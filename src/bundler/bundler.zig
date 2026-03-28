@@ -29,7 +29,9 @@ pub const BundleOptions = struct {
     format: EmitOptions.Format = .esm,
     platform: Platform = .browser,
     external: []const []const u8 = &.{},
-    minify: bool = false,
+    minify_whitespace: bool = false,
+    minify_identifiers: bool = false,
+    minify_syntax: bool = false,
     /// 스코프 호이스팅 활성화 (import/export 제거 + 변수 리네임). false면 기존 동작.
     scope_hoist: bool = true,
     /// tree-shaking 활성화 (미사용 export/모듈 제거). scope_hoist가 true일 때만 동작.
@@ -176,7 +178,7 @@ pub const Bundler = struct {
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();
-                if (self.options.minify) {
+                if (self.options.minify_identifiers) {
                     try l.computeMangling();
                 }
             }
@@ -208,7 +210,8 @@ pub const Bundler = struct {
                 &graph,
                 .{
                     .format = self.options.format,
-                    .minify = self.options.minify,
+                    .minify_whitespace = self.options.minify_whitespace,
+                    .minify_identifiers = self.options.minify_identifiers,
                     .sourcemap = true, // dev mode에서는 항상 소스맵 생성
                     .dev_mode = true,
                     .root_dir = self.options.root_dir,
@@ -242,7 +245,8 @@ pub const Bundler = struct {
                 &chunk_graph,
                 .{
                     .format = self.options.format,
-                    .minify = self.options.minify,
+                    .minify_whitespace = self.options.minify_whitespace,
+                    .minify_identifiers = self.options.minify_identifiers,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
@@ -268,7 +272,8 @@ pub const Bundler = struct {
                 &graph,
                 .{
                     .format = self.options.format,
-                    .minify = self.options.minify,
+                    .minify_whitespace = self.options.minify_whitespace,
+                    .minify_identifiers = self.options.minify_identifiers,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
@@ -430,7 +435,9 @@ test "Bundler: minified output" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
 
@@ -1423,7 +1430,9 @@ test "Format: minified IIFE" {
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .format = .iife,
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -1446,7 +1455,9 @@ test "Format: minified CJS" {
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .format = .cjs,
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -3504,7 +3515,7 @@ test "Format: minify removes module boundary comments" {
     // minify=false → 경계 주석 있음
     var b1 = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = false,
+        .minify_whitespace = false,
     });
     defer b1.deinit();
     const r1 = try b1.bundle();
@@ -3514,7 +3525,9 @@ test "Format: minify removes module boundary comments" {
     // minify=true → 경계 주석 없음
     var b2 = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b2.deinit();
     const r2 = try b2.bundle();
@@ -4397,7 +4410,9 @@ test "Stress: all formats + minify combinations" {
             var b = Bundler.init(std.testing.allocator, .{
                 .entry_points = &.{entry},
                 .format = fmt,
-                .minify = minify,
+                .minify_whitespace = minify,
+                .minify_identifiers = minify,
+                .minify_syntax = minify,
             });
             defer b.deinit();
             const result = try b.bundle();
@@ -4721,7 +4736,7 @@ test "Codegen: object literal formatting non-minify" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = false });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = false });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -4743,7 +4758,7 @@ test "Codegen: object literal formatting minify" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = true });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -4764,7 +4779,7 @@ test "Codegen: array literal formatting non-minify" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = false });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = false });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -4784,7 +4799,7 @@ test "Codegen: array literal formatting minify" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = true });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -7047,7 +7062,7 @@ test "@__PURE__: annotation not emitted in minify mode" {
     const entry = try absPath(&tmp, "index.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = true });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -7870,7 +7885,7 @@ test "CJS: minified CJS wrapping" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = true });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
@@ -9361,7 +9376,9 @@ test "CodeSplitting: minified output with chunks" {
     var bnd = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{ a_path, b_path },
         .code_splitting = true,
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer bnd.deinit();
     const result = try bnd.bundle();
@@ -10554,7 +10571,9 @@ test "Minify: CJS import binding preamble uses mangled name" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -10579,7 +10598,9 @@ test "Minify: ESM import binding not mangled" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -10602,7 +10623,9 @@ test "Minify: for-loop body var declaration has semicolon" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -10626,7 +10649,9 @@ test "Minify: template literal expression identifiers renamed (#493)" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -10658,7 +10683,9 @@ test "Minify: nested scope variable not shadowed by mangled name (#494)" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .minify = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();

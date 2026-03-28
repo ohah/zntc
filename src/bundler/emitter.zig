@@ -169,7 +169,8 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 
 pub const EmitOptions = struct {
     format: Format = .esm,
-    minify: bool = false,
+    minify_whitespace: bool = false,
+    minify_identifiers: bool = false,
     /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
     sourcemap: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
@@ -264,7 +265,7 @@ pub fn emitWithTreeShaking(
         }
     }
     if (needs_cjs_runtime) {
-        if (options.minify) {
+        if (options.minify_whitespace) {
             try output.appendSlice(allocator, CJS_RUNTIME_MIN);
             try output.appendSlice(allocator, TOESM_RUNTIME_MIN);
         } else {
@@ -275,7 +276,7 @@ pub fn emitWithTreeShaking(
 
     // Decorator 런타임 주입: experimental decorators 사용 시
     if (options.experimental_decorators) {
-        if (options.minify) {
+        if (options.minify_whitespace) {
             try output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
         } else {
             try output.appendSlice(allocator, DECORATOR_RUNTIME);
@@ -284,7 +285,7 @@ pub fn emitWithTreeShaking(
 
     // Async 런타임 주입: target < es2017 시
     if (options.target.needsAsyncAwait()) {
-        if (options.minify) {
+        if (options.minify_whitespace) {
             try output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
         } else {
             try output.appendSlice(allocator, ASYNC_RUNTIME);
@@ -420,7 +421,7 @@ pub fn emitWithTreeShaking(
         const code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker) orelse continue;
         defer allocator.free(code);
 
-        if (!options.minify) {
+        if (!options.minify_whitespace) {
             // 모듈 경계 주석 (디버깅용)
             try output.appendSlice(allocator, "// --- ");
             try output.appendSlice(allocator, std.fs.path.basename(m.path));
@@ -428,7 +429,7 @@ pub fn emitWithTreeShaking(
         }
 
         try output.appendSlice(allocator, code);
-        if (!options.minify) {
+        if (!options.minify_whitespace) {
             try output.append(allocator, '\n');
         }
     }
@@ -510,7 +511,7 @@ pub fn emitDevBundle(
     errdefer output.deinit(allocator);
 
     // HMR 런타임 주입
-    if (options.minify) {
+    if (options.minify_whitespace) {
         try output.appendSlice(allocator, HMR_RUNTIME_MIN);
     } else {
         try output.appendSlice(allocator, HMR_RUNTIME);
@@ -540,7 +541,7 @@ pub fn emitDevBundle(
     };
 
     // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
-    var bundle_line: u32 = if (!options.minify) hmr_runtime_lines else 1;
+    var bundle_line: u32 = if (!options.minify_whitespace) hmr_runtime_lines else 1;
 
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
@@ -550,7 +551,7 @@ pub fn emitDevBundle(
         defer if (emit_result.mappings) |maps| allocator.free(maps);
 
         // __zts_register 래핑 코드 생성
-        const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, options.minify);
+        const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, options.minify_whitespace);
         errdefer allocator.free(wrapped);
 
         // per-module code 저장
@@ -560,7 +561,7 @@ pub fn emitDevBundle(
         });
 
         // 번들에 추가
-        if (!options.minify) {
+        if (!options.minify_whitespace) {
             try output.appendSlice(allocator, "// --- ");
             try output.appendSlice(allocator, std.fs.path.basename(m.path));
             try output.appendSlice(allocator, " ---\n");
@@ -595,7 +596,7 @@ pub fn emitDevBundle(
         // 번들 줄 번호 추적
         bundle_line += @intCast(std.mem.count(u8, wrapped, "\n"));
         allocator.free(wrapped);
-        if (!options.minify) {
+        if (!options.minify_whitespace) {
             bundle_line += 1; // trailing newline
             try output.append(allocator, '\n');
         }
@@ -708,7 +709,7 @@ pub fn emitDevModule(
     // @__NO_SIDE_EFFECTS__ cross-module 전파가 불필요하다.
 
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
-        .minify = options.minify,
+        .minify = options.minify_whitespace,
         .module_format = .esm,
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
@@ -834,7 +835,7 @@ pub fn emitChunks(
             }
         }
         if (needs_cjs_runtime) {
-            if (options.minify) {
+            if (options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, CJS_RUNTIME_MIN);
                 try chunk_output.appendSlice(allocator, TOESM_RUNTIME_MIN);
             } else {
@@ -843,14 +844,14 @@ pub fn emitChunks(
             }
         }
         if (options.experimental_decorators) {
-            if (options.minify) {
+            if (options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
             } else {
                 try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME);
             }
         }
         if (options.target.needsAsyncAwait()) {
-            if (options.minify) {
+            if (options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
             } else {
                 try chunk_output.appendSlice(allocator, ASYNC_RUNTIME);
@@ -896,7 +897,7 @@ pub fn emitChunks(
 
             if (symbols != null and symbols.?.items.len > 0) {
                 // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
-                if (!options.minify) {
+                if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, "import { ");
                 } else {
                     try chunk_output.appendSlice(allocator, "import{");
@@ -925,14 +926,14 @@ pub fn emitChunks(
                         try chunk_output.appendSlice(allocator, name);
                     }
                     if (si + 1 < symbols.?.items.len) {
-                        if (!options.minify) {
+                        if (!options.minify_whitespace) {
                             try chunk_output.appendSlice(allocator, ", ");
                         } else {
                             try chunk_output.append(allocator, ',');
                         }
                     }
                 }
-                if (!options.minify) {
+                if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, " } from \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
                     try chunk_output.appendSlice(allocator, ".js\";\n");
@@ -943,7 +944,7 @@ pub fn emitChunks(
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
-                if (!options.minify) {
+                if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, "import \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
                     try chunk_output.appendSlice(allocator, ".js\";\n");
@@ -1014,13 +1015,13 @@ pub fn emitChunks(
             const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph);
             defer allocator.free(code);
 
-            if (!options.minify) {
+            if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "// --- ");
                 try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
                 try chunk_output.appendSlice(allocator, " ---\n");
             }
             try chunk_output.appendSlice(allocator, code);
-            if (!options.minify) {
+            if (!options.minify_whitespace) {
                 try chunk_output.append(allocator, '\n');
             }
         }
@@ -1042,7 +1043,7 @@ pub fn emitChunks(
                 }
             }.lessThan);
 
-            if (!options.minify) {
+            if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "export { ");
             } else {
                 try chunk_output.appendSlice(allocator, "export{");
@@ -1080,14 +1081,14 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, name);
                 }
                 if (ni + 1 < export_names.items.len) {
-                    if (!options.minify) {
+                    if (!options.minify_whitespace) {
                         try chunk_output.appendSlice(allocator, ", ");
                     } else {
                         try chunk_output.append(allocator, ',');
                     }
                 }
             }
-            if (!options.minify) {
+            if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, " };\n");
             } else {
                 try chunk_output.appendSlice(allocator, "};");
@@ -1220,7 +1221,7 @@ pub fn emitModule(
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
-        return emitDisabledModule(allocator, module, options.minify);
+        return emitDisabledModule(allocator, module, options.minify_whitespace);
     }
 
     const ast = &(module.ast orelse return null);
@@ -1367,7 +1368,7 @@ pub fn emitModule(
 
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
-        .minify = options.minify,
+        .minify = options.minify_whitespace,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
         .module_format = if (module.wrap_kind == .cjs) .cjs else .esm,
@@ -1389,7 +1390,7 @@ pub fn emitModule(
         var wrapped: std.ArrayList(u8) = .empty;
         defer wrapped.deinit(allocator);
 
-        if (options.minify) {
+        if (options.minify_whitespace) {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, "=__commonJS({\"");
@@ -1626,7 +1627,7 @@ test "emitter: minified output" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .minify = true }, null);
+    const output = try emit(std.testing.allocator, &result.graph, .{ .minify_whitespace = true, .minify_identifiers = true }, null);
     defer std.testing.allocator.free(output);
 
     // minify: 모듈 경계 주석 없음

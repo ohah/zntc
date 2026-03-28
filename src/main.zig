@@ -16,7 +16,9 @@ const DefineEntry = lib.transformer.DefineEntry;
 
 const TranspileOptions = struct {
     module_format: lib.codegen.codegen.ModuleFormat = .esm,
-    minify: bool = false,
+    minify_whitespace: bool = false,
+    minify_identifiers: bool = false,
+    minify_syntax: bool = false,
     drop_console: bool = false,
     drop_debugger: bool = false,
     sourcemap: bool = false,
@@ -106,7 +108,7 @@ fn transpileFile(
     var mangle_result: ?Mangler.ManglerResult = null;
     defer if (mangle_result) |*mr| mr.deinit();
 
-    if (options.minify) {
+    if (options.minify_identifiers) {
         if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
             mangle_result = Mangler.mangle(arena_alloc, .{
                 .scopes = analyzer.scopes.items,
@@ -162,7 +164,7 @@ fn transpileFile(
     // 코드 생성
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .module_format = options.module_format,
-        .minify = options.minify,
+        .minify = options.minify_whitespace,
         .sourcemap = options.sourcemap,
         .ascii_only = options.ascii_only,
         .quote_style = options.quote_style,
@@ -315,7 +317,9 @@ pub fn main() !void {
     var input_file: ?[]const u8 = null;
     var output_file: ?[]const u8 = null;
     var output_dir: ?[]const u8 = null;
-    var minify = false;
+    var minify_whitespace = false;
+    var minify_identifiers = false;
+    var minify_syntax = false;
     var module_format: lib.codegen.codegen.ModuleFormat = .esm;
     var drop_console = false;
     var drop_debugger = false;
@@ -367,7 +371,15 @@ pub fn main() !void {
                 output_dir = args[i];
             }
         } else if (std.mem.eql(u8, arg, "--minify")) {
-            minify = true;
+            minify_whitespace = true;
+            minify_identifiers = true;
+            minify_syntax = true;
+        } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
+            minify_whitespace = true;
+        } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
+            minify_identifiers = true;
+        } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
+            minify_syntax = true;
         } else if (std.mem.eql(u8, arg, "--format=cjs")) {
             module_format = .cjs;
             bundle_format = .cjs;
@@ -592,7 +604,9 @@ pub fn main() !void {
             .format = bundle_format,
             .platform = platform,
             .external = external_list.items,
-            .minify = minify,
+            .minify_whitespace = minify_whitespace,
+            .minify_identifiers = minify_identifiers,
+            .minify_syntax = minify_syntax,
             .code_splitting = splitting,
             .define = define_list.items,
             .experimental_decorators = experimental_decorators orelse false,
@@ -701,7 +715,9 @@ pub fn main() !void {
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
         .module_format = module_format,
-        .minify = minify,
+        .minify_whitespace = minify_whitespace,
+        .minify_identifiers = minify_identifiers,
+        .minify_syntax = minify_syntax,
         .drop_console = drop_console,
         .drop_debugger = drop_debugger,
         .sourcemap = sourcemap,
