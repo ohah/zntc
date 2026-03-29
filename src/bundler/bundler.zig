@@ -12,6 +12,7 @@
 //!   defer result.deinit(allocator);
 
 const std = @import("std");
+const plugin_mod = @import("plugin.zig");
 const types = @import("types.zig");
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
@@ -96,6 +97,8 @@ pub const BundleOptions = struct {
     inject: []const []const u8 = &.{},
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존
     keep_names: bool = false,
+    /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
+    plugins: []const plugin_mod.Plugin = &.{},
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -243,6 +246,7 @@ pub const Bundler = struct {
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
             .keep_names = self.options.keep_names,
+            .plugins = self.options.plugins,
         };
     }
 
@@ -265,6 +269,7 @@ pub const Bundler = struct {
         graph.public_path = self.options.public_path;
         graph.asset_names = self.options.asset_names;
         graph.inject_files = self.options.inject;
+        graph.plugins = self.options.plugins;
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);
@@ -484,6 +489,16 @@ pub const Bundler = struct {
             try generateMetafileJson(self.allocator, &graph, output, outputs)
         else
             null;
+
+        // 8. Plugin: generateBundle 훅 — 번들 완료 후 모든 플러그인에 알림
+        if (self.options.plugins.len > 0) {
+            const runner = plugin_mod.PluginRunner.init(self.options.plugins);
+            const gen_outputs: []const emitter.OutputFile = if (outputs) |outs|
+                outs
+            else
+                &.{.{ .path = "bundle.js", .contents = output }};
+            runner.runGenerateBundle(gen_outputs);
+        }
 
         return .{
             .output = output,

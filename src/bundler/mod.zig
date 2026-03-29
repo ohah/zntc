@@ -31,6 +31,7 @@ pub const stmt_info = @import("stmt_info.zig");
 pub const chunk = @import("chunk.zig");
 pub const runtime_helpers = @import("runtime_helpers.zig");
 pub const bundler_core = @import("bundler.zig");
+pub const plugin = @import("plugin.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -56,6 +57,8 @@ pub const ChunkGraph = chunk.ChunkGraph;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
+pub const Plugin = plugin.Plugin;
+pub const PluginRunner = plugin.PluginRunner;
 
 test {
     _ = types;
@@ -74,6 +77,7 @@ test {
     _ = chunk;
     _ = runtime_helpers;
     _ = bundler_core;
+    _ = plugin;
 
     // test files
     _ = @import("bundler_test.zig");
@@ -91,4 +95,5 @@ test {
     _ = @import("resolve_cache_test.zig");
     _ = @import("types_test.zig");
     _ = @import("module_test.zig");
+    _ = @import("plugin_test.zig");
 }
