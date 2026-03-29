@@ -92,6 +92,8 @@ pub const BundleOptions = struct {
     metafile: bool = false,
     /// 번들 분석 출력 (--analyze). metafile을 내부적으로 강제 활성화.
     analyze: bool = false,
+    /// 모든 모듈에 자동 import (--inject:./file.js). 절대 경로 목록.
+    inject: []const []const u8 = &.{},
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -259,6 +261,7 @@ pub const Bundler = struct {
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.asset_names = self.options.asset_names;
+        graph.inject_files = self.options.inject;
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);
