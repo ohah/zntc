@@ -38,6 +38,7 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("statement_shaker.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
+const plugin_mod = @import("plugin.zig");
 
 pub const EmitOptions = struct {
     format: Format = .esm,
@@ -90,6 +91,8 @@ pub const EmitOptions = struct {
     legal_comments: types.LegalComments = .default,
     /// --keep-names: minify 시 함수/클래스 .name 프로퍼티 보존
     keep_names: bool = false,
+    /// 플러그인 배열. bundler에서 전파.
+    plugins: []const plugin_mod.Plugin = &.{},
 
     pub const Format = enum {
         esm,
@@ -271,6 +274,20 @@ pub fn emitWithTreeShaking(
 
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
+
+    // Plugin: renderChunk 훅 — 단일 파일 모드에서도 적용
+    if (options.plugins.len > 0) {
+        const runner = plugin_mod.PluginRunner.init(options.plugins);
+        const rc_result = runner.runRenderChunk(output.items, "bundle", allocator) catch |err| switch (err) {
+            error.PluginFailed => null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        if (rc_result) |result| {
+            output.clearRetainingCapacity();
+            try output.appendSlice(allocator, result);
+            allocator.free(result);
+        }
+    }
 
     // 포맷별 epilogue
     switch (options.format) {
@@ -913,6 +930,22 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, " };\n");
             } else {
                 try chunk_output.appendSlice(allocator, "};");
+            }
+        }
+
+        // Plugin: renderChunk 훅 — 청크 완성 후, footer 전
+        if (options.plugins.len > 0) {
+            const runner = plugin_mod.PluginRunner.init(options.plugins);
+            var rc_stem_buf: [128]u8 = undefined;
+            const rc_chunk_name = chunkPlaceholderStem(chunk, &rc_stem_buf, options);
+            const chunk_rc_result = runner.runRenderChunk(chunk_output.items, rc_chunk_name, allocator) catch |err| switch (err) {
+                error.PluginFailed => null,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            if (chunk_rc_result) |result| {
+                chunk_output.clearRetainingCapacity();
+                try chunk_output.appendSlice(allocator, result);
+                allocator.free(result);
             }
         }
 
@@ -1614,7 +1647,21 @@ pub fn emitModule(
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
     });
-    const code = try cg.generate(root);
+    var code = try cg.generate(root);
+
+    // Plugin: transform 훅 — codegen 직후, CJS 래핑 전
+    // 플러그인 결과를 arena로 복사하여 emit_arena와 같은 생명주기 보장
+    if (options.plugins.len > 0) {
+        const runner = plugin_mod.PluginRunner.init(options.plugins);
+        const transform_result = runner.runTransform(code, module.path, allocator) catch |err| switch (err) {
+            error.PluginFailed => null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        if (transform_result) |result| {
+            code = try arena_alloc.dupe(u8, result);
+            allocator.free(result);
+        }
+    }
 
     // keepNames: codegen이 generate() 내에서 직접 __name() 호출을 buf에 append.
     // entries가 있으면 런타임 헬퍼 플래그만 설정.

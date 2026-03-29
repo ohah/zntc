@@ -36,6 +36,7 @@ const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
+const plugin_mod = @import("plugin.zig");
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -67,6 +68,8 @@ pub const ModuleGraph = struct {
     entry_dir: []const u8 = "",
     /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
     inject_files: []const []const u8 = &.{},
+    /// 플러그인 배열. bundler에서 전파.
+    plugins: []const plugin_mod.Plugin = &.{},
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -486,11 +489,24 @@ pub const ModuleGraph = struct {
         module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 
-        // 파일 읽기 (arena — module.source가 참조)
-        const source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-            self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .resolve, "Cannot read file", null);
-            module.state = .ready;
-            return;
+        // Plugin: load 훅 — virtual module 지원을 위해 파일 I/O 전에 플러그인에게 기회를 줌
+        const source: []const u8 = blk: {
+            if (self.plugins.len > 0) {
+                const runner = plugin_mod.PluginRunner.init(self.plugins);
+                const load_result = runner.runLoad(module.path, arena_alloc) catch |err| switch (err) {
+                    error.PluginFailed => null,
+                    error.OutOfMemory => {
+                        module.state = .ready;
+                        return;
+                    },
+                };
+                if (load_result) |plugin_source| break :blk plugin_source;
+            }
+            break :blk std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
+                self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .resolve, "Cannot read file", null);
+                module.state = .ready;
+                return;
+            };
         };
         module.source = source;
 
@@ -713,7 +729,27 @@ pub const ModuleGraph = struct {
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
         const records = self.modules.items[mod_idx].import_records;
 
+        // Plugin: resolveId 훅용 runner를 루프 밖에서 한 번만 생성
+        const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
+            plugin_mod.PluginRunner.init(self.plugins)
+        else
+            null;
+
         for (records, 0..) |record, rec_i| {
+            // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
+            if (plugin_runner) |runner| {
+                if (runner.runResolveId(record.specifier, module_path, self.allocator)) |plugin_result| {
+                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
+                    continue;
+                } else |err| switch (err) {
+                    error.PluginFailed => {
+                        try self.applyResolveResult(mod_idx, rec_i, record, null, true);
+                        continue;
+                    },
+                    error.OutOfMemory => return error.OutOfMemory,
+                }
+            }
+
             const resolved = self.resolve_cache.resolve(
                 source_dir,
                 record.specifier,

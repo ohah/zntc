@@ -1,0 +1,249 @@
+//! 플러그인 시스템 테스트
+//!
+//! - 단위 테스트: PluginRunner의 각 훅 실행 로직 검증
+//! - 통합 테스트: Bundler.bundle()을 통한 end-to-end 검증
+
+const std = @import("std");
+const Bundler = @import("bundler.zig").Bundler;
+const plugin_mod = @import("plugin.zig");
+const Plugin = plugin_mod.Plugin;
+const PluginRunner = plugin_mod.PluginRunner;
+const ResolveResult = @import("resolver.zig").ResolveResult;
+const OutputFile = @import("emitter.zig").OutputFile;
+const test_helpers = @import("test_helpers.zig");
+const writeFile = test_helpers.writeFile;
+const absPath = test_helpers.absPath;
+
+// ============================================================
+// 단위 테스트: PluginRunner
+// ============================================================
+
+test "PluginRunner: empty plugins is no-op" {
+    const runner = PluginRunner.init(&.{});
+    try std.testing.expect(runner.isEmpty());
+
+    const resolve_result = try runner.runResolveId("foo", null, std.testing.allocator);
+    try std.testing.expect(resolve_result == null);
+
+    const load_result = try runner.runLoad("foo.ts", std.testing.allocator);
+    try std.testing.expect(load_result == null);
+
+    const transform_result = try runner.runTransform("code", "id", std.testing.allocator);
+    try std.testing.expect(transform_result == null);
+
+    const render_result = try runner.runRenderChunk("code", "chunk", std.testing.allocator);
+    try std.testing.expect(render_result == null);
+
+    runner.runGenerateBundle(&.{});
+}
+
+// --- resolveId 훅 테스트 ---
+
+fn testResolveIdHook(specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
+    if (std.mem.eql(u8, specifier, "virtual:config")) {
+        return .{
+            .path = try allocator.dupe(u8, "/virtual/config.js"),
+            .module_type = .javascript,
+        };
+    }
+    return null;
+}
+
+test "PluginRunner: resolveId first mode" {
+    const plugins = [_]Plugin{
+        .{ .name = "test-resolve", .resolveId = testResolveIdHook },
+    };
+    const runner = PluginRunner.init(&plugins);
+
+    // 매칭되는 specifier → non-null
+    const result = try runner.runResolveId("virtual:config", null, std.testing.allocator);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("/virtual/config.js", result.?.path);
+    std.testing.allocator.free(result.?.path);
+
+    // 매칭 안 되는 specifier → null (기본 resolver 사용)
+    const result2 = try runner.runResolveId("./normal", null, std.testing.allocator);
+    try std.testing.expect(result2 == null);
+}
+
+// --- load 훅 테스트 ---
+
+fn testLoadHook(path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    if (std.mem.endsWith(u8, path, ".custom")) {
+        return try allocator.dupe(u8, "export default 'custom-loaded';");
+    }
+    return null;
+}
+
+test "PluginRunner: load first mode" {
+    const plugins = [_]Plugin{
+        .{ .name = "test-load", .load = testLoadHook },
+    };
+    const runner = PluginRunner.init(&plugins);
+
+    const result = try runner.runLoad("module.custom", std.testing.allocator);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("export default 'custom-loaded';", result.?);
+    std.testing.allocator.free(result.?);
+
+    // 매칭 안 되는 확장자 → null (파일 시스템에서 읽기)
+    const result2 = try runner.runLoad("module.ts", std.testing.allocator);
+    try std.testing.expect(result2 == null);
+}
+
+// --- transform 훅 테스트 (체이닝) ---
+
+fn testTransformHookA(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* A */", code }) catch return error.OutOfMemory;
+}
+
+fn testTransformHookB(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* B */", code }) catch return error.OutOfMemory;
+}
+
+test "PluginRunner: transform chaining" {
+    const plugins = [_]Plugin{
+        .{ .name = "transform-a", .transform = testTransformHookA },
+        .{ .name = "transform-b", .transform = testTransformHookB },
+    };
+    const runner = PluginRunner.init(&plugins);
+
+    const result = try runner.runTransform("original", "test.js", std.testing.allocator);
+    try std.testing.expect(result != null);
+    // B가 A의 결과를 받으므로: "/* B *//* A */original"
+    try std.testing.expectEqualStrings("/* B *//* A */original", result.?);
+    std.testing.allocator.free(result.?);
+}
+
+// --- renderChunk 훅 테스트 ---
+
+fn testRenderChunkHook(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* rendered */\n", code }) catch return error.OutOfMemory;
+}
+
+test "PluginRunner: renderChunk chaining" {
+    const plugins = [_]Plugin{
+        .{ .name = "test-render", .renderChunk = testRenderChunkHook },
+    };
+    const runner = PluginRunner.init(&plugins);
+
+    const result = try runner.runRenderChunk("chunk code", "main", std.testing.allocator);
+    try std.testing.expect(result != null);
+    try std.testing.expect(std.mem.startsWith(u8, result.?, "/* rendered */\n"));
+    std.testing.allocator.free(result.?);
+}
+
+// --- generateBundle 훅 테스트 ---
+
+var generate_bundle_called: bool = false;
+
+fn testGenerateBundleHook(_: []const OutputFile) void {
+    generate_bundle_called = true;
+}
+
+test "PluginRunner: generateBundle all executed" {
+    generate_bundle_called = false;
+    const plugins = [_]Plugin{
+        .{ .name = "test-generate", .generateBundle = testGenerateBundleHook },
+    };
+    const runner = PluginRunner.init(&plugins);
+
+    runner.runGenerateBundle(&.{.{ .path = "out.js", .contents = "code" }});
+    try std.testing.expect(generate_bundle_called);
+}
+
+// ============================================================
+// 통합 테스트: Bundler.bundle()을 통한 플러그인 훅 실행 검증
+// ============================================================
+
+// --- transform 훅 통합 테스트 ---
+
+fn integrationTransformHook(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* PLUGIN_TRANSFORM */\n", code }) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: transform hook modifies output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x: number = 42;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "test-transform", .transform = integrationTransformHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // transform 훅이 삽입한 마커가 출력에 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* PLUGIN_TRANSFORM */") != null);
+    try std.testing.expect(!result.hasErrors());
+}
+
+// --- generateBundle 훅 통합 테스트 ---
+
+var integration_generate_called: bool = false;
+var integration_generate_output_len: usize = 0;
+
+fn integrationGenerateBundleHook(outputs: []const OutputFile) void {
+    integration_generate_called = true;
+    integration_generate_output_len = outputs.len;
+}
+
+test "Plugin integration: generateBundle hook is called" {
+    integration_generate_called = false;
+    integration_generate_output_len = 0;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "test-generate", .generateBundle = integrationGenerateBundleHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(integration_generate_called);
+    try std.testing.expect(integration_generate_output_len > 0);
+}
+
+// --- plugins 없이 기존 동작 유지 테스트 ---
+
+test "Plugin integration: no plugins preserves existing behavior" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x: number = 42;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42;") != null);
+    try std.testing.expect(!result.hasErrors());
+}
