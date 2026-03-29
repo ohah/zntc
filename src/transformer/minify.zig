@@ -109,6 +109,9 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
 
     // 비교 연산 (산술보다 먼저 — 숫자 === 숫자도 여기서 처리)
     if (op == .eq3 or op == .neq2) {
+        // x === true → x, x === false → !x (한쪽만 boolean이면 축약)
+        if (simplifyBooleanComparison(ast, node_idx, left, right, left_ni, right_ni, op)) return;
+
         if (foldStrictEquality(ast, left, right)) |result| {
             const value = if (op == .neq2) !result else result;
             const text = if (value) "true" else "false";
@@ -199,6 +202,53 @@ fn stripQuotes(text: []const u8) []const u8 {
     return text;
 }
 
+/// x === true → x, x === false → !x, x !== true → !x, x !== false → x
+/// 한쪽이 boolean 리터럴이고 다른 쪽이 non-literal이면 축약.
+fn simplifyBooleanComparison(
+    ast: *Ast,
+    node_idx: u32,
+    left: Node,
+    right: Node,
+    left_ni: u32,
+    right_ni: u32,
+    op: Kind,
+) bool {
+    // 어느 쪽이 boolean 리터럴인지 판별
+    const bool_val: ?bool = if (left.tag == .boolean_literal)
+        getBoolValue(ast, left)
+    else if (right.tag == .boolean_literal)
+        getBoolValue(ast, right)
+    else
+        null;
+    const bv = bool_val orelse return false;
+
+    // 양쪽 다 리터럴이면 foldStrictEquality에서 처리 (여기서는 축약하지 않음)
+    const other_ni = if (left.tag == .boolean_literal) right_ni else left_ni;
+    const other = ast.nodes.items[other_ni];
+    if (other.tag == .boolean_literal or other.tag == .numeric_literal or
+        other.tag == .string_literal or other.tag == .null_literal) return false;
+
+    // x === true → x, x === false → !x
+    // x !== true → !x, x !== false → x
+    const need_negate = (op == .eq3 and !bv) or (op == .neq2 and bv);
+
+    if (need_negate) {
+        // !x — unary_expression을 새로 만들어야 하는데, in-place 수정으로는
+        // extra_data에 추가가 필요. addExtra가 실패할 수 있으므로 try 없이 catch 처리.
+        const operand_extra = ast.addExtra(other_ni) catch return false;
+        _ = ast.addExtra(@intFromEnum(Kind.bang)) catch return false;
+        ast.nodes.items[node_idx] = .{
+            .tag = .unary_expression,
+            .span = ast.nodes.items[node_idx].span,
+            .data = .{ .extra = operand_extra },
+        };
+    } else {
+        // x 그대로
+        ast.nodes.items[node_idx] = other;
+    }
+    return true;
+}
+
 fn foldStrictEquality(ast: *const Ast, left: Node, right: Node) ?bool {
     // 숫자 === 숫자
     if (left.tag == .numeric_literal and right.tag == .numeric_literal) {
@@ -239,6 +289,20 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
 
     switch (op) {
         .bang => {
+            // !!x → x (double negation elimination)
+            if (operand.tag == .unary_expression) {
+                const inner_e = operand.data.extra;
+                if (inner_e + 1 < ast.extra_data.items.len) {
+                    const inner_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[inner_e + 1])));
+                    if (inner_op == .bang) {
+                        const inner_operand_ni = ast.extra_data.items[inner_e];
+                        if (inner_operand_ni < ast.nodes.items.len) {
+                            ast.nodes.items[node_idx] = ast.nodes.items[inner_operand_ni];
+                            return;
+                        }
+                    }
+                }
+            }
             // !true → false, !false → true, !0 → true, !1 → false
             if (evalTruthiness(ast, operand)) |truthy| {
                 const text = if (!truthy) "true" else "false";
