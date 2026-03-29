@@ -126,6 +126,26 @@ pub const SemanticAnalyzer = struct {
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
 
+    // ================================================================
+    // Part 시스템 (Phase 7-1): 번들러 StmtInfo를 파싱 중 구축
+    // ================================================================
+
+    /// 현재 방문 중인 top-level statement 인덱스. null이면 top-level이 아님.
+    /// visitProgram의 2nd pass에서 각 statement 방문 전 설정.
+    current_top_stmt: ?u32 = null,
+
+    /// per-top-level-statement declared 심볼 인덱스 수집 버퍼.
+    /// stmt_declared.items[i] = i번째 top-level statement가 선언하는 심볼들.
+    stmt_declared: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+
+    /// per-top-level-statement referenced 심볼 인덱스 수집 버퍼.
+    /// stmt_referenced.items[i] = i번째 top-level statement가 참조하는 심볼들 (declared에 없는 것만).
+    stmt_referenced: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+
+    /// top-level statement의 AST 노드 인덱스 배열.
+    top_stmt_node_indices: std.ArrayListUnmanaged(u32) = .empty,
+
+
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
@@ -194,6 +214,12 @@ pub const SemanticAnalyzer = struct {
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
         self.class_private_refs.deinit(self.allocator);
+        // Part 시스템 필드 해제
+        for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
+        self.stmt_declared.deinit(self.allocator);
+        for (self.stmt_referenced.items) |*b| b.deinit(self.allocator);
+        self.stmt_referenced.deinit(self.allocator);
+        self.top_stmt_node_indices.deinit(self.allocator);
     }
 
     // ================================================================
@@ -504,6 +530,14 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
             try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
+
+        // Part 시스템: top-level scope 심볼이면 stmt_declared에 수집
+        if (self.current_top_stmt) |si| {
+            if (@intFromEnum(target_scope) == 0 and si < self.stmt_declared.items.len) {
+                const sym_u32: u32 = @intCast(sym_index);
+                self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
+            }
+        }
     }
 
     /// 가장 가까운 var scope(function/global/module)를 찾는다.
@@ -684,6 +718,24 @@ pub const SemanticAnalyzer = struct {
                         self.symbol_ids.items[ni] = @intCast(sym_idx);
                     }
                 }
+                // Part 시스템: top-level statement의 referenced 심볼 수집
+                if (self.current_top_stmt) |si| {
+                    if (si < self.stmt_referenced.items.len) {
+                        const sym_u32: u32 = @intCast(sym_idx);
+                        // 중복 방지 (선형 탐색 — 심볼 수가 적으므로 HashMap보다 효율적)
+                        const refs = self.stmt_referenced.items[si].items;
+                        var dup = false;
+                        for (refs) |r| {
+                            if (r == sym_u32) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            self.stmt_referenced.items[si].append(self.allocator, sym_u32) catch {};
+                        }
+                    }
+                }
                 return;
             }
 
@@ -713,6 +765,61 @@ pub const SemanticAnalyzer = struct {
     fn markSymbolNoSideEffects(self: *SemanticAnalyzer, name_span: Span) void {
         const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
         self.symbols.items[sym_idx].decl_flags.no_side_effects = true;
+    }
+
+    /// predeclared 심볼에 대해 symbol_ids[node_idx]를 설정한다.
+    /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
+    /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
+    fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) void {
+        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
+        if (node_idx < self.symbol_ids.items.len) {
+            self.symbol_ids.items[node_idx] = @intCast(sym_idx);
+        }
+        // Part 시스템: top-level scope 심볼이면 stmt_declared에 수집
+        if (self.current_top_stmt) |si| {
+            if (si < self.stmt_declared.items.len) {
+                const sym_u32: u32 = @intCast(sym_idx);
+                // 중복 방지
+                const items = self.stmt_declared.items[si].items;
+                for (items) |item| {
+                    if (item == sym_u32) return;
+                }
+                self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
+            }
+        }
+    }
+
+    /// variable_declaration의 predeclared 바인딩에 대해 symbol_ids를 설정한다.
+    /// 단순 식별자와 destructuring 패턴을 재귀 처리.
+    fn setSymbolIdForPredeclaredBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const ni = @intFromEnum(idx);
+        if (ni >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .assignment_target_identifier => {
+                self.setSymbolIdForPredeclared(node.span, ni);
+            },
+            .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw| {
+                    self.setSymbolIdForPredeclaredBinding(@enumFromInt(raw));
+                }
+            },
+            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                self.setSymbolIdForPredeclaredBinding(node.data.binary.right);
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                self.setSymbolIdForPredeclaredBinding(node.data.binary.left);
+            },
+            .binding_rest_element, .rest_element, .assignment_target_rest => {
+                self.setSymbolIdForPredeclaredBinding(node.data.unary.operand);
+            },
+            else => {},
+        }
     }
 
     const ConstValue = @import("symbol.zig").ConstValue;
@@ -1150,10 +1257,36 @@ pub const SemanticAnalyzer = struct {
         // 1st pass — top-level 바인딩 이름만 스코프에 등록 (initializer는 순회하지 않음).
         //   예: const foo = () => bar();  // bar가 아직 스코프에 없어도
         //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
-        // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
+        // 2nd pass — statement별 루프로 current_top_stmt 추적 (Part 시스템).
         try self.predeclareTopLevelBindings(node.data.list);
         self.predeclared_scope = self.current_scope;
-        try self.visitNodeList(node.data.list);
+
+        // Part 시스템: top-level statement별로 declared/referenced 심볼 수집.
+        // visitNodeList 대신 직접 루프를 돌면서 current_top_stmt를 설정한다.
+        const list = node.data.list;
+        if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+
+            try self.stmt_declared.ensureTotalCapacity(self.allocator, @intCast(indices.len));
+            try self.stmt_referenced.ensureTotalCapacity(self.allocator, @intCast(indices.len));
+            try self.top_stmt_node_indices.ensureTotalCapacity(self.allocator, @intCast(indices.len));
+
+            for (indices, 0..) |raw_idx, stmt_i| {
+                const idx: NodeIndex = @enumFromInt(raw_idx);
+
+                // Part 메타데이터 기록
+                self.top_stmt_node_indices.appendAssumeCapacity(raw_idx);
+                self.stmt_declared.appendAssumeCapacity(.empty);
+                self.stmt_referenced.appendAssumeCapacity(.empty);
+                // side_effects는 buildFromSemantic에서 purity 모듈로 판정 (순환 의존 방지)
+
+                // current_top_stmt 설정 후 방문
+                self.current_top_stmt = @intCast(stmt_i);
+                try self.visitNode(idx);
+            }
+            self.current_top_stmt = null;
+        }
+
         self.predeclared_scope = .none;
 
         self.exitScope(saved);
@@ -1381,6 +1514,12 @@ pub const SemanticAnalyzer = struct {
             if (!self.isInPredeclaredScope()) {
                 const name_node = self.ast.getNode(name_idx);
                 try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+            } else {
+                // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정.
+                // declareSymbolWithNode를 skip하지만 symbol_ids는 설정해야
+                // buildFromSemantic/build에서 declared 매칭이 정확하다.
+                const name_node = self.ast.getNode(name_idx);
+                self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
             }
 
             // @__NO_SIDE_EFFECTS__ → symbol에 전파 (predeclared 여부와 무관하게 항상 수행)
@@ -1589,9 +1728,14 @@ pub const SemanticAnalyzer = struct {
 
         // 클래스 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
-        if (!name_idx.isNone() and !self.isInPredeclaredScope()) {
-            const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+        if (!name_idx.isNone()) {
+            if (!self.isInPredeclaredScope()) {
+                const name_node = self.ast.getNode(name_idx);
+                try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+            } else {
+                const name_node = self.ast.getNode(name_idx);
+                self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
+            }
         }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
@@ -1966,6 +2110,8 @@ pub const SemanticAnalyzer = struct {
                 if (!self.isInPredeclaredScope()) {
                     try self.registerBinding(binding_idx, sym_kind);
                 } else {
+                    // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정
+                    self.setSymbolIdForPredeclaredBinding(binding_idx);
                     // predeclared인 경우에도, destructuring 패턴 내부의 default value
                     // 표현식은 순회해야 한다 (registerBinding이 수행하던 visitNode 호출 대체).
                     try self.visitBindingPatternExpressions(binding_idx);
@@ -2152,6 +2298,12 @@ pub const SemanticAnalyzer = struct {
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
+                // Part 시스템: facade 심볼도 stmt_declared에 수집
+                if (self.current_top_stmt) |si| {
+                    if (@intFromEnum(module_scope) == 0 and si < self.stmt_declared.items.len) {
+                        self.stmt_declared.items[si].append(self.allocator, @intCast(sym_index)) catch {};
+                    }
+                }
                 // export default <literal> → facade 심볼에 const_value 설정
                 if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
                     const cv = self.extractConstValue(self.ast.getNode(inner_idx));

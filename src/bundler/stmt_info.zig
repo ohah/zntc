@@ -335,3 +335,184 @@ pub fn build(
         .allocator = allocator,
     };
 }
+
+/// Semantic analyzer가 파싱 중 수집한 Part 데이터로 ModuleStmtInfos를 구축한다.
+/// build()와 달리 전체 AST 노드를 재순회하지 않는다 — O(S + symbols) (S = statement count).
+///
+/// declared: symbols의 scope_id==0인 심볼의 declaration_span으로 소속 statement 매칭.
+/// referenced: semantic analyzer가 resolveIdentifier에서 수집한 per-statement 참조.
+/// side_effects: purity 모듈로 각 statement의 순수성 판정.
+pub fn buildFromSemantic(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    symbols: []const Symbol,
+    sem_declared: []const std.ArrayListUnmanaged(u32),
+    sem_referenced: []const std.ArrayListUnmanaged(u32),
+    top_stmt_node_indices: []const u32,
+    stmt_count: u32,
+) !?ModuleStmtInfos {
+    if (stmt_count == 0) return null;
+    const sc: usize = @intCast(stmt_count);
+
+    var stmts = try allocator.alloc(StmtInfo, sc);
+    errdefer {
+        for (stmts) |s| {
+            allocator.free(s.declared_symbols);
+            allocator.free(s.referenced_symbols);
+        }
+        allocator.free(stmts);
+    }
+
+    var sym_to_stmt = try allocator.alloc(?u32, symbols.len);
+    errdefer allocator.free(sym_to_stmt);
+    for (sym_to_stmt) |*s| s.* = null;
+
+    // Phase 1: statement span + side_effects 판정
+    var stmt_spans = try allocator.alloc(Span, sc);
+    defer allocator.free(stmt_spans);
+
+    for (top_stmt_node_indices[0..sc], 0..) |raw_idx, stmt_i| {
+        const ni: usize = @intCast(raw_idx);
+        if (ni >= ast.nodes.items.len) {
+            stmt_spans[stmt_i] = .{ .start = 0, .end = 0 };
+            stmts[stmt_i] = .{
+                .node_idx = @intCast(ni),
+                .span = .{ .start = 0, .end = 0 },
+                .has_side_effects = true,
+                .declared_symbols = &.{},
+                .referenced_symbols = &.{},
+            };
+            continue;
+        }
+        const node = ast.nodes.items[ni];
+        stmt_spans[stmt_i] = node.span;
+        const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
+        stmts[stmt_i] = .{
+            .node_idx = @intCast(ni),
+            .span = node.span,
+            .has_side_effects = side_effects,
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
+        };
+    }
+
+    // Phase 2a: declared — semantic analyzer가 수집한 per-statement declared 데이터 사용.
+    // 전체 AST 노드 순회 없이 O(S * avg_declared)으로 ��축.
+    var declared_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), sc);
+    defer {
+        for (declared_bufs) |*b| b.deinit(allocator);
+        allocator.free(declared_bufs);
+    }
+    for (declared_bufs) |*b| b.* = .empty;
+
+    for (0..sc) |stmt_i| {
+        if (stmt_i >= sem_declared.len) break;
+        const decls = sem_declared[stmt_i];
+        for (decls.items) |sym_u32| {
+            if (sym_u32 >= symbols.len) continue;
+            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_u32)) {
+                try declared_bufs[stmt_i].append(allocator, sym_u32);
+                if (sym_u32 < sym_to_stmt.len) {
+                    sym_to_stmt[sym_u32] = @intCast(stmt_i);
+                }
+            }
+        }
+    }
+
+    // Phase 2b: referenced — semantic analyzer가 수집한 데이터 사용
+    // declared에 포함된 심볼은 제외 (자체 선언 참조 방지)
+    var referenced_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), sc);
+    defer {
+        for (referenced_bufs) |*b| b.deinit(allocator);
+        allocator.free(referenced_bufs);
+    }
+    for (referenced_bufs) |*b| b.* = .empty;
+
+    for (0..sc) |stmt_i| {
+        if (stmt_i >= sem_referenced.len) break;
+        const refs = sem_referenced[stmt_i];
+        for (refs.items) |sym_u32| {
+            // declared에 없는 것만 referenced로 추가
+            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_u32)) {
+                if (!sliceContains(u32, referenced_bufs[stmt_i].items, sym_u32)) {
+                    try referenced_bufs[stmt_i].append(allocator, sym_u32);
+                }
+            }
+        }
+    }
+
+    // stmts에 기록
+    for (stmts, 0..) |*stmt, stmt_i| {
+        if (declared_bufs[stmt_i].items.len > 0) {
+            stmt.declared_symbols = try declared_bufs[stmt_i].toOwnedSlice(allocator);
+        }
+        if (referenced_bufs[stmt_i].items.len > 0) {
+            stmt.referenced_symbols = try referenced_bufs[stmt_i].toOwnedSlice(allocator);
+        }
+    }
+
+    // Phase 3: 역인덱스 구축 (기존 build()와 동일)
+    const sym_count = symbols.len;
+
+    var ref_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(ref_counts);
+    @memset(ref_counts, 0);
+    var se_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(se_counts);
+    @memset(se_counts, 0);
+
+    for (stmts) |stmt| {
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    var sym_to_ref_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_ref_stmts);
+    var sym_to_se_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_se_stmts);
+
+    var ref_bufs_phase3 = try allocator.alloc([]u32, sym_count);
+    defer allocator.free(ref_bufs_phase3);
+    var se_bufs_phase3 = try allocator.alloc([]u32, sym_count);
+    defer allocator.free(se_bufs_phase3);
+
+    for (0..sym_count) |sym| {
+        ref_bufs_phase3[sym] = if (ref_counts[sym] > 0) try allocator.alloc(u32, ref_counts[sym]) else &.{};
+        se_bufs_phase3[sym] = if (se_counts[sym] > 0) try allocator.alloc(u32, se_counts[sym]) else &.{};
+    }
+
+    @memset(ref_counts, 0);
+    @memset(se_counts, 0);
+
+    for (stmts, 0..) |stmt, si| {
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_bufs_phase3[sym][ref_counts[sym]] = @intCast(si);
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_bufs_phase3[sym][se_counts[sym]] = @intCast(si);
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    for (0..sym_count) |sym| {
+        sym_to_ref_stmts[sym] = ref_bufs_phase3[sym];
+        sym_to_se_stmts[sym] = se_bufs_phase3[sym];
+    }
+
+    return .{
+        .stmts = stmts,
+        .symbol_to_stmt = sym_to_stmt,
+        .sym_to_side_effect_stmts = sym_to_se_stmts,
+        .sym_to_referencing_stmts = sym_to_ref_stmts,
+        .allocator = allocator,
+    };
+}
