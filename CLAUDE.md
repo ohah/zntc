@@ -63,6 +63,7 @@ src/
     es2015_class.zig        #   class → function + prototype
     es2015_generator.zig    #   generator → 상태 머신 (__generator)
     es_helpers.zig          #   다운레벨링 헬퍼 유틸
+    minify.zig              #   AST 미니파이어 (별도 패스, new_ast in-place 수정)
   codegen/                  # Phase 4: 코드 생성 ✅
     mod.zig                 #   코드젠 엔트리 + re-export
     codegen.zig             #   코드 생성 (formatting, minify, indentation)
@@ -128,6 +129,7 @@ Input (.ts/.tsx/.js/.jsx)
   → Parser (AST, 24B 고정 노드, 인덱스 기반)
   → Semantic Analyzer (스코프 + 심볼 + 검증)
   → Transformer (TS 스트리핑, ES 다운레벨링, JSX, decorator)
+  → Minifier (--minify 시: constant folding, DCE, boolean simplification)
   → Codegen (JavaScript + SourceMap V3)
   → Output (.js + .js.map)
 ```
@@ -229,6 +231,23 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
   - emitter에서 new_ast + `transformer.new_symbol_ids`로 StmtInfo 구축 → linker rename 후에도 정확
   - cross-module import 필터: importer의 도달성으로 dead import binding 스킵
 
+### AST Minifier Design
+- **별도 패스 (oxc 방식)**: transformer 완료 후 new_ast를 in-place 수정
+  - transformer 통합(esbuild 방식)은 visitNodeInner 복잡도 증가 + 테스트 격리 불가
+  - 별도 패스는 minify 대상 태그(~10개)만 switch, 끄면 기존 동작 보장
+  - new_ast의 24B 고정 노드를 tag+data 교체로 in-place 수정 (추가 copy 없음)
+- **파일 구조**: `src/transformer/minify.zig` (Phase별 분리 가능)
+- **파이프라인**: Scanner → Parser → Semantic → Transformer → **Minifier** → Codegen
+- **Phase 1: Constant folding** — `1+2`→`3`, `"a"+"b"`→`"ab"`, `!true`→`false`, `typeof "x"`→`"string"`
+  - 결과가 원본보다 긴 경우 fold 안 함 (esbuild `ShouldFoldBinaryOperatorWhenMinifying` 기준)
+  - NaN, Infinity, -0 등 특수값 처리
+- **Phase 2: Dead code elimination** — `if(false){A}else{B}`→`B`, `while(false){}`→삭제
+  - side effect 분석에 `purity.zig`의 `isExprPure` 재사용
+- **Phase 3: Boolean simplification** — `!!x`→`x` (boolean context), `x===true`→`x`
+- **Phase 4: Comma/Template** — `(0,foo)()`→`foo()`, `` `${"a"}` ``→`"a"`
+- **추후**: ES 다운레벨링 mixin도 같은 별도 패스 구조로 마이그레이션 검토
+- **참고**: oxc peephole (fold_constants.rs, remove_dead_code.rs), esbuild js_ast_helpers.go
+
 ### Semantic Analysis Design (D051-D055)
 - 파서에서 구문 컨텍스트 추적, Semantic 패스에서 스코프/심볼
 - 스코프: 플랫 배열 + 부모 인덱스. 심볼: 최소 모델 (name/scope/kind/flags/span)
@@ -284,8 +303,9 @@ ZTS 279ms vs esbuild 182ms (**1.5배**).
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
   - 런타임 헬퍼 자동 주입 ✅ (__extends, __generator, __rest, __async — tslib 불필요)
+- **AST 미니파이어**: `--minify` 시 AST 레벨 최적화 (별도 패스, 아래 설계 참조)
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
-- **프로파일링 → SIMD → 미니파이어** — 번들러 완료 후
+- **SIMD** — 렉서 공백/식별자/문자열 스캔 가속 (parse 10-20% 개선 예상)
 - **WASM 공개 AST API** — AST 안정화 후
 
 ### 상세 설계 문서
@@ -303,7 +323,14 @@ AST 안정화 ──────────────┬──→ WASM 공개
 번들러 성능 ─────────────┬──→ scan 파이프라인화 (배치 경계 제거)
                          └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS)
 
-독립 (아무 때나): ES 다운레벨링, Flow, SIMD, 미니파이어
+AST 미니파이어 ──────────┬──→ Phase 1: Constant folding (1+2→3, "a"+"b"→"ab")
+                         ├──→ Phase 2: Dead code elimination (if(false) 제거)
+                         ├──→ Phase 3: Boolean simplification + typeof folding
+                         └──→ Phase 4: Comma operator + Template literal folding
+
+추후 리팩터링: ES 다운레벨링 mixin → 별도 패스 구조로 마이그레이션
+
+독립 (아무 때나): Flow, SIMD
 ```
 
 ### 성능 최적화 현황
