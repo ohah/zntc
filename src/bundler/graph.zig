@@ -52,6 +52,9 @@ pub const ModuleGraph = struct {
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
 
+    /// 파이프라인 단계별 타이밍 출력 (--timing)
+    timing: bool = false,
+
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
             .allocator = allocator,
@@ -65,18 +68,8 @@ pub const ModuleGraph = struct {
 
     pub fn deinit(self: *ModuleGraph) void {
         for (self.modules.items) |*m| {
-            // import_records, import_bindings, export_bindings는 graph allocator 소유.
-            if (m.import_records.len > 0) self.allocator.free(m.import_records);
-            if (m.import_bindings.len > 0) {
-                // namespace_used_properties 해제
-                for (m.import_bindings) |ib| {
-                    if (ib.namespace_used_properties) |props| {
-                        if (props.len > 0) self.allocator.free(props);
-                    }
-                }
-                self.allocator.free(m.import_bindings);
-            }
-            if (m.export_bindings.len > 0) self.allocator.free(m.export_bindings);
+            // import_records, import_bindings, export_bindings는 parse_arena 소유.
+            // parse_arena.deinit()이 일괄 해제하므로 명시적 free 불필요.
             m.deinit(self.allocator); // parse_arena.deinit() + dependencies/importers 해제
         }
         self.modules.deinit(self.allocator);
@@ -107,10 +100,19 @@ pub const ModuleGraph = struct {
         const pool_ok = if (pool.init(.{ .allocator = self.allocator })) |_| true else |_| false;
         defer if (pool_ok) pool.deinit();
 
+        // 세부 타이밍
+        var t_parse_total: u64 = 0;
+        var t_side_effects_total: u64 = 0;
+        var t_resolve_total: u64 = 0;
+        var batch_count: u32 = 0;
+        var detail_timer: ?std.time.Timer = if (self.timing) std.time.Timer.start() catch null else null;
+
         var parse_start: usize = 0;
         while (parse_start < self.modules.items.len) {
             const parse_end = self.modules.items.len;
             const batch_size = parse_end - parse_start;
+
+            if (detail_timer) |*t| t.reset();
 
             if (batch_size >= 2 and pool_ok) {
                 self.parseModulesBatchWithPool(&pool, parse_start, parse_end);
@@ -120,15 +122,53 @@ pub const ModuleGraph = struct {
                 }
             }
 
-            // 파싱 완료 즉시 finalize + resolve (새 모듈이 modules에 추가됨)
+            if (detail_timer) |*t| {
+                t_parse_total += t.read();
+                t.reset();
+            }
+
+            // sideEffects 반영 + resolve (import 추출은 parseModule에서 완료)
             var i: usize = parse_start;
             while (i < parse_end) : (i += 1) {
                 const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
-                self.finalizeModule(idx);
+                self.applySideEffectsFromPackageJson(&self.modules.items[@intFromEnum(idx)]);
+                self.modules.items[@intFromEnum(idx)].state = .ready;
+            }
+
+            if (detail_timer) |*t| {
+                t_side_effects_total += t.read();
+                t.reset();
+            }
+
+            i = parse_start;
+            while (i < parse_end) : (i += 1) {
+                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
                 try self.resolveModuleImports(idx);
             }
 
+            if (detail_timer) |*t| {
+                t_resolve_total += t.read();
+            }
+            batch_count += 1;
+
             parse_start = parse_end;
+        }
+
+        if (self.timing) {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print(
+                \\  Graph detail ({d} batches, pool={s}):
+                \\    parse+finalize: {d:.3} ms  (parallel)
+                \\    sideEffects:    {d:.3} ms  (sequential)
+                \\    resolve:        {d:.3} ms  (sequential)
+                \\
+            , .{
+                batch_count,
+                if (pool_ok) "yes" else "no",
+                @as(f64, @floatFromInt(t_parse_total)) / 1_000_000.0,
+                @as(f64, @floatFromInt(t_side_effects_total)) / 1_000_000.0,
+                @as(f64, @floatFromInt(t_resolve_total)) / 1_000_000.0,
+            }) catch {};
         }
 
         // Phase 2: DFS로 exec_index + 순환 감지
@@ -330,24 +370,8 @@ pub const ModuleGraph = struct {
         module.ast = parser.ast;
         module.line_offsets = scanner.line_offsets.items;
 
-        // Phase A 완료 — AST/semantic만 저장. import 추출은 finalizeModule에서.
-        module.state = .parsed;
-    }
-
-    /// 파싱 완료된 모듈의 import/export 추출 + sideEffects 반영 (메인 스레드에서 호출).
-    /// graph allocator를 사용하므로 스레드 안전하지 않음.
-    fn finalizeModule(self: *ModuleGraph, idx: ModuleIndex) void {
-        const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) return;
-        const module = &self.modules.items[mod_idx];
-        if (module.state != .parsed) return;
-
-        const ast = &(module.ast orelse {
-            module.state = .ready;
-            return;
-        });
-
-        const scan_result = import_scanner.extractImportsWithCjsDetection(self.allocator, ast) catch {
+        // import/export 추출 (parse_arena — 스레드 안전, graph allocator 불필요)
+        const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &parser.ast) catch {
             module.state = .ready;
             return;
         };
@@ -356,14 +380,11 @@ pub const ModuleGraph = struct {
         module.exports_kind = determineExportsKind(scan_result, module.path);
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
-        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, ast, scan_result.records) catch &.{};
-        // namespace import의 실제 프로퍼티 접근 수집 (tree-shaking 정밀도 향상)
-        binding_scanner_mod.collectNamespaceAccesses(self.allocator, ast, module.import_bindings) catch {};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, ast, scan_result.records, module.import_bindings) catch &.{};
+        module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, scan_result.records) catch &.{};
+        binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, scan_result.records, module.import_bindings) catch &.{};
 
-        self.applySideEffectsFromPackageJson(module);
-
-        module.state = .ready;
+        module.state = .parsed;
     }
 
     /// 모듈 경로에서 node_modules/패키지/ 디렉토리 경로를 추출.

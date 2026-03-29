@@ -282,11 +282,10 @@ pub const TreeShaker = struct {
         if (sem.scope_maps.len == 0) return true;
         const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
 
-        // reachable statement에서 이 심볼을 참조하는지 확인
-        for (infos.stmts, 0..) |stmt, si| {
-            if (!reachable.isSet(si)) continue;
-            for (stmt.referenced_symbols) |ref_sym| {
-                if (ref_sym == sym_idx) return true;
+        // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
+        if (sym_idx < infos.sym_to_referencing_stmts.len) {
+            for (infos.sym_to_referencing_stmts[sym_idx]) |si| {
+                if (reachable.isSet(si)) return true;
             }
         }
         return false;
@@ -507,18 +506,16 @@ pub const TreeShaker = struct {
         // 새 심볼이 reachable이 되면, 같은 모듈의 side-effect statement 중
         // 해당 심볼을 참조하는 것을 lazy 시드.
         // 예: Object3D가 reachable → Object3D.DEFAULT_UP = ... 도 시드
+        // 역인덱스 활용: O(D×K) where K = avg side-effect refs per symbol
         if (mod < self.module_stmt_infos.len) {
             if (self.module_stmt_infos[mod]) |infos| {
                 if (stmt < infos.stmts.len) {
                     for (infos.stmts[stmt].declared_symbols) |declared_sym| {
-                        for (infos.stmts, 0..) |s, si| {
-                            if (!s.has_side_effects) continue;
-                            if (reachable[mod].?.isSet(si)) continue;
-                            for (s.referenced_symbols) |ref_sym| {
-                                if (ref_sym == declared_sym) {
+                        if (declared_sym < infos.sym_to_side_effect_stmts.len) {
+                            for (infos.sym_to_side_effect_stmts[declared_sym]) |si| {
+                                if (!reachable[mod].?.isSet(si)) {
                                     reachable[mod].?.set(si);
                                     try queue.append(self.allocator, .{ .mod = @intCast(mod), .stmt = @intCast(si) });
-                                    break;
                                 }
                             }
                         }

@@ -771,5 +771,12 @@
 - **결과**: tslib --platform=node 22KB FAIL → 1KB OK
 - **참고**: esbuild는 conditions를 set으로 처리 + exports key 순서 순회
 
+### D096: 번들러 병렬화 개선 + tree-shaker 역인덱스 (2026-03-29)
+- **결정**: (1) finalize를 parseModule에 통합 — parse_arena 소유로 스레드 안전 (2) stmt_info O(S×N)→O(N log S) 단일 패스 (3) sym→stmt 역인덱스로 enqueue/isImportLive O(1) 조회
+- **이유**: 프로파일링 결과 two bottlenecks — lodash-es 641모듈에서 finalize+resolve 순차 실행 81%, three.js에서 tree-shaker 89% (O(S×N) + O(S²))
+- **결과**: three.js 1095ms→233ms (4.7배), lodash-es 210ms→159ms (1.3배), smoke 125개 전체 통과
+- **보류**: resolve 병렬화 (95ms, 모듈당 0.15ms) — Zig 0.16 async/await 지원 후 rolldown 방식(join_all) 또는 esbuild 방식(파일 단위 파이프라인) 비교하여 결정. 현재는 절대값이 작아 투자 대비 효과 낮음.
+- **참고**: esbuild — goroutine+channel 파일 단위 파이프라인, rolldown — tokio::spawn+join_all import 단위 병렬
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)

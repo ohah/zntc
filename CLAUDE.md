@@ -285,7 +285,9 @@ AST 안정화 ──────────────┬──→ WASM 공개
 |--------|-----------|------|
 | Arena allocator | ✅ 완료 | 번들러에 필수 |
 | SIMD | 번들러 MVP 후 | 렉서만 건드려서 언제든 동일 비용 |
-| 멀티스레드 | 번들러 설계 시 | 아키텍처에 스레드 모델 포함 |
+| 멀티스레드 parse+finalize | ✅ 완료 | finalize를 parseModule에 통합, parse_arena 소유 |
+| tree-shaker 역인덱스 | ✅ 완료 | stmt_info O(N log S) + sym→stmt 역인덱스 |
+| 비동기 resolve 병렬화 | Zig 0.16 async/await 지원 후 | 현재 resolve 95ms (모듈당 0.15ms)로 급하지 않음. Zig 0.16에서 async/await 복귀 예정 → rolldown 방식(join_all 패턴)으로 파일 내 import 병렬 resolve 가능. 그때 esbuild 방식(파일 단위 파이프라인)과 비교하여 결정 |
 | 프로파일링 | 번들러 MVP 후 | 실제 워크로드 필요 |
 
 ## Commands
