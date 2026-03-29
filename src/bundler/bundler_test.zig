@@ -10843,3 +10843,317 @@ test "Asset loader: [ext] pattern" {
     // [ext] = "woff2" (dot 없이)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "static/woff2/font-") != null);
 }
+
+// ============================================================
+// Batch D: metafile, analyze, legal-comments, inject, keepNames
+// ============================================================
+
+test "Batch D: metafile — JSON with inputs and outputs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { add } from './math';\nconsole.log(add(1, 2));");
+    try writeFile(tmp.dir, "math.ts", "export function add(a: number, b: number) { return a + b; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .metafile = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // metafile JSON이 생성됨
+    try std.testing.expect(result.metafile_json != null);
+    const mf = result.metafile_json.?;
+    // inputs 섹션에 두 모듈 포함
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\"inputs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mf, "entry.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mf, "math.ts") != null);
+    // outputs 섹션 존재
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\"outputs\"") != null);
+    // import 관계 포함
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\"imports\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mf, "static_import") != null);
+    // bytes 필드 포함
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\"bytes\"") != null);
+}
+
+test "Batch D: metafile — disabled when not requested" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "console.log(1);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // metafile 미요청 시 null
+    try std.testing.expect(result.metafile_json == null);
+}
+
+test "Batch D: analyze — forces metafile generation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "console.log('hello');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .analyze = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // analyze=true → metafile 자동 활성화
+    try std.testing.expect(result.metafile_json != null);
+}
+
+test "Batch D: legal-comments=eof — collect at end of output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\/** @license MIT */
+        \\console.log("hello");
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .legal_comments = .eof,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // legal comment가 출력 끝에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "@license MIT") != null);
+    // code가 legal comment보다 앞에 위치
+    const code_pos = std.mem.indexOf(u8, result.output, "console.log") orelse 0;
+    const license_pos = std.mem.indexOf(u8, result.output, "@license") orelse 0;
+    try std.testing.expect(code_pos < license_pos);
+}
+
+test "Batch D: legal-comments=none — strip all" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\/*! Copyright 2024 */
+        \\console.log("hello");
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .legal_comments = .none,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // legal comment 완전 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Copyright") == null);
+}
+
+test "Batch D: legal-comments=eof — deduplication" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 두 모듈에 같은 license 주석
+    try writeFile(tmp.dir, "a.ts",
+        \\/** @license MIT */
+        \\export const a = 1;
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\/** @license MIT */
+        \\export const b = 2;
+    );
+    try writeFile(tmp.dir, "entry.ts", "import { a } from './a';\nimport { b } from './b';\nconsole.log(a, b);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .legal_comments = .eof,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // @license MIT가 1번만 출현 (중복 제거)
+    var count: usize = 0;
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, search_pos, "@license MIT")) |pos| {
+        count += 1;
+        search_pos = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "Batch D: inject — prepends injected file before entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shim.js", "globalThis.MY_SHIM = true;");
+    try writeFile(tmp.dir, "entry.ts", "console.log(MY_SHIM);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const inject = try absPath(&tmp, "shim.js");
+    defer std.testing.allocator.free(inject);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .inject = &.{inject},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // shim 코드가 entry보다 먼저 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MY_SHIM = true") != null);
+    const shim_pos = std.mem.indexOf(u8, result.output, "MY_SHIM = true") orelse 0;
+    const entry_pos = std.mem.indexOf(u8, result.output, "console.log") orelse 0;
+    try std.testing.expect(shim_pos < entry_pos);
+}
+
+test "Batch D: inject — multiple inject files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shim1.js", "globalThis.A = 1;");
+    try writeFile(tmp.dir, "shim2.js", "globalThis.B = 2;");
+    try writeFile(tmp.dir, "entry.ts", "console.log(A, B);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const inject1 = try absPath(&tmp, "shim1.js");
+    defer std.testing.allocator.free(inject1);
+    const inject2 = try absPath(&tmp, "shim2.js");
+    defer std.testing.allocator.free(inject2);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .inject = &.{ inject1, inject2 },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 shim 모두 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "A = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "B = 2") != null);
+}
+
+test "Batch D: keepNames — __name call for renamed functions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 두 모듈에서 같은 이름 → linker가 충돌 해결로 rename
+    try writeFile(tmp.dir, "a.ts", "export function hello() { return 'a'; }");
+    try writeFile(tmp.dir, "b.ts", "export function hello() { return 'b'; }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { hello as ha } from './a';
+        \\import { hello as hb } from './b';
+        \\console.log(ha(), hb());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 이름 충돌로 rename → __name 호출 삽입
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name(") != null);
+    // __name 런타임 헬퍼 주입
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __name") != null);
+    // 원본 이름 "hello" 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
+}
+
+test "Batch D: keepNames — no __name when names unchanged" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "function foo() { return 1; }\nconsole.log(foo());");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 이름 변경 없음 → __name 불필요
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name(") == null);
+}
+
+test "Batch D: keepNames — class declaration" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export class Foo { run() { return 1; } }");
+    try writeFile(tmp.dir, "b.ts", "export class Foo { run() { return 2; } }");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Foo as A } from './a';
+        \\import { Foo as B } from './b';
+        \\console.log(new A().run(), new B().run());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // class도 __name 적용
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Foo\"") != null);
+}
