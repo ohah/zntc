@@ -566,4 +566,3 @@ fn isSideEffectFreeLiteral(node: Node) bool {
         else => false,
     };
 }
-
