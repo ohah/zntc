@@ -48,6 +48,8 @@ pub const SubprocessPlugin = struct {
     read_buf_len: usize = 0,
     read_buf_pos: usize = 0,
     next_id: u32 = 1,
+    /// 멀티스레드 parseModule에서 동시 IPC 접근 방지
+    ipc_mutex: std.Thread.Mutex = .{},
     filters: FilterMap = .{},
     allocator: std.mem.Allocator,
     /// 핸드셰이크에서 수신한 필터 문자열 저장용
@@ -86,14 +88,13 @@ pub const SubprocessPlugin = struct {
     fn handshake(self: *SubprocessPlugin) !void {
         try self.sendRaw("{\"id\":0,\"type\":\"init\"}\n");
 
-        const response = self.readLine(self.allocator) catch return error.PluginFailed;
-        defer self.allocator.free(response);
-
+        // filter_arena에 응답을 할당 — parseFromSliceLeaky가 문자열을 참조하므로 arena와 같은 수명 필요
         const arena_alloc = self.filter_arena.allocator();
-        const parsed = std.json.parseFromSlice(InitResponse, arena_alloc, response, .{
+        const response = self.readLine(arena_alloc) catch return error.PluginFailed;
+
+        const init_resp = std.json.parseFromSliceLeaky(InitResponse, arena_alloc, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
-        const init_resp = parsed.value;
 
         self.filters = .{
             .resolve_filters = init_resp.filters.resolveId orelse &.{},
@@ -133,14 +134,18 @@ pub const SubprocessPlugin = struct {
         try self.stdin_file.writeAll(data);
     }
 
-    /// JSON 요청 전송
-    fn sendJsonRequest(self: *SubprocessPlugin, allocator: std.mem.Allocator, msg_type: []const u8, fields: []const u8) !void {
+    /// JSON 요청 전송 + 응답 읽기 (mutex로 보호). caller가 응답을 free.
+    fn sendAndReceive(self: *SubprocessPlugin, allocator: std.mem.Allocator, msg_type: []const u8, fields: []const u8) ![]u8 {
+        self.ipc_mutex.lock();
+        defer self.ipc_mutex.unlock();
+
         const id = self.next_id;
         self.next_id += 1;
 
         const request = try std.fmt.allocPrint(allocator, "{{\"id\":{d},\"type\":\"{s}\",{s}}}\n", .{ id, msg_type, fields });
         defer allocator.free(request);
         try self.sendRaw(request);
+        return self.readLine(allocator);
     }
 
     /// stdout에서 한 줄 읽기 (줄바꿈 경계 정확 처리). heap 할당, caller가 free.
@@ -190,9 +195,7 @@ pub const SubprocessPlugin = struct {
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        self.sendJsonRequest(allocator, "resolveId", fields) catch return error.PluginFailed;
-
-        const response = self.readLine(allocator) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "resolveId", fields) catch return error.PluginFailed;
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
@@ -221,9 +224,7 @@ pub const SubprocessPlugin = struct {
         const fields = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{escaped_path}) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        self.sendJsonRequest(allocator, "load", fields) catch return error.PluginFailed;
-
-        const response = self.readLine(allocator) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "load", fields) catch return error.PluginFailed;
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
@@ -253,9 +254,7 @@ pub const SubprocessPlugin = struct {
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        self.sendJsonRequest(allocator, "transform", fields) catch return error.PluginFailed;
-
-        const response = self.readLine(allocator) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "transform", fields) catch return error.PluginFailed;
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
