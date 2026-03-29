@@ -65,6 +65,8 @@ pub const ModuleGraph = struct {
     /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.
     /// entry point들의 공통 부모 디렉토리 (esbuild --outbase에 해당).
     entry_dir: []const u8 = "",
+    /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
+    inject_files: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -111,6 +113,14 @@ pub const ModuleGraph = struct {
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        }
+
+        // --inject 파일을 먼저 모듈 그래프에 추가
+        var inject_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer inject_indices.deinit(self.allocator);
+        for (self.inject_files) |inject_path| {
+            const idx = try self.addModule(inject_path);
+            try inject_indices.append(self.allocator, idx);
         }
 
         // Phase 1: BFS + 병렬 파싱
@@ -199,6 +209,21 @@ pub const ModuleGraph = struct {
                 @as(f64, @floatFromInt(t_side_effects_total)) / 1_000_000.0,
                 @as(f64, @floatFromInt(t_resolve_total)) / 1_000_000.0,
             }) catch {};
+        }
+
+        // --inject: inject 파일을 각 엔트리 모듈의 의존성으로 추가.
+        // DFS에서 inject 모듈이 먼저 방문되어 exec_index가 낮아지고, 번들 상단에 출력.
+        if (inject_indices.items.len > 0) {
+            for (entry_points) |entry_path| {
+                if (self.path_to_module.get(entry_path)) |entry_idx| {
+                    const ei = @intFromEnum(entry_idx);
+                    if (ei < self.modules.items.len) {
+                        for (inject_indices.items) |inject_idx| {
+                            try self.modules.items[ei].addDependency(self.allocator, inject_idx, self.modules.items);
+                        }
+                    }
+                }
+            }
         }
 
         // Phase 2: DFS로 exec_index + 순환 감지

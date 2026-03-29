@@ -64,6 +64,7 @@ const CliOptions = struct {
     metafile_path: ?[]const u8 = null,
     analyze: bool = false,
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
+    inject_list: std.ArrayList([]const u8) = .empty,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -85,6 +86,8 @@ const CliOptions = struct {
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
         self.loader_list.deinit(alloc);
+        for (self.inject_list.items) |p| alloc.free(p);
+        self.inject_list.deinit(alloc);
     }
 };
 
@@ -280,6 +283,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.metafile_path = "meta.json";
         } else if (std.mem.eql(u8, arg, "--analyze")) {
             opts.analyze = true;
+        } else if (std.mem.startsWith(u8, arg, "--inject:")) {
+            const inject_path = arg["--inject:".len..];
+            // 절대 경로로 변환
+            const abs = std.fs.cwd().realpathAlloc(allocator, inject_path) catch {
+                try stderr.print("zts: cannot resolve inject path: {s}\n", .{inject_path});
+                return null;
+            };
+            try opts.inject_list.append(allocator, abs);
         } else if (std.mem.startsWith(u8, arg, "--legal-comments=")) {
             const val = arg["--legal-comments=".len..];
             opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
@@ -901,6 +912,7 @@ pub fn main() !void {
             .metafile = opts.metafile_path != null or opts.analyze,
             .analyze = opts.analyze,
             .legal_comments = opts.legal_comments,
+            .inject = opts.inject_list.items,
         });
         defer bundler.deinit();
 
