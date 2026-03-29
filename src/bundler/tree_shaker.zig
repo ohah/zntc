@@ -226,7 +226,7 @@ pub const TreeShaker = struct {
             if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
             const sem = m.semantic orelse continue;
             const ast = &(m.ast orelse continue);
-            if (sem.top_stmt_count > 0) {
+            if (sem.top_stmt_node_indices.len > 0) {
                 // 빠른 경로: semantic에서 수집한 Part 데이터 사용
                 module_stmt_infos[i] = stmt_info_mod.buildFromSemantic(
                     self.allocator,
@@ -235,7 +235,6 @@ pub const TreeShaker = struct {
                     sem.stmt_declared,
                     sem.stmt_referenced,
                     sem.top_stmt_node_indices,
-                    sem.top_stmt_count,
                 ) catch null;
             } else {
                 // fallback: 기존 build() (Part 데이터 없는 경우)

@@ -366,7 +366,6 @@ pub const ModuleGraph = struct {
                 .stmt_declared = analyzer.stmt_declared.items,
                 .stmt_referenced = analyzer.stmt_referenced.items,
                 .top_stmt_node_indices = analyzer.top_stmt_node_indices.items,
-                .top_stmt_count = @intCast(analyzer.top_stmt_node_indices.items.len),
             };
             // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
             module.uses_top_level_await = analyzer.has_top_level_await;

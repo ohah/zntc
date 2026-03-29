@@ -111,13 +111,6 @@ pub const ModuleStmtInfos = struct {
     }
 };
 
-fn sliceContains(comptime T: type, slice: []const T, value: T) bool {
-    for (slice) |item| {
-        if (item == value) return true;
-    }
-    return false;
-}
-
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
 pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
@@ -137,6 +130,77 @@ pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
         }
     }
     return null; // 어떤 statement span에도 속하지 않음
+}
+
+const ReverseIndex = struct {
+    sym_to_referencing_stmts: []const []const u32,
+    sym_to_side_effect_stmts: []const []const u32,
+};
+
+/// symbol → referencing/side-effect stmt indices 역인덱스를 구축한다.
+/// build()와 buildFromSemantic() 공통으로 사용.
+fn buildReverseIndex(allocator: std.mem.Allocator, stmts: []const StmtInfo, sym_count: usize) !ReverseIndex {
+    // 카운트 패스
+    var ref_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(ref_counts);
+    @memset(ref_counts, 0);
+    var se_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(se_counts);
+    @memset(se_counts, 0);
+
+    for (stmts) |stmt| {
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    // 할당
+    var sym_to_ref_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_ref_stmts);
+    var sym_to_se_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_se_stmts);
+
+    var ref_bufs = try allocator.alloc([]u32, sym_count);
+    defer allocator.free(ref_bufs);
+    var se_bufs = try allocator.alloc([]u32, sym_count);
+    defer allocator.free(se_bufs);
+
+    for (0..sym_count) |sym| {
+        ref_bufs[sym] = if (ref_counts[sym] > 0) try allocator.alloc(u32, ref_counts[sym]) else &.{};
+        se_bufs[sym] = if (se_counts[sym] > 0) try allocator.alloc(u32, se_counts[sym]) else &.{};
+    }
+
+    // 기록 패스 (카운터 재활용)
+    @memset(ref_counts, 0);
+    @memset(se_counts, 0);
+
+    for (stmts, 0..) |stmt, si| {
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_bufs[sym][ref_counts[sym]] = @intCast(si);
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_bufs[sym][se_counts[sym]] = @intCast(si);
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    for (0..sym_count) |sym| {
+        sym_to_ref_stmts[sym] = ref_bufs[sym];
+        sym_to_se_stmts[sym] = se_bufs[sym];
+    }
+
+    return .{
+        .sym_to_referencing_stmts = sym_to_ref_stmts,
+        .sym_to_side_effect_stmts = sym_to_se_stmts,
+    };
 }
 
 /// AST + semantic data로부터 ModuleStmtInfos를 구축한다.
@@ -196,13 +260,12 @@ pub fn build(
             .node_idx = @intCast(ni),
             .span = node.span,
             .has_side_effects = side_effects,
-            .declared_symbols = &.{}, // Phase 2에서 채움
-            .referenced_symbols = &.{}, // Phase 2에서 채움
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
         };
     }
 
     // Phase 2: 모든 AST 노드를 단일 패스로 순회하며 심볼 수집 — O(N log S)
-    // per-statement 임시 버퍼 (선형 탐색으로 중복 방지 — 심볼 수가 적으므로 HashMap보다 효율적)
     var declared_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
     defer {
         for (declared_bufs) |*b| b.deinit(allocator);
@@ -217,7 +280,6 @@ pub fn build(
     }
     for (referenced_bufs) |*b| b.* = .empty;
 
-    // 단일 패스: 모든 노드 → binary search로 소속 statement 결정
     for (ast.nodes.items, 0..) |n, node_i| {
         const stmt_i = findStmtForPos(stmt_spans, n.span.start) orelse continue;
         if (node_i >= symbol_ids.len) continue;
@@ -232,7 +294,7 @@ pub fn build(
             n.span.start >= sym.declaration_span.start and
             n.span.end <= sym.declaration_span.end)
         {
-            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_idx_u32)) {
+            if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_idx_u32) == null) {
                 try declared_bufs[stmt_i].append(allocator, sym_idx_u32);
                 if (sym_idx < sym_to_stmt.len) {
                     sym_to_stmt[sym_idx] = @intCast(stmt_i);
@@ -245,14 +307,13 @@ pub fn build(
             .identifier_reference, .assignment_target_identifier => true,
             else => false,
         };
-        if (is_ref and !sliceContains(u32, declared_bufs[stmt_i].items, sym_idx_u32)) {
-            if (!sliceContains(u32, referenced_bufs[stmt_i].items, sym_idx_u32)) {
+        if (is_ref and std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_idx_u32) == null) {
+            if (std.mem.indexOfScalar(u32, referenced_bufs[stmt_i].items, sym_idx_u32) == null) {
                 try referenced_bufs[stmt_i].append(allocator, sym_idx_u32);
             }
         }
     }
 
-    // Phase 2 결과를 stmts에 기록 (toOwnedSlice로 이중 할당 방지)
     for (stmts, 0..) |*stmt, stmt_i| {
         if (declared_bufs[stmt_i].items.len > 0) {
             stmt.declared_symbols = try declared_bufs[stmt_i].toOwnedSlice(allocator);
@@ -262,86 +323,20 @@ pub fn build(
         }
     }
 
-    // Phase 3: 역인덱스 구축 — symbol → referencing stmt indices
-    const sym_count = symbols.len;
-
-    // 3a: 카운트 패스
-    var ref_counts = try allocator.alloc(u32, sym_count);
-    defer allocator.free(ref_counts);
-    @memset(ref_counts, 0);
-    var se_counts = try allocator.alloc(u32, sym_count);
-    defer allocator.free(se_counts);
-    @memset(se_counts, 0);
-
-    for (stmts) |stmt| {
-        for (stmt.referenced_symbols) |sym| {
-            if (sym < sym_count) {
-                ref_counts[sym] += 1;
-                if (stmt.has_side_effects) {
-                    se_counts[sym] += 1;
-                }
-            }
-        }
-    }
-
-    // 3b: 할당
-    var sym_to_ref_stmts = try allocator.alloc([]const u32, sym_count);
-    errdefer allocator.free(sym_to_ref_stmts);
-    var sym_to_se_stmts = try allocator.alloc([]const u32, sym_count);
-    errdefer allocator.free(sym_to_se_stmts);
-
-    // 임시 쓰기용 mutable 버퍼
-    var ref_bufs = try allocator.alloc([]u32, sym_count);
-    defer {
-        // ref_bufs의 각 슬라이스는 sym_to_ref_stmts로 이전되므로 별도 free 불필요
-        allocator.free(ref_bufs);
-    }
-    var se_bufs = try allocator.alloc([]u32, sym_count);
-    defer allocator.free(se_bufs);
-
-    for (0..sym_count) |sym| {
-        ref_bufs[sym] = if (ref_counts[sym] > 0) try allocator.alloc(u32, ref_counts[sym]) else &.{};
-        se_bufs[sym] = if (se_counts[sym] > 0) try allocator.alloc(u32, se_counts[sym]) else &.{};
-    }
-
-    // 3c: 기록 패스 (카운터 재활용)
-    @memset(ref_counts, 0);
-    @memset(se_counts, 0);
-
-    for (stmts, 0..) |stmt, si| {
-        for (stmt.referenced_symbols) |sym| {
-            if (sym < sym_count) {
-                ref_bufs[sym][ref_counts[sym]] = @intCast(si);
-                ref_counts[sym] += 1;
-                if (stmt.has_side_effects) {
-                    se_bufs[sym][se_counts[sym]] = @intCast(si);
-                    se_counts[sym] += 1;
-                }
-            }
-        }
-    }
-
-    // 3d: const 슬라이스로 변환
-    for (0..sym_count) |sym| {
-        sym_to_ref_stmts[sym] = ref_bufs[sym];
-        sym_to_se_stmts[sym] = se_bufs[sym];
-    }
+    // Phase 3: 역인덱스 구축
+    const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
     return .{
         .stmts = stmts,
         .symbol_to_stmt = sym_to_stmt,
-        .sym_to_side_effect_stmts = sym_to_se_stmts,
-        .sym_to_referencing_stmts = sym_to_ref_stmts,
+        .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
+        .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
         .allocator = allocator,
     };
 }
 
 /// Semantic analyzer가 파싱 중 수집한 Part 데이터로 ModuleStmtInfos를 구축한다.
-/// build()와 달리 전체 AST 노드를 재순회하지 않는다 — O(S + symbols) (S = statement count).
-///
-/// declared: symbols의 scope_id==0인 심볼의 declaration_span으로 소속 statement 매칭.
-/// referenced: semantic analyzer가 resolveIdentifier에서 수집한 per-statement 참조.
-/// side_effects: purity 모듈로 각 statement의 순수성 판정.
+/// build()와 달리 전체 AST 노드를 재순회하지 않는다 — O(S + refs).
 pub fn buildFromSemantic(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -349,10 +344,9 @@ pub fn buildFromSemantic(
     sem_declared: []const std.ArrayListUnmanaged(u32),
     sem_referenced: []const std.ArrayListUnmanaged(u32),
     top_stmt_node_indices: []const u32,
-    stmt_count: u32,
 ) !?ModuleStmtInfos {
-    if (stmt_count == 0) return null;
-    const sc: usize = @intCast(stmt_count);
+    const sc = top_stmt_node_indices.len;
+    if (sc == 0) return null;
 
     var stmts = try allocator.alloc(StmtInfo, sc);
     errdefer {
@@ -368,13 +362,9 @@ pub fn buildFromSemantic(
     for (sym_to_stmt) |*s| s.* = null;
 
     // Phase 1: statement span + side_effects 판정
-    var stmt_spans = try allocator.alloc(Span, sc);
-    defer allocator.free(stmt_spans);
-
     for (top_stmt_node_indices[0..sc], 0..) |raw_idx, stmt_i| {
         const ni: usize = @intCast(raw_idx);
         if (ni >= ast.nodes.items.len) {
-            stmt_spans[stmt_i] = .{ .start = 0, .end = 0 };
             stmts[stmt_i] = .{
                 .node_idx = @intCast(ni),
                 .span = .{ .start = 0, .end = 0 },
@@ -385,7 +375,6 @@ pub fn buildFromSemantic(
             continue;
         }
         const node = ast.nodes.items[ni];
-        stmt_spans[stmt_i] = node.span;
         const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
         stmts[stmt_i] = .{
             .node_idx = @intCast(ni),
@@ -396,8 +385,7 @@ pub fn buildFromSemantic(
         };
     }
 
-    // Phase 2a: declared — semantic analyzer가 수집한 per-statement declared 데이터 사용.
-    // 전체 AST 노드 순회 없이 O(S * avg_declared)으로 ��축.
+    // Phase 2a: declared — semantic analyzer가 수집한 데이터 사용
     var declared_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), sc);
     defer {
         for (declared_bufs) |*b| b.deinit(allocator);
@@ -407,10 +395,9 @@ pub fn buildFromSemantic(
 
     for (0..sc) |stmt_i| {
         if (stmt_i >= sem_declared.len) break;
-        const decls = sem_declared[stmt_i];
-        for (decls.items) |sym_u32| {
+        for (sem_declared[stmt_i].items) |sym_u32| {
             if (sym_u32 >= symbols.len) continue;
-            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_u32)) {
+            if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_u32) == null) {
                 try declared_bufs[stmt_i].append(allocator, sym_u32);
                 if (sym_u32 < sym_to_stmt.len) {
                     sym_to_stmt[sym_u32] = @intCast(stmt_i);
@@ -419,8 +406,7 @@ pub fn buildFromSemantic(
         }
     }
 
-    // Phase 2b: referenced — semantic analyzer가 수집한 데이터 사용
-    // declared에 포함된 심볼은 제외 (자체 선언 참조 방지)
+    // Phase 2b: referenced — declared에 포함된 심볼은 제외 (자체 선언 참조 방지)
     var referenced_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), sc);
     defer {
         for (referenced_bufs) |*b| b.deinit(allocator);
@@ -430,18 +416,15 @@ pub fn buildFromSemantic(
 
     for (0..sc) |stmt_i| {
         if (stmt_i >= sem_referenced.len) break;
-        const refs = sem_referenced[stmt_i];
-        for (refs.items) |sym_u32| {
-            // declared에 없는 것만 referenced로 추가
-            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_u32)) {
-                if (!sliceContains(u32, referenced_bufs[stmt_i].items, sym_u32)) {
+        for (sem_referenced[stmt_i].items) |sym_u32| {
+            if (std.mem.indexOfScalar(u32, declared_bufs[stmt_i].items, sym_u32) == null) {
+                if (std.mem.indexOfScalar(u32, referenced_bufs[stmt_i].items, sym_u32) == null) {
                     try referenced_bufs[stmt_i].append(allocator, sym_u32);
                 }
             }
         }
     }
 
-    // stmts에 기록
     for (stmts, 0..) |*stmt, stmt_i| {
         if (declared_bufs[stmt_i].items.len > 0) {
             stmt.declared_symbols = try declared_bufs[stmt_i].toOwnedSlice(allocator);
@@ -451,68 +434,14 @@ pub fn buildFromSemantic(
         }
     }
 
-    // Phase 3: 역인덱스 구축 (기존 build()와 동일)
-    const sym_count = symbols.len;
-
-    var ref_counts = try allocator.alloc(u32, sym_count);
-    defer allocator.free(ref_counts);
-    @memset(ref_counts, 0);
-    var se_counts = try allocator.alloc(u32, sym_count);
-    defer allocator.free(se_counts);
-    @memset(se_counts, 0);
-
-    for (stmts) |stmt| {
-        for (stmt.referenced_symbols) |sym| {
-            if (sym < sym_count) {
-                ref_counts[sym] += 1;
-                if (stmt.has_side_effects) {
-                    se_counts[sym] += 1;
-                }
-            }
-        }
-    }
-
-    var sym_to_ref_stmts = try allocator.alloc([]const u32, sym_count);
-    errdefer allocator.free(sym_to_ref_stmts);
-    var sym_to_se_stmts = try allocator.alloc([]const u32, sym_count);
-    errdefer allocator.free(sym_to_se_stmts);
-
-    var ref_bufs_phase3 = try allocator.alloc([]u32, sym_count);
-    defer allocator.free(ref_bufs_phase3);
-    var se_bufs_phase3 = try allocator.alloc([]u32, sym_count);
-    defer allocator.free(se_bufs_phase3);
-
-    for (0..sym_count) |sym| {
-        ref_bufs_phase3[sym] = if (ref_counts[sym] > 0) try allocator.alloc(u32, ref_counts[sym]) else &.{};
-        se_bufs_phase3[sym] = if (se_counts[sym] > 0) try allocator.alloc(u32, se_counts[sym]) else &.{};
-    }
-
-    @memset(ref_counts, 0);
-    @memset(se_counts, 0);
-
-    for (stmts, 0..) |stmt, si| {
-        for (stmt.referenced_symbols) |sym| {
-            if (sym < sym_count) {
-                ref_bufs_phase3[sym][ref_counts[sym]] = @intCast(si);
-                ref_counts[sym] += 1;
-                if (stmt.has_side_effects) {
-                    se_bufs_phase3[sym][se_counts[sym]] = @intCast(si);
-                    se_counts[sym] += 1;
-                }
-            }
-        }
-    }
-
-    for (0..sym_count) |sym| {
-        sym_to_ref_stmts[sym] = ref_bufs_phase3[sym];
-        sym_to_se_stmts[sym] = se_bufs_phase3[sym];
-    }
+    // Phase 3: 역인덱스 구축
+    const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
     return .{
         .stmts = stmts,
         .symbol_to_stmt = sym_to_stmt,
-        .sym_to_side_effect_stmts = sym_to_se_stmts,
-        .sym_to_referencing_stmts = sym_to_ref_stmts,
+        .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
+        .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
         .allocator = allocator,
     };
 }
