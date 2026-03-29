@@ -139,7 +139,7 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
 
     // 문자열 연결 (+ 연산자만)
     if (left.tag == .string_literal and right.tag == .string_literal and op == .plus) {
-        foldStringConcat(ast, node_idx, node, left, right);
+        foldStringConcat(ast, node_idx, left, right);
         return;
     }
 }
@@ -162,8 +162,7 @@ fn foldNumericBinary(ast: *const Ast, left: Node, right: Node, op: Kind) ?f64 {
     };
 }
 
-fn foldStringConcat(ast: *Ast, node_idx: u32, node: Node, left: Node, right: Node) void {
-    _ = node;
+fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node) void {
     const left_text = ast.getText(left.span);
     const right_text = ast.getText(right.span);
 
@@ -297,7 +296,7 @@ fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
     return switch (node.tag) {
         .boolean_literal => getBoolValue(ast, node),
         .numeric_literal => blk: {
-            const val: f64 = @bitCast(node.data.number_bytes);
+            const val = parseNumericLiteral(ast, node) orelse break :blk null;
             if (std.math.isNan(val)) break :blk false;
             break :blk val != 0;
         },
@@ -321,8 +320,7 @@ fn getBoolValue(ast: *const Ast, node: Node) ?bool {
     const text = ast.getText(node.span);
     if (std.mem.eql(u8, text, "true")) return true;
     if (std.mem.eql(u8, text, "false")) return false;
-    // data.none에 1/0으로 저장된 경우 (minify에서 생성한 노드)
-    return node.data.none == 1;
+    return null;
 }
 
 fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
