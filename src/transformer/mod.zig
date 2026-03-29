@@ -46,4 +46,5 @@ test {
 
     // test files
     _ = @import("transformer_test.zig");
+    _ = @import("minify_test.zig");
 }
