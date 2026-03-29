@@ -11,6 +11,8 @@ const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
 const emitter = lib.bundler.emitter;
+const SubprocessPlugin = lib.bundler.SubprocessPlugin;
+const plugin_mod = lib.bundler.plugin;
 
 /// CLI 인자를 파싱한 결과를 담는 구조체.
 /// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
@@ -66,6 +68,7 @@ const CliOptions = struct {
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
+    plugin_path: ?[]const u8 = null,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -286,6 +289,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.analyze = true;
         } else if (std.mem.eql(u8, arg, "--keep-names")) {
             opts.keep_names = true;
+        } else if (std.mem.eql(u8, arg, "--plugin")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.plugin_path = args[i];
+            } else {
+                try stderr.print("zts: --plugin requires a file path\n", .{});
+                return null;
+            }
         } else if (std.mem.startsWith(u8, arg, "--inject:")) {
             const inject_path = arg["--inject:".len..];
             // 절대 경로로 변환
@@ -886,6 +897,21 @@ pub fn main() !void {
             return;
         }
 
+        // Subprocess 플러그인 spawn (--plugin 옵션이 있을 때)
+        var subprocess: ?*SubprocessPlugin = null;
+        defer if (subprocess) |sp| sp.shutdown();
+
+        var plugin_list: [1]plugin_mod.Plugin = undefined;
+        var plugins_slice: []const plugin_mod.Plugin = &.{};
+        if (opts.plugin_path) |config_path| {
+            subprocess = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
+                try stderr.print("zts: plugin spawn failed: {}\n", .{err});
+                return;
+            };
+            plugin_list[0] = subprocess.?.toPlugin();
+            plugins_slice = &plugin_list;
+        }
+
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .format = opts.bundle_format,
@@ -920,6 +946,7 @@ pub fn main() !void {
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,
             .keep_names = opts.keep_names,
+            .plugins = plugins_slice,
         });
         defer bundler.deinit();
 
