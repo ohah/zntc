@@ -742,6 +742,7 @@ pub fn main() !void {
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
             .target = opts.target,
             .conditions = opts.conditions_list.items,
+            .timing = opts.timing,
         });
         defer bundler.deinit();
 

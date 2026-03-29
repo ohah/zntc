@@ -30,6 +30,12 @@ pub const ModuleStmtInfos = struct {
     stmts: []StmtInfo,
     /// symbol_index → stmt_index (선언 역매핑). 없으면 null.
     symbol_to_stmt: []const ?u32,
+    /// symbol_index → [side-effect stmt indices that reference this symbol].
+    /// tree_shaker.enqueue()에서 O(1) 조회용.
+    sym_to_side_effect_stmts: []const []const u32,
+    /// symbol_index → [all stmt indices that reference this symbol].
+    /// tree_shaker.isImportLiveInModule()에서 O(1) 조회용.
+    sym_to_referencing_stmts: []const []const u32,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ModuleStmtInfos) void {
@@ -39,6 +45,15 @@ pub const ModuleStmtInfos = struct {
         }
         self.allocator.free(self.stmts);
         self.allocator.free(self.symbol_to_stmt);
+        // 역인덱스 해제
+        for (self.sym_to_side_effect_stmts) |s| {
+            if (s.len > 0) self.allocator.free(s);
+        }
+        self.allocator.free(self.sym_to_side_effect_stmts);
+        for (self.sym_to_referencing_stmts) |s| {
+            if (s.len > 0) self.allocator.free(s);
+        }
+        self.allocator.free(self.sym_to_referencing_stmts);
     }
 
     /// symbol_index가 선언된 statement 인덱스 반환.
@@ -96,6 +111,27 @@ pub const ModuleStmtInfos = struct {
     }
 };
 
+/// statement span 배열에서 pos를 포함하는 statement를 binary search.
+/// statement span은 소스 순서로 비중첩.
+fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
+    if (stmt_spans.len == 0) return null;
+
+    var lo: u32 = 0;
+    var hi: u32 = @intCast(stmt_spans.len);
+
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (pos >= stmt_spans[mid].end) {
+            lo = mid + 1;
+        } else if (pos < stmt_spans[mid].start) {
+            hi = mid;
+        } else {
+            return mid; // stmt_spans[mid].start <= pos < stmt_spans[mid].end
+        }
+    }
+    return null; // 어떤 statement span에도 속하지 않음
+}
+
 /// AST + semantic data로부터 ModuleStmtInfos를 구축한다.
 pub fn build(
     allocator: std.mem.Allocator,
@@ -113,7 +149,8 @@ pub fn build(
     if (list.start + list.len > ast.extra_data.items.len) return null;
     const stmt_raw_indices = ast.extra_data.items[list.start .. list.start + list.len];
 
-    var stmts = try allocator.alloc(StmtInfo, stmt_raw_indices.len);
+    const stmt_count = stmt_raw_indices.len;
+    var stmts = try allocator.alloc(StmtInfo, stmt_count);
     errdefer {
         for (stmts) |s| {
             allocator.free(s.declared_symbols);
@@ -127,10 +164,15 @@ pub fn build(
     errdefer allocator.free(sym_to_stmt);
     for (sym_to_stmt) |*s| s.* = null;
 
+    // Phase 1: statement span 배열 + side-effects 판정 + 초기화
+    var stmt_spans = try allocator.alloc(Span, stmt_count);
+    defer allocator.free(stmt_spans);
+
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
         const ni = @intFromEnum(idx);
         if (ni >= ast.nodes.items.len) {
+            stmt_spans[stmt_i] = .{ .start = 0, .end = 0 };
             stmts[stmt_i] = .{
                 .node_idx = @intCast(ni),
                 .span = .{ .start = 0, .end = 0 },
@@ -141,78 +183,165 @@ pub fn build(
             continue;
         }
         const node = ast.nodes.items[ni];
-
-        // side-effects 판정: import는 side-effect-free (도달성 분석 핵심)
-        // import は side-effect-free (도달성 분석의 핵심: 미사용 import가 seed되지 않음)
+        stmt_spans[stmt_i] = node.span;
         const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
+        stmts[stmt_i] = .{
+            .node_idx = @intCast(ni),
+            .span = node.span,
+            .has_side_effects = side_effects,
+            .declared_symbols = &.{}, // Phase 2에서 채움
+            .referenced_symbols = &.{}, // Phase 2에서 채움
+        };
+    }
 
-        // 심볼 수집: 이 statement의 span 안에 있는 모든 노드의 symbol_ids
-        var declared_buf: std.ArrayListUnmanaged(u32) = .empty;
-        defer declared_buf.deinit(allocator);
-        var referenced_buf: std.ArrayListUnmanaged(u32) = .empty;
-        defer referenced_buf.deinit(allocator);
+    // Phase 2: 모든 AST 노드를 단일 패스로 순회하며 심볼 수집 — O(N log S)
+    // 각 statement별 declared/referenced 임시 버퍼
+    var declared_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
+    defer {
+        for (declared_bufs) |*b| b.deinit(allocator);
+        allocator.free(declared_bufs);
+    }
+    for (declared_bufs) |*b| b.* = .empty;
 
-        // declared: top-level scope (scope_id == 0)에 선언된 심볼
-        var declared_set = std.AutoHashMap(u32, void).init(allocator);
-        defer declared_set.deinit();
+    var referenced_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
+    defer {
+        for (referenced_bufs) |*b| b.deinit(allocator);
+        allocator.free(referenced_bufs);
+    }
+    for (referenced_bufs) |*b| b.* = .empty;
 
-        // 모든 노드를 순회하며 이 statement span 안의 심볼 수집
-        for (ast.nodes.items, 0..) |n, node_i| {
-            if (n.span.start < node.span.start or n.span.start >= node.span.end) continue;
-            if (node_i >= symbol_ids.len) continue;
-            const sym_idx = symbol_ids[node_i] orelse continue;
-            if (sym_idx >= symbols.len) continue;
+    // 중복 방지용 per-statement set (symbol_index별 비트)
+    var declared_sets = try allocator.alloc(std.AutoHashMapUnmanaged(u32, void), stmt_count);
+    defer {
+        for (declared_sets) |*s| s.deinit(allocator);
+        allocator.free(declared_sets);
+    }
+    for (declared_sets) |*s| s.* = .{};
 
-            const sym = &symbols[sym_idx];
-            // top-level scope에 선언된 심볼 = declared
-            if (@intFromEnum(sym.scope_id) == 0 and
-                n.span.start >= sym.declaration_span.start and
-                n.span.end <= sym.declaration_span.end)
-            {
-                if (!declared_set.contains(@intCast(sym_idx))) {
-                    try declared_set.put(@intCast(sym_idx), {});
-                    try declared_buf.append(allocator, @intCast(sym_idx));
-                    // 역매핑 등록
-                    if (sym_idx < sym_to_stmt.len) {
-                        sym_to_stmt[sym_idx] = @intCast(stmt_i);
-                    }
+    var referenced_sets = try allocator.alloc(std.AutoHashMapUnmanaged(u32, void), stmt_count);
+    defer {
+        for (referenced_sets) |*s| s.deinit(allocator);
+        allocator.free(referenced_sets);
+    }
+    for (referenced_sets) |*s| s.* = .{};
+
+    // 단일 패스: 모든 노드 → binary search로 소속 statement 결정
+    for (ast.nodes.items, 0..) |n, node_i| {
+        const stmt_i = findStmtForPos(stmt_spans, n.span.start) orelse continue;
+        if (node_i >= symbol_ids.len) continue;
+        const sym_idx = symbol_ids[node_i] orelse continue;
+        if (sym_idx >= symbols.len) continue;
+
+        const sym = &symbols[sym_idx];
+
+        // declared: top-level scope에 선언된 심볼
+        if (@intFromEnum(sym.scope_id) == 0 and
+            n.span.start >= sym.declaration_span.start and
+            n.span.end <= sym.declaration_span.end)
+        {
+            if (!declared_sets[stmt_i].contains(@intCast(sym_idx))) {
+                try declared_sets[stmt_i].put(allocator, @intCast(sym_idx), {});
+                try declared_bufs[stmt_i].append(allocator, @intCast(sym_idx));
+                if (sym_idx < sym_to_stmt.len) {
+                    sym_to_stmt[sym_idx] = @intCast(stmt_i);
                 }
             }
         }
 
         // referenced: identifier_reference + assignment_target_identifier 중 declared에 없는 것
-        var referenced_set = std.AutoHashMap(u32, void).init(allocator);
-        defer referenced_set.deinit();
-
-        for (ast.nodes.items, 0..) |n, node_i| {
-            if (n.span.start < node.span.start or n.span.start >= node.span.end) continue;
-            const is_ref = switch (n.tag) {
-                .identifier_reference, .assignment_target_identifier => true,
-                else => false,
-            };
-            if (!is_ref) continue;
-            if (node_i >= symbol_ids.len) continue;
-            const sym_idx = symbol_ids[node_i] orelse continue;
-            if (sym_idx >= symbols.len) continue;
-            if (declared_set.contains(@intCast(sym_idx))) continue;
-            if (!referenced_set.contains(@intCast(sym_idx))) {
-                try referenced_set.put(@intCast(sym_idx), {});
-                try referenced_buf.append(allocator, @intCast(sym_idx));
+        const is_ref = switch (n.tag) {
+            .identifier_reference, .assignment_target_identifier => true,
+            else => false,
+        };
+        if (is_ref and !declared_sets[stmt_i].contains(@intCast(sym_idx))) {
+            if (!referenced_sets[stmt_i].contains(@intCast(sym_idx))) {
+                try referenced_sets[stmt_i].put(allocator, @intCast(sym_idx), {});
+                try referenced_bufs[stmt_i].append(allocator, @intCast(sym_idx));
             }
         }
+    }
 
-        stmts[stmt_i] = .{
-            .node_idx = @intCast(ni),
-            .span = node.span,
-            .has_side_effects = side_effects,
-            .declared_symbols = try allocator.dupe(u32, declared_buf.items),
-            .referenced_symbols = try allocator.dupe(u32, referenced_buf.items),
-        };
+    // Phase 2 결과를 stmts에 기록
+    for (stmts, 0..) |*stmt, stmt_i| {
+        if (stmt.declared_symbols.len == 0 and declared_bufs[stmt_i].items.len > 0) {
+            stmt.declared_symbols = try allocator.dupe(u32, declared_bufs[stmt_i].items);
+        }
+        if (stmt.referenced_symbols.len == 0 and referenced_bufs[stmt_i].items.len > 0) {
+            stmt.referenced_symbols = try allocator.dupe(u32, referenced_bufs[stmt_i].items);
+        }
+    }
+
+    // Phase 3: 역인덱스 구축 — symbol → referencing stmt indices
+    const sym_count = symbols.len;
+
+    // 3a: 카운트 패스
+    var ref_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(ref_counts);
+    @memset(ref_counts, 0);
+    var se_counts = try allocator.alloc(u32, sym_count);
+    defer allocator.free(se_counts);
+    @memset(se_counts, 0);
+
+    for (stmts, 0..) |stmt, si| {
+        _ = si;
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    // 3b: 할당
+    var sym_to_ref_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_ref_stmts);
+    var sym_to_se_stmts = try allocator.alloc([]const u32, sym_count);
+    errdefer allocator.free(sym_to_se_stmts);
+
+    // 임시 쓰기용 mutable 버퍼
+    var ref_bufs = try allocator.alloc([]u32, sym_count);
+    defer {
+        // ref_bufs의 각 슬라이스는 sym_to_ref_stmts로 이전되므로 별도 free 불필요
+        allocator.free(ref_bufs);
+    }
+    var se_bufs = try allocator.alloc([]u32, sym_count);
+    defer allocator.free(se_bufs);
+
+    for (0..sym_count) |sym| {
+        ref_bufs[sym] = if (ref_counts[sym] > 0) try allocator.alloc(u32, ref_counts[sym]) else &.{};
+        se_bufs[sym] = if (se_counts[sym] > 0) try allocator.alloc(u32, se_counts[sym]) else &.{};
+    }
+
+    // 3c: 기록 패스 (카운터 재활용)
+    @memset(ref_counts, 0);
+    @memset(se_counts, 0);
+
+    for (stmts, 0..) |stmt, si| {
+        for (stmt.referenced_symbols) |sym| {
+            if (sym < sym_count) {
+                ref_bufs[sym][ref_counts[sym]] = @intCast(si);
+                ref_counts[sym] += 1;
+                if (stmt.has_side_effects) {
+                    se_bufs[sym][se_counts[sym]] = @intCast(si);
+                    se_counts[sym] += 1;
+                }
+            }
+        }
+    }
+
+    // 3d: const 슬라이스로 변환
+    for (0..sym_count) |sym| {
+        sym_to_ref_stmts[sym] = ref_bufs[sym];
+        sym_to_se_stmts[sym] = se_bufs[sym];
     }
 
     return .{
         .stmts = stmts,
         .symbol_to_stmt = sym_to_stmt,
+        .sym_to_side_effect_stmts = sym_to_se_stmts,
+        .sym_to_referencing_stmts = sym_to_ref_stmts,
         .allocator = allocator,
     };
 }
