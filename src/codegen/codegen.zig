@@ -3929,6 +3929,56 @@ test "ES2015: template no transform on esnext" {
     try std.testing.expectEqualStrings("const x=`hello`;", r.output);
 }
 
+// --- tagged template ---
+
+test "tagged template: basic" {
+    var r = try e2e(std.testing.allocator, "foo`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("foo`hello`;", r.output);
+}
+
+test "tagged template: with substitution" {
+    var r = try e2e(std.testing.allocator, "foo`hello ${x} world`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("foo`hello ${x} world`;", r.output);
+}
+
+test "tagged template: after var declaration" {
+    var r = try e2e(std.testing.allocator, "var x;foo`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var x;foo`hello`;", r.output);
+}
+
+test "tagged template: after let declaration" {
+    var r = try e2e(std.testing.allocator, "let x=1;foo`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;foo`hello`;", r.output);
+}
+
+test "tagged template: after function declaration" {
+    var r = try e2e(std.testing.allocator, "function f(){}foo`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(){}foo`hello`;", r.output);
+}
+
+test "tagged template: as identifier as tag" {
+    var r = try e2e(std.testing.allocator, "as`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("as`hello`;", r.output);
+}
+
+test "tagged template: member expression tag" {
+    var r = try e2e(std.testing.allocator, "foo.bar`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("foo.bar`hello`;", r.output);
+}
+
+test "tagged template: no-substitution after expression statement" {
+    var r = try e2e(std.testing.allocator, "1;foo`hello`;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("1;foo`hello`;", r.output);
+}
+
 // --- ES2015: shorthand property ---
 
 test "ES2015: shorthand property expansion" {
