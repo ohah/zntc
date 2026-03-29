@@ -22,6 +22,18 @@ pub const ModuleIndex = enum(u32) {
 };
 
 // ============================================================
+// Alias (resolve.alias)
+// ============================================================
+
+/// import 경로 별칭. resolve 시 specifier 앞부분을 치환.
+/// 정확 매칭: "react" → "preact/compat"
+/// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
+pub const AliasEntry = struct {
+    from: []const u8,
+    to: []const u8,
+};
+
+// ============================================================
 // Import 종류
 // ============================================================
 
@@ -246,6 +258,32 @@ pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
 
     var name: std.ArrayList(u8) = .empty;
     try name.appendSlice(allocator, "require_");
+    for (without_ext) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_') {
+            try name.append(allocator, c);
+        } else {
+            try name.append(allocator, '_');
+        }
+    }
+    return name.toOwnedSlice(allocator);
+}
+
+/// JSON 모듈용 ESM 변수명 생성. require_ 대신 json_ 접두사 사용.
+/// data.json → json_data, node_modules/foo/config.json → json_foo_config
+pub fn makeJsonVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const nm = "node_modules" ++ std.fs.path.sep_str;
+    const significant = if (std.mem.lastIndexOf(u8, path, nm)) |pos|
+        path[pos + nm.len ..]
+    else
+        std.fs.path.basename(path);
+
+    const without_ext = if (std.mem.lastIndexOf(u8, significant, ".")) |dot|
+        significant[0..dot]
+    else
+        significant;
+
+    var name: std.ArrayList(u8) = .empty;
+    try name.appendSlice(allocator, "json_");
     for (without_ext) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '_') {
             try name.append(allocator, c);

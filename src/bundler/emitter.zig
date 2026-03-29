@@ -64,6 +64,23 @@ pub const EmitOptions = struct {
     target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     platform: @import("../codegen/codegen.zig").Platform = .browser,
+    // --- Batch A 옵션 ---
+    /// 에셋/청크 URL prefix (동적 import 경로에 적용)
+    public_path: []const u8 = "",
+    /// 번들 출력 앞에 삽입할 텍스트
+    banner_js: ?[]const u8 = null,
+    /// 번들 출력 뒤에 삽입할 텍스트
+    footer_js: ?[]const u8 = null,
+    /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명
+    global_name: ?[]const u8 = null,
+    /// 출력 파일 확장자 오버라이드 (.mjs, .cjs 등)
+    out_extension_js: ?[]const u8 = null,
+    /// 소스맵 sourceRoot 필드
+    source_root: ?[]const u8 = null,
+    /// 소스맵에 sourcesContent 포함 여부
+    sources_content: bool = true,
+    /// UTF-8 문자를 이스케이프하지 않고 그대로 출력
+    charset_utf8: bool = false,
 
     pub const Format = enum {
         esm,
@@ -118,9 +135,31 @@ pub fn emitWithTreeShaking(
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
+    // banner 삽입 (포맷별 prologue 직전)
+    if (options.banner_js) |banner| {
+        try output.appendSlice(allocator, banner);
+        try output.append(allocator, '\n');
+    }
+
     // 포맷별 prologue
     switch (options.format) {
-        .iife => try output.appendSlice(allocator, "(function() {\n"),
+        .iife => {
+            if (options.global_name) |gn| {
+                if (std.mem.indexOfScalar(u8, gn, '.') != null) {
+                    // 네임스페이스 globalName은 미지원 — 경고 주석 삽입
+                    try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
+                    try output.appendSlice(allocator, gn);
+                    try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
+                    try output.appendSlice(allocator, "(function() {\n");
+                } else {
+                    try output.appendSlice(allocator, "var ");
+                    try output.appendSlice(allocator, gn);
+                    try output.appendSlice(allocator, " = (function() {\n");
+                }
+            } else {
+                try output.appendSlice(allocator, "(function() {\n");
+            }
+        },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},
     }
@@ -230,6 +269,12 @@ pub fn emitWithTreeShaking(
         .cjs, .esm => {},
     }
 
+    // footer 삽입 (포맷별 epilogue 직후)
+    if (options.footer_js) |footer| {
+        try output.appendSlice(allocator, footer);
+        try output.append(allocator, '\n');
+    }
+
     return output.toOwnedSlice(allocator);
 }
 
@@ -314,10 +359,12 @@ pub fn emitDevBundle(
     }
 
     // 번들 레벨 소스맵 빌더 (소스맵 활성화 시)
-    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap)
-        SourceMap.SourceMapBuilder.init(allocator)
-    else
-        null;
+    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap) blk: {
+        var sm = SourceMap.SourceMapBuilder.init(allocator);
+        sm.source_root = options.source_root orelse "";
+        sm.sources_content = options.sources_content;
+        break :blk sm;
+    } else null;
     defer if (bundle_sm) |*sm| sm.deinit();
 
     // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
@@ -494,6 +541,9 @@ pub fn emitDevModule(
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
         .platform = options.platform,
+        .ascii_only = if (options.charset_utf8) false else false,
+        .source_root = options.source_root orelse "",
+        .sources_content = options.sources_content,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -605,6 +655,15 @@ pub fn emitChunks(
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
 
+        // 출력 확장자 (cross-chunk import 경로 + 파일명에 공용)
+        const ext = options.out_extension_js orelse ".js";
+
+        // banner 삽입 (각 청크 출력 앞)
+        if (options.banner_js) |banner| {
+            try chunk_output.appendSlice(allocator, banner);
+            try chunk_output.append(allocator, '\n');
+        }
+
         // 청크별 런타임 헬퍼 주입
         try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, modules, options);
 
@@ -682,22 +741,26 @@ pub fn emitChunks(
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, " } from \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js\";\n");
+                    try chunk_output.appendSlice(allocator, ext);
+                    try chunk_output.appendSlice(allocator, "\";\n");
                 } else {
                     try chunk_output.appendSlice(allocator, "}from\"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js\";");
+                    try chunk_output.appendSlice(allocator, ext);
+                    try chunk_output.appendSlice(allocator, "\";");
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
                 if (!options.minify_whitespace) {
                     try chunk_output.appendSlice(allocator, "import \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js\";\n");
+                    try chunk_output.appendSlice(allocator, ext);
+                    try chunk_output.appendSlice(allocator, "\";\n");
                 } else {
                     try chunk_output.appendSlice(allocator, "import\"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js\";");
+                    try chunk_output.appendSlice(allocator, ext);
+                    try chunk_output.appendSlice(allocator, "\";");
                 }
             }
         }
@@ -758,7 +821,7 @@ pub fn emitChunks(
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph);
+            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph, options.public_path, ext);
             defer allocator.free(code);
 
             if (!options.minify_whitespace) {
@@ -837,10 +900,16 @@ pub fn emitChunks(
             }
         }
 
-        // 출력 파일명 생성: "{stem}.js"
+        // footer 삽입 (각 청크 출력 뒤)
+        if (options.footer_js) |footer| {
+            try chunk_output.appendSlice(allocator, footer);
+            try chunk_output.append(allocator, '\n');
+        }
+
+        // 출력 파일명 생성: "{stem}{ext}" (out_extension_js로 오버라이드 가능)
         var stem_buf: [64]u8 = undefined;
         const stem = chunkStem(chunk, &stem_buf);
-        const filename = try std.fmt.allocPrint(allocator, "{s}.js", .{stem});
+        const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext });
         errdefer allocator.free(filename);
 
         try outputs.append(allocator, .{
@@ -864,6 +933,8 @@ fn rewriteDynamicImports(
     code: []const u8,
     module: *const Module,
     chunk_graph: *const ChunkGraph,
+    public_path: []const u8,
+    out_ext: []const u8,
 ) ![]const u8 {
     // dynamic import가 없으면 그대로 복사해서 반환
     if (module.import_records.len == 0) {
@@ -900,10 +971,13 @@ fn rewriteDynamicImports(
 
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
-        // 청크 파일명 생성: "./{stem}.js"
+        // 청크 파일명 생성: public_path가 있으면 "{public_path}{stem}{ext}", 없으면 "./{stem}{ext}"
         var stem_buf: [64]u8 = undefined;
         const stem = chunkStem(target_chunk, &stem_buf);
-        const replacement = try std.fmt.allocPrint(allocator, "./{s}.js", .{stem});
+        const replacement = if (public_path.len > 0)
+            try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
+        else
+            try std.fmt.allocPrint(allocator, "./{s}{s}", .{ stem, out_ext });
         defer allocator.free(replacement);
 
         // 코드에서 원본 specifier를 찾아 교체
@@ -1125,7 +1199,7 @@ pub fn emitModule(
 ) !?[]const u8 {
     // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
     if (module.module_type == .json) {
-        return emitJsonModule(allocator, module);
+        return emitJsonModule(allocator, module, options);
     }
 
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
@@ -1298,6 +1372,11 @@ pub fn emitModule(
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
+        // --charset=utf8 → ascii_only=false (명시적 보장)
+        .ascii_only = if (options.charset_utf8) false else false,
+        // 소스맵 옵션 전달
+        .source_root = options.source_root orelse "",
+        .sources_content = options.sources_content,
     });
     const code = try cg.generate(root);
 
@@ -1372,9 +1451,31 @@ fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minif
     return try buf.toOwnedSlice(allocator);
 }
 
-fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
+fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
 
+    // ESM 포맷: var json_X = <json_content>; (scope-hoisted)
+    // CJS 래핑 대신 직접 변수 할당으로 더 효율적인 출력.
+    // graph.zig에서 JSON 모듈은 항상 wrap_kind=cjs로 설정되지만,
+    // ESM 출력 시에는 __commonJS 래핑 없이 직접 변수로 출력한다.
+    if (options.format == .esm) {
+        const var_name = try types.makeJsonVarName(allocator, module.path);
+        defer allocator.free(var_name);
+
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, var_name);
+        if (options.minify_whitespace) {
+            try buf.appendSlice(allocator, "=");
+        } else {
+            try buf.appendSlice(allocator, " = ");
+        }
+        try buf.appendSlice(allocator, module.source);
+        try buf.appendSlice(allocator, ";\n");
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    // CJS/IIFE 포맷: 기존 __commonJS 래핑 유지
     const var_name = try types.makeRequireVarName(allocator, module.path);
     defer allocator.free(var_name);
 
@@ -1495,10 +1596,13 @@ fn emitBundleRuntimeHelpers(
     sorted_modules: []const *const Module,
     options: EmitOptions,
 ) !void {
-    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입
+    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입.
+    // ESM 포맷에서 JSON 모듈은 scope-hoisted 변수로 출력하므로
+    // __commonJS 래핑을 사용하지 않음 — 런타임 필요 여부 판정에서 제외.
     var needs_cjs_runtime = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) {
+            if (options.format == .esm and m.module_type == .json) continue;
             needs_cjs_runtime = true;
             break;
         }

@@ -65,6 +65,10 @@ pub const CodegenOptions = struct {
     sourcemap: bool = false,
     /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
     ascii_only: bool = false,
+    /// 소스맵 sourceRoot 필드
+    source_root: []const u8 = "",
+    /// 소스맵에 sourcesContent 포함 여부 (기본: true)
+    sources_content: bool = true,
     /// 번들러 linker 메타데이터. 설정 시 import 스킵 + 식별자 리네임 적용.
     linking_metadata: ?*const LinkingMetadata = null,
     /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
@@ -118,13 +122,18 @@ pub const Codegen = struct {
     }
 
     pub fn initWithOptions(allocator: std.mem.Allocator, ast: *const Ast, options: CodegenOptions) Codegen {
+        var sm = if (options.sourcemap) SourceMapBuilder.init(allocator) else null;
+        if (sm) |*builder| {
+            builder.source_root = options.source_root;
+            builder.sources_content = options.sources_content;
+        }
         return .{
             .ast = ast,
             .allocator = allocator,
             .buf = .empty,
             .options = options,
             .indent_level = 0,
-            .sm_builder = if (options.sourcemap) SourceMapBuilder.init(allocator) else null,
+            .sm_builder = sm,
             .gen_line = 0,
             .gen_col = 0,
         };
@@ -214,6 +223,10 @@ pub const Codegen = struct {
     pub fn addSourceFile(self: *Codegen, source_name: []const u8) !void {
         if (self.sm_builder) |*sm| {
             _ = try sm.addSource(source_name);
+            // sourcesContent 옵션이 켜져 있으면 소스 내용도 추가
+            if (self.options.sources_content) {
+                try sm.addSourceContent(self.ast.source);
+            }
         }
     }
 

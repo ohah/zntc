@@ -83,13 +83,20 @@ pub const Mapping = struct {
 pub const SourceMapBuilder = struct {
     mappings: std.ArrayList(Mapping),
     sources: std.ArrayList([]const u8),
+    /// 소스 파일 내용 (sourcesContent 배열용). addSourceContent()로 추가.
+    source_contents: std.ArrayList([]const u8),
     buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    /// sourceRoot 필드 값. 빈 문자열이면 ""로 출력.
+    source_root: []const u8 = "",
+    /// sourcesContent 포함 여부. true이고 source_contents가 비어있지 않으면 JSON에 포함.
+    sources_content: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
             .mappings = .empty,
             .sources = .empty,
+            .source_contents = .empty,
             .buf = .empty,
             .allocator = allocator,
         };
@@ -98,6 +105,7 @@ pub const SourceMapBuilder = struct {
     pub fn deinit(self: *SourceMapBuilder) void {
         self.mappings.deinit(self.allocator);
         self.sources.deinit(self.allocator);
+        self.source_contents.deinit(self.allocator);
         self.buf.deinit(self.allocator);
     }
 
@@ -106,6 +114,11 @@ pub const SourceMapBuilder = struct {
         const idx: u32 = @intCast(self.sources.items.len);
         try self.sources.append(self.allocator, source_name);
         return idx;
+    }
+
+    /// 소스 파일 내용 추가. sources 배열과 인덱스가 대응해야 한다.
+    pub fn addSourceContent(self: *SourceMapBuilder, content: []const u8) !void {
+        try self.source_contents.append(self.allocator, content);
     }
 
     /// 매핑 추가.
@@ -120,7 +133,9 @@ pub const SourceMapBuilder = struct {
         // JSON 시작
         try self.buf.appendSlice(self.allocator, "{\"version\":3,\"file\":\"");
         try self.buf.appendSlice(self.allocator, output_file);
-        try self.buf.appendSlice(self.allocator, "\",\"sourceRoot\":\"\",\"sources\":[");
+        try self.buf.appendSlice(self.allocator, "\",\"sourceRoot\":\"");
+        try self.buf.appendSlice(self.allocator, self.source_root);
+        try self.buf.appendSlice(self.allocator, "\",\"sources\":[");
 
         // sources 배열
         for (self.sources.items, 0..) |src, i| {
@@ -135,9 +150,48 @@ pub const SourceMapBuilder = struct {
         // mappings 인코딩
         try self.encodeMappings();
 
-        try self.buf.appendSlice(self.allocator, "\"}");
+        try self.buf.append(self.allocator, '"');
+
+        // sourcesContent (옵션에 따라 포함)
+        if (self.sources_content and self.source_contents.items.len > 0) {
+            try self.buf.appendSlice(self.allocator, ",\"sourcesContent\":[");
+            for (self.source_contents.items, 0..) |content, i| {
+                if (i > 0) try self.buf.append(self.allocator, ',');
+                // JSON 문자열로 이스케이프
+                try self.appendJsonString(content);
+            }
+            try self.buf.append(self.allocator, ']');
+        }
+
+        try self.buf.append(self.allocator, '}');
 
         return self.buf.items;
+    }
+
+    /// 문자열을 JSON 이스케이프하여 buf에 추가한다.
+    fn appendJsonString(self: *SourceMapBuilder, s: []const u8) !void {
+        try self.buf.append(self.allocator, '"');
+        for (s) |c| {
+            switch (c) {
+                '"' => try self.buf.appendSlice(self.allocator, "\\\""),
+                '\\' => try self.buf.appendSlice(self.allocator, "\\\\"),
+                '\n' => try self.buf.appendSlice(self.allocator, "\\n"),
+                '\r' => try self.buf.appendSlice(self.allocator, "\\r"),
+                '\t' => try self.buf.appendSlice(self.allocator, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        // 제어 문자 → \u00XX
+                        try self.buf.appendSlice(self.allocator, "\\u00");
+                        const hex = "0123456789abcdef";
+                        try self.buf.append(self.allocator, hex[c >> 4]);
+                        try self.buf.append(self.allocator, hex[c & 0x0f]);
+                    } else {
+                        try self.buf.append(self.allocator, c);
+                    }
+                },
+            }
+        }
+        try self.buf.append(self.allocator, '"');
     }
 
     /// mappings 필드를 VLQ 인코딩.
@@ -181,3 +235,66 @@ pub const SourceMapBuilder = struct {
         }
     }
 };
+
+// ============================================================
+// 테스트
+// ============================================================
+
+test "sourceRoot — default empty string" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    const json = try sm.generateJSON("output.js");
+    // 기본값: sourceRoot가 빈 문자열
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sourceRoot\":\"\"") != null);
+}
+
+test "sourceRoot — custom value" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    sm.source_root = "https://example.com/";
+    _ = try sm.addSource("input.ts");
+    const json = try sm.generateJSON("output.js");
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sourceRoot\":\"https://example.com/\"") != null);
+}
+
+test "sourcesContent — included by default" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    try sm.addSourceContent("const x = 1;\n");
+    const json = try sm.generateJSON("output.js");
+    // sourcesContent 배열이 JSON에 포함되어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sourcesContent\":[\"const x = 1;\\n\"]") != null);
+}
+
+test "sourcesContent — excluded when false" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    sm.sources_content = false;
+    _ = try sm.addSource("input.ts");
+    try sm.addSourceContent("const x = 1;\n");
+    const json = try sm.generateJSON("output.js");
+    // sources_content=false이면 sourcesContent가 없어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, json, "sourcesContent") == null);
+}
+
+test "sourcesContent — empty contents not included" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    // source_contents를 추가하지 않으면 빈 배열이므로 sourcesContent 생략
+    const json = try sm.generateJSON("output.js");
+    try std.testing.expect(std.mem.indexOf(u8, json, "sourcesContent") == null);
+}
+
+test "sourcesContent — JSON escaping" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    try sm.addSourceContent("let s = \"hello\\nworld\";\n");
+    const json = try sm.generateJSON("output.js");
+    // 따옴표와 백슬래시가 이스케이프되어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, json, "sourcesContent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\\\"hello") != null);
+}

@@ -9,6 +9,7 @@ const Codegen = lib.codegen.Codegen;
 const TsConfig = lib.config.TsConfig;
 const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
+const BundleOptions = lib.bundler.BundleOptions;
 const emitter = lib.bundler.emitter;
 
 /// CLI 인자를 파싱한 결과를 담는 구조체.
@@ -45,11 +46,28 @@ const CliOptions = struct {
     target: lib.transformer.TransformOptions.Target = .esnext,
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
+    // --- Batch A 옵션 ---
+    preserve_symlinks: bool = false,
+    alias_list: std.ArrayList(AliasEntry) = .empty,
+    public_path: ?[]const u8 = null,
+    banner_js: ?[]const u8 = null,
+    footer_js: ?[]const u8 = null,
+    global_name: ?[]const u8 = null,
+    out_extension_js: ?[]const u8 = null,
+    source_root: ?[]const u8 = null,
+    sources_content: bool = true,
+    log_level: LogLevel = .info,
+    charset_utf8: bool = false,
+
+    const AliasEntry = BundleOptions.AliasEntry;
+
+    const LogLevel = BundleOptions.LogLevel;
 
     fn deinit(self: *CliOptions, alloc: std.mem.Allocator) void {
         self.external_list.deinit(alloc);
         self.define_list.deinit(alloc);
         self.conditions_list.deinit(alloc);
+        self.alias_list.deinit(alloc);
     }
 };
 
@@ -193,6 +211,46 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: unknown target '{s}'\n", .{val});
                 return null;
             };
+        } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
+            opts.preserve_symlinks = true;
+        } else if (std.mem.startsWith(u8, arg, "--alias:")) {
+            // --alias:react=preact/compat (esbuild 호환)
+            const kv = arg["--alias:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                try opts.alias_list.append(allocator, .{
+                    .from = kv[0..eq_pos],
+                    .to = kv[eq_pos + 1 ..],
+                });
+            } else {
+                try stderr.print("zts: --alias requires FROM=TO format: {s}\n", .{arg});
+                return null;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--public-path=")) {
+            opts.public_path = arg["--public-path=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--banner:js=")) {
+            opts.banner_js = arg["--banner:js=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--footer:js=")) {
+            opts.footer_js = arg["--footer:js=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--global-name=")) {
+            opts.global_name = arg["--global-name=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--out-extension:")) {
+            // --out-extension:.js=.mjs (esbuild 호환)
+            const kv = arg["--out-extension:".len..];
+            if (std.mem.startsWith(u8, kv, ".js=")) {
+                opts.out_extension_js = kv[".js=".len..];
+            }
+        } else if (std.mem.startsWith(u8, arg, "--source-root=")) {
+            opts.source_root = arg["--source-root=".len..];
+        } else if (std.mem.eql(u8, arg, "--sources-content=false")) {
+            opts.sources_content = false;
+        } else if (std.mem.startsWith(u8, arg, "--log-level=")) {
+            const val = arg["--log-level=".len..];
+            opts.log_level = std.meta.stringToEnum(CliOptions.LogLevel, val) orelse {
+                try stderr.print("zts: unknown log-level '{s}' (expected: silent, error, warning, info, debug, verbose)\n", .{val});
+                return null;
+            };
+        } else if (std.mem.eql(u8, arg, "--charset=utf8")) {
+            opts.charset_utf8 = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return null;
@@ -257,6 +315,12 @@ const TranspileOptions = struct {
     target: lib.transformer.TransformOptions.Target = .esnext,
     /// 파이프라인 단계별 소요시간 출력
     timing: bool = false,
+    /// 소스맵 sourceRoot 필드
+    source_root: []const u8 = "",
+    /// 소스맵에 sourcesContent 포함 여부
+    sources_content: bool = true,
+    /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
+    charset_utf8: bool = false,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -444,10 +508,12 @@ fn transpileFile(
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
         .sourcemap = options.sourcemap,
-        .ascii_only = options.ascii_only,
+        .ascii_only = if (options.charset_utf8) false else options.ascii_only,
         .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .platform = options.platform,
+        .source_root = options.source_root,
+        .sources_content = options.sources_content,
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {
@@ -749,6 +815,17 @@ pub fn main() !void {
             .target = opts.target,
             .conditions = opts.conditions_list.items,
             .timing = opts.timing,
+            .preserve_symlinks = opts.preserve_symlinks,
+            .alias = opts.alias_list.items,
+            .public_path = opts.public_path orelse "",
+            .banner_js = opts.banner_js,
+            .footer_js = opts.footer_js,
+            .global_name = opts.global_name,
+            .out_extension_js = opts.out_extension_js,
+            .source_root = opts.source_root,
+            .sources_content = opts.sources_content,
+            .log_level = opts.log_level,
+            .charset_utf8 = opts.charset_utf8,
         });
         defer bundler.deinit();
 
@@ -758,16 +835,28 @@ pub fn main() !void {
         };
         defer result.deinit(allocator);
 
-        // 진단 메시지 출력
-        for (result.getDiagnostics()) |d| {
-            const sev_str: []const u8 = switch (d.severity) {
-                .@"error" => "error",
-                .warning => "warning",
-                .info => "info",
-            };
-            try stderr.print("[{s}] {s}: {s}", .{ sev_str, d.file_path, d.message });
-            if (d.suggestion) |s| try stderr.print(" (did you mean '{s}'?)", .{s});
-            try stderr.print("\n", .{});
+        // 진단 메시지 출력 (log-level 필터링)
+        if (opts.log_level != .silent) {
+            for (result.getDiagnostics()) |d| {
+                // log-level에 따른 필터링:
+                // error: error만, warning: error+warning, info/debug/verbose: 전부
+                const show = switch (opts.log_level) {
+                    .silent => false,
+                    .@"error" => d.severity == .@"error",
+                    .warning => d.severity == .@"error" or d.severity == .warning,
+                    .info, .debug, .verbose => true,
+                };
+                if (!show) continue;
+
+                const sev_str: []const u8 = switch (d.severity) {
+                    .@"error" => "error",
+                    .warning => "warning",
+                    .info => "info",
+                };
+                try stderr.print("[{s}] {s}: {s}", .{ sev_str, d.file_path, d.message });
+                if (d.suggestion) |s| try stderr.print(" (did you mean '{s}'?)", .{s});
+                try stderr.print("\n", .{});
+            }
         }
 
         // 출력
@@ -865,6 +954,9 @@ pub fn main() !void {
         .experimental_decorators = opts.experimental_decorators orelse false,
         .target = opts.target,
         .timing = opts.timing,
+        .source_root = opts.source_root orelse "",
+        .sources_content = opts.sources_content,
+        .charset_utf8 = opts.charset_utf8,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");

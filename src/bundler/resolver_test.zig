@@ -1,6 +1,7 @@
 const std = @import("std");
 const resolver_mod = @import("resolver.zig");
 const Resolver = resolver_mod.Resolver;
+const AliasEntry = resolver_mod.AliasEntry;
 const ModuleType = @import("types.zig").ModuleType;
 const isRelativeOrAbsolute = resolver_mod.isRelativeOrAbsolute;
 const splitBareSpecifier = resolver_mod.splitBareSpecifier;
@@ -411,4 +412,53 @@ test "resolve: subpath imports not found" {
     var resolver = Resolver.init(std.testing.allocator);
     const result = resolver.resolve(dir_path, "#bar");
     try std.testing.expectError(error.ModuleNotFound, result);
+}
+
+// ============================================================
+// applyAlias tests
+// ============================================================
+
+test "resolve.alias — exact match" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" },
+    };
+    const result = try Resolver.applyAlias(std.testing.allocator, aliases, "react");
+    defer std.testing.allocator.free(result.?);
+    try std.testing.expectEqualStrings("preact/compat", result.?);
+}
+
+test "resolve.alias — prefix match" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" },
+    };
+    const result = try Resolver.applyAlias(std.testing.allocator, aliases, "react/hooks");
+    defer std.testing.allocator.free(result.?);
+    try std.testing.expectEqualStrings("preact/compat/hooks", result.?);
+}
+
+test "resolve.alias — no match" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" },
+    };
+    const result = try Resolver.applyAlias(std.testing.allocator, aliases, "vue");
+    try std.testing.expectEqual(@as(?[]const u8, null), result);
+}
+
+test "resolve.alias — no match partial name" {
+    // "react-dom"은 "react" alias에 매칭되지 않아야 함 (접두사 + '/' 만 매칭)
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" },
+    };
+    const result = try Resolver.applyAlias(std.testing.allocator, aliases, "react-dom");
+    try std.testing.expectEqual(@as(?[]const u8, null), result);
+}
+
+test "resolve.alias — multiple entries first match wins" {
+    const aliases: []const AliasEntry = &.{
+        .{ .from = "react", .to = "preact/compat" },
+        .{ .from = "react", .to = "inferno-compat" },
+    };
+    const result = try Resolver.applyAlias(std.testing.allocator, aliases, "react");
+    defer std.testing.allocator.free(result.?);
+    try std.testing.expectEqualStrings("preact/compat", result.?);
 }

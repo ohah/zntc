@@ -7669,7 +7669,7 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -7767,7 +7767,7 @@ test "CJS: require overrides ESM promotion (both import and require same module)
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();

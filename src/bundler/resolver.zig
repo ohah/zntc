@@ -58,30 +58,72 @@ const ts_extension_map: []const struct { from: []const u8, to: []const []const u
 /// index 파일 탐색 순서 (디렉토리 해석 시).
 const index_files: []const []const u8 = &.{ "index.ts", "index.tsx", "index.js", "index.jsx" };
 
+pub const AliasEntry = types.AliasEntry;
+
 pub const Resolver = struct {
     allocator: std.mem.Allocator,
     /// 조건 세트 (D064: import kind별로 다를 수 있음).
     /// ResolveCache.conditionsFor()에서 platform+kind별로 설정.
     /// 기본값은 테스트용 (브라우저 ESM).
     conditions: []const []const u8 = &.{ "import", "module", "browser", "default" },
+    /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks).
+    /// true이면 makeResult()에서 realpathAlloc 대신 allocator.dupe 사용.
+    preserve_symlinks: bool = false,
+    /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
+    /// 정확 매칭: "react" → "preact/compat"
+    /// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
+    alias: []const AliasEntry = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
         return .{ .allocator = allocator };
     }
 
+    /// alias 규칙을 specifier에 적용한다.
+    /// 정확 매칭: specifier == entry.from → entry.to
+    /// 접두사 매칭: specifier가 entry.from + "/" 로 시작 → entry.to + 나머지
+    /// 매칭 없으면 null 반환. 반환값은 allocator 소유 (호출자가 해제).
+    pub fn applyAlias(allocator: std.mem.Allocator, alias_entries: []const AliasEntry, specifier: []const u8) error{OutOfMemory}!?[]const u8 {
+        for (alias_entries) |entry| {
+            // 정확 매칭
+            if (std.mem.eql(u8, specifier, entry.from)) {
+                return try allocator.dupe(u8, entry.to);
+            }
+            // 접두사 매칭: specifier가 "from/" 로 시작
+            if (specifier.len > entry.from.len and
+                std.mem.startsWith(u8, specifier, entry.from) and
+                specifier[entry.from.len] == '/')
+            {
+                const suffix = specifier[entry.from.len..]; // "/hooks" 등
+                var result = try allocator.alloc(u8, entry.to.len + suffix.len);
+                @memcpy(result[0..entry.to.len], entry.to);
+                @memcpy(result[entry.to.len..], suffix);
+                return result;
+            }
+        }
+        return null;
+    }
+
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        // alias 치환 (resolve 맨 처음에 적용, esbuild 동작과 동일)
+        const effective_specifier = if (self.alias.len > 0)
+            (applyAlias(self.allocator, self.alias, specifier) catch return error.OutOfMemory) orelse specifier
+        else
+            specifier;
+        defer if (self.alias.len > 0 and effective_specifier.ptr != specifier.ptr)
+            self.allocator.free(effective_specifier);
+
         // #specifier → package.json "imports" 필드 (Node.js subpath imports)
-        if (specifier.len > 0 and specifier[0] == '#') {
-            return self.resolveSubpathImports(source_dir, specifier);
+        if (effective_specifier.len > 0 and effective_specifier[0] == '#') {
+            return self.resolveSubpathImports(source_dir, effective_specifier);
         }
 
         // bare specifier → node_modules 탐색
-        if (!isRelativeOrAbsolute(specifier)) {
-            return self.resolveNodeModules(source_dir, specifier);
+        if (!isRelativeOrAbsolute(effective_specifier)) {
+            return self.resolveNodeModules(source_dir, effective_specifier);
         }
 
         // 경로 조합
-        const joined = std.fs.path.resolve(self.allocator, &.{ source_dir, specifier }) catch
+        const joined = std.fs.path.resolve(self.allocator, &.{ source_dir, effective_specifier }) catch
             return error.OutOfMemory;
         defer self.allocator.free(joined);
 
@@ -362,10 +404,14 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // bun(.bun/)과 pnpm(.pnpm/)은 node_modules를 symlink로 설치하므로,
-        // realpath로 해석해야 중첩 node_modules 탐색이 올바른 계층에서 동작한다.
-        const resolved = std.fs.cwd().realpathAlloc(self.allocator, path) catch
-            self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+        // preserve_symlinks=true이면 symlink를 따라가지 않고 경로 그대로 사용.
+        // 기본(false)이면 bun(.bun/)과 pnpm(.pnpm/)의 symlink를 realpath로 해석하여
+        // 중첩 node_modules 탐색이 올바른 계층에서 동작하도록 한다.
+        const resolved = if (self.preserve_symlinks)
+            self.allocator.dupe(u8, path) catch return error.OutOfMemory
+        else
+            std.fs.cwd().realpathAlloc(self.allocator, path) catch
+                self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         const ext = std.fs.path.extension(resolved);
         return .{
             .path = resolved,

@@ -105,8 +105,17 @@ pub const ResolveCache = struct {
         };
     }
 
-    pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8, custom_conditions: []const []const u8) ResolveCache {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        platform: Platform,
+        external_patterns: []const []const u8,
+        custom_conditions: []const []const u8,
+        preserve_symlinks: bool,
+        alias: []const resolver_mod.AliasEntry,
+    ) ResolveCache {
         var r = Resolver.init(allocator);
+        r.preserve_symlinks = preserve_symlinks;
+        r.alias = alias;
         const has_custom = custom_conditions.len > 0;
         const cond_import = if (has_custom)
             buildConditions(allocator, baseConditionsFor(platform, .static_import), custom_conditions) catch baseConditionsFor(platform, .static_import)

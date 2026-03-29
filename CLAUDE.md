@@ -301,10 +301,7 @@ ZTS 279ms vs esbuild 182ms (**1.5배**).
 - esbuild는 Part 시스템으로 단일 패스 1ms
 - 점진적 개선: stmtinfo 병렬화, used_exports를 BitSet으로 교체 등
 
-### ⏳ 진행 중 / 미완료
-- **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
-  - 런타임 헬퍼 자동 주입 ✅ (__extends, __generator, __rest, __async — tslib 불필요)
-- **AST 미니파이어**: ✅ Phase 1~4 완료 (constant folding, DCE, boolean, comma). three.js -34%
+### ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **SIMD** — 렉서 공백/식별자/문자열 스캔 가속 (parse 10-20% 개선 예상)
 - **WASM 공개 AST API** — AST 안정화 후
@@ -324,15 +321,229 @@ AST 안정화 ──────────────┬──→ WASM 공개
 번들러 성능 ─────────────┬──→ scan 파이프라인화 (배치 경계 제거)
                          └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS)
 
-AST 미니파이어 ──────────┬──→ Phase 1: Constant folding (1+2→3, "a"+"b"→"ab")
-                         ├──→ Phase 2: Dead code elimination (if(false) 제거)
-                         ├──→ Phase 3: Boolean simplification + typeof folding
-                         └──→ Phase 4: Comma operator + Template literal folding
-
-추후 리팩터링: ES 다운레벨링 mixin → 별도 패스 구조로 마이그레이션
+번들러 기능 ─────────────┬──→ 로더 시스템 (JSON, text, file, dataurl)
+                         ├──→ CSS 번들링 (별도 파서)
+                         └──→ 플러그인 API (Zig builtin → N-API JS)
 
 독립 (아무 때나): Flow, SIMD
 ```
+
+### 미지원 기능 (상용 번들러 대비)
+
+esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
+- **난이도**: S(반나절) / M(1~2일) / L(3~5일) / XL(1주+)
+- **선행**: 먼저 구현해야 하는 기능. 없으면 독립
+- **배치**: 같이 묶어서 한 PR로 할 수 있는 그룹
+
+#### Critical (없으면 실사용 어려움)
+
+- **JSON 로더** — `S` | 선행: 없음 | 배치: A
+  `import pkg from './package.json'` 같은 JSON import가 안 됨.
+  esbuild/rolldown/rspack 모두 기본 내장. JSON → `export default { ... }` + named exports 변환.
+  실무 프로젝트 대부분이 package.json이나 설정 JSON을 import하므로, 이게 없으면 빌드 자체가 실패하는 경우가 많음.
+  **현황**: graph.parseModule()에서 CJS 래핑은 동작. ESM named exports + `--loader:.json` CLI 옵션만 추가하면 됨.
+
+- **Asset 로더** (file, dataurl, text, binary, copy) — `L` | 선행: content hash, naming 패턴 | 배치: C
+  이미지, 폰트, SVG, `.txt`, `.wasm` 등 non-JS 파일을 import할 수 없음.
+  esbuild는 `--loader:.png=file` 형태로 파일 타입별 로더 지정. file 로더는 해시 파일명으로 복사 + URL 문자열 export, dataurl은 base64 인라인.
+  React/Vue 프로젝트에서 `import logo from './logo.png'` 패턴이 매우 흔하므로 없으면 프론트엔드 프로젝트 빌드 불가.
+  **현황**: ModuleType.asset 정의만 있고 parseModule()에서 source도 안 읽음. emitter에서 완전 제외. 로더별 emit 로직 + 출력 다중화 필요.
+
+- **CSS 번들링** — `XL (2~3주)` | 선행: emitter 출력 다중화 | 배치: 단독
+  JS에서 `import './style.css'`를 처리하지 못함. CSS Modules (`import styles from './foo.module.css'`)도 미지원.
+  esbuild는 CSS 파서를 내장하여 `@import` 해석 + 중복 제거 + minify까지 처리. rolldown/rspack은 PostCSS/Lightning CSS 통합.
+  프론트엔드 앱의 거의 100%가 CSS import를 사용하므로, JSON 로더와 함께 가장 시급한 기능.
+  **현황**: CSS 파서를 새로 작성해야 함. ModuleType.css는 정의되어 있으나 파싱/emit 로직 전무. 가장 큰 작업.
+
+- **플러그인 API** — `XL (2~3주)` | 선행: 로더 시스템 안정화 | 배치: 단독
+  사용자가 빌드 파이프라인을 확장할 수 없음. 커스텀 로더, 가상 모듈, 코드 변환 등 모두 불가.
+  esbuild는 onResolve/onLoad 훅, rolldown은 Rollup 호환 resolveId/load/transform 훅 제공.
+  위의 JSON/Asset/CSS도 플러그인 없이는 사용자가 직접 해결할 방법이 없으므로, 생태계 확장의 전제 조건.
+  **현황**: 훅 포인트 설계 + Zig 인터페이스 + (이후) N-API JS 바인딩. resolver/graph/emitter 모두 수정 필요.
+
+- **metafile** — `M` | 선행: 없음 | 배치: D
+  빌드 결과의 입출력 파일, 사이즈, import 관계를 JSON으로 출력하는 기능이 없음.
+  esbuild는 `--metafile=meta.json` 으로 번들 구성 분석 데이터 생성. bundle-buddy, esbuild-visualizer 등 시각화 도구의 입력.
+  CI에서 번들 사이즈 회귀 감지, PR 코멘트에 사이즈 변화 표시 등 프로덕션 워크플로에 필수.
+  **현황**: emitter에서 모듈/청크 정보는 이미 가지고 있음. JSON 직렬화 + CLI 옵션만 추가.
+
+- **resolve.alias** — `S` | 선행: 없음 | 배치: A
+  `{ "@": "./src", "~": "./src" }` 같은 경로 별칭을 번들러 레벨에서 설정할 수 없음.
+  현재 tsconfig paths로 일부 대체 가능하지만, tsconfig 없는 JS 프로젝트나 번들러 전용 별칭에는 대응 불가.
+  esbuild는 `--alias:react=preact/compat`, rolldown/rspack은 resolve.alias 객체로 지원.
+  **현황**: resolver.resolveSpecifier() 맨 앞에서 alias map 치환 한 줄이면 됨. CLI 옵션 `--alias:K=V` 파싱 추가.
+
+- **naming 패턴** — `M` | 선행: content hash | 배치: B
+  출력 파일명에 `[name].[hash].js` 같은 패턴을 지정할 수 없음. 현재는 원본 파일명 그대로 출력.
+  프로덕션 배포 시 content hash 기반 캐시 버스팅이 표준. 해시 없으면 CDN 캐시 무효화를 수동으로 해야 함.
+  esbuild는 `--entry-names=[dir]/[name]-[hash]`, `--chunk-names`, `--asset-names` 각각 지정 가능.
+  **현황**: chunkStem()에 모듈 인덱스 기반 해시 있음. 파일 내용 기반 content hash로 교체 + 템플릿 파서 추가 필요.
+
+- **publicPath** — `S` | 선행: 없음 | 배치: A
+  에셋 URL의 기본 경로를 지정할 수 없음. CDN 배포 시 `https://cdn.example.com/assets/` 같은 prefix 필요.
+  file 로더가 생성하는 URL, 동적 import 청크 로딩 경로, CSS `url()` 참조 모두 이 값에 의존.
+  esbuild는 `--public-path=https://cdn.example.com/`, rolldown/rspack은 output.publicPath로 지원.
+  **현황**: BundleOptions에 필드 추가 + emitter의 동적 import 경로 생성부에 prefix 적용. 작은 작업.
+
+#### Important (프로덕션 배포에 자주 필요)
+
+- **banner / footer** — `S` | 선행: 없음 | 배치: A
+  출력 파일 맨 앞/뒤에 텍스트를 삽입할 수 없음. 라이센스 헤더, 빌드 메타정보 주석, shebang(`#!/usr/bin/env node`) 등에 사용.
+  esbuild는 `--banner:js='/* v1.0 */'`, `--footer:js='/* end */'`. CSS에도 별도 지정 가능.
+  CLI 도구 빌드 시 shebang 삽입이 안 되면 `chmod +x` 후에도 직접 실행 불가.
+  **현황**: emitter 최종 출력 앞뒤에 문자열 concat. 가장 단순한 기능.
+
+- **inject** — `M` | 선행: 없음 | 배치: D
+  모든 파일에 특정 모듈을 자동 import하는 기능이 없음.
+  esbuild는 `--inject:./polyfill.js`로 React import 자동 삽입, process 심 주입, 글로벌 폴리필 등에 활용.
+  JSX 자동 런타임(`react/jsx-runtime`) 도입 전에는 매 파일에 `import React` 필요했고, inject로 해결하는 패턴이 여전히 흔함.
+  **현황**: graph 빌드 시 각 모듈의 import_records에 가상 import 삽입. inject 파일 자체도 모듈 그래프에 포함시켜야 함.
+
+- **legal comments** — `M` | 선행: 없음 | 배치: D
+  `@license`, `@preserve`, `/*!` 로 시작하는 라이센스 주석의 처리 방식을 지정할 수 없음.
+  esbuild는 `--legal-comments=eof|linked|external|none` — eof는 파일 끝에 모음, linked는 별도 `.LEGAL.txt` + 참조 주석.
+  오픈소스 라이센스 준수를 위해 프로덕션 빌드에서 라이센스 주석을 보존하거나 별도 파일로 추출하는 것이 법적으로 필요.
+  **현황**: scanner에서 주석 위치는 이미 추적. 특정 패턴 주석을 수집 + codegen/emitter에서 출력 모드 분기 필요.
+
+- **globalName** — `S` | 선행: 없음 | 배치: A
+  IIFE 포맷에서 번들 export를 글로벌 변수에 바인딩하는 이름을 지정할 수 없음.
+  esbuild는 `--global-name=MyLib` → `var MyLib = (() => { ... })()`. 네임스페이스도 가능: `--global-name=MyApp.Utils`.
+  `<script>` 태그로 로딩하는 라이브러리 배포(UMD/IIFE) 시 필수. 없으면 export에 접근 불가.
+  **현황**: emitter의 IIFE 래핑 코드에서 `var <name> =` prefix만 추가. 네임스페이스(`a.b.c`)는 중첩 할당 생성.
+
+- **keepNames** — `M` | 선행: 없음 | 배치: D
+  minify 시 함수/클래스의 `.name` 프로퍼티가 축약되는 것을 방지할 수 없음.
+  esbuild는 `--keep-names` 플래그로 `Object.defineProperty(fn, "name", { value: "originalName" })` 자동 삽입.
+  React DevTools, 에러 스택 트레이스, `Function.name` 기반 로직(직렬화, DI 컨테이너 등)이 깨지는 것을 방지.
+  **현황**: mangler에서 이름 축약 후 원본 이름을 보존하는 AST 변환 추가. transformer에서 defineProperty 호출 삽입 필요.
+
+- **out-extension** — `S` | 선행: 없음 | 배치: A
+  출력 파일의 확장자를 변경할 수 없음 (`.js` 고정).
+  esbuild는 `--out-extension:.js=.mjs` → ESM 출력을 `.mjs`로, CJS를 `.cjs`로 분리 가능.
+  Node.js의 `"type": "module"` 설정 없이 ESM/CJS 듀얼 패키지를 배포하려면 확장자 분리가 필수.
+  **현황**: emitter의 출력 파일명 결정부에서 확장자 치환 한 줄. CLI 옵션 파싱만 추가.
+
+- **source-root / sources-content** — `S` | 선행: 없음 | 배치: A
+  소스맵에서 소스 파일의 루트 경로(`sourceRoot`)나 원본 내용 포함 여부(`sourcesContent`)를 제어할 수 없음.
+  esbuild는 `--source-root=https://raw.githubusercontent.com/...`, `--sources-content=false` (소스맵 사이즈 감소).
+  모노레포에서 소스맵 경로가 깨지거나, 소스 코드 유출을 방지하면서 디버깅은 유지하고 싶을 때 필요.
+  **현황**: sourcemap.zig의 JSON 직렬화에 sourceRoot 필드 추가 + sourcesContent 조건부 제외. 옵션 전달만 하면 됨.
+
+- **엔진 타겟** (chrome, firefox, safari, node 버전) — `XL` | 선행: 없음 | 배치: 단독
+  현재 `--target=es2020` 같은 ES 스펙 버전만 지원. 특정 브라우저/Node 버전 지정 불가.
+  esbuild는 `--target=chrome90,firefox88,safari14` → 해당 엔진이 지원하지 않는 문법만 다운레벨링.
+  ES 버전 기반은 보수적이라 불필요한 다운레벨링이 발생. 엔진 버전은 caniuse 데이터 기반으로 정밀 제어 가능.
+  **현황**: caniuse 호환 데이터 테이블(엔진 버전 → ES 기능 매핑) 구축 필요. esbuild는 ~2000줄 테이블. 데이터 수집이 핵심 작업.
+
+- **log-level** — `S` | 선행: 없음 | 배치: A
+  빌드 시 출력되는 경고/정보 메시지의 수준을 제어할 수 없음.
+  esbuild는 `--log-level=silent|error|warning|info|debug|verbose`. CI에서는 error만, 디버깅 시 verbose.
+  대규모 프로젝트에서 경고가 수백 개 나오면 중요한 에러가 묻히므로, 필터링 옵션이 필요.
+  **현황**: diagnostic.zig에 레벨 enum 추가 + 출력 전 필터링. CLI 옵션 파싱만 추가.
+
+#### Nice to Have
+
+- **analyze** — `S` | 선행: metafile | 배치: D
+  번들 사이즈를 모듈/청크별로 분석하는 리포트 기능이 없음.
+  esbuild는 `--analyze` 플래그로 터미널에 사이즈 트리 출력. metafile + 시각화 도구(bundle-visualizer)로 더 상세 분석 가능.
+  "어떤 모듈이 번들을 크게 만드는가"를 파악하는 데 필수. 없으면 수동으로 external하면서 이진 탐색해야 함.
+  **현황**: metafile 데이터를 트리 형태로 포맷팅하여 stdout 출력. metafile 구현 후 부산물.
+
+- **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
+  객체 프로퍼티 이름을 축약하는 기능이 없음 (`{ longPropertyName: 1 }` → `{ a: 1 }`).
+  esbuild는 `--mangle-props=_$` (접미사 패턴), `--reserve-props`, `--mangle-cache` (빌드 간 일관성) 지원.
+  minify-identifiers보다 훨씬 공격적인 압축. 내부 API에만 적용해야 하므로 패턴 필터가 중요.
+  **현황**: cross-module 프로퍼티 추적 + 패턴 매칭 + 캐시 파일 I/O. mangler.zig 확장이지만 복잡도 높음.
+
+- **import.meta.glob** — `M` | 선행: 없음 (플러그인 API 없이 builtin 가능) | 배치: 단독
+  `import.meta.glob('./pages/*.tsx')` 같은 파일시스템 글로브 패턴 import가 없음.
+  Vite가 도입한 기능으로, rolldown/rspack도 지원. 빌드 타임에 매칭 파일들을 lazy import 객체로 변환.
+  라우팅 자동 생성, i18n 파일 일괄 로딩 등 DX 편의 기능. 없어도 수동 import로 대체 가능.
+  **현황**: transformer에서 import.meta.glob 호출 감지 → 파일시스템 글로브 → 동적 import 객체로 AST 치환.
+
+- **Virtual modules** — `M` | 선행: 플러그인 API | 배치: 플러그인과 함께
+  플러그인에서 파일시스템에 없는 가상 모듈을 생성할 수 없음 (`import env from 'virtual:env'`).
+  esbuild는 onResolve + onLoad 훅으로 구현, rolldown은 `\0` prefix resolveId 컨벤션.
+  환경변수 주입, 빌드타임 코드 생성, 프레임워크 매직 모듈(Vite의 `import.meta.env` 등)의 기반.
+  **현황**: 플러그인 API의 onResolve/onLoad가 있으면 자연스럽게 지원됨. 플러그인 없이는 resolver에 가상 모듈 맵 하드코딩 필요.
+
+- **charset=utf8** — `S` | 선행: 없음 | 배치: A
+  비ASCII 문자를 이스케이프하지 않고 UTF-8 그대로 출력하는 옵션이 없음.
+  현재 `--ascii-only`로 이스케이프는 가능하지만, 반대 방향(이스케이프 비활성화) 명시 옵션이 없음.
+  esbuild는 `--charset=utf8`으로 한글/일본어 등이 `\uXXXX`로 변환되지 않게 보장.
+  **현황**: codegen의 ascii_only 플래그 반전 로직. CLI 옵션 파싱만 추가하면 끝.
+
+- **preserve-symlinks** — `S` | 선행: 없음 | 배치: A
+  심볼릭 링크를 따라가지 않고 링크 자체의 경로로 해석하는 옵션이 없음.
+  Node.js의 `--preserve-symlinks`와 동일. esbuild/rolldown/rspack 모두 지원.
+  모노레포에서 `node_modules/.pnpm` 심링크 구조나, `npm link`로 로컬 패키지 개발 시 resolve 경로가 달라지는 문제 방지.
+  **현황**: resolver.makeResult()에서 realpathAlloc 호출을 조건부 스킵하면 끝. 1줄 분기.
+
+#### 배치 그룹 & 구현 순서
+
+```
+배치 A (반나절, 한 PR로 가능) ─────────────────────────────────
+  JSON 로더 강화, resolve.alias, publicPath, banner/footer,
+  globalName, out-extension, source-root/sources-content,
+  log-level, charset, preserve-symlinks
+  → 전부 옵션 추가 + 1~2줄 로직. 독립적이라 한번에 가능.
+
+배치 B (1~2일) ─────────────────────────────────────────────────
+  content hash (파일 내용 기반) + naming 패턴 ([name].[hash])
+  → chunkStem() 교체 + 템플릿 파서. Asset 로더의 선행 조건.
+
+배치 C (3~5일, 배치 B 후) ──────────────────────────────────────
+  Asset 로더 (file/dataurl/text/binary/copy)
+  + emitter 출력 다중화 (JS 외 파일 출력)
+  → content hash + naming 패턴 위에 구축.
+
+배치 D (2~3일, 독립) ───────────────────────────────────────────
+  metafile + analyze + inject + legal comments + keepNames
+  → 각각 M 난이도지만 서로 독립. 2~3개씩 묶어서 PR 가능.
+
+단독 XL ────────────────────────────────────────────────────────
+  CSS 번들링 (2~3주) — CSS 파서 새로 작성
+  플러그인 API (2~3주) — 파이프라인 훅 설계 + N-API
+  엔진 타겟 (1주+) — caniuse 데이터 테이블 구축
+  mangleProps (1주+) — cross-module 프로퍼티 추적
+```
+
+#### 기술부채 & 구조적 제약
+
+현재 번들러는 **JS 전용으로 설계**되어 있음. 배치 A~D는 이 구조에 영향 없이 안전하게 구현 가능.
+CSS 번들링/Asset 로더/플러그인 API는 아래 JS 전용 경계를 넘어야 함.
+
+**배치별 기술부채 영향:**
+| 작업 | JS 전용 구조에 부딪히나? | 새 부채 생성 위험? |
+|------|----------------------|-----------------|
+| 배치 A (옵션 10개) | 아니오 — 옵션 추가 + 출력 문자열 수준 | 없음 |
+| 배치 B (content hash) | 아니오 — chunkStem() 깨끗한 대체 | 없음 |
+| 배치 C (Asset 로더) | **예** — emitter/linker 분기 필요 | 접근 방식에 따라 다름 (아래 참고) |
+| 배치 D (metafile 등) | 아니오 — 각각 독립적 | 없음 |
+| CSS 번들링 | **예** — 구조 전면 수정 | CSS 파서 자체가 새 코드라 부채 아님 |
+| 플러그인 API | **예** — 훅 포인트 삽입 | 설계만 잘하면 없음 |
+
+**JS 전용 구조 — 수정이 필요한 계층 (배치 C/CSS/플러그인 시):**
+| 계층 | 파일 | 현재 상태 | 필요한 변경 |
+|------|------|----------|-----------|
+| Module 구조체 | module.zig | `semantic`, `import_bindings`, `export_bindings`가 JS 전용 | CSS/asset 모듈 진입 시 null → 접근 코드마다 방어 체크, 또는 `asset_output` 필드 추가 |
+| Linker | linker.zig | `export_map`이 JS 심볼 기반 | CSS/asset 모듈은 link() 시 스킵하거나 별도 경로 |
+| Tree Shaker | tree_shaker.zig | `ast` 존재 + `export_bindings` 의존 | CSS/asset은 ast=null → side_effects=true 고정, 분석 스킵 |
+| Emitter 필터 | emitter.zig | `is_js or is_json`만 sorted에 포함 | CSS/asset 포함으로 필터 확장 + 타입별 emit 분기 |
+| Chunk | chunk.zig | "하나의 JS 파일" 가정, ChunkKind=entry/common만 | CSS 별도 청크 타입 추가 |
+| BundleResult | bundler.zig | JS 출력만 반환 | `css_outputs`, `asset_outputs` 추가 |
+
+**⚠️ Asset 로더 구현 시 반드시 피해야 할 접근:**
+```
+❌ asset을 가짜 JS 모듈로 위장 (fake AST + exports_kind=.esm)
+   → linker/tree-shaker/codegen이 "JS인 척"하는 모듈로 처리
+   → 나중에 CSS 번들링할 때 이 가정을 다시 뜯어야 하는 부채 발생
+
+✅ 타입별 분기를 명시적으로 (asset_output 필드 + linker/tree-shaker 스킵)
+   → CSS 추가 시 같은 패턴으로 확장 가능
+```
+
+**결론**: 배치 A~D를 먼저 해도 CSS/플러그인이 더 어려워지지 않음. JS 전용 경계는 어차피 CSS/Asset 구현 시점에 한 번 넘어야 하는 것이고, 다른 기능이 이 경계를 두껍게 만들지 않음.
 
 ### 성능 최적화 현황
 | 최적화 | 상태 | 효과 |

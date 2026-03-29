@@ -1,6 +1,7 @@
 const std = @import("std");
 const emitter = @import("emitter.zig");
 const emit = emitter.emit;
+const EmitOptions = emitter.EmitOptions;
 const appendRuntimeHelpers = emitter.appendRuntimeHelpers;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
@@ -14,7 +15,7 @@ fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
     return .{ .graph = graph, .cache = cache };
@@ -104,7 +105,7 @@ test "emitter: CJS format" {
 }
 
 test "emitter: empty graph" {
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -178,7 +179,7 @@ fn buildGraphMultiEntry(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, 
         try entries.append(allocator, try std.fs.path.resolve(allocator, &.{ dp, name }));
     }
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(entries.items);
     return .{ .graph = graph, .cache = cache };
@@ -622,4 +623,207 @@ test "appendRuntimeHelpers: generator runtime is valid JS" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "Symbol.iterator") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "function verb") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "function step") != null);
+}
+
+// ============================================================
+// banner/footer Tests
+// ============================================================
+
+test "banner/footer — basic ESM" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .banner_js = "/* banner */",
+        .footer_js = "/* footer */",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // banner가 맨 앞에 위치
+    try std.testing.expect(std.mem.startsWith(u8, output, "/* banner */\n"));
+    // footer가 맨 뒤에 위치
+    try std.testing.expect(std.mem.endsWith(u8, output, "/* footer */\n"));
+}
+
+test "banner/footer — IIFE format" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .banner_js = "// license header",
+        .footer_js = "// end",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // banner → IIFE prologue → code → IIFE epilogue → footer
+    try std.testing.expect(std.mem.startsWith(u8, output, "// license header\n(function() {\n"));
+    try std.testing.expect(std.mem.endsWith(u8, output, "})();\n// end\n"));
+}
+
+test "banner/footer — CJS format" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .cjs,
+        .banner_js = "/* CJS banner */",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // banner가 "use strict" 앞에 위치
+    try std.testing.expect(std.mem.startsWith(u8, output, "/* CJS banner */\n\"use strict\";\n"));
+}
+
+// ============================================================
+// globalName Tests
+// ============================================================
+
+test "globalName — IIFE wrapping" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .global_name = "MyLib",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // prologue: "var MyLib = (function() {\n"
+    try std.testing.expect(std.mem.startsWith(u8, output, "var MyLib = (function() {\n"));
+    // epilogue: "})();\n"
+    try std.testing.expect(std.mem.endsWith(u8, output, "})();\n"));
+}
+
+test "globalName — dotted name warning" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .global_name = "MyApp.Utils",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // 경고 주석이 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, output, "[ZTS WARNING] Dotted globalName") != null);
+    // dotted name이면 일반 IIFE로 폴백
+    try std.testing.expect(std.mem.indexOf(u8, output, "(function() {\n") != null);
+}
+
+test "globalName — ignored for non-IIFE" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .esm,
+        .global_name = "MyLib",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // ESM에서는 globalName이 무시됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "var MyLib") == null);
+}
+
+test "globalName — with banner/footer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .global_name = "MyLib",
+        .banner_js = "/* license */",
+        .footer_js = "/* end */",
+    }, null);
+    defer std.testing.allocator.free(output);
+
+    // banner → globalName prologue → code → epilogue → footer
+    try std.testing.expect(std.mem.startsWith(u8, output, "/* license */\nvar MyLib = (function() {\n"));
+    try std.testing.expect(std.mem.endsWith(u8, output, "})();\n/* end */\n"));
+}
+
+// ============================================================
+// JSON Module Tests
+// ============================================================
+
+test "JSON module — ESM format" {
+    // ESM 포맷에서 JSON이 var json_X = {...}; 형태로 출력되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import data from './data.json';\nconsole.log(data);");
+    try writeFile(tmp.dir, "data.json",
+        \\{"key":"value","num":42}
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .esm }, null);
+    defer std.testing.allocator.free(output);
+
+    // ESM: JSON 모듈이 var json_data = {...}; 형태로 출력
+    try std.testing.expect(std.mem.indexOf(u8, output, "var json_data") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"key\":\"value\"") != null);
+    // JSON 모듈 자체는 __commonJS 래핑을 사용하지 않음 (var json_data = ... 사용).
+    // 단, linker 없이는 JS 모듈의 CJS require 호출이 남아 CJS 런타임이 주입될 수 있으므로
+    // 런타임 주입 여부는 검증하지 않음. JSON 변수 출력 형태만 확인.
+    try std.testing.expect(std.mem.indexOf(u8, output, "var json_data =") != null);
+}
+
+test "JSON module — CJS format" {
+    // CJS 포맷에서 기존 __commonJS 래핑이 유지되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import data from './data.json';\nconsole.log(data);");
+    try writeFile(tmp.dir, "data.json",
+        \\{"key":"value"}
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
+    defer std.testing.allocator.free(output);
+
+    // CJS: __commonJS 래핑 사용
+    try std.testing.expect(std.mem.indexOf(u8, output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "require_data") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "module.exports=") != null);
 }

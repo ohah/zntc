@@ -58,6 +58,40 @@ pub const BundleOptions = struct {
     conditions: []const []const u8 = &.{},
     /// 파이프라인 단계별 타이밍 출력 (--timing)
     timing: bool = false,
+    // --- Batch A 옵션 ---
+    /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
+    preserve_symlinks: bool = false,
+    /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
+    alias: []const types.AliasEntry = &.{},
+    /// 에셋/청크 URL prefix (--public-path). 동적 import 경로에 적용.
+    public_path: []const u8 = "",
+    /// 번들 출력 앞에 삽입할 텍스트 (--banner:js)
+    banner_js: ?[]const u8 = null,
+    /// 번들 출력 뒤에 삽입할 텍스트 (--footer:js)
+    footer_js: ?[]const u8 = null,
+    /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명 (--global-name)
+    global_name: ?[]const u8 = null,
+    /// 출력 파일 확장자 오버라이드 (--out-extension:.js=.mjs)
+    out_extension_js: ?[]const u8 = null,
+    /// 소스맵 sourceRoot 필드 (--source-root)
+    source_root: ?[]const u8 = null,
+    /// 소스맵에 sourcesContent 포함 여부 (--sources-content=false로 제외)
+    sources_content: bool = true,
+    /// 로그 출력 레벨 (--log-level)
+    log_level: LogLevel = .info,
+    /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
+    charset_utf8: bool = false,
+
+    pub const AliasEntry = types.AliasEntry;
+
+    pub const LogLevel = enum {
+        silent,
+        @"error",
+        warning,
+        info,
+        debug,
+        verbose,
+    };
 };
 
 pub const BundleResult = struct {
@@ -152,12 +186,34 @@ pub const Bundler = struct {
         return .{
             .allocator = allocator,
             .options = options,
-            .resolve_cache = ResolveCache.init(allocator, options.platform, options.external, options.conditions),
+            .resolve_cache = ResolveCache.init(allocator, options.platform, options.external, options.conditions, options.preserve_symlinks, options.alias),
         };
     }
 
     pub fn deinit(self: *Bundler) void {
         self.resolve_cache.deinit();
+    }
+
+    /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
+    fn makeEmitOptions(self: *const Bundler) EmitOptions {
+        return .{
+            .format = self.options.format,
+            .minify_whitespace = self.options.minify_whitespace,
+            .minify_syntax = self.options.minify_syntax,
+            .define = self.options.define,
+            .platform = self.options.platform,
+            .experimental_decorators = self.options.experimental_decorators,
+            .use_define_for_class_fields = self.options.use_define_for_class_fields,
+            .target = self.options.target,
+            .public_path = self.options.public_path,
+            .banner_js = self.options.banner_js,
+            .footer_js = self.options.footer_js,
+            .global_name = self.options.global_name,
+            .out_extension_js = self.options.out_extension_js,
+            .source_root = self.options.source_root,
+            .sources_content = self.options.sources_content,
+            .charset_utf8 = self.options.charset_utf8,
+        };
     }
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
@@ -231,22 +287,15 @@ pub const Bundler = struct {
 
         if (self.options.dev_mode) {
             // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes + 소스맵 동시 생성
+            var dev_emit_opts = self.makeEmitOptions();
+            dev_emit_opts.sourcemap = true; // dev mode에서는 항상 소스맵 생성
+            dev_emit_opts.dev_mode = true;
+            dev_emit_opts.root_dir = self.options.root_dir;
+            dev_emit_opts.react_refresh = self.options.react_refresh;
             const dev_result = try emitter.emitDevBundle(
                 self.allocator,
                 &graph,
-                .{
-                    .format = self.options.format,
-                    .minify_whitespace = self.options.minify_whitespace,
-                    .sourcemap = true, // dev mode에서는 항상 소스맵 생성
-                    .dev_mode = true,
-                    .root_dir = self.options.root_dir,
-                    .react_refresh = self.options.react_refresh,
-                    .define = self.options.define,
-                    .platform = self.options.platform,
-                    .experimental_decorators = self.options.experimental_decorators,
-                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
-                    .target = self.options.target,
-                },
+                dev_emit_opts,
                 if (linker) |*l| l else null,
             );
             output = dev_result.output;
@@ -268,16 +317,7 @@ pub const Bundler = struct {
                 self.allocator,
                 graph.modules.items,
                 &chunk_graph,
-                .{
-                    .format = self.options.format,
-                    .minify_whitespace = self.options.minify_whitespace,
-                    .minify_syntax = self.options.minify_syntax,
-                    .define = self.options.define,
-                    .platform = self.options.platform,
-                    .experimental_decorators = self.options.experimental_decorators,
-                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
-                    .target = self.options.target,
-                },
+                self.makeEmitOptions(),
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
@@ -295,16 +335,7 @@ pub const Bundler = struct {
             output = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                .{
-                    .format = self.options.format,
-                    .minify_whitespace = self.options.minify_whitespace,
-                    .minify_syntax = self.options.minify_syntax,
-                    .define = self.options.define,
-                    .platform = self.options.platform,
-                    .experimental_decorators = self.options.experimental_decorators,
-                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
-                    .target = self.options.target,
-                },
+                self.makeEmitOptions(),
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );
