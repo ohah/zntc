@@ -9,6 +9,7 @@ const Codegen = lib.codegen.Codegen;
 const TsConfig = lib.config.TsConfig;
 const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
+const emitter = lib.bundler.emitter;
 
 /// 트랜스파일 옵션을 담는 구조체.
 /// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
@@ -178,10 +179,26 @@ fn transpileFile(
         };
         cg.line_offsets = scanner.line_offsets.items;
     }
-    const output = cg.generate(root) catch |err| {
+    const raw_output = cg.generate(root) catch |err| {
         try stderr.print("zts: codegen error in '{s}': {}\n", .{ file_path, err });
         return;
     };
+
+    // 런타임 헬퍼 주입: transformer가 사용한 헬퍼를 코드 앞에 prepend
+    const rh = transformer.runtime_helpers;
+    const needs_helpers = rh.extends or rh.generator or rh.rest or rh.async_helper;
+    const output = if (needs_helpers) blk: {
+        var helper_buf: std.ArrayList(u8) = .empty;
+        emitter.appendRuntimeHelpers(&helper_buf, arena_alloc, rh, options.minify_whitespace) catch |err| {
+            try stderr.print("zts: helper injection error: {}\n", .{err});
+            break :blk raw_output;
+        };
+        helper_buf.appendSlice(arena_alloc, raw_output) catch |err| {
+            try stderr.print("zts: helper concat error: {}\n", .{err});
+            break :blk raw_output;
+        };
+        break :blk helper_buf.items;
+    } else raw_output;
 
     // 출력 — output은 Arena 메모리의 slice이므로 arena.deinit() 전에 완료해야 함
     if (output_path) |out_path| {

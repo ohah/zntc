@@ -76,6 +76,21 @@ const ASYNC_RUNTIME =
 ;
 const ASYNC_RUNTIME_MIN = "var __async=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
 
+/// __extends 런타임 헬퍼: class 상속 prototype chain (ES2015).
+/// TypeScript __extends 호환.
+const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
+const EXTENDS_RUNTIME_MIN = "var __extends=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
+
+/// __generator 런타임 헬퍼: generator 상태 머신 (ES2015).
+/// TypeScript __generator 호환. yield/return/throw를 label 기반 switch로 처리.
+const GENERATOR_RUNTIME = "var __generator = function(body) {\n  var _ = { label: 0, sent: function() { return t[1]; }, trys: [], ops: [] }, f, y, t, g;\n  return g = { next: verb(0), \"throw\": verb(1), \"return\": verb(2) }, g[Symbol.iterator] = function() { return this; }, g;\n  function verb(n) { return function(v) { return step([n, v]); }; }\n  function step(op) {\n    if (f) throw new TypeError(\"Generator is already executing.\");\n    while (g && (g = 0, op[0] && (_ = 0)), _) try {\n      if (f = 1, y && (t = op[0] & 2 ? y[\"return\"] : op[0] ? y[\"throw\"] || ((t = y[\"return\"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;\n      if (y = 0, t) op = [op[0] & 2, t.value];\n      switch (op[0]) {\n        case 0: case 1: t = op; break;\n        case 4: _.label++; return { value: op[1], done: false };\n        case 5: _.label++; y = op[1]; op = [0]; continue;\n        case 7: op = _.ops.pop(); _.trys.pop(); continue;\n        default:\n          if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }\n          if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }\n          if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }\n          if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }\n          if (t[2]) _.ops.pop();\n          _.trys.pop(); continue;\n      }\n      op = body.call(null, _);\n    } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }\n    if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };\n  }\n};\n";
+const GENERATOR_RUNTIME_MIN = "var __generator=function(body){var _={label:0,sent:function(){return t[1]},trys:[],ops:[]},f,y,t,g;return g={next:verb(0),\"throw\":verb(1),\"return\":verb(2)},g[Symbol.iterator]=function(){return this},g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(null,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}};";
+
+/// __rest 런타임 헬퍼: object destructuring rest (ES2018).
+/// TypeScript __rest 호환. exclude 배열에 없는 own 프로퍼티만 복사.
+const REST_RUNTIME = "var __rest = function(s, e) {\n  var t = {};\n  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];\n  return t;\n};\n";
+const REST_RUNTIME_MIN = "var __rest=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];return t};";
+
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///
@@ -157,6 +172,7 @@ const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Ast = @import("../parser/ast.zig").Ast;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
+const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
@@ -308,11 +324,18 @@ pub fn emitWithTreeShaking(
     // import 구문이 없으면 Node가 CJS로 파싱하여 require()가 동작한다.
     // (createRequire shim은 ESM 파싱을 유발하여 var 재선언 에러를 일으킴)
 
+    // 런타임 헬퍼 수집: 모듈별 transform에서 실제 사용된 헬퍼만 추적
+    var collected_helpers: RuntimeHelpers = .{};
+
     // 엔트리 모듈 인덱스 (final exports용)
     const entry_idx: ?u32 = if (sorted.items.len > 0)
         @intFromEnum(sorted.items[sorted.items.len - 1].index)
     else
         null;
+
+    // 모듈 코드를 별도 버퍼에 수집 (런타임 헬퍼를 코드 앞에 주입하기 위해)
+    var module_output: std.ArrayList(u8) = .empty;
+    defer module_output.deinit(allocator);
 
     for (sorted.items) |m| {
         const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
@@ -417,21 +440,35 @@ pub fn emitWithTreeShaking(
             break :blk names_buf.items;
         } else null;
 
-        const code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker) orelse continue;
+        const code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &collected_helpers) orelse continue;
         defer allocator.free(code);
 
         if (!options.minify_whitespace) {
             // 모듈 경계 주석 (디버깅용)
-            try output.appendSlice(allocator, "// --- ");
-            try output.appendSlice(allocator, std.fs.path.basename(m.path));
-            try output.appendSlice(allocator, " ---\n");
+            try module_output.appendSlice(allocator, "// --- ");
+            try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
+            try module_output.appendSlice(allocator, " ---\n");
         }
 
-        try output.appendSlice(allocator, code);
+        try module_output.appendSlice(allocator, code);
         if (!options.minify_whitespace) {
-            try output.append(allocator, '\n');
+            try module_output.append(allocator, '\n');
         }
     }
+
+    // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
+    if (collected_helpers.extends) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
+    }
+    if (collected_helpers.generator) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
+    }
+    if (collected_helpers.rest) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) REST_RUNTIME_MIN else REST_RUNTIME);
+    }
+
+    // 모듈 코드 합류
+    try output.appendSlice(allocator, module_output.items);
 
     // 포맷별 epilogue
     switch (options.format) {
@@ -1007,7 +1044,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -1211,6 +1248,7 @@ pub fn emitModule(
     is_entry: bool,
     used_export_names: ?[]const []const u8,
     shaker: ?*const TreeShaker,
+    helpers_out: ?*RuntimeHelpers,
 ) !?[]const u8 {
     // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
     if (module.module_type == .json) {
@@ -1243,6 +1281,17 @@ pub fn emitModule(
         transformer.old_symbol_ids = sem.symbol_ids;
     }
     const root = try transformer.transform();
+
+    // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
+    if (helpers_out) |h| {
+        const rh = transformer.runtime_helpers;
+        if (rh.extends) h.extends = true;
+        if (rh.generator) h.generator = true;
+        if (rh.rest) h.rest = true;
+        if (rh.async_helper) h.async_helper = true;
+        if (rh.spread_array) h.spread_array = true;
+        if (rh.values) h.values = true;
+    }
 
     // Linker 메타데이터 생성 (있으면) — new_ast 기준으로 구축
     var metadata: ?LinkingMetadata = null;
@@ -2120,4 +2169,85 @@ test "CodeSplitting: static import not rewritten" {
     // import('./lib.js') 같은 동적 import 경로가 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import('./") == null);
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import(\"./") == null);
+}
+
+/// 런타임 헬퍼 문자열을 ArrayList에 주입한다.
+/// standalone 트랜스파일(main.zig)에서도 사용할 수 있도록 pub으로 노출.
+pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, helpers: RuntimeHelpers, minify: bool) !void {
+    if (helpers.extends) {
+        try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
+    }
+    if (helpers.generator) {
+        try buf.appendSlice(allocator, if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
+    }
+    if (helpers.rest) {
+        try buf.appendSlice(allocator, if (minify) REST_RUNTIME_MIN else REST_RUNTIME);
+    }
+    if (helpers.async_helper) {
+        try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
+    }
+}
+
+// ================================================================
+// 런타임 헬퍼 주입 유닛 테스트
+// ================================================================
+
+test "appendRuntimeHelpers: no helpers → empty" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{}, false);
+    try std.testing.expectEqual(@as(usize, 0), buf.items.len);
+}
+
+test "appendRuntimeHelpers: extends only" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true }, false);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __extends") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "__generator") == null);
+}
+
+test "appendRuntimeHelpers: generator only" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "__extends") == null);
+}
+
+test "appendRuntimeHelpers: rest only" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .rest = true }, false);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __rest") != null);
+}
+
+test "appendRuntimeHelpers: multiple helpers" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true, .generator = true, .rest = true }, false);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __extends") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __rest") != null);
+}
+
+test "appendRuntimeHelpers: minified" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, true);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator=function") != null);
+    // minified에는 줄바꿈이 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\n") == null);
+}
+
+test "appendRuntimeHelpers: generator runtime is valid JS" {
+    // __generator가 올바른 JS인지 기본 구조 검증
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false);
+    // 핵심 구조 요소 존재 확인
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "label: 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "function verb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "function step") != null);
 }

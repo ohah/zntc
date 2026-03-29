@@ -248,7 +248,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
-  - ES2015 generator: try/catch/finally + yield ✅, __generator 런타임 헬퍼 주입은 미구현 (tslib 사용)
+  - 런타임 헬퍼 자동 주입 ✅ (__extends, __generator, __rest, __async — tslib 불필요)
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **프로파일링 → SIMD → 미니파이어** — 번들러 완료 후
 - **WASM 공개 AST API** — AST 안정화 후
