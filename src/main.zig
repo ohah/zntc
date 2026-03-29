@@ -288,8 +288,8 @@ fn transpileFile(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // 타이밍 측정용 타이머
-    var timer = std.time.Timer.start() catch null;
+    // 타이밍 측정용 타이머 (--timing일 때만 시작)
+    var timer: ?std.time.Timer = if (options.timing) std.time.Timer.start() catch null else null;
     var t_read: u64 = 0;
     var t_scan: u64 = 0;
     var t_parse: u64 = 0;
@@ -313,9 +313,11 @@ fn transpileFile(
     if (options.timing) {
         if (timer) |*t| t.reset();
         var scan_only = try Scanner.init(arena_alloc, source);
+        // Parser.applyExtension()과 동일한 확장자 목록으로 is_module 설정.
         const ext = std.fs.path.extension(file_path);
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs") or
-            std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx"))
+            std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".cts"))
         {
             scan_only.is_module = true;
         }
@@ -623,12 +625,13 @@ pub fn main() !void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
     // ReleaseFast: libc malloc 사용 (내부 메모리 풀링으로 page fault 최소화).
     // Debug: GPA 사용 (leak detection, double-free 감지).
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = if (@import("builtin").mode == .Debug)
-        gpa.allocator()
-    else
-        std.heap.c_allocator;
+    const is_debug = @import("builtin").mode == .Debug;
+    var gpa: if (is_debug) std.heap.GeneralPurposeAllocator(.{}) else void =
+        if (is_debug) .{} else {};
+    defer if (is_debug) {
+        _ = gpa.deinit();
+    };
+    const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else std.heap.c_allocator;
 
     // CLI 인자 파싱
     const args = try std.process.argsAlloc(allocator);

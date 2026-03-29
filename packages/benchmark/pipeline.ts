@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -71,16 +71,10 @@ function generateReact(lines: number): string {
   const count = Math.max(1, Math.floor(lines / 5));
   for (let i = 0; i < count; i++) {
     parts.push(`interface Props${i} { name${i}: string; count${i}: number; }`);
-    parts.push(
-      `const Comp${i}: React.FC<Props${i}> = ({ name${i}, count${i} }) => {`,
-    );
+    parts.push(`const Comp${i}: React.FC<Props${i}> = ({ name${i}, count${i} }) => {`);
     parts.push(`  const [s${i}, setS${i}] = useState(count${i});`);
-    parts.push(
-      `  const handler${i} = useCallback(() => setS${i}(s${i} + 1), [s${i}]);`,
-    );
-    parts.push(
-      `  return createElement("div", { onClick: handler${i} }, name${i}, String(s${i}));`,
-    );
+    parts.push(`  const handler${i} = useCallback(() => setS${i}(s${i} + 1), [s${i}]);`);
+    parts.push(`  return createElement("div", { onClick: handler${i} }, name${i}, String(s${i}));`);
     parts.push(`};`);
   }
   return parts.join("\n");
@@ -140,7 +134,13 @@ function median(values: number[]): number {
 
 function medianTiming(timings: PipelineTiming[]): PipelineTiming {
   const keys: (keyof PipelineTiming)[] = [
-    "read", "scan", "parse", "semantic", "transform", "codegen", "total",
+    "read",
+    "scan",
+    "parse",
+    "semantic",
+    "transform",
+    "codegen",
+    "total",
   ];
   const result: Record<string, number> = {};
   for (const key of keys) {
@@ -218,7 +218,7 @@ function fmt(ms: number): string {
 
 function fmtMBs(sizeKB: number, ms: number): string {
   if (ms <= 0) return "-";
-  const mbPerSec = (sizeKB / 1024) / (ms / 1000);
+  const mbPerSec = sizeKB / 1024 / (ms / 1000);
   return Math.round(mbPerSec).toString();
 }
 
@@ -338,16 +338,11 @@ console.log("");
 
 console.log("===== ZTS vs esbuild (wall time, ms, median) =====\n");
 
-console.log(
-  "| Pattern | Lines | Size (KB) | ZTS (ms) | esbuild (ms) | ratio |",
-);
-console.log(
-  "|---------|------:|----------:|---------:|-------------:|------:|",
-);
+console.log("| Pattern | Lines | Size (KB) | ZTS (ms) | esbuild (ms) | ratio |");
+console.log("|---------|------:|----------:|---------:|-------------:|------:|");
 
 for (const r of wallTimeResults) {
-  const ratio =
-    r.esbuildMs > 0 ? `${(r.ztsMs / r.esbuildMs).toFixed(2)}x` : "-";
+  const ratio = r.esbuildMs > 0 ? `${(r.ztsMs / r.esbuildMs).toFixed(2)}x` : "-";
   const esStr = r.esbuildMs > 0 ? fmt(r.esbuildMs) : "N/A";
   console.log(
     `| ${r.pattern} | ${r.lines.toLocaleString()} | ${r.sizeKB} | ` +

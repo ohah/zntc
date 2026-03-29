@@ -102,16 +102,22 @@ pub const ModuleGraph = struct {
             _ = try self.addModule(entry_path);
         }
 
+        // 스레드 풀: build() 전체에서 1회 생성, 모든 배치에서 재사용.
+        var pool: std.Thread.Pool = undefined;
+        const pool_ok = if (pool.init(.{ .allocator = self.allocator })) |_| true else |_| false;
+        defer if (pool_ok) pool.deinit();
+
         var parse_start: usize = 0;
         while (parse_start < self.modules.items.len) {
             const parse_end = self.modules.items.len;
             const batch_size = parse_end - parse_start;
 
-            // 병렬 파싱 (Thread.spawn + join)
-            if (batch_size >= 2) {
-                try self.parseModulesBatch(parse_start, parse_end);
+            if (batch_size >= 2 and pool_ok) {
+                self.parseModulesBatchWithPool(&pool, parse_start, parse_end);
             } else {
-                self.parseModule(@enumFromInt(@as(u32, @intCast(parse_start))));
+                for (parse_start..parse_end) |j| {
+                    self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
+                }
             }
 
             // 파싱 완료 즉시 finalize + resolve (새 모듈이 modules에 추가됨)
@@ -199,29 +205,13 @@ pub const ModuleGraph = struct {
     /// 여러 모듈을 병렬 파싱한다 (Thread.spawn per module).
     /// 각 모듈의 파싱은 독립적 (파일별 Arena, 전역 상태 없음).
     /// import_records 추출은 graph allocator를 사용하므로 mutex로 보호.
-    fn parseModulesBatch(self: *ModuleGraph, start: usize, end: usize) !void {
-        const count = end - start;
-        if (count == 0) return;
-
-        // 스레드 풀: CPU 코어 수만큼 워커 스레드 생성 (스레드 생성 오버헤드 최소화).
-        // 모듈당 스레드 1개 대신 N개 워커가 작업 큐에서 모듈을 가져가 파싱한다.
-        var pool: std.Thread.Pool = undefined;
-        pool.init(.{ .allocator = self.allocator }) catch {
-            // 풀 생성 실패 시 순차 파싱
-            for (start..end) |i| {
-                self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
-            }
-            return;
-        };
-        defer pool.deinit();
-
+    fn parseModulesBatchWithPool(self: *ModuleGraph, pool: *std.Thread.Pool, start: usize, end: usize) void {
         var wg: std.Thread.WaitGroup = .{};
 
         for (start..end) |i| {
             pool.spawnWg(&wg, parseModuleThread, .{ self, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) });
         }
 
-        // 메인 스레드도 작업에 참여하며 대기
         pool.waitAndWork(&wg);
     }
 
