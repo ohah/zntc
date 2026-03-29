@@ -211,7 +211,6 @@ pub const Bundler = struct {
                 .{
                     .format = self.options.format,
                     .minify_whitespace = self.options.minify_whitespace,
-                    .minify_identifiers = self.options.minify_identifiers,
                     .sourcemap = true, // dev mode에서는 항상 소스맵 생성
                     .dev_mode = true,
                     .root_dir = self.options.root_dir,
@@ -246,7 +245,6 @@ pub const Bundler = struct {
                 .{
                     .format = self.options.format,
                     .minify_whitespace = self.options.minify_whitespace,
-                    .minify_identifiers = self.options.minify_identifiers,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
@@ -273,7 +271,6 @@ pub const Bundler = struct {
                 .{
                     .format = self.options.format,
                     .minify_whitespace = self.options.minify_whitespace,
-                    .minify_identifiers = self.options.minify_identifiers,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,

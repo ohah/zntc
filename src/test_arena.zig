@@ -29,7 +29,7 @@ fn runPipeline(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
     var transformer = Transformer.init(allocator, &parser.ast, .{});
     const root = try transformer.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{ .minify = true });
+    var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{ .minify_whitespace = true });
     return try cg.generate(root);
 }
 
