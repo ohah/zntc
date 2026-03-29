@@ -463,6 +463,32 @@ pub const ModuleGraph = struct {
         var module = &self.modules.items[mod_idx];
         module.state = .parsing;
 
+        // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
+        // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
+        if (self.plugins.len > 0) {
+            const runner = plugin_mod.PluginRunner.init(self.plugins);
+            // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
+            var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
+                error.PluginFailed => null,
+                error.OutOfMemory => {
+                    tmp_arena.deinit();
+                    module.state = .ready;
+                    return;
+                },
+            };
+            if (load_result) |plugin_source| {
+                // 플러그인이 내용을 반환 → JS 모듈로 전환하여 아래 파싱 경로를 탐
+                module.module_type = .javascript;
+                module.parse_arena = tmp_arena;
+                module.source = plugin_source;
+                // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
+                // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
+            } else {
+                tmp_arena.deinit();
+            }
+        }
+
         // JSON 모듈: 파싱 불필요, CJS로 래핑만
         if (module.module_type == .json) {
             module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -486,32 +512,24 @@ pub const ModuleGraph = struct {
         }
 
         // 모듈별 Arena: Scanner/Parser/AST 메모리를 소유 (D061)
-        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        // 플러그인 load 훅에서 이미 설정된 경우 건너뜀
+        if (module.parse_arena == null) {
+            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        }
         const arena_alloc = module.parse_arena.?.allocator();
 
-        // Plugin: load 훅 — virtual module 지원을 위해 파일 I/O 전에 플러그인에게 기회를 줌
-        const source: []const u8 = blk: {
-            if (self.plugins.len > 0) {
-                const runner = plugin_mod.PluginRunner.init(self.plugins);
-                const load_result = runner.runLoad(module.path, arena_alloc) catch |err| switch (err) {
-                    error.PluginFailed => null,
-                    error.OutOfMemory => {
-                        module.state = .ready;
-                        return;
-                    },
-                };
-                if (load_result) |plugin_source| break :blk plugin_source;
-            }
-            break :blk std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
+        // 파일 시스템에서 읽기 (플러그인이 source를 이미 설정한 경우 건너뜀)
+        if (module.source.len == 0) {
+            const source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                 self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .resolve, "Cannot read file", null);
                 module.state = .ready;
                 return;
             };
-        };
-        module.source = source;
+            module.source = source;
+        }
 
         // Scanner + Parser (arena 할당)
-        var scanner = Scanner.init(arena_alloc, source) catch {
+        var scanner = Scanner.init(arena_alloc, module.source) catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Scanner initialization failed", null);
             module.state = .ready;
             return;
@@ -564,8 +582,8 @@ pub const ModuleGraph = struct {
                 if (arena_alloc.alloc([]const u8, legal_count)) |buf| {
                     var li: usize = 0;
                     for (parser.scanner.comments.items) |c| {
-                        if (c.is_legal and c.start < source.len and c.end <= source.len) {
-                            buf[li] = source[c.start..c.end];
+                        if (c.is_legal and c.start < module.source.len and c.end <= module.source.len) {
+                            buf[li] = module.source[c.start..c.end];
                             li += 1;
                         }
                     }
@@ -738,16 +756,16 @@ pub const ModuleGraph = struct {
         for (records, 0..) |record, rec_i| {
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
             if (plugin_runner) |runner| {
-                if (runner.runResolveId(record.specifier, module_path, self.allocator)) |plugin_result| {
+                const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                    error.PluginFailed => null,
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
+                // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
+                if (resolve_result) |plugin_result| {
                     try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
                     continue;
-                } else |err| switch (err) {
-                    error.PluginFailed => {
-                        try self.applyResolveResult(mod_idx, rec_i, record, null, true);
-                        continue;
-                    },
-                    error.OutOfMemory => return error.OutOfMemory,
                 }
+                // null이면 기본 resolver로 fall through
             }
 
             const resolved = self.resolve_cache.resolve(
