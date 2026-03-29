@@ -10504,3 +10504,289 @@ test "Minify: nested scope variable not shadowed by mangled name (#494)" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ok") != null);
 }
+
+// ============================================================
+// Asset Loader Tests
+// ============================================================
+
+test "Asset loader: text — string export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import msg from './hello.txt';\nconsole.log(msg);");
+    try writeFile(tmp.dir, "hello.txt", "Hello, World!");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // text 로더: 문자열이 CJS wrapper로 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Hello, World!\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hello") != null);
+    // asset 파일 출력 없음 (text는 인라인)
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Asset loader: text — escapes special characters" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import s from './special.txt';\nconsole.log(s);");
+    try writeFile(tmp.dir, "special.txt", "line1\nline2\\end\"quote");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // \n → \\n, \\ → \\\\, " → \\"
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "line1\\nline2\\\\end\\\"quote") != null);
+}
+
+test "Asset loader: dataurl — base64 data URL" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './icon.png';\nconsole.log(url);");
+    // 간단한 바이너리 데이터 (실제 PNG가 아니어도 테스트 목적으로 충분)
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .dataurl }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // data URL: data:image/png;base64,...
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:image/png;base64,") != null);
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Asset loader: file — hash filename + asset output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './logo.png';\nconsole.log(url);");
+    try tmp.dir.writeFile(.{ .sub_path = "logo.png", .data = "fake-png-data" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // file 로더: URL 문자열 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "logo-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".png") != null);
+    // asset_outputs에 원본 파일 내용 포함
+    try std.testing.expect(result.asset_outputs != null);
+    try std.testing.expectEqual(@as(usize, 1), result.asset_outputs.?.len);
+    try std.testing.expectEqualStrings("fake-png-data", result.asset_outputs.?[0].contents);
+}
+
+test "Asset loader: file — public-path prefix" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './img.png';\nconsole.log(url);");
+    try tmp.dir.writeFile(.{ .sub_path = "img.png", .data = "data" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+        .public_path = "https://cdn.example.com/",
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "https://cdn.example.com/img-") != null);
+}
+
+test "Asset loader: file — content hash determinism" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './a.bin';\nconsole.log(url);");
+    try tmp.dir.writeFile(.{ .sub_path = "a.bin", .data = "deterministic-content" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // 첫 번째 번들
+    var b1 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .file }},
+    });
+    defer b1.deinit();
+    const r1 = try b1.bundle();
+    defer r1.deinit(std.testing.allocator);
+
+    // 두 번째 번들 (같은 내용)
+    var b2 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .file }},
+    });
+    defer b2.deinit();
+    const r2 = try b2.bundle();
+    defer r2.deinit(std.testing.allocator);
+
+    // 같은 내용 → 같은 해시 → 같은 출력
+    try std.testing.expectEqualStrings(r1.output, r2.output);
+}
+
+test "Asset loader: binary — __toBinary runtime helper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import data from './raw.bin';\nconsole.log(data);");
+    try tmp.dir.writeFile(.{ .sub_path = "raw.bin", .data = &.{ 0xDE, 0xAD, 0xBE, 0xEF } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // binary 로더: __toBinary 호출 + 런타임 헬퍼 주입
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toBinary(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __toBinary") != null);
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Asset loader: empty — undefined export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import x from './style.css';\nconsole.log(x);");
+    try writeFile(tmp.dir, "style.css", "body { color: red; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".css", .loader = .empty }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "undefined") != null);
+}
+
+test "Asset loader: --loader override takes precedence" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // .txt는 기본적으로 text 로더이지만, --loader로 file로 오버라이드
+    try writeFile(tmp.dir, "entry.ts", "import url from './readme.txt';\nconsole.log(url);");
+    try writeFile(tmp.dir, "readme.txt", "README content");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".txt", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // file 로더: URL 경로 출력 (text가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "readme-") != null);
+    // asset_outputs 존재 (file 로더)
+    try std.testing.expect(result.asset_outputs != null);
+}
+
+test "Asset loader: asset-names pattern" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './font.woff';\nconsole.log(url);");
+    try tmp.dir.writeFile(.{ .sub_path = "font.woff", .data = "woff-data" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".woff", .loader = .file }},
+        .asset_names = "assets/[name]-[hash]",
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // asset-names 패턴 적용: assets/font-HASH.woff
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "assets/font-") != null);
+    // asset_outputs 경로에도 패턴 적용
+    try std.testing.expect(result.asset_outputs != null);
+    try std.testing.expect(std.mem.startsWith(u8, result.asset_outputs.?[0].path, "assets/font-"));
+}
+
+test "Asset loader: CJS format" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import msg from './data.txt';\nconsole.log(msg);");
+    try writeFile(tmp.dir, "data.txt", "hello");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+        .loader_overrides = &.{.{ .ext = ".txt", .loader = .text }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
+}
