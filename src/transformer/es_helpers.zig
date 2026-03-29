@@ -143,6 +143,41 @@ pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
     });
 }
 
+/// binding_identifier 노드 생성 (변수 바인딩용).
+/// span은 이미 addString된 이름 span.
+pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
+    return self.new_ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+}
+
+/// variable_declarator 노드 생성 (binding + optional init).
+/// extra = [binding, type_annotation(none), init]
+pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: Span) !NodeIndex {
+    const de = try self.new_ast.addExtras(&.{
+        @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
+    });
+    return self.new_ast.addNode(.{
+        .tag = .variable_declarator,
+        .span = span,
+        .data = .{ .extra = de },
+    });
+}
+
+/// variable_declaration 노드 생성 (var 키워드, declarators 배열).
+/// kind_flags: 0 = var, 1 = let, 2 = const
+pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind_flags: u32, span: Span) !NodeIndex {
+    const decl_list = try self.new_ast.addNodeList(declarators);
+    const var_extra = try self.new_ast.addExtras(&.{ kind_flags, decl_list.start, decl_list.len });
+    return self.new_ast.addNode(.{
+        .tag = .variable_declaration,
+        .span = span,
+        .data = .{ .extra = var_extra },
+    });
+}
+
 /// expression을 expression_statement로 감싸기.
 pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
     return self.new_ast.addNode(.{

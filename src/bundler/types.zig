@@ -221,6 +221,16 @@ pub const BundlerDiagnostic = struct {
 // 공유 유틸리티
 // ============================================================
 
+// ============================================================
+// 공유 비교자 (Comparators)
+// ============================================================
+
+/// []const u8 문자열을 사전순으로 비교하는 comparator.
+/// 결정론적 출력을 위한 정렬에 사용 (cross-chunk import/export 이름 등).
+pub fn stringLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
 /// 모듈 경로에서 require_xxx 변수명을 생성한다.
 /// "lib/foo-bar.cjs" → "require_foo_bar"
 pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {

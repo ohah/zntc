@@ -41,58 +41,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // --- init: var _a = 0, _b = arr ---
             // _a = 0
-            const idx_binding = try makeBinding(self, idx_span);
-            const zero_span = try self.new_ast.addString("0");
-            const zero = try self.new_ast.addNode(.{
-                .tag = .numeric_literal,
-                .span = zero_span,
-                .data = .{ .none = 0 },
-            });
-            const idx_decl_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(idx_binding), @intFromEnum(NodeIndex.none), @intFromEnum(zero),
-            });
-            const idx_decl = try self.new_ast.addNode(.{
-                .tag = .variable_declarator,
-                .span = span,
-                .data = .{ .extra = idx_decl_extra },
-            });
+            const idx_binding = try es_helpers.makeBindingIdentifier(self, idx_span);
+            const zero = try es_helpers.makeNumericLiteral(self, 0);
+            const idx_decl = try es_helpers.makeDeclarator(self, idx_binding, zero, span);
 
             // _b = arr
-            const arr_binding = try makeBinding(self, arr_span);
-            const arr_decl_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(arr_binding), @intFromEnum(NodeIndex.none), @intFromEnum(new_right),
-            });
-            const arr_decl = try self.new_ast.addNode(.{
-                .tag = .variable_declarator,
-                .span = span,
-                .data = .{ .extra = arr_decl_extra },
-            });
+            const arr_binding = try es_helpers.makeBindingIdentifier(self, arr_span);
+            const arr_decl = try es_helpers.makeDeclarator(self, arr_binding, new_right, span);
 
-            const init_list = try self.new_ast.addNodeList(&.{ idx_decl, arr_decl });
-            const init_extra = try self.new_ast.addExtras(&.{ 0, init_list.start, init_list.len }); // 0 = var
-            const init = try self.new_ast.addNode(.{
-                .tag = .variable_declaration,
-                .span = span,
-                .data = .{ .extra = init_extra },
-            });
+            const init = try es_helpers.makeVarDeclaration(self, &.{ idx_decl, arr_decl }, 0, span);
 
             // --- test: _a < _b.length ---
             const idx_ref = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const length_span = try self.new_ast.addString("length");
-            const length_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = length_span,
-                .data = .{ .string_ref = length_span },
-            });
+            const length_prop = try es_helpers.makeIdentifierRef(self, "length");
             const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-            const member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(arr_ref_test), @intFromEnum(length_prop), 0,
-            });
-            const arr_length = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = member_extra },
-            });
+            const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
             const test_expr = try self.new_ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
@@ -153,15 +116,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
         }
 
-        /// binding_identifier 노드 생성
-        fn makeBinding(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
-            return self.new_ast.addNode(.{
-                .tag = .binding_identifier,
-                .span = name_span,
-                .data = .{ .string_ref = name_span },
-            });
-        }
-
         /// for-of의 left를 기반으로 `var x = elem` 문 생성.
         /// left가 variable_declaration이면 해당 패턴을 재사용.
         /// left가 expression이면 assignment로 변환.
@@ -185,23 +139,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 const binding_name = try self.visitNode(@enumFromInt(extras[first_decl.data.extra]));
 
                 // var x = elem
-                const decl_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(binding_name),
-                    @intFromEnum(NodeIndex.none),
-                    @intFromEnum(elem),
-                });
-                const declarator = try self.new_ast.addNode(.{
-                    .tag = .variable_declarator,
-                    .span = span,
-                    .data = .{ .extra = decl_extra },
-                });
-                const decl_list = try self.new_ast.addNodeList(&.{declarator});
-                const var_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len }); // 0 = var
-                return self.new_ast.addNode(.{
-                    .tag = .variable_declaration,
-                    .span = span,
-                    .data = .{ .extra = var_extra },
-                });
+                const declarator = try es_helpers.makeDeclarator(self, binding_name, elem, span);
+                return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
             } else {
                 // for (x of ...) → x = _b[_a]
                 const new_left = try self.visitNode(left);

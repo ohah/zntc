@@ -194,11 +194,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_node = if (!new_name.isNone())
                 new_name
             else
-                try self.new_ast.addNode(.{
-                    .tag = .binding_identifier,
-                    .span = name_span,
-                    .data = .{ .string_ref = name_span },
-                });
+                try es_helpers.makeBindingIdentifier(self, name_span);
 
             // super class
             const has_super = !super_idx.isNone();

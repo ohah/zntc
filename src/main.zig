@@ -11,6 +11,225 @@ const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
 const emitter = lib.bundler.emitter;
 
+/// CLI 인자를 파싱한 결과를 담는 구조체.
+/// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
+const CliOptions = struct {
+    input_file: ?[]const u8 = null,
+    output_file: ?[]const u8 = null,
+    output_dir: ?[]const u8 = null,
+    minify_whitespace: bool = false,
+    minify_identifiers: bool = false,
+    minify_syntax: bool = false,
+    module_format: lib.codegen.codegen.ModuleFormat = .esm,
+    drop_console: bool = false,
+    drop_debugger: bool = false,
+    sourcemap: bool = false,
+    ascii_only: bool = false,
+    quote_style: lib.codegen.QuoteStyle = .double,
+    watch: bool = false,
+    is_test262: bool = false,
+    is_tokenize: bool = false,
+    is_bundle: bool = false,
+    is_serve: bool = false,
+    serve_port: u16 = 3000,
+    splitting: bool = false,
+    external_list: std.ArrayList([]const u8) = .empty,
+    define_list: std.ArrayList(DefineEntry) = .empty,
+    platform: lib.bundler.Platform = .browser,
+    bundle_format: lib.bundler.emitter.EmitOptions.Format = .esm,
+    bundle_format_explicit: bool = false,
+    test262_dir: ?[]const u8 = null,
+    project_path: ?[]const u8 = null,
+    use_define_for_class_fields: ?bool = null,
+    experimental_decorators: ?bool = null,
+    target: lib.transformer.TransformOptions.Target = .esnext,
+    conditions_list: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *CliOptions, alloc: std.mem.Allocator) void {
+        self.external_list.deinit(alloc);
+        self.define_list.deinit(alloc);
+        self.conditions_list.deinit(alloc);
+    }
+};
+
+/// CLI 인자를 파싱하여 CliOptions를 반환한다.
+/// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
+fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?CliOptions {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (args.len < 2) {
+        try printUsage(stdout);
+        return null;
+    }
+
+    var opts = CliOptions{};
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--test262")) {
+            opts.is_test262 = true;
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.test262_dir = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--tokenize")) {
+            opts.is_tokenize = true;
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out-file")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.output_file = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--outdir")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.output_dir = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--minify")) {
+            opts.minify_whitespace = true;
+            opts.minify_identifiers = true;
+            opts.minify_syntax = true;
+        } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
+            opts.minify_whitespace = true;
+        } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
+            opts.minify_identifiers = true;
+        } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
+            opts.minify_syntax = true;
+        } else if (std.mem.eql(u8, arg, "--format=cjs")) {
+            opts.module_format = .cjs;
+            opts.bundle_format = .cjs;
+            opts.bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--format=esm")) {
+            opts.module_format = .esm;
+            opts.bundle_format = .esm;
+            opts.bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--drop=console")) {
+            opts.drop_console = true;
+        } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
+            opts.drop_debugger = true;
+        } else if (std.mem.startsWith(u8, arg, "--define:")) {
+            // --define:KEY=VALUE (esbuild 호환 문법)
+            const kv = arg["--define:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                try opts.define_list.append(allocator, .{
+                    .key = kv[0..eq_pos],
+                    .value = kv[eq_pos + 1 ..],
+                });
+            } else {
+                try stderr.print("zts: --define requires KEY=VALUE format: {s}\n", .{arg});
+                return null;
+            }
+        } else if (std.mem.eql(u8, arg, "--ascii-only")) {
+            opts.ascii_only = true;
+        } else if (std.mem.startsWith(u8, arg, "--quotes=")) {
+            const val = arg["--quotes=".len..];
+            if (std.mem.eql(u8, val, "double")) {
+                opts.quote_style = .double;
+            } else if (std.mem.eql(u8, val, "single")) {
+                opts.quote_style = .single;
+            } else if (std.mem.eql(u8, val, "preserve")) {
+                opts.quote_style = .preserve;
+            } else {
+                try stderr.print("zts: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
+                return null;
+            }
+        } else if (std.mem.eql(u8, arg, "--sourcemap")) {
+            opts.sourcemap = true;
+        } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.project_path = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
+            opts.watch = true;
+        } else if (std.mem.eql(u8, arg, "--bundle")) {
+            opts.is_bundle = true;
+        } else if (std.mem.eql(u8, arg, "--serve")) {
+            opts.is_serve = true;
+        } else if (std.mem.eql(u8, arg, "--port")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.serve_port = std.fmt.parseInt(u16, args[i], 10) catch {
+                    try stderr.print("zts: invalid port number: {s}\n", .{args[i]});
+                    return null;
+                };
+            }
+        } else if (std.mem.eql(u8, arg, "--splitting")) {
+            opts.splitting = true;
+        } else if (std.mem.eql(u8, arg, "--external")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                try opts.external_list.append(allocator, args[i]);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--conditions=")) {
+            const val = arg["--conditions=".len..];
+            // 쉼표로 분리된 조건 목록 (esbuild 호환: --conditions=production,development)
+            var it = std.mem.splitScalar(u8, val, ',');
+            while (it.next()) |cond| {
+                if (cond.len > 0) try opts.conditions_list.append(allocator, cond);
+            }
+        } else if (std.mem.eql(u8, arg, "--platform=node")) {
+            opts.platform = .node;
+        } else if (std.mem.eql(u8, arg, "--platform=browser")) {
+            opts.platform = .browser;
+        } else if (std.mem.eql(u8, arg, "--platform=neutral")) {
+            opts.platform = .neutral;
+        } else if (std.mem.eql(u8, arg, "--format=iife")) {
+            opts.bundle_format = .iife;
+            opts.bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--experimental-decorators")) {
+            opts.experimental_decorators = true;
+        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=false")) {
+            opts.use_define_for_class_fields = false;
+        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=true")) {
+            opts.use_define_for_class_fields = true;
+        } else if (std.mem.startsWith(u8, arg, "--target=")) {
+            const val = arg["--target=".len..];
+            opts.target = std.meta.stringToEnum(lib.transformer.TransformOptions.Target, val) orelse {
+                try stderr.print("zts: unknown target '{s}'\n", .{val});
+                return null;
+            };
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try printUsage(stdout);
+            return null;
+        } else if (arg[0] != '-' or (arg.len == 1 and arg[0] == '-')) {
+            opts.input_file = arg;
+        } else {
+            try stderr.print("zts: unknown option: {s}\n", .{arg});
+            return null;
+        }
+    }
+
+    // --bundle + --platform=browser + --format 미지정이면 IIFE로 기본 설정 (esbuild 호환).
+    // 브라우저 <script> 태그에서 로드할 때 top-level 선언이 글로벌을 오염시키지 않도록
+    // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
+    if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit) {
+        opts.bundle_format = .iife;
+    }
+
+    // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
+    // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
+    // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
+    if (opts.is_bundle and opts.platform == .browser) {
+        var has_node_env = false;
+        for (opts.define_list.items) |d| {
+            if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
+                has_node_env = true;
+                break;
+            }
+        }
+        if (!has_node_env) {
+            try opts.define_list.append(allocator, .{
+                .key = "process.env.NODE_ENV",
+                .value = "\"production\"",
+            });
+        }
+    }
+
+    return opts;
+}
+
 /// 트랜스파일 옵션을 담는 구조체.
 /// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
 const DefineEntry = lib.transformer.DefineEntry;
@@ -324,212 +543,12 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    if (args.len < 2) {
-        try printUsage(stdout);
-        return;
-    }
-
-    // 옵션 파싱
-    var input_file: ?[]const u8 = null;
-    var output_file: ?[]const u8 = null;
-    var output_dir: ?[]const u8 = null;
-    var minify_whitespace = false;
-    var minify_identifiers = false;
-    var minify_syntax = false;
-    var module_format: lib.codegen.codegen.ModuleFormat = .esm;
-    var drop_console = false;
-    var drop_debugger = false;
-    var sourcemap = false;
-    var ascii_only = false;
-    var quote_style: lib.codegen.QuoteStyle = .double;
-    var watch = false;
-    var is_test262 = false;
-    var is_tokenize = false;
-    var is_bundle = false;
-    var is_serve = false;
-    var serve_port: u16 = 3000;
-    var splitting = false;
-    var external_list: std.ArrayList([]const u8) = .empty;
-    defer external_list.deinit(allocator);
-    var define_list: std.ArrayList(DefineEntry) = .empty;
-    defer define_list.deinit(allocator);
-    var platform: lib.bundler.Platform = .browser;
-    var bundle_format: lib.bundler.emitter.EmitOptions.Format = .esm;
-    var bundle_format_explicit = false; // 사용자가 --format을 명시했는지 추적
-    var test262_dir: ?[]const u8 = null;
-    var project_path: ?[]const u8 = null;
-    var use_define_for_class_fields: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
-    var experimental_decorators: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
-    const Target = lib.transformer.TransformOptions.Target;
-    var target: Target = .esnext;
-    var conditions_list: std.ArrayList([]const u8) = .empty;
-    defer conditions_list.deinit(allocator);
-
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--test262")) {
-            is_test262 = true;
-            if (i + 1 < args.len) {
-                i += 1;
-                test262_dir = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "--tokenize")) {
-            is_tokenize = true;
-        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out-file")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                output_file = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "--outdir")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                output_dir = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "--minify")) {
-            minify_whitespace = true;
-            minify_identifiers = true;
-            minify_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
-            minify_whitespace = true;
-        } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
-            minify_identifiers = true;
-        } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
-            minify_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--format=cjs")) {
-            module_format = .cjs;
-            bundle_format = .cjs;
-            bundle_format_explicit = true;
-        } else if (std.mem.eql(u8, arg, "--format=esm")) {
-            module_format = .esm;
-            bundle_format = .esm;
-            bundle_format_explicit = true;
-        } else if (std.mem.eql(u8, arg, "--drop=console")) {
-            drop_console = true;
-        } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
-            drop_debugger = true;
-        } else if (std.mem.startsWith(u8, arg, "--define:")) {
-            // --define:KEY=VALUE (esbuild 호환 문법)
-            const kv = arg["--define:".len..];
-            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
-                try define_list.append(allocator, .{
-                    .key = kv[0..eq_pos],
-                    .value = kv[eq_pos + 1 ..],
-                });
-            } else {
-                try stderr.print("zts: --define requires KEY=VALUE format: {s}\n", .{arg});
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "--ascii-only")) {
-            ascii_only = true;
-        } else if (std.mem.startsWith(u8, arg, "--quotes=")) {
-            const val = arg["--quotes=".len..];
-            if (std.mem.eql(u8, val, "double")) {
-                quote_style = .double;
-            } else if (std.mem.eql(u8, val, "single")) {
-                quote_style = .single;
-            } else if (std.mem.eql(u8, val, "preserve")) {
-                quote_style = .preserve;
-            } else {
-                try stderr.print("zts: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
-                return;
-            }
-        } else if (std.mem.eql(u8, arg, "--sourcemap")) {
-            sourcemap = true;
-        } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                project_path = args[i];
-            }
-        } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
-            watch = true;
-        } else if (std.mem.eql(u8, arg, "--bundle")) {
-            is_bundle = true;
-        } else if (std.mem.eql(u8, arg, "--serve")) {
-            is_serve = true;
-        } else if (std.mem.eql(u8, arg, "--port")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                serve_port = std.fmt.parseInt(u16, args[i], 10) catch {
-                    try stderr.print("zts: invalid port number: {s}\n", .{args[i]});
-                    return;
-                };
-            }
-        } else if (std.mem.eql(u8, arg, "--splitting")) {
-            splitting = true;
-        } else if (std.mem.eql(u8, arg, "--external")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                try external_list.append(allocator, args[i]);
-            }
-        } else if (std.mem.startsWith(u8, arg, "--conditions=")) {
-            const val = arg["--conditions=".len..];
-            // 쉼표로 분리된 조건 목록 (esbuild 호환: --conditions=production,development)
-            var it = std.mem.splitScalar(u8, val, ',');
-            while (it.next()) |cond| {
-                if (cond.len > 0) try conditions_list.append(allocator, cond);
-            }
-        } else if (std.mem.eql(u8, arg, "--platform=node")) {
-            platform = .node;
-        } else if (std.mem.eql(u8, arg, "--platform=browser")) {
-            platform = .browser;
-        } else if (std.mem.eql(u8, arg, "--platform=neutral")) {
-            platform = .neutral;
-        } else if (std.mem.eql(u8, arg, "--format=iife")) {
-            bundle_format = .iife;
-            bundle_format_explicit = true;
-        } else if (std.mem.eql(u8, arg, "--experimental-decorators")) {
-            experimental_decorators = true;
-        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=false")) {
-            use_define_for_class_fields = false;
-        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=true")) {
-            use_define_for_class_fields = true;
-        } else if (std.mem.startsWith(u8, arg, "--target=")) {
-            const val = arg["--target=".len..];
-            target = std.meta.stringToEnum(Target, val) orelse {
-                try stderr.print("zts: unknown target '{s}'\n", .{val});
-                return;
-            };
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try printUsage(stdout);
-            return;
-        } else if (arg[0] != '-' or (arg.len == 1 and arg[0] == '-')) {
-            input_file = arg;
-        } else {
-            try stderr.print("zts: unknown option: {s}\n", .{arg});
-            return;
-        }
-    }
-
-    // --bundle + --platform=browser + --format 미지정이면 IIFE로 기본 설정 (esbuild 호환).
-    // 브라우저 <script> 태그에서 로드할 때 top-level 선언이 글로벌을 오염시키지 않도록
-    // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
-    if (is_bundle and platform == .browser and !bundle_format_explicit) {
-        bundle_format = .iife;
-    }
-
-    // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
-    // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
-    // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
-    if (is_bundle and platform == .browser) {
-        var has_node_env = false;
-        for (define_list.items) |d| {
-            if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
-                has_node_env = true;
-                break;
-            }
-        }
-        if (!has_node_env) {
-            try define_list.append(allocator, .{
-                .key = "process.env.NODE_ENV",
-                .value = "\"production\"",
-            });
-        }
-    }
+    var opts = try parseCliArguments(args, allocator) orelse return;
+    defer opts.deinit(allocator);
 
     // --test262
-    if (is_test262) {
-        const dir_path = test262_dir orelse {
+    if (opts.is_test262) {
+        const dir_path = opts.test262_dir orelse {
             try stderr.print("Error: --test262 requires a directory path\n", .{});
             return;
         };
@@ -542,8 +561,8 @@ pub fn main() !void {
     }
 
     // --tokenize
-    if (is_tokenize) {
-        const file_path = input_file orelse {
+    if (opts.is_tokenize) {
+        const file_path = opts.input_file orelse {
             try stderr.print("Error: --tokenize requires a file path\n", .{});
             return;
         };
@@ -568,14 +587,14 @@ pub fn main() !void {
     }
 
     // --serve (정적 서버 또는 --bundle과 조합하여 번들 서빙)
-    if (is_serve) {
+    if (opts.is_serve) {
         // --serve --bundle entry.ts → entry의 디렉토리를 root로 사용
-        const serve_dir: []const u8 = if (is_bundle and input_file != null) blk: {
-            break :blk std.fs.path.dirname(input_file.?) orelse ".";
-        } else input_file orelse ".";
+        const serve_dir: []const u8 = if (opts.is_bundle and opts.input_file != null) blk: {
+            break :blk std.fs.path.dirname(opts.input_file.?) orelse ".";
+        } else opts.input_file orelse ".";
 
-        const entry: ?[]const u8 = if (is_bundle) blk: {
-            break :blk input_file orelse {
+        const entry: ?[]const u8 = if (opts.is_bundle) blk: {
+            break :blk opts.input_file orelse {
                 try stderr.print("Error: --serve --bundle requires an entry file path\n", .{});
                 return;
             };
@@ -583,7 +602,7 @@ pub fn main() !void {
 
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
-            .port = serve_port,
+            .port = opts.serve_port,
             .entry_point = entry,
         }) catch |err| {
             try stderr.print("Error: failed to start dev server: {}\n", .{err});
@@ -598,8 +617,8 @@ pub fn main() !void {
     }
 
     // --bundle
-    if (is_bundle) {
-        const entry_file = input_file orelse {
+    if (opts.is_bundle) {
+        const entry_file = opts.input_file orelse {
             try stderr.print("Error: --bundle requires an entry file path\n", .{});
             return;
         };
@@ -610,25 +629,25 @@ pub fn main() !void {
         defer allocator.free(abs_entry);
 
         // --splitting은 --outdir 필수
-        if (splitting and output_dir == null) {
+        if (opts.splitting and opts.output_dir == null) {
             try stderr.print("Error: --splitting requires --outdir\n", .{});
             return;
         }
 
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
-            .format = bundle_format,
-            .platform = platform,
-            .external = external_list.items,
-            .minify_whitespace = minify_whitespace,
-            .minify_identifiers = minify_identifiers,
-            .minify_syntax = minify_syntax,
-            .code_splitting = splitting,
-            .define = define_list.items,
-            .experimental_decorators = experimental_decorators orelse false,
-            .use_define_for_class_fields = use_define_for_class_fields orelse true,
-            .target = target,
-            .conditions = conditions_list.items,
+            .format = opts.bundle_format,
+            .platform = opts.platform,
+            .external = opts.external_list.items,
+            .minify_whitespace = opts.minify_whitespace,
+            .minify_identifiers = opts.minify_identifiers,
+            .minify_syntax = opts.minify_syntax,
+            .code_splitting = opts.splitting,
+            .define = opts.define_list.items,
+            .experimental_decorators = opts.experimental_decorators orelse false,
+            .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
+            .target = opts.target,
+            .conditions = opts.conditions_list.items,
         });
         defer bundler.deinit();
 
@@ -653,7 +672,7 @@ pub fn main() !void {
         // 출력
         if (result.outputs) |outputs| {
             // Code splitting: 다중 파일 출력 → --outdir 필수
-            const out_dir = output_dir orelse ".";
+            const out_dir = opts.output_dir orelse ".";
             std.fs.cwd().makePath(out_dir) catch {};
             for (outputs) |o| {
                 const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
@@ -664,7 +683,7 @@ pub fn main() !void {
                 try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
             }
             try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
-        } else if (output_file) |out_path| {
+        } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
                 std.fs.cwd().makePath(dir) catch {};
@@ -680,14 +699,14 @@ pub fn main() !void {
     }
 
     // 입력 경로가 디렉토리인지 확인
-    const input_path_str = input_file orelse {
+    const input_path_str = opts.input_file orelse {
         try printUsage(stdout);
         return;
     };
 
     // tsconfig.json 로드.
     // 우선순위: --project 경로 > 입력이 디렉토리면 그 디렉토리 > 입력 파일의 부모 디렉토리
-    const tsconfig_dir: []const u8 = if (project_path) |pp|
+    const tsconfig_dir: []const u8 = if (opts.project_path) |pp|
         pp
     else if (!std.mem.eql(u8, input_path_str, "-"))
         // 파일이면 dirname, 디렉토리면 그대로
@@ -701,26 +720,26 @@ pub fn main() !void {
     // tsconfig 값을 기본값으로 사용하되, CLI 옵션이 우선한다.
     // CLI에서 명시적으로 설정하지 않은 옵션만 tsconfig에서 가져온다.
     // module_format: tsconfig의 module이 "commonjs"이면 cjs 사용
-    if (module_format == .esm) { // CLI에서 --format=cjs를 안 했으면
+    if (opts.module_format == .esm) { // CLI에서 --format=cjs를 안 했으면
         if (tsconfig.module) |mod| {
             if (std.ascii.eqlIgnoreCase(mod, "commonjs")) {
-                module_format = .cjs;
+                opts.module_format = .cjs;
             }
         }
     }
     // sourcemap: tsconfig에서 true이면 적용 (CLI --sourcemap이 이미 true면 그대로)
-    if (!sourcemap and tsconfig.source_map) {
-        sourcemap = true;
+    if (!opts.sourcemap and tsconfig.source_map) {
+        opts.sourcemap = true;
     }
     // output_dir: tsconfig의 outDir를 기본값으로 사용
-    if (output_dir == null) {
+    if (opts.output_dir == null) {
         if (tsconfig.out_dir) |od| {
-            output_dir = od;
+            opts.output_dir = od;
         }
     }
     // experimentalDecorators: CLI 미지정이면 tsconfig에서 가져옴
-    if (experimental_decorators == null and tsconfig.experimental_decorators) {
-        experimental_decorators = true;
+    if (opts.experimental_decorators == null and tsconfig.experimental_decorators) {
+        opts.experimental_decorators = true;
     }
     // useDefineForClassFields: CLI 미지정이면 tsconfig에서 가져옴 (tsconfig 파싱 필요 — 아래 참고)
     // 주의: tsconfig에 useDefineForClassFields가 없고 experimentalDecorators=true이면
@@ -730,20 +749,20 @@ pub fn main() !void {
 
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
-        .module_format = module_format,
-        .minify_whitespace = minify_whitespace,
-        .minify_identifiers = minify_identifiers,
-        .minify_syntax = minify_syntax,
-        .drop_console = drop_console,
-        .drop_debugger = drop_debugger,
-        .sourcemap = sourcemap,
-        .ascii_only = ascii_only,
-        .quote_style = quote_style,
-        .define = define_list.items,
-        .platform = platform,
-        .use_define_for_class_fields = use_define_for_class_fields orelse true,
-        .experimental_decorators = experimental_decorators orelse false,
-        .target = target,
+        .module_format = opts.module_format,
+        .minify_whitespace = opts.minify_whitespace,
+        .minify_identifiers = opts.minify_identifiers,
+        .minify_syntax = opts.minify_syntax,
+        .drop_console = opts.drop_console,
+        .drop_debugger = opts.drop_debugger,
+        .sourcemap = opts.sourcemap,
+        .ascii_only = opts.ascii_only,
+        .quote_style = opts.quote_style,
+        .define = opts.define_list.items,
+        .platform = opts.platform,
+        .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
+        .experimental_decorators = opts.experimental_decorators orelse false,
+        .target = opts.target,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
@@ -760,24 +779,24 @@ pub fn main() !void {
             };
             dir.close();
             // 디렉토리 확인됨 — 아래 디렉토리 처리로 이동
-            const out_dir = output_dir orelse {
+            const out_dir = opts.output_dir orelse {
                 try stderr.print("zts: --outdir is required when input is a directory\n", .{});
                 return;
             };
             try walkAndTranspile(allocator, input_path_str, out_dir, options);
-            if (watch) {
+            if (opts.watch) {
                 try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
             }
             return;
         };
 
         if (stat.kind == .directory) {
-            const out_dir = output_dir orelse {
+            const out_dir = opts.output_dir orelse {
                 try stderr.print("zts: --outdir is required when input is a directory\n", .{});
                 return;
             };
             try walkAndTranspile(allocator, input_path_str, out_dir, options);
-            if (watch) {
+            if (opts.watch) {
                 try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
             }
             return;
@@ -793,11 +812,11 @@ pub fn main() !void {
             return;
         };
         defer allocator.free(source);
-        try transpileFile(allocator, file_path, source, output_file, options);
+        try transpileFile(allocator, file_path, source, opts.output_file, options);
     } else {
-        try transpileFile(allocator, file_path, null, output_file, options);
-        if (watch) {
-            try watchFile(allocator, file_path, output_file, options, stderr);
+        try transpileFile(allocator, file_path, null, opts.output_file, options);
+        if (opts.watch) {
+            try watchFile(allocator, file_path, opts.output_file, options, stderr);
         }
     }
 }
