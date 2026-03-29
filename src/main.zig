@@ -63,10 +63,12 @@ const CliOptions = struct {
     loader_list: std.ArrayList(LoaderOverride) = .empty,
     metafile_path: ?[]const u8 = null,
     analyze: bool = false,
+    legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
     const LoaderEnum = @import("zts_lib").bundler.types.Loader;
+    const LegalCommentsEnum = @import("zts_lib").bundler.types.LegalComments;
 
     const LogLevel = enum {
         silent,
@@ -278,6 +280,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.metafile_path = "meta.json";
         } else if (std.mem.eql(u8, arg, "--analyze")) {
             opts.analyze = true;
+        } else if (std.mem.startsWith(u8, arg, "--legal-comments=")) {
+            const val = arg["--legal-comments=".len..];
+            opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
+                try stderr.print("zts: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
+                return null;
+            };
         } else if (std.mem.startsWith(u8, arg, "--loader:")) {
             // --loader:.png=file (esbuild 호환)
             const kv = arg["--loader:".len..];
@@ -892,6 +900,7 @@ pub fn main() !void {
             .loader_overrides = opts.loader_list.items,
             .metafile = opts.metafile_path != null or opts.analyze,
             .analyze = opts.analyze,
+            .legal_comments = opts.legal_comments,
         });
         defer bundler.deinit();
 

@@ -86,6 +86,8 @@ pub const EmitOptions = struct {
     chunk_names: []const u8 = "[name]-[hash]",
     /// 에셋 파일명 패턴 (예: "[name]-[hash]", "assets/[name]-[hash]")
     asset_names: []const u8 = "[name]-[hash]",
+    /// legal comments 처리 모드
+    legal_comments: types.LegalComments = .default,
 
     pub const Format = enum {
         esm,
@@ -272,6 +274,12 @@ pub fn emitWithTreeShaking(
     switch (options.format) {
         .iife => try output.appendSlice(allocator, "})();\n"),
         .cjs, .esm => {},
+    }
+
+    // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
+    const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
+    if (lc_mode == .eof or lc_mode == .linked or lc_mode == .external) {
+        try collectLegalComments(&output, allocator, sorted.items, lc_mode);
     }
 
     // footer 삽입 (포맷별 epilogue 직후)
@@ -1910,5 +1918,38 @@ fn emitChunkRuntimeHelpers(
     }
     if (needs_to_binary) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
+    }
+}
+
+/// default → 실제 모드로 해석. default는 minify 시 eof, 아니면 inline.
+fn resolveDefaultLegalComments(mode: types.LegalComments, minify: bool) types.LegalComments {
+    if (mode != .default) return mode;
+    return if (minify) .eof else .@"inline";
+}
+
+/// eof/linked/external 모드에서 legal comments를 수집하여 출력 끝에 추가.
+/// 중복 제거: 같은 텍스트의 주석은 한 번만 출력.
+fn collectLegalComments(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    sorted_modules: []const *const Module,
+    mode: types.LegalComments,
+) !void {
+    _ = mode; // linked/external 분기는 향후 확장
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(allocator);
+    var has_any = false;
+
+    for (sorted_modules) |m| {
+        for (m.legal_comments) |comment_text| {
+            const gop = try seen.getOrPut(allocator, comment_text);
+            if (gop.found_existing) continue;
+            if (!has_any) {
+                try output.appendSlice(allocator, "\n");
+                has_any = true;
+            }
+            try output.appendSlice(allocator, comment_text);
+            try output.append(allocator, '\n');
+        }
     }
 }
