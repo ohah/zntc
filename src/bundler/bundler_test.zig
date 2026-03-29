@@ -9137,6 +9137,110 @@ test "CodeSplitting: CJS module in shared chunk" {
 }
 
 // ============================================================
+// Content Hash + Naming Pattern Tests
+// ============================================================
+
+test "CodeSplitting: content hash naming — entry-names and chunk-names" {
+    // --entry-names=[name]-[hash] --chunk-names=chunks/[name]-[hash] 통합 테스트
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { shared } from './shared';\nconsole.log('a', shared);");
+    try writeFile(tmp.dir, "b.ts", "import { shared } from './shared';\nconsole.log('b', shared);");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 'common';");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+        .entry_names = "[name]-[hash]",
+        .chunk_names = "chunks/[name]-[hash]",
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 엔트리 파일명: "{name}-{8hex}.js"
+    // 공통 청크 파일명: "chunks/chunk-{8hex}.js"
+    var entry_count: usize = 0;
+    var chunk_count: usize = 0;
+    for (outputs) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunks/")) {
+            chunk_count += 1;
+            try std.testing.expect(std.mem.startsWith(u8, o.path, "chunks/chunk-"));
+            try std.testing.expect(std.mem.endsWith(u8, o.path, ".js"));
+        } else {
+            entry_count += 1;
+            // "a-{8hex}.js" or "b-{8hex}.js"
+            try std.testing.expect(std.mem.endsWith(u8, o.path, ".js"));
+            try std.testing.expect(std.mem.indexOf(u8, o.path, "-") != null);
+        }
+        // placeholder가 최종 출력에 남아있으면 안 된다
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\x00ZH") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.path, "\x00ZH") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), entry_count);
+    try std.testing.expect(chunk_count >= 1);
+}
+
+test "CodeSplitting: content hash deterministic — same code same hash" {
+    // 동일한 코드를 두 번 빌드하면 동일한 content hash가 나와야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 1;");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    // 1차 빌드
+    var bnd1 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+        .chunk_names = "[name]-[hash]",
+    });
+    defer bnd1.deinit();
+    const result1 = try bnd1.bundle();
+    defer result1.deinit(std.testing.allocator);
+
+    // 2차 빌드
+    var bnd2 = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+        .chunk_names = "[name]-[hash]",
+    });
+    defer bnd2.deinit();
+    const result2 = try bnd2.bundle();
+    defer result2.deinit(std.testing.allocator);
+
+    const outs1 = result1.outputs orelse return error.TestUnexpectedResult;
+    const outs2 = result2.outputs orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(outs1.len, outs2.len);
+
+    // 파일명이 동일한지 확인
+    for (outs1) |o1| {
+        var found = false;
+        for (outs2) |o2| {
+            if (std.mem.eql(u8, o1.path, o2.path)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+}
+
+// ============================================================
 // Dev Mode Tests
 // ============================================================
 

@@ -57,6 +57,8 @@ const CliOptions = struct {
     sources_content: bool = true,
     log_level: LogLevel = .info,
     charset_utf8: bool = false,
+    entry_names: []const u8 = "[name]",
+    chunk_names: []const u8 = "[name]-[hash]",
 
     const AliasEntry = BundleOptions.AliasEntry;
 
@@ -257,6 +259,10 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             };
         } else if (std.mem.eql(u8, arg, "--charset=utf8")) {
             opts.charset_utf8 = true;
+        } else if (std.mem.startsWith(u8, arg, "--entry-names=")) {
+            opts.entry_names = arg["--entry-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--chunk-names=")) {
+            opts.chunk_names = arg["--chunk-names=".len..];
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return null;
@@ -831,6 +837,8 @@ pub fn main() !void {
             .source_root = opts.source_root,
             .sources_content = opts.sources_content,
             .charset_utf8 = opts.charset_utf8,
+            .entry_names = opts.entry_names,
+            .chunk_names = opts.chunk_names,
         });
         defer bundler.deinit();
 
@@ -872,6 +880,11 @@ pub fn main() !void {
             for (outputs) |o| {
                 const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
                 defer allocator.free(full_path);
+                // naming 패턴에 디렉토리가 포함된 경우 (예: chunks/[name]-[hash])
+                // 하위 디렉토리를 생성해야 함
+                if (std.fs.path.dirname(full_path)) |dir| {
+                    std.fs.cwd().makePath(dir) catch {};
+                }
                 const file = try std.fs.cwd().createFile(full_path, .{});
                 defer file.close();
                 try file.writeAll(o.contents);

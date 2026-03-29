@@ -80,6 +80,10 @@ pub const EmitOptions = struct {
     sources_content: bool = true,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력
     charset_utf8: bool = false,
+    /// 엔트리 청크 파일명 패턴 (예: "[name]", "[name]-[hash]", "[dir]/[name]-[hash]")
+    entry_names: []const u8 = "[name]",
+    /// 공통 청크 파일명 패턴 (예: "[name]-[hash]", "chunks/[name]-[hash]")
+    chunk_names: []const u8 = "[name]-[hash]",
 
     pub const Format = enum {
         esm,
@@ -695,8 +699,8 @@ pub fn emitChunks(
 
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
-            var dep_buf: [64]u8 = undefined;
-            const dep_stem = chunkStem(dep_chunk, &dep_buf);
+            var dep_buf: [128]u8 = undefined;
+            const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
             const dep_ci = @intFromEnum(dep_chunk_idx);
 
             // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
@@ -819,7 +823,7 @@ pub fn emitChunks(
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph, options.public_path, ext);
+            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph, options.public_path, ext, options);
             defer allocator.free(code);
 
             if (!options.minify_whitespace) {
@@ -904,9 +908,9 @@ pub fn emitChunks(
             try chunk_output.append(allocator, '\n');
         }
 
-        // 출력 파일명 생성: "{stem}{ext}" (out_extension_js로 오버라이드 가능)
-        var stem_buf: [64]u8 = undefined;
-        const stem = chunkStem(chunk, &stem_buf);
+        // 출력 파일명 생성: "{stem}{ext}" (placeholder hash 포함, 나중에 치환)
+        var stem_buf: [128]u8 = undefined;
+        const stem = chunkPlaceholderStem(chunk, &stem_buf, options);
         const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext });
         errdefer allocator.free(filename);
 
@@ -915,6 +919,11 @@ pub fn emitChunks(
             .contents = try chunk_output.toOwnedSlice(allocator),
         });
     }
+
+    // 2패스: content hash 계산 및 placeholder 치환.
+    // 각 청크의 content에서 placeholder를 찾아 content hash로 교체한다.
+    // esbuild도 동일한 2패스 접근을 사용 (placeholder → content hash).
+    try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph);
 
     return outputs.toOwnedSlice(allocator);
 }
@@ -933,6 +942,7 @@ fn rewriteDynamicImports(
     chunk_graph: *const ChunkGraph,
     public_path: []const u8,
     out_ext: []const u8,
+    emit_options: EmitOptions,
 ) ![]const u8 {
     // dynamic import가 없으면 그대로 복사해서 반환
     if (module.import_records.len == 0) {
@@ -970,8 +980,8 @@ fn rewriteDynamicImports(
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
         // 청크 파일명 생성: public_path가 있으면 "{public_path}{stem}{ext}", 없으면 "./{stem}{ext}"
-        var stem_buf: [64]u8 = undefined;
-        const stem = chunkStem(target_chunk, &stem_buf);
+        var stem_buf: [128]u8 = undefined;
+        const stem = chunkPlaceholderStem(target_chunk, &stem_buf, emit_options);
         const replacement = if (public_path.len > 0)
             try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ public_path, stem, out_ext })
         else
@@ -993,15 +1003,89 @@ fn rewriteDynamicImports(
     return result;
 }
 
-/// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
-/// 엔트리 청크: 모듈 파일의 stem (예: "index", "lazy")
-/// 공통 청크: "chunk-{hash}" — 모듈 인덱스의 정렬된 Wyhash로 결정론적 파일명 생성.
-/// 같은 모듈 조합이면 삽입 순서와 무관하게 항상 같은 해시.
-fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
-    if (chunk.name) |name| return name;
-    // 모듈 인덱스를 정렬하여 삽입 순서 무관하게 결정론적 해시 생성
+/// content hash 계산 + placeholder 치환 (2패스).
+/// 모든 청크의 출력이 완성된 후 호출.
+/// 각 청크의 placeholder hash를 content hash로 교체한다.
+fn resolveContentHashes(
+    allocator: std.mem.Allocator,
+    outputs: []OutputFile,
+    sorted_indices: []const usize,
+    chunk_graph: *const ChunkGraph,
+) !void {
+    if (outputs.len == 0) return;
+
+    // 1단계: 각 청크의 placeholder hash와 content hash를 계산
+    const PlaceholderInfo = struct {
+        placeholder: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8,
+        real_hash: [HASH_PLACEHOLDER_LEN]u8,
+    };
+
+    var infos = try allocator.alloc(PlaceholderInfo, outputs.len);
+    defer allocator.free(infos);
+
+    for (sorted_indices, 0..) |ci, out_idx| {
+        if (out_idx >= outputs.len) break;
+        const chunk = &chunk_graph.chunks.items[ci];
+
+        // placeholder hash 재계산 (chunkPlaceholderStem과 동일한 방식)
+        const idx_hash = chunkIndexHash(chunk);
+        var ph: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
+        @memcpy(ph[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
+        _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+        infos[out_idx].placeholder = ph;
+
+        // content hash 계산
+        contentHash(outputs[out_idx].contents, &infos[out_idx].real_hash);
+    }
+
+    // 2단계: 모든 출력에서 모든 placeholder를 content hash로 치환
+    for (outputs, 0..) |*out, out_idx| {
+        if (out_idx >= infos.len) break;
+
+        // contents 치환: 모든 청크의 placeholder를 치환 (cross-chunk import 포함)
+        var cur_contents: []const u8 = out.contents;
+        for (infos) |info| {
+            const replaced = try replacePlaceholders(allocator, cur_contents, &info.placeholder, &info.real_hash);
+            allocator.free(cur_contents);
+            cur_contents = replaced;
+        }
+        out.contents = cur_contents;
+
+        // path 치환: 자기 청크의 placeholder만 치환
+        const new_path = try replacePlaceholders(allocator, out.path, &infos[out_idx].placeholder, &infos[out_idx].real_hash);
+        allocator.free(out.path);
+        out.path = new_path;
+    }
+}
+
+/// placeholder 해시 길이 (8자리 hex).
+const HASH_PLACEHOLDER_LEN = 8;
+/// placeholder 구분 문자열. 최종 출력에서 content hash로 치환된다.
+/// 다른 코드에서 절대 등장하지 않을 문자열을 사용.
+const HASH_PLACEHOLDER_PREFIX = "\x00ZH";
+
+/// 청크의 placeholder stem을 반환한다 (확장자 없음).
+/// cross-chunk import 등 content가 아직 없는 시점에서 사용.
+/// 엔트리 청크: naming pattern 적용 (placeholder hash 포함 가능).
+/// 공통 청크: naming pattern 적용 (placeholder hash 포함).
+/// 최종 출력 시 placeholder를 content hash로 치환한다.
+fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: EmitOptions) []const u8 {
+    const is_entry = chunk.name != null;
+    const base_name = chunk.name orelse "chunk";
+    const pattern = if (is_entry) options.entry_names else options.chunk_names;
+
+    // placeholder hash: 모듈 인덱스 기반 (나중에 content hash로 치환)
+    var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
+    @memcpy(hash_buf[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
+    const idx_hash = chunkIndexHash(chunk);
+    _ = std.fmt.bufPrint(hash_buf[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+
+    return applyNamingPattern(buf, pattern, base_name, &hash_buf);
+}
+
+/// 모듈 인덱스 기반 해시 (placeholder 식별자용, content hash 아님).
+fn chunkIndexHash(chunk: *const Chunk) u64 {
     var hasher = std.hash.Wyhash.init(0);
-    // 임시 정렬: 스택 버퍼 사용 (모듈 수가 256 이하인 일반적 경우)
     var sort_buf: [256]u32 = undefined;
     const mod_count = @min(chunk.modules.items.len, 256);
     for (chunk.modules.items[0..mod_count], sort_buf[0..mod_count]) |mod_idx, *sb| {
@@ -1011,8 +1095,104 @@ fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
     for (sort_buf[0..mod_count]) |idx| {
         hasher.update(std.mem.asBytes(&idx));
     }
+    return hasher.final();
+}
+
+/// content hash 계산: 청크의 최종 출력 코드를 Wyhash하여 8자리 hex 반환.
+pub fn contentHash(content: []const u8, buf: *[HASH_PLACEHOLDER_LEN]u8) void {
+    var hasher = std.hash.Wyhash.init(0);
+    // content에서 placeholder를 제외하고 해시 (자기 참조 순환 방지).
+    // placeholder는 "\x00ZH" + 8자리 hex 형태이므로 이를 건너뛴다.
+    var i: usize = 0;
+    while (i < content.len) {
+        if (i + HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN <= content.len and
+            std.mem.eql(u8, content[i..][0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX))
+        {
+            // placeholder 건너뛰기
+            i += HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+        } else {
+            hasher.update(content[i..][0..1]);
+            i += 1;
+        }
+    }
     const h = hasher.final();
-    return std.fmt.bufPrint(buf, "chunk-{x:0>8}", .{@as(u32, @truncate(h))}) catch "chunk";
+    _ = std.fmt.bufPrint(buf, "{x:0>8}", .{@as(u32, @truncate(h))}) catch unreachable;
+}
+
+/// placeholder를 실제 content hash로 치환한다.
+/// 반환값은 allocator 소유.
+fn replacePlaceholders(allocator: std.mem.Allocator, input: []const u8, placeholder_hash: []const u8, real_hash: []const u8) ![]const u8 {
+    // placeholder_hash는 "\x00ZH" + 8hex, real_hash는 8hex
+    // 치환 대상: placeholder_hash 전체 → real_hash
+    const ph_len = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    if (placeholder_hash.len != ph_len) return try allocator.dupe(u8, input);
+
+    // 치환 횟수 카운트
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (pos + ph_len <= input.len) {
+        if (std.mem.eql(u8, input[pos..][0..ph_len], placeholder_hash)) {
+            count += 1;
+            pos += ph_len;
+        } else {
+            pos += 1;
+        }
+    }
+    if (count == 0) return try allocator.dupe(u8, input);
+
+    // 새 버퍼 할당 + 치환
+    const new_len = input.len - count * ph_len + count * real_hash.len;
+    const result = try allocator.alloc(u8, new_len);
+    var src: usize = 0;
+    var dst: usize = 0;
+    while (src < input.len) {
+        if (src + ph_len <= input.len and
+            std.mem.eql(u8, input[src..][0..ph_len], placeholder_hash))
+        {
+            @memcpy(result[dst..][0..real_hash.len], real_hash);
+            dst += real_hash.len;
+            src += ph_len;
+        } else {
+            result[dst] = input[src];
+            dst += 1;
+            src += 1;
+        }
+    }
+    return result;
+}
+
+/// naming pattern을 적용한다.
+/// [name] → base_name, [hash] → hash_str 로 치환.
+/// buf에 결과를 쓰고 슬라이스를 반환.
+pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash_str: []const u8) []const u8 {
+    var dst: usize = 0;
+    var i: usize = 0;
+    while (i < pattern.len) {
+        if (i + "[name]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[name]".len], "[name]")) {
+            const end = @min(dst + name.len, buf.len);
+            @memcpy(buf[dst..end], name[0 .. end - dst]);
+            dst = end;
+            i += "[name]".len;
+        } else if (i + "[hash]".len <= pattern.len and std.mem.eql(u8, pattern[i..][0.."[hash]".len], "[hash]")) {
+            const end = @min(dst + hash_str.len, buf.len);
+            @memcpy(buf[dst..end], hash_str[0 .. end - dst]);
+            dst = end;
+            i += "[hash]".len;
+        } else {
+            if (dst < buf.len) {
+                buf[dst] = pattern[i];
+                dst += 1;
+            }
+            i += 1;
+        }
+    }
+    return buf[0..dst];
+}
+
+/// 후방 호환: 기존 chunkStem 시그니처 유지 (테스트 등에서 사용).
+/// 기본 naming pattern으로 placeholder stem을 생성한다.
+fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
+    return chunkPlaceholderStem(chunk, buf, .{});
 }
 
 /// used_names 사전 계산 결과.

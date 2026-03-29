@@ -78,6 +78,10 @@ pub const BundleOptions = struct {
     sources_content: bool = true,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
+    /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[name]")
+    entry_names: []const u8 = "[name]",
+    /// 공통 청크 파일명 패턴 (--chunk-names, 기본: "[name]-[hash]")
+    chunk_names: []const u8 = "[name]-[hash]",
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -207,6 +211,8 @@ pub const Bundler = struct {
             .source_root = self.options.source_root,
             .sources_content = self.options.sources_content,
             .charset_utf8 = self.options.charset_utf8,
+            .entry_names = self.options.entry_names,
+            .chunk_names = self.options.chunk_names,
         };
     }
 

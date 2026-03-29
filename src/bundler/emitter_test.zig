@@ -484,6 +484,214 @@ test "chunkStem: same modules produce same hash (deterministic)" {
 }
 
 // ============================================================
+// Content Hash Tests
+// ============================================================
+
+test "content hash: same content produces same hash" {
+    // 동일한 코드 내용이면 동일한 content hash가 나와야 한다.
+    const content = "const x = 1;\nexport { x };";
+    var hash1: [8]u8 = undefined;
+    var hash2: [8]u8 = undefined;
+    emitter.contentHash(content, &hash1);
+    emitter.contentHash(content, &hash2);
+    try std.testing.expectEqualStrings(&hash1, &hash2);
+}
+
+test "content hash: different content produces different hash" {
+    // 다른 코드 내용이면 다른 content hash가 나와야 한다.
+    var hash1: [8]u8 = undefined;
+    var hash2: [8]u8 = undefined;
+    emitter.contentHash("const x = 1;", &hash1);
+    emitter.contentHash("const x = 2;", &hash2);
+    try std.testing.expect(!std.mem.eql(u8, &hash1, &hash2));
+}
+
+test "content hash: ignores placeholders in content" {
+    // content에 placeholder가 포함되어 있어도 placeholder를 제외하고 해시해야 한다.
+    // 이는 자기 참조 순환을 방지하기 위함.
+    const prefix = "\x00ZH";
+    const placeholder = prefix ++ "abcdef01";
+    const content1 = "import '" ++ placeholder ++ "'; const x = 1;";
+    const content2 = "import '" ++ prefix ++ "12345678" ++ "'; const x = 1;";
+    var hash1: [8]u8 = undefined;
+    var hash2: [8]u8 = undefined;
+    emitter.contentHash(content1, &hash1);
+    emitter.contentHash(content2, &hash2);
+    // placeholder 부분이 달라도, 나머지가 같으면 같은 해시
+    try std.testing.expectEqualStrings(&hash1, &hash2);
+}
+
+test "naming pattern: [name] only" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPattern(&buf, "[name]", "index", "abcdef01");
+    try std.testing.expectEqualStrings("index", result);
+}
+
+test "naming pattern: [name]-[hash]" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPattern(&buf, "[name]-[hash]", "chunk", "abcdef01");
+    try std.testing.expectEqualStrings("chunk-abcdef01", result);
+}
+
+test "naming pattern: directory prefix" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPattern(&buf, "chunks/[name]-[hash]", "chunk", "12345678");
+    try std.testing.expectEqualStrings("chunks/chunk-12345678", result);
+}
+
+test "naming pattern: no placeholders" {
+    var buf: [128]u8 = undefined;
+    const result = emitter.applyNamingPattern(&buf, "bundle", "index", "abcdef01");
+    try std.testing.expectEqualStrings("bundle", result);
+}
+
+test "naming pattern: entry-names with hash" {
+    // --entry-names=[name]-[hash] 설정 시 엔트리 청크에도 hash가 붙는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{entry_path}, null);
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{
+        .entry_names = "[name]-[hash]",
+    }, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    // 파일명이 "index-{8hex}.js" 형식인지 확인
+    try std.testing.expect(std.mem.startsWith(u8, outputs[0].path, "index-"));
+    try std.testing.expect(std.mem.endsWith(u8, outputs[0].path, ".js"));
+    // "index-" (6) + 8hex + ".js" (3) = 17
+    try std.testing.expectEqual(@as(usize, 17), outputs[0].path.len);
+}
+
+test "naming pattern: chunk-names with directory" {
+    // --chunk-names=chunks/[name]-[hash] 설정 시 공통 청크 경로에 디렉토리가 포함되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 1;");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator, null);
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{
+        .chunk_names = "chunks/[name]-[hash]",
+    }, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 공통 청크가 "chunks/" 디렉토리 prefix를 가지는지 확인
+    var found_chunk = false;
+    for (outputs) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunks/")) {
+            found_chunk = true;
+            try std.testing.expect(std.mem.startsWith(u8, o.path, "chunks/chunk-"));
+            try std.testing.expect(std.mem.endsWith(u8, o.path, ".js"));
+        }
+    }
+    try std.testing.expect(found_chunk);
+}
+
+test "content hash: cross-chunk import uses content hash" {
+    // cross-chunk import 경로에도 content hash가 적용되는지 확인.
+    // 엔트리 청크가 공통 청크를 import할 때, 경로에 content hash가 포함되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { shared } from './shared';\nconsole.log('a', shared);");
+    try writeFile(tmp.dir, "b.ts", "import { shared } from './shared';\nconsole.log('b', shared);");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 'common';");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator, null);
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 공통 청크의 파일명 찾기
+    var chunk_filename: ?[]const u8 = null;
+    for (outputs) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunk-")) {
+            chunk_filename = o.path;
+        }
+    }
+    try std.testing.expect(chunk_filename != null);
+
+    // 공통 청크의 stem (확장자 제외)
+    const chunk_stem = chunk_filename.?[0 .. chunk_filename.?.len - ".js".len];
+
+    // 엔트리 청크의 import 문에 공통 청크 stem이 포함되어야 한다
+    var found_import = false;
+    for (outputs) |o| {
+        if (!std.mem.startsWith(u8, o.path, "chunk-")) {
+            if (std.mem.indexOf(u8, o.contents, chunk_stem) != null) {
+                found_import = true;
+            }
+        }
+    }
+    try std.testing.expect(found_import);
+
+    // placeholder ("\x00ZH") 문자가 최종 출력에 남아있으면 안 된다
+    for (outputs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "\x00ZH") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.path, "\x00ZH") == null);
+    }
+}
+
+// ============================================================
 // CJS Runtime Deduplication Tests
 // ============================================================
 
