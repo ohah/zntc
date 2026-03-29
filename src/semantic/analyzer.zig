@@ -126,7 +126,6 @@ pub const SemanticAnalyzer = struct {
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
 
-
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
@@ -505,7 +504,6 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
             try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
-
     }
 
     /// 가장 가까운 var scope(function/global/module)를 찾는다.

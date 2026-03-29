@@ -38,7 +38,6 @@ pub const ModuleSemanticData = struct {
     unresolved_references: std.StringHashMap(void),
     /// mangler용 참조 scope 페어. liveness BitSet 계산에 사용.
     ref_scope_pairs: []const RefScopePair = &.{},
-
 };
 
 pub const Module = struct {
