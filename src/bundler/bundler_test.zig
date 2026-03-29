@@ -6361,6 +6361,32 @@ test "JSON import: ESM format uses json_ variable (linker integration)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
 }
 
+test "IIFE globalName: export → return 변환 (linker integration)" {
+    // IIFE + globalName에서 엔트리 export가 "return { ... }" 형태로 출력되는지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const answer = 42;\nexport const name = \"test\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .global_name = "MyLib",
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // IIFE prologue: var MyLib = (function() {
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var MyLib = (function()") != null);
+    // 엔트리 export가 return으로 변환됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return {") != null);
+    // export 키워드가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "export {") == null);
+}
+
 // ============================================================
 // P2: multi-level rename re-export chain
 // ============================================================
@@ -7697,7 +7723,7 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -7795,7 +7821,7 @@ test "CJS: require overrides ESM promotion (both import and require same module)
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();

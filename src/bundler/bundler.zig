@@ -174,7 +174,13 @@ pub const Bundler = struct {
         return .{
             .allocator = allocator,
             .options = options,
-            .resolve_cache = ResolveCache.init(allocator, options.platform, options.external, options.conditions, options.preserve_symlinks, options.alias),
+            .resolve_cache = ResolveCache.init(allocator, .{
+                .platform = options.platform,
+                .external_patterns = options.external,
+                .custom_conditions = options.conditions,
+                .preserve_symlinks = options.preserve_symlinks,
+                .alias = options.alias,
+            }),
         };
     }
 

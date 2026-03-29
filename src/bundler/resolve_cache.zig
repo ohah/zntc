@@ -105,14 +105,23 @@ pub const ResolveCache = struct {
         };
     }
 
+    pub const InitOptions = struct {
+        platform: Platform = .browser,
+        external_patterns: []const []const u8 = &.{},
+        custom_conditions: []const []const u8 = &.{},
+        preserve_symlinks: bool = false,
+        alias: []const resolver_mod.AliasEntry = &.{},
+    };
+
     pub fn init(
         allocator: std.mem.Allocator,
-        platform: Platform,
-        external_patterns: []const []const u8,
-        custom_conditions: []const []const u8,
-        preserve_symlinks: bool,
-        alias: []const resolver_mod.AliasEntry,
+        options: InitOptions,
     ) ResolveCache {
+        const platform = options.platform;
+        const external_patterns = options.external_patterns;
+        const custom_conditions = options.custom_conditions;
+        const preserve_symlinks = options.preserve_symlinks;
+        const alias = options.alias;
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
         r.alias = alias;

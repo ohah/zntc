@@ -27,7 +27,7 @@ test "matchGlob: node: prefix" {
 }
 
 test "isExternal: node: prefix always external" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("node:fs"));
@@ -36,7 +36,7 @@ test "isExternal: node: prefix always external" {
 }
 
 test "isExternal: node builtins when platform=node" {
-    var cache = ResolveCache.init(std.testing.allocator, .node, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{ .platform = .node });
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("fs"));
@@ -59,7 +59,7 @@ test "isNodeBuiltin" {
 }
 
 test "isExternal: node builtins NOT external when platform=browser" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
 
     try std.testing.expect(!cache.isExternal("fs"));
@@ -67,7 +67,7 @@ test "isExternal: node builtins NOT external when platform=browser" {
 }
 
 test "isExternal: user patterns" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{ "react", "@mui/*" }, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{ "react", "@mui/*" } });
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("react"));
@@ -76,7 +76,7 @@ test "isExternal: user patterns" {
 }
 
 test "resolve: external returns null" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{"react"}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
     defer cache.deinit();
 
     const result = try cache.resolve("/some/dir", "react", .static_import);
@@ -94,7 +94,7 @@ test "resolve: cache hit" {
     const file = try tmp.dir.createFile("foo.ts", .{});
     file.close();
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
 
     // 첫 번째 호출 (캐시 미스) — caller 소유
@@ -121,7 +121,7 @@ test "resolve: not found cached" {
     const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(dir_path);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
 
     // 존재하지 않는 파일

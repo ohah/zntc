@@ -17,7 +17,7 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
@@ -170,7 +170,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -216,7 +216,7 @@ test "linker: external import not resolved (no binding)" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{"react"}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -530,7 +530,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -569,7 +569,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();

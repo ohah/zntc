@@ -143,9 +143,6 @@ pub fn emitWithTreeShaking(
     // 포맷별 prologue
     switch (options.format) {
         .iife => {
-            // TODO: IIFE export를 return 객체로 변환 (linker에서 final_exports를
-            // `export { x }` 대신 `return { x }` 형태로 생성해야 함).
-            // 현재는 globalName 할당만 래핑하고, export → return 변환은 미구현.
             if (options.global_name) |gn| {
                 if (std.mem.indexOfScalar(u8, gn, '.') != null) {
                     try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
@@ -1418,7 +1415,22 @@ pub fn emitModule(
 
     // CJS import preamble + final_exports를 하나의 concat으로 합침 (중간 할당 누수 방지)
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
-    const final_exports = if (metadata) |md| md.final_exports else null;
+    const raw_final_exports = if (metadata) |md| md.final_exports else null;
+
+    // IIFE + globalName: "export { x }" → "return { x }" 변환.
+    // linker는 format-agnostic하게 "export {}" 를 생성하므로, emitter에서 IIFE 시 치환.
+    var iife_return_buf: ?[]const u8 = null;
+    defer if (iife_return_buf) |buf| allocator.free(buf);
+
+    const final_exports = if (raw_final_exports) |fe| blk: {
+        if (options.format == .iife and options.global_name != null) {
+            if (std.mem.startsWith(u8, fe, "export {")) {
+                iife_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
+                break :blk iife_return_buf.?;
+            }
+        }
+        break :blk fe;
+    } else null;
 
     if (preamble != null or final_exports != null) {
         return try std.mem.concat(allocator, u8, &.{

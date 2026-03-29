@@ -15,7 +15,7 @@ fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
     return .{ .graph = graph, .cache = cache };
@@ -105,7 +105,7 @@ test "emitter: CJS format" {
 }
 
 test "emitter: empty graph" {
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -179,7 +179,7 @@ fn buildGraphMultiEntry(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, 
         try entries.append(allocator, try std.fs.path.resolve(allocator, &.{ dp, name }));
     }
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(entries.items);
     return .{ .graph = graph, .cache = cache };

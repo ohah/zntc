@@ -44,7 +44,7 @@ fn buildAndShakeWithOpts(
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
@@ -196,7 +196,7 @@ test "tree-shaking: included module's dependencies are propagated" {
 
 // --- 테스트 10: 빈 그래프 ---
 test "tree-shaking: empty module graph" {
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{}, false, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
