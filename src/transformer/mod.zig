@@ -28,6 +28,7 @@ pub const es2021 = @import("es2021.zig");
 pub const es2022 = @import("es2022.zig");
 pub const es2024 = @import("es2024.zig");
 pub const es_helpers = @import("es_helpers.zig");
+pub const minify = @import("minify.zig");
 
 test {
     _ = transformer;
@@ -41,6 +42,7 @@ test {
     _ = es2022;
     _ = es2024;
     _ = es_helpers;
+    _ = minify;
 
     // test files
     _ = @import("transformer_test.zig");

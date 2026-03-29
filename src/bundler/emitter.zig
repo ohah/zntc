@@ -42,6 +42,8 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 pub const EmitOptions = struct {
     format: Format = .esm,
     minify_whitespace: bool = false,
+    /// AST 레벨 최적화 (constant folding, DCE 등)
+    minify_syntax: bool = false,
     /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
     sourcemap: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
@@ -1152,6 +1154,11 @@ pub fn emitModule(
         transformer.old_symbol_ids = sem.symbol_ids;
     }
     const root = try transformer.transform();
+
+    // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
+    if (options.minify_syntax) {
+        @import("../transformer/minify.zig").minify(&transformer.new_ast);
+    }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
     // packed struct(u16)이므로 bitwise OR로 한번에 합친다

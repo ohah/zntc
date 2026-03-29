@@ -404,6 +404,12 @@ fn transpileFile(
         try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
         return;
     };
+
+    // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
+    if (options.minify_syntax) {
+        @import("zts_lib").transformer.minify.minify(&transformer.new_ast);
+    }
+
     if (timer) |*t| {
         t_transform = t.read();
         t.reset();

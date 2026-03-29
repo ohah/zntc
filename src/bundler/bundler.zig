@@ -271,6 +271,7 @@ pub const Bundler = struct {
                 .{
                     .format = self.options.format,
                     .minify_whitespace = self.options.minify_whitespace,
+                    .minify_syntax = self.options.minify_syntax,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
@@ -297,6 +298,7 @@ pub const Bundler = struct {
                 .{
                     .format = self.options.format,
                     .minify_whitespace = self.options.minify_whitespace,
+                    .minify_syntax = self.options.minify_syntax,
                     .define = self.options.define,
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
