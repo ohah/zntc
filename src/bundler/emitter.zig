@@ -161,7 +161,7 @@ pub fn emitWithTreeShaking(
         allocator.free(used_names_list);
     }
 
-    // Phase 2: emitModule 병렬 실행
+    // Phase 2: emitModule 병렬 실행 (2개 이상이면 스레드 풀, 아니면 순차)
     var results = try allocator.alloc(EmitResult, sorted.items.len);
     defer {
         for (results) |r| {
@@ -171,34 +171,26 @@ pub fn emitWithTreeShaking(
     }
     for (results) |*r| r.* = .{};
 
-    // 모듈 수가 2개 이상이면 스레드 풀 사용
-    if (sorted.items.len >= 2) {
-        var pool: std.Thread.Pool = undefined;
-        const pool_ok = if (pool.init(.{ .allocator = allocator })) |_| true else |_| false;
-        defer if (pool_ok) pool.deinit();
+    var use_pool = sorted.items.len >= 2;
+    var pool: std.Thread.Pool = undefined;
+    if (use_pool) {
+        use_pool = if (pool.init(.{ .allocator = allocator })) |_| true else |_| false;
+    }
+    defer if (use_pool) pool.deinit();
 
-        if (pool_ok) {
-            var wg: std.Thread.WaitGroup = .{};
-            for (sorted.items, 0..) |m, i| {
-                const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
-                const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-                pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
-            }
-            pool.waitAndWork(&wg);
-        } else {
-            // 풀 초기화 실패 시 순차 실행
-            for (sorted.items, 0..) |m, i| {
-                const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
-                const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-                results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers) catch null;
-            }
-        }
-    } else {
-        // 단일 모듈은 직접 실행
+    if (use_pool) {
+        var wg: std.Thread.WaitGroup = .{};
         for (sorted.items, 0..) |m, i| {
             const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers);
+            pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
+        }
+        pool.waitAndWork(&wg);
+    } else {
+        for (sorted.items, 0..) |m, i| {
+            const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+            const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers) catch null;
         }
     }
 
@@ -1084,7 +1076,11 @@ fn computeAllUsedNames(
             list[idx] = .{ .names = &.{}, .all_used = true };
         } else {
             list[idx] = .{
-                .names = names_buf.toOwnedSlice(allocator) catch &.{},
+                .names = names_buf.toOwnedSlice(allocator) catch blk: {
+                    // OOM: 내부 버퍼 해제 후 all_used 처리 (불완전한 이름 목록 방지)
+                    names_buf.deinit(allocator);
+                    break :blk &.{};
+                },
                 .all_used = false,
             };
         }
