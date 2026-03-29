@@ -89,6 +89,8 @@ pub fn minify(ast: *Ast) void {
             .conditional_expression => foldConditional(ast, @intCast(i), node),
             .if_statement => foldIf(ast, @intCast(i), node),
             .while_statement => foldWhile(ast, @intCast(i), node),
+            .sequence_expression => simplifySequence(ast, @intCast(i), node),
+            .template_literal => foldTemplate(ast, @intCast(i), node),
             else => {},
         }
     }
@@ -519,4 +521,95 @@ fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
         },
         else => {},
     }
+}
+
+// ================================================================
+// Phase 4: Comma Operator + Template Literal Folding
+// ================================================================
+
+/// sequence_expression (comma operator) 축약.
+/// side-effect-free 리터럴만 있는 앞쪽 항목 제거: (0, foo) → foo
+/// 단, 2개 항목이고 좌측이 리터럴인 경우만.
+fn simplifySequence(ast: *Ast, node_idx: u32, node: Node) void {
+    const list = node.data.list;
+    if (list.len != 2) return;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    const first_ni: u32 = indices[0];
+    const second_ni: u32 = indices[1];
+    if (first_ni >= ast.nodes.items.len or second_ni >= ast.nodes.items.len) return;
+
+    const first = ast.nodes.items[first_ni];
+
+    if (isSideEffectFreeLiteral(first)) {
+        ast.nodes.items[node_idx] = ast.nodes.items[second_ni];
+    }
+}
+
+fn isSideEffectFreeLiteral(node: Node) bool {
+    return switch (node.tag) {
+        .numeric_literal, .string_literal, .boolean_literal, .null_literal => true,
+        else => false,
+    };
+}
+
+/// template literal 축약.
+/// 모든 substitution이 string_literal이면 단일 string으로 합침.
+fn foldTemplate(ast: *Ast, node_idx: u32, node: Node) void {
+    // substitution 없는 단순 template은 대상 아님
+    if (node.data.none == 0) return;
+
+    const list = node.data.list;
+    if (list.len == 0) return;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    const items = ast.extra_data.items[list.start .. list.start + list.len];
+
+    // 모든 substitution이 string_literal인지 확인
+    for (items) |item_raw| {
+        if (item_raw >= ast.nodes.items.len) return;
+        const child = ast.nodes.items[item_raw];
+        if (child.tag != .template_element and child.tag != .string_literal) return;
+    }
+
+    // 모든 항목을 연결
+    var buf: [8192]u8 = undefined;
+    var pos: usize = 1;
+    buf[0] = '"';
+
+    for (items) |item_raw| {
+        const child = ast.nodes.items[item_raw];
+        const text = ast.getText(child.span);
+        const content = if (child.tag == .string_literal)
+            stripQuotes(text)
+        else
+            stripTemplateQuotes(text);
+
+        if (pos + content.len >= buf.len - 1) return;
+        @memcpy(buf[pos .. pos + content.len], content);
+        pos += content.len;
+    }
+
+    buf[pos] = '"';
+    pos += 1;
+
+    const span = ast.addString(buf[0..pos]) catch return;
+    ast.nodes.items[node_idx] = .{
+        .tag = .string_literal,
+        .span = span,
+        .data = .{ .none = 0 },
+    };
+}
+
+/// template element의 raw 텍스트에서 backtick/`${`/`}` 마커를 제거한다.
+fn stripTemplateQuotes(text: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = text.len;
+    if (start < end and (text[start] == '`' or text[start] == '}')) start += 1;
+    if (end >= 2 and text[end - 2] == '$' and text[end - 1] == '{') {
+        end -= 2;
+    } else if (end > start and text[end - 1] == '`') {
+        end -= 1;
+    }
+    return if (start <= end) text[start..end] else "";
 }
