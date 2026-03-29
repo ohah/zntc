@@ -111,7 +111,6 @@ pub const ModuleGraph = struct {
             if (batch_size >= 2) {
                 try self.parseModulesBatch(parse_start, parse_end);
             } else {
-                // 1개면 순차 (스레드 오버헤드 방지)
                 self.parseModule(@enumFromInt(@as(u32, @intCast(parse_start))));
             }
 
@@ -204,27 +203,29 @@ pub const ModuleGraph = struct {
         const count = end - start;
         if (count == 0) return;
 
-        // 스레드 핸들 저장
-        var threads = try self.allocator.alloc(std.Thread, count);
-        defer self.allocator.free(threads);
-
-        var spawned: usize = 0;
-        for (start..end) |i| {
-            threads[i - start] = std.Thread.spawn(.{}, parseModuleThread, .{ self, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) }) catch {
-                // 스레드 생성 실패 시 순차 파싱으로 폴백
+        // 스레드 풀: CPU 코어 수만큼 워커 스레드 생성 (스레드 생성 오버헤드 최소화).
+        // 모듈당 스레드 1개 대신 N개 워커가 작업 큐에서 모듈을 가져가 파싱한다.
+        var pool: std.Thread.Pool = undefined;
+        pool.init(.{ .allocator = self.allocator }) catch {
+            // 풀 생성 실패 시 순차 파싱
+            for (start..end) |i| {
                 self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
-                continue;
-            };
-            spawned += 1;
+            }
+            return;
+        };
+        defer pool.deinit();
+
+        var wg: std.Thread.WaitGroup = .{};
+
+        for (start..end) |i| {
+            pool.spawnWg(&wg, parseModuleThread, .{ self, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) });
         }
 
-        // 모든 스레드 대기
-        for (threads[0..spawned]) |t| {
-            t.join();
-        }
+        // 메인 스레드도 작업에 참여하며 대기
+        pool.waitAndWork(&wg);
     }
 
-    /// 스레드에서 실행되는 모듈 파싱 래퍼.
+    /// 스레드 풀에서 실행되는 모듈 파싱 래퍼.
     fn parseModuleThread(self: *ModuleGraph, idx: ModuleIndex) void {
         self.parseModule(idx);
     }
