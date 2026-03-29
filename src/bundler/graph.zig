@@ -387,9 +387,6 @@ pub const ModuleGraph = struct {
         module.state = .parsed;
     }
 
-    // finalizeModule 제거 — import/export 추출은 parseModule에서 병렬 처리 (parse_arena 소유).
-    // sideEffects 반영은 build() 루프에서 직접 applySideEffectsFromPackageJson 호출.
-
     /// 모듈 경로에서 node_modules/패키지/ 디렉토리 경로를 추출.
     /// 스코프 패키지 (@scope/name) 지원.
     fn findPackageDirPath(module_path: []const u8) ?[]const u8 {
