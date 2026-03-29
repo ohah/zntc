@@ -1003,6 +1003,11 @@ fn rewriteDynamicImports(
     return result;
 }
 
+const PlaceholderInfo = struct {
+    placeholder: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8,
+    real_hash: [HASH_PLACEHOLDER_LEN]u8,
+};
+
 /// content hash 계산 + placeholder 치환 (2패스).
 /// 모든 청크의 출력이 완성된 후 호출.
 /// 각 청크의 placeholder hash를 content hash로 교체한다.
@@ -1015,11 +1020,6 @@ fn resolveContentHashes(
     if (outputs.len == 0) return;
 
     // 1단계: 각 청크의 placeholder hash와 content hash를 계산
-    const PlaceholderInfo = struct {
-        placeholder: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8,
-        real_hash: [HASH_PLACEHOLDER_LEN]u8,
-    };
-
     var infos = try allocator.alloc(PlaceholderInfo, outputs.len);
     defer allocator.free(infos);
 
@@ -1027,32 +1027,23 @@ fn resolveContentHashes(
         if (out_idx >= outputs.len) break;
         const chunk = &chunk_graph.chunks.items[ci];
 
-        // placeholder hash 재계산 (chunkPlaceholderStem과 동일한 방식)
-        const idx_hash = chunkIndexHash(chunk);
-        var ph: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
-        @memcpy(ph[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
-        _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
-        infos[out_idx].placeholder = ph;
+        buildPlaceholder(chunk, &infos[out_idx].placeholder);
 
         // content hash 계산
         contentHash(outputs[out_idx].contents, &infos[out_idx].real_hash);
     }
 
-    // 2단계: 모든 출력에서 모든 placeholder를 content hash로 치환
-    for (outputs, 0..) |*out, out_idx| {
-        if (out_idx >= infos.len) break;
+    // 2단계: 모든 출력에서 모든 placeholder를 content hash로 단일패스 치환.
+    // O(N*M) → O(M) (M=content 길이, N=청크 수).
+    const ph_total = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+    for (outputs) |*out| {
+        // contents: 모든 placeholder를 한 번의 스캔으로 치환
+        const new_contents = try replaceAllPlaceholders(allocator, out.contents, infos, ph_total);
+        allocator.free(out.contents);
+        out.contents = new_contents;
 
-        // contents 치환: 모든 청크의 placeholder를 치환 (cross-chunk import 포함)
-        var cur_contents: []const u8 = out.contents;
-        for (infos) |info| {
-            const replaced = try replacePlaceholders(allocator, cur_contents, &info.placeholder, &info.real_hash);
-            allocator.free(cur_contents);
-            cur_contents = replaced;
-        }
-        out.contents = cur_contents;
-
-        // path 치환: 자기 청크의 placeholder만 치환
-        const new_path = try replacePlaceholders(allocator, out.path, &infos[out_idx].placeholder, &infos[out_idx].real_hash);
+        // path도 동일하게 치환
+        const new_path = try replaceAllPlaceholders(allocator, out.path, infos, ph_total);
         allocator.free(out.path);
         out.path = new_path;
     }
@@ -1064,21 +1055,24 @@ const HASH_PLACEHOLDER_LEN = 8;
 /// 다른 코드에서 절대 등장하지 않을 문자열을 사용.
 const HASH_PLACEHOLDER_PREFIX = "\x00ZH";
 
+/// 청크의 인덱스 해시로 placeholder 바이트를 생성한다.
+/// chunkPlaceholderStem과 resolveContentHashes에서 공용.
+fn buildPlaceholder(chunk: *const Chunk, ph: *[HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8) void {
+    @memcpy(ph[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
+    const idx_hash = chunkIndexHash(chunk);
+    _ = std.fmt.bufPrint(ph[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+}
+
 /// 청크의 placeholder stem을 반환한다 (확장자 없음).
 /// cross-chunk import 등 content가 아직 없는 시점에서 사용.
-/// 엔트리 청크: naming pattern 적용 (placeholder hash 포함 가능).
-/// 공통 청크: naming pattern 적용 (placeholder hash 포함).
 /// 최종 출력 시 placeholder를 content hash로 치환한다.
 fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: EmitOptions) []const u8 {
     const is_entry = chunk.name != null;
     const base_name = chunk.name orelse "chunk";
     const pattern = if (is_entry) options.entry_names else options.chunk_names;
 
-    // placeholder hash: 모듈 인덱스 기반 (나중에 content hash로 치환)
     var hash_buf: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8 = undefined;
-    @memcpy(hash_buf[0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX);
-    const idx_hash = chunkIndexHash(chunk);
-    _ = std.fmt.bufPrint(hash_buf[HASH_PLACEHOLDER_PREFIX.len..], "{x:0>8}", .{@as(u32, @truncate(idx_hash))}) catch unreachable;
+    buildPlaceholder(chunk, &hash_buf);
 
     return applyNamingPattern(buf, pattern, base_name, &hash_buf);
 }
@@ -1099,27 +1093,72 @@ fn chunkIndexHash(chunk: *const Chunk) u64 {
 }
 
 /// content hash 계산: 청크의 최종 출력 코드를 Wyhash하여 8자리 hex 반환.
+/// placeholder 바이트를 건너뛰어 자기 참조 순환을 방지한다.
 pub fn contentHash(content: []const u8, buf: *[HASH_PLACEHOLDER_LEN]u8) void {
+    const ph_total = HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
     var hasher = std.hash.Wyhash.init(0);
-    // content에서 placeholder를 제외하고 해시 (자기 참조 순환 방지).
-    // placeholder는 "\x00ZH" + 8자리 hex 형태이므로 이를 건너뛴다.
     var i: usize = 0;
+    var run_start: usize = 0; // 현재 non-placeholder 구간의 시작
     while (i < content.len) {
-        if (i + HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN <= content.len and
+        if (i + ph_total <= content.len and
             std.mem.eql(u8, content[i..][0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX))
         {
-            // placeholder 건너뛰기
-            i += HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN;
+            // placeholder 앞까지의 구간을 벌크 해싱
+            if (i > run_start) hasher.update(content[run_start..i]);
+            i += ph_total;
+            run_start = i;
         } else {
-            hasher.update(content[i..][0..1]);
             i += 1;
         }
     }
+    // 마지막 구간 벌크 해싱
+    if (i > run_start) hasher.update(content[run_start..i]);
     const h = hasher.final();
     _ = std.fmt.bufPrint(buf, "{x:0>8}", .{@as(u32, @truncate(h))}) catch unreachable;
 }
 
-/// placeholder를 실제 content hash로 치환한다.
+/// 모든 placeholder를 단일패스로 치환한다.
+/// input을 1회 스캔하면서 "\x00ZH" prefix를 만나면 infos에서 매칭하여 real_hash로 치환.
+fn replaceAllPlaceholders(allocator: std.mem.Allocator, input: []const u8, infos: []const PlaceholderInfo, ph_total: usize) ![]const u8 {
+    // placeholder가 있는지 빠르게 확인 (없으면 복사만)
+    if (std.mem.indexOf(u8, input, HASH_PLACEHOLDER_PREFIX) == null) {
+        return try allocator.dupe(u8, input);
+    }
+
+    // 최대 크기: 원본과 동일 (placeholder가 real_hash보다 길어서 줄어듦)
+    var result: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    var run_start: usize = 0;
+    while (i + ph_total <= input.len) {
+        if (std.mem.eql(u8, input[i..][0..HASH_PLACEHOLDER_PREFIX.len], HASH_PLACEHOLDER_PREFIX)) {
+            // run_start..i 까지의 일반 텍스트 복사
+            try result.appendSlice(allocator, input[run_start..i]);
+            // infos에서 매칭하는 placeholder 찾기
+            const ph_bytes = input[i..][0..ph_total];
+            var found = false;
+            for (infos) |info| {
+                if (std.mem.eql(u8, ph_bytes, &info.placeholder)) {
+                    try result.appendSlice(allocator, &info.real_hash);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // 매칭 안 되면 원본 유지
+                try result.appendSlice(allocator, ph_bytes);
+            }
+            i += ph_total;
+            run_start = i;
+        } else {
+            i += 1;
+        }
+    }
+    // 나머지 복사
+    try result.appendSlice(allocator, input[run_start..]);
+    return result.toOwnedSlice(allocator);
+}
+
+/// 단일 placeholder를 실제 content hash로 치환한다.
 /// 반환값은 allocator 소유.
 fn replacePlaceholders(allocator: std.mem.Allocator, input: []const u8, placeholder_hash: []const u8, real_hash: []const u8) ![]const u8 {
     // placeholder_hash는 "\x00ZH" + 8hex, real_hash는 8hex
@@ -1187,12 +1226,6 @@ pub fn applyNamingPattern(buf: []u8, pattern: []const u8, name: []const u8, hash
         }
     }
     return buf[0..dst];
-}
-
-/// 후방 호환: 기존 chunkStem 시그니처 유지 (테스트 등에서 사용).
-/// 기본 naming pattern으로 placeholder stem을 생성한다.
-fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
-    return chunkPlaceholderStem(chunk, buf, .{});
 }
 
 /// used_names 사전 계산 결과.
