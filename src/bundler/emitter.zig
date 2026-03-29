@@ -18,151 +18,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
 const WrapKind = types.WrapKind;
-
-/// CJS 런타임 헬퍼: __commonJS 팩토리 함수 (esbuild 호환)
-const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
-const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
-
-/// __toESM 런타임 헬퍼: CJS 모듈을 ESM namespace로 변환 (esbuild/rolldown 호환).
-/// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.
-/// __esModule=true이면 원본 프로퍼티를 사용하되 default는 추가하지 않음.
-/// 참고: references/esbuild/internal/runtime/runtime.go:231
-///       references/rolldown/crates/rolldown/src/runtime/index.js:86
-const TOESM_RUNTIME =
-    \\var __getProtoOf = Object.getPrototypeOf;
-    \\var __defProp = Object.defineProperty;
-    \\var __hasOwn = Object.prototype.hasOwnProperty;
-    \\var __copyProps = (to, from) => { for (let key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
-    \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
-    \\
-;
-const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(let key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
-/// __decorateClass 런타임 헬퍼: experimental decorators 변환 시 주입 (esbuild 호환).
-/// __defProp은 __toESM 런타임에도 있지만, decorator 단독 사용 시를 위해 별도 선언.
-const DECORATOR_RUNTIME =
-    \\var __defProp2 = Object.defineProperty;
-    \\var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-    \\var __decorateClass = (decorators, target, key, kind) => {
-    \\  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    \\  for (var i = decorators.length - 1, decorator; i >= 0; i--)
-    \\    if (decorator = decorators[i])
-    \\      result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    \\  if (kind && result) __defProp2(target, key, result);
-    \\  return result;
-    \\};
-    \\var __decorateParam = (index, decorator) => (target, key) => decorator(target, key, index);
-    \\
-;
-const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __decorateClass=(decorators,target,key,kind)=>{var result=kind>1?void 0:kind?__getOwnPropDesc(target,key):target;for(var i=decorators.length-1,decorator;i>=0;i--)if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;if(kind&&result)__defProp2(target,key,result);return result};var __decorateParam=(index,decorator)=>(target,key)=>decorator(target,key,index);";
-
-/// __async 런타임 헬퍼: async/await → generator 변환 시 주입 (esbuild 호환).
-/// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
-///
-/// 스펙 참고: esbuild internal/runtime/runtime.go __async
-const ASYNC_RUNTIME =
-    \\var __async = (fn) => function(...args) {
-    \\  return new Promise((resolve, reject) => {
-    \\    var gen = fn.apply(this, args);
-    \\    function step(key, arg) {
-    \\      try { var info = gen[key](arg); var value = info.value; }
-    \\      catch (error) { reject(error); return; }
-    \\      if (info.done) resolve(value);
-    \\      else Promise.resolve(value).then(val => step("next", val), err => step("throw", err));
-    \\    }
-    \\    step("next");
-    \\  });
-    \\};
-    \\
-;
-const ASYNC_RUNTIME_MIN = "var __async=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
-
-/// __extends 런타임 헬퍼: class 상속 prototype chain (ES2015).
-/// TypeScript __extends 호환.
-const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
-const EXTENDS_RUNTIME_MIN = "var __extends=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
-
-/// __generator 런타임 헬퍼: generator 상태 머신 (ES2015).
-/// TypeScript __generator 호환. yield/return/throw를 label 기반 switch로 처리.
-const GENERATOR_RUNTIME = "var __generator = function(body) {\n  var _ = { label: 0, sent: function() { return t[1]; }, trys: [], ops: [] }, f, y, t, g;\n  return g = { next: verb(0), \"throw\": verb(1), \"return\": verb(2) }, g[Symbol.iterator] = function() { return this; }, g;\n  function verb(n) { return function(v) { return step([n, v]); }; }\n  function step(op) {\n    if (f) throw new TypeError(\"Generator is already executing.\");\n    while (g && (g = 0, op[0] && (_ = 0)), _) try {\n      if (f = 1, y && (t = op[0] & 2 ? y[\"return\"] : op[0] ? y[\"throw\"] || ((t = y[\"return\"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;\n      if (y = 0, t) op = [op[0] & 2, t.value];\n      switch (op[0]) {\n        case 0: case 1: t = op; break;\n        case 4: _.label++; return { value: op[1], done: false };\n        case 5: _.label++; y = op[1]; op = [0]; continue;\n        case 7: op = _.ops.pop(); _.trys.pop(); continue;\n        default:\n          if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }\n          if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }\n          if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }\n          if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }\n          if (t[2]) _.ops.pop();\n          _.trys.pop(); continue;\n      }\n      op = body.call(null, _);\n    } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }\n    if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };\n  }\n};\n";
-const GENERATOR_RUNTIME_MIN = "var __generator=function(body){var _={label:0,sent:function(){return t[1]},trys:[],ops:[]},f,y,t,g;return g={next:verb(0),\"throw\":verb(1),\"return\":verb(2)},g[Symbol.iterator]=function(){return this},g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(null,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}};";
-
-/// __rest 런타임 헬퍼: object destructuring rest (ES2018).
-/// TypeScript __rest 호환. exclude 배열에 없는 own 프로퍼티만 복사.
-const REST_RUNTIME = "var __rest = function(s, e) {\n  var t = {};\n  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];\n  return t;\n};\n";
-const REST_RUNTIME_MIN = "var __rest=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];return t};";
-
-/// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
-/// dev mode 번들 상단에 주입된다.
-///
-/// 구조:
-///   __zts_modules[id] = { factory, exports, hot }
-///   __zts_require(id) → 모듈의 exports 반환
-///   __zts_make_hot(id) → import.meta.hot 호환 API 객체
-///   __zts_apply_update(id, code) → 모듈 재실행 (WS에서 호출)
-const HMR_RUNTIME =
-    \\var __zts_modules = {};
-    \\var __zts_hot_cbs = {};
-    \\var __zts_hot_data = {};
-    \\function __zts_require(id) {
-    \\  var m = __zts_modules[id];
-    \\  if (!m) throw new Error("[zts] Module not found: " + id);
-    \\  return m.exports;
-    \\}
-    \\function __zts_make_hot(id) {
-    \\  if (!__zts_hot_cbs[id]) __zts_hot_cbs[id] = {};
-    \\  return {
-    \\    get data() { return __zts_hot_data[id]; },
-    \\    accept: function(deps, cb) {
-    \\      if (typeof deps === "function") { cb = deps; deps = undefined; }
-    \\      __zts_hot_cbs[id].accept = cb || true;
-    \\      if (Array.isArray(deps)) __zts_hot_cbs[id].acceptDeps = deps;
-    \\    },
-    \\    dispose: function(cb) { __zts_hot_cbs[id].dispose = cb; },
-    \\    prune: function(cb) { __zts_hot_cbs[id].prune = cb; },
-    \\    invalidate: function() { location.reload(); }
-    \\  };
-    \\}
-    \\function __zts_register(id, factory) {
-    \\  var prev = __zts_modules[id];
-    \\  var mod = { exports: {}, hot: __zts_make_hot(id), factory: factory };
-    \\  __zts_modules[id] = mod;
-    \\  window.__zts_currentModuleId = id;
-    \\  factory(mod, mod.exports);
-    \\  if (prev) {
-    \\    var cbs = __zts_hot_cbs[id];
-    \\    if (cbs && cbs.dispose) {
-    \\      __zts_hot_data[id] = {};
-    \\      cbs.dispose(__zts_hot_data[id]);
-    \\    }
-    \\  }
-    \\}
-    \\function __zts_apply_update(updates) {
-    \\  for (var i = 0; i < updates.length; i++) {
-    \\    var id = updates[i].id;
-    \\    var cbs = __zts_hot_cbs[id];
-    \\    if (!cbs || !cbs.accept) { location.reload(); return; }
-    \\    try {
-    \\      var fn = new Function("__zts_register", "__zts_require", "__zts_make_hot", updates[i].code);
-    \\      fn(__zts_register, __zts_require, __zts_make_hot);
-    \\      if (typeof cbs.accept === "function") cbs.accept();
-    \\    } catch(e) { console.error("[zts] HMR update failed:", e); location.reload(); }
-    \\  }
-    \\  if (typeof __zts_RefreshRuntime !== "undefined") __zts_RefreshRuntime.performReactRefresh();
-    \\}
-    \\var __zts_RefreshRuntime = window.__REACT_REFRESH_RUNTIME__;
-    \\window.$RefreshReg$ = function(type, id) {
-    \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, window.__zts_currentModuleId + " " + id);
-    \\};
-    \\window.$RefreshSig$ = function() {
-    \\  if (__zts_RefreshRuntime) return __zts_RefreshRuntime.createSignatureFunctionForTransform();
-    \\  return function(type) { return type; };
-    \\};
-    \\
-;
-
-const HMR_RUNTIME_MIN =
-    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={};function __zts_require(id){var m=__zts_modules[id];if(!m)throw new Error("[zts] Module not found: "+id);return m.exports}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){location.reload()}}}function __zts_register(id,f){var p=__zts_modules[id];var m={exports:{},hot:__zts_make_hot(id),factory:f};__zts_modules[id]=m;f(m,m.exports);if(p){var c=__zts_hot_cbs[id];if(c&&c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}}}function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){location.reload();return}try{var fn=new Function("__zts_register","__zts_require","__zts_make_hot",u[i].code);fn(__zts_register,__zts_require,__zts_make_hot);if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);location.reload()}}}
-;
+const rt = @import("runtime_helpers.zig");
 
 const chunk_mod = @import("chunk.zig");
 const ChunkGraph = chunk_mod.ChunkGraph;
@@ -271,41 +127,8 @@ pub fn emitWithTreeShaking(
         .esm => {},
     }
 
-    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입
-    var needs_cjs_runtime = false;
-    for (sorted.items) |m| {
-        if (m.wrap_kind == .cjs) {
-            needs_cjs_runtime = true;
-            break;
-        }
-    }
-    if (needs_cjs_runtime) {
-        if (options.minify_whitespace) {
-            try output.appendSlice(allocator, CJS_RUNTIME_MIN);
-            try output.appendSlice(allocator, TOESM_RUNTIME_MIN);
-        } else {
-            try output.appendSlice(allocator, CJS_RUNTIME);
-            try output.appendSlice(allocator, TOESM_RUNTIME);
-        }
-    }
-
-    // Decorator 런타임 주입: experimental decorators 사용 시
-    if (options.experimental_decorators) {
-        if (options.minify_whitespace) {
-            try output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
-        } else {
-            try output.appendSlice(allocator, DECORATOR_RUNTIME);
-        }
-    }
-
-    // Async 런타임 주입: target < es2017 시
-    if (options.target.needsAsyncAwait()) {
-        if (options.minify_whitespace) {
-            try output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
-        } else {
-            try output.appendSlice(allocator, ASYNC_RUNTIME);
-        }
-    }
+    // 런타임 헬퍼 주입
+    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, options);
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
     // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE 포맷에서는 동작하지 않는다.
@@ -457,7 +280,7 @@ pub fn emitWithTreeShaking(
     }
 
     // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
-    try appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace);
+    try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace);
 
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
@@ -540,9 +363,9 @@ pub fn emitDevBundle(
 
     // HMR 런타임 주입
     if (options.minify_whitespace) {
-        try output.appendSlice(allocator, HMR_RUNTIME_MIN);
+        try output.appendSlice(allocator, rt.HMR_RUNTIME_MIN);
     } else {
-        try output.appendSlice(allocator, HMR_RUNTIME);
+        try output.appendSlice(allocator, rt.HMR_RUNTIME);
     }
 
     // per-module codes 수집 (한 번의 transform 패스에서 동시 생성)
@@ -562,14 +385,8 @@ pub fn emitDevBundle(
         null;
     defer if (bundle_sm) |*sm| sm.deinit();
 
-    // HMR 런타임의 줄 수 (comptime 상수)
-    const hmr_runtime_lines = comptime blk: {
-        @setEvalBranchQuota(10000);
-        break :blk @as(u32, std.mem.count(u8, HMR_RUNTIME, "\n"));
-    };
-
     // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
-    var bundle_line: u32 = if (!options.minify_whitespace) hmr_runtime_lines else 1;
+    var bundle_line: u32 = if (!options.minify_whitespace) rt.HMR_RUNTIME_LINES else 1;
 
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
@@ -853,38 +670,8 @@ pub fn emitChunks(
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
 
-        // CJS 런타임 헬퍼: 이 청크에 CJS 래핑 모듈이 있으면 주입
-        var needs_cjs_runtime = false;
-        for (chunk.modules.items) |mod_idx| {
-            const mi = @intFromEnum(mod_idx);
-            if (mi < modules.len and modules[mi].wrap_kind == .cjs) {
-                needs_cjs_runtime = true;
-                break;
-            }
-        }
-        if (needs_cjs_runtime) {
-            if (options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, CJS_RUNTIME_MIN);
-                try chunk_output.appendSlice(allocator, TOESM_RUNTIME_MIN);
-            } else {
-                try chunk_output.appendSlice(allocator, CJS_RUNTIME);
-                try chunk_output.appendSlice(allocator, TOESM_RUNTIME);
-            }
-        }
-        if (options.experimental_decorators) {
-            if (options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
-            } else {
-                try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME);
-            }
-        }
-        if (options.target.needsAsyncAwait()) {
-            if (options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
-            } else {
-                try chunk_output.appendSlice(allocator, ASYNC_RUNTIME);
-            }
-        }
+        // 청크별 런타임 헬퍼 주입
+        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, modules, options);
 
         // 크로스 청크 import deconfliction:
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.
@@ -1598,19 +1385,60 @@ fn propagateCrossModulePurity(
     }
 }
 
-/// 런타임 헬퍼 문자열을 ArrayList에 주입한다.
-/// standalone 트랜스파일(main.zig)에서도 사용할 수 있도록 pub으로 노출.
-pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, helpers: RuntimeHelpers, minify: bool) !void {
-    if (helpers.extends) {
-        try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
+/// 런타임 헬퍼 문자열을 ArrayList에 주입한다 (re-export for backward compat).
+pub const appendRuntimeHelpers = rt.appendRuntimeHelpers;
+
+/// 번들 레벨 런타임 헬퍼 주입 (CJS interop + decorator + async).
+/// emitWithTreeShaking에서 사용.
+fn emitBundleRuntimeHelpers(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    sorted_modules: []const *const Module,
+    options: EmitOptions,
+) !void {
+    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입
+    var needs_cjs_runtime = false;
+    for (sorted_modules) |m| {
+        if (m.wrap_kind == .cjs) {
+            needs_cjs_runtime = true;
+            break;
+        }
     }
-    if (helpers.generator) {
-        try buf.appendSlice(allocator, if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
+    if (needs_cjs_runtime) {
+        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
     }
-    if (helpers.rest) {
-        try buf.appendSlice(allocator, if (minify) REST_RUNTIME_MIN else REST_RUNTIME);
+    if (options.experimental_decorators) {
+        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
-    if (helpers.async_helper) {
-        try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
+    if (options.target.needsAsyncAwait()) {
+        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
+    }
+}
+
+/// 청크별 런타임 헬퍼 주입.
+/// emitChunks에서 사용.
+fn emitChunkRuntimeHelpers(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    chunk: *const Chunk,
+    modules: []const Module,
+    options: EmitOptions,
+) !void {
+    var needs_cjs_runtime = false;
+    for (chunk.modules.items) |mod_idx| {
+        const mi = @intFromEnum(mod_idx);
+        if (mi < modules.len and modules[mi].wrap_kind == .cjs) {
+            needs_cjs_runtime = true;
+            break;
+        }
+    }
+    if (needs_cjs_runtime) {
+        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (options.experimental_decorators) {
+        try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (options.target.needsAsyncAwait()) {
+        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
     }
 }

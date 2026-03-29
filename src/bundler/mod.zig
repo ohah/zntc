@@ -29,6 +29,7 @@ pub const statement_shaker = @import("statement_shaker.zig");
 pub const purity = @import("purity.zig");
 pub const stmt_info = @import("stmt_info.zig");
 pub const chunk = @import("chunk.zig");
+pub const runtime_helpers = @import("runtime_helpers.zig");
 pub const bundler_core = @import("bundler.zig");
 
 // 공개 타입 re-export
@@ -71,6 +72,7 @@ test {
     _ = purity;
     _ = stmt_info;
     _ = chunk;
+    _ = runtime_helpers;
     _ = bundler_core;
 
     // test files
