@@ -111,9 +111,16 @@ pub const ModuleStmtInfos = struct {
     }
 };
 
+fn sliceContains(comptime T: type, slice: []const T, value: T) bool {
+    for (slice) |item| {
+        if (item == value) return true;
+    }
+    return false;
+}
+
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
-fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
+pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
     if (stmt_spans.len == 0) return null;
 
     var lo: u32 = 0;
@@ -195,7 +202,7 @@ pub fn build(
     }
 
     // Phase 2: 모든 AST 노드를 단일 패스로 순회하며 심볼 수집 — O(N log S)
-    // 각 statement별 declared/referenced 임시 버퍼
+    // per-statement 임시 버퍼 (선형 탐색으로 중복 방지 — 심볼 수가 적으므로 HashMap보다 효율적)
     var declared_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
     defer {
         for (declared_bufs) |*b| b.deinit(allocator);
@@ -210,21 +217,6 @@ pub fn build(
     }
     for (referenced_bufs) |*b| b.* = .empty;
 
-    // 중복 방지용 per-statement set (symbol_index별 비트)
-    var declared_sets = try allocator.alloc(std.AutoHashMapUnmanaged(u32, void), stmt_count);
-    defer {
-        for (declared_sets) |*s| s.deinit(allocator);
-        allocator.free(declared_sets);
-    }
-    for (declared_sets) |*s| s.* = .{};
-
-    var referenced_sets = try allocator.alloc(std.AutoHashMapUnmanaged(u32, void), stmt_count);
-    defer {
-        for (referenced_sets) |*s| s.deinit(allocator);
-        allocator.free(referenced_sets);
-    }
-    for (referenced_sets) |*s| s.* = .{};
-
     // 단일 패스: 모든 노드 → binary search로 소속 statement 결정
     for (ast.nodes.items, 0..) |n, node_i| {
         const stmt_i = findStmtForPos(stmt_spans, n.span.start) orelse continue;
@@ -233,15 +225,15 @@ pub fn build(
         if (sym_idx >= symbols.len) continue;
 
         const sym = &symbols[sym_idx];
+        const sym_idx_u32: u32 = @intCast(sym_idx);
 
         // declared: top-level scope에 선언된 심볼
         if (@intFromEnum(sym.scope_id) == 0 and
             n.span.start >= sym.declaration_span.start and
             n.span.end <= sym.declaration_span.end)
         {
-            if (!declared_sets[stmt_i].contains(@intCast(sym_idx))) {
-                try declared_sets[stmt_i].put(allocator, @intCast(sym_idx), {});
-                try declared_bufs[stmt_i].append(allocator, @intCast(sym_idx));
+            if (!sliceContains(u32, declared_bufs[stmt_i].items, sym_idx_u32)) {
+                try declared_bufs[stmt_i].append(allocator, sym_idx_u32);
                 if (sym_idx < sym_to_stmt.len) {
                     sym_to_stmt[sym_idx] = @intCast(stmt_i);
                 }
@@ -253,21 +245,20 @@ pub fn build(
             .identifier_reference, .assignment_target_identifier => true,
             else => false,
         };
-        if (is_ref and !declared_sets[stmt_i].contains(@intCast(sym_idx))) {
-            if (!referenced_sets[stmt_i].contains(@intCast(sym_idx))) {
-                try referenced_sets[stmt_i].put(allocator, @intCast(sym_idx), {});
-                try referenced_bufs[stmt_i].append(allocator, @intCast(sym_idx));
+        if (is_ref and !sliceContains(u32, declared_bufs[stmt_i].items, sym_idx_u32)) {
+            if (!sliceContains(u32, referenced_bufs[stmt_i].items, sym_idx_u32)) {
+                try referenced_bufs[stmt_i].append(allocator, sym_idx_u32);
             }
         }
     }
 
-    // Phase 2 결과를 stmts에 기록
+    // Phase 2 결과를 stmts에 기록 (toOwnedSlice로 이중 할당 방지)
     for (stmts, 0..) |*stmt, stmt_i| {
-        if (stmt.declared_symbols.len == 0 and declared_bufs[stmt_i].items.len > 0) {
-            stmt.declared_symbols = try allocator.dupe(u32, declared_bufs[stmt_i].items);
+        if (declared_bufs[stmt_i].items.len > 0) {
+            stmt.declared_symbols = try declared_bufs[stmt_i].toOwnedSlice(allocator);
         }
-        if (stmt.referenced_symbols.len == 0 and referenced_bufs[stmt_i].items.len > 0) {
-            stmt.referenced_symbols = try allocator.dupe(u32, referenced_bufs[stmt_i].items);
+        if (referenced_bufs[stmt_i].items.len > 0) {
+            stmt.referenced_symbols = try referenced_bufs[stmt_i].toOwnedSlice(allocator);
         }
     }
 
@@ -282,8 +273,7 @@ pub fn build(
     defer allocator.free(se_counts);
     @memset(se_counts, 0);
 
-    for (stmts, 0..) |stmt, si| {
-        _ = si;
+    for (stmts) |stmt| {
         for (stmt.referenced_symbols) |sym| {
             if (sym < sym_count) {
                 ref_counts[sym] += 1;
