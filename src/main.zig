@@ -68,7 +68,7 @@ const CliOptions = struct {
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
-    plugin_path: ?[]const u8 = null,
+    plugin_paths: std.ArrayList([]const u8) = .empty,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -292,7 +292,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--plugin")) {
             if (i + 1 < args.len) {
                 i += 1;
-                opts.plugin_path = args[i];
+                try opts.plugin_paths.append(allocator, args[i]);
             } else {
                 try stderr.print("zts: --plugin requires a file path\n", .{});
                 return null;
@@ -898,18 +898,21 @@ pub fn main() !void {
         }
 
         // Subprocess 플러그인 spawn (--plugin 옵션이 있을 때)
-        var subprocess: ?*SubprocessPlugin = null;
-        defer if (subprocess) |sp| sp.shutdown();
+        var subprocess_list: std.ArrayList(*SubprocessPlugin) = .empty;
+        defer {
+            for (subprocess_list.items) |sp| sp.shutdown();
+            subprocess_list.deinit(allocator);
+        }
+        var plugin_list: std.ArrayList(plugin_mod.Plugin) = .empty;
+        defer plugin_list.deinit(allocator);
 
-        var plugin_list: [1]plugin_mod.Plugin = undefined;
-        var plugins_slice: []const plugin_mod.Plugin = &.{};
-        if (opts.plugin_path) |config_path| {
-            subprocess = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
-                try stderr.print("zts: plugin spawn failed: {}\n", .{err});
+        for (opts.plugin_paths.items) |config_path| {
+            const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
+                try stderr.print("zts: plugin '{s}' spawn failed: {}\n", .{ config_path, err });
                 return;
             };
-            plugin_list[0] = subprocess.?.toPlugin();
-            plugins_slice = &plugin_list;
+            try subprocess_list.append(allocator, sp);
+            try plugin_list.append(allocator, sp.toPlugin());
         }
 
         var bundler = Bundler.init(allocator, .{
@@ -946,7 +949,7 @@ pub fn main() !void {
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,
             .keep_names = opts.keep_names,
-            .plugins = plugins_slice,
+            .plugins = plugin_list.items,
         });
         defer bundler.deinit();
 

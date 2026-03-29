@@ -20,6 +20,7 @@ import { createInterface } from "node:readline";
 
 class PluginHost {
   constructor() {
+    this.name = "unnamed";
     this.hooks = {
       resolveId: [],
       load: [],
@@ -52,7 +53,17 @@ class PluginHost {
   async handleMessage(msg) {
     switch (msg.type) {
       case "init":
-        return { id: msg.id, filters: this.getFilters(), error: null };
+        return {
+          id: msg.id,
+          name: this.name,
+          filters: this.getFilters(),
+          hooks: {
+            resolveId: this.hooks.resolveId.length > 0,
+            load: this.hooks.load.length > 0,
+            transform: this.hooks.transform.length > 0,
+          },
+          error: null,
+        };
       case "resolveId":
         return this.runFirstHook("resolveId", msg);
       case "load":
@@ -129,9 +140,17 @@ class PluginHost {
  *
  * @param {(build: BuildAPI) => void} setup — 플러그인 등록 함수
  */
-export function definePlugin(setup) {
+export function definePlugin(nameOrSetup, maybeSetup) {
   const host = new PluginHost();
   const build = host.createBuildAPI();
+
+  let setup;
+  if (typeof nameOrSetup === "string") {
+    host.name = nameOrSetup;
+    setup = maybeSetup;
+  } else {
+    setup = nameOrSetup;
+  }
   setup(build);
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
