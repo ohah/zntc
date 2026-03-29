@@ -159,6 +159,96 @@ pub const ModuleType = enum {
 };
 
 // ============================================================
+// 로더 (Asset Loader)
+// ============================================================
+
+/// 모듈의 로딩 방식. ModuleType(파일의 본질)과 별개로,
+/// 번들러가 파일을 어떻게 처리할지 결정한다.
+/// --loader:.png=file 같은 CLI 옵션으로 확장자별 오버라이드 가능.
+/// 플러그인 API의 load 훅과 1:1 대응 (PLUGINS.md 참고).
+pub const Loader = enum {
+    /// 기본값 — JS/TS 파싱 파이프라인
+    javascript,
+    /// JSON 모듈 (기존 처리)
+    json,
+    /// CSS (미구현, 향후 CSS 번들링)
+    css,
+    /// 파일을 출력 디렉토리에 복사하고 URL 문자열을 export.
+    /// export default "/assets/logo-a1b2c3.png"
+    file,
+    /// 파일을 base64 data URL로 인라인.
+    /// export default "data:image/png;base64,..."
+    dataurl,
+    /// 파일을 UTF-8 문자열로 export.
+    /// export default "file contents..."
+    text,
+    /// 파일을 base64 인코딩 + __toBinary 런타임 헬퍼로 Uint8Array export.
+    /// export default __toBinary("base64...")
+    binary,
+    /// file과 동일하되 원본 디렉토리 구조를 유지.
+    copy,
+    /// 빈 모듈 (무시)
+    empty,
+    /// 알 수 없는 로더 (에러 발생)
+    none,
+
+    /// 확장자에서 기본 로더를 추론한다.
+    /// JS/JSON/CSS는 해당 로더, 나머지는 .none (--loader로 명시 필요).
+    pub fn fromExtension(ext: []const u8) Loader {
+        if (std.mem.eql(u8, ext, ".ts") or
+            std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".js") or
+            std.mem.eql(u8, ext, ".jsx") or
+            std.mem.eql(u8, ext, ".mjs") or
+            std.mem.eql(u8, ext, ".mts") or
+            std.mem.eql(u8, ext, ".cjs") or
+            std.mem.eql(u8, ext, ".cts"))
+        {
+            return .javascript;
+        }
+        if (std.mem.eql(u8, ext, ".json")) return .json;
+        if (std.mem.eql(u8, ext, ".css")) return .css;
+        if (std.mem.eql(u8, ext, ".txt")) return .text;
+        return .none;
+    }
+
+    /// 문자열에서 Loader enum으로 변환 (CLI 파싱용).
+    /// "file", "dataurl", "text", "binary", "copy", "json", "css", "empty" 지원.
+    pub fn fromString(s: []const u8) ?Loader {
+        if (std.mem.eql(u8, s, "file")) return .file;
+        if (std.mem.eql(u8, s, "dataurl")) return .dataurl;
+        if (std.mem.eql(u8, s, "text")) return .text;
+        if (std.mem.eql(u8, s, "binary")) return .binary;
+        if (std.mem.eql(u8, s, "copy")) return .copy;
+        if (std.mem.eql(u8, s, "json")) return .json;
+        if (std.mem.eql(u8, s, "css")) return .css;
+        if (std.mem.eql(u8, s, "empty")) return .empty;
+        if (std.mem.eql(u8, s, "js")) return .javascript;
+        if (std.mem.eql(u8, s, "jsx")) return .javascript;
+        if (std.mem.eql(u8, s, "ts")) return .javascript;
+        if (std.mem.eql(u8, s, "tsx")) return .javascript;
+        return null;
+    }
+
+    /// asset 로더인지 (file/dataurl/text/binary/copy/empty).
+    /// JS/JSON/CSS가 아닌 로더.
+    pub fn isAsset(self: Loader) bool {
+        return switch (self) {
+            .file, .dataurl, .text, .binary, .copy, .empty => true,
+            else => false,
+        };
+    }
+};
+
+/// --loader:.ext=type CLI 옵션 하나를 나타내는 쌍.
+pub const LoaderOverride = struct {
+    /// 확장자 (dot 포함, 예: ".png")
+    ext: []const u8,
+    /// 적용할 로더
+    loader: Loader,
+};
+
+// ============================================================
 // Import 레코드 (D079)
 // ============================================================
 
@@ -273,6 +363,11 @@ pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
 /// JSON 모듈 ESM용 변수명. "data.json" → "json_data"
 pub fn makeJsonVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return makeVarNameWithPrefix(allocator, path, "json_");
+}
+
+/// Asset 모듈 ESM용 변수명. "logo.png" → "asset_logo"
+pub fn makeAssetVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return makeVarNameWithPrefix(allocator, path, "asset_");
 }
 
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.

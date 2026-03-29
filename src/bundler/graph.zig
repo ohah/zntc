@@ -35,6 +35,7 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
+const mime = @import("../server/mime.zig");
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -55,6 +56,12 @@ pub const ModuleGraph = struct {
 
     /// 파이프라인 단계별 타이밍 출력 (--timing)
     timing: bool = false,
+    /// 확장자별 로더 오버라이드 (--loader:.png=file). bundler에서 전달.
+    loader_overrides: []const types.LoaderOverride = &.{},
+    /// 에셋/청크 URL prefix (--public-path). asset 로더에서 사용.
+    public_path: []const u8 = "",
+    /// 에셋 파일명 패턴 (--asset-names). asset 로더에서 사용.
+    asset_names: []const u8 = "[name]-[hash]",
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -83,6 +90,15 @@ pub const ModuleGraph = struct {
         while (se_it.next()) |se| se.deinit(self.allocator);
         self.side_effects_cache.deinit();
         self.diagnostics.deinit(self.allocator);
+    }
+
+    /// 확장자에 대한 로더를 결정한다.
+    /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
+    fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.Loader {
+        for (self.loader_overrides) |override| {
+            if (std.mem.eql(u8, override.ext, ext)) return override.loader;
+        }
+        return types.Loader.fromExtension(ext);
     }
 
     /// 진입점들로부터 모듈 그래프를 구축한다.
@@ -212,7 +228,14 @@ pub const ModuleGraph = struct {
         const path_owned = try self.allocator.dupe(u8, abs_path);
 
         var module = Module.init(index, path_owned);
-        module.module_type = ModuleType.fromExtension(std.fs.path.extension(abs_path));
+        const ext = std.fs.path.extension(abs_path);
+        module.module_type = ModuleType.fromExtension(ext);
+        // 로더 결정: --loader 오버라이드 → 확장자 기본값
+        module.loader = self.resolveLoader(ext);
+        // asset 로더가 설정되면 module_type도 .asset으로 업데이트
+        if (module.loader.isAsset()) {
+            module.module_type = .asset;
+        }
         try self.modules.append(self.allocator, module);
         try self.path_to_module.put(path_owned, index);
 
@@ -412,6 +435,12 @@ pub const ModuleGraph = struct {
             module.exports_kind = .commonjs;
             module.wrap_kind = .cjs;
             module.state = .ready;
+            return;
+        }
+
+        // Asset 로더: 파일을 읽어서 fake JS 모듈로 변환 (rolldown 방식)
+        if (module.loader.isAsset()) {
+            self.parseAssetModule(module);
             return;
         }
 
@@ -800,6 +829,131 @@ pub const ModuleGraph = struct {
         }
     }
 
+    /// Asset 로더 모듈을 파싱한다.
+    /// 파일을 읽어서 로더 타입에 따라 fake JS 소스를 생성하고,
+    /// module_type을 .javascript로 바꿔서 기존 파이프라인을 그대로 탄다.
+    fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
+        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const arena_alloc = module.parse_arena.?.allocator();
+
+        switch (module.loader) {
+            .text => {
+                // UTF-8 문자열로 읽어서 JS 문자열 리터럴 생성
+                const content = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
+                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
+                    module.state = .ready;
+                    return;
+                };
+                const escaped = escapeJsString(arena_alloc, content) catch {
+                    module.state = .ready;
+                    return;
+                };
+                // source에는 값 표현식만 저장 (JSON 모듈과 동일 패턴)
+                // emitter에서 var asset_X = <source>; 형태로 출력
+                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{escaped}) catch {
+                    module.state = .ready;
+                    return;
+                };
+            },
+            .dataurl => {
+                // 바이너리 읽기 → base64 인코딩 → data URL 문자열
+                const raw = readFileBinary(arena_alloc, module.path) catch {
+                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
+                    module.state = .ready;
+                    return;
+                };
+                const encoded = base64Encode(arena_alloc, raw) catch {
+                    module.state = .ready;
+                    return;
+                };
+                const full_mime = mime.fromExtension(module.path);
+                const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
+                    full_mime[0..semi]
+                else
+                    full_mime;
+
+                module.source = std.fmt.allocPrint(arena_alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch {
+                    module.state = .ready;
+                    return;
+                };
+            },
+            .binary => {
+                // 바이너리 읽기 → base64 인코딩 → __toBinary("...") 호출 표현식
+                const raw = readFileBinary(arena_alloc, module.path) catch {
+                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
+                    module.state = .ready;
+                    return;
+                };
+                const encoded = base64Encode(arena_alloc, raw) catch {
+                    module.state = .ready;
+                    return;
+                };
+                module.source = std.fmt.allocPrint(arena_alloc, "__toBinary(\"{s}\")", .{encoded}) catch {
+                    module.state = .ready;
+                    return;
+                };
+            },
+            .file, .copy => {
+                // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
+                const raw = readFileBinary(arena_alloc, module.path) catch {
+                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
+                    module.state = .ready;
+                    return;
+                };
+                const hash = contentHash(raw);
+                const ext = std.fs.path.extension(module.path);
+                const basename = std.fs.path.basename(module.path);
+                const name_without_ext = if (ext.len > 0 and basename.len > ext.len)
+                    basename[0 .. basename.len - ext.len]
+                else
+                    basename;
+
+                const output_name = applyAssetNamingPattern(arena_alloc, self.asset_names, name_without_ext, &hash, ext) catch {
+                    module.state = .ready;
+                    return;
+                };
+
+                module.asset_data = .{
+                    .raw_content = raw,
+                    .content_hash = hash,
+                    .output_name = output_name,
+                    .ext = ext,
+                };
+
+                const url = if (self.public_path.len > 0)
+                    std.fmt.allocPrint(arena_alloc, "{s}{s}", .{ self.public_path, output_name }) catch {
+                        module.state = .ready;
+                        return;
+                    }
+                else
+                    std.fmt.allocPrint(arena_alloc, "./{s}", .{output_name}) catch {
+                        module.state = .ready;
+                        return;
+                    };
+
+                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
+                    module.state = .ready;
+                    return;
+                };
+            },
+            .empty => {
+                module.source = "undefined";
+            },
+            else => {
+                module.state = .ready;
+                return;
+            },
+        }
+
+        // JSON 모듈과 동일한 CJS wrap 패턴: linker가 import 바인딩을 자동으로 연결.
+        // source에는 값 표현식만 저장되고, emitter가 var/module.exports 형태로 출력.
+        module.module_type = .javascript;
+        module.exports_kind = .commonjs;
+        module.wrap_kind = .cjs;
+        module.side_effects = false;
+        module.state = .ready;
+    }
+
     fn addDiag(
         self: *ModuleGraph,
         code: BundlerDiagnostic.ErrorCode,
@@ -823,6 +977,77 @@ pub const ModuleGraph = struct {
         }) catch {};
     }
 };
+
+// ============================================================
+// Asset 로더 유틸리티
+// ============================================================
+
+/// JS 문자열 리터럴용 이스케이프. \ " \n \r \0 을 처리한다.
+fn escapeJsString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    for (input) |c| {
+        switch (c) {
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            0 => try buf.appendSlice(allocator, "\\0"),
+            // backtick, $는 template literal 미사용이므로 불필요
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// 파일을 바이너리로 읽는다 (Arena 할당).
+fn readFileBinary(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fs.cwd().readFileAlloc(allocator, path, 100 * 1024 * 1024);
+}
+
+/// 바이트 배열을 standard base64로 인코딩한다.
+fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
+    const encoder = std.base64.standard.Encoder;
+    const encoded_len = encoder.calcSize(data.len);
+    const buf = try allocator.alloc(u8, encoded_len);
+    _ = encoder.encode(buf, data);
+    return buf;
+}
+
+/// 파일 내용의 content hash (xxHash → 16진수 8자리).
+/// emitter의 content hash와 동일 알고리즘.
+fn contentHash(data: []const u8) [8]u8 {
+    const hash_val = std.hash.XxHash64.hash(0, data);
+    var buf: [8]u8 = undefined;
+    _ = std.fmt.bufPrint(&buf, "{x:0>8}", .{@as(u32, @truncate(hash_val))}) catch unreachable;
+    return buf;
+}
+
+/// asset naming 패턴 적용: [name] [hash] 치환 + 확장자 추가.
+fn applyAssetNamingPattern(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+    name: []const u8,
+    hash: *const [8]u8,
+    ext: []const u8,
+) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < pattern.len) {
+        if (std.mem.startsWith(u8, pattern[i..], "[name]")) {
+            try buf.appendSlice(allocator, name);
+            i += "[name]".len;
+        } else if (std.mem.startsWith(u8, pattern[i..], "[hash]")) {
+            try buf.appendSlice(allocator, hash);
+            i += "[hash]".len;
+        } else {
+            try buf.append(allocator, pattern[i]);
+            i += 1;
+        }
+    }
+    // 확장자 추가
+    try buf.appendSlice(allocator, ext);
+    return buf.toOwnedSlice(allocator);
+}
 
 /// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.
 /// 우선순위: 1) ESM+CJS 혼용 → esm_with_dynamic_fallback

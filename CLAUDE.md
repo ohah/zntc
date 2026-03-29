@@ -276,6 +276,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 8. AST 미니파이어 | constant folding, DCE, boolean simplification, comma operator | ✅ |
 | 9. 배치 A | 번들러 옵션 10개 (alias, banner, globalName, publicPath, JSON ESM 등) | ✅ |
 | 10. 배치 B | content hash + naming 패턴 (--entry-names, --chunk-names) | ✅ |
+| 11. 배치 C | Asset 로더 (file, dataurl, text, binary, copy) + --loader CLI | ✅ |
 
 ### 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -339,11 +340,10 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 #### Critical (없으면 실사용 어려움)
 
-- **Asset 로더** (file, dataurl, text, binary, copy) — `L` | 선행: ✅ content hash, naming 패턴 | 배치: C
-  이미지, 폰트, SVG, `.txt`, `.wasm` 등 non-JS 파일을 import할 수 없음.
-  esbuild는 `--loader:.png=file` 형태로 파일 타입별 로더 지정. file 로더는 해시 파일명으로 복사 + URL 문자열 export, dataurl은 base64 인라인.
-  React/Vue 프로젝트에서 `import logo from './logo.png'` 패턴이 매우 흔하므로 없으면 프론트엔드 프로젝트 빌드 불가.
-  **현황**: ModuleType.asset 정의만 있고 parseModule()에서 source도 안 읽음. emitter에서 완전 제외. 로더별 emit 로직 + 출력 다중화 필요.
+- ~~**Asset 로더** (file, dataurl, text, binary, copy)~~ — ✅ 완료
+  `--loader:.png=file` 로 확장자별 로더 지정. fake JS 모듈 방식 (rolldown 방식).
+  file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
+  `--asset-names`, `--public-path` 지원.
 
 - **CSS 번들링** — `XL (2~3주)` | 선행: emitter 출력 다중화 | 배치: 단독
   JS에서 `import './style.css'`를 처리하지 못함. CSS Modules (`import styles from './foo.module.css'`)도 미지원.
@@ -428,10 +428,11 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   content hash (파일 내용 기반) + naming 패턴 ([name].[hash])
   → 2패스 placeholder 치환 (esbuild 방식). --entry-names, --chunk-names.
 
-배치 C (3~5일, 배치 B 후) ──────────────────────────────────────
+배치 C (3~5일, 배치 B 후) ✅ 완료 ──────────────────────────────
   Asset 로더 (file/dataurl/text/binary/copy)
   + emitter 출력 다중화 (JS 외 파일 출력)
   → content hash + naming 패턴 위에 구축.
+  → fake JS 모듈 방식 (rolldown 방식, 플러그인 API load 훅 정합).
 
 배치 D (2~3일, 독립) ───────────────────────────────────────────
   metafile + analyze + inject + legal comments + keepNames
@@ -546,6 +547,8 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
 --entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
 --chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
+--asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], 예: assets/[name]-[hash])
+--loader:.ext=type           확장자별 로더 지정 (file, dataurl, text, binary, copy, empty)
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```

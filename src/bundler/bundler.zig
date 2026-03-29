@@ -82,6 +82,10 @@ pub const BundleOptions = struct {
     entry_names: []const u8 = "[name]",
     /// 공통 청크 파일명 패턴 (--chunk-names, 기본: "[name]-[hash]")
     chunk_names: []const u8 = "[name]-[hash]",
+    /// 에셋 파일명 패턴 (--asset-names, 기본: "[name]-[hash]")
+    asset_names: []const u8 = "[name]-[hash]",
+    /// 확장자별 로더 오버라이드 (--loader:.png=file)
+    loader_overrides: []const types.LoaderOverride = &.{},
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -101,6 +105,9 @@ pub const BundleResult = struct {
     /// dev mode: JS 모듈별 __zts_register(...) 코드. HMR 모듈 단위 업데이트용.
     /// id로 매칭 (module_paths와 인덱스 대응 아님). allocator 소유.
     module_dev_codes: ?[]const ModuleDevCode = null,
+    /// asset 파일 출력 (file/copy 로더). allocator 소유.
+    /// JS 청크와 별도로 출력 디렉토리에 복사해야 하는 파일들.
+    asset_outputs: ?[]OutputFile = null,
 
     /// dev mode에서 모듈별 HMR 업데이트 코드.
     pub const ModuleDevCode = struct {
@@ -153,6 +160,13 @@ pub const BundleResult = struct {
         }
         if (self.module_dev_codes) |codes| {
             ModuleDevCode.freeAll(codes, allocator);
+        }
+        if (self.asset_outputs) |outs| {
+            for (outs) |o| {
+                allocator.free(o.path);
+                allocator.free(o.contents);
+            }
+            allocator.free(outs);
         }
     }
 
@@ -213,6 +227,7 @@ pub const Bundler = struct {
             .charset_utf8 = self.options.charset_utf8,
             .entry_names = self.options.entry_names,
             .chunk_names = self.options.chunk_names,
+            .asset_names = self.options.asset_names,
         };
     }
 
@@ -231,6 +246,9 @@ pub const Bundler = struct {
         // graph가 &self.resolve_cache를 참조 — self가 move되지 않으므로 포인터 안전.
         var graph = ModuleGraph.init(self.allocator, &self.resolve_cache);
         graph.timing = timing;
+        graph.loader_overrides = self.options.loader_overrides;
+        graph.public_path = self.options.public_path;
+        graph.asset_names = self.options.asset_names;
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);
@@ -409,6 +427,29 @@ pub const Bundler = struct {
             break :blk paths;
         } else null;
 
+        // 5.5. Asset 파일 수집 (file/copy 로더 — 출력 디렉토리에 복사할 파일들)
+        const asset_outputs: ?[]OutputFile = blk: {
+            var asset_count: usize = 0;
+            for (graph.modules.items) |m| {
+                if (m.asset_data != null) asset_count += 1;
+            }
+            if (asset_count == 0) break :blk null;
+
+            const outs = try self.allocator.alloc(OutputFile, asset_count);
+            errdefer self.allocator.free(outs);
+            var idx: usize = 0;
+            for (graph.modules.items) |m| {
+                if (m.asset_data) |ad| {
+                    outs[idx] = .{
+                        .path = try self.allocator.dupe(u8, ad.output_name),
+                        .contents = try self.allocator.dupe(u8, ad.raw_content),
+                    };
+                    idx += 1;
+                }
+            }
+            break :blk outs;
+        };
+
         // 6. Dev mode: emitDevBundle에서 이미 생성된 per-module codes를 BundleResult 타입으로 변환
         const module_dev_codes: ?[]const BundleResult.ModuleDevCode = if (module_dev_codes_from_emit) |emit_codes| blk: {
             // emitter.DevBundleResult.ModuleDevCode → BundleResult.ModuleDevCode
@@ -429,6 +470,7 @@ pub const Bundler = struct {
             .diagnostics = diagnostics,
             .module_paths = module_paths,
             .module_dev_codes = module_dev_codes,
+            .asset_outputs = asset_outputs,
         };
     }
 };

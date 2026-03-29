@@ -59,8 +59,12 @@ const CliOptions = struct {
     charset_utf8: bool = false,
     entry_names: []const u8 = "[name]",
     chunk_names: []const u8 = "[name]-[hash]",
+    asset_names: []const u8 = "[name]-[hash]",
+    loader_list: std.ArrayList(LoaderOverride) = .empty,
 
     const AliasEntry = BundleOptions.AliasEntry;
+    const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
+    const LoaderEnum = @import("zts_lib").bundler.types.Loader;
 
     const LogLevel = enum {
         silent,
@@ -76,6 +80,7 @@ const CliOptions = struct {
         self.define_list.deinit(alloc);
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
+        self.loader_list.deinit(alloc);
     }
 };
 
@@ -263,6 +268,27 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.entry_names = arg["--entry-names=".len..];
         } else if (std.mem.startsWith(u8, arg, "--chunk-names=")) {
             opts.chunk_names = arg["--chunk-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--asset-names=")) {
+            opts.asset_names = arg["--asset-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--loader:")) {
+            // --loader:.png=file (esbuild 호환)
+            const kv = arg["--loader:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                const ext_str = kv[0..eq_pos];
+                const loader_str = kv[eq_pos + 1 ..];
+                if (CliOptions.LoaderEnum.fromString(loader_str)) |loader| {
+                    try opts.loader_list.append(allocator, .{
+                        .ext = ext_str,
+                        .loader = loader,
+                    });
+                } else {
+                    try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, text, binary, copy, json, css, empty, js)\n", .{loader_str});
+                    return null;
+                }
+            } else {
+                try stderr.print("zts: --loader requires .EXT=TYPE format: {s}\n", .{arg});
+                return null;
+            }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return null;
@@ -839,6 +865,8 @@ pub fn main() !void {
             .charset_utf8 = opts.charset_utf8,
             .entry_names = opts.entry_names,
             .chunk_names = opts.chunk_names,
+            .asset_names = opts.asset_names,
+            .loader_overrides = opts.loader_list.items,
         });
         defer bundler.deinit();
 
@@ -891,6 +919,20 @@ pub fn main() !void {
                 try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
             }
             try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
+            // Asset 파일 출력 (file/copy 로더)
+            if (result.asset_outputs) |assets| {
+                for (assets) |a| {
+                    const asset_path = try std.fs.path.join(allocator, &.{ out_dir, a.path });
+                    defer allocator.free(asset_path);
+                    if (std.fs.path.dirname(asset_path)) |dir| {
+                        std.fs.cwd().makePath(dir) catch {};
+                    }
+                    const af = try std.fs.cwd().createFile(asset_path, .{});
+                    defer af.close();
+                    try af.writeAll(a.contents);
+                    try stdout.print("  {s} ({d} bytes)\n", .{ asset_path, a.contents.len });
+                }
+            }
         } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
@@ -900,6 +942,20 @@ pub fn main() !void {
             defer file.close();
             try file.writeAll(result.output);
             try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
+            // Asset 파일 출력 (-o 사용 시 같은 디렉토리에)
+            if (result.asset_outputs) |assets| {
+                const asset_dir = std.fs.path.dirname(out_path) orelse ".";
+                for (assets) |a| {
+                    const asset_path = try std.fs.path.join(allocator, &.{ asset_dir, a.path });
+                    defer allocator.free(asset_path);
+                    if (std.fs.path.dirname(asset_path)) |dir| {
+                        std.fs.cwd().makePath(dir) catch {};
+                    }
+                    const af = try std.fs.cwd().createFile(asset_path, .{});
+                    defer af.close();
+                    try af.writeAll(a.contents);
+                }
+            }
         } else {
             try stdout.print("{s}", .{result.output});
         }
