@@ -83,4 +83,10 @@ test {
     _ = diagnostics;
     _ = parser;
     _ = unicode_property;
+
+    // test files
+    _ = @import("parser_test.zig");
+    _ = @import("unicode_property_test.zig");
+    _ = @import("flags_test.zig");
+    _ = @import("ast_test.zig");
 }

@@ -72,4 +72,21 @@ test {
     _ = stmt_info;
     _ = chunk;
     _ = bundler_core;
+
+    // test files
+    _ = @import("bundler_test.zig");
+    _ = @import("tree_shaker_test.zig");
+    _ = @import("linker_test.zig");
+    _ = @import("emitter_test.zig");
+    _ = @import("chunk_test.zig");
+    _ = @import("statement_shaker_test.zig");
+    _ = @import("graph_test.zig");
+    _ = @import("resolver_test.zig");
+    _ = @import("package_json_test.zig");
+    _ = @import("binding_scanner_test.zig");
+    _ = @import("import_scanner_test.zig");
+    _ = @import("stmt_info_test.zig");
+    _ = @import("resolve_cache_test.zig");
+    _ = @import("types_test.zig");
+    _ = @import("module_test.zig");
 }

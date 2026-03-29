@@ -37,4 +37,10 @@ test {
     _ = checker;
     _ = scope;
     _ = symbol;
+
+    // test files
+    _ = @import("analyzer_test.zig");
+    _ = @import("checker_test.zig");
+    _ = @import("scope_test.zig");
+    _ = @import("symbol_test.zig");
 }

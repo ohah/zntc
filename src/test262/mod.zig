@@ -6,4 +6,7 @@ pub const runner = @import("runner.zig");
 
 test {
     _ = runner;
+
+    // test files
+    _ = @import("runner_test.zig");
 }

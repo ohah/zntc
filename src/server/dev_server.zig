@@ -920,7 +920,7 @@ pub const DevServer = struct {
 /// URL path를 안전한 상대 경로로 변환한다.
 /// `..` 세그먼트나 의심스러운 경로는 null을 반환한다.
 /// `/` → `index.html`, `/foo/bar` → `foo/bar`
-fn sanitizePath(raw: []const u8) ?[]const u8 {
+pub fn sanitizePath(raw: []const u8) ?[]const u8 {
     if (raw.len == 0) return "index.html";
 
     var path = raw;
@@ -943,35 +943,3 @@ fn sanitizePath(raw: []const u8) ?[]const u8 {
     return path;
 }
 
-test "sanitizePath: 루트 경로" {
-    const testing = std.testing;
-    try testing.expectEqualStrings("index.html", sanitizePath("/").?);
-    try testing.expectEqualStrings("index.html", sanitizePath("").?);
-    try testing.expectEqualStrings("index.html", sanitizePath("///").?);
-}
-
-test "sanitizePath: 일반 경로" {
-    const testing = std.testing;
-    try testing.expectEqualStrings("app.js", sanitizePath("/app.js").?);
-    try testing.expectEqualStrings("src/main.ts", sanitizePath("/src/main.ts").?);
-    try testing.expectEqualStrings("assets/logo.png", sanitizePath("/assets/logo.png").?);
-}
-
-test "sanitizePath: 디렉토리 탈출 차단" {
-    const testing = std.testing;
-    try testing.expect(sanitizePath("/../etc/passwd") == null);
-    try testing.expect(sanitizePath("/..") == null);
-    try testing.expect(sanitizePath("/../..") == null);
-    try testing.expect(sanitizePath("/foo/../../etc/passwd") == null);
-}
-
-test "sanitizePath: null 바이트 차단" {
-    const testing = std.testing;
-    try testing.expect(sanitizePath("/foo\x00bar") == null);
-}
-
-test "sanitizePath: 백슬래시 차단" {
-    const testing = std.testing;
-    try testing.expect(sanitizePath("/foo\\bar") == null);
-    try testing.expect(sanitizePath("\\..\\etc\\passwd") == null);
-}

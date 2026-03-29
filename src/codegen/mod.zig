@@ -19,4 +19,9 @@ test {
     _ = codegen;
     _ = sourcemap;
     _ = mangler;
+
+    // test files
+    _ = @import("codegen_test.zig");
+    _ = @import("sourcemap_test.zig");
+    _ = @import("mangler_test.zig");
 }
