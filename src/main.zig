@@ -61,6 +61,8 @@ const CliOptions = struct {
     chunk_names: []const u8 = "[name]-[hash]",
     asset_names: []const u8 = "[name]-[hash]",
     loader_list: std.ArrayList(LoaderOverride) = .empty,
+    metafile_path: ?[]const u8 = null,
+    analyze: bool = false,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -270,6 +272,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.chunk_names = arg["--chunk-names=".len..];
         } else if (std.mem.startsWith(u8, arg, "--asset-names=")) {
             opts.asset_names = arg["--asset-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--metafile=")) {
+            opts.metafile_path = arg["--metafile=".len..];
+        } else if (std.mem.eql(u8, arg, "--metafile")) {
+            opts.metafile_path = "meta.json";
+        } else if (std.mem.eql(u8, arg, "--analyze")) {
+            opts.analyze = true;
         } else if (std.mem.startsWith(u8, arg, "--loader:")) {
             // --loader:.png=file (esbuild 호환)
             const kv = arg["--loader:".len..];
@@ -882,6 +890,8 @@ pub fn main() !void {
             .chunk_names = opts.chunk_names,
             .asset_names = opts.asset_names,
             .loader_overrides = opts.loader_list.items,
+            .metafile = opts.metafile_path != null or opts.analyze,
+            .analyze = opts.analyze,
         });
         defer bundler.deinit();
 
@@ -948,6 +958,23 @@ pub fn main() !void {
         } else {
             try stdout.print("{s}", .{result.output});
         }
+
+        // metafile 출력
+        if (opts.metafile_path) |mf_path| {
+            if (result.metafile_json) |mf| {
+                const file = try std.fs.cwd().createFile(mf_path, .{});
+                defer file.close();
+                try file.writeAll(mf);
+            }
+        }
+
+        // analyze 출력 (stderr)
+        if (opts.analyze) {
+            if (result.metafile_json) |mf| {
+                try stderr.print("\n{s}", .{mf});
+            }
+        }
+
         return;
     }
 
