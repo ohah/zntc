@@ -41,8 +41,12 @@ pub const FilterMap = struct {
 pub const SubprocessPlugin = struct {
     child: std.process.Child,
     stdin_file: std.fs.File,
-    /// buffered reader로 줄바꿈 경계를 정확히 처리
-    stdout_reader: std.io.BufferedReader(4096, std.fs.File.Reader),
+    stdout_file: std.fs.File,
+    /// 줄바꿈 경계를 정확히 처리하기 위한 내부 버퍼.
+    /// read()가 다음 메시지 데이터까지 읽었을 때, 잔여 데이터를 보관.
+    read_buf: [8192]u8 = undefined,
+    read_buf_len: usize = 0,
+    read_buf_pos: usize = 0,
     next_id: u32 = 1,
     filters: FilterMap = .{},
     allocator: std.mem.Allocator,
@@ -55,9 +59,9 @@ pub const SubprocessPlugin = struct {
             &.{ "node", config_path },
             allocator,
         );
-        child.stdin_behavior = .pipe;
-        child.stdout_behavior = .pipe;
-        child.stderr_behavior = .inherit;
+        child.stdin_behavior = .Pipe;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Inherit;
 
         try child.spawn();
 
@@ -68,7 +72,7 @@ pub const SubprocessPlugin = struct {
         self.* = .{
             .child = child,
             .stdin_file = stdin_file,
-            .stdout_reader = std.io.bufferedReader(stdout_file.reader()),
+            .stdout_file = stdout_file,
             .allocator = allocator,
             .filter_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -114,7 +118,10 @@ pub const SubprocessPlugin = struct {
     /// 프로세스 종료.
     pub fn shutdown(self: *SubprocessPlugin) void {
         self.sendRaw("{\"type\":\"shutdown\"}\n") catch {};
-        self.stdin_file.close();
+        // stdin을 닫아서 Node.js에게 EOF 신호 전달.
+        // child.wait()가 내부에서 stdin/stdout을 정리하므로 별도 close 불필요.
+        self.child.stdin = null;
+        self.child.stdout = null;
         _ = self.child.wait() catch {};
         self.filter_arena.deinit();
         self.allocator.destroy(self);
@@ -136,12 +143,35 @@ pub const SubprocessPlugin = struct {
         try self.sendRaw(request);
     }
 
-    /// stdout에서 한 줄 읽기. heap 할당, caller가 free.
+    /// stdout에서 한 줄 읽기 (줄바꿈 경계 정확 처리). heap 할당, caller가 free.
     fn readLine(self: *SubprocessPlugin, allocator: std.mem.Allocator) ![]u8 {
-        return self.stdout_reader.reader().readUntilDelimiterAlloc(allocator, '\n', 1024 * 1024) catch |err| switch (err) {
-            error.EndOfStream => return error.EndOfStream,
-            else => return error.PluginFailed,
-        };
+        var line: std.ArrayList(u8) = .empty;
+        errdefer line.deinit(allocator);
+
+        while (true) {
+            // 내부 버퍼에 데이터가 있으면 줄바꿈 검색
+            if (self.read_buf_pos < self.read_buf_len) {
+                const remaining = self.read_buf[self.read_buf_pos..self.read_buf_len];
+                if (std.mem.indexOfScalar(u8, remaining, '\n')) |nl_pos| {
+                    try line.appendSlice(allocator, remaining[0..nl_pos]);
+                    self.read_buf_pos += nl_pos + 1; // 줄바꿈 건너뜀
+                    return line.toOwnedSlice(allocator);
+                }
+                // 줄바꿈 없으면 남은 전부 복사
+                try line.appendSlice(allocator, remaining);
+                self.read_buf_pos = 0;
+                self.read_buf_len = 0;
+            }
+
+            // 버퍼 리필
+            const n = self.stdout_file.read(&self.read_buf) catch return error.PluginFailed;
+            if (n == 0) {
+                if (line.items.len > 0) return line.toOwnedSlice(allocator);
+                return error.EndOfStream;
+            }
+            self.read_buf_len = n;
+            self.read_buf_pos = 0;
+        }
     }
 
     // ===== 훅 구현 =====
