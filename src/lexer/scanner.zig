@@ -1961,4 +1961,3 @@ pub const Scanner = struct {
         return isAsciiIdentStart(c) or (c >= '0' and c <= '9');
     }
 };
-

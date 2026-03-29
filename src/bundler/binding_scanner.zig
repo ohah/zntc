@@ -575,4 +575,3 @@ pub fn collectNamespaceAccesses(
         }
     }
 }
-

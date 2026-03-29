@@ -294,4 +294,3 @@ pub fn stripQuotes(text: []const u8) ?[]const u8 {
     }
     return null;
 }
-

@@ -173,7 +173,6 @@ test "Transformer: strip ts_as_expression" {
 // 통합 테스트: 파서 → transformer 연동
 // ============================================================
 
-
 /// 통합 테스트 결과. deinit()으로 모든 리소스를 한 번에 해제.
 const TestResult = struct {
     ast: Ast,

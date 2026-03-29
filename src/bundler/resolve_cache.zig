@@ -420,4 +420,3 @@ pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
     // 글롭 없으면 exact match
     return std.mem.eql(u8, pattern, text);
 }
-

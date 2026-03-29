@@ -581,4 +581,3 @@ pub const ArrowFlags = struct {
 pub const TaggedTemplateFlags = struct {
     pub const is_pure: u32 = 0x01; // @__PURE__
 };
-

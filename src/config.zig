@@ -364,4 +364,3 @@ pub fn stripJsonComments(allocator: std.mem.Allocator, input: []const u8) ![]u8 
 
     return output;
 }
-

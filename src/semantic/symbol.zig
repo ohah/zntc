@@ -280,4 +280,3 @@ pub const ReferenceKind = enum(u2) {
     write,
     read_write,
 };
-

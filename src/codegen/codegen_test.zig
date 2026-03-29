@@ -8,7 +8,6 @@ const transformer_mod = @import("../transformer/transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
 
-
 /// Arena 기반 테스트 결과. deinit()으로 모든 메모리를 일괄 해제.
 const TestResult = struct {
     output: []const u8,
@@ -31,7 +30,6 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eFull(allocator, source, .{}, .{ .minify_whitespace = true }, ".tsx");
 }
-
 
 /// 풀 옵션 e2e. ext로 확장자 지정 (".ts" 기본, ".tsx"면 JSX 모드).
 /// Arena로 전체 파이프라인을 실행. output은 arena 메모리를 가리키므로
