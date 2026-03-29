@@ -65,6 +65,7 @@ const CliOptions = struct {
     analyze: bool = false,
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
+    keep_names: bool = false,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -283,6 +284,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.metafile_path = "meta.json";
         } else if (std.mem.eql(u8, arg, "--analyze")) {
             opts.analyze = true;
+        } else if (std.mem.eql(u8, arg, "--keep-names")) {
+            opts.keep_names = true;
         } else if (std.mem.startsWith(u8, arg, "--inject:")) {
             const inject_path = arg["--inject:".len..];
             // 절대 경로로 변환
@@ -913,6 +916,7 @@ pub fn main() !void {
             .analyze = opts.analyze,
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,
+            .keep_names = opts.keep_names,
         });
         defer bundler.deinit();
 

@@ -94,6 +94,8 @@ pub const BundleOptions = struct {
     analyze: bool = false,
     /// 모든 모듈에 자동 import (--inject:./file.js). 절대 경로 목록.
     inject: []const []const u8 = &.{},
+    /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존
+    keep_names: bool = false,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -240,6 +242,7 @@ pub const Bundler = struct {
             .chunk_names = self.options.chunk_names,
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
+            .keep_names = self.options.keep_names,
         };
     }
 

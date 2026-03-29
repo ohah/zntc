@@ -78,6 +78,17 @@ pub const CodegenOptions = struct {
     ///         import.meta.dirname → __dirname, import.meta.filename → __filename
     /// - browser/neutral: import.meta.url → "", import.meta.dirname → "", import.meta.filename → ""
     platform: Platform = .browser,
+    /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존.
+    /// codegen이 rename 감지 후 __name() 호출을 수집, 선언 직후에 append.
+    keep_names: bool = false,
+};
+
+/// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
+pub const KeepNameEntry = struct {
+    /// 리네임된 이름 (linker가 부여한 새 이름)
+    new_name: []const u8,
+    /// 원본 이름 (소스 코드의 함수/클래스 이름)
+    original_name: []const u8,
 };
 
 // import.meta polyfill 상수 (emitMetaProperty + emitStaticMember에서 공유)
@@ -116,6 +127,8 @@ pub const Codegen = struct {
     /// top-level에서 선언된 이름 추적 (namespace var 중복 제거용).
     /// function/class/var/let/const/enum 선언 시 등록, namespace 출력 시 이미 있으면 var 생략.
     declared_names: std.StringHashMapUnmanaged(void) = .{},
+    /// keepNames: rename된 함수/클래스 선언 정보. generate() 완료 후 emitter에서 __name() 호출 생성에 사용.
+    keep_names_entries: std.ArrayList(KeepNameEntry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -1299,6 +1312,23 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// keepNames: name 노드가 rename되었으면 (original_name, new_name) 쌍을 수집.
+    /// emitter가 코드젠 완료 후 __name(newName, "originalName") 호출을 append.
+    fn collectKeepNameEntry(self: *Codegen, name_idx: NodeIndex) void {
+        const meta = self.options.linking_metadata orelse return;
+        const sym_id = self.resolveSymbolId(name_idx, meta) orelse return;
+        const new_name = meta.renames.get(sym_id) orelse return;
+        // 원본 이름: AST 노드의 소스 텍스트
+        const name_node = self.ast.getNode(name_idx);
+        const original_name = self.ast.getText(name_node.data.string_ref);
+        // 이름이 실제로 변경된 경우만 수집
+        if (std.mem.eql(u8, new_name, original_name)) return;
+        self.keep_names_entries.append(self.allocator, .{
+            .new_name = new_name,
+            .original_name = original_name,
+        }) catch {};
+    }
+
     fn emitComputedKey(self: *Codegen, node: Node) !void {
         try self.writeByte('[');
         try self.emitNode(node.data.unary.operand);
@@ -1551,6 +1581,11 @@ pub const Codegen = struct {
         try self.emitNodeList(params_start, params_len, ",");
         try self.writeByte(')');
         try self.emitNode(body);
+
+        // keepNames: function_declaration에서 이름이 rename된 경우 entry 수집
+        if (self.options.keep_names and node.tag == .function_declaration and !name.isNone()) {
+            self.collectKeepNameEntry(name);
+        }
     }
 
     /// arrow_function_expression: extra = [params, body, flags]
@@ -1616,6 +1651,11 @@ pub const Codegen = struct {
             try self.emitNode(super_class);
         }
         try self.emitNode(body);
+
+        // keepNames: class_declaration에서 이름이 rename된 경우 entry 수집
+        if (self.options.keep_names and node.tag == .class_declaration and !name.isNone()) {
+            self.collectKeepNameEntry(name);
+        }
     }
 
     fn emitClassBody(self: *Codegen, node: Node) !void {

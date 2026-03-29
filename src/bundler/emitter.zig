@@ -88,6 +88,8 @@ pub const EmitOptions = struct {
     asset_names: []const u8 = "[name]-[hash]",
     /// legal comments 처리 모드
     legal_comments: types.LegalComments = .default,
+    /// --keep-names: minify 시 함수/클래스 .name 프로퍼티 보존
+    keep_names: bool = false,
 
     pub const Format = enum {
         esm,
@@ -1609,8 +1611,29 @@ pub fn emitModule(
         // 소스맵 옵션 전달
         .source_root = options.source_root orelse "",
         .sources_content = options.sources_content,
+        // keepNames: codegen이 rename된 함수/클래스를 수집
+        .keep_names = options.keep_names,
     });
-    const code = try cg.generate(root);
+    var code = try cg.generate(root);
+
+    // keepNames: codegen이 수집한 entries로 __name() 호출을 code 뒤에 append
+    if (cg.keep_names_entries.items.len > 0) {
+        if (helpers_out) |h| h.keep_names = true;
+        var keep_buf: std.ArrayList(u8) = .empty;
+        try keep_buf.appendSlice(arena_alloc, code);
+        for (cg.keep_names_entries.items) |entry| {
+            try keep_buf.appendSlice(arena_alloc, "__name(");
+            try keep_buf.appendSlice(arena_alloc, entry.new_name);
+            try keep_buf.appendSlice(arena_alloc, ", \"");
+            try keep_buf.appendSlice(arena_alloc, entry.original_name);
+            if (options.minify_whitespace) {
+                try keep_buf.appendSlice(arena_alloc, "\");");
+            } else {
+                try keep_buf.appendSlice(arena_alloc, "\");\n");
+            }
+        }
+        code = try keep_buf.toOwnedSlice(arena_alloc);
+    }
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
