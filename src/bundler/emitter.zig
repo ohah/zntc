@@ -152,118 +152,67 @@ pub fn emitWithTreeShaking(
     else
         null;
 
-    // 모듈 코드를 별도 버퍼에 수집 (런타임 헬퍼를 코드 앞에 주입하기 위해)
+    // Phase 1: used_names 사전 계산 (순차 — 모듈 간 의존)
+    const used_names_list = try computeAllUsedNames(allocator, sorted.items, graph, shaker);
+    defer {
+        for (used_names_list) |un| {
+            allocator.free(un.names);
+        }
+        allocator.free(used_names_list);
+    }
+
+    // Phase 2: emitModule 병렬 실행
+    var results = try allocator.alloc(EmitResult, sorted.items.len);
+    defer {
+        for (results) |r| {
+            if (r.code) |c| allocator.free(c);
+        }
+        allocator.free(results);
+    }
+    for (results) |*r| r.* = .{};
+
+    // 모듈 수가 2개 이상이면 스레드 풀 사용
+    if (sorted.items.len >= 2) {
+        var pool: std.Thread.Pool = undefined;
+        const pool_ok = if (pool.init(.{ .allocator = allocator })) |_| true else |_| false;
+        defer if (pool_ok) pool.deinit();
+
+        if (pool_ok) {
+            var wg: std.Thread.WaitGroup = .{};
+            for (sorted.items, 0..) |m, i| {
+                const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+                const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+                pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
+            }
+            pool.waitAndWork(&wg);
+        } else {
+            // 풀 초기화 실패 시 순차 실행
+            for (sorted.items, 0..) |m, i| {
+                const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+                const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+                results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers) catch null;
+            }
+        }
+    } else {
+        // 단일 모듈은 직접 실행
+        for (sorted.items, 0..) |m, i| {
+            const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+            const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+            results[i].code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers);
+        }
+    }
+
+    // Phase 3: 순차 합류 — exec_index 순서대로 concat + helpers 합산
     var module_output: std.ArrayList(u8) = .empty;
     defer module_output.deinit(allocator);
 
-    for (sorted.items) |m| {
-        const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+    for (sorted.items, 0..) |m, i| {
+        // helpers 합산 (bitwise OR)
+        collected_helpers = @bitCast(@as(u16, @bitCast(collected_helpers)) | @as(u16, @bitCast(results[i].helpers)));
 
-        // statement-level tree-shaking: used export names 계산
-        var names_buf: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer names_buf.deinit(allocator);
-        const used_names: ?[]const []const u8 = if (shaker) |s| blk: {
-            const mod_idx: u32 = @intFromEnum(m.index);
-            // "*" 마킹이 있어도 BFS reachable_stmts로 정밀 필터링 가능하면 사용
-            if (s.isExportUsed(mod_idx, "*") and s.getModuleStmtInfos(mod_idx) == null)
-                break :blk null;
-            for (m.export_bindings) |eb| {
-                if (eb.kind == .re_export_all) continue;
-                if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
-
-                // 크로스-모듈 BFS 도달성: export의 선언 statement가 unreachable이면 제외
-                if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
-                    if (m.semantic) |sem| {
-                        if (sem.scope_maps.len > 0) {
-                            if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                                if (ts_infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
-                                    if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                if (eb.kind == .local and m.importers.items.len > 0) {
-                    const is_dead = is_dead: {
-                        var found_any = false;
-                        for (m.importers.items) |importer_idx| {
-                            const imp_i = @intFromEnum(importer_idx);
-                            if (imp_i >= graph.modules.items.len) break :is_dead false;
-                            const importer = &graph.modules.items[imp_i];
-                            // re-export 경유 모듈은 보수적으로 live
-                            // export * from './mod' 또는 export { x } from './mod'
-                            for (importer.export_bindings) |ieb| {
-                                if (ieb.kind == .re_export_all or ieb.kind == .re_export) {
-                                    if (ieb.import_record_index) |rec_idx| {
-                                        if (rec_idx < importer.import_records.len and
-                                            importer.import_records[rec_idx].resolved == m.index)
-                                        {
-                                            // named re-export: 해당 이름이 매칭되는지 확인
-                                            if (ieb.kind == .re_export) {
-                                                if (std.mem.eql(u8, ieb.local_name, eb.exported_name))
-                                                    break :is_dead false;
-                                            } else {
-                                                break :is_dead false;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            for (importer.import_bindings) |ib| {
-                                if (ib.import_record_index >= importer.import_records.len) continue;
-                                if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
-                                if (!std.mem.eql(u8, ib.imported_name, eb.exported_name)) continue;
-                                found_any = true;
-                                if (s.isImportLiveInModule(@intCast(imp_i), ib.local_name))
-                                    break :is_dead false;
-                            }
-                        }
-                        break :is_dead found_any;
-                    };
-                    if (is_dead) continue;
-                }
-
-                names_buf.append(allocator, eb.local_name) catch break :blk null;
-                if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
-                    names_buf.append(allocator, eb.exported_name) catch break :blk null;
-                }
-            }
-            // cross-module: 이 모듈을 import하는 모듈의 named binding도 포함
-            // StmtInfo 도달성으로 dead import는 제외
-            for (m.importers.items) |importer_idx| {
-                const imp_i = @intFromEnum(importer_idx);
-                if (imp_i >= graph.modules.items.len) continue;
-                const importer = &graph.modules.items[imp_i];
-                // export * as ns from './mod': 이 모듈의 모든 export를 사용
-                for (importer.export_bindings) |eb| {
-                    if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
-                        if (eb.import_record_index) |rec_idx| {
-                            if (rec_idx < importer.import_records.len and
-                                importer.import_records[rec_idx].resolved == m.index)
-                                break :blk null;
-                        }
-                    }
-                }
-                for (importer.import_bindings) |ib| {
-                    if (ib.kind != .named) continue;
-                    if (ib.import_record_index >= importer.import_records.len) continue;
-                    if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
-                    if (shaker) |sk| {
-                        if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
-                    }
-                    names_buf.append(allocator, ib.imported_name) catch break :blk null;
-                }
-            }
-            break :blk names_buf.items;
-        } else null;
-
-        const code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &collected_helpers) orelse continue;
-        defer allocator.free(code);
+        const code = results[i].code orelse continue;
 
         if (!options.minify_whitespace) {
-            // 모듈 경계 주석 (디버깅용)
             try module_output.appendSlice(allocator, "// --- ");
             try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
             try module_output.appendSlice(allocator, " ---\n");
@@ -998,6 +947,169 @@ fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
     }
     const h = hasher.final();
     return std.fmt.bufPrint(buf, "chunk-{x:0>8}", .{@as(u32, @truncate(h))}) catch "chunk";
+}
+
+/// used_names 사전 계산 결과.
+const UsedNamesEntry = struct {
+    names: []const []const u8,
+    all_used: bool, // true이면 emitModule에 null 전달 (모든 export 사용)
+};
+
+/// 모든 모듈의 used_names를 사전 계산한다 (순차).
+/// tree-shaking의 used export names 로직을 emit 루프에서 분리.
+fn computeAllUsedNames(
+    allocator: std.mem.Allocator,
+    sorted: []*const Module,
+    graph: *const ModuleGraph,
+    shaker: ?*const TreeShaker,
+) ![]UsedNamesEntry {
+    var list = try allocator.alloc(UsedNamesEntry, sorted.len);
+    for (list) |*e| e.* = .{ .names = &.{}, .all_used = true };
+
+    const s = shaker orelse return list;
+
+    for (sorted, 0..) |m, idx| {
+        const mod_idx: u32 = @intFromEnum(m.index);
+        // "*" 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
+        if (s.isExportUsed(mod_idx, "*") and s.getModuleStmtInfos(mod_idx) == null) {
+            list[idx] = .{ .names = &.{}, .all_used = true };
+            continue;
+        }
+
+        var names_buf: std.ArrayListUnmanaged([]const u8) = .empty;
+        var all_used = false;
+
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .re_export_all) continue;
+            if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
+
+            // 크로스-모듈 BFS 도달성
+            if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
+                if (m.semantic) |sem| {
+                    if (sem.scope_maps.len > 0) {
+                        if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                            if (ts_infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
+                                if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외
+            if (eb.kind == .local and m.importers.items.len > 0) {
+                const is_dead = is_dead: {
+                    var found_any = false;
+                    for (m.importers.items) |importer_idx| {
+                        const imp_i = @intFromEnum(importer_idx);
+                        if (imp_i >= graph.modules.items.len) break :is_dead false;
+                        const importer = &graph.modules.items[imp_i];
+                        for (importer.export_bindings) |ieb| {
+                            if (ieb.kind == .re_export_all or ieb.kind == .re_export) {
+                                if (ieb.import_record_index) |rec_idx| {
+                                    if (rec_idx < importer.import_records.len and
+                                        importer.import_records[rec_idx].resolved == m.index)
+                                    {
+                                        if (ieb.kind == .re_export) {
+                                            if (std.mem.eql(u8, ieb.local_name, eb.exported_name))
+                                                break :is_dead false;
+                                        } else {
+                                            break :is_dead false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for (importer.import_bindings) |ib| {
+                            if (ib.import_record_index >= importer.import_records.len) continue;
+                            if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
+                            if (!std.mem.eql(u8, ib.imported_name, eb.exported_name)) continue;
+                            found_any = true;
+                            if (s.isImportLiveInModule(@intCast(imp_i), ib.local_name))
+                                break :is_dead false;
+                        }
+                    }
+                    break :is_dead found_any;
+                };
+                if (is_dead) continue;
+            }
+
+            names_buf.append(allocator, eb.local_name) catch {
+                all_used = true;
+                break;
+            };
+            if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
+                names_buf.append(allocator, eb.exported_name) catch {
+                    all_used = true;
+                    break;
+                };
+            }
+        }
+
+        if (!all_used) {
+            // cross-module: importer의 named binding도 포함
+            for (m.importers.items) |importer_idx| {
+                const imp_i = @intFromEnum(importer_idx);
+                if (imp_i >= graph.modules.items.len) continue;
+                const importer = &graph.modules.items[imp_i];
+                for (importer.export_bindings) |eb| {
+                    if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                        if (eb.import_record_index) |rec_idx| {
+                            if (rec_idx < importer.import_records.len and
+                                importer.import_records[rec_idx].resolved == m.index)
+                            {
+                                all_used = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (all_used) break;
+                for (importer.import_bindings) |ib| {
+                    if (ib.kind != .named) continue;
+                    if (ib.import_record_index >= importer.import_records.len) continue;
+                    if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
+                    if (!s.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
+                    names_buf.append(allocator, ib.imported_name) catch {
+                        all_used = true;
+                        break;
+                    };
+                }
+                if (all_used) break;
+            }
+        }
+
+        if (all_used) {
+            names_buf.deinit(allocator);
+            list[idx] = .{ .names = &.{}, .all_used = true };
+        } else {
+            list[idx] = .{
+                .names = names_buf.toOwnedSlice(allocator) catch &.{},
+                .all_used = false,
+            };
+        }
+    }
+
+    return list;
+}
+
+/// 스레드 풀에서 실행되는 emitModule 래퍼.
+const EmitResult = struct {
+    code: ?[]const u8 = null,
+    helpers: RuntimeHelpers = .{},
+};
+
+fn emitModuleThread(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    options: EmitOptions,
+    linker: ?*const Linker,
+    is_entry: bool,
+    used_names: ?[]const []const u8,
+    shaker: ?*const TreeShaker,
+    result: *EmitResult,
+) void {
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
