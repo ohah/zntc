@@ -110,8 +110,7 @@ pub const Module = struct {
         return if (self.def_format.isEsm()) .node else .babel;
     }
 
-    /// exec_index 기준 오름차순 comparator. *const Module 정렬에 사용.
-    /// emitter, chunk 등에서 모듈을 ESM 실행 순서로 정렬할 때 공유.
+    /// exec_index 기준 오름차순 comparator.
     pub fn execIndexLessThan(_: void, a: *const Module, b: *const Module) bool {
         return a.exec_index < b.exec_index;
     }

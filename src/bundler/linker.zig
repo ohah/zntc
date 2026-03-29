@@ -1085,7 +1085,7 @@ pub const Linker = struct {
         const final_exports = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
         // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
-        const const_values = try self.buildCrossModuleConstValues(m, sem);
+        const const_values = try self.buildCrossModuleConstValues(&self.modules[module_index], sem);
 
         // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
         // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
@@ -1148,7 +1148,7 @@ pub const Linker = struct {
     /// import binding의 canonical export가 상수이면 symbol_id → ConstValue 매핑을 반환.
     fn buildCrossModuleConstValues(
         self: *const Linker,
-        m: Module,
+        m: *const Module,
         sem: @import("module.zig").ModuleSemanticData,
     ) !std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) {
         var const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{};
