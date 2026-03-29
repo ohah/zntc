@@ -274,6 +274,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
 | 8. AST 미니파이어 | constant folding, DCE, boolean simplification, comma operator | ✅ |
+| 9. 배치 A | 번들러 옵션 10개 (alias, banner, globalName, publicPath, JSON ESM 등) | ✅ |
 
 ### 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -337,12 +338,6 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 #### Critical (없으면 실사용 어려움)
 
-- **JSON 로더** — `S` | 선행: 없음 | 배치: A
-  `import pkg from './package.json'` 같은 JSON import가 안 됨.
-  esbuild/rolldown/rspack 모두 기본 내장. JSON → `export default { ... }` + named exports 변환.
-  실무 프로젝트 대부분이 package.json이나 설정 JSON을 import하므로, 이게 없으면 빌드 자체가 실패하는 경우가 많음.
-  **현황**: graph.parseModule()에서 CJS 래핑은 동작. ESM named exports + `--loader:.json` CLI 옵션만 추가하면 됨.
-
 - **Asset 로더** (file, dataurl, text, binary, copy) — `L` | 선행: content hash, naming 패턴 | 배치: C
   이미지, 폰트, SVG, `.txt`, `.wasm` 등 non-JS 파일을 import할 수 없음.
   esbuild는 `--loader:.png=file` 형태로 파일 타입별 로더 지정. file 로더는 해시 파일명으로 복사 + URL 문자열 export, dataurl은 base64 인라인.
@@ -367,31 +362,13 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   CI에서 번들 사이즈 회귀 감지, PR 코멘트에 사이즈 변화 표시 등 프로덕션 워크플로에 필수.
   **현황**: emitter에서 모듈/청크 정보는 이미 가지고 있음. JSON 직렬화 + CLI 옵션만 추가.
 
-- **resolve.alias** — `S` | 선행: 없음 | 배치: A
-  `{ "@": "./src", "~": "./src" }` 같은 경로 별칭을 번들러 레벨에서 설정할 수 없음.
-  현재 tsconfig paths로 일부 대체 가능하지만, tsconfig 없는 JS 프로젝트나 번들러 전용 별칭에는 대응 불가.
-  esbuild는 `--alias:react=preact/compat`, rolldown/rspack은 resolve.alias 객체로 지원.
-  **현황**: resolver.resolveSpecifier() 맨 앞에서 alias map 치환 한 줄이면 됨. CLI 옵션 `--alias:K=V` 파싱 추가.
-
 - **naming 패턴** — `M` | 선행: content hash | 배치: B
   출력 파일명에 `[name].[hash].js` 같은 패턴을 지정할 수 없음. 현재는 원본 파일명 그대로 출력.
   프로덕션 배포 시 content hash 기반 캐시 버스팅이 표준. 해시 없으면 CDN 캐시 무효화를 수동으로 해야 함.
   esbuild는 `--entry-names=[dir]/[name]-[hash]`, `--chunk-names`, `--asset-names` 각각 지정 가능.
   **현황**: chunkStem()에 모듈 인덱스 기반 해시 있음. 파일 내용 기반 content hash로 교체 + 템플릿 파서 추가 필요.
 
-- **publicPath** — `S` | 선행: 없음 | 배치: A
-  에셋 URL의 기본 경로를 지정할 수 없음. CDN 배포 시 `https://cdn.example.com/assets/` 같은 prefix 필요.
-  file 로더가 생성하는 URL, 동적 import 청크 로딩 경로, CSS `url()` 참조 모두 이 값에 의존.
-  esbuild는 `--public-path=https://cdn.example.com/`, rolldown/rspack은 output.publicPath로 지원.
-  **현황**: BundleOptions에 필드 추가 + emitter의 동적 import 경로 생성부에 prefix 적용. 작은 작업.
-
 #### Important (프로덕션 배포에 자주 필요)
-
-- **banner / footer** — `S` | 선행: 없음 | 배치: A
-  출력 파일 맨 앞/뒤에 텍스트를 삽입할 수 없음. 라이센스 헤더, 빌드 메타정보 주석, shebang(`#!/usr/bin/env node`) 등에 사용.
-  esbuild는 `--banner:js='/* v1.0 */'`, `--footer:js='/* end */'`. CSS에도 별도 지정 가능.
-  CLI 도구 빌드 시 shebang 삽입이 안 되면 `chmod +x` 후에도 직접 실행 불가.
-  **현황**: emitter 최종 출력 앞뒤에 문자열 concat. 가장 단순한 기능.
 
 - **inject** — `M` | 선행: 없음 | 배치: D
   모든 파일에 특정 모듈을 자동 import하는 기능이 없음.
@@ -405,41 +382,17 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   오픈소스 라이센스 준수를 위해 프로덕션 빌드에서 라이센스 주석을 보존하거나 별도 파일로 추출하는 것이 법적으로 필요.
   **현황**: scanner에서 주석 위치는 이미 추적. 특정 패턴 주석을 수집 + codegen/emitter에서 출력 모드 분기 필요.
 
-- **globalName** — `S` | 선행: 없음 | 배치: A
-  IIFE 포맷에서 번들 export를 글로벌 변수에 바인딩하는 이름을 지정할 수 없음.
-  esbuild는 `--global-name=MyLib` → `var MyLib = (() => { ... })()`. 네임스페이스도 가능: `--global-name=MyApp.Utils`.
-  `<script>` 태그로 로딩하는 라이브러리 배포(UMD/IIFE) 시 필수. 없으면 export에 접근 불가.
-  **현황**: emitter의 IIFE 래핑 코드에서 `var <name> =` prefix만 추가. 네임스페이스(`a.b.c`)는 중첩 할당 생성.
-
 - **keepNames** — `M` | 선행: 없음 | 배치: D
   minify 시 함수/클래스의 `.name` 프로퍼티가 축약되는 것을 방지할 수 없음.
   esbuild는 `--keep-names` 플래그로 `Object.defineProperty(fn, "name", { value: "originalName" })` 자동 삽입.
   React DevTools, 에러 스택 트레이스, `Function.name` 기반 로직(직렬화, DI 컨테이너 등)이 깨지는 것을 방지.
   **현황**: mangler에서 이름 축약 후 원본 이름을 보존하는 AST 변환 추가. transformer에서 defineProperty 호출 삽입 필요.
 
-- **out-extension** — `S` | 선행: 없음 | 배치: A
-  출력 파일의 확장자를 변경할 수 없음 (`.js` 고정).
-  esbuild는 `--out-extension:.js=.mjs` → ESM 출력을 `.mjs`로, CJS를 `.cjs`로 분리 가능.
-  Node.js의 `"type": "module"` 설정 없이 ESM/CJS 듀얼 패키지를 배포하려면 확장자 분리가 필수.
-  **현황**: emitter의 출력 파일명 결정부에서 확장자 치환 한 줄. CLI 옵션 파싱만 추가.
-
-- **source-root / sources-content** — `S` | 선행: 없음 | 배치: A
-  소스맵에서 소스 파일의 루트 경로(`sourceRoot`)나 원본 내용 포함 여부(`sourcesContent`)를 제어할 수 없음.
-  esbuild는 `--source-root=https://raw.githubusercontent.com/...`, `--sources-content=false` (소스맵 사이즈 감소).
-  모노레포에서 소스맵 경로가 깨지거나, 소스 코드 유출을 방지하면서 디버깅은 유지하고 싶을 때 필요.
-  **현황**: sourcemap.zig의 JSON 직렬화에 sourceRoot 필드 추가 + sourcesContent 조건부 제외. 옵션 전달만 하면 됨.
-
 - **엔진 타겟** (chrome, firefox, safari, node 버전) — `XL` | 선행: 없음 | 배치: 단독
   현재 `--target=es2020` 같은 ES 스펙 버전만 지원. 특정 브라우저/Node 버전 지정 불가.
   esbuild는 `--target=chrome90,firefox88,safari14` → 해당 엔진이 지원하지 않는 문법만 다운레벨링.
   ES 버전 기반은 보수적이라 불필요한 다운레벨링이 발생. 엔진 버전은 caniuse 데이터 기반으로 정밀 제어 가능.
   **현황**: caniuse 호환 데이터 테이블(엔진 버전 → ES 기능 매핑) 구축 필요. esbuild는 ~2000줄 테이블. 데이터 수집이 핵심 작업.
-
-- **log-level** — `S` | 선행: 없음 | 배치: A
-  빌드 시 출력되는 경고/정보 메시지의 수준을 제어할 수 없음.
-  esbuild는 `--log-level=silent|error|warning|info|debug|verbose`. CI에서는 error만, 디버깅 시 verbose.
-  대규모 프로젝트에서 경고가 수백 개 나오면 중요한 에러가 묻히므로, 필터링 옵션이 필요.
-  **현황**: diagnostic.zig에 레벨 enum 추가 + 출력 전 필터링. CLI 옵션 파싱만 추가.
 
 #### Nice to Have
 
@@ -467,26 +420,14 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   환경변수 주입, 빌드타임 코드 생성, 프레임워크 매직 모듈(Vite의 `import.meta.env` 등)의 기반.
   **현황**: 플러그인 API의 onResolve/onLoad가 있으면 자연스럽게 지원됨. 플러그인 없이는 resolver에 가상 모듈 맵 하드코딩 필요.
 
-- **charset=utf8** — `S` | 선행: 없음 | 배치: A
-  비ASCII 문자를 이스케이프하지 않고 UTF-8 그대로 출력하는 옵션이 없음.
-  현재 `--ascii-only`로 이스케이프는 가능하지만, 반대 방향(이스케이프 비활성화) 명시 옵션이 없음.
-  esbuild는 `--charset=utf8`으로 한글/일본어 등이 `\uXXXX`로 변환되지 않게 보장.
-  **현황**: codegen의 ascii_only 플래그 반전 로직. CLI 옵션 파싱만 추가하면 끝.
-
-- **preserve-symlinks** — `S` | 선행: 없음 | 배치: A
-  심볼릭 링크를 따라가지 않고 링크 자체의 경로로 해석하는 옵션이 없음.
-  Node.js의 `--preserve-symlinks`와 동일. esbuild/rolldown/rspack 모두 지원.
-  모노레포에서 `node_modules/.pnpm` 심링크 구조나, `npm link`로 로컬 패키지 개발 시 resolve 경로가 달라지는 문제 방지.
-  **현황**: resolver.makeResult()에서 realpathAlloc 호출을 조건부 스킵하면 끝. 1줄 분기.
-
 #### 배치 그룹 & 구현 순서
 
 ```
-배치 A (반나절, 한 PR로 가능) ─────────────────────────────────
+배치 A ✅ 완료 ─────────────────────────────────────────────────
   JSON 로더 강화, resolve.alias, publicPath, banner/footer,
   globalName, out-extension, source-root/sources-content,
   log-level, charset, preserve-symlinks
-  → 전부 옵션 추가 + 1~2줄 로직. 독립적이라 한번에 가능.
+  → 전부 옵션 추가 + 1~2줄 로직. 독립적이라 한번에 완료.
 
 배치 B (1~2일) ─────────────────────────────────────────────────
   content hash (파일 내용 기반) + naming 패턴 ([name].[hash])
@@ -516,7 +457,7 @@ CSS 번들링/Asset 로더/플러그인 API는 아래 JS 전용 경계를 넘어
 **배치별 기술부채 영향:**
 | 작업 | JS 전용 구조에 부딪히나? | 새 부채 생성 위험? |
 |------|----------------------|-----------------|
-| 배치 A (옵션 10개) | 아니오 — 옵션 추가 + 출력 문자열 수준 | 없음 |
+| 배치 A (옵션 10개) ✅ | 아니오 — 옵션 추가 + 출력 문자열 수준 | 없음 |
 | 배치 B (content hash) | 아니오 — chunkStem() 깨끗한 대체 | 없음 |
 | 배치 C (Asset 로더) | **예** — emitter/linker 분기 필요 | 접근 방식에 따라 다름 (아래 참고) |
 | 배치 D (metafile 등) | 아니오 — 각각 독립적 | 없음 |
@@ -597,6 +538,17 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --external <pkg>                 패키지를 번들에서 제외 (반복 가능)
 --experimental-decorators        legacy decorator 변환 (tsconfig compilerOptions 지원)
 --use-define-for-class-fields=false  class field → constructor this.x = v 변환
+--alias:FROM=TO              import 경로 별칭 (--alias:react=preact/compat)
+--public-path=<url>          에셋/청크 URL prefix (CDN 배포용)
+--banner:js=<text>           출력 파일 앞에 텍스트 삽입
+--footer:js=<text>           출력 파일 뒤에 텍스트 삽입
+--global-name=<name>         IIFE export 글로벌 변수명
+--out-extension:.js=<ext>    출력 파일 확장자 변경 (.mjs, .cjs)
+--source-root=<url>          소스맵 sourceRoot
+--sources-content=false      소스맵에서 원본 소스 제외
+--log-level=<level>          로그 레벨 (silent|error|warning|info)
+--charset=utf8               non-ASCII를 이스케이프하지 않음
+--preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```
