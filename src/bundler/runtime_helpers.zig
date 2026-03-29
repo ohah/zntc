@@ -108,6 +108,11 @@ pub const TO_BINARY_RUNTIME =
 ;
 pub const TO_BINARY_RUNTIME_MIN = "var __toBinary=function(b64){var str=atob(b64),arr=new Uint8Array(str.length);for(var i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);return arr};";
 
+/// __name: 함수/클래스의 .name 프로퍼티를 보존 (esbuild --keep-names 호환).
+/// minify로 식별자가 축약되어도 원래 이름을 .name에 설정.
+pub const KEEP_NAMES_RUNTIME = "var __name = (target, value) => Object.defineProperty(target, \"name\", { value, configurable: true });\n";
+pub const KEEP_NAMES_RUNTIME_MIN = "var __name=(target,value)=>Object.defineProperty(target,\"name\",{value,configurable:true});";
+
 // ============================================================
 // HMR (Dev Server)
 // ============================================================
@@ -212,6 +217,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
+    }
+    if (helpers.keep_names) {
+        try buf.appendSlice(allocator, if (minify) KEEP_NAMES_RUNTIME_MIN else KEEP_NAMES_RUNTIME);
     }
 }
 

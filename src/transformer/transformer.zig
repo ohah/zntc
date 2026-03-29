@@ -146,7 +146,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     values: bool = false,
     /// __toBinary: base64 → Uint8Array (binary 로더)
     to_binary: bool = false,
-    _padding: u9 = 0,
+    /// __name: 함수/클래스 .name 프로퍼티 보존 (--keep-names)
+    keep_names: bool = false,
+    _padding: u8 = 0,
 };
 
 /// AST-to-AST 변환기.
