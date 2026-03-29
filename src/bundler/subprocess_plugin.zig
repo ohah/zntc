@@ -27,9 +27,10 @@ pub const FilterMap = struct {
     load_filters: []const []const u8 = &.{},
     transform_filters: []const []const u8 = &.{},
 
-    /// specifier가 필터 목록의 어떤 suffix로든 끝나면 true
+    /// specifier가 필터 목록의 어떤 suffix로든 끝나면 true.
+    /// 필터가 비어있으면 모든 대상에 적용 (esbuild 호환).
     pub fn matchesAny(filters: []const []const u8, target: []const u8) bool {
-        if (filters.len == 0) return true; // 필터 없으면 모든 대상에 적용
+        if (filters.len == 0) return true;
         for (filters) |f| {
             if (std.mem.endsWith(u8, target, f)) return true;
         }
@@ -40,7 +41,8 @@ pub const FilterMap = struct {
 pub const SubprocessPlugin = struct {
     child: std.process.Child,
     stdin_file: std.fs.File,
-    stdout_file: std.fs.File,
+    /// buffered reader로 줄바꿈 경계를 정확히 처리
+    stdout_reader: std.io.BufferedReader(4096, std.fs.File.Reader),
     next_id: u32 = 1,
     filters: FilterMap = .{},
     allocator: std.mem.Allocator,
@@ -48,7 +50,6 @@ pub const SubprocessPlugin = struct {
     filter_arena: std.heap.ArenaAllocator,
 
     /// Node.js 프로세스를 spawn하고 핸드셰이크를 수행.
-    /// 실패 시 에러 반환, 성공 시 heap에 할당된 포인터 반환.
     pub fn spawn(allocator: std.mem.Allocator, config_path: []const u8) !*SubprocessPlugin {
         var child = std.process.Child.init(
             &.{ "node", config_path },
@@ -60,19 +61,18 @@ pub const SubprocessPlugin = struct {
 
         try child.spawn();
 
-        const stdin_file = child.stdin orelse return error.StdinNotAvailable;
-        const stdout_file = child.stdout orelse return error.StdoutNotAvailable;
+        const stdin_file = child.stdin orelse return error.SpawnFailed;
+        const stdout_file = child.stdout orelse return error.SpawnFailed;
 
         const self = try allocator.create(SubprocessPlugin);
         self.* = .{
             .child = child,
             .stdin_file = stdin_file,
-            .stdout_file = stdout_file,
+            .stdout_reader = std.io.bufferedReader(stdout_file.reader()),
             .allocator = allocator,
             .filter_arena = std.heap.ArenaAllocator.init(allocator),
         };
 
-        // 핸드셰이크: init 메시지 전송 → 필터 목록 수신
         try self.handshake();
 
         return self;
@@ -82,12 +82,13 @@ pub const SubprocessPlugin = struct {
     fn handshake(self: *SubprocessPlugin) !void {
         try self.sendRaw("{\"id\":0,\"type\":\"init\"}\n");
 
-        const response = try self.readLine();
-        // 응답에서 필터 파싱
+        const response = self.readLine(self.allocator) catch return error.PluginFailed;
+        defer self.allocator.free(response);
+
         const arena_alloc = self.filter_arena.allocator();
         const parsed = std.json.parseFromSlice(InitResponse, arena_alloc, response, .{
             .ignore_unknown_fields = true,
-        }) catch return; // 핸드셰이크 파싱 실패 시 필터 없이 진행
+        }) catch return error.PluginFailed;
         const init_resp = parsed.value;
 
         self.filters = .{
@@ -113,7 +114,6 @@ pub const SubprocessPlugin = struct {
     /// 프로세스 종료.
     pub fn shutdown(self: *SubprocessPlugin) void {
         self.sendRaw("{\"type\":\"shutdown\"}\n") catch {};
-        // stdin 닫으면 Node.js가 자연스럽게 종료됨
         self.stdin_file.close();
         _ = self.child.wait() catch {};
         self.filter_arena.deinit();
@@ -122,12 +122,11 @@ pub const SubprocessPlugin = struct {
 
     // ===== IPC 함수 =====
 
-    /// stdin에 원시 바이트 쓰기
     fn sendRaw(self: *SubprocessPlugin, data: []const u8) !void {
         try self.stdin_file.writeAll(data);
     }
 
-    /// JSON 요청 전송. 자동으로 \n 추가.
+    /// JSON 요청 전송
     fn sendJsonRequest(self: *SubprocessPlugin, allocator: std.mem.Allocator, msg_type: []const u8, fields: []const u8) !void {
         const id = self.next_id;
         self.next_id += 1;
@@ -137,57 +136,34 @@ pub const SubprocessPlugin = struct {
         try self.sendRaw(request);
     }
 
-    /// stdout에서 한 줄 읽기 (줄바꿈 제거)
-    fn readLine(self: *SubprocessPlugin) ![]const u8 {
-        var buf: [256 * 1024]u8 = undefined;
-        var total: usize = 0;
-
-        while (total < buf.len) {
-            const n = self.stdout_file.read(buf[total..]) catch |err| {
-                if (total > 0) break;
-                return err;
-            };
-            if (n == 0) break; // EOF
-            total += n;
-            // 줄바꿈을 찾으면 거기까지만 반환
-            if (std.mem.indexOfScalar(u8, buf[0..total], '\n')) |_| break;
-        }
-
-        if (total == 0) return error.EndOfStream;
-
-        // 줄바꿈 제거
-        var end = total;
-        while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r')) end -= 1;
-        return buf[0..end];
+    /// stdout에서 한 줄 읽기. heap 할당, caller가 free.
+    fn readLine(self: *SubprocessPlugin, allocator: std.mem.Allocator) ![]u8 {
+        return self.stdout_reader.reader().readUntilDelimiterAlloc(allocator, '\n', 1024 * 1024) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            else => return error.PluginFailed,
+        };
     }
 
-    /// JSON 응답에서 "result" 필드의 문자열 값을 추출.
-    /// result가 null이면 null 반환. error가 있으면 PluginFailed.
-    fn parseStringResult(self: *SubprocessPlugin, allocator: std.mem.Allocator, key: []const u8) PluginError!?[]const u8 {
-        _ = self;
-        _ = allocator;
-        _ = key;
-        // readLine + JSON 파싱은 각 훅 함수에서 직접 처리
-        return null;
-    }
-
-    // ===== 훅 구현 (static 함수 — Plugin 함수 포인터에 대입) =====
+    // ===== 훅 구현 =====
 
     fn subprocessResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolveResult {
         const self = getSelf(ctx);
         if (!FilterMap.matchesAny(self.filters.resolve_filters, specifier)) return null;
 
-        // JSON 요청 생성
-        const importer_str = importer orelse "";
+        const escaped_spec = escapeJsonString(allocator, specifier) catch return error.OutOfMemory;
+        defer allocator.free(escaped_spec);
+        const escaped_imp = escapeJsonString(allocator, importer orelse "") catch return error.OutOfMemory;
+        defer allocator.free(escaped_imp);
+
         const fields = std.fmt.allocPrint(allocator, "\"specifier\":\"{s}\",\"importer\":\"{s}\"", .{
-            specifier, importer_str,
+            escaped_spec, escaped_imp,
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
         self.sendJsonRequest(allocator, "resolveId", fields) catch return error.PluginFailed;
 
-        // 응답 읽기 + 파싱
-        const response = self.readLine() catch return error.PluginFailed;
+        const response = self.readLine(allocator) catch return error.PluginFailed;
+        defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
@@ -209,12 +185,16 @@ pub const SubprocessPlugin = struct {
         const self = getSelf(ctx);
         if (!FilterMap.matchesAny(self.filters.load_filters, path)) return null;
 
-        const fields = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{path}) catch return error.OutOfMemory;
+        const escaped_path = escapeJsonString(allocator, path) catch return error.OutOfMemory;
+        defer allocator.free(escaped_path);
+
+        const fields = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{escaped_path}) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
         self.sendJsonRequest(allocator, "load", fields) catch return error.PluginFailed;
 
-        const response = self.readLine() catch return error.PluginFailed;
+        const response = self.readLine(allocator) catch return error.PluginFailed;
+        defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
@@ -233,18 +213,20 @@ pub const SubprocessPlugin = struct {
         const self = getSelf(ctx);
         if (!FilterMap.matchesAny(self.filters.transform_filters, id)) return null;
 
-        // code에 특수문자가 있을 수 있으므로 JSON 이스케이프 필요
         const escaped_code = escapeJsonString(allocator, code) catch return error.OutOfMemory;
         defer allocator.free(escaped_code);
+        const escaped_id = escapeJsonString(allocator, id) catch return error.OutOfMemory;
+        defer allocator.free(escaped_id);
 
         const fields = std.fmt.allocPrint(allocator, "\"code\":\"{s}\",\"moduleId\":\"{s}\"", .{
-            escaped_code, id,
+            escaped_code, escaped_id,
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
         self.sendJsonRequest(allocator, "transform", fields) catch return error.PluginFailed;
 
-        const response = self.readLine() catch return error.PluginFailed;
+        const response = self.readLine(allocator) catch return error.PluginFailed;
+        defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
@@ -259,13 +241,12 @@ pub const SubprocessPlugin = struct {
         return null;
     }
 
-    /// context 포인터에서 SubprocessPlugin 포인터 복원
     inline fn getSelf(ctx: ?*anyopaque) *SubprocessPlugin {
         return @ptrCast(@alignCast(ctx.?));
     }
 };
 
-// ===== JSON 직렬화/역직렬화 타입 =====
+// ===== JSON 타입 =====
 
 const InitResponse = struct {
     id: u32 = 0,
@@ -290,7 +271,7 @@ const HookResponse = struct {
     };
 };
 
-/// JSON 문자열 이스케이프 (줄바꿈, 탭, 따옴표, 백슬래시)
+/// JSON 문자열 이스케이프 (줄바꿈, 탭, 따옴표, 백슬래시, 제어 문자)
 fn escapeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
