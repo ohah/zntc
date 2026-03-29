@@ -56,6 +56,8 @@ pub const BundleOptions = struct {
     target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
     /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
     conditions: []const []const u8 = &.{},
+    /// 파이프라인 단계별 타이밍 출력 (--timing)
+    timing: bool = false,
 };
 
 pub const BundleResult = struct {
@@ -161,12 +163,26 @@ pub const Bundler = struct {
     /// 번들 파이프라인 실행: resolve → graph → emit.
     /// graph는 함수 내에서 생성+해제. &self.resolve_cache 포인터는 self가 살아있는 동안 유효.
     pub fn bundle(self: *Bundler) !BundleResult {
+        const timing = self.options.timing;
+        var t_graph: u64 = 0;
+        var t_link: u64 = 0;
+        var t_shake: u64 = 0;
+        var t_emit: u64 = 0;
+
+        var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
+
         // 1. 모듈 그래프 구축
         // graph가 &self.resolve_cache를 참조 — self가 move되지 않으므로 포인터 안전.
         var graph = ModuleGraph.init(self.allocator, &self.resolve_cache);
+        graph.timing = timing;
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);
+
+        if (timer) |*t| {
+            t_graph = t.read();
+            t.reset();
+        }
 
         // 2. 링킹 (scope hoisting)
         // dev_mode: link()만 실행 (import→export 바인딩 해석), rename은 스킵.
@@ -186,6 +202,11 @@ pub const Bundler = struct {
         } else null;
         defer if (linker) |*l| l.deinit();
 
+        if (timer) |*t| {
+            t_link = t.read();
+            t.reset();
+        }
+
         // 2.5. Tree-shaking (scope_hoist + tree_shaking 둘 다 켜져 있을 때)
         // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
@@ -194,6 +215,11 @@ pub const Bundler = struct {
             break :blk s;
         } else null;
         defer if (shaker) |*s| s.deinit();
+
+        if (timer) |*t| {
+            t_shake = t.read();
+            t.reset();
+        }
 
         // 3. 번들 출력 생성
         var output: []const u8 = "";
@@ -282,6 +308,35 @@ pub const Bundler = struct {
             );
         }
         errdefer self.allocator.free(output);
+
+        if (timer) |*t| {
+            t_emit = t.read();
+        }
+
+        // 타이밍 출력
+        if (timing) {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const total = t_graph + t_link + t_shake + t_emit;
+            const module_count = graph.modules.items.len;
+            stderr.print(
+                \\
+                \\  Bundle timing ({d} modules):
+                \\    graph:      {d:.3} ms  (resolve + parse + finalize)
+                \\    link:       {d:.3} ms
+                \\    tree-shake: {d:.3} ms
+                \\    emit:       {d:.3} ms  (transform + codegen)
+                \\    ─────────────────
+                \\    total:      {d:.3} ms
+                \\
+            , .{
+                module_count,
+                @as(f64, @floatFromInt(t_graph)) / 1_000_000.0,
+                @as(f64, @floatFromInt(t_link)) / 1_000_000.0,
+                @as(f64, @floatFromInt(t_shake)) / 1_000_000.0,
+                @as(f64, @floatFromInt(t_emit)) / 1_000_000.0,
+                @as(f64, @floatFromInt(total)) / 1_000_000.0,
+            }) catch {};
+        }
 
         // 4. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
         const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0) blk: {
