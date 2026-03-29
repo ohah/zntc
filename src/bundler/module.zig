@@ -38,6 +38,18 @@ pub const ModuleSemanticData = struct {
     unresolved_references: std.StringHashMap(void),
     /// mangler용 참조 scope 페어. liveness BitSet 계산에 사용.
     ref_scope_pairs: []const RefScopePair = &.{},
+
+    // Part 시스템 (Phase 7-1): semantic analyzer가 파싱 중 구축한 per-statement 데이터.
+    // buildFromSemantic()에서 사용하여 stmt_info.build()의 전체 AST 재순회를 제거.
+
+    /// per-top-level-statement declared 심볼 인덱스. stmt_declared[i] = i번째 statement가 선언하는 심볼들.
+    stmt_declared: []const std.ArrayListUnmanaged(u32) = &.{},
+    /// per-top-level-statement referenced 심볼 인덱스. stmt_referenced[i] = i번째 statement가 참조하는 심볼들.
+    stmt_referenced: []const std.ArrayListUnmanaged(u32) = &.{},
+    /// top-level statement의 AST 노드 인덱스 배열.
+    top_stmt_node_indices: []const u32 = &.{},
+    /// top-level statement 수.
+    top_stmt_count: u32 = 0,
 };
 
 pub const Module = struct {
