@@ -214,13 +214,13 @@ exports[`TSC: expressions asOperator2 1`] = `
 
 exports[`TSC: expressions asOperator3 1`] = `
 "var a = \`\${123 + 456 as number}\`;
-var b = \`leading \${123 + 456 as number}\`;
-var c = \`\${123 + 456 as number} trailing\`;
-var d = \`Hello \${123} World\` ;
-var e = \`Hello\`;
-var f = 1 + \`\${1} end of string\` ;
-var g = tag\`Hello \${123} World\` ;
-var h = tag\`Hello\`;
+var b = \`leading \${123 + 456}\`;
+var c = \`\${123 + 456} trailing\`;
+var d = \`Hello \${123} World\`;
+var e = ;
+var f = 1 + \`\${1} end of string\`;
+var g = tag\`Hello \${123} World\`;
+var h = tag;
 "
 `;
 
@@ -238,7 +238,7 @@ exports[`TSC: expressions asOperatorASI 1`] = `
 }
 // Example 1
 var x = 10;
-as\`Hello world\`;
+as;
 // should not error
 // Example 2
 var y = 20;
@@ -6694,21 +6694,14 @@ exports[`TSC: expressions parenthesizedContexualTyping3 1`] = `
 function tempFun(tempStrs,g,x) {
 	return g(x);
 }
-var a = tempFun\`\${ x => x }  \${ 10 }\`
-;
-var b = tempFun\`\${ (x => x) }  \${ 10 }\`
-;
-var c = tempFun\`\${ ((x => x)) } \${ 10 }\`
-;
-var d = tempFun\`\${ x => x } \${ x => x } \${ 10 }\`
-;
-var e = tempFun\`\${ x => x } \${ (x => x) } \${ 10 }\`
-;
-var f = tempFun\`\${ x => x } \${ ((x => x)) } \${ 10 }\`
-;
-var g = tempFun\`\${ (x => x) } \${ (((x => x))) } \${ 10 }\`
-;
-var h = tempFun\`\${ (x => x) } \${ (((x => x))) } \${ undefined }\`;
+var a = tempFun\`\${(x) => x}  \${10}\`;
+var b = tempFun\`\${((x) => x)}  \${10}\`;
+var c = tempFun\`\${(((x) => x))} \${10}\`;
+var d = tempFun\`\${(x) => x} \${(x) => x} \${10}\`;
+var e = tempFun\`\${(x) => x} \${((x) => x)} \${10}\`;
+var f = tempFun\`\${(x) => x} \${(((x) => x))} \${10}\`;
+var g = tempFun\`\${((x) => x)} \${((((x) => x)))} \${10}\`;
+var h = tempFun\`\${((x) => x)} \${((((x) => x)))} \${undefined}\`;
 "
 `;
 
@@ -6777,10 +6770,31 @@ exports[`TSC: expressions taggedTemplateContextualTyping1 1`] = `
 // Otherwise, the arrow functions' parameters will be typed as 'any',
 // and it is an error to invoke an any-typed value with type arguments,
 // so this test will error.
-tempTag1\`\${ x => { x<number>(undefined); return x; }                   }\${ 10 }\`;
-tempTag1\`\${ x => { x<number>(undefined); return x; }                   }\${ y => { y<number>(undefined); return y; }                  }\${ 10 }\`;
-tempTag1\`\${ x => { x<number>(undefined); return x; }                   }\${ (y: <T>(p: T) => T) => { y<number>(undefined); return y } }\${ undefined }\`;
-tempTag1\`\${ (x: <T>(p: T) => T) => { x<number>(undefined); return x; } }\${ y => { y<number>(undefined); return y; }                  }\${ undefined }\`;
+tempTag1\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${10}\`;
+tempTag1\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${(y) => {
+	y(undefined);
+	return y;
+}}\${10}\`;
+tempTag1\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${(y) => {
+	y(undefined);
+	return y;
+}}\${undefined}\`;
+tempTag1\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${(y) => {
+	y(undefined);
+	return y;
+}}\${undefined}\`;
 "
 `;
 
@@ -6792,9 +6806,21 @@ exports[`TSC: expressions taggedTemplateContextualTyping2 1`] = `
 // Otherwise, the arrow functions' parameters will be typed as 'any',
 // and it is an error to invoke an any-typed value with type arguments,
 // so this test will error.
-tempTag2\`\${ x => { x<number>(undefined); return x; }         }\${ 0 }\`;
-tempTag2\`\${ x => { x<number, string>(undefined); return x; } }\${ y => { y<string, number>(null); return y; } }\${ "hello" }\`;
-tempTag2\`\${ x => { x<number, string>(undefined); return x; } }\${ undefined }\${ "hello" }\`;
+tempTag2\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${0}\`;
+tempTag2\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${(y) => {
+	y(null);
+	return y;
+}}\${"hello"}\`;
+tempTag2\`\${(x) => {
+	x(undefined);
+	return x;
+}}\${undefined}\${"hello"}\`;
 "
 `;
 
@@ -9445,7 +9471,7 @@ constructor(f=this) {
 
 exports[`TSC: expressions constAssertions 1`] = `
 "let v1 = "abc";
-let v2 = \`abc\`;
+let v2 = ;
 let v3 = 10;
 let v4 = -10;
 let v5 = +10;
@@ -9454,7 +9480,7 @@ let v7 = -10n;
 let v8 = true;
 let v9 = false;
 let c1 = "abc";
-let c2 = \`abc\`;
+let c2 = ;
 let c3 = 10;
 let c4 = -10;
 let c5 = +10;
@@ -9504,30 +9530,30 @@ let e3 = id(1);
 // Error
 let t1 = "foo";
 let t2 = "bar";
-let t3 = \`\${t1}-\${t2}\` ;
-let t4 = \`\${\`(\${t1})\`}-\${\`(\${t2})\`}\` ;
+let t3 = \`\${t1}-\${t2}\`;
+let t4 = \`\${\`(\${t1})\`}-\${\`(\${t2})\`}\`;
 function ff1(x,y) {
-	return \`\${x}-\${y}\` ;
+	return \`\${x}-\${y}\`;
 }
 function ff2(x,y) {
-	return \`\${x}-\${y}\` ;
+	return \`\${x}-\${y}\`;
 }
 const ts1 = ff2("foo", "bar");
 const ts2 = ff2("foo", !!true ? "0" : "1");
 const ts3 = ff2(!!true ? "top" : "bottom", !!true ? "left" : "right");
 function ff3(x,y) {
-	return \`\${x}\${y}\` ;
+	return \`\${x}\${y}\`;
 }
 function ff4(verify,contentMatches) {
-	const action = verify ? \`verify\` : \`write\`;
-	const contentMatch = contentMatches ? \`match\` : \`nonMatch\`;
-	const outcome = \`\${action}_\${contentMatch}\` ;
+	const action = verify ?  : ;
+	const contentMatch = contentMatches ?  : ;
+	const outcome = \`\${action}_\${contentMatch}\`;
 	return outcome;
 }
 function ff5(verify,contentMatches) {
-	const action = verify ? \`verify\` : \`write\`;
-	const contentMatch = contentMatches ? \`match\` : \`nonMatch\`;
-	const outcome = \`\${action}_\${contentMatch}\` ;
+	const action = verify ?  : ;
+	const contentMatch = contentMatches ?  : ;
+	const outcome = \`\${action}_\${contentMatch}\`;
 	return outcome;
 }
 function accessorNames(propName) {
@@ -9795,9 +9821,9 @@ if (hasLegs(beast)) {
 		// All winged beasts with legs
 if (hasWings(beast)) {
 			if (beast.legs === 4) {
-				log(\`pegasus - 4 legs, wings\`);
+				log();
 			} else if (beast.legs === 2) {
-				log(\`bird - 2 legs, wings\`);
+				log();
 			} else {
 				log(\`unknown - \${beast.legs} legs, wings\`);
 			}
@@ -9808,9 +9834,9 @@ if (hasWings(beast)) {
 	} else // All beasts without legs    
 {
 		if (hasWings(beast)) {
-			log(\`quetzalcoatl - no legs, wings\`);
+			log();
 		} else {
-			log(\`snake - no legs, no wings\`);
+			log();
 		}
 	}
 }

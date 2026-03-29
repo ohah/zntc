@@ -4,7 +4,7 @@ exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEs
 "// @target: es6
 function f(...x) {
 }
-f\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n\`;
+f;
 "
 `;
 
@@ -12,7 +12,7 @@ exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEs
 "// @target: es2015
 function f(...x) {
 }
-f\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n\`;
+f;
 "
 `;
 
@@ -20,7 +20,7 @@ exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEs
 "// @target: es6
 function f(...x) {
 }
-f\`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ " " }8\${ " " }9\${ " " }10\${ " " }11\${ " " }12\${ " " }13\${ " " }14\${ " " }15\${ " " }16\${ " " }17\${ " " }18\${ " " }19\${ " " }20\${ " " }2028\${ " " }2029\${ " " }0085\${ " " }t\${ " " }v\${ " " }f\${ " " }b\${ " " }r\${ " " }n\`;
+f\`0\${" "}1\${" "}2\${" "}3\${" "}4\${" "}5\${" "}6\${" "}7\${" "}8\${" "}9\${" "}10\${" "}11\${" "}12\${" "}13\${" "}14\${" "}15\${" "}16\${" "}17\${" "}18\${" "}19\${" "}20\${" "}2028\${" "}2029\${" "}0085\${" "}t\${" "}v\${" "}f\${" "}b\${" "}r\${" "}n\`;
 "
 `;
 
@@ -35,11 +35,11 @@ exports[`TSC: es6/templates taggedTemplateStringsTypeArgumentInference 1`] = `
 // Generic tag with one parameter
 function noParams(n) {
 }
-noParams\`\`;
+noParams;
 // Generic tag with parameter which does not use type parameter
 function noGenericParams(n) {
 }
-noGenericParams\`\`;
+noGenericParams;
 // Generic tag with multiple type parameters and only one used in parameter type annotation
 function someGenerics1a(n,m) {
 }
@@ -50,64 +50,64 @@ someGenerics1b\`\${3}\`;
 // Generic tag with argument of function type whose parameter is of type parameter type
 function someGenerics2a(strs,n) {
 }
-someGenerics2a\`\${(n: string) => n}\`;
+someGenerics2a\`\${(n) => n}\`;
 function someGenerics2b(strs,n) {
 }
-someGenerics2b\`\${ (n: string, x: number) => n }\`;
+someGenerics2b\`\${(n, x) => n}\`;
 // Generic tag with argument of function type whose parameter is not of type parameter type but body/return type uses type parameter
 function someGenerics3(strs,producer) {
 }
-someGenerics3\`\${() => ''}\`;
+someGenerics3\`\${() => ""}\`;
 someGenerics3\`\${() => undefined}\`;
 someGenerics3\`\${() => 3}\`;
 // 2 parameter generic tag with argument 1 of type parameter type and argument 2 of function type whose parameter is of type parameter type
 function someGenerics4(strs,n,f) {
 }
-someGenerics4\`\${4}\${ () => null }\`;
-someGenerics4\`\${''}\${ () => 3 }\`;
-someGenerics4\`\${ null }\${ null }\`;
+someGenerics4\`\${4}\${() => null}\`;
+someGenerics4\`\${""}\${() => 3}\`;
+someGenerics4\`\${null}\${null}\`;
 // 2 parameter generic tag with argument 2 of type parameter type and argument 1 of function type whose parameter is of type parameter type
 function someGenerics5(strs,n,f) {
 }
-someGenerics5\`\${ 4 } \${ () => null }\`;
-someGenerics5\`\${ '' }\${ () => 3 }\`;
+someGenerics5\`\${4} \${() => null}\`;
+someGenerics5\`\${""}\${() => 3}\`;
 someGenerics5\`\${null}\${null}\`;
 // Generic tag with multiple arguments of function types that each have parameters of the same generic type
 function someGenerics6(strs,a,b,c) {
 }
-someGenerics6\`\${ n => n }\${ n => n}\${ n => n}\`;
-someGenerics6\`\${ n => n }\${ n => n}\${ n => n}\`;
-someGenerics6\`\${ (n: number) => n }\${ (n: number) => n }\${ (n: number) => n }\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
 // Generic tag with multiple arguments of function types that each have parameters of different generic type
 function someGenerics7(strs,a,b,c) {
 }
-someGenerics7\`\${ n => n }\${ n => n }\${ n => n }\`;
-someGenerics7\`\${ n => n }\${ n => n }\${ n => n }\`;
-someGenerics7\`\${(n: number) => n}\${ (n: string) => n}\${ (n: number) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
 // Generic tag with argument of generic function type
 function someGenerics8(strs,n) {
 	return n;
 }
-var x = someGenerics8\`\${ someGenerics7 }\`;
+var x = someGenerics8\`\${someGenerics7}\`;
 x\`\${null}\${null}\${null}\`;
 // Generic tag with multiple parameters of generic type passed arguments with no best common type
 function someGenerics9(strs,a,b,c) {
 	return null;
 }
-var a9a = someGenerics9\`\${ '' }\${ 0 }\${ [] }\`;
+var a9a = someGenerics9\`\${""}\${0}\${[]}\`;
 var a9a;
 // Generic tag with multiple parameters of generic type passed arguments with multiple best common types
-var a9e = someGenerics9\`\${ undefined }\${ { x: 6, z: new Date() } }\${ { x: 6, y: '' } }\`;
+var a9e = someGenerics9\`\${undefined}\${{ x: 6, z: new Date() }}\${{ x: 6, y: "" }}\`;
 var a9e;
 // Generic tag with multiple parameters of generic type passed arguments with a single best common type
-var a9d = someGenerics9\`\${ { x: 3 }}\${ { x: 6 }}\${ { x: 6 } }\`;
+var a9d = someGenerics9\`\${{ x: 3 }}\${{ x: 6 }}\${{ x: 6 }}\`;
 var a9d;
 // Generic tag with multiple parameters of generic type where one argument is of type 'any'
 var anyVar;
-var a = someGenerics9\`\${ 7 }\${ anyVar }\${ 4 }\`;
+var a = someGenerics9\`\${7}\${anyVar}\${4}\`;
 var a;
 // Generic tag with multiple parameters of generic type where one argument is [] and the other is not 'any'
-var arr = someGenerics9\`\${ [] }\${ null }\${ undefined }\`;
+var arr = someGenerics9\`\${[]}\${null}\${undefined}\`;
 var arr;
 "
 `;
@@ -117,11 +117,11 @@ exports[`TSC: es6/templates taggedTemplateStringsTypeArgumentInferenceES6 1`] = 
 // Generic tag with one parameter
 function noParams(n) {
 }
-noParams\`\`;
+noParams;
 // Generic tag with parameter which does not use type parameter
 function noGenericParams(n) {
 }
-noGenericParams\`\`;
+noGenericParams;
 // Generic tag with multiple type parameters and only one used in parameter type annotation
 function someGenerics1a(n,m) {
 }
@@ -132,64 +132,64 @@ someGenerics1b\`\${3}\`;
 // Generic tag with argument of function type whose parameter is of type parameter type
 function someGenerics2a(strs,n) {
 }
-someGenerics2a\`\${(n: string) => n}\`;
+someGenerics2a\`\${(n) => n}\`;
 function someGenerics2b(strs,n) {
 }
-someGenerics2b\`\${ (n: string, x: number) => n }\`;
+someGenerics2b\`\${(n, x) => n}\`;
 // Generic tag with argument of function type whose parameter is not of type parameter type but body/return type uses type parameter
 function someGenerics3(strs,producer) {
 }
-someGenerics3\`\${() => ''}\`;
+someGenerics3\`\${() => ""}\`;
 someGenerics3\`\${() => undefined}\`;
 someGenerics3\`\${() => 3}\`;
 // 2 parameter generic tag with argument 1 of type parameter type and argument 2 of function type whose parameter is of type parameter type
 function someGenerics4(strs,n,f) {
 }
-someGenerics4\`\${4}\${ () => null }\`;
-someGenerics4\`\${''}\${ () => 3 }\`;
-someGenerics4\`\${ null }\${ null }\`;
+someGenerics4\`\${4}\${() => null}\`;
+someGenerics4\`\${""}\${() => 3}\`;
+someGenerics4\`\${null}\${null}\`;
 // 2 parameter generic tag with argument 2 of type parameter type and argument 1 of function type whose parameter is of type parameter type
 function someGenerics5(strs,n,f) {
 }
-someGenerics5\`\${ 4 } \${ () => null }\`;
-someGenerics5\`\${ '' }\${ () => 3 }\`;
+someGenerics5\`\${4} \${() => null}\`;
+someGenerics5\`\${""}\${() => 3}\`;
 someGenerics5\`\${null}\${null}\`;
 // Generic tag with multiple arguments of function types that each have parameters of the same generic type
 function someGenerics6(strs,a,b,c) {
 }
-someGenerics6\`\${ n => n }\${ n => n}\${ n => n}\`;
-someGenerics6\`\${ n => n }\${ n => n}\${ n => n}\`;
-someGenerics6\`\${ (n: number) => n }\${ (n: number) => n }\${ (n: number) => n }\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics6\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
 // Generic tag with multiple arguments of function types that each have parameters of different generic type
 function someGenerics7(strs,a,b,c) {
 }
-someGenerics7\`\${ n => n }\${ n => n }\${ n => n }\`;
-someGenerics7\`\${ n => n }\${ n => n }\${ n => n }\`;
-someGenerics7\`\${(n: number) => n}\${ (n: string) => n}\${ (n: number) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
+someGenerics7\`\${(n) => n}\${(n) => n}\${(n) => n}\`;
 // Generic tag with argument of generic function type
 function someGenerics8(strs,n) {
 	return n;
 }
-var x = someGenerics8\`\${ someGenerics7 }\`;
+var x = someGenerics8\`\${someGenerics7}\`;
 x\`\${null}\${null}\${null}\`;
 // Generic tag with multiple parameters of generic type passed arguments with no best common type
 function someGenerics9(strs,a,b,c) {
 	return null;
 }
-var a9a = someGenerics9\`\${ '' }\${ 0 }\${ [] }\`;
+var a9a = someGenerics9\`\${""}\${0}\${[]}\`;
 var a9a;
 // Generic tag with multiple parameters of generic type passed arguments with multiple best common types
-var a9e = someGenerics9\`\${ undefined }\${ { x: 6, z: new Date() } }\${ { x: 6, y: '' } }\`;
+var a9e = someGenerics9\`\${undefined}\${{ x: 6, z: new Date() }}\${{ x: 6, y: "" }}\`;
 var a9e;
 // Generic tag with multiple parameters of generic type passed arguments with a single best common type
-var a9d = someGenerics9\`\${ { x: 3 }}\${ { x: 6 }}\${ { x: 6 } }\`;
+var a9d = someGenerics9\`\${{ x: 3 }}\${{ x: 6 }}\${{ x: 6 }}\`;
 var a9d;
 // Generic tag with multiple parameters of generic type where one argument is of type 'any'
 var anyVar;
-var a = someGenerics9\`\${ 7 }\${ anyVar }\${ 4 }\`;
+var a = someGenerics9\`\${7}\${anyVar}\${4}\`;
 var a;
 // Generic tag with multiple parameters of generic type where one argument is [] and the other is not 'any'
-var arr = someGenerics9\`\${ [] }\${ null }\${ undefined }\`;
+var arr = someGenerics9\`\${[]}\${null}\${undefined}\`;
 var arr;
 "
 `;
@@ -198,14 +198,14 @@ exports[`TSC: es6/templates taggedTemplateStringsWithIncompatibleTypedTags 1`] =
 "// @target: es2015
 f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
+f[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f\`abc\${ true }def\${ true }ghi\`["member"].member\`abc\${ 1 }def\${ 2 }ghi\`;
-f.thisIsNotATag(\`abc\`);
+f\`abc\${true}def\${true}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -214,14 +214,14 @@ exports[`TSC: es6/templates taggedTemplateStringsWithIncompatibleTypedTagsES6 1`
 "// @target: ES6
 f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
+f[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f\`abc\${ true }def\${ true }ghi\`["member"].member\`abc\${ 1 }def\${ 2 }ghi\`;
-f.thisIsNotATag(\`abc\`);
+f\`abc\${true}def\${true}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -229,14 +229,14 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressions 1`] = `
 "// @target: es2015
 var f;
-var x = new new new f()()()\`abc\${ 0 }def\`.member("hello")(42) === true;
+var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplateStringsWithManyCallAndMemberExpressionsES6 1`] = `
 "// @target: ES6
 var f;
-var x = new new new f()()()\`abc\${ 0 }def\`.member("hello")(42) === true;
+var x = new new new f()()()\`abc\${0}def\`.member("hello")(42) === true;
 "
 `;
 
@@ -257,7 +257,7 @@ var e = foo([], 1, "2");
 // {}
 var f = foo([], 1, 2, 3);
 // any (with error)
-var u = foo\`\`;
+var u = foo;
 // number
 var v = foo\`\${1}\`;
 // string
@@ -289,7 +289,7 @@ var e = foo([], 1, "2");
 // {}
 var f = foo([], 1, 2, 3);
 // any (with error)
-var u = foo\`\`;
+var u = foo;
 // number
 var v = foo\`\${1}\`;
 // string
@@ -340,64 +340,63 @@ exports[`TSC: es6/templates taggedTemplateStringsWithOverloadResolution3_ES6 1`]
 function fn1() {
 	return null;
 }
-var s = fn1\`\${ undefined }\`;
+var s = fn1\`\${undefined}\`;
 // No candidate overloads found
-fn1\`\${ {} }\`;
+fn1\`\${{}}\`;
 // Error
 function fn2() {
 	return undefined;
 }
-var d1 = fn2\`\${ 0 }\${ undefined }\`;
+var d1 = fn2\`\${0}\${undefined}\`;
 // contextually typed
-var d2 = fn2\`\${ 0 }\${ undefined }\`;
+var d2 = fn2\`\${0}\${undefined}\`;
 // any
 d1.foo();
 // error
 d2();
 // no error (typed as any)
 // Generic and non-generic overload where generic overload is the only candidate
-fn2\`\${ 0 }\${ '' }\`;
+fn2\`\${0}\${""}\`;
 // OK
 // Generic and non-generic overload where non-generic overload is the only candidate
-fn2\`\${ '' }\${ 0 }\`;
+fn2\`\${""}\${0}\`;
 // OK
 // Generic overloads with differing arity
 function fn3() {
 	return null;
 }
-var s = fn3\`\${ 3 }\`;
-var s = fn3\`\${'' }\${ 3 }\${ '' }\`;
-var n = fn3\`\${ 5 }\${ 5 }\${ 5 }\`;
+var s = fn3\`\${3}\`;
+var s = fn3\`\${""}\${3}\${""}\`;
+var n = fn3\`\${5}\${5}\${5}\`;
 var n;
 // Generic overloads with differing arity tagging with arguments matching each overload type parameter count
-var s = fn3\`\${ 4 }\`
-;
-var s = fn3\`\${ '' }\${ '' }\${ '' }\`;
-var n = fn3\`\${ '' }\${ '' }\${ 3 }\`;
+var s = fn3\`\${4}\`;
+var s = fn3\`\${""}\${""}\${""}\`;
+var n = fn3\`\${""}\${""}\${3}\`;
 // Generic overloads with differing arity tagging with argument count that doesn't match any overload
-fn3\`\`;
+fn3;
 // Error
 // Generic overloads with constraints
 function fn4() {
 }
 // Generic overloads with constraints tagged with types that satisfy the constraints
-fn4\`\${ '' }\${ 3  }\`;
-fn4\`\${ 3  }\${ '' }\`;
-fn4\`\${ 3  }\${ undefined }\`;
-fn4\`\${ '' }\${ null }\`;
+fn4\`\${""}\${3}\`;
+fn4\`\${3}\${""}\`;
+fn4\`\${3}\${undefined}\`;
+fn4\`\${""}\${null}\`;
 // Generic overloads with constraints called with type arguments that do not satisfy the constraints
-fn4\`\${ null }\${ null }\`;
+fn4\`\${null}\${null}\`;
 // Error
 // Generic overloads with constraints called without type arguments but with types that do not satisfy the constraints
-fn4\`\${ true }\${ null }\`;
-fn4\`\${ null }\${ true }\`;
+fn4\`\${true}\${null}\`;
+fn4\`\${null}\${true}\`;
 // Non - generic overloads where contextual typing of function arguments has errors
 function fn5() {
 	return undefined;
 }
-fn5\`\${ (n) => n.toFixed() }\`;
+fn5\`\${(n) => n.toFixed()}\`;
 // will error; 'n' should have type 'string'.
-fn5\`\${ (n) => n.substr(0) }\`;
+fn5\`\${(n) => n.substr(0)}\`;
 "
 `;
 
@@ -407,64 +406,63 @@ exports[`TSC: es6/templates taggedTemplateStringsWithOverloadResolution3 1`] = `
 function fn1() {
 	return null;
 }
-var s = fn1\`\${ undefined }\`;
+var s = fn1\`\${undefined}\`;
 // No candidate overloads found
-fn1\`\${ {} }\`;
+fn1\`\${{}}\`;
 // Error
 function fn2() {
 	return undefined;
 }
-var d1 = fn2\`\${ 0 }\${ undefined }\`;
+var d1 = fn2\`\${0}\${undefined}\`;
 // contextually typed
-var d2 = fn2\`\${ 0 }\${ undefined }\`;
+var d2 = fn2\`\${0}\${undefined}\`;
 // any
 d1.foo();
 // error
 d2();
 // no error (typed as any)
 // Generic and non-generic overload where generic overload is the only candidate
-fn2\`\${ 0 }\${ '' }\`;
+fn2\`\${0}\${""}\`;
 // OK
 // Generic and non-generic overload where non-generic overload is the only candidate
-fn2\`\${ '' }\${ 0 }\`;
+fn2\`\${""}\${0}\`;
 // OK
 // Generic overloads with differing arity
 function fn3() {
 	return null;
 }
-var s = fn3\`\${ 3 }\`;
-var s = fn3\`\${'' }\${ 3 }\${ '' }\`;
-var n = fn3\`\${ 5 }\${ 5 }\${ 5 }\`;
+var s = fn3\`\${3}\`;
+var s = fn3\`\${""}\${3}\${""}\`;
+var n = fn3\`\${5}\${5}\${5}\`;
 var n;
 // Generic overloads with differing arity tagging with arguments matching each overload type parameter count
-var s = fn3\`\${ 4 }\`
-;
-var s = fn3\`\${ '' }\${ '' }\${ '' }\`;
-var n = fn3\`\${ '' }\${ '' }\${ 3 }\`;
+var s = fn3\`\${4}\`;
+var s = fn3\`\${""}\${""}\${""}\`;
+var n = fn3\`\${""}\${""}\${3}\`;
 // Generic overloads with differing arity tagging with argument count that doesn't match any overload
-fn3\`\`;
+fn3;
 // Error
 // Generic overloads with constraints
 function fn4() {
 }
 // Generic overloads with constraints tagged with types that satisfy the constraints
-fn4\`\${ '' }\${ 3  }\`;
-fn4\`\${ 3  }\${ '' }\`;
-fn4\`\${ 3  }\${ undefined }\`;
-fn4\`\${ '' }\${ null }\`;
+fn4\`\${""}\${3}\`;
+fn4\`\${3}\${""}\`;
+fn4\`\${3}\${undefined}\`;
+fn4\`\${""}\${null}\`;
 // Generic overloads with constraints called with type arguments that do not satisfy the constraints
-fn4\`\${ null }\${ null }\`;
+fn4\`\${null}\${null}\`;
 // Error
 // Generic overloads with constraints called without type arguments but with types that do not satisfy the constraints
-fn4\`\${ true }\${ null }\`;
-fn4\`\${ null }\${ true }\`;
+fn4\`\${true}\${null}\`;
+fn4\`\${null}\${true}\`;
 // Non - generic overloads where contextual typing of function arguments has errors
 function fn5() {
 	return undefined;
 }
-fn5\`\${ (n) => n.toFixed() }\`;
+fn5\`\${(n) => n.toFixed()}\`;
 // will error; 'n' should have type 'string'.
-fn5\`\${ (n) => n.substr(0) }\`;
+fn5\`\${(n) => n.substr(0)}\`;
 "
 `;
 
@@ -485,17 +483,17 @@ function declare(x,...ys) {
 exports[`TSC: es6/templates taggedTemplateStringsWithTagsTypedAsAny 1`] = `
 "// @target: es2015
 var f;
-f\`abc\`;
+f;
 f\`abc\${1}def\${2}ghi\`;
-f.g.h\`abc\`;
+f.g.h;
 f.g.h\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
+f["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag(\`abc\`);
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -503,17 +501,17 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTagsTypedAsAnyES6 1`] = `
 "// @target: ES6
 var f;
-f\`abc\`;
+f;
 f\`abc\${1}def\${2}ghi\`;
-f.g.h\`abc\`;
+f.g.h;
 f.g.h\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
+f["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag(\`abc\`);
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -521,15 +519,15 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTypedTags 1`] = `
 "// @target: es2015
 var f;
-f\`abc\`;
+f;
 f\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
+f[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag(\`abc\`);
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -537,15 +535,15 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTypedTagsES6 1`] = `
 "// @target: ES6
 var f;
-f\`abc\`;
+f;
 f\`abc\${1}def\${2}ghi\`;
-f\`abc\`.member;
+f.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f\`abc\`["member"];
+f["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
+f[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag(\`abc\`);
+f.thisIsNotATag();
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -554,7 +552,9 @@ exports[`TSC: es6/templates taggedTemplateStringsWithTypeErrorInFunctionExpressi
 "// @target: es2015
 function foo(...rest) {
 }
-foo\`\${function (x: number) { x = "bad"; } }\`;
+foo\`\${function(x) {
+	x = "bad";
+}}\`;
 "
 `;
 
@@ -562,34 +562,34 @@ exports[`TSC: es6/templates taggedTemplateStringsWithTypeErrorInFunctionExpressi
 "//@target: es6
 function foo(...rest) {
 }
-foo\`\${function (x: number) { x = "bad"; } }\`;
+foo\`\${function(x) {
+	x = "bad";
+}}\`;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplatesWithTypeArguments1 1`] = `
 "export const a = f\`
     hello
-    \${stuff => stuff.x}
+    \${(stuff) => stuff.x}
     brave
-    \${stuff => stuff.y}
+    \${(stuff) => stuff.y}
     world
-    \${stuff => stuff.z}
+    \${(stuff) => stuff.z}
 \`;
 export const b = g\`
     hello
-    \${stuff => stuff.x}
+    \${(stuff) => stuff.x}
     brave
-    \${stuff => stuff.y}
+    \${(stuff) => stuff.y}
     world
-    \${stuff => stuff.z}
+    \${(stuff) => stuff.z}
 \`;
-export let c = obj["prop"]\`\${(input) => ({ ...input })}\`
-;
+export let c = obj["prop"]\`\${(input) => ({ ...input })}\`;
 c.returnedObjProp.x;
 c.returnedObjProp.y;
 c.returnedObjProp.z;
-c = obj.prop\`\${(input) => ({ ...input })}\`
-;
+c = obj.prop\`\${(input) => ({ ...input })}\`;
 c.returnedObjProp.x;
 c.returnedObjProp.y;
 c.returnedObjProp.z;
@@ -609,7 +609,7 @@ const d = new tag()\`\${"hello"} \${"world"}\`(100, 200);
  * \`hello\${369}\`();
  * \`\`\`
  */
-const e = new tag()\`hello\`();
+const e = new tag()();
 class SomeBase {
 	a;
 	b;
@@ -617,7 +617,7 @@ class SomeBase {
 }
 class SomeDerived extends SomeBase {
 	constructor() {
-		super\`hello world\`;
+		super;
 	}
 }
 "
@@ -625,14 +625,14 @@ class SomeDerived extends SomeBase {
 
 exports[`TSC: es6/templates taggedTemplateUntypedTagCall01 1`] = `
 "var tag;
-tag\`Hello world!\`;
+tag;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplateWithConstructableTag01 1`] = `
 "class CtorTag {
 }
-CtorTag\`Hello world!\`;
+CtorTag;
 "
 `;
 
@@ -644,308 +644,308 @@ exports[`TSC: es6/templates taggedTemplateWithConstructableTag02 1`] = `
 exports[`TSC: es6/templates templateStringBinaryOperations 1`] = `
 "// @target: es2015
 var a = 1 + \`\${ 3 }\`;
-var b = 1 + \`2\${ 3 }\`;
-var c = 1 + \`\${ 3 }4\`;
-var d = 1 + \`2\${ 3 }4\`;
-var e = \`\${ 3 }\`  + 5;
-var f = \`2\${ 3 }\`  + 5;
-var g = \`\${ 3 }4\`  + 5;
-var h = \`2\${ 3 }4\`  + 5;
-var i = 1 + \`\${ 3 }\`  + 5;
-var j = 1 + \`2\${ 3 }\`  + 5;
-var k = 1 + \`\${ 3 }4\`  + 5;
-var l = 1 + \`2\${ 3 }4\`  + 5;
-var a2 = 1 + \`\${ 3 - 4 }\`;
-var b2 = 1 + \`2\${ 3 - 4 }\`;
-var c2 = 1 + \`\${ 3 - 4 }5\`;
-var d2 = 1 + \`2\${ 3 - 4 }5\`;
-var e2 = \`\${ 3 - 4 }\`  + 6;
-var f2 = \`2\${ 3 - 4 }\`  + 6;
-var g2 = \`\${ 3 - 4 }5\`  + 6;
-var h2 = \`2\${ 3 - 4 }5\`  + 6;
-var i2 = 1 + \`\${ 3 - 4 }\`  + 6;
-var j2 = 1 + \`2\${ 3 - 4 }\`  + 6;
-var k2 = 1 + \`\${ 3 - 4 }5\`  + 6;
-var l2 = 1 + \`2\${ 3 - 4 }5\`  + 6;
-var a3 = 1 + \`\${ 3 * 4 }\`;
-var b3 = 1 + \`2\${ 3 * 4 }\`;
-var c3 = 1 + \`\${ 3 * 4 }5\`;
-var d3 = 1 + \`2\${ 3 * 4 }5\`;
-var e3 = \`\${ 3 * 4 }\`  + 6;
-var f3 = \`2\${ 3 * 4 }\`  + 6;
-var g3 = \`\${ 3 * 4 }5\`  + 6;
-var h3 = \`2\${ 3 * 4 }5\`  + 6;
-var i3 = 1 + \`\${ 3 * 4 }\`  + 6;
-var j3 = 1 + \`2\${ 3 * 4 }\`  + 6;
-var k3 = 1 + \`\${ 3 * 4 }5\`  + 6;
-var l3 = 1 + \`2\${ 3 * 4 }5\`  + 6;
-var a4 = 1 + \`\${ 3 & 4 }\`;
-var b4 = 1 + \`2\${ 3 & 4 }\`;
-var c4 = 1 + \`\${ 3 & 4 }5\`;
-var d4 = 1 + \`2\${ 3 & 4 }5\`;
-var e4 = \`\${ 3 & 4 }\`  + 6;
-var f4 = \`2\${ 3 & 4 }\`  + 6;
-var g4 = \`\${ 3 & 4 }5\`  + 6;
-var h4 = \`2\${ 3 & 4 }5\`  + 6;
-var i4 = 1 + \`\${ 3 & 4 }\`  + 6;
-var j4 = 1 + \`2\${ 3 & 4 }\`  + 6;
-var k4 = 1 + \`\${ 3 & 4 }5\`  + 6;
-var l4 = 1 + \`2\${ 3 & 4 }5\`  + 6;
+var b = 1 + \`2\${3}\`;
+var c = 1 + \`\${3}4\`;
+var d = 1 + \`2\${3}4\`;
+var e = \`\${3}\` + 5;
+var f = \`2\${3}\` + 5;
+var g = \`\${3}4\` + 5;
+var h = \`2\${3}4\` + 5;
+var i = 1 + \`\${3}\` + 5;
+var j = 1 + \`2\${3}\` + 5;
+var k = 1 + \`\${3}4\` + 5;
+var l = 1 + \`2\${3}4\` + 5;
+var a2 = 1 + \`\${3 - 4}\`;
+var b2 = 1 + \`2\${3 - 4}\`;
+var c2 = 1 + \`\${3 - 4}5\`;
+var d2 = 1 + \`2\${3 - 4}5\`;
+var e2 = \`\${3 - 4}\` + 6;
+var f2 = \`2\${3 - 4}\` + 6;
+var g2 = \`\${3 - 4}5\` + 6;
+var h2 = \`2\${3 - 4}5\` + 6;
+var i2 = 1 + \`\${3 - 4}\` + 6;
+var j2 = 1 + \`2\${3 - 4}\` + 6;
+var k2 = 1 + \`\${3 - 4}5\` + 6;
+var l2 = 1 + \`2\${3 - 4}5\` + 6;
+var a3 = 1 + \`\${3 * 4}\`;
+var b3 = 1 + \`2\${3 * 4}\`;
+var c3 = 1 + \`\${3 * 4}5\`;
+var d3 = 1 + \`2\${3 * 4}5\`;
+var e3 = \`\${3 * 4}\` + 6;
+var f3 = \`2\${3 * 4}\` + 6;
+var g3 = \`\${3 * 4}5\` + 6;
+var h3 = \`2\${3 * 4}5\` + 6;
+var i3 = 1 + \`\${3 * 4}\` + 6;
+var j3 = 1 + \`2\${3 * 4}\` + 6;
+var k3 = 1 + \`\${3 * 4}5\` + 6;
+var l3 = 1 + \`2\${3 * 4}5\` + 6;
+var a4 = 1 + \`\${3 & 4}\`;
+var b4 = 1 + \`2\${3 & 4}\`;
+var c4 = 1 + \`\${3 & 4}5\`;
+var d4 = 1 + \`2\${3 & 4}5\`;
+var e4 = \`\${3 & 4}\` + 6;
+var f4 = \`2\${3 & 4}\` + 6;
+var g4 = \`\${3 & 4}5\` + 6;
+var h4 = \`2\${3 & 4}5\` + 6;
+var i4 = 1 + \`\${3 & 4}\` + 6;
+var j4 = 1 + \`2\${3 & 4}\` + 6;
+var k4 = 1 + \`\${3 & 4}5\` + 6;
+var l4 = 1 + \`2\${3 & 4}5\` + 6;
 "
 `;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsES6 1`] = `
 "// @target: ES6
 var a = 1 + \`\${ 3 }\`;
-var b = 1 + \`2\${ 3 }\`;
-var c = 1 + \`\${ 3 }4\`;
-var d = 1 + \`2\${ 3 }4\`;
-var e = \`\${ 3 }\`  + 5;
-var f = \`2\${ 3 }\`  + 5;
-var g = \`\${ 3 }4\`  + 5;
-var h = \`2\${ 3 }4\`  + 5;
-var i = 1 + \`\${ 3 }\`  + 5;
-var j = 1 + \`2\${ 3 }\`  + 5;
-var k = 1 + \`\${ 3 }4\`  + 5;
-var l = 1 + \`2\${ 3 }4\`  + 5;
-var a2 = 1 + \`\${ 3 - 4 }\`;
-var b2 = 1 + \`2\${ 3 - 4 }\`;
-var c2 = 1 + \`\${ 3 - 4 }5\`;
-var d2 = 1 + \`2\${ 3 - 4 }5\`;
-var e2 = \`\${ 3 - 4 }\`  + 6;
-var f2 = \`2\${ 3 - 4 }\`  + 6;
-var g2 = \`\${ 3 - 4 }5\`  + 6;
-var h2 = \`2\${ 3 - 4 }5\`  + 6;
-var i2 = 1 + \`\${ 3 - 4 }\`  + 6;
-var j2 = 1 + \`2\${ 3 - 4 }\`  + 6;
-var k2 = 1 + \`\${ 3 - 4 }5\`  + 6;
-var l2 = 1 + \`2\${ 3 - 4 }5\`  + 6;
-var a3 = 1 + \`\${ 3 * 4 }\`;
-var b3 = 1 + \`2\${ 3 * 4 }\`;
-var c3 = 1 + \`\${ 3 * 4 }5\`;
-var d3 = 1 + \`2\${ 3 * 4 }5\`;
-var e3 = \`\${ 3 * 4 }\`  + 6;
-var f3 = \`2\${ 3 * 4 }\`  + 6;
-var g3 = \`\${ 3 * 4 }5\`  + 6;
-var h3 = \`2\${ 3 * 4 }5\`  + 6;
-var i3 = 1 + \`\${ 3 * 4 }\`  + 6;
-var j3 = 1 + \`2\${ 3 * 4 }\`  + 6;
-var k3 = 1 + \`\${ 3 * 4 }5\`  + 6;
-var l3 = 1 + \`2\${ 3 * 4 }5\`  + 6;
-var a4 = 1 + \`\${ 3 & 4 }\`;
-var b4 = 1 + \`2\${ 3 & 4 }\`;
-var c4 = 1 + \`\${ 3 & 4 }5\`;
-var d4 = 1 + \`2\${ 3 & 4 }5\`;
-var e4 = \`\${ 3 & 4 }\`  + 6;
-var f4 = \`2\${ 3 & 4 }\`  + 6;
-var g4 = \`\${ 3 & 4 }5\`  + 6;
-var h4 = \`2\${ 3 & 4 }5\`  + 6;
-var i4 = 1 + \`\${ 3 & 4 }\`  + 6;
-var j4 = 1 + \`2\${ 3 & 4 }\`  + 6;
-var k4 = 1 + \`\${ 3 & 4 }5\`  + 6;
-var l4 = 1 + \`2\${ 3 & 4 }5\`  + 6;
+var b = 1 + \`2\${3}\`;
+var c = 1 + \`\${3}4\`;
+var d = 1 + \`2\${3}4\`;
+var e = \`\${3}\` + 5;
+var f = \`2\${3}\` + 5;
+var g = \`\${3}4\` + 5;
+var h = \`2\${3}4\` + 5;
+var i = 1 + \`\${3}\` + 5;
+var j = 1 + \`2\${3}\` + 5;
+var k = 1 + \`\${3}4\` + 5;
+var l = 1 + \`2\${3}4\` + 5;
+var a2 = 1 + \`\${3 - 4}\`;
+var b2 = 1 + \`2\${3 - 4}\`;
+var c2 = 1 + \`\${3 - 4}5\`;
+var d2 = 1 + \`2\${3 - 4}5\`;
+var e2 = \`\${3 - 4}\` + 6;
+var f2 = \`2\${3 - 4}\` + 6;
+var g2 = \`\${3 - 4}5\` + 6;
+var h2 = \`2\${3 - 4}5\` + 6;
+var i2 = 1 + \`\${3 - 4}\` + 6;
+var j2 = 1 + \`2\${3 - 4}\` + 6;
+var k2 = 1 + \`\${3 - 4}5\` + 6;
+var l2 = 1 + \`2\${3 - 4}5\` + 6;
+var a3 = 1 + \`\${3 * 4}\`;
+var b3 = 1 + \`2\${3 * 4}\`;
+var c3 = 1 + \`\${3 * 4}5\`;
+var d3 = 1 + \`2\${3 * 4}5\`;
+var e3 = \`\${3 * 4}\` + 6;
+var f3 = \`2\${3 * 4}\` + 6;
+var g3 = \`\${3 * 4}5\` + 6;
+var h3 = \`2\${3 * 4}5\` + 6;
+var i3 = 1 + \`\${3 * 4}\` + 6;
+var j3 = 1 + \`2\${3 * 4}\` + 6;
+var k3 = 1 + \`\${3 * 4}5\` + 6;
+var l3 = 1 + \`2\${3 * 4}5\` + 6;
+var a4 = 1 + \`\${3 & 4}\`;
+var b4 = 1 + \`2\${3 & 4}\`;
+var c4 = 1 + \`\${3 & 4}5\`;
+var d4 = 1 + \`2\${3 & 4}5\`;
+var e4 = \`\${3 & 4}\` + 6;
+var f4 = \`2\${3 & 4}\` + 6;
+var g4 = \`\${3 & 4}5\` + 6;
+var h4 = \`2\${3 & 4}5\` + 6;
+var i4 = 1 + \`\${3 & 4}\` + 6;
+var j4 = 1 + \`2\${3 & 4}\` + 6;
+var k4 = 1 + \`\${3 & 4}5\` + 6;
+var l4 = 1 + \`2\${3 & 4}5\` + 6;
 "
 `;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsES6Invalid 1`] = `
 "// @target: ES6
 var a = 1 - \`\${ 3 }\`;
-var b = 1 - \`2\${ 3 }\`;
-var c = 1 - \`\${ 3 }4\`;
-var d = 1 - \`2\${ 3 }4\`;
-var e = \`\${ 3 }\`  - 5;
-var f = \`2\${ 3 }\`  - 5;
-var g = \`\${ 3 }4\`  - 5;
-var h = \`2\${ 3 }4\`  - 5;
-var a2 = 1 * \`\${ 3 }\`;
-var b2 = 1 * \`2\${ 3 }\`;
-var c2 = 1 * \`\${ 3 }4\`;
-var d2 = 1 * \`2\${ 3 }4\`;
-var e2 = \`\${ 3 }\`  * 5;
-var f2 = \`2\${ 3 }\`  * 5;
-var g2 = \`\${ 3 }4\`  * 5;
-var h2 = \`2\${ 3 }4\`  * 5;
-var a3 = 1 & \`\${ 3 }\`;
-var b3 = 1 & \`2\${ 3 }\`;
-var c3 = 1 & \`\${ 3 }4\`;
-var d3 = 1 & \`2\${ 3 }4\`;
-var e3 = \`\${ 3 }\`  & 5;
-var f3 = \`2\${ 3 }\`  & 5;
-var g3 = \`\${ 3 }4\`  & 5;
-var h3 = \`2\${ 3 }4\`  & 5;
-var a4 = 1 - \`\${ 3 - 4 }\`;
-var b4 = 1 - \`2\${ 3 - 4 }\`;
-var c4 = 1 - \`\${ 3 - 4 }5\`;
-var d4 = 1 - \`2\${ 3 - 4 }5\`;
-var e4 = \`\${ 3 - 4 }\`  - 6;
-var f4 = \`2\${ 3 - 4 }\`  - 6;
-var g4 = \`\${ 3 - 4 }5\`  - 6;
-var h4 = \`2\${ 3 - 4 }5\`  - 6;
-var a5 = 1 - \`\${ 3 * 4 }\`;
-var b5 = 1 - \`2\${ 3 * 4 }\`;
-var c5 = 1 - \`\${ 3 * 4 }5\`;
-var d5 = 1 - \`2\${ 3 * 4 }5\`;
-var e5 = \`\${ 3 * 4 }\`  - 6;
-var f5 = \`2\${ 3 * 4 }\`  - 6;
-var g5 = \`\${ 3 * 4 }5\`  - 6;
-var h5 = \`2\${ 3 * 4 }5\`  - 6;
-var a6 = 1 - \`\${ 3 & 4 }\`;
-var b6 = 1 - \`2\${ 3 & 4 }\`;
-var c6 = 1 - \`\${ 3 & 4 }5\`;
-var d6 = 1 - \`2\${ 3 & 4 }5\`;
-var e6 = \`\${ 3 & 4 }\`  - 6;
-var f6 = \`2\${ 3 & 4 }\`  - 6;
-var g6 = \`\${ 3 & 4 }5\`  - 6;
-var h6 = \`2\${ 3 & 4 }5\`  - 6;
-var a7 = 1 * \`\${ 3 - 4 }\`;
-var b7 = 1 * \`2\${ 3 - 4 }\`;
-var c7 = 1 * \`\${ 3 - 4 }5\`;
-var d7 = 1 * \`2\${ 3 - 4 }5\`;
-var e7 = \`\${ 3 - 4 }\`  * 6;
-var f7 = \`2\${ 3 - 4 }\`  * 6;
-var g7 = \`\${ 3 - 4 }5\`  * 6;
-var h7 = \`2\${ 3 - 4 }5\`  * 6;
-var a8 = 1 * \`\${ 3 * 4 }\`;
-var b8 = 1 * \`2\${ 3 * 4 }\`;
-var c8 = 1 * \`\${ 3 * 4 }5\`;
-var d8 = 1 * \`2\${ 3 * 4 }5\`;
-var e8 = \`\${ 3 * 4 }\`  * 6;
-var f8 = \`2\${ 3 * 4 }\`  * 6;
-var g8 = \`\${ 3 * 4 }5\`  * 6;
-var h8 = \`2\${ 3 * 4 }5\`  * 6;
-var a9 = 1 * \`\${ 3 & 4 }\`;
-var b9 = 1 * \`2\${ 3 & 4 }\`;
-var c9 = 1 * \`\${ 3 & 4 }5\`;
-var d9 = 1 * \`2\${ 3 & 4 }5\`;
-var e9 = \`\${ 3 & 4 }\`  * 6;
-var f9 = \`2\${ 3 & 4 }\`  * 6;
-var g9 = \`\${ 3 & 4 }5\`  * 6;
-var h9 = \`2\${ 3 & 4 }5\`  * 6;
-var aa = 1 & \`\${ 3 - 4 }\`;
-var ba = 1 & \`2\${ 3 - 4 }\`;
-var ca = 1 & \`\${ 3 - 4 }5\`;
-var da = 1 & \`2\${ 3 - 4 }5\`;
-var ea = \`\${ 3 - 4 }\`  & 6;
-var fa = \`2\${ 3 - 4 }\`  & 6;
-var ga = \`\${ 3 - 4 }5\`  & 6;
-var ha = \`2\${ 3 - 4 }5\`  & 6;
-var ab = 1 & \`\${ 3 * 4 }\`;
-var bb = 1 & \`2\${ 3 * 4 }\`;
-var cb = 1 & \`\${ 3 * 4 }5\`;
-var db = 1 & \`2\${ 3 * 4 }5\`;
-var eb = \`\${ 3 * 4 }\`  & 6;
-var fb = \`2\${ 3 * 4 }\`  & 6;
-var gb = \`\${ 3 * 4 }5\`  & 6;
-var hb = \`2\${ 3 * 4 }5\`  & 6;
-var ac = 1 & \`\${ 3 & 4 }\`;
-var bc = 1 & \`2\${ 3 & 4 }\`;
-var cc = 1 & \`\${ 3 & 4 }5\`;
-var dc = 1 & \`2\${ 3 & 4 }5\`;
-var ec = \`\${ 3 & 4 }\`  & 6;
-var fc = \`2\${ 3 & 4 }\`  & 6;
-var gc = \`\${ 3 & 4 }5\`  & 6;
-var hc = \`2\${ 3 & 4 }5\`  & 6;
+var b = 1 - \`2\${3}\`;
+var c = 1 - \`\${3}4\`;
+var d = 1 - \`2\${3}4\`;
+var e = \`\${3}\` - 5;
+var f = \`2\${3}\` - 5;
+var g = \`\${3}4\` - 5;
+var h = \`2\${3}4\` - 5;
+var a2 = 1 * \`\${3}\`;
+var b2 = 1 * \`2\${3}\`;
+var c2 = 1 * \`\${3}4\`;
+var d2 = 1 * \`2\${3}4\`;
+var e2 = \`\${3}\` * 5;
+var f2 = \`2\${3}\` * 5;
+var g2 = \`\${3}4\` * 5;
+var h2 = \`2\${3}4\` * 5;
+var a3 = 1 & \`\${3}\`;
+var b3 = 1 & \`2\${3}\`;
+var c3 = 1 & \`\${3}4\`;
+var d3 = 1 & \`2\${3}4\`;
+var e3 = \`\${3}\` & 5;
+var f3 = \`2\${3}\` & 5;
+var g3 = \`\${3}4\` & 5;
+var h3 = \`2\${3}4\` & 5;
+var a4 = 1 - \`\${3 - 4}\`;
+var b4 = 1 - \`2\${3 - 4}\`;
+var c4 = 1 - \`\${3 - 4}5\`;
+var d4 = 1 - \`2\${3 - 4}5\`;
+var e4 = \`\${3 - 4}\` - 6;
+var f4 = \`2\${3 - 4}\` - 6;
+var g4 = \`\${3 - 4}5\` - 6;
+var h4 = \`2\${3 - 4}5\` - 6;
+var a5 = 1 - \`\${3 * 4}\`;
+var b5 = 1 - \`2\${3 * 4}\`;
+var c5 = 1 - \`\${3 * 4}5\`;
+var d5 = 1 - \`2\${3 * 4}5\`;
+var e5 = \`\${3 * 4}\` - 6;
+var f5 = \`2\${3 * 4}\` - 6;
+var g5 = \`\${3 * 4}5\` - 6;
+var h5 = \`2\${3 * 4}5\` - 6;
+var a6 = 1 - \`\${3 & 4}\`;
+var b6 = 1 - \`2\${3 & 4}\`;
+var c6 = 1 - \`\${3 & 4}5\`;
+var d6 = 1 - \`2\${3 & 4}5\`;
+var e6 = \`\${3 & 4}\` - 6;
+var f6 = \`2\${3 & 4}\` - 6;
+var g6 = \`\${3 & 4}5\` - 6;
+var h6 = \`2\${3 & 4}5\` - 6;
+var a7 = 1 * \`\${3 - 4}\`;
+var b7 = 1 * \`2\${3 - 4}\`;
+var c7 = 1 * \`\${3 - 4}5\`;
+var d7 = 1 * \`2\${3 - 4}5\`;
+var e7 = \`\${3 - 4}\` * 6;
+var f7 = \`2\${3 - 4}\` * 6;
+var g7 = \`\${3 - 4}5\` * 6;
+var h7 = \`2\${3 - 4}5\` * 6;
+var a8 = 1 * \`\${3 * 4}\`;
+var b8 = 1 * \`2\${3 * 4}\`;
+var c8 = 1 * \`\${3 * 4}5\`;
+var d8 = 1 * \`2\${3 * 4}5\`;
+var e8 = \`\${3 * 4}\` * 6;
+var f8 = \`2\${3 * 4}\` * 6;
+var g8 = \`\${3 * 4}5\` * 6;
+var h8 = \`2\${3 * 4}5\` * 6;
+var a9 = 1 * \`\${3 & 4}\`;
+var b9 = 1 * \`2\${3 & 4}\`;
+var c9 = 1 * \`\${3 & 4}5\`;
+var d9 = 1 * \`2\${3 & 4}5\`;
+var e9 = \`\${3 & 4}\` * 6;
+var f9 = \`2\${3 & 4}\` * 6;
+var g9 = \`\${3 & 4}5\` * 6;
+var h9 = \`2\${3 & 4}5\` * 6;
+var aa = 1 & \`\${3 - 4}\`;
+var ba = 1 & \`2\${3 - 4}\`;
+var ca = 1 & \`\${3 - 4}5\`;
+var da = 1 & \`2\${3 - 4}5\`;
+var ea = \`\${3 - 4}\` & 6;
+var fa = \`2\${3 - 4}\` & 6;
+var ga = \`\${3 - 4}5\` & 6;
+var ha = \`2\${3 - 4}5\` & 6;
+var ab = 1 & \`\${3 * 4}\`;
+var bb = 1 & \`2\${3 * 4}\`;
+var cb = 1 & \`\${3 * 4}5\`;
+var db = 1 & \`2\${3 * 4}5\`;
+var eb = \`\${3 * 4}\` & 6;
+var fb = \`2\${3 * 4}\` & 6;
+var gb = \`\${3 * 4}5\` & 6;
+var hb = \`2\${3 * 4}5\` & 6;
+var ac = 1 & \`\${3 & 4}\`;
+var bc = 1 & \`2\${3 & 4}\`;
+var cc = 1 & \`\${3 & 4}5\`;
+var dc = 1 & \`2\${3 & 4}5\`;
+var ec = \`\${3 & 4}\` & 6;
+var fc = \`2\${3 & 4}\` & 6;
+var gc = \`\${3 & 4}5\` & 6;
+var hc = \`2\${3 & 4}5\` & 6;
 "
 `;
 
 exports[`TSC: es6/templates templateStringBinaryOperationsInvalid 1`] = `
 "// @target: es2015
 var a = 1 - \`\${ 3 }\`;
-var b = 1 - \`2\${ 3 }\`;
-var c = 1 - \`\${ 3 }4\`;
-var d = 1 - \`2\${ 3 }4\`;
-var e = \`\${ 3 }\`  - 5;
-var f = \`2\${ 3 }\`  - 5;
-var g = \`\${ 3 }4\`  - 5;
-var h = \`2\${ 3 }4\`  - 5;
-var a2 = 1 * \`\${ 3 }\`;
-var b2 = 1 * \`2\${ 3 }\`;
-var c2 = 1 * \`\${ 3 }4\`;
-var d2 = 1 * \`2\${ 3 }4\`;
-var e2 = \`\${ 3 }\`  * 5;
-var f2 = \`2\${ 3 }\`  * 5;
-var g2 = \`\${ 3 }4\`  * 5;
-var h2 = \`2\${ 3 }4\`  * 5;
-var a3 = 1 & \`\${ 3 }\`;
-var b3 = 1 & \`2\${ 3 }\`;
-var c3 = 1 & \`\${ 3 }4\`;
-var d3 = 1 & \`2\${ 3 }4\`;
-var e3 = \`\${ 3 }\`  & 5;
-var f3 = \`2\${ 3 }\`  & 5;
-var g3 = \`\${ 3 }4\`  & 5;
-var h3 = \`2\${ 3 }4\`  & 5;
-var a4 = 1 - \`\${ 3 - 4 }\`;
-var b4 = 1 - \`2\${ 3 - 4 }\`;
-var c4 = 1 - \`\${ 3 - 4 }5\`;
-var d4 = 1 - \`2\${ 3 - 4 }5\`;
-var e4 = \`\${ 3 - 4 }\`  - 6;
-var f4 = \`2\${ 3 - 4 }\`  - 6;
-var g4 = \`\${ 3 - 4 }5\`  - 6;
-var h4 = \`2\${ 3 - 4 }5\`  - 6;
-var a5 = 1 - \`\${ 3 * 4 }\`;
-var b5 = 1 - \`2\${ 3 * 4 }\`;
-var c5 = 1 - \`\${ 3 * 4 }5\`;
-var d5 = 1 - \`2\${ 3 * 4 }5\`;
-var e5 = \`\${ 3 * 4 }\`  - 6;
-var f5 = \`2\${ 3 * 4 }\`  - 6;
-var g5 = \`\${ 3 * 4 }5\`  - 6;
-var h5 = \`2\${ 3 * 4 }5\`  - 6;
-var a6 = 1 - \`\${ 3 & 4 }\`;
-var b6 = 1 - \`2\${ 3 & 4 }\`;
-var c6 = 1 - \`\${ 3 & 4 }5\`;
-var d6 = 1 - \`2\${ 3 & 4 }5\`;
-var e6 = \`\${ 3 & 4 }\`  - 6;
-var f6 = \`2\${ 3 & 4 }\`  - 6;
-var g6 = \`\${ 3 & 4 }5\`  - 6;
-var h6 = \`2\${ 3 & 4 }5\`  - 6;
-var a7 = 1 * \`\${ 3 - 4 }\`;
-var b7 = 1 * \`2\${ 3 - 4 }\`;
-var c7 = 1 * \`\${ 3 - 4 }5\`;
-var d7 = 1 * \`2\${ 3 - 4 }5\`;
-var e7 = \`\${ 3 - 4 }\`  * 6;
-var f7 = \`2\${ 3 - 4 }\`  * 6;
-var g7 = \`\${ 3 - 4 }5\`  * 6;
-var h7 = \`2\${ 3 - 4 }5\`  * 6;
-var a8 = 1 * \`\${ 3 * 4 }\`;
-var b8 = 1 * \`2\${ 3 * 4 }\`;
-var c8 = 1 * \`\${ 3 * 4 }5\`;
-var d8 = 1 * \`2\${ 3 * 4 }5\`;
-var e8 = \`\${ 3 * 4 }\`  * 6;
-var f8 = \`2\${ 3 * 4 }\`  * 6;
-var g8 = \`\${ 3 * 4 }5\`  * 6;
-var h8 = \`2\${ 3 * 4 }5\`  * 6;
-var a9 = 1 * \`\${ 3 & 4 }\`;
-var b9 = 1 * \`2\${ 3 & 4 }\`;
-var c9 = 1 * \`\${ 3 & 4 }5\`;
-var d9 = 1 * \`2\${ 3 & 4 }5\`;
-var e9 = \`\${ 3 & 4 }\`  * 6;
-var f9 = \`2\${ 3 & 4 }\`  * 6;
-var g9 = \`\${ 3 & 4 }5\`  * 6;
-var h9 = \`2\${ 3 & 4 }5\`  * 6;
-var aa = 1 & \`\${ 3 - 4 }\`;
-var ba = 1 & \`2\${ 3 - 4 }\`;
-var ca = 1 & \`\${ 3 - 4 }5\`;
-var da = 1 & \`2\${ 3 - 4 }5\`;
-var ea = \`\${ 3 - 4 }\`  & 6;
-var fa = \`2\${ 3 - 4 }\`  & 6;
-var ga = \`\${ 3 - 4 }5\`  & 6;
-var ha = \`2\${ 3 - 4 }5\`  & 6;
-var ab = 1 & \`\${ 3 * 4 }\`;
-var bb = 1 & \`2\${ 3 * 4 }\`;
-var cb = 1 & \`\${ 3 * 4 }5\`;
-var db = 1 & \`2\${ 3 * 4 }5\`;
-var eb = \`\${ 3 * 4 }\`  & 6;
-var fb = \`2\${ 3 * 4 }\`  & 6;
-var gb = \`\${ 3 * 4 }5\`  & 6;
-var hb = \`2\${ 3 * 4 }5\`  & 6;
-var ac = 1 & \`\${ 3 & 4 }\`;
-var bc = 1 & \`2\${ 3 & 4 }\`;
-var cc = 1 & \`\${ 3 & 4 }5\`;
-var dc = 1 & \`2\${ 3 & 4 }5\`;
-var ec = \`\${ 3 & 4 }\`  & 6;
-var fc = \`2\${ 3 & 4 }\`  & 6;
-var gc = \`\${ 3 & 4 }5\`  & 6;
-var hc = \`2\${ 3 & 4 }5\`  & 6;
+var b = 1 - \`2\${3}\`;
+var c = 1 - \`\${3}4\`;
+var d = 1 - \`2\${3}4\`;
+var e = \`\${3}\` - 5;
+var f = \`2\${3}\` - 5;
+var g = \`\${3}4\` - 5;
+var h = \`2\${3}4\` - 5;
+var a2 = 1 * \`\${3}\`;
+var b2 = 1 * \`2\${3}\`;
+var c2 = 1 * \`\${3}4\`;
+var d2 = 1 * \`2\${3}4\`;
+var e2 = \`\${3}\` * 5;
+var f2 = \`2\${3}\` * 5;
+var g2 = \`\${3}4\` * 5;
+var h2 = \`2\${3}4\` * 5;
+var a3 = 1 & \`\${3}\`;
+var b3 = 1 & \`2\${3}\`;
+var c3 = 1 & \`\${3}4\`;
+var d3 = 1 & \`2\${3}4\`;
+var e3 = \`\${3}\` & 5;
+var f3 = \`2\${3}\` & 5;
+var g3 = \`\${3}4\` & 5;
+var h3 = \`2\${3}4\` & 5;
+var a4 = 1 - \`\${3 - 4}\`;
+var b4 = 1 - \`2\${3 - 4}\`;
+var c4 = 1 - \`\${3 - 4}5\`;
+var d4 = 1 - \`2\${3 - 4}5\`;
+var e4 = \`\${3 - 4}\` - 6;
+var f4 = \`2\${3 - 4}\` - 6;
+var g4 = \`\${3 - 4}5\` - 6;
+var h4 = \`2\${3 - 4}5\` - 6;
+var a5 = 1 - \`\${3 * 4}\`;
+var b5 = 1 - \`2\${3 * 4}\`;
+var c5 = 1 - \`\${3 * 4}5\`;
+var d5 = 1 - \`2\${3 * 4}5\`;
+var e5 = \`\${3 * 4}\` - 6;
+var f5 = \`2\${3 * 4}\` - 6;
+var g5 = \`\${3 * 4}5\` - 6;
+var h5 = \`2\${3 * 4}5\` - 6;
+var a6 = 1 - \`\${3 & 4}\`;
+var b6 = 1 - \`2\${3 & 4}\`;
+var c6 = 1 - \`\${3 & 4}5\`;
+var d6 = 1 - \`2\${3 & 4}5\`;
+var e6 = \`\${3 & 4}\` - 6;
+var f6 = \`2\${3 & 4}\` - 6;
+var g6 = \`\${3 & 4}5\` - 6;
+var h6 = \`2\${3 & 4}5\` - 6;
+var a7 = 1 * \`\${3 - 4}\`;
+var b7 = 1 * \`2\${3 - 4}\`;
+var c7 = 1 * \`\${3 - 4}5\`;
+var d7 = 1 * \`2\${3 - 4}5\`;
+var e7 = \`\${3 - 4}\` * 6;
+var f7 = \`2\${3 - 4}\` * 6;
+var g7 = \`\${3 - 4}5\` * 6;
+var h7 = \`2\${3 - 4}5\` * 6;
+var a8 = 1 * \`\${3 * 4}\`;
+var b8 = 1 * \`2\${3 * 4}\`;
+var c8 = 1 * \`\${3 * 4}5\`;
+var d8 = 1 * \`2\${3 * 4}5\`;
+var e8 = \`\${3 * 4}\` * 6;
+var f8 = \`2\${3 * 4}\` * 6;
+var g8 = \`\${3 * 4}5\` * 6;
+var h8 = \`2\${3 * 4}5\` * 6;
+var a9 = 1 * \`\${3 & 4}\`;
+var b9 = 1 * \`2\${3 & 4}\`;
+var c9 = 1 * \`\${3 & 4}5\`;
+var d9 = 1 * \`2\${3 & 4}5\`;
+var e9 = \`\${3 & 4}\` * 6;
+var f9 = \`2\${3 & 4}\` * 6;
+var g9 = \`\${3 & 4}5\` * 6;
+var h9 = \`2\${3 & 4}5\` * 6;
+var aa = 1 & \`\${3 - 4}\`;
+var ba = 1 & \`2\${3 - 4}\`;
+var ca = 1 & \`\${3 - 4}5\`;
+var da = 1 & \`2\${3 - 4}5\`;
+var ea = \`\${3 - 4}\` & 6;
+var fa = \`2\${3 - 4}\` & 6;
+var ga = \`\${3 - 4}5\` & 6;
+var ha = \`2\${3 - 4}5\` & 6;
+var ab = 1 & \`\${3 * 4}\`;
+var bb = 1 & \`2\${3 * 4}\`;
+var cb = 1 & \`\${3 * 4}5\`;
+var db = 1 & \`2\${3 * 4}5\`;
+var eb = \`\${3 * 4}\` & 6;
+var fb = \`2\${3 * 4}\` & 6;
+var gb = \`\${3 * 4}5\` & 6;
+var hb = \`2\${3 * 4}5\` & 6;
+var ac = 1 & \`\${3 & 4}\`;
+var bc = 1 & \`2\${3 & 4}\`;
+var cc = 1 & \`\${3 & 4}5\`;
+var dc = 1 & \`2\${3 & 4}5\`;
+var ec = \`\${3 & 4}\` & 6;
+var fc = \`2\${3 & 4}\` & 6;
+var gc = \`\${3 & 4}5\` & 6;
+var hc = \`2\${3 & 4}5\` & 6;
 "
 `;
 
@@ -1017,25 +1017,25 @@ var x = (x) => \`abc\${ x }def\`;
 
 exports[`TSC: es6/templates templateStringInCallExpression 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
+\`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInCallExpressionES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
+\`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditional 1`] = `
 "// @target: es2015
-var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${ " " }def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditionalES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${ " " }def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
@@ -1059,13 +1059,13 @@ var x = \`abc\${ 1 }def\`  / 1;
 
 exports[`TSC: es6/templates templateStringInEqualityChecks 1`] = `
 "// @target: es2015
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\`  == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  ===  ||  !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInEqualityChecksES6 1`] = `
 "// @target: ES6
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\`  == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  ===  ||  !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
@@ -1073,7 +1073,7 @@ exports[`TSC: es6/templates templateStringInFunctionExpression 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${ 0 }def\`;
+	return \`abc\${0}def\`;
 };
 "
 `;
@@ -1082,20 +1082,20 @@ exports[`TSC: es6/templates templateStringInFunctionExpressionES6 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${ 0 }def\`;
+	return \`abc\${0}def\`;
 };
 "
 `;
 
 exports[`TSC: es6/templates templateStringInIndexExpression 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`[\`0\`];
+\`abc\${0}abc\`[];
 "
 `;
 
 exports[`TSC: es6/templates templateStringInIndexExpressionES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`[\`0\`];
+\`abc\${0}abc\`[];
 "
 `;
 
@@ -1149,13 +1149,13 @@ var x = 1 * \`abc\${ 1 }def\`;
 
 exports[`TSC: es6/templates templateStringInNewExpression 1`] = `
 "// @target: es2015
-new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
+new \`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInNewExpressionES6 1`] = `
 "// @target: ES6
-new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
+new \`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
 "
 `;
 
@@ -1200,8 +1200,8 @@ var x = { a: \`abc\${ 123 }def\${ 456 }ghi\`
 exports[`TSC: es6/templates templateStringInSwitchAndCase 1`] = `
 "// @target: es2015
 switch (\`abc\${0}abc\`) {
-	case \`abc\`:
-	case \`123\`:
+	case :
+	case :
 	case \`abc\${0}abc\`:
 		\`def\${1}def\`;
 }
@@ -1211,8 +1211,8 @@ switch (\`abc\${0}abc\`) {
 exports[`TSC: es6/templates templateStringInSwitchAndCaseES6 1`] = `
 "// @target: ES6
 switch (\`abc\${0}abc\`) {
-	case \`abc\`:
-	case \`123\`:
+	case :
+	case :
 	case \`abc\${0}abc\`:
 		\`def\${1}def\`;
 }
@@ -1221,13 +1221,13 @@ switch (\`abc\${0}abc\`) {
 
 exports[`TSC: es6/templates templateStringInTaggedTemplate 1`] = `
 "// @target: es2015
-\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${ "AM" } THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTaggedTemplateES6 1`] = `
 "// @target: ES6
-\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${ "AM" } THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
@@ -1372,13 +1372,17 @@ exports[`TSC: es6/templates templateStringPlainCharactersThatArePartsOfEscapes02
 
 exports[`TSC: es6/templates templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression 1`] = `
 "// @target: es2015
-\`\${function (x: number) { x = "bad"; } }\`;
+\`\${function(x) {
+	x = "bad";
+}}\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpressionES6 1`] = `
 "//@target: es6
-\`\${function (x: number) { x = "bad"; } }\`;
+\`\${function(x) {
+	x = "bad";
+}}\`;
 "
 `;
 
@@ -1471,34 +1475,28 @@ exports[`TSC: es6/templates templateStringWhitespaceEscapes2 1`] = `
 exports[`TSC: es6/templates templateStringWithBackslashEscapes01_ES6 1`] = `
 "// @target: es6
 var a = \`hello\\world\`;
-var b = \`hello\\\\world\`;
-var c = \`hello\\\\\\world\`;
-var d = \`hello\\\\\\\\world\`;
+var b = ;
+var c = ;
+var d = ;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithBackslashEscapes01 1`] = `
 "// @target: es2015
 var a = \`hello\\world\`;
-var b = \`hello\\\\world\`;
-var c = \`hello\\\\\\world\`;
-var d = \`hello\\\\\\\\world\`;
+var b = ;
+var c = ;
+var d = ;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithCommentsInArrowFunction 1`] = `
 "// @target: es2015
 const a = 1;
-const f1 = () => \`\${
-      // a
-      a
-    }a\`;
-// a
-const f2 = () => \`\${
-      // a
-      a
-    }\`;
-// a
+const f1 = () => \`\${// a
+a}a\`;
+const f2 = () => \`\${// a
+a}\`;
 "
 `;
 
@@ -1516,25 +1514,25 @@ var x = \`abc\${ 10 + 10 }def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedArray 1`] = `
 "// @target: es2015
-var x = \`abc\${ [1,2,3] }def\`;
+var x = \`abc\${[1, 2, 3]}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedArrayES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ [1,2,3] }def\`;
+var x = \`abc\${[1, 2, 3]}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedArrowFunction 1`] = `
 "// @target: es2015
-var x = \`abc\${ x => x }def\`;
+var x = \`abc\${(x) => x}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedArrowFunctionES6 1`] = `
 "// @strict: false
-var x = \`abc\${ x => x }def\`;
+var x = \`abc\${(x) => x}def\`;
 "
 `;
 
@@ -1609,24 +1607,28 @@ var x = \`abc\${ 1 / 1 }def\`;
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedFunctionExpression 1`] = `
-"var x = \`abc\${ function y() { return y; } }def\`;
+"var x = \`abc\${function y() {
+	return y;
+}}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedFunctionExpressionES6 1`] = `
-"var x = \`abc\${ function y() { return y; } }def\`;
+"var x = \`abc\${function y() {
+	return y;
+}}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedInOperator 1`] = `
 "// @target: es2015
-var x = \`abc\${ "hi" in { hi: 10, hello: 20} }def\`;
+var x = \`abc\${"hi" in { hi: 10, hello: 20 }}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedInOperatorES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ "hi" in { hi: 10, hello: 20} }def\`;
+var x = \`abc\${"hi" in { hi: 10, hello: 20 }}def\`;
 "
 `;
 
@@ -1668,37 +1670,37 @@ var x = \`abc\${ 7 * 6 }def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedNewOperator 1`] = `
 "// @target: es2015
-var x = \`abc\${ new String("Hi") }def\`;
+var x = \`abc\${new String("Hi")}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedNewOperatorES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ new String("Hi") }def\`;
+var x = \`abc\${new String("Hi")}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedObjectLiteral 1`] = `
 "// @target: es2015
-var x = \`abc\${ { x: 10, y: 20 } }def\`;
+var x = \`abc\${{ x: 10, y: 20 }}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedObjectLiteralES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ { x: 10, y: 20 } }def\`;
+var x = \`abc\${{ x: 10, y: 20 }}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateString 1`] = `
 "// @target: es2015
-var x = \`123\${ \`456 \${ " | " } 654\` }321 123\${ \`456 \${ " | " } 654\` }321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateStringES6 1`] = `
 "// @target: ES6
-var x = \`123\${ \`456 \${ " | " } 654\` }321 123\${ \`456 \${ " | " } 654\` }321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
@@ -1716,25 +1718,25 @@ var x = \`abc\${ <any>(10 + 10) }def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeOfOperator 1`] = `
 "// @target: es2015
-var x = \`abc\${ typeof "hi" }def\`;
+var x = \`abc\${typeof "hi"}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeOfOperatorES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ typeof "hi" }def\`;
+var x = \`abc\${typeof "hi"}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedUnaryPlus 1`] = `
 "// @target: es2015
-var x = \`abc\${ +Infinity }def\`;
+var x = \`abc\${+Infinity}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedUnaryPlusES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ +Infinity }def\`;
+var x = \`abc\${+Infinity}def\`;
 "
 `;
 
@@ -1750,36 +1752,36 @@ var x = \`abc\${ yield 10 }def\`;
 exports[`TSC: es6/templates templateStringWithEmptyLiteralPortions 1`] = `
 "// @target: es2015
 var a = \`\`;
-var b = \`\${ 0 }\`;
-var c = \`1\${ 0 }\`;
-var d = \`\${ 0 }2\`;
-var e = \`1\${ 0 }2\`;
-var f = \`\${ 0 }\${ 0 }\`;
-var g = \`1\${ 0 }\${ 0 }\`;
-var h = \`\${ 0 }2\${ 0 }\`;
-var i = \`1\${ 0 }2\${ 0 }\`;
-var j = \`\${ 0 }\${ 0 }3\`;
-var k = \`1\${ 0 }\${ 0 }3\`;
-var l = \`\${ 0 }2\${ 0 }3\`;
-var m = \`1\${ 0 }2\${ 0 }3\`;
+var b = \`\${0}\`;
+var c = \`1\${0}\`;
+var d = \`\${0}2\`;
+var e = \`1\${0}2\`;
+var f = \`\${0}\${0}\`;
+var g = \`1\${0}\${0}\`;
+var h = \`\${0}2\${0}\`;
+var i = \`1\${0}2\${0}\`;
+var j = \`\${0}\${0}3\`;
+var k = \`1\${0}\${0}3\`;
+var l = \`\${0}2\${0}3\`;
+var m = \`1\${0}2\${0}3\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmptyLiteralPortionsES6 1`] = `
 "// @target: ES6
 var a = \`\`;
-var b = \`\${ 0 }\`;
-var c = \`1\${ 0 }\`;
-var d = \`\${ 0 }2\`;
-var e = \`1\${ 0 }2\`;
-var f = \`\${ 0 }\${ 0 }\`;
-var g = \`1\${ 0 }\${ 0 }\`;
-var h = \`\${ 0 }2\${ 0 }\`;
-var i = \`1\${ 0 }2\${ 0 }\`;
-var j = \`\${ 0 }\${ 0 }3\`;
-var k = \`1\${ 0 }\${ 0 }3\`;
-var l = \`\${ 0 }2\${ 0 }3\`;
-var m = \`1\${ 0 }2\${ 0 }3\`;
+var b = \`\${0}\`;
+var c = \`1\${0}\`;
+var d = \`\${0}2\`;
+var e = \`1\${0}2\`;
+var f = \`\${0}\${0}\`;
+var g = \`1\${0}\${0}\`;
+var h = \`\${0}2\${0}\`;
+var i = \`1\${0}2\${0}\`;
+var j = \`\${0}\${0}3\`;
+var k = \`1\${0}\${0}3\`;
+var l = \`\${0}2\${0}3\`;
+var m = \`1\${0}2\${0}3\`;
 "
 `;
 
@@ -1797,12 +1799,12 @@ exports[`TSC: es6/templates templateStringWithOpenCommentInStringPortionES6 1`] 
 
 exports[`TSC: es6/templates templateStringWithPropertyAccess 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`.indexOf(\`abc\`);
+\`abc\${0}abc\`.indexOf();
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithPropertyAccessES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`.indexOf(\`abc\`);
+\`abc\${0}abc\`.indexOf();
 "
 `;
