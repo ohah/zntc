@@ -84,17 +84,16 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
   `--asset-names`, `--public-path` 지원.
 
-- **CSS 번들링** — `XL (2~3주)` | 선행: emitter 출력 다중화 | 배치: 단독
-  JS에서 `import './style.css'`를 처리하지 못함. CSS Modules (`import styles from './foo.module.css'`)도 미지원.
-  esbuild는 CSS 파서를 내장하여 `@import` 해석 + 중복 제거 + minify까지 처리. rolldown/rspack은 PostCSS/Lightning CSS 통합.
-  프론트엔드 앱의 거의 100%가 CSS import를 사용하므로, JSON 로더와 함께 가장 시급한 기능.
-  **현황**: CSS 파서를 새로 작성해야 함. ModuleType.css는 정의되어 있으나 파싱/emit 로직 전무. 가장 큰 작업.
+- **플러그인 API** — 3단계로 구현 ([PLUGINS.md](../PLUGINS.md) 참조)
+  - 1단계: Zig Builtin 플러그인 (L, 3~5일) — Zig 함수 포인터, N-API 불필요
+  - 2단계: JS 플러그인 subprocess (M, 1주) — esbuild 방식 stdin/stdout JSON
+  - 3단계: N-API .node addon (XL, 2~3주, 선택적) — in-process 호출 최적화
+  플러그인 API가 있으면 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
-- **플러그인 API** — `XL (2~3주)` | 선행: 로더 시스템 안정화 | 배치: 단독
-  사용자가 빌드 파이프라인을 확장할 수 없음. 커스텀 로더, 가상 모듈, 코드 변환 등 모두 불가.
-  esbuild는 onResolve/onLoad 훅, rolldown은 Rollup 호환 resolveId/load/transform 훅 제공.
-  위의 JSON/Asset/CSS도 플러그인 없이는 사용자가 직접 해결할 방법이 없으므로, 생태계 확장의 전제 조건.
-  **현황**: 훅 포인트 설계 + Zig 인터페이스 + (이후) N-API JS 바인딩. resolver/graph/emitter 모두 수정 필요.
+- **CSS 번들링** — `XL (2~3주)` | 선행: 플러그인 API | 우선순위 하향
+  자체 CSS 파서 대신, 플러그인 API를 통해 Lightning CSS/PostCSS를 외부 도구로 위임 가능.
+  현재 `--loader:.css=empty`로 CSS import 무시 후 별도 CSS 빌드 도구 사용 가능.
+  자체 CSS 파서는 플러그인만으로 부족할 때 검토. Bun도 자체 CSS 번들링 미지원.
 
 - ~~**metafile**~~ — ✅ 완료. `--metafile=meta.json` esbuild 호환 JSON.
 - ~~**analyze**~~ — ✅ 완료. `--analyze` metafile JSON stderr 출력 (향후 트리 포맷 개선 예정).

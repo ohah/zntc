@@ -79,19 +79,49 @@ CJS 래핑 등
 └──────────────────────┴───────────────────────────────────────┴──────────┘
 ```
 
-## 구현 전략 — 2단계
+## 구현 전략 — 3단계
 
-### 1단계: Zig Builtin 플러그인 (N-API 불필요, 즉시 가능)
+### 1단계: Zig Builtin 플러그인 (난이도 L, 3~5일)
 - 플러그인 인터페이스를 Zig 함수 포인터로 정의
 - JSON/Text/Asset 로더를 Zig builtin 플러그인으로 구현 (최고 성능)
 - resolveId 훅으로 alias, virtual module 지원
 - 파이프라인 단방향 구조(resolver → graph → emitter)라 훅 삽입 용이
+- N-API 불필요, 즉시 가능
 
-### 2단계: JS 플러그인 위임 (N-API 필요)
-- N-API C ABI로 Zig ↔ Node.js 바인딩
-- "문자열 in, 문자열 out" — Zig와 JS가 AST를 공유하지 않음, 소스 코드 문자열만 주고받음
-- Zig → N-API → JS(Babel/PostCSS) → N-API → Zig 왕복
-- 성능 트레이드오프: 가능하면 Zig builtin 우선, 안 되는 것만 JS 플러그인으로 위임
+### 2단계: JS 플러그인 — subprocess 방식 (난이도 M, 1주)
+- esbuild와 동일한 아키텍처: 별도 Node.js 프로세스를 spawn하고 stdin/stdout JSON 메시지로 통신
+- N-API 불필요 — child_process + JSON 프로토콜만으로 동작
+- "문자열 in, 문자열 out" — Zig와 JS가 AST를 공유하지 않음
+- 플러그인 필터(예: `filter: /\.css$/`)로 호출 대상을 제한하여 IPC 오버헤드 최소화
+- 성능: 호출당 ~50~200μs (특정 확장자만 처리하면 전체 영향 10ms 이하)
+- 사용자가 PostCSS, Lightning CSS, Babel 등을 JS 플러그인으로 사용 가능
+
+```
+ZTS (Zig 바이너리)
+  ↕ stdin/stdout JSON
+Node.js (JS 플러그인 호스트)
+  ├─ 사용자 플러그인 코드
+  ├─ PostCSS / Lightning CSS / Babel 등
+  └─ @zts/core npm 패키지 (JSON 프로토콜 래퍼)
+```
+
+### 3단계: N-API addon 방식 (난이도 XL, 2~3주, 선택적)
+- Zig를 .node shared library로 빌드 → Node.js에서 `require('./zts.node')` 로딩
+- in-process 호출로 IPC 오버헤드 제거 (호출당 ~1~5μs)
+- Plugin 인터페이스 동일 — 전송 계층만 subprocess → N-API로 교체
+- 전체 파일 대상 transform 플러그인 등 호출 빈도 높은 경우에 유효
+- Zig에 napi-rs 같은 성숙한 바인딩 라이브러리 없음 → N-API C 헤더 직접 사용
+
+**2단계 → 3단계 전환 비용**: Plugin 인터페이스가 동일하므로 호출부(resolver, graph, emitter) 수정 불필요.
+전송 계층(JSON IPC → N-API 직접 호출)만 교체. esbuild는 4년간 subprocess 방식으로 프로덕션 운영 중.
+
+### 참고: 다른 번들러의 JS 플러그인 아키텍처
+| 번들러 | 방식 | 이유 |
+|--------|------|------|
+| esbuild | subprocess + stdin/stdout JSON | Go는 shared lib 불편, 충분히 빠름 |
+| rolldown | N-API .node addon (napi-rs) | Rust↔Node는 napi-rs로 쉬움 |
+| rspack | N-API .node addon (napi-rs) | 동일 |
+| Bun | JS 런타임 내장 (JavaScriptCore) | 런타임 자체가 목적 |
 
 ## 플러그인 인터페이스
 ```zig
@@ -131,11 +161,13 @@ pub const Plugin = struct {
 - hotUpdate — HMR 업데이트 커스터마이징
 
 ## 구현 순서
-1. 플러그인 인터페이스 정의 (Zig struct)
-2. 파이프라인에 훅 호출 삽입 (resolver, graph, emitter)
-3. Builtin 플러그인 (json, text, asset)
-4. N-API 바인딩 (JS 플러그인 실행)
-5. Vite 호환 확장
+1. 플러그인 인터페이스 정의 (Zig struct) — 1단계
+2. 파이프라인에 훅 호출 삽입 (resolver, graph, emitter) — 1단계
+3. Builtin 플러그인 (json, text, asset) — 1단계
+4. subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
+5. @zts/core npm 패키지 (JS API 래퍼) — 2단계
+6. N-API .node addon (선택적 성능 최적화) — 3단계
+7. Vite 호환 확장 — 후순위
 
 ## 참고
 - Rollup/Rolldown: `references/rolldown/packages/rolldown/src/plugin/index.ts`
