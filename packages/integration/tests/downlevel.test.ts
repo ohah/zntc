@@ -1,65 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { bundleAndRun } from "./helpers";
 
-// 런타임 헬퍼 (번들러가 아직 자동 주입하지 않으므로 인라인)
-const HELPERS = `
-var __extends = function(d, b) {
-  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];
-  function __() { this.constructor = d; }
-  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-};
-var __generator = function(body) {
-  var _ = { label: 0, sent: function() { return t[1]; }, trys: [], ops: [] }, f, y, t, g;
-  return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, g[Symbol.iterator] = function() { return this; }, g;
-  function verb(n) { return function(v) { return step([n, v]); }; }
-  function step(op) {
-    if (f) throw new TypeError("Generator is already executing.");
-    while (g && (g = 0, op[0] && (_ = 0)), _) try {
-      if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
-      if (y = 0, t) op = [op[0] & 2, t.value];
-      switch (op[0]) {
-        case 0: case 1: t = op; break;
-        case 4: _.label++; return { value: op[1], done: false };
-        case 5: _.label++; y = op[1]; op = [0]; continue;
-        case 7: op = _.ops.pop(); _.trys.pop(); continue;
-        default:
-          if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
-          if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
-          if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
-          if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
-          if (t[2]) _.ops.pop();
-          _.trys.pop(); continue;
-      }
-      op = body.call(null, _);
-    } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
-    if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
-  }
-};
-var __async = function(fn) {
-  return function() {
-    var args = arguments, self = this;
-    return new Promise(function(resolve, reject) {
-      var gen = fn.apply(self, args);
-      function step(key, arg) {
-        try { var info = gen[key](arg); var value = info.value; }
-        catch (error) { reject(error); return; }
-        if (info.done) resolve(value);
-        else Promise.resolve(value).then(function(v) { step("next", v); }, function(e) { step("throw", e); });
-      }
-      step("next");
-    });
-  };
-};
-var __rest = function(s, e) {
-  var t = {};
-  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];
-  return t;
-};
-`;
-
-function withHelpers(code: string): string {
-  return HELPERS + code;
-}
+// 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
 describe("ES 다운레벨링 런타임 테스트", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -198,7 +140,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("destructuring rest (object)", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(
+          "index.ts": (
             "const { a, ...rest } = { a: 1, b: 2, c: 3 }; console.log(a, JSON.stringify(rest));",
           ),
         },
@@ -243,7 +185,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("class extends/super", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             class Animal { name: string; constructor(name: string) { this.name = name; } speak() { return this.name; } }
             class Dog extends Animal { speak() { return super.speak() + " barks"; } }
             console.log(new Dog("Rex").speak());
@@ -292,7 +234,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator .next()", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             function* gen() { yield 1; yield 2; yield 3; }
             const g = gen();
             const arr: number[] = [];
@@ -311,7 +253,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator return", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             function* gen() { yield 1; return 99; }
             const g = gen();
             console.log(JSON.stringify(g.next()), JSON.stringify(g.next()));
@@ -431,7 +373,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator yield value receive", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             function* gen() { const x = yield 1; return x; }
             const g = gen(); g.next(); const r = g.next(42);
             console.log(JSON.stringify(r));
@@ -621,7 +563,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("class extends with method override", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             class Animal {
               speak() { return 'animal'; }
             }
@@ -643,7 +585,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator with multiple yields", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             function* multi() {
               yield 'a';
               yield 'b';
@@ -667,7 +609,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator yield delegation", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": withHelpers(`
+          "index.ts": (`
             function* inner() { yield 1; yield 2; }
             function* outer() { yield 0; yield* inner(); yield 3; }
             var out = [];
