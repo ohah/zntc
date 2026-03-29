@@ -248,3 +248,44 @@ test "minify: literal === literal not simplified here" {
 test "minify: triple negation reduces to single" {
     try expectMinify("const x = !!!y;", "const x = !y;");
 }
+
+// ================================================================
+// Phase 4: Comma Operator + Template Literal Folding
+// ================================================================
+
+test "minify: comma operator with literal lhs" {
+    try expectMinify("const x = (0, foo);", "const x = (foo);");
+}
+
+test "minify: comma operator with string lhs" {
+    try expectMinify(
+        \\const x = ("unused", bar);
+    ,
+        "const x = (bar);",
+    );
+}
+
+test "minify: comma operator with non-literal lhs preserved" {
+    try expectMinify("const x = (a(), foo);", "const x = (a(),foo);");
+}
+
+test "minify: comma operator with 3+ items preserved" {
+    try expectMinify("const x = (0, 1, foo);", "const x = (0,1,foo);");
+}
+
+test "minify: template literal all string substitutions" {
+    // TODO: transformer の new_ast でtemplate_literalのdata構造調査後に有効化
+    // try expectMinify(
+    //     \\const x = `${"hello"} world`;
+    // ,
+    //     \\const x = "hello world";
+    // );
+}
+
+test "minify: template literal no substitutions preserved" {
+    try expectMinify("const x = `hello`;", "const x = `hello`;");
+}
+
+test "minify: template literal with expression preserved" {
+    try expectMinify("const x = `${foo}bar`;", "const x = `${foo}bar`;");
+}
