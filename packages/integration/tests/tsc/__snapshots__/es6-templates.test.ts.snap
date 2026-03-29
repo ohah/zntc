@@ -4,7 +4,7 @@ exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEs
 "// @target: es6
 function f(...x) {
 }
-f;
+f\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n\`;
 "
 `;
 
@@ -12,7 +12,7 @@ exports[`TSC: es6/templates taggedTemplateStringsPlainCharactersThatArePartsOfEs
 "// @target: es2015
 function f(...x) {
 }
-f;
+f\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n\`;
 "
 `;
 
@@ -35,11 +35,11 @@ exports[`TSC: es6/templates taggedTemplateStringsTypeArgumentInference 1`] = `
 // Generic tag with one parameter
 function noParams(n) {
 }
-noParams;
+noParams\`\`;
 // Generic tag with parameter which does not use type parameter
 function noGenericParams(n) {
 }
-noGenericParams;
+noGenericParams\`\`;
 // Generic tag with multiple type parameters and only one used in parameter type annotation
 function someGenerics1a(n,m) {
 }
@@ -117,11 +117,11 @@ exports[`TSC: es6/templates taggedTemplateStringsTypeArgumentInferenceES6 1`] = 
 // Generic tag with one parameter
 function noParams(n) {
 }
-noParams;
+noParams\`\`;
 // Generic tag with parameter which does not use type parameter
 function noGenericParams(n) {
 }
-noGenericParams;
+noGenericParams\`\`;
 // Generic tag with multiple type parameters and only one used in parameter type annotation
 function someGenerics1a(n,m) {
 }
@@ -198,14 +198,14 @@ exports[`TSC: es6/templates taggedTemplateStringsWithIncompatibleTypedTags 1`] =
 "// @target: es2015
 f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f[0].member\`abc\${1}def\${2}ghi\`;
+f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${true}def\${true}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -214,14 +214,14 @@ exports[`TSC: es6/templates taggedTemplateStringsWithIncompatibleTypedTagsES6 1`
 "// @target: ES6
 f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f[0].member\`abc\${1}def\${2}ghi\`;
+f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${true}def\${true}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -257,7 +257,7 @@ var e = foo([], 1, "2");
 // {}
 var f = foo([], 1, 2, 3);
 // any (with error)
-var u = foo;
+var u = foo\`\`;
 // number
 var v = foo\`\${1}\`;
 // string
@@ -289,7 +289,7 @@ var e = foo([], 1, "2");
 // {}
 var f = foo([], 1, 2, 3);
 // any (with error)
-var u = foo;
+var u = foo\`\`;
 // number
 var v = foo\`\${1}\`;
 // string
@@ -374,7 +374,7 @@ var s = fn3\`\${4}\`;
 var s = fn3\`\${""}\${""}\${""}\`;
 var n = fn3\`\${""}\${""}\${3}\`;
 // Generic overloads with differing arity tagging with argument count that doesn't match any overload
-fn3;
+fn3\`\`;
 // Error
 // Generic overloads with constraints
 function fn4() {
@@ -440,7 +440,7 @@ var s = fn3\`\${4}\`;
 var s = fn3\`\${""}\${""}\${""}\`;
 var n = fn3\`\${""}\${""}\${3}\`;
 // Generic overloads with differing arity tagging with argument count that doesn't match any overload
-fn3;
+fn3\`\`;
 // Error
 // Generic overloads with constraints
 function fn4() {
@@ -483,17 +483,17 @@ function declare(x,...ys) {
 exports[`TSC: es6/templates taggedTemplateStringsWithTagsTypedAsAny 1`] = `
 "// @target: es2015
 var f;
-f;
+f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.g.h;
+f.g.h\`abc\`;
 f.g.h\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
+f\`abc\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -501,17 +501,17 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTagsTypedAsAnyES6 1`] = `
 "// @target: ES6
 var f;
-f;
+f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.g.h;
+f.g.h\`abc\`;
 f.g.h\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
+f\`abc\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].someOtherTag\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -519,15 +519,15 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTypedTags 1`] = `
 "// @target: es2015
 var f;
-f;
+f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f[0].member\`abc\${1}def\${2}ghi\`;
+f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -535,15 +535,15 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 exports[`TSC: es6/templates taggedTemplateStringsWithTypedTagsES6 1`] = `
 "// @target: ES6
 var f;
-f;
+f\`abc\`;
 f\`abc\${1}def\${2}ghi\`;
-f.member;
+f\`abc\`.member;
 f\`abc\${1}def\${2}ghi\`.member;
-f["member"];
+f\`abc\`["member"];
 f\`abc\${1}def\${2}ghi\`["member"];
-f[0].member\`abc\${1}def\${2}ghi\`;
+f\`abc\`[0].member\`abc\${1}def\${2}ghi\`;
 f\`abc\${1}def\${2}ghi\`["member"].member\`abc\${1}def\${2}ghi\`;
-f.thisIsNotATag();
+f.thisIsNotATag(\`abc\`);
 f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
 "
 `;
@@ -609,7 +609,7 @@ const d = new tag()\`\${"hello"} \${"world"}\`(100, 200);
  * \`hello\${369}\`();
  * \`\`\`
  */
-const e = new tag()();
+const e = new tag()\`hello\`();
 class SomeBase {
 	a;
 	b;
@@ -617,7 +617,7 @@ class SomeBase {
 }
 class SomeDerived extends SomeBase {
 	constructor() {
-		super;
+		super\`hello world\`;
 	}
 }
 "
@@ -625,14 +625,14 @@ class SomeDerived extends SomeBase {
 
 exports[`TSC: es6/templates taggedTemplateUntypedTagCall01 1`] = `
 "var tag;
-tag;
+tag\`Hello world!\`;
 "
 `;
 
 exports[`TSC: es6/templates taggedTemplateWithConstructableTag01 1`] = `
 "class CtorTag {
 }
-CtorTag;
+CtorTag\`Hello world!\`;
 "
 `;
 
@@ -1017,25 +1017,25 @@ var x = (x) => \`abc\${ x }def\`;
 
 exports[`TSC: es6/templates templateStringInCallExpression 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
+\`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInCallExpressionES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
+\`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditional 1`] = `
 "// @target: es2015
-var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${" "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditionalES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${" "}def\`;
 "
 `;
 
@@ -1059,13 +1059,13 @@ var x = \`abc\${ 1 }def\`  / 1;
 
 exports[`TSC: es6/templates templateStringInEqualityChecks 1`] = `
 "// @target: es2015
-var x = \`abc\${0}abc\`  ===  ||  !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInEqualityChecksES6 1`] = `
 "// @target: ES6
-var x = \`abc\${0}abc\`  ===  ||  !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
@@ -1073,7 +1073,7 @@ exports[`TSC: es6/templates templateStringInFunctionExpression 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${0}def\`;
+	return \`abc\${ 0 }def\`;
 };
 "
 `;
@@ -1082,20 +1082,20 @@ exports[`TSC: es6/templates templateStringInFunctionExpressionES6 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${0}def\`;
+	return \`abc\${ 0 }def\`;
 };
 "
 `;
 
 exports[`TSC: es6/templates templateStringInIndexExpression 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`[];
+\`abc\${0}abc\`[\`0\`];
 "
 `;
 
 exports[`TSC: es6/templates templateStringInIndexExpressionES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`[];
+\`abc\${0}abc\`[\`0\`];
 "
 `;
 
@@ -1149,13 +1149,13 @@ var x = 1 * \`abc\${ 1 }def\`;
 
 exports[`TSC: es6/templates templateStringInNewExpression 1`] = `
 "// @target: es2015
-new \`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
+new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringInNewExpressionES6 1`] = `
 "// @target: ES6
-new \`abc\${0}abc\`(\`hello \${0} world\`, , \`1\${2}3\`);
+new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);
 "
 `;
 
@@ -1200,8 +1200,8 @@ var x = { a: \`abc\${ 123 }def\${ 456 }ghi\`
 exports[`TSC: es6/templates templateStringInSwitchAndCase 1`] = `
 "// @target: es2015
 switch (\`abc\${0}abc\`) {
-	case :
-	case :
+	case \`abc\`:
+	case \`123\`:
 	case \`abc\${0}abc\`:
 		\`def\${1}def\`;
 }
@@ -1211,8 +1211,8 @@ switch (\`abc\${0}abc\`) {
 exports[`TSC: es6/templates templateStringInSwitchAndCaseES6 1`] = `
 "// @target: ES6
 switch (\`abc\${0}abc\`) {
-	case :
-	case :
+	case \`abc\`:
+	case \`123\`:
 	case \`abc\${0}abc\`:
 		\`def\${1}def\`;
 }
@@ -1221,13 +1221,13 @@ switch (\`abc\${0}abc\`) {
 
 exports[`TSC: es6/templates templateStringInTaggedTemplate 1`] = `
 "// @target: es2015
-\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTaggedTemplateES6 1`] = `
 "// @target: ES6
-\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
@@ -1475,18 +1475,18 @@ exports[`TSC: es6/templates templateStringWhitespaceEscapes2 1`] = `
 exports[`TSC: es6/templates templateStringWithBackslashEscapes01_ES6 1`] = `
 "// @target: es6
 var a = \`hello\\world\`;
-var b = ;
-var c = ;
-var d = ;
+var b = \`hello\\\\world\`;
+var c = \`hello\\\\\\world\`;
+var d = \`hello\\\\\\\\world\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithBackslashEscapes01 1`] = `
 "// @target: es2015
 var a = \`hello\\world\`;
-var b = ;
-var c = ;
-var d = ;
+var b = \`hello\\\\world\`;
+var c = \`hello\\\\\\world\`;
+var d = \`hello\\\\\\\\world\`;
 "
 `;
 
@@ -1694,13 +1694,13 @@ var x = \`abc\${{ x: 10, y: 20 }}def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateString 1`] = `
 "// @target: es2015
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${ " | " } 654\` }321\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateStringES6 1`] = `
 "// @target: ES6
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${ " | " } 654\` }321\`;
 "
 `;
 
@@ -1799,12 +1799,12 @@ exports[`TSC: es6/templates templateStringWithOpenCommentInStringPortionES6 1`] 
 
 exports[`TSC: es6/templates templateStringWithPropertyAccess 1`] = `
 "// @target: es2015
-\`abc\${0}abc\`.indexOf();
+\`abc\${0}abc\`.indexOf(\`abc\`);
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithPropertyAccessES6 1`] = `
 "// @target: ES6
-\`abc\${0}abc\`.indexOf();
+\`abc\${0}abc\`.indexOf(\`abc\`);
 "
 `;

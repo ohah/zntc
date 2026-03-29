@@ -4959,7 +4959,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers1 1`] = `
 	static z15 = --super.a;
 	static z16 = ++super[("a")];
 	static z17 = super.a++;
-	static z18 = super.a;
+	static z18 = super.a\`\`;
 	// these should be unaffected
 x = 1;
 	y = this.x;
@@ -4995,7 +4995,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers2 1`] = `
 	static z15 = --super.a;
 	static z16 = ++super[("a")];
 	static z17 = super.a++;
-	static z18 = super.a;
+	static z18 = super.a\`\`;
 	// these should be unaffected
 x = 1;
 	y = this.x;

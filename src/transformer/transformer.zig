@@ -414,6 +414,9 @@ pub const Transformer = struct {
                 if (self.options.target.needsES2015()) {
                     return es2015_template.ES2015Template(Transformer).lowerTemplateLiteral(self, node);
                 }
+                // no-substitution template (data.none == 0)은 리프 노드 — visitListNode으로 처리하면
+                // data.list = {start: X, len: 0}이 되어 codegen의 data.none == 0 체크가 깨짐
+                if (node.data.none == 0) return self.copyNodeDirect(node);
                 return self.visitListNode(node);
             },
 
