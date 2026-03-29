@@ -857,7 +857,7 @@ pub const ModuleGraph = struct {
             },
             .dataurl => {
                 // 바이너리 읽기 → base64 인코딩 → data URL 문자열
-                const raw = readFileBinary(arena_alloc, module.path) catch {
+                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
                     return;
@@ -879,7 +879,7 @@ pub const ModuleGraph = struct {
             },
             .binary => {
                 // 바이너리 읽기 → base64 인코딩 → __toBinary("...") 호출 표현식
-                const raw = readFileBinary(arena_alloc, module.path) catch {
+                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
                     return;
@@ -895,7 +895,7 @@ pub const ModuleGraph = struct {
             },
             .file, .copy => {
                 // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
-                const raw = readFileBinary(arena_alloc, module.path) catch {
+                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
                     return;
@@ -982,26 +982,56 @@ pub const ModuleGraph = struct {
 // Asset 로더 유틸리티
 // ============================================================
 
-/// JS 문자열 리터럴용 이스케이프. \ " \n \r \0 을 처리한다.
+/// JS 문자열 리터럴용 이스케이프. \ " \n \r \0 \u2028 \u2029 를 처리한다.
 fn escapeJsString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
+    // fast path: 이스케이프가 필요한 문자가 없으면 복사만
+    var needs_escape = false;
     for (input) |c| {
+        switch (c) {
+            '\\', '"', '\n', '\r', 0 => {
+                needs_escape = true;
+                break;
+            },
+            0xe2 => {
+                needs_escape = true; // UTF-8 U+2028/U+2029 시작 바이트
+                break;
+            },
+            else => {},
+        }
+    }
+    if (!needs_escape) return try allocator.dupe(u8, input);
+
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.ensureTotalCapacity(allocator, input.len);
+    var i: usize = 0;
+    while (i < input.len) {
+        const c = input[i];
         switch (c) {
             '\\' => try buf.appendSlice(allocator, "\\\\"),
             '"' => try buf.appendSlice(allocator, "\\\""),
             '\n' => try buf.appendSlice(allocator, "\\n"),
             '\r' => try buf.appendSlice(allocator, "\\r"),
             0 => try buf.appendSlice(allocator, "\\0"),
-            // backtick, $는 template literal 미사용이므로 불필요
+            0xe2 => {
+                // U+2028 (LS) = E2 80 A8, U+2029 (PS) = E2 80 A9
+                if (i + 2 < input.len and input[i + 1] == 0x80) {
+                    if (input[i + 2] == 0xa8) {
+                        try buf.appendSlice(allocator, "\\u2028");
+                        i += 3;
+                        continue;
+                    } else if (input[i + 2] == 0xa9) {
+                        try buf.appendSlice(allocator, "\\u2029");
+                        i += 3;
+                        continue;
+                    }
+                }
+                try buf.append(allocator, c);
+            },
             else => try buf.append(allocator, c),
         }
+        i += 1;
     }
     return buf.toOwnedSlice(allocator);
-}
-
-/// 파일을 바이너리로 읽는다 (Arena 할당).
-fn readFileBinary(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.fs.cwd().readFileAlloc(allocator, path, 100 * 1024 * 1024);
 }
 
 /// 바이트 배열을 standard base64로 인코딩한다.
@@ -1013,10 +1043,10 @@ fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
     return buf;
 }
 
-/// 파일 내용의 content hash (xxHash → 16진수 8자리).
-/// emitter의 content hash와 동일 알고리즘.
+/// 파일 내용의 content hash (Wyhash → 16진수 8자리).
+/// emitter.zig의 content hash와 동일 알고리즘 (Wyhash + 32-bit truncate).
 fn contentHash(data: []const u8) [8]u8 {
-    const hash_val = std.hash.XxHash64.hash(0, data);
+    const hash_val = std.hash.Wyhash.hash(0, data);
     var buf: [8]u8 = undefined;
     _ = std.fmt.bufPrint(&buf, "{x:0>8}", .{@as(u32, @truncate(hash_val))}) catch unreachable;
     return buf;
