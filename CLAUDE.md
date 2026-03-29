@@ -275,6 +275,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
 | 8. AST 미니파이어 | constant folding, DCE, boolean simplification, comma operator | ✅ |
 | 9. 배치 A | 번들러 옵션 10개 (alias, banner, globalName, publicPath, JSON ESM 등) | ✅ |
+| 10. 배치 B | content hash + naming 패턴 (--entry-names, --chunk-names) | ✅ |
 
 ### 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -338,7 +339,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 #### Critical (없으면 실사용 어려움)
 
-- **Asset 로더** (file, dataurl, text, binary, copy) — `L` | 선행: content hash, naming 패턴 | 배치: C
+- **Asset 로더** (file, dataurl, text, binary, copy) — `L` | 선행: ✅ content hash, naming 패턴 | 배치: C
   이미지, 폰트, SVG, `.txt`, `.wasm` 등 non-JS 파일을 import할 수 없음.
   esbuild는 `--loader:.png=file` 형태로 파일 타입별 로더 지정. file 로더는 해시 파일명으로 복사 + URL 문자열 export, dataurl은 base64 인라인.
   React/Vue 프로젝트에서 `import logo from './logo.png'` 패턴이 매우 흔하므로 없으면 프론트엔드 프로젝트 빌드 불가.
@@ -361,12 +362,6 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   esbuild는 `--metafile=meta.json` 으로 번들 구성 분석 데이터 생성. bundle-buddy, esbuild-visualizer 등 시각화 도구의 입력.
   CI에서 번들 사이즈 회귀 감지, PR 코멘트에 사이즈 변화 표시 등 프로덕션 워크플로에 필수.
   **현황**: emitter에서 모듈/청크 정보는 이미 가지고 있음. JSON 직렬화 + CLI 옵션만 추가.
-
-- **naming 패턴** — `M` | 선행: content hash | 배치: B
-  출력 파일명에 `[name].[hash].js` 같은 패턴을 지정할 수 없음. 현재는 원본 파일명 그대로 출력.
-  프로덕션 배포 시 content hash 기반 캐시 버스팅이 표준. 해시 없으면 CDN 캐시 무효화를 수동으로 해야 함.
-  esbuild는 `--entry-names=[dir]/[name]-[hash]`, `--chunk-names`, `--asset-names` 각각 지정 가능.
-  **현황**: chunkStem()에 모듈 인덱스 기반 해시 있음. 파일 내용 기반 content hash로 교체 + 템플릿 파서 추가 필요.
 
 #### Important (프로덕션 배포에 자주 필요)
 
@@ -429,9 +424,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   log-level, charset, preserve-symlinks
   → 전부 옵션 추가 + 1~2줄 로직. 독립적이라 한번에 완료.
 
-배치 B (1~2일) ─────────────────────────────────────────────────
+배치 B (1~2일) ✅ 완료 ──────────────────────────────────────────
   content hash (파일 내용 기반) + naming 패턴 ([name].[hash])
-  → chunkStem() 교체 + 템플릿 파서. Asset 로더의 선행 조건.
+  → 2패스 placeholder 치환 (esbuild 방식). --entry-names, --chunk-names.
 
 배치 C (3~5일, 배치 B 후) ──────────────────────────────────────
   Asset 로더 (file/dataurl/text/binary/copy)
@@ -458,7 +453,7 @@ CSS 번들링/Asset 로더/플러그인 API는 아래 JS 전용 경계를 넘어
 | 작업 | JS 전용 구조에 부딪히나? | 새 부채 생성 위험? |
 |------|----------------------|-----------------|
 | 배치 A (옵션 10개) ✅ | 아니오 — 옵션 추가 + 출력 문자열 수준 | 없음 |
-| 배치 B (content hash) | 아니오 — chunkStem() 깨끗한 대체 | 없음 |
+| 배치 B (content hash) | ✅ 완료 | 없음 |
 | 배치 C (Asset 로더) | **예** — emitter/linker 분기 필요 | 접근 방식에 따라 다름 (아래 참고) |
 | 배치 D (metafile 등) | 아니오 — 각각 독립적 | 없음 |
 | CSS 번들링 | **예** — 구조 전면 수정 | CSS 파서 자체가 새 코드라 부채 아님 |
@@ -549,6 +544,8 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --log-level=<level>          로그 레벨 (silent|error|warning|info)
 --charset=utf8               non-ASCII를 이스케이프하지 않음
 --preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
+--entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
+--chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```
