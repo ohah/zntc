@@ -984,7 +984,9 @@ for (const p of filteredProjects) {
 
 // Summary table
 function fmtSize(size: number): string {
-  return size > 0 ? `${Math.round(size / 1024)}KB` : "-";
+  if (size <= 0) return "-";
+  const kb = size / 1024;
+  return kb >= 10 ? `${Math.round(kb)}KB` : `${kb.toFixed(1)}KB`;
 }
 function fmtStatus(build: boolean): string {
   return build ? "OK" : "FAIL";
