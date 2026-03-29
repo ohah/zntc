@@ -17,4 +17,8 @@ pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 test {
     _ = ast;
     _ = parser;
+
+    // test files
+    _ = @import("parser_test.zig");
+    _ = @import("ast_test.zig");
 }

@@ -41,4 +41,7 @@ test {
     _ = es2022;
     _ = es2024;
     _ = es_helpers;
+
+    // test files
+    _ = @import("transformer_test.zig");
 }

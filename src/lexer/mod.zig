@@ -18,4 +18,9 @@ test {
     _ = token;
     _ = scanner;
     _ = unicode_util;
+
+    // test files
+    _ = @import("scanner_test.zig");
+    _ = @import("token_test.zig");
+    _ = @import("unicode_test.zig");
 }

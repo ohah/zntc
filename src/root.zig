@@ -27,4 +27,7 @@ test {
     _ = bundler;
     _ = server;
     _ = @import("test_arena.zig");
+
+    // test files
+    _ = @import("config_test.zig");
 }
