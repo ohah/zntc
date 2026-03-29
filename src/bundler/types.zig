@@ -159,6 +159,35 @@ pub const ModuleType = enum {
 };
 
 // ============================================================
+// Legal Comments
+// ============================================================
+
+/// 라이센스 주석 (@license, @preserve, /*!) 처리 모드.
+pub const LegalComments = enum {
+    /// 기본: minify 시 eof, 아니면 inline
+    default,
+    /// 모든 legal 주석 제거
+    none,
+    /// 원래 위치에 보존 (현재 기본 동작)
+    @"inline",
+    /// 파일 끝에 모아서 출력
+    eof,
+    /// eof + 별도 .LEGAL.txt 파일에 링크 주석 추가
+    linked,
+    /// 별도 .LEGAL.txt 파일로만 추출
+    external,
+
+    pub fn fromString(s: []const u8) ?LegalComments {
+        if (std.mem.eql(u8, s, "none")) return .none;
+        if (std.mem.eql(u8, s, "inline")) return .@"inline";
+        if (std.mem.eql(u8, s, "eof")) return .eof;
+        if (std.mem.eql(u8, s, "linked")) return .linked;
+        if (std.mem.eql(u8, s, "external")) return .external;
+        return null;
+    }
+};
+
+// ============================================================
 // 로더 (Asset Loader)
 // ============================================================
 

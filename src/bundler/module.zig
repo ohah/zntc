@@ -57,6 +57,8 @@ pub const Module = struct {
     /// Scanner의 line offset 테이블. parse_arena가 소유. 소스맵 생성에 사용.
     /// line_offsets[i] = i번째 줄의 시작 byte offset.
     line_offsets: []const u32 = &.{},
+    /// legal comment 텍스트 목록 (parse_arena 소유). eof/linked/external 모드에서 사용.
+    legal_comments: []const []const u8 = &.{},
     /// import 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     import_bindings: []ImportBinding = &.{},
     /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).

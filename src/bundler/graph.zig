@@ -513,6 +513,26 @@ pub const ModuleGraph = struct {
             self.addDiag(.parse_error, .warning, module.path, Span.EMPTY, .parse, "Parse completed with errors", null);
         }
 
+        // Legal comments 수집 (eof/linked/external 모드용)
+        {
+            var legal_count: usize = 0;
+            for (parser.scanner.comments.items) |c| {
+                if (c.is_legal) legal_count += 1;
+            }
+            if (legal_count > 0) {
+                if (arena_alloc.alloc([]const u8, legal_count)) |buf| {
+                    var li: usize = 0;
+                    for (parser.scanner.comments.items) |c| {
+                        if (c.is_legal and c.start < source.len and c.end <= source.len) {
+                            buf[li] = source[c.start..c.end];
+                            li += 1;
+                        }
+                    }
+                    module.legal_comments = buf[0..li];
+                } else |_| {}
+            }
+        }
+
         // Semantic analysis — linker에 필요한 스코프/심볼/export 정보.
         // arena_alloc으로 실행: SemanticAnalyzer의 모든 데이터가 parse_arena에 할당.
         // analyzer.deinit()을 의도적으로 호출하지 않음 — arena가 일괄 해제.

@@ -86,6 +86,8 @@ pub const BundleOptions = struct {
     asset_names: []const u8 = "[name]-[hash]",
     /// 확장자별 로더 오버라이드 (--loader:.png=file)
     loader_overrides: []const types.LoaderOverride = &.{},
+    /// legal comments 처리 모드 (--legal-comments)
+    legal_comments: types.LegalComments = .default,
     /// metafile JSON 생성 (--metafile)
     metafile: bool = false,
     /// 번들 분석 출력 (--analyze). metafile을 내부적으로 강제 활성화.
@@ -235,6 +237,7 @@ pub const Bundler = struct {
             .entry_names = self.options.entry_names,
             .chunk_names = self.options.chunk_names,
             .asset_names = self.options.asset_names,
+            .legal_comments = self.options.legal_comments,
         };
     }
 
