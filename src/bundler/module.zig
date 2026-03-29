@@ -48,8 +48,6 @@ pub const ModuleSemanticData = struct {
     stmt_referenced: []const std.ArrayListUnmanaged(u32) = &.{},
     /// top-level statement의 AST 노드 인덱스 배열.
     top_stmt_node_indices: []const u32 = &.{},
-    /// top-level statement 수.
-    top_stmt_count: u32 = 0,
 };
 
 pub const Module = struct {

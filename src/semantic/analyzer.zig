@@ -145,7 +145,6 @@ pub const SemanticAnalyzer = struct {
     /// top-level statement의 AST 노드 인덱스 배열.
     top_stmt_node_indices: std.ArrayListUnmanaged(u32) = .empty,
 
-
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
@@ -722,16 +721,7 @@ pub const SemanticAnalyzer = struct {
                 if (self.current_top_stmt) |si| {
                     if (si < self.stmt_referenced.items.len) {
                         const sym_u32: u32 = @intCast(sym_idx);
-                        // 중복 방지 (선형 탐색 — 심볼 수가 적으므로 HashMap보다 효율적)
-                        const refs = self.stmt_referenced.items[si].items;
-                        var dup = false;
-                        for (refs) |r| {
-                            if (r == sym_u32) {
-                                dup = true;
-                                break;
-                            }
-                        }
-                        if (!dup) {
+                        if (std.mem.indexOfScalar(u32, self.stmt_referenced.items[si].items, sym_u32) == null) {
                             self.stmt_referenced.items[si].append(self.allocator, sym_u32) catch {};
                         }
                     }
@@ -779,12 +769,9 @@ pub const SemanticAnalyzer = struct {
         if (self.current_top_stmt) |si| {
             if (si < self.stmt_declared.items.len) {
                 const sym_u32: u32 = @intCast(sym_idx);
-                // 중복 방지
-                const items = self.stmt_declared.items[si].items;
-                for (items) |item| {
-                    if (item == sym_u32) return;
+                if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
+                    self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
                 }
-                self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
             }
         }
     }
