@@ -238,13 +238,13 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
   - new_ast의 24B 고정 노드를 tag+data 교체로 in-place 수정 (추가 copy 없음)
 - **파일 구조**: `src/transformer/minify.zig` (Phase별 분리 가능)
 - **파이프라인**: Scanner → Parser → Semantic → Transformer → **Minifier** → Codegen
-- **Phase 1: Constant folding** — `1+2`→`3`, `"a"+"b"`→`"ab"`, `!true`→`false`, `typeof "x"`→`"string"`
+- **Phase 1: Constant folding** ✅ — `1+2`→`3`, `"a"+"b"`→`"ab"`, `!true`→`false`, `typeof "x"`→`"string"`
   - 결과가 원본보다 긴 경우 fold 안 함 (esbuild `ShouldFoldBinaryOperatorWhenMinifying` 기준)
   - NaN, Infinity, -0 등 특수값 처리
-- **Phase 2: Dead code elimination** — `if(false){A}else{B}`→`B`, `while(false){}`→삭제
-  - side effect 분석에 `purity.zig`의 `isExprPure` 재사용
-- **Phase 3: Boolean simplification** — `!!x`→`x` (boolean context), `x===true`→`x`
-- **Phase 4: Comma/Template** — `(0,foo)()`→`foo()`, `` `${"a"}` ``→`"a"`
+- **Phase 2: Dead code elimination** ✅ — `if(false){A}else{B}`→`B`, `while(false){}`→삭제, logical/nullish 축약
+- **Phase 3: Boolean simplification** ✅ — `!!x`→`x`, `x===true`→`x`, `x===false`→`!x`
+- **Phase 4: Comma operator** ✅ — `(0,foo)`→`foo`, `(0,1,foo)`→`foo` (N개 선행 리터럴 제거)
+- **실측**: three.js 번들 1,149KB → 761KB (**-34%**, --minify)
 - **추후**: ES 다운레벨링 mixin도 같은 별도 패스 구조로 마이그레이션 검토
 - **참고**: oxc peephole (fold_constants.rs, remove_dead_code.rs), esbuild js_ast_helpers.go
 
@@ -273,6 +273,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
+| 8. AST 미니파이어 | constant folding, DCE, boolean simplification, comma operator | ✅ |
 
 ### 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -303,7 +304,7 @@ ZTS 279ms vs esbuild 182ms (**1.5배**).
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
   - 런타임 헬퍼 자동 주입 ✅ (__extends, __generator, __rest, __async — tslib 불필요)
-- **AST 미니파이어**: `--minify` 시 AST 레벨 최적화 (별도 패스, 아래 설계 참조)
+- **AST 미니파이어**: ✅ Phase 1~4 완료 (constant folding, DCE, boolean, comma). three.js -34%
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **SIMD** — 렉서 공백/식별자/문자열 스캔 가속 (parse 10-20% 개선 예상)
 - **WASM 공개 AST API** — AST 안정화 후
