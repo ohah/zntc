@@ -26,8 +26,12 @@ pub const FilterMap = struct {
     resolve_filters: []const []const u8 = &.{},
     load_filters: []const []const u8 = &.{},
     transform_filters: []const []const u8 = &.{},
+    /// 각 훅에 플러그인이 등록되어 있는지 (핸드셰이크에서 설정)
+    has_resolve: bool = false,
+    has_load: bool = false,
+    has_transform: bool = false,
 
-    /// specifier가 필터 목록의 어떤 suffix로든 끝나면 true.
+    /// target이 필터 목록의 어떤 suffix로든 끝나면 true.
     /// 필터가 비어있으면 모든 대상에 적용 (esbuild 호환).
     pub fn matchesAny(filters: []const []const u8, target: []const u8) bool {
         if (filters.len == 0) return true;
@@ -42,17 +46,17 @@ pub const SubprocessPlugin = struct {
     child: std.process.Child,
     stdin_file: std.fs.File,
     stdout_file: std.fs.File,
-    /// 줄바꿈 경계를 정확히 처리하기 위한 내부 버퍼.
-    /// read()가 다음 메시지 데이터까지 읽었을 때, 잔여 데이터를 보관.
     read_buf: [8192]u8 = undefined,
     read_buf_len: usize = 0,
     read_buf_pos: usize = 0,
     next_id: u32 = 1,
-    /// 멀티스레드 parseModule에서 동시 IPC 접근 방지
     ipc_mutex: std.Thread.Mutex = .{},
     filters: FilterMap = .{},
+    /// 플러그인 이름 (핸드셰이크에서 수신, 에러 메시지용)
+    plugin_name: []const u8 = "subprocess",
+    /// 마지막 플러그인 에러 메시지 (stderr 출력용)
+    last_error: ?[]const u8 = null,
     allocator: std.mem.Allocator,
-    /// 핸드셰이크에서 수신한 필터 문자열 저장용
     filter_arena: std.heap.ArenaAllocator,
 
     /// Node.js 프로세스를 spawn하고 핸드셰이크를 수행.
@@ -96,17 +100,36 @@ pub const SubprocessPlugin = struct {
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
+        const resolve_f = init_resp.filters.resolveId orelse &.{};
+        const load_f = init_resp.filters.load orelse &.{};
+        const transform_f = init_resp.filters.transform orelse &.{};
         self.filters = .{
-            .resolve_filters = init_resp.filters.resolveId orelse &.{},
-            .load_filters = init_resp.filters.load orelse &.{},
-            .transform_filters = init_resp.filters.transform orelse &.{},
+            .resolve_filters = resolve_f,
+            .load_filters = load_f,
+            .transform_filters = transform_f,
+            .has_resolve = init_resp.hooks.resolveId orelse (resolve_f.len > 0),
+            .has_load = init_resp.hooks.load orelse (load_f.len > 0),
+            .has_transform = init_resp.hooks.transform orelse (transform_f.len > 0),
         };
+        if (init_resp.name) |name| {
+            self.plugin_name = name;
+        }
+    }
+
+    /// 플러그인 에러를 stderr에 출력
+    fn reportError(self: *SubprocessPlugin, hook_name: []const u8, target: []const u8, err_msg: ?[]const u8) void {
+        const w = std.fs.File.stderr().deprecatedWriter();
+        if (err_msg) |msg| {
+            w.print("[plugin:{s}] {s} error for '{s}': {s}\n", .{ self.plugin_name, hook_name, target, msg }) catch {};
+        } else {
+            w.print("[plugin:{s}] {s} failed for '{s}'\n", .{ self.plugin_name, hook_name, target }) catch {};
+        }
     }
 
     /// Plugin 인터페이스로 변환. context에 self 포인터 전달.
     pub fn toPlugin(self: *SubprocessPlugin) Plugin {
         return .{
-            .name = "subprocess",
+            .name = self.plugin_name,
             .context = @ptrCast(self),
             .resolveId = subprocessResolveId,
             .load = subprocessLoad,
@@ -183,6 +206,7 @@ pub const SubprocessPlugin = struct {
 
     fn subprocessResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolveResult {
         const self = getSelf(ctx);
+        if (!self.filters.has_resolve) return null;
         if (!FilterMap.matchesAny(self.filters.resolve_filters, specifier)) return null;
 
         const escaped_spec = escapeJsonString(allocator, specifier) catch return error.OutOfMemory;
@@ -195,13 +219,19 @@ pub const SubprocessPlugin = struct {
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        const response = self.sendAndReceive(allocator, "resolveId", fields) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "resolveId", fields) catch {
+            self.reportError("resolveId", specifier, null);
+            return error.PluginFailed;
+        };
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
-        if (parsed.@"error") |_| return error.PluginFailed;
+        if (parsed.@"error") |err_msg| {
+            self.reportError("resolveId", specifier, err_msg);
+            return error.PluginFailed;
+        }
 
         if (parsed.result) |result| {
             if (result.path) |path| {
@@ -216,6 +246,7 @@ pub const SubprocessPlugin = struct {
 
     fn subprocessLoad(ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 {
         const self = getSelf(ctx);
+        if (!self.filters.has_load) return null;
         if (!FilterMap.matchesAny(self.filters.load_filters, path)) return null;
 
         const escaped_path = escapeJsonString(allocator, path) catch return error.OutOfMemory;
@@ -224,13 +255,19 @@ pub const SubprocessPlugin = struct {
         const fields = std.fmt.allocPrint(allocator, "\"path\":\"{s}\"", .{escaped_path}) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        const response = self.sendAndReceive(allocator, "load", fields) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "load", fields) catch {
+            self.reportError("load", path, null);
+            return error.PluginFailed;
+        };
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
-        if (parsed.@"error") |_| return error.PluginFailed;
+        if (parsed.@"error") |err_msg| {
+            self.reportError("load", path, err_msg);
+            return error.PluginFailed;
+        }
 
         if (parsed.result) |result| {
             if (result.contents) |contents| {
@@ -242,6 +279,7 @@ pub const SubprocessPlugin = struct {
 
     fn subprocessTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 {
         const self = getSelf(ctx);
+        if (!self.filters.has_transform) return null;
         if (!FilterMap.matchesAny(self.filters.transform_filters, id)) return null;
 
         const escaped_code = escapeJsonString(allocator, code) catch return error.OutOfMemory;
@@ -254,13 +292,19 @@ pub const SubprocessPlugin = struct {
         }) catch return error.OutOfMemory;
         defer allocator.free(fields);
 
-        const response = self.sendAndReceive(allocator, "transform", fields) catch return error.PluginFailed;
+        const response = self.sendAndReceive(allocator, "transform", fields) catch {
+            self.reportError("transform", id, null);
+            return error.PluginFailed;
+        };
         defer allocator.free(response);
         const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
-        if (parsed.@"error") |_| return error.PluginFailed;
+        if (parsed.@"error") |err_msg| {
+            self.reportError("transform", id, err_msg);
+            return error.PluginFailed;
+        }
 
         if (parsed.result) |result| {
             if (result.contents) |contents| {
@@ -279,13 +323,22 @@ pub const SubprocessPlugin = struct {
 
 const InitResponse = struct {
     id: u32 = 0,
+    name: ?[]const u8 = null,
     filters: Filters = .{},
+    hooks: Hooks = .{},
     @"error": ?[]const u8 = null,
 
     const Filters = struct {
         resolveId: ?[]const []const u8 = null,
         load: ?[]const []const u8 = null,
         transform: ?[]const []const u8 = null,
+    };
+
+    /// 각 훅에 콜백이 등록되어 있는지 (필터가 비어도 훅이 없으면 IPC 건너뜀)
+    const Hooks = struct {
+        resolveId: ?bool = null,
+        load: ?bool = null,
+        transform: ?bool = null,
     };
 };
 
