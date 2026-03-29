@@ -64,6 +64,8 @@ pub fn build(b: *std.Build) void {
         .name = "zts",
         .root_module = exe_mod,
     });
+    // c_allocator 사용을 위해 libc 링크 (GPA 대비 page fault 최소화)
+    exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
