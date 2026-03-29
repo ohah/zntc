@@ -167,77 +167,23 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolveResult {
-        // 1. external 체크 (캐시 전에, 항상 먼저)
-        if (self.isExternal(specifier)) return null;
-
-        // 2. 캐시 조회
-        const cache_key = self.makeCacheKey(source_dir, specifier, kind) catch
-            return error.OutOfMemory;
-        defer self.allocator.free(cache_key);
-
-        if (self.cache.get(cache_key)) |cached| {
-            return switch (cached) {
-                // 캐시 히트: caller 소유 복사본 반환 (Critical #2 수정)
-                .resolved => |r| ResolveResult{
-                    .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
-                    .module_type = r.module_type,
-                },
-                .disabled => |r| ResolveResult{
-                    .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
-                    .module_type = r.module_type,
-                    .disabled = true,
-                },
-                .external => null,
-                .not_found => error.ModuleNotFound,
-            };
-        }
-
-        // 3. 실제 resolve — import kind에 따라 조건 세트를 교체 (D064)
-        //    require() → "require" 조건, 그 외 → "import" 조건
-        //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
-        const saved_conditions = self.resolver.conditions;
-        self.resolver.conditions = self.conditionsFor(kind);
-        defer self.resolver.conditions = saved_conditions;
-
-        const result = self.resolver.resolve(source_dir, specifier) catch |err| switch (err) {
-            error.ModuleNotFound => {
-                try self.putCache(cache_key, .not_found);
-                return error.ModuleNotFound;
-            },
-            else => return err,
-        };
-
-        // 4. platform=browser: package.json "browser" 필드 체크.
-        //    해석된 파일이 browser 필드에서 false로 매핑되었으면 disabled 처리.
-        if (self.platform == .browser and self.isBrowserDisabled(result.path)) {
-            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-            try self.putCache(cache_key, .{ .disabled = .{
-                .path = cache_path,
-                .module_type = result.module_type,
-            } });
-            // caller에게 disabled 표시된 결과 반환 (path는 resolver가 할당한 것)
-            return ResolveResult{
-                .path = result.path,
-                .module_type = result.module_type,
-                .disabled = true,
-            };
-        }
-
-        // 5. 캐시에 저장 (캐시가 path를 소유, caller에게는 별도 복사본)
-        const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-        try self.putCache(cache_key, .{ .resolved = .{
-            .path = cache_path,
-            .module_type = result.module_type,
-        } });
-
-        // result.path는 resolver가 할당한 것 — caller 소유로 그대로 반환
-        return result;
+        return self.resolveInner(false, source_dir, specifier, kind);
     }
 
     /// 스레드 안전 resolve. 병렬 resolve에서 사용.
-    /// resolver를 스택 복사하여 conditions 수정 없이 사용, cache 접근에 mutex.
     pub fn resolveThreadSafe(
         self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+    ) ResolveError!?ResolveResult {
+        return self.resolveInner(true, source_dir, specifier, kind);
+    }
+
+    /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
+    fn resolveInner(
+        self: *ResolveCache,
+        comptime thread_safe: bool,
         source_dir: []const u8,
         specifier: []const u8,
         kind: ImportKind,
@@ -248,10 +194,10 @@ pub const ResolveCache = struct {
             return error.OutOfMemory;
         defer self.allocator.free(cache_key);
 
-        // 캐시 조회 (mutex)
+        // 캐시 조회
         {
-            self.cache_mutex.lock();
-            defer self.cache_mutex.unlock();
+            if (thread_safe) self.cache_mutex.lock();
+            defer if (thread_safe) self.cache_mutex.unlock();
             if (self.cache.get(cache_key)) |cached| {
                 return switch (cached) {
                     .resolved => |r| ResolveResult{
@@ -269,24 +215,29 @@ pub const ResolveCache = struct {
             }
         }
 
-        // resolver를 스택에 복사하여 conditions를 안전하게 설정
+        // 실제 resolve — thread_safe 모드에서는 resolver를 스택 복사하여 conditions 수정 방지
         var local_resolver = self.resolver;
         local_resolver.conditions = self.conditionsFor(kind);
+        if (!thread_safe) {
+            // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원
+            self.resolver.conditions = local_resolver.conditions;
+        }
+        const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
-        const result = local_resolver.resolve(source_dir, specifier) catch |err| switch (err) {
+        const result = resolve_ptr.resolve(source_dir, specifier) catch |err| switch (err) {
             error.ModuleNotFound => {
-                self.cache_mutex.lock();
-                defer self.cache_mutex.unlock();
+                if (thread_safe) self.cache_mutex.lock();
+                defer if (thread_safe) self.cache_mutex.unlock();
                 self.putCache(cache_key, .not_found) catch {};
                 return error.ModuleNotFound;
             },
             else => return err,
         };
 
-        // browser disabled 체크 + 캐시 저장 (mutex)
+        // browser disabled 체크 + 캐시 저장
         {
-            self.cache_mutex.lock();
-            defer self.cache_mutex.unlock();
+            if (thread_safe) self.cache_mutex.lock();
+            defer if (thread_safe) self.cache_mutex.unlock();
 
             if (self.platform == .browser and self.isBrowserDisabled(result.path)) {
                 const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
