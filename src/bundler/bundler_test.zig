@@ -11157,3 +11157,125 @@ test "Batch D: keepNames — class declaration" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__name(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Foo\"") != null);
 }
+
+test "Batch D: keepNames + code splitting — __name helper in chunk" {
+    // code splitting + keepNames: 동적 import된 청크에도 __name 런타임 헬퍼가 주입되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const mod = import('./lazy');\nconsole.log(mod);");
+    // lazy 청크에 두 개의 같은 이름 함수 → rename 발생
+    try writeFile(tmp.dir, "lazy.ts",
+        \\import { run } from './util';
+        \\export function run() { return 'lazy'; }
+        \\console.log(run());
+    );
+    try writeFile(tmp.dir, "util.ts", "export function run() { return 'util'; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 최소 2개 청크
+    try std.testing.expect(outs.len >= 2);
+
+    // __name 호출이 있는 청크에 __name 런타임 헬퍼도 포함되어야 함
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "__name(") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, o.contents, "var __name") != null);
+        }
+    }
+}
+
+test "Batch D: legal-comments=eof + minify — comments after minified code" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\/*! MIT License */
+        \\export function greet() { return "hi"; }
+    );
+    try writeFile(tmp.dir, "entry.ts", "import { greet } from './a';\nconsole.log(greet());");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+        .legal_comments = .eof,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // minified 코드 뒤에 legal comment
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MIT License") != null);
+    const code_end = std.mem.indexOf(u8, result.output, "console.log") orelse 0;
+    const license_pos = std.mem.indexOf(u8, result.output, "MIT License") orelse 0;
+    try std.testing.expect(code_end < license_pos);
+}
+
+test "Batch D: metafile — code splitting produces per-chunk outputs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const mod = import('./lazy');\nconsole.log(mod);");
+    try writeFile(tmp.dir, "lazy.ts", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .metafile = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(result.metafile_json != null);
+    const mf = result.metafile_json.?;
+    // code splitting: outputs에 여러 청크 파일 경로 포함
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\"outputs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mf, ".js") != null);
+}
+
+test "Batch D: inject — inject file included in metafile inputs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shim.js", "globalThis.X = 1;");
+    try writeFile(tmp.dir, "entry.ts", "console.log(X);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const inject = try absPath(&tmp, "shim.js");
+    defer std.testing.allocator.free(inject);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .inject = &.{inject},
+        .metafile = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(result.metafile_json != null);
+    // inject 파일도 metafile inputs에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.metafile_json.?, "shim.js") != null);
+}
