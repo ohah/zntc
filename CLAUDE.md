@@ -252,8 +252,39 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | Test262 | 50,504건 100% 통과 | ✅ |
 | Smoke | 125개 패키지, avg 0.74x, ❌ 0개 | ✅ |
 
-### 🔜 다음 우선순위
-- smoke 전체 통과 — 다음 목표 결정 필요
+### 🔜 다음 우선순위: 번들러 성능 — esbuild 수준 달성
+현재 1102모듈 대형 번들 기준: ZTS 1502ms vs esbuild 77ms (20배 차이).
+목표: ~120-180ms (esbuild의 1.5-2.3배).
+
+**Phase 7-1: StmtInfo를 파서/semantic에서 구축 (Part 시스템)**
+- 현재: 파싱 후 tree_shaker.analyze()에서 stmt_info.build()로 전체 AST 재순회 → 723ms
+- 목표: semantic analyzer에서 파싱 중 per-statement declared/referenced 심볼을 구축
+  - analyzer.symbol_ids + scope 정보를 활용해 Part 데이터를 파싱 시점에 채움
+  - stmt_info.build() 완전 제거, tree-shake 단계는 이미 구축된 데이터로 즉시 시작
+- 참고: esbuild Part 시스템, bun ast.zig Part 구조체
+- 예상: tree-shake 723ms → ~10ms
+
+**Phase 7-2: emit 병렬화 (모듈별 transform+codegen을 스레드 풀)**
+- 현재: emitter에서 모듈을 순차적으로 transform+codegen → 164ms
+- 목표: 각 모듈의 transform+codegen을 독립적으로 스레드 풀에서 병렬 실행
+  - 모듈별 Arena가 이미 독립적이므로 스레드 안전
+  - linker rename 결과를 읽기 전용으로 참조, 최종 출력만 메인 스레드에서 합침
+- 참고: bun generateChunksInParallel (Part 범위별 병렬)
+- 예상: 164ms → ~40ms (4코어 기준)
+
+**Phase 7-3: resolve 파이프라인 (Zig 0.16 async/await 또는 esbuild 방식)**
+- 현재: parse(병렬) → resolve(순차) 배치 구조 → resolve 194ms
+- 목표: parse+resolve를 하나의 워커 단위로 통합, 채널 기반 파이프라인
+  - resolve_cache에 Mutex 추가, 스레드 풀에서 resolve 호출
+  - 메인 스레드는 결과 수신 → addModule → 즉시 새 워커 스폰 (배치 경계 제거)
+  - Zig 0.16 async/await 지원 시 rolldown join_all 방식도 검토
+- 참고: esbuild goroutine+channel, bun ParseTask 2단계 (io_pool + worker_pool)
+- 예상: graph 414ms → ~100ms
+
+**Phase 7-4: link 최적화**
+- 현재: computeRenames + scope hoisting → 87ms
+- 목표: canonical_names 구축 최적화, 불필요한 순회 제거
+- 예상: 87ms → ~30ms
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
@@ -274,10 +305,12 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
                          └──→ .d.ts (isolatedDeclarations)
 
-번들러 ✅ ───────────────┬──→ 멀티스레드 (파일별 Arena 독립)
-                         └──→ 미니파이어 (tree-shaking + minify 연동)
+번들러 성능 ─────────────┬──→ 7-1: Part 시스템 (semantic에서 StmtInfo 구축)
+                         ├──→ 7-2: emit 병렬화 (7-1과 독립)
+                         ├──→ 7-3: resolve 파이프라인 (Zig 0.16 async 또는 Mutex)
+                         └──→ 7-4: link 최적화 (독립)
 
-독립 (아무 때나): ES 다운레벨링, Flow, SIMD
+독립 (아무 때나): ES 다운레벨링, Flow, SIMD, 미니파이어
 ```
 
 ### 성능 최적화 도입 시기
