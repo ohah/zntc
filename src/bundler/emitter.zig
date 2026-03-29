@@ -84,6 +84,8 @@ pub const EmitOptions = struct {
     entry_names: []const u8 = "[name]",
     /// 공통 청크 파일명 패턴 (예: "[name]-[hash]", "chunks/[name]-[hash]")
     chunk_names: []const u8 = "[name]-[hash]",
+    /// 에셋 파일명 패턴 (예: "[name]-[hash]", "assets/[name]-[hash]")
+    asset_names: []const u8 = "[name]-[hash]",
 
     pub const Format = enum {
         esm,
@@ -121,7 +123,8 @@ pub fn emitWithTreeShaking(
     defer sorted.deinit(allocator);
 
     for (graph.modules.items, 0..) |*m, i| {
-        const is_js = m.module_type == .javascript and (m.ast != null or m.is_disabled);
+        const is_asset = m.loader.isAsset() and m.source.len > 0;
+        const is_js = m.module_type == .javascript and (m.ast != null or m.is_disabled or is_asset);
         const is_json = m.module_type == .json;
         if (is_js or is_json) {
             // tree-shaking: 미포함 모듈 스킵
@@ -332,7 +335,8 @@ pub fn emitDevBundle(
     defer sorted.deinit(allocator);
 
     for (graph.modules.items) |*m| {
-        if ((m.module_type == .javascript and (m.ast != null or m.is_disabled)) or m.module_type == .json) {
+        const m_is_asset = m.loader.isAsset() and m.source.len > 0;
+        if ((m.module_type == .javascript and (m.ast != null or m.is_disabled or m_is_asset)) or m.module_type == .json) {
             try sorted.append(allocator, m);
         }
     }
@@ -1419,6 +1423,15 @@ pub fn emitModule(
         return emitDisabledModule(allocator, module, options.minify_whitespace);
     }
 
+    // Asset 모듈: JSON 모듈과 동일한 패턴으로 출력.
+    // source에 값 표현식이 저장되어 있고, var asset_X = <source>; 형태로 출력.
+    if (module.loader.isAsset() and module.source.len > 0) {
+        if (module.loader == .binary) {
+            if (helpers_out) |h| h.to_binary = true;
+        }
+        return emitAssetModule(allocator, module, options);
+    }
+
     const ast = &(module.ast orelse return null);
 
     // 변환용 arena (Transformer/Codegen 내부 메모리)
@@ -1713,6 +1726,36 @@ fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: 
     try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
     try buf.appendSlice(allocator, module.source);
     try buf.appendSlice(allocator, ";\n\t}\n});\n");
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Asset 모듈을 출력한다 (JSON 모듈과 동일한 CJS wrap 패턴).
+/// source에 값 표현식이 저장되어 있고, __commonJS wrapper로 래핑.
+/// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
+fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
+    if (module.source.len == 0) return null;
+
+    const var_name = try types.makeRequireVarName(allocator, module.path);
+    defer allocator.free(var_name);
+
+    var buf: std.ArrayList(u8) = .empty;
+    if (options.minify_whitespace) {
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, var_name);
+        try buf.appendSlice(allocator, "=__commonJS({\"");
+        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
+        try buf.appendSlice(allocator, "\"(exports,module){module.exports=");
+        try buf.appendSlice(allocator, module.source);
+        try buf.appendSlice(allocator, "}});");
+    } else {
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, var_name);
+        try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
+        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
+        try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports = ");
+        try buf.appendSlice(allocator, module.source);
+        try buf.appendSlice(allocator, ";\n\t}\n});\n");
+    }
     return try buf.toOwnedSlice(allocator);
 }
 

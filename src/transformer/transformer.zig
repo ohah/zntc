@@ -144,7 +144,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     rest: bool = false,
     /// __values: for-of iterator protocol (ES2015)
     values: bool = false,
-    _padding: u10 = 0,
+    /// __toBinary: base64 → Uint8Array (binary 로더)
+    to_binary: bool = false,
+    _padding: u9 = 0,
 };
 
 /// AST-to-AST 변환기.

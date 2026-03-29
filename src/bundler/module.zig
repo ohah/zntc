@@ -70,6 +70,9 @@ pub const Module = struct {
     dynamic_imports: std.ArrayList(ModuleIndex),
 
     module_type: ModuleType,
+    /// 모듈의 로딩 방식 (file/dataurl/text/binary/copy 등).
+    /// addModule에서 확장자 또는 --loader 옵션으로 결정.
+    loader: types.Loader = .none,
     /// 모듈의 export 방식 (CJS/ESM 판별)
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)
@@ -91,6 +94,21 @@ pub const Module = struct {
     /// 순환 참조 그룹 ID. 0 = 순환 없음 (D065)
     cycle_group: u32,
     state: State,
+    /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
+    asset_data: ?AssetData = null,
+
+    /// file/copy 로더용 asset 메타데이터. parse_arena 소유.
+    /// emitter가 asset 파일을 출력 디렉토리에 복사할 때 사용.
+    pub const AssetData = struct {
+        /// 원본 파일 내용 (바이너리). parse_arena 할당.
+        raw_content: []const u8,
+        /// content hash (16진수 8자리)
+        content_hash: [8]u8,
+        /// 출력 파일명 (예: "logo-a1b2c3d4.png"). parse_arena 할당.
+        output_name: []const u8,
+        /// 원본 확장자 (dot 포함, 예: ".png")
+        ext: []const u8,
+    };
 
     pub const State = enum {
         /// 슬롯만 예약됨, 아직 파싱 안 됨
