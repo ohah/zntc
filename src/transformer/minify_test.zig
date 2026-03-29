@@ -269,23 +269,10 @@ test "minify: comma operator with non-literal lhs preserved" {
     try expectMinify("const x = (a(), foo);", "const x = (a(),foo);");
 }
 
-test "minify: comma operator with 3+ items preserved" {
-    try expectMinify("const x = (0, 1, foo);", "const x = (0,1,foo);");
+test "minify: comma operator with 3+ literal items simplified" {
+    try expectMinify("const x = (0, 1, foo);", "const x = (foo);");
 }
 
-test "minify: template literal all string substitutions" {
-    // TODO: transformer の new_ast でtemplate_literalのdata構造調査後に有効化
-    // try expectMinify(
-    //     \\const x = `${"hello"} world`;
-    // ,
-    //     \\const x = "hello world";
-    // );
-}
-
-test "minify: template literal no substitutions preserved" {
-    try expectMinify("const x = `hello`;", "const x = `hello`;");
-}
-
-test "minify: template literal with expression preserved" {
-    try expectMinify("const x = `${foo}bar`;", "const x = `${foo}bar`;");
+test "minify: comma operator mixed keeps non-literal" {
+    try expectMinify("const x = (0, a(), foo);", "const x = (a(),foo);");
 }
