@@ -68,4 +68,3 @@ pub const Scope = struct {
     /// 이 스코프에서 선언된 심볼 수 (디버깅/통계용)
     symbol_count: u16 = 0,
 };
-

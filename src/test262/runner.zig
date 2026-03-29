@@ -325,4 +325,3 @@ pub fn runCategories(allocator: mem.Allocator, base_dir_path: []const u8) ![]Cat
 
     return categories.toOwnedSlice(allocator);
 }
-

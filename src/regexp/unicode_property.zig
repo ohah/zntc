@@ -652,4 +652,3 @@ const property_of_strings = StringSet(.{
     .{ "RGI_Emoji_ZWJ_Sequence", {} },
     .{ "RGI_Emoji", {} },
 }).map;
-

@@ -500,4 +500,3 @@ fn collectArrowParamNames(
         else => {},
     }
 }
-

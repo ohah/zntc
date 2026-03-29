@@ -2344,4 +2344,3 @@ pub const SemanticAnalyzer = struct {
         }
     }
 };
-

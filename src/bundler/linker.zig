@@ -2125,4 +2125,3 @@ fn appendCjsImportPreamble(
         try buf.appendSlice(allocator, ";\n");
     }
 }
-

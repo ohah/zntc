@@ -165,4 +165,3 @@ pub const Module = struct {
         if (self.parse_arena) |*arena| arena.deinit();
     }
 };
-

@@ -1203,4 +1203,3 @@ const id_continue_only_table = [_][2]u21{
     .{ 0x1FBF0, 0x1FBF9 },
     .{ 0xE0100, 0xE01EF },
 };
-
