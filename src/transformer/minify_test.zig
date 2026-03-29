@@ -203,3 +203,48 @@ test "minify: if false keeps else" {
 test "minify: if false no else becomes empty" {
     try expectMinify("if (false) { console.log(1); }", ";");
 }
+
+// ================================================================
+// Phase 3: Boolean Simplification
+// ================================================================
+
+test "minify: double negation elimination" {
+    try expectMinify("const x = !!y;", "const x = y;");
+}
+
+test "minify: double negation with expression" {
+    try expectMinify("const x = !!foo();", "const x = foo();");
+}
+
+test "minify: x === true simplifies to x" {
+    try expectMinify("const x = y === true;", "const x = y;");
+}
+
+test "minify: x === false simplifies to !x" {
+    try expectMinify("const x = y === false;", "const x = !y;");
+}
+
+test "minify: x !== true simplifies to !x" {
+    try expectMinify("const x = y !== true;", "const x = !y;");
+}
+
+test "minify: x !== false simplifies to x" {
+    try expectMinify("const x = y !== false;", "const x = y;");
+}
+
+test "minify: true === x simplifies to x" {
+    try expectMinify("const x = true === y;", "const x = y;");
+}
+
+test "minify: false === x simplifies to !x" {
+    try expectMinify("const x = false === y;", "const x = !y;");
+}
+
+test "minify: literal === literal not simplified here" {
+    // 양쪽 모두 리터럴이면 foldStrictEquality에서 처리
+    try expectMinify("const x = true === true;", "const x = true;");
+}
+
+test "minify: triple negation reduces to single" {
+    try expectMinify("const x = !!!y;", "const x = !y;");
+}
