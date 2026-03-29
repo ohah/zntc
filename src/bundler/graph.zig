@@ -62,6 +62,9 @@ pub const ModuleGraph = struct {
     public_path: []const u8 = "",
     /// 에셋 파일명 패턴 (--asset-names). asset 로더에서 사용.
     asset_names: []const u8 = "[name]-[hash]",
+    /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.
+    /// entry point들의 공통 부모 디렉토리 (esbuild --outbase에 해당).
+    entry_dir: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -105,6 +108,11 @@ pub const ModuleGraph = struct {
     /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
+        // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
+        if (self.entry_dir.len == 0 and entry_points.len > 0) {
+            self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        }
+
         // Phase 1: BFS + 병렬 파싱
         // 개선된 배치 모델: 각 모듈 파싱 완료 즉시 resolve → 새 모듈 발견 → 다음 배치에 포함.
         // 배치 크기가 작아도 즉시 다음 라운드로 진행하여 파이프라인 효과 달성.
@@ -908,7 +916,10 @@ pub const ModuleGraph = struct {
                 else
                     basename;
 
-                const output_name = applyAssetNamingPattern(arena_alloc, self.asset_names, name_without_ext, &hash, ext) catch {
+                // [dir]: entry_dir 기준 상대 디렉토리 경로
+                const dir = computeAssetDir(module.path, self.entry_dir);
+
+                const output_name = applyAssetNamingPattern(arena_alloc, self.asset_names, name_without_ext, &hash, ext, dir) catch {
                     module.state = .ready;
                     return;
                 };
@@ -1059,6 +1070,7 @@ fn applyAssetNamingPattern(
     name: []const u8,
     hash: *const [8]u8,
     ext: []const u8,
+    dir: []const u8,
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var i: usize = 0;
@@ -1069,6 +1081,13 @@ fn applyAssetNamingPattern(
         } else if (std.mem.startsWith(u8, pattern[i..], "[hash]")) {
             try buf.appendSlice(allocator, hash);
             i += "[hash]".len;
+        } else if (std.mem.startsWith(u8, pattern[i..], "[dir]")) {
+            if (dir.len > 0) try buf.appendSlice(allocator, dir);
+            i += "[dir]".len;
+        } else if (std.mem.startsWith(u8, pattern[i..], "[ext]")) {
+            // [ext]는 dot 없이 (예: "png")
+            if (ext.len > 1) try buf.appendSlice(allocator, ext[1..]);
+            i += "[ext]".len;
         } else {
             try buf.append(allocator, pattern[i]);
             i += 1;
@@ -1077,6 +1096,22 @@ fn applyAssetNamingPattern(
     // 확장자 추가
     try buf.appendSlice(allocator, ext);
     return buf.toOwnedSlice(allocator);
+}
+
+/// asset 파일의 entry_dir 기준 상대 디렉토리 경로를 계산한다.
+/// 예: entry_dir="/app/src", module="/app/src/images/icons/logo.png" → "images/icons"
+/// entry_dir 밖이면 빈 문자열 반환.
+fn computeAssetDir(module_path: []const u8, entry_dir: []const u8) []const u8 {
+    if (entry_dir.len == 0) return "";
+    const module_dir = std.fs.path.dirname(module_path) orelse return "";
+    // entry_dir이 module_dir의 prefix인지 확인
+    if (module_dir.len <= entry_dir.len) return "";
+    if (!std.mem.startsWith(u8, module_dir, entry_dir)) return "";
+    // 구분자 건너뛰기
+    var start = entry_dir.len;
+    if (start < module_dir.len and module_dir[start] == std.fs.path.sep) start += 1;
+    if (start >= module_dir.len) return "";
+    return module_dir[start..];
 }
 
 /// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.

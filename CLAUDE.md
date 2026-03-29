@@ -482,6 +482,14 @@ CSS 번들링/Asset 로더/플러그인 API는 아래 JS 전용 경계를 넘어
 
 **결론**: 배치 A~D를 먼저 해도 CSS/플러그인이 더 어려워지지 않음. JS 전용 경계는 어차피 CSS/Asset 구현 시점에 한 번 넘어야 하는 것이고, 다른 기능이 이 경계를 두껍게 만들지 않음.
 
+#### 알려진 제한 (Known Limitations)
+
+**CJS wrap 모듈의 tree-shaking 미지원**
+Asset/JSON 모듈은 `exports_kind = .commonjs`, `wrap_kind = .cjs`로 처리됨.
+미사용 import라도 `require_X()` 호출이 side-effect로 간주되어 tree-shaker가 제거하지 못함.
+esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 tree-shaker는 CJS wrap에 대해 아직 이 최적화를 수행하지 않음.
+별도 이슈로 개선 필요 — Asset 로더뿐 아니라 JSON 모듈, 기타 CJS 모듈 전체에 영향.
+
 ### 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
 |--------|------|------|
@@ -547,7 +555,7 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
 --entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
 --chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
---asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], 예: assets/[name]-[hash])
+--asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], [dir]/[name]/[hash]/[ext] 지원)
 --loader:.ext=type           확장자별 로더 지정 (file, dataurl, text, binary, copy, empty)
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로

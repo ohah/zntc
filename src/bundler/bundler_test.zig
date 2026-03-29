@@ -10790,3 +10790,56 @@ test "Asset loader: CJS format" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports=") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
 }
+
+test "Asset loader: [dir] pattern preserves directory structure" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 서브디렉토리에 asset 배치
+    tmp.dir.makePath("images/icons") catch {};
+    try tmp.dir.writeFile(.{ .sub_path = "images/icons/logo.png", .data = "png-data" });
+    try writeFile(tmp.dir, "entry.ts", "import url from './images/icons/logo.png';\nconsole.log(url);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+        .asset_names = "[dir]/[name]-[hash]",
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // [dir] = "images/icons" → 출력 경로에 디렉토리 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "images/icons/logo-") != null);
+    // asset_outputs 경로에도 디렉토리 포함
+    try std.testing.expect(result.asset_outputs != null);
+    try std.testing.expect(std.mem.startsWith(u8, result.asset_outputs.?[0].path, "images/icons/logo-"));
+}
+
+test "Asset loader: [ext] pattern" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "font.woff2", .data = "woff2-data" });
+    try writeFile(tmp.dir, "entry.ts", "import url from './font.woff2';\nconsole.log(url);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".woff2", .loader = .file }},
+        .asset_names = "static/[ext]/[name]-[hash]",
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // [ext] = "woff2" (dot 없이)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "static/woff2/font-") != null);
+}
