@@ -171,20 +171,9 @@ pub const TreeShaker = struct {
 
             if (try self.includeReExportSources(true)) changed = true;
 
-            // 미사용 sideEffects=false 모듈 제거 (CJS는 정적 분석 불가이므로 제외)
-            for (self.modules, 0..) |m, i| {
-                if (!self.included.isSet(i)) continue;
-                if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
-                if (!self.hasAnyUsedExport(@intCast(i))) {
-                    self.included.unset(i);
-                    changed = true;
-                }
-            }
-
             // 포함된 모듈이 import하는 모듈 전파:
             // - side_effects=true 모듈: 항상 포함
             // - CJS require() 타겟: ESM import binding으로 추적 불가하므로 무조건 포함
-            //   (CJS는 모듈 전체를 로드하므로 개별 export 추적이 불가능)
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 for (m.import_records) |rec| {
@@ -192,9 +181,6 @@ pub const TreeShaker = struct {
                     const target = @intFromEnum(rec.resolved);
                     if (target >= self.modules.len) continue;
                     if (self.included.isSet(target)) continue;
-                    // CJS 모듈은 항상 포함: require() 대상이거나, wrap_kind가 CJS인 모듈은
-                    // 정적 export 분석이 불가능하므로 tree-shaking에서 제외해야 한다.
-                    // (rxjs, tslib 등 sideEffects:false인 CJS 모듈이 제거되는 버그 수정)
                     if (rec.kind == .require or self.modules[target].side_effects or
                         self.modules[target].wrap_kind == .cjs)
                     {
@@ -205,6 +191,15 @@ pub const TreeShaker = struct {
             }
 
             if (!changed) break;
+        }
+
+        // fixpoint 후 미사용 sideEffects=false 모듈 제거 (1회만 수행, oscillation 방지)
+        for (self.modules, 0..) |m, i| {
+            if (!self.included.isSet(i)) continue;
+            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
+            if (!self.hasAnyUsedExport(@intCast(i))) {
+                self.included.unset(i);
+            }
         }
 
         // 2차: 심볼 기반 도달성 분석 (rolldown 방식)
