@@ -556,7 +556,7 @@ function* t7() {
 	yield // comment
 // comment
 // comment
-a;
+a\`\`;
 }
 function* t8() {
 	yield // comment

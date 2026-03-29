@@ -217,10 +217,10 @@ exports[`TSC: expressions asOperator3 1`] = `
 var b = \`leading \${123 + 456}\`;
 var c = \`\${123 + 456} trailing\`;
 var d = \`Hello \${123} World\`;
-var e = ;
+var e = \`Hello\`;
 var f = 1 + \`\${1} end of string\`;
 var g = tag\`Hello \${123} World\`;
-var h = tag;
+var h = tag\`Hello\`;
 "
 `;
 
@@ -238,7 +238,7 @@ exports[`TSC: expressions asOperatorASI 1`] = `
 }
 // Example 1
 var x = 10;
-as;
+as\`Hello world\`;
 // should not error
 // Example 2
 var y = 20;
@@ -9471,7 +9471,7 @@ constructor(f=this) {
 
 exports[`TSC: expressions constAssertions 1`] = `
 "let v1 = "abc";
-let v2 = ;
+let v2 = \`abc\`;
 let v3 = 10;
 let v4 = -10;
 let v5 = +10;
@@ -9480,7 +9480,7 @@ let v7 = -10n;
 let v8 = true;
 let v9 = false;
 let c1 = "abc";
-let c2 = ;
+let c2 = \`abc\`;
 let c3 = 10;
 let c4 = -10;
 let c5 = +10;
@@ -9545,14 +9545,14 @@ function ff3(x,y) {
 	return \`\${x}\${y}\`;
 }
 function ff4(verify,contentMatches) {
-	const action = verify ?  : ;
-	const contentMatch = contentMatches ?  : ;
+	const action = verify ? \`verify\` : \`write\`;
+	const contentMatch = contentMatches ? \`match\` : \`nonMatch\`;
 	const outcome = \`\${action}_\${contentMatch}\`;
 	return outcome;
 }
 function ff5(verify,contentMatches) {
-	const action = verify ?  : ;
-	const contentMatch = contentMatches ?  : ;
+	const action = verify ? \`verify\` : \`write\`;
+	const contentMatch = contentMatches ? \`match\` : \`nonMatch\`;
 	const outcome = \`\${action}_\${contentMatch}\`;
 	return outcome;
 }
@@ -9821,9 +9821,9 @@ if (hasLegs(beast)) {
 		// All winged beasts with legs
 if (hasWings(beast)) {
 			if (beast.legs === 4) {
-				log();
+				log(\`pegasus - 4 legs, wings\`);
 			} else if (beast.legs === 2) {
-				log();
+				log(\`bird - 2 legs, wings\`);
 			} else {
 				log(\`unknown - \${beast.legs} legs, wings\`);
 			}
@@ -9834,9 +9834,9 @@ if (hasWings(beast)) {
 	} else // All beasts without legs    
 {
 		if (hasWings(beast)) {
-			log();
+			log(\`quetzalcoatl - no legs, wings\`);
 		} else {
-			log();
+			log(\`snake - no legs, no wings\`);
 		}
 	}
 }
