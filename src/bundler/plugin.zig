@@ -2,6 +2,7 @@
 //!
 //! Rollup 호환 플러그인 인터페이스 (resolveId, load, transform, renderChunk, generateBundle).
 //! Builtin 플러그인은 Zig 함수 포인터로 구현하여 최고 성능.
+//! Subprocess 플러그인은 context 포인터로 child process 상태를 전달.
 //!
 //! 훅 실행 순서:
 //!   - resolveId/load: 첫 번째 non-null 반환 플러그인이 승리 (first 모드)
@@ -23,27 +24,31 @@ pub const PluginError = error{
 
 /// Rollup 호환 플러그인 인터페이스.
 /// 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
+/// context 필드로 플러그인 상태를 전달 (builtin은 null, subprocess는 child process handle).
 pub const Plugin = struct {
     name: []const u8,
+    /// 플러그인 상태를 전달하는 opaque 포인터.
+    /// builtin 플러그인은 null, subprocess 플러그인은 SubprocessPlugin 포인터.
+    context: ?*anyopaque = null,
 
     /// 모듈 경로 해석 커스텀 (alias, virtual module).
     /// non-null 반환 시 기본 resolver를 건너뜀.
-    resolveId: ?*const fn (specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolveResult = null,
+    resolveId: ?*const fn (ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolveResult = null,
 
     /// 모듈 내용 로딩 (virtual module, 커스텀 로더).
     /// non-null 반환 시 파일 시스템 읽기를 건너뜀.
-    load: ?*const fn (path: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
 
     /// 코드 변환 (codegen 직후, CJS 래핑 전).
     /// non-null 반환 시 원본 코드를 반환값으로 교체.
-    transform: ?*const fn (code: []const u8, id: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    transform: ?*const fn (ctx: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
 
     /// 청크 코드 후처리 (청크 완성 후, footer 전).
     /// non-null 반환 시 청크 코드를 반환값으로 교체.
-    renderChunk: ?*const fn (code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    renderChunk: ?*const fn (ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
 
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
-    generateBundle: ?*const fn (output_files: []const OutputFile) void = null,
+    generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
 };
 
 /// 플러그인 배열을 순회하며 훅을 실행하는 유틸리티.
@@ -70,7 +75,7 @@ pub const PluginRunner = struct {
     ) PluginError!?ResolveResult {
         for (self.plugins) |p| {
             if (p.resolveId) |hook| {
-                if (try hook(specifier, importer, allocator)) |result| {
+                if (try hook(p.context, specifier, importer, allocator)) |result| {
                     return result;
                 }
             }
@@ -87,7 +92,7 @@ pub const PluginRunner = struct {
     ) PluginError!?[]const u8 {
         for (self.plugins) |p| {
             if (p.load) |hook| {
-                if (try hook(path, allocator)) |result| {
+                if (try hook(p.context, path, allocator)) |result| {
                     return result;
                 }
             }
@@ -108,7 +113,7 @@ pub const PluginRunner = struct {
         for (self.plugins) |p| {
             if (p.transform) |hook| {
                 const input = current orelse code;
-                if (try hook(input, id, allocator)) |result| {
+                if (try hook(p.context, input, id, allocator)) |result| {
                     // 이전 체이닝 결과가 있으면 해제 (원본 code는 caller 소유이므로 건드리지 않음)
                     if (current) |prev| allocator.free(prev);
                     current = result;
@@ -130,7 +135,7 @@ pub const PluginRunner = struct {
         for (self.plugins) |p| {
             if (p.renderChunk) |hook| {
                 const input = current orelse code;
-                if (try hook(input, chunk_name, allocator)) |result| {
+                if (try hook(p.context, input, chunk_name, allocator)) |result| {
                     if (current) |prev| allocator.free(prev);
                     current = result;
                 }
@@ -146,7 +151,7 @@ pub const PluginRunner = struct {
     ) void {
         for (self.plugins) |p| {
             if (p.generateBundle) |hook| {
-                hook(output_files);
+                hook(p.context, output_files);
             }
         }
     }

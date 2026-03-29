@@ -39,7 +39,7 @@ test "PluginRunner: empty plugins is no-op" {
 
 // --- resolveId 훅 테스트 ---
 
-fn testResolveIdHook(specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
+fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
     if (std.mem.eql(u8, specifier, "virtual:config")) {
         return .{
             .path = try allocator.dupe(u8, "/virtual/config.js"),
@@ -68,7 +68,7 @@ test "PluginRunner: resolveId first mode" {
 
 // --- load 훅 테스트 ---
 
-fn testLoadHook(path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
     if (std.mem.endsWith(u8, path, ".custom")) {
         return try allocator.dupe(u8, "export default 'custom-loaded';");
     }
@@ -93,11 +93,11 @@ test "PluginRunner: load first mode" {
 
 // --- transform 훅 테스트 (체이닝) ---
 
-fn testTransformHookA(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testTransformHookA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* A */", code }) catch return error.OutOfMemory;
 }
 
-fn testTransformHookB(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testTransformHookB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* B */", code }) catch return error.OutOfMemory;
 }
 
@@ -117,7 +117,7 @@ test "PluginRunner: transform chaining" {
 
 // --- renderChunk 훅 테스트 ---
 
-fn testRenderChunkHook(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testRenderChunkHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* rendered */\n", code }) catch return error.OutOfMemory;
 }
 
@@ -137,7 +137,7 @@ test "PluginRunner: renderChunk chaining" {
 
 var generate_bundle_called: bool = false;
 
-fn testGenerateBundleHook(_: []const OutputFile) void {
+fn testGenerateBundleHook(_: ?*anyopaque, _: []const OutputFile) void {
     generate_bundle_called = true;
 }
 
@@ -158,7 +158,7 @@ test "PluginRunner: generateBundle all executed" {
 
 // --- transform 훅 통합 테스트 ---
 
-fn integrationTransformHook(code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn integrationTransformHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
     return std.mem.concat(allocator, u8, &.{ "/* PLUGIN_TRANSFORM */\n", code }) catch return error.OutOfMemory;
 }
 
@@ -193,7 +193,7 @@ test "Plugin integration: transform hook modifies output" {
 var integration_generate_called: bool = false;
 var integration_generate_output_len: usize = 0;
 
-fn integrationGenerateBundleHook(outputs: []const OutputFile) void {
+fn integrationGenerateBundleHook(_: ?*anyopaque, outputs: []const OutputFile) void {
     integration_generate_called = true;
     integration_generate_output_len = outputs.len;
 }
