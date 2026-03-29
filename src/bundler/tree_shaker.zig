@@ -219,32 +219,17 @@ pub const TreeShaker = struct {
         self.reachable_stmts = reachable_stmts;
 
         // StmtInfo 구축 (entry, CJS 제외)
-        // Part 시스템: semantic analyzer가 수집한 데이터가 있으면 빠른 경로 사용 (Phase 7-1).
-        // 전체 AST 재순회를 제거하여 O(N log S) → O(S + symbols)으로 개선.
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
             const sem = m.semantic orelse continue;
             const ast = &(m.ast orelse continue);
-            if (sem.top_stmt_node_indices.len > 0) {
-                // 빠른 경로: semantic에서 수집한 Part 데이터 사용
-                module_stmt_infos[i] = stmt_info_mod.buildFromSemantic(
-                    self.allocator,
-                    ast,
-                    sem.symbols,
-                    sem.stmt_declared,
-                    sem.stmt_referenced,
-                    sem.top_stmt_node_indices,
-                ) catch null;
-            } else {
-                // fallback: 기존 build() (Part 데이터 없는 경우)
-                module_stmt_infos[i] = stmt_info_mod.build(
-                    self.allocator,
-                    ast,
-                    sem.symbols,
-                    sem.symbol_ids,
-                ) catch null;
-            }
+            module_stmt_infos[i] = stmt_info_mod.build(
+                self.allocator,
+                ast,
+                sem.symbols,
+                sem.symbol_ids,
+            ) catch null;
         }
 
         // 크로스-모듈 BFS: rolldown 방식 — import binding을 따라 모듈 횡단
