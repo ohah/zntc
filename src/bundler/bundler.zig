@@ -86,6 +86,10 @@ pub const BundleOptions = struct {
     asset_names: []const u8 = "[name]-[hash]",
     /// 확장자별 로더 오버라이드 (--loader:.png=file)
     loader_overrides: []const types.LoaderOverride = &.{},
+    /// metafile JSON 생성 (--metafile)
+    metafile: bool = false,
+    /// 번들 분석 출력 (--analyze). metafile을 내부적으로 강제 활성화.
+    analyze: bool = false,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -108,6 +112,8 @@ pub const BundleResult = struct {
     /// asset 파일 출력 (file/copy 로더). allocator 소유.
     /// JS 청크와 별도로 출력 디렉토리에 복사해야 하는 파일들.
     asset_outputs: ?[]OutputFile = null,
+    /// metafile JSON (--metafile). allocator 소유.
+    metafile_json: ?[]const u8 = null,
 
     /// dev mode에서 모듈별 HMR 업데이트 코드.
     pub const ModuleDevCode = struct {
@@ -168,6 +174,7 @@ pub const BundleResult = struct {
             }
             allocator.free(outs);
         }
+        if (self.metafile_json) |mf| allocator.free(mf);
     }
 
     pub fn hasErrors(self: *const BundleResult) bool {
@@ -463,6 +470,12 @@ pub const Bundler = struct {
             break :blk result_codes;
         } else null;
 
+        // 7. Metafile JSON 생성 (--metafile / --analyze)
+        const metafile_json: ?[]const u8 = if (self.options.metafile or self.options.analyze)
+            try generateMetafileJson(self.allocator, &graph, output, outputs)
+        else
+            null;
+
         return .{
             .output = output,
             .sourcemap = dev_sourcemap,
@@ -471,6 +484,95 @@ pub const Bundler = struct {
             .module_paths = module_paths,
             .module_dev_codes = module_dev_codes,
             .asset_outputs = asset_outputs,
+            .metafile_json = metafile_json,
         };
     }
 };
+
+/// metafile JSON을 생성한다 (esbuild 호환 형식).
+/// inputs: 각 모듈의 경로, 바이트 수, import 목록
+/// outputs: 출력 파일의 경로, 바이트 수, 포함된 입력 모듈
+fn generateMetafileJson(
+    allocator: std.mem.Allocator,
+    graph: *const @import("graph.zig").ModuleGraph,
+    single_output: []const u8,
+    multi_outputs: ?[]const OutputFile,
+) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "{\n  \"inputs\": {");
+
+    // inputs
+    var first_input = true;
+    for (graph.modules.items) |m| {
+        if (m.path.len == 0) continue;
+        if (!first_input) try buf.appendSlice(allocator, ",");
+        first_input = false;
+        try buf.appendSlice(allocator, "\n    ");
+        try appendJsonString(&buf, allocator, m.path);
+        try buf.appendSlice(allocator, ": { \"bytes\": ");
+        try appendInt(&buf, allocator, m.source.len);
+        // imports
+        try buf.appendSlice(allocator, ", \"imports\": [");
+        var first_imp = true;
+        for (m.import_records) |rec| {
+            if (rec.is_external) continue;
+            if (rec.resolved.isNone()) continue;
+            const dep_idx = @intFromEnum(rec.resolved);
+            if (dep_idx >= graph.modules.items.len) continue;
+            if (!first_imp) try buf.appendSlice(allocator, ", ");
+            first_imp = false;
+            try buf.appendSlice(allocator, "{ \"path\": ");
+            try appendJsonString(&buf, allocator, graph.modules.items[dep_idx].path);
+            try buf.appendSlice(allocator, ", \"kind\": ");
+            try appendJsonString(&buf, allocator, @tagName(rec.kind));
+            try buf.appendSlice(allocator, " }");
+        }
+        try buf.appendSlice(allocator, "] }");
+    }
+
+    try buf.appendSlice(allocator, "\n  },\n  \"outputs\": {");
+
+    // outputs
+    if (multi_outputs) |outs| {
+        var first_out = true;
+        for (outs) |o| {
+            if (!first_out) try buf.appendSlice(allocator, ",");
+            first_out = false;
+            try buf.appendSlice(allocator, "\n    ");
+            try appendJsonString(&buf, allocator, o.path);
+            try buf.appendSlice(allocator, ": { \"bytes\": ");
+            try appendInt(&buf, allocator, o.contents.len);
+            try buf.appendSlice(allocator, " }");
+        }
+    } else if (single_output.len > 0) {
+        try buf.appendSlice(allocator, "\n    \"bundle.js\": { \"bytes\": ");
+        try appendInt(&buf, allocator, single_output.len);
+        try buf.appendSlice(allocator, " }");
+    }
+
+    try buf.appendSlice(allocator, "\n  }\n}\n");
+    return buf.toOwnedSlice(allocator);
+}
+
+fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    try buf.append(allocator, '"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+}
+
+fn appendInt(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usize) !void {
+    var tmp: [20]u8 = undefined;
+    const s = std.fmt.bufPrint(&tmp, "{d}", .{val}) catch unreachable;
+    try buf.appendSlice(allocator, s);
+}
