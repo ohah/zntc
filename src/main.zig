@@ -186,8 +186,7 @@ fn transpileFile(
 
     // 런타임 헬퍼 주입: transformer가 사용한 헬퍼를 코드 앞에 prepend
     const rh = transformer.runtime_helpers;
-    const needs_helpers = rh.extends or rh.generator or rh.rest or rh.async_helper;
-    const output = if (needs_helpers) blk: {
+    const output = if (@as(u16, @bitCast(rh)) != 0) blk: {
         var helper_buf: std.ArrayList(u8) = .empty;
         emitter.appendRuntimeHelpers(&helper_buf, arena_alloc, rh, options.minify_whitespace) catch |err| {
             try stderr.print("zts: helper injection error: {}\n", .{err});
