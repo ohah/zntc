@@ -64,8 +64,19 @@ pub fn build(b: *std.Build) void {
         .name = "zts",
         .root_module = exe_mod,
     });
-    // c_allocator 사용을 위해 libc 링크 (GPA 대비 page fault 최소화)
     exe.linkLibC();
+
+    // mimalloc: 고성능 메모리 할당자 (vendor/mimalloc, static.c 단일 컴파일)
+    exe.addCSourceFile(.{
+        .file = b.path("vendor/mimalloc/src/static.c"),
+        .flags = &.{
+            "-DMI_SKIP_COLLECT_ON_EXIT=1",
+            "-DMI_OVERRIDE=0",
+            "-DNDEBUG",
+            "-Wno-date-time", // __DATE__/__TIME__ 경고 억제
+        },
+    });
+    exe.addIncludePath(b.path("vendor/mimalloc/include"));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

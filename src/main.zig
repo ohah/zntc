@@ -623,7 +623,7 @@ fn walkAndTranspile(
 pub fn main() !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
-    // ReleaseFast: libc malloc 사용 (내부 메모리 풀링으로 page fault 최소화).
+    // ReleaseFast/ReleaseSafe: mimalloc 사용 (스레드별 힙, 페이지 캐싱).
     // Debug: GPA 사용 (leak detection, double-free 감지).
     const is_debug = @import("builtin").mode == .Debug;
     var gpa: if (is_debug) std.heap.GeneralPurposeAllocator(.{}) else void =
@@ -631,7 +631,7 @@ pub fn main() !void {
     defer if (is_debug) {
         _ = gpa.deinit();
     };
-    const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else std.heap.c_allocator;
+    const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else @import("mimalloc.zig").allocator;
 
     // CLI 인자 파싱
     const args = try std.process.argsAlloc(allocator);

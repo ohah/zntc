@@ -167,6 +167,15 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 ### Memory Strategy (D004)
 - Phase-based arena allocator
 - AST 노드는 포인터 대신 인덱스 기반 참조 (use-after-free 방지)
+- **Backing allocator**: mimalloc (v3.2.8, vendor/mimalloc)
+  - Debug: GPA (leak detection, double-free 감지)
+  - ReleaseFast/ReleaseSafe: mimalloc (스레드별 힙 자동 격리, 페이지 캐싱)
+  - GPA → c_allocator 전환으로 번들 200모듈 267ms → 30ms, mimalloc으로 추가 개선
+  - GPA의 page_allocator(mmap 직접 호출)가 page fault 164K를 일으킨 것이 병목이었음
+- **mimalloc 기본 API 사용 (mi_malloc/mi_free)**: Bun처럼 명시적 mi_heap API는 미사용
+  - mimalloc 내부에서 자동으로 스레드별 힙 격리 수행
+  - ZTS의 모듈별 Arena가 이미 스레드 내 일괄 해제를 담당
+  - 수천 개 파일 번들링에서 병목 관찰 시 mi_heap API(힙 단위 일괄 해제)로 전환 검토
 
 ### Parser Design
 - comptime으로 JS/JSX/TS/TSX/Flow 파서 각각 생성 (런타임 분기 없음)
