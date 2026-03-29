@@ -84,7 +84,11 @@ pub fn minify(ast: *Ast) void {
     for (ast.nodes.items, 0..) |node, i| {
         switch (node.tag) {
             .binary_expression => foldBinary(ast, @intCast(i), node),
+            .logical_expression => foldLogical(ast, @intCast(i), node),
             .unary_expression => foldUnary(ast, @intCast(i), node),
+            .conditional_expression => foldConditional(ast, @intCast(i), node),
+            .if_statement => foldIf(ast, @intCast(i), node),
+            .while_statement => foldWhile(ast, @intCast(i), node),
             else => {},
         }
     }
@@ -337,4 +341,118 @@ fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
         .function_expression, .arrow_function_expression => "function",
         else => null,
     };
+}
+
+// ================================================================
+// Phase 2: Dead Code Elimination
+// ================================================================
+
+/// conditional_expression: false ? a : b → b, true ? a : b → a
+fn foldConditional(ast: *Ast, node_idx: u32, node: Node) void {
+    const cond_ni = @intFromEnum(node.data.ternary.a);
+    if (cond_ni >= ast.nodes.items.len) return;
+    const cond = ast.nodes.items[cond_ni];
+
+    const truthy = evalTruthiness(ast, cond) orelse return;
+    // 조건이 상수이면 선택된 분기로 교체
+    const kept = if (truthy) node.data.ternary.b else node.data.ternary.c;
+    const kept_ni = @intFromEnum(kept);
+    if (kept_ni >= ast.nodes.items.len) return;
+    ast.nodes.items[node_idx] = ast.nodes.items[kept_ni];
+}
+
+/// if_statement: if (false) { A } else { B } → B, if (true) { A } → A
+fn foldIf(ast: *Ast, node_idx: u32, node: Node) void {
+    const cond_ni = @intFromEnum(node.data.ternary.a);
+    if (cond_ni >= ast.nodes.items.len) return;
+    const cond = ast.nodes.items[cond_ni];
+
+    const truthy = evalTruthiness(ast, cond) orelse return;
+    if (truthy) {
+        // if (true) { A } → A (then 분기)
+        const then_ni = @intFromEnum(node.data.ternary.b);
+        if (then_ni >= ast.nodes.items.len) return;
+        ast.nodes.items[node_idx] = ast.nodes.items[then_ni];
+    } else {
+        // if (false) { A } else { B } → B (else 분기가 있으면)
+        if (!node.data.ternary.c.isNone()) {
+            const else_ni = @intFromEnum(node.data.ternary.c);
+            if (else_ni >= ast.nodes.items.len) return;
+            ast.nodes.items[node_idx] = ast.nodes.items[else_ni];
+        } else {
+            // if (false) { A } → empty_statement
+            ast.nodes.items[node_idx] = .{
+                .tag = .empty_statement,
+                .span = node.span,
+                .data = .{ .none = 0 },
+            };
+        }
+    }
+}
+
+/// while (false) { ... } → empty_statement
+fn foldWhile(ast: *Ast, node_idx: u32, node: Node) void {
+    const cond_ni = @intFromEnum(node.data.binary.left);
+    if (cond_ni >= ast.nodes.items.len) return;
+    const cond = ast.nodes.items[cond_ni];
+
+    const truthy = evalTruthiness(ast, cond) orelse return;
+    if (!truthy) {
+        ast.nodes.items[node_idx] = .{
+            .tag = .empty_statement,
+            .span = node.span,
+            .data = .{ .none = 0 },
+        };
+    }
+}
+
+/// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x
+fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
+    const left_ni = @intFromEnum(node.data.binary.left);
+    if (left_ni >= ast.nodes.items.len) return;
+    const left = ast.nodes.items[left_ni];
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+
+    const truthy = evalTruthiness(ast, left) orelse return;
+
+    switch (op) {
+        .amp2 => { // &&
+            if (truthy) {
+                // true && x → x
+                const right_ni = @intFromEnum(node.data.binary.right);
+                if (right_ni >= ast.nodes.items.len) return;
+                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+            } else {
+                // false && x → false (left 값 유지)
+                ast.nodes.items[node_idx] = left;
+            }
+        },
+        .pipe2 => { // ||
+            if (truthy) {
+                // true || x → true (left 값 유지)
+                ast.nodes.items[node_idx] = left;
+            } else {
+                // false || x → x
+                const right_ni = @intFromEnum(node.data.binary.right);
+                if (right_ni >= ast.nodes.items.len) return;
+                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+            }
+        },
+        .question2 => { // ??
+            // null ?? x → x, undefined ?? x → x
+            if (left.tag == .null_literal) {
+                const right_ni = @intFromEnum(node.data.binary.right);
+                if (right_ni >= ast.nodes.items.len) return;
+                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+            } else if (left.tag == .identifier_reference) {
+                const text = ast.getText(left.span);
+                if (std.mem.eql(u8, text, "undefined")) {
+                    const right_ni = @intFromEnum(node.data.binary.right);
+                    if (right_ni >= ast.nodes.items.len) return;
+                    ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+                }
+            }
+        },
+        else => {},
+    }
 }
