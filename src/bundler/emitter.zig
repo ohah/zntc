@@ -110,11 +110,7 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    std.mem.sort(*const Module, sorted.items, {}, struct {
-        fn lessThan(_: void, a: *const Module, b: *const Module) bool {
-            return a.exec_index < b.exec_index;
-        }
-    }.lessThan);
+    std.mem.sort(*const Module, sorted.items, {}, Module.execIndexLessThan);
 
     // 2. 각 모듈을 변환 + 코드젠
     var output: std.ArrayList(u8) = .empty;
@@ -351,11 +347,7 @@ pub fn emitDevBundle(
         }
     }
 
-    std.mem.sort(*const Module, sorted.items, {}, struct {
-        fn lessThan(_: void, a: *const Module, b: *const Module) bool {
-            return a.exec_index < b.exec_index;
-        }
-    }.lessThan);
+    std.mem.sort(*const Module, sorted.items, {}, Module.execIndexLessThan);
 
     // 2. 출력 빌드
     var output: std.ArrayList(u8) = .empty;
@@ -718,11 +710,7 @@ pub fn emitChunks(
                     try chunk_output.appendSlice(allocator, "import{");
                 }
                 // 결정론적 출력을 위해 심볼명 정렬
-                std.mem.sort([]const u8, symbols.?.items, {}, struct {
-                    fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                        return std.mem.order(u8, a, b) == .lt;
-                    }
-                }.lessThan);
+                std.mem.sort([]const u8, symbols.?.items, {}, types.stringLessThan);
                 for (symbols.?.items, 0..) |name, si| {
                     const total = name_total_count.get(name) orelse 1;
                     const seen_gop = try name_seen_count.getOrPut(allocator, name);
@@ -852,11 +840,7 @@ pub fn emitChunks(
             while (eit.next()) |entry| {
                 try export_names.append(allocator, entry.key_ptr.*);
             }
-            std.mem.sort([]const u8, export_names.items, {}, struct {
-                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                    return std.mem.order(u8, a, b) == .lt;
-                }
-            }.lessThan);
+            std.mem.sort([]const u8, export_names.items, {}, types.stringLessThan);
 
             if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "export { ");

@@ -458,26 +458,33 @@ pub const Linker = struct {
         }
     }
 
-    /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
-    /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
-    pub fn computeMangling(self: *Linker) !void {
-        const Mangler = @import("../codegen/mangler.zig");
+    const NameEntry = struct {
+        name: []const u8,
+        total_refs: u32,
+    };
 
-        // ================================================================
-        // Top-level 심볼을 빈도순 Base54로 mangling (cross-module)
-        // ================================================================
+    /// mangling 후보 수집 결과. computeMangling()에서 사용.
+    const ManglingCandidates = struct {
+        /// mangling 제외 대상 (export/import binding 이름)
+        exported: std.StringHashMap(void),
+        /// 빈도순 정렬된 mangling 후보 목록
+        entries: std.ArrayListUnmanaged(NameEntry),
 
-        // 1. 모든 모듈의 top-level 심볼의 reference_count 합산
-        const NameEntry = struct {
-            name: []const u8,
-            total_refs: u32,
-        };
+        fn deinit(mc: *ManglingCandidates, allocator: std.mem.Allocator) void {
+            mc.exported.deinit();
+            mc.entries.deinit(allocator);
+        }
+    };
+
+    /// 모든 모듈의 top-level 심볼을 수집하고 reference_count 빈도순으로 정렬.
+    /// mangling 제외 대상(export/import binding)도 함께 수집한다.
+    fn collectManglingCandidates(self: *const Linker) !ManglingCandidates {
         var name_refs = std.StringHashMap(u32).init(self.allocator);
         defer name_refs.deinit();
 
         // export/import binding 이름 수집 (mangling 제외 대상)
         var exported = std.StringHashMap(void).init(self.allocator);
-        defer exported.deinit();
+        errdefer exported.deinit();
         for (self.modules) |m| {
             for (m.export_bindings) |eb| {
                 try exported.put(eb.exported_name, {});
@@ -509,9 +516,9 @@ pub const Linker = struct {
             }
         }
 
-        // 2. 빈도순 정렬
+        // 빈도순 정렬
         var entries: std.ArrayListUnmanaged(NameEntry) = .empty;
-        defer entries.deinit(self.allocator);
+        errdefer entries.deinit(self.allocator);
         {
             var it = name_refs.iterator();
             while (it.next()) |entry| {
@@ -528,7 +535,23 @@ pub const Linker = struct {
             }
         }.cmp);
 
-        // 3. 빈도순으로 Base54 이름 할당
+        return .{ .exported = exported, .entries = entries };
+    }
+
+    /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
+    /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
+    pub fn computeMangling(self: *Linker) !void {
+        const Mangler = @import("../codegen/mangler.zig");
+
+        // ================================================================
+        // Top-level 심볼을 빈도순 Base54로 mangling (cross-module)
+        // ================================================================
+
+        // 1. mangling 후보 수집 + 빈도순 정렬
+        var candidates = try self.collectManglingCandidates();
+        defer candidates.deinit(self.allocator);
+
+        // 2. 빈도순으로 Base54 이름 할당
         // 기존에 사용 중인 이름 수집 (충돌 방지)
         var all_names = std.StringHashMap(void).init(self.allocator);
         defer all_names.deinit();
@@ -557,11 +580,11 @@ pub const Linker = struct {
 
         var name_counter: u32 = 0;
         var name_buf: [8]u8 = undefined;
-        for (entries.items) |entry| {
+        for (candidates.entries.items) |entry| {
             var new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
             while (all_names.contains(new_name) or
                 used_names.contains(new_name) or
-                exported.contains(new_name))
+                candidates.exported.contains(new_name))
             {
                 new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
             }
@@ -573,7 +596,7 @@ pub const Linker = struct {
             }
         }
 
-        // 4. canonical_names 업데이트 — 기존 rename된 이름도 mangling
+        // 3. canonical_names 업데이트 — 기존 rename된 이름도 mangling
         var update_list: std.ArrayList(struct { key: []const u8, val: []const u8 }) = .empty;
         defer update_list.deinit(self.allocator);
 
@@ -594,7 +617,7 @@ pub const Linker = struct {
             }
         }
 
-        // 5. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
+        // 4. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
         for (self.modules, 0..) |m, i| {
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
@@ -1059,63 +1082,75 @@ pub const Linker = struct {
         }
 
         // 3. 엔트리 포인트 final exports
-        var final_exports: ?[]const u8 = null;
-        if (is_entry and m.export_bindings.len > 0) {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(self.allocator);
-            try buf.appendSlice(self.allocator, "export {");
-            var first = true;
-            for (m.export_bindings) |eb| {
-                if (eb.kind == .re_export_all) continue;
-                if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-                if (!first) try buf.appendSlice(self.allocator, ",");
-                first = false;
-                const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
-                try buf.append(self.allocator, ' ');
-                try buf.appendSlice(self.allocator, actual_name);
-                if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
-                    try buf.appendSlice(self.allocator, " as ");
-                    try buf.appendSlice(self.allocator, eb.exported_name);
-                }
-            }
-            try buf.appendSlice(self.allocator, " };\n");
-            if (!first) {
-                final_exports = try self.allocator.dupe(u8, buf.items);
-            }
-        }
-
-        // ns_member_rewrites 소유권 이동
-        const ns_rewrites: LinkingMetadata.NsMemberRewrites = if (ns_rewrite_list.items.len > 0) blk: {
-            break :blk .{ .entries = try self.allocator.dupe(LinkingMetadata.NsMemberRewrites.Entry, ns_rewrite_list.items) };
-        } else .{};
-        ns_rewrite_list.deinit(self.allocator);
-
-        const ns_inlines: LinkingMetadata.NsInlineObjects = if (ns_inline_list.items.len > 0) blk: {
-            break :blk .{ .entries = try self.allocator.dupe(LinkingMetadata.NsInlineObjects.Entry, ns_inline_list.items) };
-        } else .{};
-        ns_inline_list.deinit(self.allocator);
-
-        // namespace 변수 선언을 preamble에 추가: var gql = {parse: parse, ...};
-        var ns_preamble_buf: std.ArrayList(u8) = .empty;
-        defer ns_preamble_buf.deinit(self.allocator);
-        for (ns_inlines.entries) |entry| {
-            try ns_preamble_buf.appendSlice(self.allocator, "var ");
-            try ns_preamble_buf.appendSlice(self.allocator, entry.var_name);
-            try ns_preamble_buf.appendSlice(self.allocator, " = ");
-            try ns_preamble_buf.appendSlice(self.allocator, entry.object_literal);
-            try ns_preamble_buf.appendSlice(self.allocator, ";\n");
-        }
-        const combined_preamble: ?[]const u8 = if (ns_preamble_buf.items.len > 0) blk: {
-            // ns preamble이 있으면 cjs preamble과 합침
-            const combined = try std.mem.concat(self.allocator, u8, &.{
-                cjs_import_preamble orelse "",
-                ns_preamble_buf.items,
-            });
-            if (cjs_import_preamble) |p| self.allocator.free(p);
-            break :blk combined;
-        } else cjs_import_preamble;
+        const final_exports = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
         // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
+        const const_values = try self.buildCrossModuleConstValues(m, sem);
+
+        // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
+        // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
+        // errdefer가 이미 해제된 리스트에 접근하지 않도록 마지막에 호출한다.
+        const ns_result = try finalizeNamespaceData(self.allocator, &ns_rewrite_list, &ns_inline_list, cjs_import_preamble);
+        const ns_rewrites = ns_result.rewrites;
+        const ns_inlines = ns_result.inlines;
+        const combined_preamble = ns_result.combined_preamble;
+
+        return .{
+            .skip_nodes = skip_nodes,
+            .renames = renames,
+            .final_exports = final_exports,
+            .symbol_ids = sem.symbol_ids,
+            .cjs_import_preamble = combined_preamble,
+            .default_export_name = default_export_name,
+            .ns_member_rewrites = ns_rewrites,
+            .ns_inline_objects = ns_inlines,
+            .const_values = const_values,
+            .owned_rename_values = owned_nested_renames,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// 엔트리 포인트의 최종 export 문을 생성한다. (e.g. "export { x, y$1 as y };\n")
+    /// is_entry가 false이거나 export가 없으면 null 반환.
+    fn buildFinalExports(
+        self: *const Linker,
+        is_entry: bool,
+        module_index: u32,
+        export_bindings: []const ExportBinding,
+    ) !?[]const u8 {
+        if (!is_entry or export_bindings.len == 0) return null;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, "export {");
+        var first = true;
+        for (export_bindings) |eb| {
+            if (eb.kind == .re_export_all) continue;
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+            if (!first) try buf.appendSlice(self.allocator, ",");
+            first = false;
+            const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+            try buf.append(self.allocator, ' ');
+            try buf.appendSlice(self.allocator, actual_name);
+            if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
+                try buf.appendSlice(self.allocator, " as ");
+                try buf.appendSlice(self.allocator, eb.exported_name);
+            }
+        }
+        try buf.appendSlice(self.allocator, " };\n");
+        if (!first) {
+            return try self.allocator.dupe(u8, buf.items);
+        }
+        return null;
+    }
+
+    /// 크로스-모듈 상수 인라인 맵을 생성한다.
+    /// import binding의 canonical export가 상수이면 symbol_id → ConstValue 매핑을 반환.
+    fn buildCrossModuleConstValues(
+        self: *const Linker,
+        m: Module,
+        sem: @import("module.zig").ModuleSemanticData,
+    ) !std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) {
         var const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{};
         for (m.import_bindings) |ib| {
             if (ib.import_record_index >= m.import_records.len) continue;
@@ -1146,19 +1181,57 @@ pub const Linker = struct {
                 }
             }
         }
+        return const_values;
+    }
+
+    /// namespace 리스트의 소유권을 이동하고, namespace preamble을 CJS preamble과 합친다.
+    /// ns_rewrite_list와 ns_inline_list는 이 함수 호출 후 deinit된다.
+    fn finalizeNamespaceData(
+        allocator: std.mem.Allocator,
+        ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
+        ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+        cjs_import_preamble: ?[]const u8,
+    ) !struct {
+        rewrites: LinkingMetadata.NsMemberRewrites,
+        inlines: LinkingMetadata.NsInlineObjects,
+        combined_preamble: ?[]const u8,
+    } {
+        const ns_rewrites: LinkingMetadata.NsMemberRewrites = if (ns_rewrite_list.items.len > 0)
+            .{ .entries = try allocator.dupe(LinkingMetadata.NsMemberRewrites.Entry, ns_rewrite_list.items) }
+        else
+            .{};
+        ns_rewrite_list.deinit(allocator);
+
+        const ns_inlines: LinkingMetadata.NsInlineObjects = if (ns_inline_list.items.len > 0)
+            .{ .entries = try allocator.dupe(LinkingMetadata.NsInlineObjects.Entry, ns_inline_list.items) }
+        else
+            .{};
+        ns_inline_list.deinit(allocator);
+
+        // namespace 변수 선언을 preamble에 추가: var gql = {parse: parse, ...};
+        var ns_preamble_buf: std.ArrayList(u8) = .empty;
+        defer ns_preamble_buf.deinit(allocator);
+        for (ns_inlines.entries) |entry| {
+            try ns_preamble_buf.appendSlice(allocator, "var ");
+            try ns_preamble_buf.appendSlice(allocator, entry.var_name);
+            try ns_preamble_buf.appendSlice(allocator, " = ");
+            try ns_preamble_buf.appendSlice(allocator, entry.object_literal);
+            try ns_preamble_buf.appendSlice(allocator, ";\n");
+        }
+        const combined_preamble: ?[]const u8 = if (ns_preamble_buf.items.len > 0) blk: {
+            // ns preamble이 있으면 cjs preamble과 합침
+            const combined = try std.mem.concat(allocator, u8, &.{
+                cjs_import_preamble orelse "",
+                ns_preamble_buf.items,
+            });
+            if (cjs_import_preamble) |p| allocator.free(p);
+            break :blk combined;
+        } else cjs_import_preamble;
 
         return .{
-            .skip_nodes = skip_nodes,
-            .renames = renames,
-            .final_exports = final_exports,
-            .symbol_ids = sem.symbol_ids,
-            .cjs_import_preamble = combined_preamble,
-            .default_export_name = default_export_name,
-            .ns_member_rewrites = ns_rewrites,
-            .ns_inline_objects = ns_inlines,
-            .const_values = const_values,
-            .owned_rename_values = owned_nested_renames,
-            .allocator = self.allocator,
+            .rewrites = ns_rewrites,
+            .inlines = ns_inlines,
+            .combined_preamble = combined_preamble,
         };
     }
 

@@ -190,94 +190,25 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
 
             // [].slice
-            const slice_span = try self.new_ast.addString("slice");
-            const slice_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = slice_span,
-                .data = .{ .string_ref = slice_span },
-            });
-            const member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(empty_arr), @intFromEnum(slice_prop), 0,
-            });
-            const slice_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = member_extra },
-            });
+            const slice_prop = try es_helpers.makeIdentifierRef(self, "slice");
+            const slice_member = try es_helpers.makeStaticMember(self, empty_arr, slice_prop, span);
 
             // [].slice.call
-            const call_span = try self.new_ast.addString("call");
-            const call_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = call_span,
-                .data = .{ .string_ref = call_span },
-            });
-            const call_member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(slice_member), @intFromEnum(call_prop), 0,
-            });
-            const slice_call = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = call_member_extra },
-            });
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const slice_call = try es_helpers.makeStaticMember(self, slice_member, call_prop, span);
 
             // arguments
-            const args_span = try self.new_ast.addString("arguments");
-            const args_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
+            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
 
             // start_index number
-            var idx_buf: [16]u8 = undefined;
-            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{start_index}) catch "0";
-            const idx_span = try self.new_ast.addString(idx_str);
-            const idx_node = try self.new_ast.addNode(.{
-                .tag = .numeric_literal,
-                .span = idx_span,
-                .data = .{ .none = 0 },
-            });
+            const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_index));
 
             // [].slice.call(arguments, N)
-            const call_args = try self.new_ast.addNodeList(&.{ args_ref, idx_node });
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(slice_call),
-                call_args.start,
-                call_args.len,
-                0,
-            });
-            const call_node = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const call_node = try es_helpers.makeCallExpr(self, slice_call, &.{ args_ref, idx_node }, span);
 
             // var rest = [].slice.call(arguments, N)
-            const declarator_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(binding),
-                @intFromEnum(NodeIndex.none),
-                @intFromEnum(call_node),
-            });
-            const declarator = try self.new_ast.addNode(.{
-                .tag = .variable_declarator,
-                .span = span,
-                .data = .{ .extra = declarator_extra },
-            });
-
-            // variable_declaration: extra = [kind_flags, list_start, list_len]
-            // kind_flags: 0 = var
-            const decl_list = try self.new_ast.addNodeList(&.{declarator});
-            const var_extra = try self.new_ast.addExtras(&.{
-                0, // var
-                decl_list.start,
-                decl_list.len,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .variable_declaration,
-                .span = span,
-                .data = .{ .extra = var_extra },
-            });
+            const declarator = try es_helpers.makeDeclarator(self, binding, call_node, span);
+            return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
         }
 
         /// identifier 노드를 복제한다 (같은 이름의 새 노드).

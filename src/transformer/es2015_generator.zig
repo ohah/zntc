@@ -178,25 +178,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 defer self.scratch.shrinkRetainingCapacity(scratch_top2);
 
                 for (hoisted_vars.items) |binding| {
-                    const decl_extra = try self.new_ast.addExtras(&.{
-                        @intFromEnum(binding),
-                        @intFromEnum(NodeIndex.none),
-                        @intFromEnum(NodeIndex.none),
-                    });
-                    const declarator = try self.new_ast.addNode(.{
-                        .tag = .variable_declarator,
-                        .span = span,
-                        .data = .{ .extra = decl_extra },
-                    });
+                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                     try self.scratch.append(self.allocator, declarator);
                 }
-                const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top2..]);
-                const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
-                var_decl_node = try self.new_ast.addNode(.{
-                    .tag = .variable_declaration,
-                    .span = span,
-                    .data = .{ .extra = var_decl_extra },
-                });
+                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top2..], 0, span);
             }
 
             return .{ .body = switch_node, .var_decl = var_decl_node };
@@ -1366,7 +1351,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // _state 파라미터
             const state_span = try self.new_ast.addString("_state");
-            const state_param = try self.new_ast.addNode(.{ .tag = .binding_identifier, .span = state_span, .data = .{ .string_ref = state_span } });
+            const state_param = try es_helpers.makeBindingIdentifier(self, state_span);
 
             // function body: switch_body를 block으로 감싸기
             const body_list = try self.new_ast.addNodeList(&.{switch_body});

@@ -113,14 +113,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // 먼저 init을 임시 변수에 저장
                     const new_init = try self.visitNode(init_idx);
                     const temp_span = try es_helpers.makeTempVarSpan(self);
-                    const temp_binding = try self.new_ast.addNode(.{
-                        .tag = .binding_identifier,
-                        .span = temp_span,
-                        .data = .{ .string_ref = temp_span },
-                    });
+                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
 
                     // var _ref = init
-                    const ref_decl = try makeDeclarator(self, temp_binding, new_init, span);
+                    const ref_decl = try es_helpers.makeDeclarator(self, temp_binding, new_init, span);
                     try self.scratch.append(self.allocator, ref_decl);
 
                     // 패턴을 개별 declarator로 분해
@@ -385,7 +381,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = key_node.span,
                         .data = .{ .string_ref = key_node.data.string_ref },
                     });
-                    const decl = try makeDeclarator(self, binding, member_access, span);
+                    const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
                     try self.scratch.append(self.allocator, decl);
                 } else {
                     const value_node = self.old_ast.getNode(value_idx);
@@ -394,23 +390,19 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const binding = try self.visitNode(value_node.data.binary.left);
                         const default_val = try self.visitNode(value_node.data.binary.right);
                         const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, span);
-                        const decl = try makeDeclarator(self, binding, defaulted, span);
+                        const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
                         try self.scratch.append(self.allocator, decl);
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
                         // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
                         const nested_span = try es_helpers.makeTempVarSpan(self);
-                        const nested_binding = try self.new_ast.addNode(.{
-                            .tag = .binding_identifier,
-                            .span = nested_span,
-                            .data = .{ .string_ref = nested_span },
-                        });
-                        const nested_decl = try makeDeclarator(self, nested_binding, member_access, span);
+                        const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                        const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, member_access, span);
                         try self.scratch.append(self.allocator, nested_decl);
                         try emitPatternDeclarators(self, value_node, nested_span, span);
                     } else {
                         // long-form: { a: b } → var b = _ref.a
                         const binding = try self.visitNode(value_idx);
-                        const decl = try makeDeclarator(self, binding, member_access, span);
+                        const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
                         try self.scratch.append(self.allocator, decl);
                     }
                 }
@@ -431,7 +423,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // ...rest → var rest = _ref.slice(N)
                     const rest_binding = try self.visitNode(elem.data.unary.operand);
                     const rest_init = try buildArraySlice(self, ref_span, idx, span);
-                    const rest_decl = try makeDeclarator(self, rest_binding, rest_init, span);
+                    const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, rest_init, span);
                     try self.scratch.append(self.allocator, rest_decl);
                     continue;
                 }
@@ -455,23 +447,19 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
                     });
-                    const decl = try makeDeclarator(self, binding, conditional, span);
+                    const decl = try es_helpers.makeDeclarator(self, binding, conditional, span);
                     try self.scratch.append(self.allocator, decl);
                 } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
                     // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
                     const nested_span = try es_helpers.makeTempVarSpan(self);
-                    const nested_binding = try self.new_ast.addNode(.{
-                        .tag = .binding_identifier,
-                        .span = nested_span,
-                        .data = .{ .string_ref = nested_span },
-                    });
-                    const nested_decl = try makeDeclarator(self, nested_binding, elem_access, span);
+                    const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
+                    const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, elem_access, span);
                     try self.scratch.append(self.allocator, nested_decl);
                     try emitPatternDeclarators(self, elem, nested_span, span);
                 } else {
                     // 단순: [x] → var x = _ref[0]
                     const binding = try self.visitNode(@enumFromInt(raw_idx));
-                    const decl = try makeDeclarator(self, binding, elem_access, span);
+                    const decl = try es_helpers.makeDeclarator(self, binding, elem_access, span);
                     try self.scratch.append(self.allocator, decl);
                 }
             }
@@ -493,18 +481,6 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .tag = .conditional_expression,
                 .span = span,
                 .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
-            });
-        }
-
-        /// variable_declarator 노드 생성 헬퍼
-        fn makeDeclarator(self: *Transformer, binding: NodeIndex, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const de = try self.new_ast.addExtras(&.{
-                @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
-            });
-            return self.new_ast.addNode(.{
-                .tag = .variable_declarator,
-                .span = span,
-                .data = .{ .extra = de },
             });
         }
 
@@ -579,7 +555,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // __rest(_ref, [...])
             const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
 
-            return makeDeclarator(self, binding, call, span);
+            return es_helpers.makeDeclarator(self, binding, call, span);
         }
     };
 }
