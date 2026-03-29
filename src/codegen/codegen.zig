@@ -164,6 +164,20 @@ pub const Codegen = struct {
         // namespace var 중복 제거: top-level 선언 이름 사전 수집
         self.collectTopLevelDeclNames(root);
         try self.emitNode(root);
+
+        // keepNames: 수집된 entries를 코드 끝에 __name() 호출로 append (복사 없음)
+        for (self.keep_names_entries.items) |entry| {
+            try self.write("__name(");
+            try self.write(entry.new_name);
+            try self.write(", \"");
+            try self.write(entry.original_name);
+            if (self.options.minify_whitespace) {
+                try self.write("\");");
+            } else {
+                try self.write("\");\n");
+            }
+        }
+
         return self.buf.items;
     }
 
@@ -1318,15 +1332,14 @@ pub const Codegen = struct {
         const meta = self.options.linking_metadata orelse return;
         const sym_id = self.resolveSymbolId(name_idx, meta) orelse return;
         const new_name = meta.renames.get(sym_id) orelse return;
-        // 원본 이름: AST 노드의 소스 텍스트
         const name_node = self.ast.getNode(name_idx);
         const original_name = self.ast.getText(name_node.data.string_ref);
-        // 이름이 실제로 변경된 경우만 수집
         if (std.mem.eql(u8, new_name, original_name)) return;
+        // OOM 시 append 실패 → __name() 미삽입. arena 할당이므로 현실적으로 발생하지 않음.
         self.keep_names_entries.append(self.allocator, .{
             .new_name = new_name,
             .original_name = original_name,
-        }) catch {};
+        }) catch return;
     }
 
     fn emitComputedKey(self: *Codegen, node: Node) !void {

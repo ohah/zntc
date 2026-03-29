@@ -300,6 +300,9 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
                 return null;
             };
+            if (opts.legal_comments == .linked or opts.legal_comments == .external) {
+                try stderr.print("zts: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
+            }
         } else if (std.mem.startsWith(u8, arg, "--loader:")) {
             // --loader:.png=file (esbuild 호환)
             const kv = arg["--loader:".len..];

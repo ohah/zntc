@@ -1614,25 +1614,12 @@ pub fn emitModule(
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
     });
-    var code = try cg.generate(root);
+    const code = try cg.generate(root);
 
-    // keepNames: codegen이 수집한 entries로 __name() 호출을 code 뒤에 append
+    // keepNames: codegen이 generate() 내에서 직접 __name() 호출을 buf에 append.
+    // entries가 있으면 런타임 헬퍼 플래그만 설정.
     if (cg.keep_names_entries.items.len > 0) {
         if (helpers_out) |h| h.keep_names = true;
-        var keep_buf: std.ArrayList(u8) = .empty;
-        try keep_buf.appendSlice(arena_alloc, code);
-        for (cg.keep_names_entries.items) |entry| {
-            try keep_buf.appendSlice(arena_alloc, "__name(");
-            try keep_buf.appendSlice(arena_alloc, entry.new_name);
-            try keep_buf.appendSlice(arena_alloc, ", \"");
-            try keep_buf.appendSlice(arena_alloc, entry.original_name);
-            if (options.minify_whitespace) {
-                try keep_buf.appendSlice(arena_alloc, "\");");
-            } else {
-                try keep_buf.appendSlice(arena_alloc, "\");\n");
-            }
-        }
-        code = try keep_buf.toOwnedSlice(arena_alloc);
     }
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
@@ -1941,6 +1928,9 @@ fn emitChunkRuntimeHelpers(
     }
     if (needs_to_binary) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
+    }
+    if (options.keep_names) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.KEEP_NAMES_RUNTIME_MIN else rt.KEEP_NAMES_RUNTIME);
     }
 }
 
