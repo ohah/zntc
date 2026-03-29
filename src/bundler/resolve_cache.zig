@@ -46,6 +46,8 @@ pub const ResolveCache = struct {
     cache: std.StringHashMap(CachedResult),
     external_patterns: []const []const u8,
     platform: Platform,
+    /// 병렬 resolve 시 캐시 접근 보호용 mutex.
+    cache_mutex: std.Thread.Mutex = .{},
 
     /// 패키지 디렉토리별 browser 필드 disabled 파일 캐시.
     /// pkg_dir_path → disabled 상대 경로 집합 (null이면 browser 필드 없음).
@@ -229,6 +231,83 @@ pub const ResolveCache = struct {
         } });
 
         // result.path는 resolver가 할당한 것 — caller 소유로 그대로 반환
+        return result;
+    }
+
+    /// 스레드 안전 resolve. 병렬 resolve에서 사용.
+    /// resolver를 스택 복사하여 conditions 수정 없이 사용, cache 접근에 mutex.
+    pub fn resolveThreadSafe(
+        self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+    ) ResolveError!?ResolveResult {
+        if (self.isExternal(specifier)) return null;
+
+        const cache_key = self.makeCacheKey(source_dir, specifier, kind) catch
+            return error.OutOfMemory;
+        defer self.allocator.free(cache_key);
+
+        // 캐시 조회 (mutex)
+        {
+            self.cache_mutex.lock();
+            defer self.cache_mutex.unlock();
+            if (self.cache.get(cache_key)) |cached| {
+                return switch (cached) {
+                    .resolved => |r| ResolveResult{
+                        .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
+                        .module_type = r.module_type,
+                    },
+                    .disabled => |r| ResolveResult{
+                        .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
+                        .module_type = r.module_type,
+                        .disabled = true,
+                    },
+                    .external => null,
+                    .not_found => error.ModuleNotFound,
+                };
+            }
+        }
+
+        // resolver를 스택에 복사하여 conditions를 안전하게 설정
+        var local_resolver = self.resolver;
+        local_resolver.conditions = self.conditionsFor(kind);
+
+        const result = local_resolver.resolve(source_dir, specifier) catch |err| switch (err) {
+            error.ModuleNotFound => {
+                self.cache_mutex.lock();
+                defer self.cache_mutex.unlock();
+                self.putCache(cache_key, .not_found) catch {};
+                return error.ModuleNotFound;
+            },
+            else => return err,
+        };
+
+        // browser disabled 체크 + 캐시 저장 (mutex)
+        {
+            self.cache_mutex.lock();
+            defer self.cache_mutex.unlock();
+
+            if (self.platform == .browser and self.isBrowserDisabled(result.path)) {
+                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                self.putCache(cache_key, .{ .disabled = .{
+                    .path = cache_path,
+                    .module_type = result.module_type,
+                } }) catch {};
+                return ResolveResult{
+                    .path = result.path,
+                    .module_type = result.module_type,
+                    .disabled = true,
+                };
+            }
+
+            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+            self.putCache(cache_key, .{ .resolved = .{
+                .path = cache_path,
+                .module_type = result.module_type,
+            } }) catch {};
+        }
+
         return result;
     }
 

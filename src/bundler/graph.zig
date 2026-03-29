@@ -26,6 +26,7 @@ const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache_mod.ResolveCache;
+const resolver_mod = @import("resolver.zig");
 const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
@@ -140,10 +141,15 @@ pub const ModuleGraph = struct {
                 t.reset();
             }
 
-            i = parse_start;
-            while (i < parse_end) : (i += 1) {
-                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
-                try self.resolveModuleImports(idx);
+            // resolve 병렬화: resolve(파일시스템 탐색)만 병렬, addModule/addDependency는 순차
+            if (batch_size >= 2 and pool_ok) {
+                try self.resolveModuleImportsBatchParallel(&pool, parse_start, parse_end);
+            } else {
+                i = parse_start;
+                while (i < parse_end) : (i += 1) {
+                    const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+                    try self.resolveModuleImports(idx);
+                }
             }
 
             if (detail_timer) |*t| {
@@ -253,6 +259,135 @@ pub const ModuleGraph = struct {
         }
 
         pool.waitAndWork(&wg);
+    }
+
+    /// resolve 결과를 저장하는 구조체.
+    const ResolveTaskResult = struct {
+        result: ?resolver_mod.ResolveResult = null,
+        is_error: bool = false,
+        is_node_builtin: bool = false,
+    };
+
+    /// 배치 내 모든 모듈의 import를 병렬 resolve한 후 순차 적용.
+    fn resolveModuleImportsBatchParallel(self: *ModuleGraph, pool: *std.Thread.Pool, start: usize, end: usize) !void {
+        // 전체 import record 수 계산
+        var total_records: usize = 0;
+        for (start..end) |i| {
+            total_records += self.modules.items[i].import_records.len;
+        }
+        if (total_records == 0) return;
+
+        // resolve 결과 배열 할당
+        var results = try self.allocator.alloc(ResolveTaskResult, total_records);
+        defer self.allocator.free(results);
+        for (results) |*r| r.* = .{};
+
+        // 병렬 resolve 실행
+        {
+            var wg: std.Thread.WaitGroup = .{};
+            var result_idx: usize = 0;
+            for (start..end) |mod_i| {
+                const module_path = self.modules.items[mod_i].path;
+                const source_dir = std.fs.path.dirname(module_path) orelse ".";
+                const records = self.modules.items[mod_i].import_records;
+
+                for (records) |record| {
+                    pool.spawnWg(&wg, resolveThread, .{
+                        self.resolve_cache,
+                        source_dir,
+                        record.specifier,
+                        record.kind,
+                        self.resolve_cache.platform,
+                        &results[result_idx],
+                    });
+                    result_idx += 1;
+                }
+            }
+            pool.waitAndWork(&wg);
+        }
+
+        // 순차 적용: addModule + addDependency
+        var result_idx: usize = 0;
+        for (start..end) |mod_i| {
+            const records = self.modules.items[mod_i].import_records;
+            const module_path = self.modules.items[mod_i].path;
+
+            for (records, 0..) |record, rec_i| {
+                const task = results[result_idx];
+                result_idx += 1;
+
+                if (task.is_error) {
+                    // ModuleNotFound
+                    if (task.is_node_builtin) {
+                        const dep_idx = try self.addDisabledModule(record.specifier);
+                        self.modules.items[mod_i].import_records[rec_i].resolved = dep_idx;
+                        if (record.kind == .dynamic_import) {
+                            try self.modules.items[mod_i].addDynamicImport(self.allocator, dep_idx);
+                        } else {
+                            try self.modules.items[mod_i].addDependency(self.allocator, dep_idx, self.modules.items);
+                        }
+                    } else {
+                        const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
+                        self.addDiag(.unresolved_import, sev, module_path, record.span, .resolve, "Cannot resolve module", record.specifier);
+                    }
+                    continue;
+                }
+
+                if (task.result) |r| {
+                    defer self.allocator.free(r.path);
+
+                    if (r.disabled) {
+                        const dep_idx = try self.addDisabledModule(record.specifier);
+                        self.modules.items[mod_i].import_records[rec_i].resolved = dep_idx;
+                        if (record.kind == .dynamic_import) {
+                            try self.modules.items[mod_i].addDynamicImport(self.allocator, dep_idx);
+                        } else {
+                            try self.modules.items[mod_i].addDependency(self.allocator, dep_idx, self.modules.items);
+                        }
+                        continue;
+                    }
+
+                    const dep_idx = try self.addModule(r.path);
+
+                    if (r.is_module_field or self.modules.items[mod_i].is_module_field) {
+                        self.modules.items[@intFromEnum(dep_idx)].is_module_field = true;
+                    }
+
+                    self.modules.items[mod_i].import_records[rec_i].resolved = dep_idx;
+
+                    if (record.kind == .dynamic_import) {
+                        try self.modules.items[mod_i].addDynamicImport(self.allocator, dep_idx);
+                    } else {
+                        try self.modules.items[mod_i].addDependency(self.allocator, dep_idx, self.modules.items);
+                    }
+                } else {
+                    // external
+                    self.modules.items[mod_i].import_records[rec_i].is_external = true;
+                }
+            }
+        }
+    }
+
+    /// 스레드 풀에서 실행되는 resolve 워커.
+    fn resolveThread(
+        resolve_cache: *resolve_cache_mod.ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: types.ImportKind,
+        platform: resolve_cache_mod.Platform,
+        out: *ResolveTaskResult,
+    ) void {
+        out.result = resolve_cache.resolveThreadSafe(source_dir, specifier, kind) catch |err| switch (err) {
+            error.ModuleNotFound => {
+                out.is_error = true;
+                out.is_node_builtin = (platform == .browser and resolve_cache_mod.isNodeBuiltin(specifier));
+                return;
+            },
+            error.OutOfMemory => {
+                out.is_error = true;
+                return;
+            },
+        };
     }
 
     /// 스레드 풀에서 실행되는 모듈 파싱 래퍼.
