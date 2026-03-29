@@ -140,9 +140,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("destructuring rest (object)", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (
+          "index.ts":
             "const { a, ...rest } = { a: 1, b: 2, c: 3 }; console.log(a, JSON.stringify(rest));",
-          ),
         },
         "index.ts",
         ["--target=es5"],
@@ -185,11 +184,11 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("class extends/super", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             class Animal { name: string; constructor(name: string) { this.name = name; } speak() { return this.name; } }
             class Dog extends Animal { speak() { return super.speak() + " barks"; } }
             console.log(new Dog("Rex").speak());
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -234,13 +233,13 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator .next()", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             function* gen() { yield 1; yield 2; yield 3; }
             const g = gen();
             const arr: number[] = [];
             let r = g.next(); while (!r.done) { arr.push(r.value); r = g.next(); }
             console.log(JSON.stringify(arr));
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -253,11 +252,11 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator return", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             function* gen() { yield 1; return 99; }
             const g = gen();
             console.log(JSON.stringify(g.next()), JSON.stringify(g.next()));
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -373,11 +372,11 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator yield value receive", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             function* gen() { const x = yield 1; return x; }
             const g = gen(); g.next(); const r = g.next(42);
             console.log(JSON.stringify(r));
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -563,7 +562,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("class extends with method override", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             class Animal {
               speak() { return 'animal'; }
             }
@@ -572,7 +571,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
             }
             class Cat extends Animal {}
             console.log(new Dog().speak(), new Cat().speak());
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -585,7 +584,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator with multiple yields", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             function* multi() {
               yield 'a';
               yield 'b';
@@ -596,7 +595,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
             var r = it.next();
             while (!r.done) { out.push(r.value); r = it.next(); }
             console.log(out.join(','));
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
@@ -609,7 +608,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("generator yield delegation", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": (`
+          "index.ts": `
             function* inner() { yield 1; yield 2; }
             function* outer() { yield 0; yield* inner(); yield 3; }
             var out = [];
@@ -617,7 +616,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
             var r = it.next();
             while (!r.done) { out.push(r.value); r = it.next(); }
             console.log(out.join(','));
-          `),
+          `,
         },
         "index.ts",
         ["--target=es5"],
