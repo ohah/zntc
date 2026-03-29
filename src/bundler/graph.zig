@@ -1082,7 +1082,10 @@ fn applyAssetNamingPattern(
             try buf.appendSlice(allocator, hash);
             i += "[hash]".len;
         } else if (std.mem.startsWith(u8, pattern[i..], "[dir]")) {
-            if (dir.len > 0) try buf.appendSlice(allocator, dir);
+            // Windows 경로 구분자(\)를 URL 구분자(/)로 정규화
+            for (dir) |c| {
+                try buf.append(allocator, if (c == '\\') '/' else c);
+            }
             i += "[dir]".len;
         } else if (std.mem.startsWith(u8, pattern[i..], "[ext]")) {
             // [ext]는 dot 없이 (예: "png")
