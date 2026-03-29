@@ -78,6 +78,11 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
 --asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], [dir]/[name]/[hash]/[ext] 지원)
 --loader:.ext=type           확장자별 로더 지정 (file, dataurl, text, binary, copy, empty)
+--metafile=<path>            빌드 입출력 JSON (esbuild 호환, 기본: meta.json)
+--analyze                    번들 분석 출력 (metafile JSON을 stderr에 출력)
+--legal-comments=<mode>      라이센스 주석 처리 (none, inline, eof, linked, external)
+--inject:<path>              모든 엔트리에 자동 import (반복 가능)
+--keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```

@@ -22,6 +22,7 @@
 | 9. 배치 A | 번들러 옵션 10개 (alias, banner, globalName, publicPath, JSON ESM 등) | ✅ |
 | 10. 배치 B | content hash + naming 패턴 (--entry-names, --chunk-names) | ✅ |
 | 11. 배치 C | Asset 로더 (file, dataurl, text, binary, copy) + --loader CLI | ✅ |
+| 12. 배치 D | metafile, analyze, legal-comments, inject, keepNames | ✅ |
 
 ## 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -95,22 +96,18 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   위의 JSON/Asset/CSS도 플러그인 없이는 사용자가 직접 해결할 방법이 없으므로, 생태계 확장의 전제 조건.
   **현황**: 훅 포인트 설계 + Zig 인터페이스 + (이후) N-API JS 바인딩. resolver/graph/emitter 모두 수정 필요.
 
-- **metafile** — `M` | 선행: 없음 | 배치: D
-  빌드 결과의 입출력 파일, 사이즈, import 관계를 JSON으로 출력하는 기능이 없음.
-  esbuild는 `--metafile=meta.json` 으로 번들 구성 분석 데이터 생성. bundle-buddy, esbuild-visualizer 등 시각화 도구의 입력.
-  CI에서 번들 사이즈 회귀 감지, PR 코멘트에 사이즈 변화 표시 등 프로덕션 워크플로에 필수.
-  **현황**: emitter에서 모듈/청크 정보는 이미 가지고 있음. JSON 직렬화 + CLI 옵션만 추가.
+- ~~**metafile**~~ — ✅ 완료. `--metafile=meta.json` esbuild 호환 JSON.
+- ~~**analyze**~~ — ✅ 완료. `--analyze` metafile JSON stderr 출력 (향후 트리 포맷 개선 예정).
+- ~~**inject**~~ — ✅ 완료. `--inject:./file.js` 모든 엔트리에 자동 import.
+- ~~**legal comments**~~ — ✅ 완료. `--legal-comments=none|inline|eof` (linked/external은 eof 폴백).
+- ~~**keepNames**~~ — ✅ 완료. `--keep-names` minify 시 .name 보존 (`__name()` 헬퍼).
 
 ### Important (프로덕션 배포에 자주 필요)
 
-- **inject** — `M` | 선행: 없음 | 배치: D
-- **legal comments** — `M` | 선행: 없음 | 배치: D
-- **keepNames** — `M` | 선행: 없음 | 배치: D
 - **엔진 타겟** (chrome, firefox, safari, node 버전) — `XL` | 선행: 없음 | 배치: 단독
 
 ### Nice to Have
 
-- **analyze** — `S` | 선행: metafile | 배치: D
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
 - **import.meta.glob** — `M` | 선행: 없음 | 배치: 단독
 - **Virtual modules** — `M` | 선행: 플러그인 API | 배치: 플러그인과 함께
@@ -122,9 +119,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 배치 B ✅ 완료 ──────────────────────────────────────────────────
 배치 C ✅ 완료 ──────────────────────────────────────────────────
 
-배치 D (2~3일, 독립) ───────────────────────────────────────────
+배치 D ✅ 완료 ──────────────────────────────────────────────────
   metafile + analyze + inject + legal comments + keepNames
-  → 각각 M 난이도지만 서로 독립. 2~3개씩 묶어서 PR 가능.
 
 단독 XL ────────────────────────────────────────────────────────
   CSS 번들링 (2~3주) — CSS 파서 새로 작성
