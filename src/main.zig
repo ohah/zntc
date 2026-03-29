@@ -46,7 +46,6 @@ const CliOptions = struct {
     target: lib.transformer.TransformOptions.Target = .esnext,
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
-    // --- Batch A 옵션 ---
     preserve_symlinks: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
     public_path: ?[]const u8 = null,
@@ -61,7 +60,14 @@ const CliOptions = struct {
 
     const AliasEntry = BundleOptions.AliasEntry;
 
-    const LogLevel = BundleOptions.LogLevel;
+    const LogLevel = enum {
+        silent,
+        @"error",
+        warning,
+        info,
+        debug,
+        verbose,
+    };
 
     fn deinit(self: *CliOptions, alloc: std.mem.Allocator) void {
         self.external_list.deinit(alloc);
@@ -824,7 +830,6 @@ pub fn main() !void {
             .out_extension_js = opts.out_extension_js,
             .source_root = opts.source_root,
             .sources_content = opts.sources_content,
-            .log_level = opts.log_level,
             .charset_utf8 = opts.charset_utf8,
         });
         defer bundler.deinit();

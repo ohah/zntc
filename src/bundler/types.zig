@@ -239,25 +239,22 @@ pub fn stringLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
 
-/// 모듈 경로에서 require_xxx 변수명을 생성한다.
-/// "lib/foo-bar.cjs" → "require_foo_bar"
-pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    // node_modules/ 이후의 전체 경로를 사용하여 고유성 보장.
-    // react/index.js → require_react_index, react-dom/index.js → require_react_dom_index
+/// 모듈 경로에서 prefix_xxx 형태의 변수명을 생성한다.
+/// 공통 로직: node_modules 이후 경로 추출 → 확장자 제거 → 비식별자 문자를 _로 치환.
+fn makeVarNameWithPrefix(allocator: std.mem.Allocator, path: []const u8, prefix: []const u8) ![]const u8 {
     const nm = "node_modules" ++ std.fs.path.sep_str;
     const significant = if (std.mem.lastIndexOf(u8, path, nm)) |pos|
         path[pos + nm.len ..]
     else
         std.fs.path.basename(path);
 
-    // 확장자 제거
     const without_ext = if (std.mem.lastIndexOf(u8, significant, ".")) |dot|
         significant[0..dot]
     else
         significant;
 
     var name: std.ArrayList(u8) = .empty;
-    try name.appendSlice(allocator, "require_");
+    try name.appendSlice(allocator, prefix);
     for (without_ext) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '_') {
             try name.append(allocator, c);
@@ -268,30 +265,14 @@ pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
     return name.toOwnedSlice(allocator);
 }
 
-/// JSON 모듈용 ESM 변수명 생성. require_ 대신 json_ 접두사 사용.
-/// data.json → json_data, node_modules/foo/config.json → json_foo_config
+/// CJS 래핑용 변수명. "lib/foo-bar.cjs" → "require_foo_bar"
+pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return makeVarNameWithPrefix(allocator, path, "require_");
+}
+
+/// JSON 모듈 ESM용 변수명. "data.json" → "json_data"
 pub fn makeJsonVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const nm = "node_modules" ++ std.fs.path.sep_str;
-    const significant = if (std.mem.lastIndexOf(u8, path, nm)) |pos|
-        path[pos + nm.len ..]
-    else
-        std.fs.path.basename(path);
-
-    const without_ext = if (std.mem.lastIndexOf(u8, significant, ".")) |dot|
-        significant[0..dot]
-    else
-        significant;
-
-    var name: std.ArrayList(u8) = .empty;
-    try name.appendSlice(allocator, "json_");
-    for (without_ext) |c| {
-        if (std.ascii.isAlphanumeric(c) or c == '_') {
-            try name.append(allocator, c);
-        } else {
-            try name.append(allocator, '_');
-        }
-    }
-    return name.toOwnedSlice(allocator);
+    return makeVarNameWithPrefix(allocator, path, "json_");
 }
 
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.

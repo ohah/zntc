@@ -58,7 +58,6 @@ pub const BundleOptions = struct {
     conditions: []const []const u8 = &.{},
     /// 파이프라인 단계별 타이밍 출력 (--timing)
     timing: bool = false,
-    // --- Batch A 옵션 ---
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
     preserve_symlinks: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
@@ -77,21 +76,10 @@ pub const BundleOptions = struct {
     source_root: ?[]const u8 = null,
     /// 소스맵에 sourcesContent 포함 여부 (--sources-content=false로 제외)
     sources_content: bool = true,
-    /// 로그 출력 레벨 (--log-level)
-    log_level: LogLevel = .info,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
 
     pub const AliasEntry = types.AliasEntry;
-
-    pub const LogLevel = enum {
-        silent,
-        @"error",
-        warning,
-        info,
-        debug,
-        verbose,
-    };
 };
 
 pub const BundleResult = struct {

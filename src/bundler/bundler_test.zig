@@ -6333,6 +6333,34 @@ test "Resolution: JSON file import" {
     try std.testing.expect(!result.hasErrors());
 }
 
+test "JSON import: ESM format uses json_ variable (linker integration)" {
+    // linker 포함 통합 테스트: ESM 포맷에서 JSON 모듈이 var json_X = {...} 로 출력되고
+    // __commonJS 래핑 없이 동작하는지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import data from './data.json';\nconsole.log(data.key);");
+    try writeFile(tmp.dir, "data.json",
+        \\{"key":"value"}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM: JSON 모듈이 var json_data = {...} 형태로 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var json_data") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"key\":\"value\"") != null);
+    // ESM + scope hoisting: __commonJS 래핑이 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+}
+
 // ============================================================
 // P2: multi-level rename re-export chain
 // ============================================================

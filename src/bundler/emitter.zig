@@ -64,7 +64,6 @@ pub const EmitOptions = struct {
     target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     platform: @import("../codegen/codegen.zig").Platform = .browser,
-    // --- Batch A 옵션 ---
     /// 에셋/청크 URL prefix (동적 import 경로에 적용)
     public_path: []const u8 = "",
     /// 번들 출력 앞에 삽입할 텍스트
@@ -144,9 +143,11 @@ pub fn emitWithTreeShaking(
     // 포맷별 prologue
     switch (options.format) {
         .iife => {
+            // TODO: IIFE export를 return 객체로 변환 (linker에서 final_exports를
+            // `export { x }` 대신 `return { x }` 형태로 생성해야 함).
+            // 현재는 globalName 할당만 래핑하고, export → return 변환은 미구현.
             if (options.global_name) |gn| {
                 if (std.mem.indexOfScalar(u8, gn, '.') != null) {
-                    // 네임스페이스 globalName은 미지원 — 경고 주석 삽입
                     try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
                     try output.appendSlice(allocator, gn);
                     try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
@@ -541,7 +542,7 @@ pub fn emitDevModule(
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
         .platform = options.platform,
-        .ascii_only = if (options.charset_utf8) false else false,
+        .ascii_only = false,
         .source_root = options.source_root orelse "",
         .sources_content = options.sources_content,
     });
@@ -1373,7 +1374,7 @@ pub fn emitModule(
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
         // --charset=utf8 → ascii_only=false (명시적 보장)
-        .ascii_only = if (options.charset_utf8) false else false,
+        .ascii_only = false,
         // 소스맵 옵션 전달
         .source_root = options.source_root orelse "",
         .sources_content = options.sources_content,
