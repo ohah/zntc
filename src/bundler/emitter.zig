@@ -457,15 +457,7 @@ pub fn emitWithTreeShaking(
     }
 
     // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
-    if (collected_helpers.extends) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
-    }
-    if (collected_helpers.generator) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
-    }
-    if (collected_helpers.rest) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) REST_RUNTIME_MIN else REST_RUNTIME);
-    }
+    try appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace);
 
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
@@ -1283,14 +1275,9 @@ pub fn emitModule(
     const root = try transformer.transform();
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
+    // packed struct(u16)이므로 bitwise OR로 한번에 합친다
     if (helpers_out) |h| {
-        const rh = transformer.runtime_helpers;
-        if (rh.extends) h.extends = true;
-        if (rh.generator) h.generator = true;
-        if (rh.rest) h.rest = true;
-        if (rh.async_helper) h.async_helper = true;
-        if (rh.spread_array) h.spread_array = true;
-        if (rh.values) h.values = true;
+        h.* = @bitCast(@as(u16, @bitCast(h.*)) | @as(u16, @bitCast(transformer.runtime_helpers)));
     }
 
     // Linker 메타데이터 생성 (있으면) — new_ast 기준으로 구축
