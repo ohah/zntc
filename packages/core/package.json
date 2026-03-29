@@ -1,0 +1,14 @@
+{
+  "name": "@zts/core",
+  "version": "0.1.0",
+  "description": "ZTS plugin API — subprocess JSON protocol wrapper",
+  "license": "MIT",
+  "files": [
+    "index.js"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  }
+}

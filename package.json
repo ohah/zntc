@@ -3,6 +3,7 @@
   "name": "zts",
   "version": "0.1.0",
   "workspaces": [
+    "./packages/core",
     "./packages/integration",
     "./packages/e2e",
     "./packages/benchmark"
