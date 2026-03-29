@@ -44,6 +44,7 @@ const CliOptions = struct {
     experimental_decorators: ?bool = null,
     target: lib.transformer.TransformOptions.Target = .esnext,
     conditions_list: std.ArrayList([]const u8) = .empty,
+    timing: bool = false,
 
     fn deinit(self: *CliOptions, alloc: std.mem.Allocator) void {
         self.external_list.deinit(alloc);
@@ -143,6 +144,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
             opts.watch = true;
+        } else if (std.mem.eql(u8, arg, "--timing")) {
+            opts.timing = true;
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             opts.is_bundle = true;
         } else if (std.mem.eql(u8, arg, "--serve")) {
@@ -252,6 +255,8 @@ const TranspileOptions = struct {
     experimental_decorators: bool = false,
     /// ES 타겟 레벨
     target: lib.transformer.TransformOptions.Target = .esnext,
+    /// 파이프라인 단계별 소요시간 출력
+    timing: bool = false,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -283,6 +288,15 @@ fn transpileFile(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
+    // 타이밍 측정용 타이머
+    var timer = std.time.Timer.start() catch null;
+    var t_read: u64 = 0;
+    var t_scan: u64 = 0;
+    var t_parse: u64 = 0;
+    var t_semantic: u64 = 0;
+    var t_transform: u64 = 0;
+    var t_codegen: u64 = 0;
+
     // 소스 읽기 — Arena에서 할당하므로 별도 free 불필요
     const source = source_override orelse blk: {
         break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
@@ -290,6 +304,30 @@ fn transpileFile(
             return;
         };
     };
+    if (timer) |*t| {
+        t_read = t.read();
+        t.reset();
+    }
+
+    // --timing: scan-only 패스로 순수 토큰화 시간 측정
+    if (options.timing) {
+        if (timer) |*t| t.reset();
+        var scan_only = try Scanner.init(arena_alloc, source);
+        const ext = std.fs.path.extension(file_path);
+        if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs") or
+            std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx"))
+        {
+            scan_only.is_module = true;
+        }
+        try scan_only.next(); // 첫 토큰 스캔 (init은 토큰을 스캔하지 않음)
+        while (scan_only.token.kind != .eof) {
+            try scan_only.next();
+        }
+        if (timer) |*t| {
+            t_scan = t.read();
+            t.reset();
+        }
+    }
 
     // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
     var scanner = try Scanner.init(arena_alloc, source);
@@ -299,6 +337,10 @@ fn transpileFile(
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
     };
+    if (timer) |*t| {
+        t_parse = t.read();
+        t.reset();
+    }
 
     // 파서 에러 출력 (코드 프레임, D012)
     if (parser.errors.items.len > 0) {
@@ -314,6 +356,10 @@ fn transpileFile(
     analyzer.is_module = parser.is_module;
     analyzer.is_ts = parser.is_ts;
     try analyzer.analyze();
+    if (timer) |*t| {
+        t_semantic = t.read();
+        t.reset();
+    }
     if (analyzer.errors.items.len > 0) {
         for (analyzer.errors.items) |diag| {
             try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
@@ -356,6 +402,10 @@ fn transpileFile(
         try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
         return;
     };
+    if (timer) |*t| {
+        t_transform = t.read();
+        t.reset();
+    }
 
     // Mangling 메타데이터 구성 (codegen에 전달)
     // renames는 mangle_result가 소유 — mangle_metadata.deinit()에서 해제하지 않음
@@ -402,6 +452,10 @@ fn transpileFile(
         try stderr.print("zts: codegen error in '{s}': {}\n", .{ file_path, err });
         return;
     };
+    if (timer) |*t| {
+        t_codegen = t.read();
+        t.reset();
+    }
 
     // 런타임 헬퍼 주입: transformer가 사용한 헬퍼를 코드 앞에 prepend
     const rh = transformer.runtime_helpers;
@@ -450,6 +504,38 @@ fn transpileFile(
         }
     } else {
         try stdout.writeAll(output);
+    }
+
+    // --timing: 파이프라인 단계별 소요시간 출력
+    if (options.timing) {
+        const total = t_read + t_parse + t_semantic + t_transform + t_codegen;
+        const f_scan = @as(f64, @floatFromInt(t_scan)) / 1_000_000.0;
+        const f_parse = @as(f64, @floatFromInt(t_parse)) / 1_000_000.0;
+        try stderr.print(
+            \\
+            \\  Timing for '{s}' ({d} bytes):
+            \\    read:      {d:.3} ms
+            \\    scan:      {d:.3} ms  (standalone)
+            \\    parse:     {d:.3} ms  (scan+AST: scan ~{d:.3}, AST ~{d:.3})
+            \\    semantic:  {d:.3} ms
+            \\    transform: {d:.3} ms
+            \\    codegen:   {d:.3} ms
+            \\    ─────────────────
+            \\    total:     {d:.3} ms  (excludes standalone scan)
+            \\
+        , .{
+            file_path,
+            source.len,
+            @as(f64, @floatFromInt(t_read)) / 1_000_000.0,
+            f_scan,
+            f_parse,
+            @min(f_scan, f_parse),
+            @max(f_parse - f_scan, 0.0),
+            @as(f64, @floatFromInt(t_semantic)) / 1_000_000.0,
+            @as(f64, @floatFromInt(t_transform)) / 1_000_000.0,
+            @as(f64, @floatFromInt(t_codegen)) / 1_000_000.0,
+            @as(f64, @floatFromInt(total)) / 1_000_000.0,
+        });
     }
 }
 
@@ -535,9 +621,14 @@ fn walkAndTranspile(
 pub fn main() !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
+    // ReleaseFast: libc malloc 사용 (내부 메모리 풀링으로 page fault 최소화).
+    // Debug: GPA 사용 (leak detection, double-free 감지).
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = if (@import("builtin").mode == .Debug)
+        gpa.allocator()
+    else
+        std.heap.c_allocator;
 
     // CLI 인자 파싱
     const args = try std.process.argsAlloc(allocator);
@@ -763,6 +854,7 @@ pub fn main() !void {
         .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
         .experimental_decorators = opts.experimental_decorators orelse false,
         .target = opts.target,
+        .timing = opts.timing,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");

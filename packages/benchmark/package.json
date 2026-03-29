@@ -5,7 +5,8 @@
   "scripts": {
     "bench": "bun run bench.ts",
     "bench:transpile": "bun run bench.ts --transpile",
-    "bench:bundle": "bun run bench.ts --bundle"
+    "bench:bundle": "bun run bench.ts --bundle",
+    "pipeline": "bun run pipeline.ts"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.0.0",
