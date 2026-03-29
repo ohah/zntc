@@ -47,6 +47,7 @@ zts - < input.ts                # stdin 입력
 zts --bundle <entry.ts>                          # 번들 → stdout
 zts --bundle <entry.ts> -o out.js                # 번들 → 파일
 zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
+zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 ```
 
 ### 공통 옵션
@@ -83,6 +84,7 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --legal-comments=<mode>      라이센스 주석 처리 (none, inline, eof, linked, external)
 --inject:<path>              모든 엔트리에 자동 import (반복 가능)
 --keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
+--plugin <path>                  JS 플러그인 (subprocess JSON IPC)
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```

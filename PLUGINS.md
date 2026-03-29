@@ -81,20 +81,17 @@ CJS 래핑 등
 
 ## 구현 전략 — 3단계
 
-### 1단계: Zig Builtin 플러그인 (난이도 L, 3~5일)
-- 플러그인 인터페이스를 Zig 함수 포인터로 정의
-- JSON/Text/Asset 로더를 Zig builtin 플러그인으로 구현 (최고 성능)
-- resolveId 훅으로 alias, virtual module 지원
-- 파이프라인 단방향 구조(resolver → graph → emitter)라 훅 삽입 용이
-- N-API 불필요, 즉시 가능
+### 1단계: Zig Builtin 플러그인 ✅ 완료 (PR #521)
+- Plugin struct (context + 5개 훅 함수 포인터) + PluginRunner
+- 파이프라인 5곳에 훅 삽입 (resolver → graph → emitter → bundler)
+- context: ?*anyopaque로 subprocess 플러그인 상태 전달 지원 (PR #522)
 
-### 2단계: JS 플러그인 — subprocess 방식 (난이도 M, 1주)
-- esbuild와 동일한 아키텍처: 별도 Node.js 프로세스를 spawn하고 stdin/stdout JSON 메시지로 통신
-- N-API 불필요 — child_process + JSON 프로토콜만으로 동작
-- "문자열 in, 문자열 out" — Zig와 JS가 AST를 공유하지 않음
-- 플러그인 필터(예: `filter: /\.css$/`)로 호출 대상을 제한하여 IPC 오버헤드 최소화
-- 성능: 호출당 ~50~200μs (특정 확장자만 처리하면 전체 영향 10ms 이하)
-- 사용자가 PostCSS, Lightning CSS, Babel 등을 JS 플러그인으로 사용 가능
+### 2단계: JS 플러그인 — subprocess 방식 ✅ 완료 (PR #523, #524, #525)
+- SubprocessPlugin: Node.js child process spawn + stdin/stdout JSON IPC
+- @zts/core npm 패키지: definePlugin(), build.onResolve/onLoad/onTransform
+- CLI: `--plugin <path>` 옵션으로 JS 플러그인 파일 지정
+- suffix 기반 필터 매칭 (.css, .svg 등)으로 IPC 호출 최소화
+- **제한사항**: 현재 load 훅은 JS 모듈 파싱 경로에서만 동작. 비-JS 확장자(.css 등)를 JS로 변환하려면 graph.zig의 module_type 결정 로직 확장 필요.
 
 ```
 ZTS (Zig 바이너리)
