@@ -164,7 +164,7 @@ fn transpileFile(
     // 코드 생성
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .module_format = options.module_format,
-        .minify = options.minify_whitespace,
+        .minify_whitespace = options.minify_whitespace,
         .sourcemap = options.sourcemap,
         .ascii_only = options.ascii_only,
         .quote_style = options.quote_style,

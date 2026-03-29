@@ -59,8 +59,8 @@ pub const CodegenOptions = struct {
     indent_width: u8 = 2,
     /// 줄바꿈 문자 (D045: \n 기본, Windows는 \r\n)
     newline: []const u8 = "\n",
-    /// 공백 최소화 (minify)
-    minify: bool = false,
+    /// 공백/줄바꿈/들여쓰기 최소화
+    minify_whitespace: bool = false,
     /// 소스맵 생성 활성화
     sourcemap: bool = false,
     /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
@@ -272,13 +272,13 @@ pub const Codegen = struct {
 
     /// 줄바꿈 출력. minify 모드에서는 아무것도 출력하지 않음.
     fn writeNewline(self: *Codegen) !void {
-        if (self.options.minify) return;
+        if (self.options.minify_whitespace) return;
         try self.write(self.options.newline);
     }
 
     /// 현재 들여쓰기 레벨만큼 들여쓰기 출력.
     fn writeIndent(self: *Codegen) !void {
-        if (self.options.minify) return;
+        if (self.options.minify_whitespace) return;
         var i: u32 = 0;
         while (i < self.indent_level) : (i += 1) {
             switch (self.options.indent_char) {
@@ -295,7 +295,7 @@ pub const Codegen = struct {
 
     /// 공백 출력. minify에서는 생략.
     fn writeSpace(self: *Codegen) !void {
-        if (!self.options.minify) try self.writeByte(' ');
+        if (!self.options.minify_whitespace) try self.writeByte(' ');
     }
 
     /// span 범위의 텍스트를 출력한다.
@@ -452,7 +452,7 @@ pub const Codegen = struct {
                 if (comment.start > p) break;
             }
             // minify 모드: legal comment만 출력
-            if (self.options.minify and !comment.is_legal) {
+            if (self.options.minify_whitespace and !comment.is_legal) {
                 self.next_comment_idx += 1;
                 continue;
             }
@@ -682,7 +682,7 @@ pub const Codegen = struct {
     /// { item1 item2 ... } — 블록과 클래스 바디 공통.
     /// `{` 앞 공백: 마지막 바이트가 공백/줄바꿈이 아니면 자동 추가 (이중 공백 방지).
     fn emitBracedList(self: *Codegen, node: Node) !void {
-        if (!self.options.minify and self.buf.items.len > 0) {
+        if (!self.options.minify_whitespace and self.buf.items.len > 0) {
             const last = self.buf.items[self.buf.items.len - 1];
             if (last != ' ' and last != '\n' and last != '\t') {
                 try self.writeByte(' ');
@@ -743,14 +743,14 @@ pub const Codegen = struct {
                 }
             }
         }
-        if (self.options.minify) try self.write("if(") else try self.write("if (");
+        if (self.options.minify_whitespace) try self.write("if(") else try self.write("if (");
         try self.emitNode(t.a);
         try self.writeByte(')');
         try self.emitNode(t.b);
         if (!t.c.isNone()) {
             // else 분기가 DCE로 완전히 제거되는 if문이면 else 키워드 자체를 생략
             if (self.isDeadIfNode(t.c)) return;
-            if (self.options.minify) {
+            if (self.options.minify_whitespace) {
                 const next_node = self.ast.getNode(t.c);
                 if (next_node.tag == .block_statement) {
                     try self.write("else");
@@ -837,7 +837,7 @@ pub const Codegen = struct {
     }
 
     fn emitWhile(self: *Codegen, node: Node) !void {
-        if (self.options.minify) try self.write("while(") else try self.write("while (");
+        if (self.options.minify_whitespace) try self.write("while(") else try self.write("while (");
         try self.emitNode(node.data.binary.left);
         try self.writeByte(')');
         try self.emitNode(node.data.binary.right);
@@ -850,7 +850,7 @@ pub const Codegen = struct {
             try self.writeByte(' ');
         }
         try self.emitNode(node.data.binary.right);
-        if (self.options.minify) try self.write("while(") else try self.write(" while (");
+        if (self.options.minify_whitespace) try self.write("while(") else try self.write(" while (");
         try self.emitNode(node.data.binary.left);
         try self.write(");");
     }
@@ -858,12 +858,12 @@ pub const Codegen = struct {
     fn emitFor(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 4];
-        if (self.options.minify) try self.write("for(") else try self.write("for (");
+        if (self.options.minify_whitespace) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
         try self.emitNode(@enumFromInt(extras[0]));
-        if (self.options.minify) try self.writeByte(';') else try self.write("; ");
+        if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[1]));
-        if (self.options.minify) try self.writeByte(';') else try self.write("; ");
+        if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[2]));
         self.in_for_init = false;
         try self.writeByte(')');
@@ -872,7 +872,7 @@ pub const Codegen = struct {
 
     fn emitForAwaitOf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
-        if (self.options.minify) try self.write("for await(") else try self.write("for await (");
+        if (self.options.minify_whitespace) try self.write("for await(") else try self.write("for await (");
         self.in_for_init = true;
         try self.emitNode(t.a);
         self.in_for_init = false;
@@ -894,7 +894,7 @@ pub const Codegen = struct {
             try self.writeIndent();
         }
 
-        if (self.options.minify) try self.write("for(") else try self.write("for (");
+        if (self.options.minify_whitespace) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
         self.skip_var_init = try self.shouldSkipVarInit(t.a);
         try self.emitNode(t.a);
@@ -970,7 +970,7 @@ pub const Codegen = struct {
         const cases_start = extras[1];
         const cases_len = extras[2];
 
-        if (self.options.minify) try self.write("switch(") else try self.write("switch (");
+        if (self.options.minify_whitespace) try self.write("switch(") else try self.write("switch (");
         try self.emitNode(discriminant);
         try self.writeByte(')');
         try self.writeSpace();
@@ -1049,7 +1049,7 @@ pub const Codegen = struct {
     fn emitCatch(self: *Codegen, node: Node) !void {
         try self.write("catch");
         if (!node.data.binary.left.isNone()) {
-            if (self.options.minify) try self.writeByte('(') else try self.write(" (");
+            if (self.options.minify_whitespace) try self.writeByte('(') else try self.write(" (");
             try self.emitNode(node.data.binary.left);
             try self.writeByte(')');
         }
@@ -1202,7 +1202,7 @@ pub const Codegen = struct {
 
     fn emitArray(self: *Codegen, node: Node) !void {
         try self.writeByte('[');
-        try self.emitList(node, if (self.options.minify) "," else ", ");
+        try self.emitList(node, if (self.options.minify_whitespace) "," else ", ");
         try self.writeByte(']');
     }
 
@@ -1212,7 +1212,7 @@ pub const Codegen = struct {
             try self.write("{}");
             return;
         }
-        if (self.options.minify) {
+        if (self.options.minify_whitespace) {
             try self.writeByte('{');
             try self.emitList(node, ",");
             try self.writeByte('}');
@@ -1234,7 +1234,7 @@ pub const Codegen = struct {
             if (self.identifierHasRename(key)) {
                 const key_node = self.ast.getNode(key);
                 try self.writeSpan(key_node.data.string_ref);
-                if (self.options.minify) {
+                if (self.options.minify_whitespace) {
                     try self.writeByte(':');
                 } else {
                     try self.write(": ");
@@ -1245,7 +1245,7 @@ pub const Codegen = struct {
             }
         } else {
             try self.emitNode(key);
-            if (self.options.minify) {
+            if (self.options.minify_whitespace) {
                 try self.writeByte(':');
             } else {
                 try self.write(": ");
@@ -1401,11 +1401,11 @@ pub const Codegen = struct {
         // CJS require() 치환: require('specifier') → require_xxx()
         if (try self.tryRewriteRequire(callee, args_start, args_len)) return;
 
-        if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
+        if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
+        try self.emitNodeList(args_start, args_len, if (self.options.minify_whitespace) "," else ", ");
         try self.writeByte(')');
     }
 
@@ -1450,12 +1450,12 @@ pub const Codegen = struct {
         const CallFlags = ast_mod.CallFlags;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
-        if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
+        if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
 
         try self.write("new ");
         try self.emitNode(callee);
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
+        try self.emitNodeList(args_start, args_len, if (self.options.minify_whitespace) "," else ", ");
         try self.writeByte(')');
     }
 
@@ -2108,7 +2108,7 @@ pub const Codegen = struct {
 
     /// `var <name> = <inner>;` 출력 (export default 변환용).
     fn emitDefaultVarAssignment(self: *Codegen, name: []const u8, inner: NodeIndex) !void {
-        if (self.options.minify) {
+        if (self.options.minify_whitespace) {
             try self.write("var ");
             try self.write(name);
             try self.writeByte('=');
@@ -2181,11 +2181,11 @@ pub const Codegen = struct {
     /// attributes → ,{key:val,...} or ,null
     fn emitJSXAttrs(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
         if (attrs_len > 0) {
-            if (self.options.minify) try self.write(",{") else try self.write(", { ");
+            if (self.options.minify_whitespace) try self.write(",{") else try self.write(", { ");
             const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
             for (attr_indices, 0..) |raw_idx, i| {
                 if (i > 0) {
-                    if (self.options.minify) try self.writeByte(',') else try self.write(", ");
+                    if (self.options.minify_whitespace) try self.writeByte(',') else try self.write(", ");
                 }
                 const attr = self.ast.getNode(@enumFromInt(raw_idx));
                 if (attr.tag == .jsx_attribute) {
@@ -2195,9 +2195,9 @@ pub const Codegen = struct {
                     try self.emitNode(attr.data.unary.operand);
                 }
             }
-            if (self.options.minify) try self.writeByte('}') else try self.write(" }");
+            if (self.options.minify_whitespace) try self.writeByte('}') else try self.write(" }");
         } else {
-            if (self.options.minify) try self.write(",null") else try self.write(", null");
+            if (self.options.minify_whitespace) try self.write(",null") else try self.write(", null");
         }
     }
 
@@ -2217,13 +2217,13 @@ pub const Codegen = struct {
                 // 줄바꿈이 포함되면 전체 trim, 아니면 원본 유지 (후행 공백 보존)
                 const has_newline = std.mem.indexOfAny(u8, text, "\n\r") != null;
                 const trimmed = if (has_newline) std.mem.trim(u8, text, " \t\n\r") else text;
-                if (self.options.minify) try self.write(",\"") else try self.write(", \"");
+                if (self.options.minify_whitespace) try self.write(",\"") else try self.write(", \"");
                 try self.write(trimmed);
                 try self.writeByte('"');
             } else {
                 // 빈 expression container {} 는 스킵 (esbuild 호환)
                 if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
-                if (self.options.minify) try self.writeByte(',') else try self.write(", ");
+                if (self.options.minify_whitespace) try self.writeByte(',') else try self.write(", ");
                 // JSX spread child: {...expr} → ...expr (spread argument)
                 if (child.tag == .jsx_spread_child) {
                     try self.write("...");
@@ -2239,10 +2239,10 @@ pub const Codegen = struct {
     fn emitJSXAttribute(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
         if (!node.data.binary.right.isNone()) {
-            if (self.options.minify) try self.writeByte(':') else try self.write(": ");
+            if (self.options.minify_whitespace) try self.writeByte(':') else try self.write(": ");
             try self.emitNode(node.data.binary.right);
         } else {
-            if (self.options.minify) try self.write(":true") else try self.write(": true");
+            if (self.options.minify_whitespace) try self.write(":true") else try self.write(": true");
         }
     }
 
@@ -2846,15 +2846,15 @@ const TestResult = struct {
 
 /// 기본 e2e: minify 모드 (기존 테스트 호환)
 fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eWithOptions(allocator, source, .{ .minify = true });
+    return e2eWithOptions(allocator, source, .{ .minify_whitespace = true });
 }
 
 fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eWithOptions(allocator, source, .{ .module_format = .cjs, .minify = true });
+    return e2eWithOptions(allocator, source, .{ .module_format = .cjs, .minify_whitespace = true });
 }
 
 fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eFull(allocator, source, .{}, .{ .minify = true }, ".tsx");
+    return e2eFull(allocator, source, .{}, .{ .minify_whitespace = true }, ".tsx");
 }
 
 const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
@@ -2947,13 +2947,13 @@ test "Codegen CJS: export default" {
 }
 
 test "Codegen: drop debugger" {
-    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }
 
 test "Codegen: drop console" {
-    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }
@@ -3456,13 +3456,13 @@ test "Codegen formatted: spaces indent" {
 // ================================================================
 
 test "import.meta: ESM keeps import.meta as-is" {
-    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .esm });
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify_whitespace = true, .module_format = .esm });
     defer r.deinit();
     try std.testing.expectEqualStrings("const m=import.meta;", r.output);
 }
 
 test "import.meta: CJS node — standalone import.meta" {
-    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .node });
     defer r.deinit();
     // CJS node: import.meta → full polyfill object
     try std.testing.expectEqualStrings(
@@ -3472,14 +3472,14 @@ test "import.meta: CJS node — standalone import.meta" {
 }
 
 test "import.meta: CJS browser — standalone import.meta" {
-    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .browser });
     defer r.deinit();
     // CJS browser: import.meta → {}
     try std.testing.expectEqualStrings("const m={};", r.output);
 }
 
 test "import.meta.url: CJS node" {
-    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .node });
     defer r.deinit();
     try std.testing.expectEqualStrings(
         "const u=require(\"url\").pathToFileURL(__filename).href;",
@@ -3488,44 +3488,44 @@ test "import.meta.url: CJS node" {
 }
 
 test "import.meta.url: CJS browser" {
-    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .browser });
     defer r.deinit();
     try std.testing.expectEqualStrings("const u=\"\";", r.output);
 }
 
 test "import.meta.dirname: CJS node" {
-    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .node });
     defer r.deinit();
     try std.testing.expectEqualStrings("const d=__dirname;", r.output);
 }
 
 test "import.meta.dirname: CJS browser" {
-    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .browser });
     defer r.deinit();
     try std.testing.expectEqualStrings("const d=\"\";", r.output);
 }
 
 test "import.meta.filename: CJS node" {
-    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .node });
     defer r.deinit();
     try std.testing.expectEqualStrings("const f=__filename;", r.output);
 }
 
 test "import.meta.filename: CJS browser" {
-    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .browser });
     defer r.deinit();
     try std.testing.expectEqualStrings("const f=\"\";", r.output);
 }
 
 test "import.meta.url: ESM keeps as-is" {
-    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .esm });
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify_whitespace = true, .module_format = .esm });
     defer r.deinit();
     try std.testing.expectEqualStrings("const u=import.meta.url;", r.output);
 }
 
 test "import.meta: replace_import_meta with node platform" {
     // 번들러가 replace_import_meta를 설정하는 경우 (non-ESM 번들)
-    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .replace_import_meta = true, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify_whitespace = true, .replace_import_meta = true, .platform = .node });
     defer r.deinit();
     try std.testing.expectEqualStrings(
         "const u=require(\"url\").pathToFileURL(__filename).href;",
@@ -3534,14 +3534,14 @@ test "import.meta: replace_import_meta with node platform" {
 }
 
 test "import.meta: replace_import_meta with browser platform" {
-    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .replace_import_meta = true, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify_whitespace = true, .replace_import_meta = true, .platform = .browser });
     defer r.deinit();
     try std.testing.expectEqualStrings("const u=\"\";", r.output);
 }
 
 test "import.meta: unknown property CJS node falls through to polyfill" {
     // import.meta.env 등 알려지지 않은 프로퍼티 → import.meta polyfill + .env
-    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .node });
     defer r.deinit();
     // 알려지지 않은 프로퍼티는 import.meta 폴리필 뒤에 .prop이 붙어야 함
     try std.testing.expectEqualStrings(
@@ -3551,7 +3551,7 @@ test "import.meta: unknown property CJS node falls through to polyfill" {
 }
 
 test "import.meta: unknown property CJS browser" {
-    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify_whitespace = true, .module_format = .cjs, .platform = .browser });
     defer r.deinit();
     try std.testing.expectEqualStrings("const e={}.env;", r.output);
 }
@@ -3561,7 +3561,7 @@ test "import.meta: unknown property CJS browser" {
 // ============================================================
 
 fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.Target) !TestResult {
-    return e2eFull(allocator, source, .{ .target = target }, .{ .minify = true }, ".ts");
+    return e2eFull(allocator, source, .{ .target = target }, .{ .minify_whitespace = true }, ".ts");
 }
 
 // --- ?? (nullish coalescing) ---
@@ -3756,37 +3756,37 @@ test "ES2022: static block with methods preserved" {
 // --- ES2017: async/await → generator ---
 
 test "ES2017: async function declaration" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());}).call(this);}", r.output);
 }
 
 test "ES2017: async arrow block body" {
-    var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);}).call(this);", r.output);
 }
 
 test "ES2017: async arrow expression body" {
-    var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);}).call(this);", r.output);
 }
 
 test "ES2017: no transform on es2017" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .es2017 }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .es2017 }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
 }
 
 test "ES2017: no transform on esnext" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .esnext }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .esnext }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
 }
 
 test "ES2017: non-async function unchanged" {
-    var r = try e2eFull(std.testing.allocator, "export function foo() { return 1; }", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export function foo() { return 1; }", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export function foo(){return 1;}", r.output);
 }
@@ -4731,7 +4731,7 @@ test "ES2022: static block to IIFE (target=es2021)" {
 // --- useDefineForClassFields=false ---
 
 test "useDefineForClassFields=false: instance to constructor" {
-    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
     // x=1 은 class body에 없어야 함
@@ -4739,7 +4739,7 @@ test "useDefineForClassFields=false: instance to constructor" {
 }
 
 test "useDefineForClassFields=false: static field outside class" {
-    var r = try e2eFull(std.testing.allocator, "class Foo{static z=2;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "class Foo{static z=2;}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.z=2") != null);
     // static z=2 는 class body에 없어야 함
@@ -4747,7 +4747,7 @@ test "useDefineForClassFields=false: static field outside class" {
 }
 
 test "useDefineForClassFields=false: multiple static assignments ordered" {
-    var r = try e2eFull(std.testing.allocator, "class Foo{static a=1;static b=2;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "class Foo{static a=1;static b=2;}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.a=1") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.b=2") != null);
@@ -4758,14 +4758,14 @@ test "useDefineForClassFields=false: multiple static assignments ordered" {
 }
 
 test "useDefineForClassFields=false: method preserved" {
-    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;method(){return this.x;}}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;method(){return this.x;}}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "method()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
 }
 
 test "useDefineForClassFields=false: no-init fields removed" {
-    var r = try e2eFull(std.testing.allocator, "class Foo{y;static w;method(){}}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    var r = try e2eFull(std.testing.allocator, "class Foo{y;static w;method(){}}", .{ .use_define_for_class_fields = false }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();
     // y, w 모두 제거되어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "method") != null);
@@ -4819,20 +4819,20 @@ test "ternary with arrow function — d3 cumsum pattern" {
 
 test "Minify: for-loop body var has semicolon" {
     // for (var i=0;...) { var x=1; console.log(x); } → "var x=1;" 세미콜론 필수
-    var r = try e2eWithOptions(std.testing.allocator, "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }", .{ .minify_whitespace = true });
     defer r.deinit();
     // "var x=i;" 다음에 세미콜론이 있어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=i;") != null);
 }
 
 test "Minify: for-loop body let has semicolon" {
-    var r = try e2eWithOptions(std.testing.allocator, "for (let i = 0; i < 3; i++) { let y = i * 2; console.log(y); }", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "for (let i = 0; i < 3; i++) { let y = i * 2; console.log(y); }", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "let y=i*2;") != null);
 }
 
 test "Minify: for-of body var has semicolon" {
-    var r = try e2eWithOptions(std.testing.allocator, "for (const x of [1,2,3]) { var y = x; console.log(y); }", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "for (const x of [1,2,3]) { var y = x; console.log(y); }", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var y=x;") != null);
 }
@@ -4843,13 +4843,13 @@ test "Minify: for-of body var has semicolon" {
 
 test "Minify: template literal preserves identifier references" {
     // template literal 내 ${expr} 식별자가 정상 출력되어야 한다.
-    var r = try e2eWithOptions(std.testing.allocator, "const x = 1; const s = `val=${x}`;", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "const x = 1; const s = `val=${x}`;", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "`val=${x}`") != null);
 }
 
 test "Minify: template literal with multiple expressions" {
-    var r = try e2eWithOptions(std.testing.allocator, "const a = 1; const b = 2; const s = `${a}+${b}`;", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "const a = 1; const b = 2; const s = `${a}+${b}`;", .{ .minify_whitespace = true });
     defer r.deinit();
     // 표현식이 올바르게 emit됨 (backtick + interpolation 구조 유지)
     try std.testing.expect(std.mem.indexOf(u8, r.output, "${a}") != null);
@@ -4857,7 +4857,7 @@ test "Minify: template literal with multiple expressions" {
 }
 
 test "Minify: simple template literal without substitution" {
-    var r = try e2eWithOptions(std.testing.allocator, "const s = `hello world`;", .{ .minify = true });
+    var r = try e2eWithOptions(std.testing.allocator, "const s = `hello world`;", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "`hello world`") != null);
 }

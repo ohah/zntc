@@ -170,7 +170,6 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 pub const EmitOptions = struct {
     format: Format = .esm,
     minify_whitespace: bool = false,
-    minify_identifiers: bool = false,
     /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
     sourcemap: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
@@ -709,7 +708,7 @@ pub fn emitDevModule(
     // @__NO_SIDE_EFFECTS__ cross-module 전파가 불필요하다.
 
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
-        .minify = options.minify_whitespace,
+        .minify_whitespace = options.minify_whitespace,
         .module_format = .esm,
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
@@ -1368,7 +1367,7 @@ pub fn emitModule(
 
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
-        .minify = options.minify_whitespace,
+        .minify_whitespace = options.minify_whitespace,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
         .module_format = if (module.wrap_kind == .cjs) .cjs else .esm,
@@ -1627,7 +1626,7 @@ test "emitter: minified output" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .minify_whitespace = true, .minify_identifiers = true }, null);
+    const output = try emit(std.testing.allocator, &result.graph, .{ .minify_whitespace = true }, null);
     defer std.testing.allocator.free(output);
 
     // minify: 모듈 경계 주석 없음
