@@ -77,10 +77,15 @@ class PluginHost {
     }
   }
 
+  matchesFilter(filter, target) {
+    if (!filter) return true;
+    return target.startsWith(filter) || target.endsWith(filter) || target.includes(filter);
+  }
+
   async runFirstHook(hookName, msg) {
     for (const entry of this.hooks[hookName]) {
       const target = msg.specifier || msg.path || msg.moduleId || "";
-      if (entry.filter && !target.endsWith(entry.filter)) continue;
+      if (!this.matchesFilter(entry.filter, target)) continue;
 
       try {
         const args = this.buildArgs(hookName, msg);
@@ -101,7 +106,7 @@ class PluginHost {
 
     for (const entry of this.hooks[hookName]) {
       const target = msg.moduleId || "";
-      if (entry.filter && !target.endsWith(entry.filter)) continue;
+      if (!this.matchesFilter(entry.filter, target)) continue;
 
       try {
         const args = { ...this.buildArgs(hookName, msg), code: currentCode };

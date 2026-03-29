@@ -31,12 +31,15 @@ pub const FilterMap = struct {
     has_load: bool = false,
     has_transform: bool = false,
 
-    /// target이 필터 목록의 어떤 suffix로든 끝나면 true.
+    /// target이 필터 목록의 어떤 패턴에든 매칭되면 true.
+    /// suffix, prefix, contains 매칭 지원 (예: ".css", "virtual:", "\0").
     /// 필터가 비어있으면 모든 대상에 적용 (esbuild 호환).
     pub fn matchesAny(filters: []const []const u8, target: []const u8) bool {
         if (filters.len == 0) return true;
         for (filters) |f| {
-            if (std.mem.endsWith(u8, target, f)) return true;
+            if (std.mem.endsWith(u8, target, f) or
+                std.mem.startsWith(u8, target, f) or
+                std.mem.indexOf(u8, target, f) != null) return true;
         }
         return false;
     }
