@@ -652,6 +652,21 @@ fn transpileFile(
 }
 
 /// 디렉토리를 재귀 순회하며 .ts/.tsx 파일을 찾아 트랜스파일한다.
+/// Asset 파일(file/copy 로더)을 출력 디렉토리에 쓴다.
+fn writeAssetOutputs(allocator: std.mem.Allocator, asset_outputs: ?[]const emitter.OutputFile, base_dir: []const u8) !void {
+    const assets = asset_outputs orelse return;
+    for (assets) |a| {
+        const asset_path = try std.fs.path.join(allocator, &.{ base_dir, a.path });
+        defer allocator.free(asset_path);
+        if (std.fs.path.dirname(asset_path)) |dir| {
+            std.fs.cwd().makePath(dir) catch {};
+        }
+        const af = try std.fs.cwd().createFile(asset_path, .{});
+        defer af.close();
+        try af.writeAll(a.contents);
+    }
+}
+
 /// input_dir: 입력 디렉토리 경로, output_dir: 출력 디렉토리 경로
 /// .d.ts 파일과 node_modules 디렉토리는 건너뛴다.
 fn walkAndTranspile(
@@ -919,20 +934,7 @@ pub fn main() !void {
                 try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
             }
             try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
-            // Asset 파일 출력 (file/copy 로더)
-            if (result.asset_outputs) |assets| {
-                for (assets) |a| {
-                    const asset_path = try std.fs.path.join(allocator, &.{ out_dir, a.path });
-                    defer allocator.free(asset_path);
-                    if (std.fs.path.dirname(asset_path)) |dir| {
-                        std.fs.cwd().makePath(dir) catch {};
-                    }
-                    const af = try std.fs.cwd().createFile(asset_path, .{});
-                    defer af.close();
-                    try af.writeAll(a.contents);
-                    try stdout.print("  {s} ({d} bytes)\n", .{ asset_path, a.contents.len });
-                }
-            }
+            try writeAssetOutputs(allocator, result.asset_outputs, out_dir);
         } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
@@ -942,20 +944,7 @@ pub fn main() !void {
             defer file.close();
             try file.writeAll(result.output);
             try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
-            // Asset 파일 출력 (-o 사용 시 같은 디렉토리에)
-            if (result.asset_outputs) |assets| {
-                const asset_dir = std.fs.path.dirname(out_path) orelse ".";
-                for (assets) |a| {
-                    const asset_path = try std.fs.path.join(allocator, &.{ asset_dir, a.path });
-                    defer allocator.free(asset_path);
-                    if (std.fs.path.dirname(asset_path)) |dir| {
-                        std.fs.cwd().makePath(dir) catch {};
-                    }
-                    const af = try std.fs.cwd().createFile(asset_path, .{});
-                    defer af.close();
-                    try af.writeAll(a.contents);
-                }
-            }
+            try writeAssetOutputs(allocator, result.asset_outputs, std.fs.path.dirname(out_path) orelse ".");
         } else {
             try stdout.print("{s}", .{result.output});
         }

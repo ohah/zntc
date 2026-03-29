@@ -1714,19 +1714,8 @@ fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: 
         return try buf.toOwnedSlice(allocator);
     }
 
-    // CJS/IIFE 포맷: 기존 __commonJS 래핑 유지
-    const var_name = try types.makeRequireVarName(allocator, module.path);
-    defer allocator.free(var_name);
-
-    var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(allocator, "var ");
-    try buf.appendSlice(allocator, var_name);
-    try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
-    try buf.appendSlice(allocator, std.fs.path.basename(module.path));
-    try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
-    try buf.appendSlice(allocator, module.source);
-    try buf.appendSlice(allocator, ";\n\t}\n});\n");
-    return try buf.toOwnedSlice(allocator);
+    // CJS/IIFE 포맷: __commonJS 래핑 (JSON/Asset 공통)
+    return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
 }
 
 /// Asset 모듈을 출력한다 (JSON 모듈과 동일한 CJS wrap 패턴).
@@ -1734,26 +1723,31 @@ fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: 
 /// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
 fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
+    return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
+}
 
-    const var_name = try types.makeRequireVarName(allocator, module.path);
+/// __commonJS wrapper 출력 (JSON/Asset 모듈 공통).
+/// var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });
+fn emitCjsWrapper(allocator: std.mem.Allocator, path: []const u8, source: []const u8, minify: bool) !?[]const u8 {
+    const var_name = try types.makeRequireVarName(allocator, path);
     defer allocator.free(var_name);
 
     var buf: std.ArrayList(u8) = .empty;
-    if (options.minify_whitespace) {
+    if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
         try buf.appendSlice(allocator, "=__commonJS({\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
+        try buf.appendSlice(allocator, std.fs.path.basename(path));
         try buf.appendSlice(allocator, "\"(exports,module){module.exports=");
-        try buf.appendSlice(allocator, module.source);
+        try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, "}});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
         try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(module.path));
-        try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports = ");
-        try buf.appendSlice(allocator, module.source);
+        try buf.appendSlice(allocator, std.fs.path.basename(path));
+        try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
+        try buf.appendSlice(allocator, source);
         try buf.appendSlice(allocator, ";\n\t}\n});\n");
     }
     return try buf.toOwnedSlice(allocator);
@@ -1897,11 +1891,12 @@ fn emitChunkRuntimeHelpers(
     options: EmitOptions,
 ) !void {
     var needs_cjs_runtime = false;
+    var needs_to_binary = false;
     for (chunk.modules.items) |mod_idx| {
         const mi = @intFromEnum(mod_idx);
-        if (mi < modules.len and modules[mi].wrap_kind == .cjs) {
-            needs_cjs_runtime = true;
-            break;
+        if (mi < modules.len) {
+            if (modules[mi].wrap_kind == .cjs) needs_cjs_runtime = true;
+            if (modules[mi].loader == .binary) needs_to_binary = true;
         }
     }
     if (needs_cjs_runtime) {
@@ -1912,5 +1907,8 @@ fn emitChunkRuntimeHelpers(
     }
     if (options.target.needsAsyncAwait()) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (needs_to_binary) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
     }
 }
