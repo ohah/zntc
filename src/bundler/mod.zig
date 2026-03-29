@@ -32,6 +32,7 @@ pub const chunk = @import("chunk.zig");
 pub const runtime_helpers = @import("runtime_helpers.zig");
 pub const bundler_core = @import("bundler.zig");
 pub const plugin = @import("plugin.zig");
+pub const subprocess_plugin = @import("subprocess_plugin.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -59,6 +60,7 @@ pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
+pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
 
 test {
     _ = types;
@@ -78,6 +80,7 @@ test {
     _ = runtime_helpers;
     _ = bundler_core;
     _ = plugin;
+    _ = subprocess_plugin;
 
     // test files
     _ = @import("bundler_test.zig");
