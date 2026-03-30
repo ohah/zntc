@@ -547,8 +547,9 @@ pub const DevServer = struct {
                             self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
                         }
                     } else {
-                        // 코드 변경 없음 (타입만 변경 등) → 무시
-                        getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
+                        // 코드 diff 없음 (타입만 변경 등) → 안전하게 full-reload
+                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                        getLog().print("  [hmr] no code diff, full-reload\n", .{}) catch {};
                     }
 
                     // free changed_modules
