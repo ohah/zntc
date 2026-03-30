@@ -3,7 +3,9 @@ const http = std.http;
 const mime = @import("mime.zig");
 const lib = @import("../root.zig");
 const Bundler = lib.bundler.Bundler;
+const BundleOptions = lib.bundler.BundleOptions;
 const BundleResult = lib.bundler.BundleResult;
+const plugin_mod = lib.bundler.plugin;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -98,7 +100,7 @@ pub const DevServer = struct {
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
-    /// 마지막 번들의 소스맵 (캐시). /bundle.js.map 요청 시 반환. mutex로 보호.
+    plugins: []const plugin_mod.Plugin = &.{},
     sourcemap_cache: struct {
         mutex: std.Thread.Mutex = .{},
         data: ?[]const u8 = null,
@@ -108,6 +110,7 @@ pub const DevServer = struct {
         root_dir: []const u8 = ".",
         port: u16 = 3000,
         entry_point: ?[]const u8 = null,
+        plugins: []const plugin_mod.Plugin = &.{},
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -147,6 +150,7 @@ pub const DevServer = struct {
             .tcp_server = null,
             .entry_point = options.entry_point,
             .abs_entry = abs_entry,
+            .plugins = options.plugins,
         };
     }
 
@@ -298,7 +302,7 @@ pub const DevServer = struct {
         const abs_entry = self.abs_entry orelse return;
 
         // 초기 번들 → 모듈 경로 수집
-        var watch_paths = collectModulePaths(self.allocator, abs_entry) orelse return;
+        var watch_paths = collectModulePaths(self.allocator, abs_entry, self.plugins) orelse return;
         defer freeWatchPaths(self.allocator, &watch_paths);
 
         // root_dir의 CSS 파일을 watch 대상에 추가
@@ -394,7 +398,7 @@ pub const DevServer = struct {
             if (has_css and !has_non_css) continue;
 
             // 재번들 시도 → 에러면 에러 오버레이, 성공이면 HMR update (폴백: full-reload)
-            const rebuild_result = tryRebuild(self.allocator, abs_entry);
+            const rebuild_result = tryRebuild(self.allocator, abs_entry, self.plugins);
             switch (rebuild_result) {
                 .success => |result| {
                     defer {
@@ -449,12 +453,13 @@ pub const DevServer = struct {
         fatal, // 번들러 자체 실패
     };
 
-    fn tryRebuild(allocator: std.mem.Allocator, abs_entry: []const u8) RebuildResult {
+    fn tryRebuild(allocator: std.mem.Allocator, abs_entry: []const u8, plugins: []const plugin_mod.Plugin) RebuildResult {
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .platform = .browser,
             .dev_mode = true,
             .react_refresh = true,
+            .plugins = plugins,
         });
         defer bundler.deinit();
 
@@ -545,12 +550,13 @@ pub const DevServer = struct {
         return allocator.dupe(u8, msg.items) catch return null;
     }
 
-    fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8) ?[]const []const u8 {
+    fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8, plugins: []const plugin_mod.Plugin) ?[]const []const u8 {
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .platform = .browser,
             .dev_mode = true,
             .react_refresh = true,
+            .plugins = plugins,
         });
         defer bundler.deinit();
 
