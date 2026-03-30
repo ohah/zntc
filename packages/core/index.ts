@@ -208,37 +208,27 @@ class PluginHost {
   }
 
   private async runTransform(msg: IpcMessage): Promise<IpcResponse> {
-    let currentCode = msg.code!;
-    let changed = false;
-
-    for (const plugin of this.plugins) {
-      if (!plugin.transform) continue;
-      try {
-        const result = await plugin.transform(currentCode, msg.moduleId!);
-        if (result == null) continue;
-        const code = typeof result === "string" ? result : result.contents;
-        if (code != null) {
-          currentCode = code;
-          changed = true;
-        }
-      } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
-      }
-    }
-
-    return changed
-      ? { id: msg.id, result: { contents: currentCode }, error: null }
-      : { id: msg.id, result: null, error: null };
+    return this.runChainHook("transform", msg.code!, msg.moduleId!, msg);
   }
 
   private async runRenderChunk(msg: IpcMessage): Promise<IpcResponse> {
-    let currentCode = msg.code!;
+    return this.runChainHook("renderChunk", msg.code!, msg.chunkName!, msg);
+  }
+
+  private async runChainHook(
+    hookName: "transform" | "renderChunk",
+    initialCode: string,
+    key: string,
+    msg: IpcMessage,
+  ): Promise<IpcResponse> {
+    let currentCode = initialCode;
     let changed = false;
 
     for (const plugin of this.plugins) {
-      if (!plugin.renderChunk) continue;
+      const hookFn = plugin[hookName];
+      if (!hookFn) continue;
       try {
-        const result = await plugin.renderChunk(currentCode, msg.chunkName!);
+        const result = await hookFn.call(plugin, currentCode, key);
         if (result == null) continue;
         const code = typeof result === "string" ? result : result.contents;
         if (code != null) {

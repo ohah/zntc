@@ -938,6 +938,22 @@ pub fn main() !void {
             try serve_plugin_list.append(allocator, sp.toPlugin());
         }
 
+        // config 파일의 server 옵션 적용 (CLI가 우선)
+        if (serve_subprocess_list.items.len > 0) {
+            const sp = serve_subprocess_list.items[0];
+            if (sp.config.server) |srv| {
+                if (opts.serve_port == 12300) { // CLI 기본값이면 config 사용
+                    if (srv.port) |p| opts.serve_port = p;
+                }
+                if (std.mem.eql(u8, opts.serve_host, "localhost")) {
+                    if (srv.host) |h| opts.serve_host = h;
+                }
+                if (!opts.serve_open) {
+                    if (srv.open) |o| opts.serve_open = o;
+                }
+            }
+        }
+
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
             .port = opts.serve_port,
@@ -1032,32 +1048,27 @@ pub fn main() !void {
             .plugins = plugin_list.items,
         };
 
-        // config 파일의 옵션 적용 (CLI 옵션이 미지정일 때만)
-        for (subprocess_list.items) |sp| {
-            // loader: CLI --loader가 없으면 config의 loader 사용
+        // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
+        if (subprocess_list.items.len > 0) {
+            const sp = subprocess_list.items[0];
             if (opts.loader_list.items.len == 0) {
                 const config_loaders = sp.getLoaderOverrides(allocator) catch &.{};
                 if (config_loaders.len > 0) bundle_opts.loader_overrides = config_loaders;
             }
-            // external: CLI --external이 없으면 config의 external 사용
             if (opts.external_list.items.len == 0) {
                 const config_ext = sp.getExternals();
                 if (config_ext.len > 0) bundle_opts.external = config_ext;
             }
-            // sourcemap: CLI --sourcemap이 없으면 config 사용
             if (!opts.sourcemap) {
-                if (sp.config.sourcemap) |sm| {
-                    if (sm) opts.sourcemap = true;
-                }
+                if (sp.config.sourcemap) |sm| if (sm) {
+                    opts.sourcemap = true;
+                };
             }
-            // minify: CLI --minify가 없으면 config 사용
             if (!opts.minify_whitespace and !opts.minify_syntax) {
-                if (sp.config.minify) |m| {
-                    if (m) {
-                        bundle_opts.minify_whitespace = true;
-                        bundle_opts.minify_syntax = true;
-                    }
-                }
+                if (sp.config.minify) |m| if (m) {
+                    bundle_opts.minify_whitespace = true;
+                    bundle_opts.minify_syntax = true;
+                };
             }
         }
 
