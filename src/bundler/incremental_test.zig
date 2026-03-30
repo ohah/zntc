@@ -137,6 +137,41 @@ test "IncrementalBundler: detects graph change (new import)" {
     }
 }
 
+test "IncrementalBundler: detects graph change when import removed (module deleted)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "index.ts", "import { y } from './extra';\nconsole.log(y);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드 (2개 모듈: index.ts + extra.ts)
+    _ = try ib.rebuild();
+
+    // import 제거 → extra.ts가 그래프에서 빠짐
+    try writeFile(tmp.dir, "index.ts", "console.log('no import');");
+
+    // 증분 빌드: 모듈 수 변경 → graph_changed
+    const result = try ib.rebuild();
+    switch (result) {
+        .success => |r| {
+            try std.testing.expect(r.graph_changed);
+            if (r.changed_modules.len > 0) {
+                std.testing.allocator.free(r.changed_modules);
+            }
+        },
+        .build_error => return error.TestUnexpectedResult,
+        .fatal => return error.TestUnexpectedResult,
+    }
+}
+
 test "IncrementalBundler: build error returns error message" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
