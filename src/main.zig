@@ -1033,6 +1033,126 @@ pub fn main() !void {
             }
         }
 
+        // --watch: 파일 변경 감지 후 재번들
+        if (opts.watch) {
+            // 초기 module_paths에서 mtime 수집
+            var mtime_map = std.StringHashMap(i128).init(allocator);
+            defer {
+                var it = mtime_map.keyIterator();
+                while (it.next()) |k| allocator.free(k.*);
+                mtime_map.deinit();
+            }
+
+            // 엔트리 파일도 감시 대상에 추가
+            const entry_dupe = try allocator.dupe(u8, abs_entry);
+            const entry_mtime = getFileMtime(abs_entry) catch 0;
+            try mtime_map.put(entry_dupe, entry_mtime);
+
+            if (result.module_paths) |paths| {
+                for (paths) |p| {
+                    const duped = allocator.dupe(u8, p) catch continue;
+                    const mt = getFileMtime(p) catch continue;
+                    mtime_map.put(duped, mt) catch continue;
+                }
+            }
+
+            try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
+
+            while (true) {
+                std.Thread.sleep(500 * std.time.ns_per_ms);
+
+                // mtime 변경 확인
+                var changed = false;
+                var mit = mtime_map.iterator();
+                while (mit.next()) |entry| {
+                    const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
+                    if (current_mtime != entry.value_ptr.*) {
+                        try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
+                        entry.value_ptr.* = current_mtime;
+                        changed = true;
+                    }
+                }
+
+                if (!changed) continue;
+
+                // 재번들 (플러그인은 그대로 유지, 새 Bundler 인스턴스 생성)
+                var rebundler = Bundler.init(allocator, .{
+                    .entry_points = &.{abs_entry},
+                    .format = opts.bundle_format,
+                    .platform = opts.platform,
+                    .external = opts.external_list.items,
+                    .minify_whitespace = opts.minify_whitespace,
+                    .minify_identifiers = opts.minify_identifiers,
+                    .minify_syntax = opts.minify_syntax,
+                    .code_splitting = opts.splitting,
+                    .define = opts.define_list.items,
+                    .experimental_decorators = opts.experimental_decorators orelse false,
+                    .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
+                    .target = opts.target,
+                    .conditions = opts.conditions_list.items,
+                    .timing = opts.timing,
+                    .preserve_symlinks = opts.preserve_symlinks,
+                    .alias = opts.alias_list.items,
+                    .public_path = opts.public_path orelse "",
+                    .banner_js = opts.banner_js,
+                    .footer_js = opts.footer_js,
+                    .global_name = opts.global_name,
+                    .out_extension_js = opts.out_extension_js,
+                    .source_root = opts.source_root,
+                    .sources_content = opts.sources_content,
+                    .charset_utf8 = opts.charset_utf8,
+                    .entry_names = opts.entry_names,
+                    .chunk_names = opts.chunk_names,
+                    .asset_names = opts.asset_names,
+                    .loader_overrides = opts.loader_list.items,
+                    .metafile = opts.metafile_path != null or opts.analyze,
+                    .analyze = opts.analyze,
+                    .legal_comments = opts.legal_comments,
+                    .inject = opts.inject_list.items,
+                    .keep_names = opts.keep_names,
+                    .plugins = plugin_list.items,
+                });
+                defer rebundler.deinit();
+
+                const rebuild_result = rebundler.bundle() catch |err| {
+                    try stderr.print("[watch] Bundle failed: {}\n", .{err});
+                    continue;
+                };
+                defer rebuild_result.deinit(allocator);
+
+                // 출력 파일 다시 쓰기
+                if (rebuild_result.outputs) |outputs| {
+                    const out_dir = opts.output_dir orelse ".";
+                    for (outputs) |o| {
+                        const full_path = std.fs.path.join(allocator, &.{ out_dir, o.path }) catch continue;
+                        defer allocator.free(full_path);
+                        if (std.fs.path.dirname(full_path)) |dir| std.fs.cwd().makePath(dir) catch {};
+                        const file = std.fs.cwd().createFile(full_path, .{}) catch continue;
+                        defer file.close();
+                        file.writeAll(o.contents) catch continue;
+                    }
+                    try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});
+                } else if (opts.output_file) |out_path| {
+                    if (std.fs.path.dirname(out_path)) |dir| std.fs.cwd().makePath(dir) catch {};
+                    const file = std.fs.cwd().createFile(out_path, .{}) catch continue;
+                    defer file.close();
+                    file.writeAll(rebuild_result.output) catch continue;
+                    try stderr.print("[watch] Rebuilt → {s} ({d} bytes)\n", .{ out_path, rebuild_result.output.len });
+                }
+
+                // watch 대상 갱신 (새 모듈이 추가되었을 수 있음)
+                if (rebuild_result.module_paths) |paths| {
+                    for (paths) |p| {
+                        if (!mtime_map.contains(p)) {
+                            const duped = allocator.dupe(u8, p) catch continue;
+                            const mt = getFileMtime(p) catch continue;
+                            mtime_map.put(duped, mt) catch continue;
+                        }
+                    }
+                }
+            }
+        }
+
         return;
     }
 
