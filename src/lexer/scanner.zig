@@ -100,8 +100,6 @@ pub const Scanner = struct {
     /// Flow comment 모드: `/*::` 또는 `/*:` 주석 안의 코드를 토큰으로 공급 중.
     /// `*/`를 만나면 false로 복귀하고 다음 토큰을 스캔한다.
     in_flow_comment: bool = false,
-    /// Flow comment 타입: true = `/*::` (블록), false = `/*:` (인라인)
-    flow_comment_is_block: bool = false,
 
     /// 스캔 중 발견된 주석 리스트 (소스 순서).
     /// codegen에서 주석 보존에 사용한다.
@@ -376,21 +374,17 @@ pub const Scanner = struct {
 
         // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
         while (true) {
-            // Flow comment 모드: `*/`를 만나면 모드 종료 후 다음 토큰으로
-            if (self.in_flow_comment) {
-                try self.skipWhitespace();
-                if (self.current + 1 < self.source.len and
-                    self.source[self.current] == '*' and self.source[self.current + 1] == '/')
-                {
-                    self.current += 2; // skip */
-                    self.in_flow_comment = false;
-                    // `*/` 이후 공백 스킵하고 다음 토큰으로 continue
-                    continue;
-                }
-            }
-
             // 공백 스킵 (줄바꿈 추적 포함)
             try self.skipWhitespace();
+
+            // Flow comment 모드: `*/`를 만나면 모드 종료 후 다음 토큰으로
+            if (self.in_flow_comment and self.current + 1 < self.source.len and
+                self.source[self.current] == '*' and self.source[self.current + 1] == '/')
+            {
+                self.current += 2; // skip */
+                self.in_flow_comment = false;
+                continue;
+            }
 
             // 토큰 시작 위치 기록
             self.start = self.current;
@@ -765,13 +759,11 @@ pub const Scanner = struct {
     }
 
     fn scanStar(self: *Scanner) Kind {
-        // Flow comment 모드: `*/`는 주석 종료 → `*`를 일반 토큰으로 반환하지 않고
-        // current를 되돌려서 next() 루프에서 `*/` 종료를 처리하게 한다.
+        // Flow comment 모드: `*/`는 주석 종료 마커.
+        // `*`를 되돌리고 .undetermined를 반환하여 next() 루프에서 `*/`를 처리하게 한다.
         if (self.in_flow_comment and self.peek() == '/') {
-            self.current -= 1; // `*`를 다시 되돌림 (advance에서 이미 소비됨)
-            self.in_flow_comment = false;
-            self.current += 2; // skip */
-            return .undetermined; // 다음 토큰으로
+            self.current -= 1; // advance에서 소비된 `*`를 되돌림
+            return .undetermined;
         }
         if (self.peek() == '*') {
             self.current += 1;
@@ -941,15 +933,10 @@ pub const Scanner = struct {
                 // /*:: — 블록 flow comment. 내용을 코드로 파싱.
                 self.current += 2; // skip '::'
                 self.in_flow_comment = true;
-                self.flow_comment_is_block = true;
-                self.start = self.current; // 다음 토큰의 시작을 주석 내용으로
                 return false; // 주석 처리 종료 — 이후 next()가 내부 코드를 스캔
             }
             // /*: — 인라인 flow comment (: Type */). colon부터 코드로 파싱.
-            // current는 이미 ':' 위치. 이 위치에서 다음 토큰 스캔 시작.
             self.in_flow_comment = true;
-            self.flow_comment_is_block = false;
-            self.start = self.current; // ':' 위치에서 시작
             return false;
         }
 
