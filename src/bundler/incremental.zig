@@ -12,14 +12,6 @@ const Bundler = @import("bundler.zig").Bundler;
 const BundleResult = @import("bundler.zig").BundleResult;
 const BundleOptions = @import("bundler.zig").BundleOptions;
 
-/// 절대 경로가 모듈 ID(상대 경로)와 일치하는지 suffix 비교.
-/// 경로 구분자를 체크하여 false positive 방지.
-pub fn pathMatchesModuleId(abs_path: []const u8, module_id: []const u8) bool {
-    return std.mem.eql(u8, abs_path, module_id) or
-        (std.mem.endsWith(u8, abs_path, module_id) and
-            abs_path.len > module_id.len and abs_path[abs_path.len - module_id.len - 1] == '/');
-}
-
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다.
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
     for (s) |c| {
@@ -101,14 +93,14 @@ pub const IncrementalBundler = struct {
 
     /// 증분 번들. changed_paths가 주어지면 해당 모듈만 재빌드 시도.
     /// 그래프 변경(새 import 추가 등)이 감지되면 자동으로 전체 재빌드 폴백.
-    pub fn rebuild(self: *IncrementalBundler, changed_paths: []const []const u8) !RebuildResult {
+    pub fn rebuild(self: *IncrementalBundler) !RebuildResult {
         if (self.needs_full_rebuild) {
-            return self.doBuild(changed_paths, true);
+            return self.doBuild(true);
         }
-        return self.doBuild(changed_paths, false);
+        return self.doBuild(false);
     }
 
-    fn doBuild(self: *IncrementalBundler, changed_paths: []const []const u8, is_first: bool) !RebuildResult {
+    fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
         var bundler = Bundler.init(self.allocator, self.options);
         defer bundler.deinit();
 
@@ -139,21 +131,10 @@ pub const IncrementalBundler = struct {
 
                 for (new_codes) |nc| {
                     const cached = self.module_cache.get(nc.id);
+                    // 캐시와 코드가 다르면 변경된 것 — 조건 없이 전송
                     const code_changed = if (cached) |c| !std.mem.eql(u8, c.code, nc.code) else true;
-
                     if (code_changed) {
-                        var is_changed_file = graph_changed or cached == null;
-                        if (!is_changed_file) {
-                            for (changed_paths) |cp| {
-                                if (pathMatchesModuleId(cp, nc.id)) {
-                                    is_changed_file = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (is_changed_file) {
-                            actually_changed.appendAssumeCapacity(nc);
-                        }
+                        actually_changed.appendAssumeCapacity(nc);
                     }
                 }
             }

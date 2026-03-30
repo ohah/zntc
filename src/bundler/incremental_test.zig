@@ -23,7 +23,7 @@ test "IncrementalBundler: first build is full rebuild" {
     defer ib.deinit();
 
     // 첫 빌드: 전체 재빌드
-    const result = try ib.rebuild(&.{});
+    const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
             try std.testing.expect(r.graph_changed); // 첫 빌드는 항상 graph_changed
@@ -49,10 +49,10 @@ test "IncrementalBundler: second build without changes has no changed modules" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild(&.{});
+    _ = try ib.rebuild();
 
     // 두 번째 빌드: 변경 없음 → changed_modules 비어있어야 함
-    const result = try ib.rebuild(&.{});
+    const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
             try std.testing.expectEqual(false, r.graph_changed);
@@ -81,13 +81,13 @@ test "IncrementalBundler: detects code change in modified file" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild(&.{});
+    _ = try ib.rebuild();
 
     // util.ts 수정
     try writeFile(tmp.dir, "util.ts", "export const x = 42;");
 
     // 증분 빌드: util.ts가 changed_paths로 전달
-    const result = try ib.rebuild(&.{util_path});
+    const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
             // 코드가 변경되었으므로 changed_modules에 포함
@@ -117,14 +117,14 @@ test "IncrementalBundler: detects graph change (new import)" {
     defer ib.deinit();
 
     // 첫 빌드 (1개 모듈)
-    _ = try ib.rebuild(&.{});
+    _ = try ib.rebuild();
 
     // 새 모듈 추가 + import 추가
     try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
     try writeFile(tmp.dir, "index.ts", "import { y } from './extra';\nconsole.log(y);");
 
     // 증분 빌드: 모듈 수 변경 → graph_changed
-    const result = try ib.rebuild(&.{entry});
+    const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
             try std.testing.expect(r.graph_changed);
@@ -152,13 +152,13 @@ test "IncrementalBundler: build error returns error message" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild(&.{});
+    _ = try ib.rebuild();
 
     // 구문 에러 삽입
     try writeFile(tmp.dir, "index.ts", "console.log(;);");
 
     // 재빌드 → 에러 또는 성공 (파서가 에러 복구할 수 있음)
-    const result = try ib.rebuild(&.{entry});
+    const result = try ib.rebuild();
     // 파서 에러 복구 수준에 따라 build_error 또는 success
     switch (result) {
         .success => |r| {
