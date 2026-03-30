@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, runZts, ZTS_BIN } from "./helpers";
+import { createFixture, ZTS_BIN } from "./helpers";
 import { join } from "node:path";
 
 // dev server 테스트는 서버를 백그라운드로 시작하고 HTTP 요청으로 검증
@@ -199,16 +199,14 @@ describe("Dev Server", () => {
     expect(receivedAuth).toBe("Bearer token123");
   });
 
-  test(
-    "--serve with --plugin loads CSS via plugin",
-    async () => {
-      const CORE_PATH = join(import.meta.dir, "../../../packages/core/index.ts");
+  test("--serve with --plugin loads CSS via plugin", async () => {
+    const CORE_PATH = join(import.meta.dir, "../../../packages/core/index.ts");
 
-      const fixture = await createFixture({
-        "index.ts": `import css from './style.css';\nconsole.log(css);`,
-        "style.css": "body { color: green; }",
-        "package.json": '{"type": "module"}',
-        "plugin.js": `
+    const fixture = await createFixture({
+      "index.ts": `import css from './style.css';\nconsole.log(css);`,
+      "style.css": "body { color: green; }",
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
           import { defineConfig } from '${CORE_PATH}';
           defineConfig({ plugins: [{
             name: 'css-loader',
@@ -220,42 +218,40 @@ describe("Dev Server", () => {
             }
           }] });
         `,
-      });
-      cleanup = fixture.cleanup;
+    });
+    cleanup = fixture.cleanup;
 
-      // CI에서 subprocess plugin spawn이 느리므로 대기 시간 확보
-      const server = await startDevServer(
-        [
-          "--serve",
-          "--bundle",
-          join(fixture.dir, "index.ts"),
-          "--port",
-          "12393",
-          "--plugin",
-          join(fixture.dir, "plugin.js"),
-        ],
-        { timeout: process.env.CI ? 6000 : 3000 },
-      );
-      killServer = server.kill;
+    // CI에서 subprocess plugin spawn이 느리므로 대기 시간 확보
+    const server = await startDevServer(
+      [
+        "--serve",
+        "--bundle",
+        join(fixture.dir, "index.ts"),
+        "--port",
+        "12393",
+        "--plugin",
+        join(fixture.dir, "plugin.js"),
+      ],
+      { timeout: process.env.CI ? 6000 : 3000 },
+    );
+    killServer = server.kill;
 
-      // retry: CI에서 최대 10회, 로컬 5회
-      const maxAttempts = process.env.CI ? 10 : 5;
-      let text = "";
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        try {
-          const res = await fetch(`http://localhost:12393/bundle.js`);
-          if (res.status === 200) {
-            text = await res.text();
-            break;
-          }
-        } catch {
-          await new Promise((r) => setTimeout(r, 1000));
+    // retry: CI에서 최대 10회, 로컬 5회
+    const maxAttempts = process.env.CI ? 10 : 5;
+    let text = "";
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const res = await fetch(`http://localhost:12393/bundle.js`);
+        if (res.status === 200) {
+          text = await res.text();
+          break;
         }
+      } catch {
+        await new Promise((r) => setTimeout(r, 1000));
       }
+    }
 
-      expect(text).toContain("style.css");
-      expect(text).toContain("__zts_register");
-    },
-    30000,
-  );
+    expect(text).toContain("style.css");
+    expect(text).toContain("__zts_register");
+  }, 30000);
 });
