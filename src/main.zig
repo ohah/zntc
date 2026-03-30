@@ -863,10 +863,29 @@ pub fn main() !void {
             };
         } else null;
 
+        // Subprocess 플러그인 spawn (--serve + --plugin)
+        var serve_subprocess_list: std.ArrayList(*SubprocessPlugin) = .empty;
+        defer {
+            for (serve_subprocess_list.items) |sp| sp.shutdown();
+            serve_subprocess_list.deinit(allocator);
+        }
+        var serve_plugin_list: std.ArrayList(plugin_mod.Plugin) = .empty;
+        defer serve_plugin_list.deinit(allocator);
+
+        for (opts.plugin_paths.items) |config_path| {
+            const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
+                try stderr.print("zts: plugin '{s}' spawn failed: {}\n", .{ config_path, err });
+                return;
+            };
+            try serve_subprocess_list.append(allocator, sp);
+            try serve_plugin_list.append(allocator, sp.toPlugin());
+        }
+
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
             .port = opts.serve_port,
             .entry_point = entry,
+            .plugins = serve_plugin_list.items,
         }) catch |err| {
             try stderr.print("Error: failed to start dev server: {}\n", .{err});
             return;
