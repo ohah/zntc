@@ -2567,6 +2567,40 @@ test "Flow: consecutive flow comments" {
 }
 
 // ================================================================
+// Flow TypeCast, Exact Object, %checks
+// ================================================================
+
+test "Flow: TypeCast (expr: Type) stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x = (null: any);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=null;", r.output);
+}
+
+test "Flow: TypeCast object (expr: Type) stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x = (obj: Foo);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=obj;", r.output);
+}
+
+test "Flow: exact object type {| |} stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: {| name: string |} = {};");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: empty exact object type {||} stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: {||} = {};");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: %checks predicate stripped" {
+    var r = try e2eFlow(std.testing.allocator, "function f(x: mixed): boolean %checks { return true; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x){return true;}", r.output);
+}
+
+// ================================================================
 // Flow Metro Smoke Test — Metro RN 실제 패턴 통합 테스트
 // ================================================================
 

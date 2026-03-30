@@ -1351,6 +1351,20 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             const paren_saved = self.enterAllowInContext(true);
             const expr = try parseExpressionOrRest(self);
             self.restoreContext(paren_saved);
+
+            // Flow TypeCast: (expr: Type) — 괄호 안에서 expression 뒤에 `: Type`이 오면
+            if (self.is_flow and self.current() == .colon) {
+                try self.advance(); // skip ':'
+                const cast_type = try self.parseType();
+                _ = cast_type;
+                try self.expect(.r_paren);
+                return try self.ast.addNode(.{
+                    .tag = .flow_type_cast_expression,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+                });
+            }
+
             try self.expect(.r_paren);
             return try self.ast.addNode(.{
                 .tag = .parenthesized_expression,
