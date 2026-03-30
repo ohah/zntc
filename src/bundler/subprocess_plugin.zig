@@ -84,7 +84,10 @@ pub const SubprocessPlugin = struct {
             .filter_arena = std.heap.ArenaAllocator.init(allocator),
         };
 
-        try self.handshake();
+        self.handshake() catch {
+            self.shutdown();
+            return error.PluginFailed;
+        };
 
         return self;
     }
@@ -408,4 +411,40 @@ test "escapeJsonString: no escaping needed" {
     const result = try escapeJsonString(std.testing.allocator, "simple text");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("simple text", result);
+}
+
+test "FilterMap: prefix matching (virtual:)" {
+    const filters: []const []const u8 = &.{"virtual:"};
+    try std.testing.expect(FilterMap.matchesAny(filters, "virtual:config"));
+    try std.testing.expect(FilterMap.matchesAny(filters, "virtual:env"));
+    try std.testing.expect(!FilterMap.matchesAny(filters, "not-virtual"));
+}
+
+test "FilterMap: no false positives from substring" {
+    const filters: []const []const u8 = &.{".css"};
+    try std.testing.expect(FilterMap.matchesAny(filters, "style.css"));
+    // .css가 중간에 있는 경우는 매칭하지 않음 (suffix/prefix만)
+    try std.testing.expect(!FilterMap.matchesAny(filters, "file.css-backup.ts"));
+}
+
+test "SubprocessPlugin: spawn with invalid path fails" {
+    if (SubprocessPlugin.spawn(std.testing.allocator, "/nonexistent/plugin.js")) |sp| {
+        sp.shutdown();
+        try std.testing.expect(false); // should not succeed
+    } else |_| {
+        // 에러가 발생해야 정상
+    }
+}
+
+test "escapeJsonString: control characters" {
+    const result = try escapeJsonString(std.testing.allocator, "a\x00b\x01c");
+    defer std.testing.allocator.free(result);
+    // null과 SOH가 \u0000, \u0001로 이스케이프됨
+    try std.testing.expect(std.mem.indexOf(u8, result, "\\u") != null);
+}
+
+test "escapeJsonString: windows path backslash" {
+    const result = try escapeJsonString(std.testing.allocator, "C:\\Users\\test\\file.ts");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("C:\\\\Users\\\\test\\\\file.ts", result);
 }

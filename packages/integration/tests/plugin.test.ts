@@ -170,6 +170,75 @@ describe("Plugin: subprocess", () => {
     }
   });
 
+  test("resolveId hook redirects import path", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import { greet } from './original';\nconsole.log(greet());`,
+      "original.ts": `export function greet() { return "original"; }`,
+      "replacement.ts": `export function greet() { return "replaced"; }`,
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        import { resolve, dirname } from 'node:path';
+        definePlugin("redirect", (build) => {
+          build.onResolve({ filter: 'original' }, async (args) => {
+            const dir = dirname(args.importer);
+            return { path: resolve(dir, 'replacement.ts') };
+          });
+        });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("replaced");
+      expect(result.stdout).not.toContain("original");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("virtual module via resolveId + load", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import { API_URL } from 'virtual:config';\nconsole.log(API_URL);`,
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        definePlugin("virtual", (build) => {
+          build.onResolve({ filter: 'virtual:' }, async (args) => {
+            return { path: '\\0' + args.specifier };
+          });
+          build.onLoad({ filter: '\\0virtual:' }, async (args) => {
+            if (args.path === '\\0virtual:config') {
+              return { contents: 'export const API_URL = "https://api.example.com";' };
+            }
+            return null;
+          });
+        });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("https://api.example.com");
+    } finally {
+      await cleanup();
+    }
+  });
+
   test("no plugins preserves existing behavior", async () => {
     const { dir, cleanup } = await createFixture({
       "entry.ts": `const x: number = 42;\nconsole.log(x);`,
