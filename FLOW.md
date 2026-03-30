@@ -68,8 +68,25 @@ external/llvh/ 70개 cpp  — LLVM 포크 (SmallVector 등)
 합계:         128개 C++ 파일
 ```
 
-## 미결정 사항
-- [ ] Flow 스펙 전체가 필요한가, Metro 수준(TIER 1+2)이면 충분한가?
-- [ ] A/B/C 중 어떤 방식으로 갈 것인가?
-- [ ] A 방식 선택 시, 추후 스펙 확장(component/hook/match)은 어떻게 대응?
-- [ ] B 방식 선택 시, WASM 빌드에 C++ 체인이 추가되는 것을 수용할 것인가?
+## ✅ 결정 완료 (2026-03-30 ~ 2026-03-31)
+
+**방식 A (직접 구현) 채택.** flow.zig 독립 파싱 체인, flow_ 접두사 AST 태그.
+
+### 구현 완료 항목
+- [x] `is_flow` 인프라: @flow pragma 감지, .js.flow 확장자, --flow CLI
+- [x] 기본 타입: string, number, boolean, bool, mixed, empty, ?Type, union, intersection, generics, T[]
+- [x] type alias, opaque type (supertype constraint 포함)
+- [x] interface (extends 지원)
+- [x] declare (class/function/var/module/module.exports/export)
+- [x] import type, import typeof, export type
+- [x] as TypeCast, (expr: Type) TypeCast
+- [x] {| |} exact object type
+- [x] %checks predicate
+- [x] /*:: */ 블록 flow comment, /*: */ 인라인 flow comment
+- [x] Metro 410/410 @flow 파일 파싱+스트리핑 성공
+- [x] --resolve-extensions, --main-fields (RN 플랫폼 확장자 해석)
+
+### 미구현 (Metro 미사용, 필요 시 추가)
+- [ ] component 선언 (Flow 2023)
+- [ ] hook 선언 (Flow 2023)
+- [ ] match 표현식 (Flow 2024)
