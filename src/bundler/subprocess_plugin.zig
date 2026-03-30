@@ -55,10 +55,10 @@ pub const SubprocessPlugin = struct {
     next_id: u32 = 1,
     ipc_mutex: std.Thread.Mutex = .{},
     filters: FilterMap = .{},
-    /// 플러그인 이름 (핸드셰이크에서 수신, 에러 메시지용)
     plugin_name: []const u8 = "subprocess",
-    /// 마지막 플러그인 에러 메시지 (stderr 출력용)
     last_error: ?[]const u8 = null,
+    /// config 파일에서 전달된 빌드 옵션
+    config: InitResponse.ConfigOptions = .{},
     allocator: std.mem.Allocator,
     filter_arena: std.heap.ArenaAllocator,
 
@@ -133,6 +133,46 @@ pub const SubprocessPlugin = struct {
         if (init_resp.name) |name| {
             self.plugin_name = name;
         }
+        self.config = init_resp.config;
+    }
+
+    /// config에서 loader 옵션을 loader_overrides 배열로 변환
+    pub fn getLoaderOverrides(self: *SubprocessPlugin, allocator: std.mem.Allocator) ![]const @import("types.zig").LoaderOverride {
+        const LoaderOverride = @import("types.zig").LoaderOverride;
+        const Loader = @import("types.zig").Loader;
+        const loader_val = self.config.loader orelse return &.{};
+        if (loader_val != .object) return &.{};
+
+        var result: std.ArrayList(LoaderOverride) = .empty;
+        var it = loader_val.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                const loader = Loader.fromString(entry.value_ptr.string) orelse continue;
+                try result.append(allocator, .{ .ext = entry.key_ptr.*, .loader = loader });
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// config에서 define 옵션을 define 배열로 변환
+    pub fn getDefines(self: *SubprocessPlugin, allocator: std.mem.Allocator) ![]const @import("../transformer/transformer.zig").DefineEntry {
+        const DefineEntry = @import("../transformer/transformer.zig").DefineEntry;
+        const define_val = self.config.define orelse return &.{};
+        if (define_val != .object) return &.{};
+
+        var result: std.ArrayList(DefineEntry) = .empty;
+        var it = define_val.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                try result.append(allocator, .{ .key = entry.key_ptr.*, .value = entry.value_ptr.string });
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// config에서 external 배열 반환
+    pub fn getExternals(self: *SubprocessPlugin) []const []const u8 {
+        return self.config.external orelse &.{};
     }
 
     /// 플러그인 에러를 stderr에 출력
@@ -434,6 +474,7 @@ const InitResponse = struct {
     name: ?[]const u8 = null,
     filters: Filters = .{},
     hooks: Hooks = .{},
+    config: ConfigOptions = .{},
     @"error": ?[]const u8 = null,
 
     const Filters = struct {
@@ -442,13 +483,30 @@ const InitResponse = struct {
         transform: ?[]const []const u8 = null,
     };
 
-    /// 각 훅에 콜백이 등록되어 있는지 (필터가 비어도 훅이 없으면 IPC 건너뜀)
     const Hooks = struct {
         resolveId: ?bool = null,
         load: ?bool = null,
         transform: ?bool = null,
         renderChunk: ?bool = null,
         generateBundle: ?bool = null,
+    };
+
+    /// config 파일에서 전달된 빌드 옵션 (Vite/esbuild 호환)
+    const ConfigOptions = struct {
+        loader: ?std.json.Value = null,
+        define: ?std.json.Value = null,
+        alias: ?std.json.Value = null,
+        external: ?[]const []const u8 = null,
+        sourcemap: ?bool = null,
+        minify: ?bool = null,
+        server: ?ServerOptions = null,
+
+        const ServerOptions = struct {
+            port: ?u16 = null,
+            host: ?[]const u8 = null,
+            open: ?bool = null,
+            proxy: ?std.json.Value = null,
+        };
     };
 };
 
