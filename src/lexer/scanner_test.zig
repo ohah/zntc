@@ -1238,6 +1238,33 @@ test "Scanner: no @flow pragma in normal comment" {
     try std.testing.expect(!scanner.has_flow_pragma);
 }
 
+test "Scanner: @flow at EOF without newline" {
+    const source = "// @flow";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next(); // eof
+    try std.testing.expect(scanner.has_flow_pragma);
+}
+
+test "Scanner: @flow in middle of comment is not pragma" {
+    const source = "// This enables @flow support\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(!scanner.has_flow_pragma);
+}
+
+test "Scanner: @noflow does not trigger @flow pragma" {
+    const source = "// @noflow\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(!scanner.has_flow_pragma);
+}
+
 // ============================================================
 // Annex B: HTML-like comment tests
 // ============================================================

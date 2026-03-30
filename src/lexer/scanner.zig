@@ -973,19 +973,30 @@ pub const Scanner = struct {
     }
 
     /// 주석에서 @flow pragma를 감지한다.
-    /// `// @flow`, `/* @flow */`, `// @flow strict` 등을 인식.
-    /// @flow 뒤에 공백/줄끝/주석끝이 아닌 문자가 바로 오면 무시한다
-    /// (예: @flowtype 같은 다른 어노테이션과 구분).
+    /// Flow 컴파일러 호환: 주석의 첫 비공백 토큰이 `@flow`인 경우만 인식.
+    /// `// @flow`, `/* @flow */`, `/** @flow strict */` 등.
+    /// 주석 중간에 등장하는 `@flow`는 무시한다 (예: "enables @flow support").
     fn checkFlowPragma(self: *Scanner, comment_text: []const u8) void {
         if (self.has_flow_pragma) return; // 이미 감지됨
-        const idx = std.mem.indexOf(u8, comment_text, "@flow") orelse return;
-        const after_pos = idx + "@flow".len;
+
+        // 선행 공백과 `*`(doc comment의 ` * @flow`)을 스킵
+        var pos: usize = 0;
+        while (pos < comment_text.len) : (pos += 1) {
+            const c = comment_text[pos];
+            if (c != ' ' and c != '\t' and c != '\n' and c != '\r' and c != '*') break;
+        }
+
+        // 주석의 첫 비공백 토큰이 @flow인지 확인
+        const remaining = comment_text[pos..];
+        if (!std.mem.startsWith(u8, remaining, "@flow")) return;
+
         // @flow 뒤에 아무것도 없거나, 공백/*/줄바꿈이면 유효한 pragma
-        if (after_pos >= comment_text.len) {
+        const after_pos = "@flow".len;
+        if (after_pos >= remaining.len) {
             self.has_flow_pragma = true;
             return;
         }
-        const next_char = comment_text[after_pos];
+        const next_char = remaining[after_pos];
         if (next_char == ' ' or next_char == '\t' or next_char == '\n' or
             next_char == '\r' or next_char == '*')
         {

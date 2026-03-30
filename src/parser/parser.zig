@@ -280,18 +280,26 @@ pub const Parser = struct {
         }
     }
 
-    /// 파일 경로에서 .js.flow 이중 확장자를 감지하여 Flow 모드를 설정한다.
+    /// 파일 경로에서 .js.flow / .jsx.flow 이중 확장자를 감지하여 Flow 모드를 설정한다.
     /// std.fs.path.extension()은 마지막 확장자(.flow)만 반환하므로
     /// 전체 경로를 확인해야 한다.
+    /// is_ts와 is_flow는 상호 배타적이므로, TS 파일에서는 설정하지 않는다.
     pub fn configureFlowFromPath(self: *Parser, file_path: []const u8) void {
+        if (self.is_ts) return; // TS와 Flow는 상호 배타
         if (std.mem.endsWith(u8, file_path, ".js.flow")) {
             self.is_flow = true;
+        } else if (std.mem.endsWith(u8, file_path, ".jsx.flow")) {
+            self.is_flow = true;
+            self.is_jsx = true;
         }
     }
 
     /// 스캐너가 @flow pragma를 감지했으면 is_flow를 활성화한다.
-    /// 파싱 시작 전에 호출해야 한다 (첫 토큰 스캔 시 주석이 이미 처리되므로).
+    /// 내부 전용 — statement.parse()의 advance() 직후에서만 호출.
+    /// advance()가 첫 주석을 스캔하므로 이 시점에서 has_flow_pragma가 설정되어 있다.
+    /// is_ts와 is_flow는 상호 배타적이므로, TS 모드에서는 무시한다.
     pub fn applyFlowPragma(self: *Parser) void {
+        if (self.is_ts) return; // TS와 Flow는 상호 배타
         if (self.scanner.has_flow_pragma) {
             self.is_flow = true;
         }

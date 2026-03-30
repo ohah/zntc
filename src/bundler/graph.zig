@@ -541,11 +541,14 @@ pub const ModuleGraph = struct {
         const ext = std.fs.path.extension(module.path);
         parser.configureForBundler(ext);
 
-        // Flow 모드: --flow CLI 또는 .js.flow 확장자 (pragma는 parse() 내부에서 감지)
-        if (self.flow) {
-            parser.is_flow = true;
-        } else {
-            parser.configureFlowFromPath(module.path);
+        // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
+        // is_ts와 is_flow는 상호 배타 — TS 파일에서는 Flow 무시
+        if (!parser.is_ts) {
+            if (self.flow) {
+                parser.is_flow = true;
+            } else {
+                parser.configureFlowFromPath(module.path);
+            }
         }
 
         // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
