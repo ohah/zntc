@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const FileWatcher = @import("file_watcher.zig").FileWatcher;
 
 test "FileWatcher: init and deinit" {
@@ -165,11 +164,7 @@ test "FileWatcher: detects multiple file modifications" {
     try std.testing.expect(found_b);
 }
 
-// inotify DELETE_SELF 재등록 메모리 문제로 Linux에서 불안정 — task #13에서 수정 예정
 test "FileWatcher: detects file deletion" {
-    // Linux inotify에서 DELETE_SELF 후 재등록 시 메모리 이슈 있음
-    if (builtin.os.tag == .linux) return error.SkipZigTest;
-
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
