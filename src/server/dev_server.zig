@@ -449,7 +449,7 @@ pub const DevServer = struct {
 
         // 초기 번들
         const initial = inc_bundler.rebuild(&.{}) catch return;
-        var watch_paths: []const []const u8 = switch (initial) {
+        const initial_paths: []const []const u8 = switch (initial) {
             .success => |r| r.paths,
             .build_error => |err_msg| {
                 self.allocator.free(err_msg);
@@ -462,7 +462,7 @@ pub const DevServer = struct {
         var watcher = FileWatcher.init(self.allocator) catch return;
         defer watcher.deinit();
 
-        for (watch_paths) |p| {
+        for (initial_paths) |p| {
             watcher.addPath(p) catch {};
         }
 
@@ -547,9 +547,8 @@ pub const DevServer = struct {
                             self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
                         }
                     } else {
-                        // 코드 diff 없음 (타입만 변경 등) → 안전하게 full-reload
-                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
-                        getLog().print("  [hmr] no code diff, full-reload\n", .{}) catch {};
+                        // 코드 diff 없음 (타입만 변경 등) → Vite와 동일하게 무시
+                        getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
                     }
 
                     // free changed_modules
@@ -557,31 +556,17 @@ pub const DevServer = struct {
                         self.allocator.free(result.changed_modules);
                     }
 
-                    // watch 대상 diff 갱신: 새 경로만 추가, 제거된 경로만 해제
-                    const new_paths = result.paths;
-                    // 이전 경로 중 새 목록에 없는 것 제거
-                    for (watch_paths) |old_p| {
-                        var found = false;
-                        for (new_paths) |new_p| {
-                            if (std.mem.eql(u8, old_p, new_p)) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) watcher.removePath(old_p);
+                    // watch 대상 갱신
+                    // result.paths는 inc_bundler.last_paths를 가리키므로
+                    // 다음 rebuild에서 해제될 수 있다. watcher에 경로를 등록하면
+                    // watcher가 내부적으로 복사하므로 안전.
+                    watcher.clearPaths();
+                    for (result.paths) |p| {
+                        watcher.addPath(p) catch {};
                     }
-                    // 새 경로 중 이전에 없던 것 추가
-                    for (new_paths) |new_p| {
-                        var found = false;
-                        for (watch_paths) |old_p| {
-                            if (std.mem.eql(u8, old_p, new_p)) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) watcher.addPath(new_p) catch {};
+                    for (css_paths.items) |p| {
+                        watcher.addPath(p) catch {};
                     }
-                    watch_paths = new_paths;
                     getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
                 },
                 .build_error => |err_msg| {
