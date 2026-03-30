@@ -97,6 +97,12 @@ pub const Scanner = struct {
     /// 파서가 is_flow 모드를 결정하는 데 사용한다.
     has_flow_pragma: bool = false,
 
+    /// Flow comment 모드: `/*::` 또는 `/*:` 주석 안의 코드를 토큰으로 공급 중.
+    /// `*/`를 만나면 false로 복귀하고 다음 토큰을 스캔한다.
+    in_flow_comment: bool = false,
+    /// Flow comment 타입: true = `/*::` (블록), false = `/*:` (인라인)
+    flow_comment_is_block: bool = false,
+
     /// 스캔 중 발견된 주석 리스트 (소스 순서).
     /// codegen에서 주석 보존에 사용한다.
     comments: std.ArrayList(Comment),
@@ -370,6 +376,19 @@ pub const Scanner = struct {
 
         // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
         while (true) {
+            // Flow comment 모드: `*/`를 만나면 모드 종료 후 다음 토큰으로
+            if (self.in_flow_comment) {
+                try self.skipWhitespace();
+                if (self.current + 1 < self.source.len and
+                    self.source[self.current] == '*' and self.source[self.current + 1] == '/')
+                {
+                    self.current += 2; // skip */
+                    self.in_flow_comment = false;
+                    // `*/` 이후 공백 스킵하고 다음 토큰으로 continue
+                    continue;
+                }
+            }
+
             // 공백 스킵 (줄바꿈 추적 포함)
             try self.skipWhitespace();
 
@@ -746,6 +765,14 @@ pub const Scanner = struct {
     }
 
     fn scanStar(self: *Scanner) Kind {
+        // Flow comment 모드: `*/`는 주석 종료 → `*`를 일반 토큰으로 반환하지 않고
+        // current를 되돌려서 next() 루프에서 `*/` 종료를 처리하게 한다.
+        if (self.in_flow_comment and self.peek() == '/') {
+            self.current -= 1; // `*`를 다시 되돌림 (advance에서 이미 소비됨)
+            self.in_flow_comment = false;
+            self.current += 2; // skip */
+            return .undetermined; // 다음 토큰으로
+        }
         if (self.peek() == '*') {
             self.current += 1;
             if (self.peek() == '=') {
@@ -900,11 +927,31 @@ pub const Scanner = struct {
     }
 
     /// multi-line comment를 스캔한다 (/* ... */).
+    /// Flow comment (`/*::` / `/*:`) 감지: has_flow_pragma가 true이면
+    /// 주석 내용을 코드로 처리하기 위해 flow comment 모드로 전환한다.
     /// @__PURE__ / @__NO_SIDE_EFFECTS__ 주석을 감지한다 (D025).
     /// @license / @preserve 주석도 감지한다 (D022, 추후 코드젠에서 활용).
     /// 미닫힌 주석이면 true(에러)를 반환.
     fn scanMultiLineComment(self: *Scanner) !bool {
         self.current += 1; // skip '*'
+
+        // Flow comment 감지: /*:: (블록) 또는 /*: (인라인 타입)
+        if (self.has_flow_pragma and self.current < self.source.len and self.source[self.current] == ':') {
+            if (self.current + 1 < self.source.len and self.source[self.current + 1] == ':') {
+                // /*:: — 블록 flow comment. 내용을 코드로 파싱.
+                self.current += 2; // skip '::'
+                self.in_flow_comment = true;
+                self.flow_comment_is_block = true;
+                self.start = self.current; // 다음 토큰의 시작을 주석 내용으로
+                return false; // 주석 처리 종료 — 이후 next()가 내부 코드를 스캔
+            }
+            // /*: — 인라인 flow comment (: Type */). colon부터 코드로 파싱.
+            // current는 이미 ':' 위치. 이 위치에서 다음 토큰 스캔 시작.
+            self.in_flow_comment = true;
+            self.flow_comment_is_block = false;
+            self.start = self.current; // ':' 위치에서 시작
+            return false;
+        }
 
         const comment_start = self.current;
 
