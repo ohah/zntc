@@ -204,17 +204,16 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 };
             }
         } else if (std.mem.eql(u8, arg, "--host")) {
-            if (i + 1 < args.len) {
+            // --host 0.0.0.0 또는 --host (값 없으면 0.0.0.0)
+            if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
                 i += 1;
                 opts.serve_host = args[i];
             } else {
-                // --host만 쓰면 0.0.0.0 (네트워크 노출)
                 opts.serve_host = "0.0.0.0";
             }
         } else if (std.mem.eql(u8, arg, "--open")) {
             opts.serve_open = true;
-        } else if (std.mem.startsWith(u8, arg, "--proxy")) {
-            // --proxy /api=http://localhost:8080
+        } else if (std.mem.eql(u8, arg, "--proxy")) {
             if (i + 1 < args.len) {
                 i += 1;
                 const kv = args[i];
@@ -239,6 +238,9 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     try stderr.print("zts: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
                     return null;
                 }
+            } else {
+                try stderr.print("zts: --proxy requires a PATH=TARGET argument\n", .{});
+                return null;
             }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             opts.splitting = true;

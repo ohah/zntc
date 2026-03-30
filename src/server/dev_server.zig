@@ -223,42 +223,77 @@ pub const DevServer = struct {
         self.acceptLoop();
     }
 
-    /// HTTP 프록시: 클라이언트 요청을 백엔드 서버로 TCP 전달
+    /// HTTP 프록시: 클라이언트 요청을 백엔드 서버로 전달 (헤더+바디 포함)
     fn handleProxy(self: *DevServer, request: *http.Server.Request, rule: ProxyRule) !void {
-        _ = self;
-        // 백엔드 서버에 TCP 연결
+        const allocator = self.allocator;
+
         const address = std.net.Address.parseIp4(rule.target_host, rule.target_port) catch
             return error.InvalidAddress;
         const backend = std.net.tcpConnectToAddress(address) catch
             return error.ConnectionRefused;
         defer backend.close();
 
-        // HTTP 요청 재구성: 원본 메서드 + 경로 + 헤더 + 바디를 그대로 전달
-        const method_str = @tagName(request.head.method);
-        var req_buf: [8192]u8 = undefined;
-        // 요청 라인: "GET /api/data HTTP/1.1\r\n"
-        const req_line = std.fmt.bufPrint(&req_buf, "{s} {s} HTTP/1.1\r\nHost: {s}:{d}\r\nConnection: close\r\n\r\n", .{
-            method_str, request.head.target, rule.target_host, rule.target_port,
-        }) catch return error.BufferOverflow;
-        try backend.writeAll(req_line);
+        // 요청 구성 (힙 할당 — 스택 오버플로 방지)
+        var req: std.ArrayList(u8) = .empty;
+        defer req.deinit(allocator);
 
-        // 백엔드 응답을 읽어서 클라이언트에 전달
-        var response_buf: [64 * 1024]u8 = undefined;
-        var total: usize = 0;
-        while (total < response_buf.len) {
-            const n = backend.read(response_buf[total..]) catch break;
-            if (n == 0) break;
-            total += n;
+        const method_str = @tagName(request.head.method);
+        // 요청 라인
+        try req.appendSlice(allocator, method_str);
+        try req.append(allocator, ' ');
+        try req.appendSlice(allocator, request.head.target);
+        try req.appendSlice(allocator, " HTTP/1.1\r\n");
+
+        // Host 헤더
+        try req.appendSlice(allocator, "Host: ");
+        try req.appendSlice(allocator, rule.target_host);
+        try req.append(allocator, ':');
+        var port_buf: [5]u8 = undefined;
+        const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{rule.target_port}) catch unreachable;
+        try req.appendSlice(allocator, port_str);
+        try req.appendSlice(allocator, "\r\nConnection: close\r\n");
+
+        // 원본 요청 헤더 전달 (Host, Connection 제외)
+        for (request.head.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "host")) continue;
+            if (std.ascii.eqlIgnoreCase(h.name, "connection")) continue;
+            try req.appendSlice(allocator, h.name);
+            try req.appendSlice(allocator, ": ");
+            try req.appendSlice(allocator, h.value);
+            try req.appendSlice(allocator, "\r\n");
+        }
+        try req.appendSlice(allocator, "\r\n");
+
+        // 요청 바디 전달 (POST/PUT/PATCH)
+        if (request.head.content_length) |cl| {
+            if (cl > 0) {
+                const body = try allocator.alloc(u8, cl);
+                defer allocator.free(body);
+                const n = try request.reader().readAll(body);
+                try req.appendSlice(allocator, body[0..n]);
+            }
         }
 
-        if (total == 0) return error.EmptyResponse;
+        try backend.writeAll(req.items);
 
-        // HTTP 응답에서 바디 시작 위치 찾기
-        const header_end = std.mem.indexOf(u8, response_buf[0..total], "\r\n\r\n");
+        // 백엔드 응답 읽기 (힙 할당, 동적 크기)
+        var response: std.ArrayList(u8) = .empty;
+        defer response.deinit(allocator);
+
+        var read_buf: [4096]u8 = undefined;
+        while (true) {
+            const n = backend.read(&read_buf) catch break;
+            if (n == 0) break;
+            try response.appendSlice(allocator, read_buf[0..n]);
+        }
+
+        if (response.items.len == 0) return error.EmptyResponse;
+
+        // HTTP 응답 파싱: 헤더에서 Content-Type 추출 + 바디 분리
+        const header_end = std.mem.indexOf(u8, response.items, "\r\n\r\n");
         if (header_end) |pos| {
-            const body = response_buf[pos + 4 .. total];
-            // Content-Type 추출 시도
-            const headers_section = response_buf[0..pos];
+            const body = response.items[pos + 4 ..];
+            const headers_section = response.items[0..pos];
             var content_type: []const u8 = "application/json";
             var line_iter = std.mem.splitSequence(u8, headers_section, "\r\n");
             while (line_iter.next()) |line| {
@@ -271,14 +306,9 @@ pub const DevServer = struct {
             const proxy_headers = cors_headers ++ [_]http.Header{
                 .{ .name = "Content-Type", .value = content_type },
             };
-            try request.respond(body, .{
-                .extra_headers = &proxy_headers,
-            });
+            try request.respond(body, .{ .extra_headers = &proxy_headers });
         } else {
-            // 헤더/바디 구분 없으면 raw 데이터 그대로 반환
-            try request.respond(response_buf[0..total], .{
-                .extra_headers = &cors_headers,
-            });
+            try request.respond(response.items, .{ .extra_headers = &cors_headers });
         }
     }
 
