@@ -60,12 +60,23 @@ pub const SubprocessPlugin = struct {
     allocator: std.mem.Allocator,
     filter_arena: std.heap.ArenaAllocator,
 
-    /// Node.js 프로세스를 spawn하고 핸드셰이크를 수행.
+    /// Node.js/Bun 프로세스를 spawn하고 핸드셰이크를 수행.
+    /// .ts/.mts/.cts 파일은 bun 또는 tsx로 실행.
     pub fn spawn(allocator: std.mem.Allocator, config_path: []const u8) !*SubprocessPlugin {
-        var child = std.process.Child.init(
-            &.{ "node", config_path },
-            allocator,
-        );
+        const runtime = detectRuntime();
+        var argv_buf: [3][]const u8 = undefined;
+        const argv: []const []const u8 = switch (runtime) {
+            .bun => blk: {
+                argv_buf = .{ "bun", "run", config_path };
+                break :blk argv_buf[0..3];
+            },
+            .node => blk: {
+                argv_buf = .{ "node", config_path, "" };
+                break :blk argv_buf[0..2];
+            },
+        };
+
+        var child = std.process.Child.init(argv, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Inherit;
@@ -324,6 +335,22 @@ pub const SubprocessPlugin = struct {
         return @ptrCast(@alignCast(ctx.?));
     }
 };
+
+const JsRuntime = enum { bun, node };
+
+fn detectRuntime() JsRuntime {
+    if (canExec("bun")) return .bun;
+    return .node;
+}
+
+fn canExec(name: []const u8) bool {
+    var child = std.process.Child.init(&.{ name, "--version" }, std.heap.page_allocator);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    child.spawn() catch return false;
+    const term = child.wait() catch return false;
+    return term == .Exited and term.Exited == 0;
+}
 
 // ===== JSON 타입 =====
 
