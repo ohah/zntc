@@ -2518,3 +2518,53 @@ test "Flow: parenthesized as cast stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=y;", r.output);
 }
+
+// ================================================================
+// Flow Metro Smoke Test — Metro RN 실제 패턴 통합 테스트
+// ================================================================
+
+test "Flow: Metro smoke — full module with all Flow features" {
+    // Metro 실제 코드에서 추출한 대표 패턴 조합
+    const source =
+        \\import type {ConfigT, InputConfigT} from './types';
+        \\import typeof * as TransformerType from '../index';
+        \\import getDefaultConfig from './defaults';
+        \\
+        \\type ID = string;
+        \\opaque type RevisionId: string = string;
+        \\
+        \\interface SnippetError extends Error {
+        \\  code: string;
+        \\  filename: string;
+        \\}
+        \\
+        \\declare function add(a: number, b: number): number;
+        \\declare var __DEV__: boolean;
+        \\declare class EventEmitter {
+        \\  on(event: string): void;
+        \\}
+        \\
+        \\function greet(name: string, age: ?number): string {
+        \\  const greeting: string = "Hello";
+        \\  const result = ({}: any) as ConfigT;
+        \\  const items: Array<number> = [1, 2, 3];
+        \\  const map: Map<string, number> = new Map();
+        \\  return greeting;
+        \\}
+        \\
+        \\export type {ConfigT};
+        \\export default greet;
+    ;
+    var r = try e2eFlowModule(std.testing.allocator, source);
+    defer r.deinit();
+    // 모든 타입 어노테이션, type/opaque/interface/declare가 제거되고
+    // import type/typeof도 제거됨. 런타임 코드만 남아야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import type") == null); // type imports 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import typeof") == null); // typeof imports 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "getDefaultConfig") != null); // 값 import 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function greet") != null); // 함수 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "string") == null); // 타입 모두 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "interface") == null); // interface 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "declare") == null); // declare 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export default greet") != null); // default export 유지
+}
