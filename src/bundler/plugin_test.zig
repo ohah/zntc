@@ -247,3 +247,105 @@ test "Plugin integration: no plugins preserves existing behavior" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42;") != null);
     try std.testing.expect(!result.hasErrors());
 }
+
+// --- 다중 플러그인 체이닝 통합 테스트 ---
+
+fn chainTransformA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* CHAIN_A */\n", code }) catch return error.OutOfMemory;
+}
+
+fn chainTransformB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "/* CHAIN_B */\n", code }) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: multiple plugins chain transforms" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "chain-a", .transform = chainTransformA },
+        .{ .name = "chain-b", .transform = chainTransformB },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 두 플러그인 모두 적용되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CHAIN_A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CHAIN_B") != null);
+    try std.testing.expect(!result.hasErrors());
+}
+
+// --- resolveId가 null 반환 시 기본 resolver fall through ---
+
+fn nullResolveHook(_: ?*anyopaque, _: []const u8, _: ?[]const u8, _: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
+    return null;
+}
+
+test "Plugin integration: resolveId null falls through to default resolver" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import { y } from './dep';\nconsole.log(y);");
+    try writeFile(tmp.dir, "dep.ts", "export const y = 99;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "null-resolve", .resolveId = nullResolveHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 기본 resolver가 dep.ts를 찾아서 번들해야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const y = 99") != null);
+    try std.testing.expect(!result.hasErrors());
+}
+
+// --- load 훅이 null 반환 시 파일 시스템 폴백 ---
+
+fn nullLoadHook(_: ?*anyopaque, _: []const u8, _: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    return null;
+}
+
+test "Plugin integration: load null falls through to filesystem" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const z = 77; console.log(z);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "null-load", .load = nullLoadHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const z = 77") != null);
+    try std.testing.expect(!result.hasErrors());
+}
