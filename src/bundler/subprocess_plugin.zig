@@ -292,6 +292,15 @@ pub const SubprocessPlugin = struct {
 
         if (parsed.result) |result| {
             if (result.contents) |contents| {
+                // loader에 따라 JS 모듈로 래핑 (esbuild 호환)
+                const loader_str = result.loader orelse "js";
+                if (std.mem.eql(u8, loader_str, "text") or std.mem.eql(u8, loader_str, "css")) {
+                    const escaped = escapeJsonString(allocator, contents) catch return error.OutOfMemory;
+                    defer allocator.free(escaped);
+                    return std.fmt.allocPrint(allocator, "export default \"{s}\";", .{escaped}) catch return error.OutOfMemory;
+                } else if (std.mem.eql(u8, loader_str, "json")) {
+                    return std.fmt.allocPrint(allocator, "export default {s};", .{contents}) catch return error.OutOfMemory;
+                }
                 return allocator.dupe(u8, contents) catch return error.OutOfMemory;
             }
         }
@@ -451,6 +460,7 @@ const HookResponse = struct {
     const HookResult = struct {
         path: ?[]const u8 = null,
         contents: ?[]const u8 = null,
+        loader: ?[]const u8 = null,
     };
 };
 

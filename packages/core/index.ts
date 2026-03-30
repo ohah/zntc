@@ -15,7 +15,7 @@
  *         load(id) {
  *           if (!id.endsWith('.css')) return null;
  *           const css = fs.readFileSync(id, 'utf8');
- *           return `export default ${JSON.stringify(css)};`;
+ *           return { contents: css, loader: 'text' };
  *         }
  *       }
  *     ]
@@ -30,8 +30,21 @@ export interface ResolveResult {
   path: string;
 }
 
+export type Loader =
+  | "js"
+  | "ts"
+  | "json"
+  | "text"
+  | "css"
+  | "file"
+  | "dataurl"
+  | "binary"
+  | "copy"
+  | "empty";
+
 export interface LoadResult {
   contents: string;
+  loader?: Loader;
 }
 
 export interface OutputFile {
