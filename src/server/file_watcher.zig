@@ -255,7 +255,8 @@ const InotifyBackend = struct {
         if (self.path_map.contains(path)) return;
 
         const mask = std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF;
-        const wd = try posix.inotify_add_watch(self.inotify_fd, path, mask);
+        // 존재하지 않는 파일은 스킵 (kqueue와 동일 동작)
+        const wd = posix.inotify_add_watch(self.inotify_fd, path, mask) catch return;
 
         const path_owned = try allocator.dupe(u8, path);
         try self.wd_map.put(wd, path_owned);
