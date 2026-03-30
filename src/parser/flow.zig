@@ -112,7 +112,7 @@ fn parsePrefixType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .question) {
         const start = self.currentSpan().start;
         try self.advance(); // skip '?'
-        const inner = try parsePrefixType(self); // 재귀: ??Type도 가능
+        const inner = try parsePrefixType(self);
         return try self.ast.addNode(.{
             .tag = .flow_nullable_type,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -473,15 +473,19 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    // 첫 요소 파싱 후 → 화살표가 오면 함수 타입, 아니면 괄호 타입
     // speculative: 함수 파라미터인지 단순 타입인지 판별
+    // AST 노드/extra도 롤백해야 하므로 길이를 저장 (ts.zig tryParseFunctionTypeWithBacktracking 패턴)
     const saved = self.saveState();
     const err_count = self.errors.items.len;
+    const saved_nodes_len = self.ast.nodes.items.len;
+    const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
 
     // 함수 타입 시도: (a: T, b: U) => R
     const params = parseFunctionTypeParamList(self) catch {
         self.restoreState(saved);
         self.errors.shrinkRetainingCapacity(err_count);
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
         // 단순 괄호 타입으로 폴백
         const inner = try parseType(self);
         try self.expect(.r_paren);
@@ -512,9 +516,11 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // 화살표가 없으면 — 파싱 상태 복원 후 괄호 타입으로 재시도
+    // 화살표가 없으면 — 파싱 상태 + AST 복원 후 괄호 타입으로 재시도
     self.restoreState(saved);
     self.errors.shrinkRetainingCapacity(err_count);
+    self.ast.nodes.items.len = saved_nodes_len;
+    self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
     try self.advance(); // skip '(' again
     const inner = try parseType(self);
     try self.expect(.r_paren);
@@ -554,37 +560,22 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
 // ================================================================
 
 /// 객체 타입: { key: Type, ... }
+/// 타입 스트리핑 전용 — 내부 멤버를 개별 AST 노드로 만들지 않고,
+/// balanced brace counting으로 전체를 소비한 뒤 단일 노드를 생성한다.
+/// 메서드 시그니처, 인덱서, spread, variance 등 복잡한 멤버도 안전하게 소비.
 fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '{'
 
-    // 빈 객체: {}
-    if (self.current() == .r_curly) {
-        try self.advance();
-        return try self.ast.addNode(.{
-            .tag = .flow_literal_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .none = 0 },
-        });
-    }
-
-    // 멤버들 파싱 (간단한 버전: key: Type 패턴만)
-    while (self.current() != .r_curly and self.current() != .eof) {
-        const loop_guard_pos = self.scanner.token.span.start;
-        // 프로퍼티 이름 스킵
-        try self.advance();
-        // optional: ?
-        _ = try self.eat(.question);
-        // : Type
-        if (self.current() == .colon) {
-            try self.advance();
-            _ = try parseType(self);
+    // balanced brace counting: 중첩된 { } 를 정확히 매칭
+    var depth: u32 = 1;
+    while (depth > 0 and self.current() != .eof) {
+        switch (self.current()) {
+            .l_curly => depth += 1,
+            .r_curly => depth -= 1,
+            else => {},
         }
-        // 구분자: , 또는 ;
-        if (!try self.eat(.comma) and !try self.eat(.semicolon)) {
-            if (self.current() != .r_curly) break;
-        }
-        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+        if (depth > 0) try self.advance();
     }
 
     try self.expect(.r_curly);

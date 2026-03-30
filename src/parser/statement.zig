@@ -197,29 +197,22 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     (next.kind == .identifier or next.kind == .l_curly or next.kind == .string_literal))
                 {
                     if (self.is_flow) {
-                        break :blk @import("flow.zig").parseFlowTypeAliasDeclaration(self);
+                        break :blk self.parseFlowTypeAliasDeclaration();
                     }
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
-            } else if (std.mem.eql(u8, text, "namespace") or std.mem.eql(u8, text, "module")) {
-                // namespace/module Foo { } → TS module declaration
-                // namespace/module "name" { } → TS ambient module declaration
-                // module.exports, module["exports"], module() → expression statement (CJS)
-                // 줄바꿈 없이 identifier/{/string이 올 때만 TS declaration으로 판별
+            } else if (!self.is_flow and (std.mem.eql(u8, text, "namespace") or std.mem.eql(u8, text, "module"))) {
+                // namespace/module — TS 전용 (Flow에서는 일반 식별자)
                 const next_ns = try self.peekNext();
                 if (!next_ns.has_newline_before and
                     (next_ns.kind == .identifier or next_ns.kind == .l_curly or next_ns.kind == .string_literal))
                 {
                     break :blk self.parseTsModuleDeclaration();
                 }
-            } else if (std.mem.eql(u8, text, "declare")) {
-                // declare\nfoo → 'declare' expression statement + foo (ASI)
-                // declare; / declare() / declare[x] → 'declare' 식별자 (ambient 아님)
-                // declare var foo → TS ambient declaration
+            } else if (!self.is_flow and std.mem.eql(u8, text, "declare")) {
+                // declare — TS 전용 (Flow의 declare는 후속 PR에서 별도 구현)
                 const next_decl = try self.peekNext();
-                // declare 뒤에 줄바꿈 없고, expression operator가 아니면 ambient declaration
                 if (!next_decl.has_newline_before and switch (next_decl.kind) {
-                    // 이 토큰들이 오면 declare는 식별자 (expression의 일부)
                     .semicolon,
                     .l_paren,
                     .l_bracket,
@@ -240,15 +233,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     .eof,
                     .r_curly,
                     => false,
-                    // 그 외 (var, const, function, class, identifier 등) → ambient
                     else => true,
                 }) {
                     break :blk self.parseTsDeclareStatement();
                 }
-            } else if (std.mem.eql(u8, text, "abstract")) {
-                // abstract class Foo {} → TS abstract class declaration
-                // abstract\nclass Foo {} → 'abstract' expression statement + class declaration (ASI)
-                // esbuild: !p.lexer.HasNewlineBefore && p.lexer.Token == TClass
+            } else if (!self.is_flow and std.mem.eql(u8, text, "abstract")) {
+                // abstract — TS 전용 (Flow에서는 일반 식별자)
                 const next = try self.peekNext();
                 if (next.kind == .kw_class and !next.has_newline_before) {
                     break :blk self.parseTsAbstractClass();

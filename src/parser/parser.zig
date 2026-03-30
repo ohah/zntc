@@ -1880,6 +1880,10 @@ pub const Parser = struct {
         return ts.parseTsTypeParameterDeclaration(self);
     }
 
+    pub fn parseFlowTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
+        return flow.parseFlowTypeAliasDeclaration(self);
+    }
+
     pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
         if (self.is_flow) return flow.tryParseTypeAnnotation(self);
         return ts.tryParseTypeAnnotation(self);
