@@ -267,7 +267,7 @@ pub fn isSubpathMap(obj: std.json.ObjectMap) bool {
     return false;
 }
 
-fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+pub fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     if (obj.get(key)) |v| {
         if (v == .string) return v.string;
     }
