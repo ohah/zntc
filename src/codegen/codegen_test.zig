@@ -2452,3 +2452,9 @@ test "Flow: export type re-export stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
+
+test "Flow: import typeof named stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "import typeof { Foo, Bar } from 'bar';\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
