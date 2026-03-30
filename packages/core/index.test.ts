@@ -1,8 +1,9 @@
 /**
  * @zts/core 단위 테스트
- * bun test packages/core/index.test.js
+ * bun test packages/core/index.test.ts
  */
 import { describe, test, expect } from "bun:test";
+import type { Plugin } from "./index";
 
 describe("PluginHost: resolveId", () => {
   test("returns first non-null result", async () => {
