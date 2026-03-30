@@ -335,8 +335,15 @@ const InotifyBackend = struct {
             if (self.path_map.get(path)) |old_wd| {
                 _ = self.wd_map.remove(old_wd);
             }
-            // 새 inode로 재등록 (파일이 아직 없으면 실패 → 다음 rebuild에서 처리)
-            const new_wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch continue;
+            // 새 inode로 재등록 (파일이 아직 없으면 실패)
+            const new_wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch {
+                // 재등록 실패 → path_map에서도 제거하여 메모리 일관성 유지.
+                // path 메모리는 wd_map에서 이미 제거되었으므로 여기서 해제.
+                if (self.path_map.fetchRemove(path)) |kv| {
+                    allocator.free(kv.key);
+                }
+                continue;
+            };
             self.wd_map.put(new_wd, path) catch {};
             self.path_map.put(path, new_wd) catch {};
         }
