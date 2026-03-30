@@ -546,6 +546,7 @@ pub const ModuleGraph = struct {
         if (!parser.is_ts) {
             if (self.flow) {
                 parser.is_flow = true;
+                scanner.has_flow_pragma = true; // flow comment 활성화
             } else {
                 parser.configureFlowFromPath(module.path);
             }

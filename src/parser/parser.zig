@@ -289,9 +289,11 @@ pub const Parser = struct {
         if (self.is_ts) return; // TS와 Flow는 상호 배타
         if (std.mem.endsWith(u8, file_path, ".js.flow")) {
             self.is_flow = true;
+            self.scanner.has_flow_pragma = true; // flow comment 활성화
         } else if (std.mem.endsWith(u8, file_path, ".jsx.flow")) {
             self.is_flow = true;
             self.is_jsx = true;
+            self.scanner.has_flow_pragma = true;
         }
     }
 
