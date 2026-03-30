@@ -30,6 +30,8 @@ pub const FilterMap = struct {
     has_resolve: bool = false,
     has_load: bool = false,
     has_transform: bool = false,
+    has_render_chunk: bool = false,
+    has_generate_bundle: bool = false,
 
     /// target이 필터의 suffix 또는 prefix에 매칭되면 true.
     /// suffix: ".css", ".svg" / prefix: "virtual:", "\0"
@@ -125,6 +127,8 @@ pub const SubprocessPlugin = struct {
             .has_resolve = init_resp.hooks.resolveId orelse (resolve_f.len > 0),
             .has_load = init_resp.hooks.load orelse (load_f.len > 0),
             .has_transform = init_resp.hooks.transform orelse (transform_f.len > 0),
+            .has_render_chunk = init_resp.hooks.renderChunk orelse false,
+            .has_generate_bundle = init_resp.hooks.generateBundle orelse false,
         };
         if (init_resp.name) |name| {
             self.plugin_name = name;
@@ -149,8 +153,8 @@ pub const SubprocessPlugin = struct {
             .resolveId = subprocessResolveId,
             .load = subprocessLoad,
             .transform = subprocessTransform,
-            .renderChunk = null,
-            .generateBundle = null,
+            .renderChunk = subprocessRenderChunk,
+            .generateBundle = subprocessGenerateBundle,
         };
     }
 
@@ -331,6 +335,64 @@ pub const SubprocessPlugin = struct {
         return null;
     }
 
+    fn subprocessRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 {
+        const self = getSelf(ctx);
+        if (!self.filters.has_render_chunk) return null;
+
+        const escaped_code = escapeJsonString(allocator, code) catch return error.OutOfMemory;
+        defer allocator.free(escaped_code);
+        const escaped_name = escapeJsonString(allocator, chunk_name) catch return error.OutOfMemory;
+        defer allocator.free(escaped_name);
+
+        const fields = std.fmt.allocPrint(allocator, "\"code\":\"{s}\",\"chunkName\":\"{s}\"", .{
+            escaped_code, escaped_name,
+        }) catch return error.OutOfMemory;
+        defer allocator.free(fields);
+
+        const response = self.sendAndReceive(allocator, "renderChunk", fields) catch {
+            self.reportError("renderChunk", chunk_name, null);
+            return error.PluginFailed;
+        };
+        defer allocator.free(response);
+        const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
+            .ignore_unknown_fields = true,
+        }) catch return error.PluginFailed;
+
+        if (parsed.@"error") |err_msg| {
+            self.reportError("renderChunk", chunk_name, err_msg);
+            return error.PluginFailed;
+        }
+
+        if (parsed.result) |result| {
+            if (result.contents) |contents| {
+                return allocator.dupe(u8, contents) catch return error.OutOfMemory;
+            }
+        }
+        return null;
+    }
+
+    fn subprocessGenerateBundle(ctx: ?*anyopaque, output_files: []const OutputFile) void {
+        const self = getSelf(ctx);
+        if (!self.filters.has_generate_bundle) return;
+
+        // 출력 파일 목록을 JSON 배열로 전송
+        var fields_buf: std.ArrayList(u8) = .empty;
+        defer fields_buf.deinit(self.allocator);
+
+        fields_buf.appendSlice(self.allocator, "\"outputs\":[") catch return;
+        for (output_files, 0..) |f, i| {
+            if (i > 0) fields_buf.append(self.allocator, ',') catch return;
+            fields_buf.appendSlice(self.allocator, "{\"path\":\"") catch return;
+            const escaped = escapeJsonString(self.allocator, f.path) catch return;
+            defer self.allocator.free(escaped);
+            fields_buf.appendSlice(self.allocator, escaped) catch return;
+            fields_buf.appendSlice(self.allocator, "\"}") catch return;
+        }
+        fields_buf.append(self.allocator, ']') catch return;
+
+        _ = self.sendAndReceive(self.allocator, "generateBundle", fields_buf.items) catch return;
+    }
+
     inline fn getSelf(ctx: ?*anyopaque) *SubprocessPlugin {
         return @ptrCast(@alignCast(ctx.?));
     }
@@ -376,6 +438,8 @@ const InitResponse = struct {
         resolveId: ?bool = null,
         load: ?bool = null,
         transform: ?bool = null,
+        renderChunk: ?bool = null,
+        generateBundle: ?bool = null,
     };
 };
 

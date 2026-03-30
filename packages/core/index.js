@@ -45,6 +45,8 @@ class PluginHost {
       resolveId: this.plugins.some((p) => p.resolveId),
       load: this.plugins.some((p) => p.load),
       transform: this.plugins.some((p) => p.transform),
+      renderChunk: this.plugins.some((p) => p.renderChunk),
+      generateBundle: this.plugins.some((p) => p.generateBundle),
     };
   }
 
@@ -68,6 +70,10 @@ class PluginHost {
         return this.runLoad(msg);
       case "transform":
         return this.runTransform(msg);
+      case "renderChunk":
+        return this.runRenderChunk(msg);
+      case "generateBundle":
+        return this.runGenerateBundle(msg);
       case "shutdown":
         process.exit(0);
       default:
@@ -131,6 +137,45 @@ class PluginHost {
 
     if (changed) {
       return { id: msg.id, result: { contents: currentCode }, error: null };
+    }
+    return { id: msg.id, result: null, error: null };
+  }
+
+  // renderChunk: chain 모드 — 청크 코드 후처리
+  async runRenderChunk(msg) {
+    let currentCode = msg.code;
+    let changed = false;
+
+    for (const plugin of this.plugins) {
+      if (!plugin.renderChunk) continue;
+      try {
+        const result = await plugin.renderChunk(currentCode, msg.chunkName);
+        if (result == null) continue;
+        const code = typeof result === "string" ? result : result.contents;
+        if (code != null) {
+          currentCode = code;
+          changed = true;
+        }
+      } catch (err) {
+        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+      }
+    }
+
+    if (changed) {
+      return { id: msg.id, result: { contents: currentCode }, error: null };
+    }
+    return { id: msg.id, result: null, error: null };
+  }
+
+  // generateBundle: 모든 플러그인에 알림
+  async runGenerateBundle(msg) {
+    for (const plugin of this.plugins) {
+      if (!plugin.generateBundle) continue;
+      try {
+        await plugin.generateBundle(msg.outputs || []);
+      } catch (err) {
+        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+      }
     }
     return { id: msg.id, result: null, error: null };
   }
