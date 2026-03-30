@@ -31,15 +31,13 @@ pub const FilterMap = struct {
     has_load: bool = false,
     has_transform: bool = false,
 
-    /// target이 필터 목록의 어떤 패턴에든 매칭되면 true.
-    /// suffix, prefix, contains 매칭 지원 (예: ".css", "virtual:", "\0").
+    /// target이 필터의 suffix 또는 prefix에 매칭되면 true.
+    /// suffix: ".css", ".svg" / prefix: "virtual:", "\0"
     /// 필터가 비어있으면 모든 대상에 적용 (esbuild 호환).
     pub fn matchesAny(filters: []const []const u8, target: []const u8) bool {
         if (filters.len == 0) return true;
         for (filters) |f| {
-            if (std.mem.endsWith(u8, target, f) or
-                std.mem.startsWith(u8, target, f) or
-                std.mem.indexOf(u8, target, f) != null) return true;
+            if (std.mem.endsWith(u8, target, f) or std.mem.startsWith(u8, target, f)) return true;
         }
         return false;
     }
@@ -145,8 +143,10 @@ pub const SubprocessPlugin = struct {
     /// 프로세스 종료.
     pub fn shutdown(self: *SubprocessPlugin) void {
         self.sendRaw("{\"type\":\"shutdown\"}\n") catch {};
-        // stdin을 닫아서 Node.js에게 EOF 신호 전달.
-        // child.wait()가 내부에서 stdin/stdout을 정리하므로 별도 close 불필요.
+        // stdin close → Node.js에 EOF 전달 → 프로세스 종료 유도
+        self.stdin_file.close();
+        self.stdout_file.close();
+        // child.wait()가 이미 닫힌 fd를 다시 닫지 않도록 null 설정
         self.child.stdin = null;
         self.child.stdout = null;
         _ = self.child.wait() catch {};

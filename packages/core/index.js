@@ -79,7 +79,7 @@ class PluginHost {
 
   matchesFilter(filter, target) {
     if (!filter) return true;
-    return target.startsWith(filter) || target.endsWith(filter) || target.includes(filter);
+    return target.endsWith(filter) || target.startsWith(filter);
   }
 
   async runFirstHook(hookName, msg) {
@@ -160,7 +160,15 @@ export function definePlugin(nameOrSetup, maybeSetup) {
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
 
-  rl.on("line", async (line) => {
+  // 큐 기반 직렬화 — async 콜백이 완료될 때까지 다음 메시지를 대기
+  // Zig 측 mutex가 직렬화를 보장하지만, JS 측에서도 명시적으로 보장
+  let processing = false;
+  const queue = [];
+
+  async function processNext() {
+    if (processing || queue.length === 0) return;
+    processing = true;
+    const line = queue.shift();
     try {
       const msg = JSON.parse(line);
       const response = await host.handleMessage(msg);
@@ -168,5 +176,12 @@ export function definePlugin(nameOrSetup, maybeSetup) {
     } catch (err) {
       process.stdout.write(`${JSON.stringify({ id: 0, result: null, error: String(err) })}\n`);
     }
+    processing = false;
+    processNext();
+  }
+
+  rl.on("line", (line) => {
+    queue.push(line);
+    processNext();
   });
 }
