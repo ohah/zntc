@@ -1888,6 +1888,14 @@ pub const Parser = struct {
         return flow.parseFlowOpaqueType(self);
     }
 
+    pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
+        return flow.parseFlowDeclareStatement(self);
+    }
+
+    pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
+        return flow.parseFlowInterfaceDeclaration(self);
+    }
+
     pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
         if (self.is_flow) return flow.tryParseTypeAnnotation(self);
         return ts.tryParseTypeAnnotation(self);

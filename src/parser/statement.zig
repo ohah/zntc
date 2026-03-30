@@ -215,8 +215,7 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 {
                     break :blk self.parseTsModuleDeclaration();
                 }
-            } else if (!self.is_flow and std.mem.eql(u8, text, "declare")) {
-                // declare — TS 전용 (Flow의 declare는 후속 PR에서 별도 구현)
+            } else if (std.mem.eql(u8, text, "declare")) {
                 const next_decl = try self.peekNext();
                 if (!next_decl.has_newline_before and switch (next_decl.kind) {
                     .semicolon,
@@ -241,6 +240,9 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     => false,
                     else => true,
                 }) {
+                    if (self.is_flow) {
+                        break :blk self.parseFlowDeclareStatement();
+                    }
                     break :blk self.parseTsDeclareStatement();
                 }
             } else if (!self.is_flow and std.mem.eql(u8, text, "abstract")) {
@@ -268,6 +270,9 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             const next_iface = try self.peekNext();
             if (next_iface.has_newline_before) {
                 break :blk_iface parseExpressionOrLabeledStatement(self);
+            }
+            if (self.is_flow) {
+                break :blk_iface self.parseFlowInterfaceDeclaration();
             }
             break :blk_iface self.parseTsInterfaceDeclaration();
         },

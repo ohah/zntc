@@ -692,3 +692,140 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
         .data = .{ .extra = extra },
     });
 }
+
+// ================================================================
+// Flow Declare Statement
+// ================================================================
+
+/// declare class/function/var/type/opaque type/module/module.exports/export
+/// 타입 스트리핑에서는 전체를 제거하므로 내부를 파싱한 뒤 NodeIndex.none을 반환한다.
+pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
+    try self.advance(); // skip 'declare'
+
+    // declare module.exports: Type — Flow CJS 모듈 타입 선언
+    if (self.current() == .identifier and self.isContextual("module")) {
+        const next = try self.peekNextKind();
+        if (next == .dot) {
+            // declare module.exports: Type;
+            try self.advance(); // skip 'module'
+            try self.advance(); // skip '.'
+            try self.advance(); // skip 'exports'
+            if (self.current() == .colon) {
+                try self.advance();
+                _ = try parseType(self);
+            }
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+        // declare module "name" { ... } — ambient module
+        if (next == .string_literal or next == .identifier) {
+            try self.advance(); // skip 'module'
+            try self.advance(); // skip name
+            if (self.current() == .l_curly) {
+                // balanced brace skip
+                try self.advance(); // skip '{'
+                var depth: u32 = 1;
+                while (depth > 0 and self.current() != .eof) {
+                    switch (self.current()) {
+                        .l_curly => depth += 1,
+                        .r_curly => depth -= 1,
+                        else => {},
+                    }
+                    if (depth > 0) try self.advance();
+                }
+                try self.expect(.r_curly);
+            }
+            return NodeIndex.none;
+        }
+    }
+
+    // declare export — Flow 전용 (declare export type, declare export class 등)
+    if (self.current() == .kw_export) {
+        try self.advance(); // skip 'export'
+        // declare export default — skip to semicolon
+        if (try self.eat(.kw_default)) {
+            _ = try parseType(self);
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+    }
+
+    // declare opaque type — opaque 키워드 후 type
+    if (self.current() == .identifier and self.isContextual("opaque")) {
+        _ = try parseFlowOpaqueType(self);
+        return NodeIndex.none;
+    }
+
+    // declare type/class/function/var/interface — 공통 처리
+    // 내부 선언을 파싱 (AST 노드 생성됨)하지만 반환값은 .none (전체 제거)
+    const saved_ambient = self.ctx;
+    self.ctx.in_ambient = true;
+    _ = try self.parseStatement();
+    self.ctx = saved_ambient;
+    return NodeIndex.none;
+}
+
+// ================================================================
+// Flow Interface Declaration
+// ================================================================
+
+/// interface Foo extends Bar { ... }
+pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'interface'
+
+    const name = try self.parseSimpleIdentifier();
+
+    // 선택적 타입 파라미터: interface Foo<T>
+    var type_params = NodeIndex.none;
+    if (self.isAtOpeningAngleBracket()) {
+        type_params = try parseTypeParameterDeclaration(self);
+    }
+
+    // extends 절: interface Foo extends Bar, Baz
+    var extends_start: u32 = 0;
+    var extends_len: u32 = 0;
+    if (try self.eat(.kw_extends)) {
+        const scratch_top = self.saveScratch();
+        const first = try parseType(self);
+        try self.scratch.append(self.allocator, first);
+        while (try self.eat(.comma)) {
+            const next_type = try parseType(self);
+            try self.scratch.append(self.allocator, next_type);
+        }
+        const items = self.scratch.items[scratch_top..];
+        const list = try self.ast.addNodeList(items);
+        self.scratch.shrinkRetainingCapacity(scratch_top);
+        extends_start = list.start;
+        extends_len = list.len;
+    }
+
+    // body: { ... } — balanced brace skip (타입 스트리핑이므로 내부 구조 불필요)
+    const body_start = self.currentSpan().start;
+    if (self.current() == .l_curly) {
+        try self.advance();
+        var depth: u32 = 1;
+        while (depth > 0 and self.current() != .eof) {
+            switch (self.current()) {
+                .l_curly => depth += 1,
+                .r_curly => depth -= 1,
+                else => {},
+            }
+            if (depth > 0) try self.advance();
+        }
+        try self.expect(.r_curly);
+    }
+    _ = body_start;
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(name),
+        @intFromEnum(type_params),
+        extends_start,
+        extends_len,
+    });
+    return try self.ast.addNode(.{
+        .tag = .flow_interface_declaration,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
+}

@@ -2458,3 +2458,45 @@ test "Flow: import typeof named stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
+
+test "Flow: declare function stripped" {
+    var r = try e2eFlow(std.testing.allocator, "declare function foo(x: number): string;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare var stripped" {
+    var r = try e2eFlow(std.testing.allocator, "declare var x: number;\nlet y = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let y=1;", r.output);
+}
+
+test "Flow: declare class stripped" {
+    var r = try e2eFlow(std.testing.allocator, "declare class Foo { bar(): void; }\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare module.exports stripped" {
+    var r = try e2eFlow(std.testing.allocator, "declare module.exports: typeof EventEmitter;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: interface declaration stripped" {
+    var r = try e2eFlow(std.testing.allocator, "interface Foo { x: number; y: string; }\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: interface extends stripped" {
+    var r = try e2eFlow(std.testing.allocator, "interface Foo extends Bar, Baz { x: number; }\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: declare export type stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "declare export type ID = string;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
