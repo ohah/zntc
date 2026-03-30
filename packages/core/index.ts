@@ -69,8 +69,29 @@ export interface Plugin {
   generateBundle?(outputs: OutputFile[]): Promise<void> | void;
 }
 
+export interface ServerConfig {
+  port?: number;
+  host?: string;
+  open?: boolean;
+  proxy?: Record<string, string>;
+}
+
 export interface ZtsConfig {
-  plugins: Plugin[];
+  plugins?: Plugin[];
+  /** 확장자별 로더 (esbuild 호환). 예: { '.png': 'file', '.svg': 'dataurl' } */
+  loader?: Record<string, Loader>;
+  /** 글로벌 define (예: { 'process.env.NODE_ENV': '"production"' }) */
+  define?: Record<string, string>;
+  /** import 경로 별칭 (예: { '@': './src' }) */
+  alias?: Record<string, string>;
+  /** 외부 모듈 (번들 제외) */
+  external?: string[];
+  /** 소스맵 생성 */
+  sourcemap?: boolean;
+  /** 코드 압축 */
+  minify?: boolean;
+  /** dev server 설정 */
+  server?: ServerConfig;
 }
 
 // ===== IPC 메시지 타입 =====
@@ -94,15 +115,18 @@ interface IpcResponse {
   name?: string;
   filters?: Record<string, string[]>;
   hooks?: Record<string, boolean>;
+  config?: Partial<ZtsConfig>;
 }
 
 // ===== PluginHost =====
 
 class PluginHost {
   private plugins: Plugin[];
+  private config: ZtsConfig;
 
-  constructor(plugins: Plugin[]) {
-    this.plugins = plugins || [];
+  constructor(config: ZtsConfig) {
+    this.plugins = config.plugins || [];
+    this.config = config;
   }
 
   getFilters(): Record<string, string[]> {
@@ -125,14 +149,17 @@ class PluginHost {
 
   async handleMessage(msg: IpcMessage): Promise<IpcResponse> {
     switch (msg.type) {
-      case "init":
+      case "init": {
+        const { plugins: _, ...configWithoutPlugins } = this.config;
         return {
           id: msg.id,
           name: this.getPluginNames(),
           filters: this.getFilters(),
           hooks: this.getHooks(),
+          config: configWithoutPlugins,
           error: null,
         };
+      }
       case "resolveId":
         return this.runResolveId(msg);
       case "load":
@@ -244,13 +271,13 @@ class PluginHost {
 // ===== Public API =====
 
 export function defineConfig(config: ZtsConfig): ZtsConfig {
-  const host = new PluginHost(config.plugins);
+  const host = new PluginHost(config);
   startIPC(host);
   return config;
 }
 
 export function definePlugin(plugin: Plugin): Plugin {
-  const host = new PluginHost([plugin]);
+  const host = new PluginHost({ plugins: [plugin] });
   startIPC(host);
   return plugin;
 }
