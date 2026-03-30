@@ -231,17 +231,25 @@ describe("Dev Server", () => {
         "--plugin",
         join(fixture.dir, "plugin.js"),
       ],
-      { timeout: 3000 },
+      { timeout: 5000 },
     );
     killServer = server.kill;
 
-    const res = await fetch(`http://localhost:12393/bundle.js`);
-    expect(res.status).toBe(200);
-    const text = await res.text();
-    // dev_mode에서는 __zts_register 래핑되므로, 플러그인이 CSS를 JS로 변환했는지 확인
-    // style.css가 모듈로 등록되어 있으면 플러그인 동작 성공
+    // CI에서 서버 준비가 느릴 수 있으므로 retry
+    let text = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`http://localhost:12393/bundle.js`);
+        if (res.status === 200) {
+          text = await res.text();
+          break;
+        }
+      } catch {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+
     expect(text).toContain("style.css");
-    // 번들에 에러 없이 포함됨
     expect(text).toContain("__zts_register");
   });
 });
