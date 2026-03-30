@@ -851,6 +851,21 @@ pub fn main() !void {
     var opts = try parseCliArguments(args, allocator) orelse return;
     defer opts.deinit(allocator);
 
+    // zts.config.{js,ts,mjs,mts,cjs,cts} 자동 탐색 (--plugin 미지정 시)
+    if (opts.plugin_paths.items.len == 0 and (opts.is_bundle or opts.is_serve)) {
+        const config_names = [_][]const u8{
+            "zts.config.ts",  "zts.config.js",  "zts.config.mts",
+            "zts.config.mjs", "zts.config.cts", "zts.config.cjs",
+        };
+        for (&config_names) |name| {
+            if (std.fs.cwd().statFile(name)) |_| {
+                try opts.plugin_paths.append(allocator, name);
+                try stderr.print("[zts] Using config: {s}\n", .{name});
+                break;
+            } else |_| {}
+        }
+    }
+
     // --test262
     if (opts.is_test262) {
         const dir_path = opts.test262_dir orelse {
