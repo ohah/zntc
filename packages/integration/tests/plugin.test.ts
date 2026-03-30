@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "./helpers";
+import { createFixture, runZts, ZTS_BIN } from "./helpers";
 import { join, resolve } from "node:path";
 
 const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.js");
@@ -11,14 +11,16 @@ describe("Plugin: subprocess", () => {
       "style.css": "body { color: red; }",
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("css-loader", (build) => {
-          build.onLoad({ filter: '.css' }, async (args) => {
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'css-loader',
+          async load(id) {
+            if (!id.endsWith('.css')) return null;
             const fs = await import('node:fs');
-            const css = await fs.promises.readFile(args.path, 'utf8');
-            return { contents: 'export default ' + JSON.stringify(css) + ';' };
-          });
-        });
+            const css = await fs.promises.readFile(id, 'utf8');
+            return 'export default ' + JSON.stringify(css) + ';';
+          }
+        }] });
       `,
     });
 
@@ -43,12 +45,14 @@ describe("Plugin: subprocess", () => {
       "entry.ts": `const x: number = 42;\nconsole.log(x);`,
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("css-only", (build) => {
-          build.onLoad({ filter: '.css' }, async () => {
-            throw new Error('should not be called for .ts files');
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'css-only',
+          load(id) {
+            if (id.endsWith('.css')) throw new Error('should not be called for .ts');
+            return null;
+          }
+        }] });
       `,
     });
 
@@ -72,12 +76,14 @@ describe("Plugin: subprocess", () => {
       "entry.ts": `const x = 42;\nconsole.log(x);`,
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("banner", (build) => {
-          build.onTransform({ filter: '.ts' }, async (args) => {
-            return { contents: '/* BANNER */\\n' + args.code };
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'banner',
+          transform(code, id) {
+            if (!id.endsWith('.ts')) return null;
+            return '/* BANNER */\\n' + code;
+          }
+        }] });
       `,
     });
 
@@ -102,12 +108,14 @@ describe("Plugin: subprocess", () => {
       "broken.css": "",
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("failing", (build) => {
-          build.onLoad({ filter: '.css' }, async () => {
-            throw new Error('CSS compilation failed');
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'failing',
+          load(id) {
+            if (id.endsWith('.css')) throw new Error('CSS compilation failed');
+            return null;
+          }
+        }] });
       `,
     });
 
@@ -119,8 +127,7 @@ describe("Plugin: subprocess", () => {
         join(dir, "plugin.js"),
       ]);
 
-      // 에러 메시지에 플러그인 이름과 에러 내용이 포함되어야 함
-      expect(result.stderr).toContain("plugin:failing");
+      expect(result.stderr).toContain("failing");
       expect(result.stderr).toContain("CSS compilation failed");
     } finally {
       await cleanup();
@@ -133,22 +140,26 @@ describe("Plugin: subprocess", () => {
       "style.css": "h1 { font-size: 24px; }",
       "package.json": '{"type": "module"}',
       "plugin-css.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("css-loader", (build) => {
-          build.onLoad({ filter: '.css' }, async (args) => {
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'css-loader',
+          async load(id) {
+            if (!id.endsWith('.css')) return null;
             const fs = await import('node:fs');
-            const css = await fs.promises.readFile(args.path, 'utf8');
-            return { contents: 'export default ' + JSON.stringify(css) + ';' };
-          });
-        });
+            const css = await fs.promises.readFile(id, 'utf8');
+            return 'export default ' + JSON.stringify(css) + ';';
+          }
+        }] });
       `,
       "plugin-banner.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("banner", (build) => {
-          build.onTransform({ filter: '.ts' }, async (args) => {
-            return { contents: '/* MULTI-PLUGIN */\\n' + args.code };
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'banner',
+          transform(code, id) {
+            if (!id.endsWith('.ts')) return null;
+            return '/* MULTI-PLUGIN */\\n' + code;
+          }
+        }] });
       `,
     });
 
@@ -177,14 +188,15 @@ describe("Plugin: subprocess", () => {
       "replacement.ts": `export function greet() { return "replaced"; }`,
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
+        import { defineConfig } from '${CORE_PATH}';
         import { resolve, dirname } from 'node:path';
-        definePlugin("redirect", (build) => {
-          build.onResolve({ filter: 'original' }, async (args) => {
-            const dir = dirname(args.importer);
-            return { path: resolve(dir, 'replacement.ts') };
-          });
-        });
+        defineConfig({ plugins: [{
+          name: 'redirect',
+          resolveId(source, importer) {
+            if (!source.includes('original')) return null;
+            return resolve(dirname(importer), 'replacement.ts');
+          }
+        }] });
       `,
     });
 
@@ -209,18 +221,20 @@ describe("Plugin: subprocess", () => {
       "entry.ts": `import { API_URL } from 'virtual:config';\nconsole.log(API_URL);`,
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("virtual", (build) => {
-          build.onResolve({ filter: 'virtual:' }, async (args) => {
-            return { path: '\\0' + args.specifier };
-          });
-          build.onLoad({ filter: '\\0virtual:' }, async (args) => {
-            if (args.path === '\\0virtual:config') {
-              return { contents: 'export const API_URL = "https://api.example.com";' };
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'virtual',
+          resolveId(source) {
+            if (source.startsWith('virtual:')) return '\\0' + source;
+            return null;
+          },
+          load(id) {
+            if (id === '\\0virtual:config') {
+              return 'export const API_URL = "https://api.example.com";';
             }
             return null;
-          });
-        });
+          }
+        }] });
       `,
     });
 
@@ -259,20 +273,24 @@ describe("Plugin: subprocess", () => {
       "entry.ts": `const x = 1;\nconsole.log(x);`,
       "package.json": '{"type": "module"}',
       "plugin-a.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("plugin-a", (build) => {
-          build.onTransform({ filter: '.ts' }, async (args) => {
-            return { contents: '/* FROM_A */\\n' + args.code };
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'plugin-a',
+          transform(code, id) {
+            if (!id.endsWith('.ts')) return null;
+            return '/* FROM_A */\\n' + code;
+          }
+        }] });
       `,
       "plugin-b.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("plugin-b", (build) => {
-          build.onTransform({ filter: '.ts' }, async (args) => {
-            return { contents: '/* FROM_B */\\n' + args.code };
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'plugin-b',
+          transform(code, id) {
+            if (!id.endsWith('.ts')) return null;
+            return '/* FROM_B */\\n' + code;
+          }
+        }] });
       `,
     });
 
@@ -287,7 +305,6 @@ describe("Plugin: subprocess", () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      // 두 플러그인 모두 transform을 적용해야 함
       expect(result.stdout).toContain("FROM_A");
       expect(result.stdout).toContain("FROM_B");
     } finally {
@@ -301,12 +318,14 @@ describe("Plugin: subprocess", () => {
       "style.css": "body { color: red; }",
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("crasher", (build) => {
-          build.onLoad({ filter: '.css' }, async () => {
-            process.exit(1); // 강제 crash
-          });
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'crasher',
+          load(id) {
+            if (id.endsWith('.css')) process.exit(1);
+            return null;
+          }
+        }] });
       `,
     });
 
@@ -318,8 +337,6 @@ describe("Plugin: subprocess", () => {
         join(dir, "plugin.js"),
       ]);
 
-      // crash 시 에러로 처리되어야 함 (panic이 아닌 정상 종료)
-      // stderr에 플러그인 에러 메시지가 있거나, 번들이 fallback으로 생성됨
       expect(result.stdout.length + result.stderr.length).toBeGreaterThan(0);
     } finally {
       await cleanup();
@@ -333,11 +350,14 @@ describe("Plugin: subprocess", () => {
       "b.ts": `export const b = 2;`,
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { definePlugin } from '${CORE_PATH}';
-        definePlugin("load-only", (build) => {
-          // load 훅만 등록, resolveId/transform은 등록 안 함
-          build.onLoad({ filter: '.never-match' }, async () => null);
-        });
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'noop',
+          load(id) {
+            if (id.endsWith('.never-match')) return 'unreachable';
+            return null;
+          }
+        }] });
       `,
     });
 
@@ -349,7 +369,6 @@ describe("Plugin: subprocess", () => {
         join(dir, "plugin.js"),
       ]);
 
-      // resolveId/transform IPC가 발생하지 않으므로 정상 번들
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("const a = 1");
       expect(result.stdout).toContain("const b = 2");
@@ -367,24 +386,20 @@ describe("Plugin: subprocess", () => {
     try {
       const { spawn: bunSpawn } = await import("bun");
 
-      // watch 모드로 시작
       const proc = bunSpawn({
         cmd: [ZTS_BIN, "--bundle", join(dir, "entry.ts"), "-o", outFile, "--watch"],
         stdout: "pipe",
         stderr: "pipe",
       });
 
-      // 초기 번들 대기
       await new Promise((r) => setTimeout(r, 2000));
 
       const { readFileSync, writeFileSync } = await import("node:fs");
       const initial = readFileSync(outFile, "utf8");
       expect(initial).toContain("initial");
 
-      // 파일 수정
       writeFileSync(join(dir, "entry.ts"), 'const v = "changed";\nconsole.log(v);');
 
-      // 재번들 대기
       await new Promise((r) => setTimeout(r, 2000));
 
       const changed = readFileSync(outFile, "utf8");

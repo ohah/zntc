@@ -1,53 +1,55 @@
 /**
- * @zts/core — ZTS subprocess plugin host
+ * @zts/core — ZTS Plugin API
  *
- * ZTS 바이너리가 이 파일을 실행하는 Node.js 프로세스를 spawn하고,
- * stdin/stdout JSON 프로토콜로 통신한다.
+ * Vite/Rollup 호환 플러그인 인터페이스.
+ * ZTS 바이너리가 config 파일을 Node.js로 실행하고 stdin/stdout JSON으로 통신한다.
  *
  * 사용법:
  *   // zts.config.js
- *   import { definePlugin } from '@zts/core';
+ *   import { defineConfig } from '@zts/core';
  *
- *   definePlugin((build) => {
- *     build.onLoad({ filter: '.css' }, async (args) => {
- *       const css = await fs.promises.readFile(args.path, 'utf8');
- *       return { contents: `export default ${JSON.stringify(css)};` };
- *     });
+ *   export default defineConfig({
+ *     plugins: [
+ *       {
+ *         name: 'css-loader',
+ *         load(id) {
+ *           if (!id.endsWith('.css')) return null;
+ *           return fs.readFileSync(id, 'utf8');
+ *         }
+ *       }
+ *     ]
  *   });
+ *
+ * 플러그인 훅 (Rollup 호환):
+ *   resolveId(source, importer) → { path } | string | null
+ *   load(id)                    → string | { contents } | null
+ *   transform(code, id)         → string | { contents } | null
  */
 
 import { createInterface } from "node:readline";
 
 class PluginHost {
-  constructor() {
-    this.name = "unnamed";
-    this.hooks = {
-      resolveId: [],
-      load: [],
-      transform: [],
-    };
-  }
-
-  createBuildAPI() {
-    return {
-      onResolve: (options, callback) => {
-        this.hooks.resolveId.push({ filter: options.filter, fn: callback });
-      },
-      onLoad: (options, callback) => {
-        this.hooks.load.push({ filter: options.filter, fn: callback });
-      },
-      onTransform: (options, callback) => {
-        this.hooks.transform.push({ filter: options.filter, fn: callback });
-      },
-    };
+  constructor(plugins) {
+    this.plugins = plugins || [];
   }
 
   getFilters() {
-    const filters = {};
-    for (const [hook, entries] of Object.entries(this.hooks)) {
-      filters[hook] = entries.map((e) => e.filter).filter(Boolean);
-    }
+    const filters = { resolveId: [], load: [], transform: [] };
+    // Rollup 스타일 플러그인에는 명시적 필터가 없으므로 빈 배열 반환
+    // (Zig 측에서 빈 필터 = 모든 대상에 적용)
     return filters;
+  }
+
+  getHooks() {
+    return {
+      resolveId: this.plugins.some((p) => p.resolveId),
+      load: this.plugins.some((p) => p.load),
+      transform: this.plugins.some((p) => p.transform),
+    };
+  }
+
+  getPluginNames() {
+    return this.plugins.map((p) => p.name || "unnamed").join(", ");
   }
 
   async handleMessage(msg) {
@@ -55,21 +57,17 @@ class PluginHost {
       case "init":
         return {
           id: msg.id,
-          name: this.name,
+          name: this.getPluginNames(),
           filters: this.getFilters(),
-          hooks: {
-            resolveId: this.hooks.resolveId.length > 0,
-            load: this.hooks.load.length > 0,
-            transform: this.hooks.transform.length > 0,
-          },
+          hooks: this.getHooks(),
           error: null,
         };
       case "resolveId":
-        return this.runFirstHook("resolveId", msg);
+        return this.runResolveId(msg);
       case "load":
-        return this.runFirstHook("load", msg);
+        return this.runLoad(msg);
       case "transform":
-        return this.runChainHook("transform", msg);
+        return this.runTransform(msg);
       case "shutdown":
         process.exit(0);
       default:
@@ -77,46 +75,57 @@ class PluginHost {
     }
   }
 
-  matchesFilter(filter, target) {
-    if (!filter) return true;
-    return target.endsWith(filter) || target.startsWith(filter);
-  }
-
-  async runFirstHook(hookName, msg) {
-    for (const entry of this.hooks[hookName]) {
-      const target = msg.specifier || msg.path || msg.moduleId || "";
-      if (!this.matchesFilter(entry.filter, target)) continue;
-
+  // resolveId: first 모드 — 첫 번째 non-null 반환
+  async runResolveId(msg) {
+    for (const plugin of this.plugins) {
+      if (!plugin.resolveId) continue;
       try {
-        const args = this.buildArgs(hookName, msg);
-        const result = await entry.fn(args);
-        if (result != null) {
-          return { id: msg.id, result, error: null };
-        }
+        const result = await plugin.resolveId(msg.specifier, msg.importer);
+        if (result == null) continue;
+        // string 반환 시 → { path: string }
+        const resolved = typeof result === "string" ? { path: result } : result;
+        return { id: msg.id, result: resolved, error: null };
       } catch (err) {
-        return { id: msg.id, result: null, error: String(err) };
+        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
       }
     }
     return { id: msg.id, result: null, error: null };
   }
 
-  async runChainHook(hookName, msg) {
+  // load: first 모드 — 첫 번째 non-null 반환
+  async runLoad(msg) {
+    for (const plugin of this.plugins) {
+      if (!plugin.load) continue;
+      try {
+        const result = await plugin.load(msg.path);
+        if (result == null) continue;
+        // string 반환 시 → { contents: string }
+        const loaded = typeof result === "string" ? { contents: result } : result;
+        return { id: msg.id, result: loaded, error: null };
+      } catch (err) {
+        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+      }
+    }
+    return { id: msg.id, result: null, error: null };
+  }
+
+  // transform: chain 모드 — 모든 플러그인 순차 적용
+  async runTransform(msg) {
     let currentCode = msg.code;
     let changed = false;
 
-    for (const entry of this.hooks[hookName]) {
-      const target = msg.moduleId || "";
-      if (!this.matchesFilter(entry.filter, target)) continue;
-
+    for (const plugin of this.plugins) {
+      if (!plugin.transform) continue;
       try {
-        const args = { ...this.buildArgs(hookName, msg), code: currentCode };
-        const result = await entry.fn(args);
-        if (result != null && result.contents != null) {
-          currentCode = result.contents;
+        const result = await plugin.transform(currentCode, msg.moduleId);
+        if (result == null) continue;
+        const code = typeof result === "string" ? result : result.contents;
+        if (code != null) {
+          currentCode = code;
           changed = true;
         }
       } catch (err) {
-        return { id: msg.id, result: null, error: String(err) };
+        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
       }
     }
 
@@ -125,43 +134,39 @@ class PluginHost {
     }
     return { id: msg.id, result: null, error: null };
   }
-
-  buildArgs(hookName, msg) {
-    switch (hookName) {
-      case "resolveId":
-        return { specifier: msg.specifier, importer: msg.importer };
-      case "load":
-        return { path: msg.path };
-      case "transform":
-        return { code: msg.code, id: msg.moduleId };
-      default:
-        return msg;
-    }
-  }
 }
 
 /**
- * 플러그인 엔트리포인트. ZTS가 이 파일을 `node zts.config.js`로 실행한다.
+ * ZTS config를 정의한다. plugins 배열에 Rollup/Vite 스타일 플러그인 객체를 전달.
  *
- * @param {(build: BuildAPI) => void} setup — 플러그인 등록 함수
+ * @param {{ plugins: Plugin[] }} config
+ *
+ * 사용법:
+ *   export default defineConfig({ plugins: [myPlugin()] });
  */
-export function definePlugin(nameOrSetup, maybeSetup) {
-  const host = new PluginHost();
-  const build = host.createBuildAPI();
+export function defineConfig(config) {
+  const host = new PluginHost(config.plugins);
+  startIPC(host);
+  return config;
+}
 
-  let setup;
-  if (typeof nameOrSetup === "string") {
-    host.name = nameOrSetup;
-    setup = maybeSetup;
-  } else {
-    setup = nameOrSetup;
-  }
-  setup(build);
+/**
+ * 단일 플러그인을 직접 실행. config 없이 플러그인 하나만 테스트할 때 사용.
+ *
+ * @param {Plugin} plugin
+ *
+ * 사용법:
+ *   export default definePlugin({ name: 'my', load(id) { ... } });
+ */
+export function definePlugin(plugin) {
+  const host = new PluginHost([plugin]);
+  startIPC(host);
+  return plugin;
+}
 
+function startIPC(host) {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
 
-  // 큐 기반 직렬화 — async 콜백이 완료될 때까지 다음 메시지를 대기
-  // Zig 측 mutex가 직렬화를 보장하지만, JS 측에서도 명시적으로 보장
   let processing = false;
   const queue = [];
 
