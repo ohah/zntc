@@ -2238,3 +2238,29 @@ test "SourceMap: second line offset accuracy" {
     // "foo" → 원본 1행, 열은 "const b = " 다음 = 10
     try r.expectMappingAt("foo", 1, 10);
 }
+
+test "Codegen CJS: export all as namespace" {
+    // export * as ns from './foo' → CJS에서는 Object.assign으로 처리
+    // 현재 CJS 모드에서 binary.right만 출력하므로 namespace 이름은 무시됨
+    var r = try e2eCJS(std.testing.allocator, "export * as ns from './foo';");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "require(\"./foo\")") != null);
+}
+
+test "SourceMap: multiple export all re-exports" {
+    var r = try e2eSourceMap(std.testing.allocator, "export * from './a';\nexport * from './b';\n");
+    defer r.deinit();
+    // 두 소스 경로 모두 출력에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"./a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"./b\"") != null);
+    // 매핑이 2줄 이상
+    try std.testing.expect(r.mappings.len >= 2);
+}
+
+test "SourceMap: export all as namespace has mapping" {
+    var r = try e2eSourceMap(std.testing.allocator, "export * as utils from './utils';");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"./utils\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "utils") != null);
+    try r.expectMappingAt("export", 0, 0);
+}

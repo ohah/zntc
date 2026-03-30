@@ -992,3 +992,146 @@ pub fn sanitizePath(raw: []const u8) ?[]const u8 {
 
     return path;
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────
+
+test "collectCssFiles: .css만 수집하고 .js는 제외" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // tmpDir 생성
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    // .css 파일 2개 + .js 파일 1개 생성
+    tmp.dir.writeFile(.{ .sub_path = "a.css", .data = "" }) catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "b.css", .data = "" }) catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "c.js", .data = "" }) catch unreachable;
+
+    var out: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (out.items) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+
+    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+
+    // .css 2개만 수집되어야 한다
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+
+    // 수집된 경로에 .css만 있는지 확인
+    for (out.items) |p| {
+        try testing.expect(std.mem.endsWith(u8, p, ".css"));
+    }
+}
+
+test "collectCssFiles: node_modules 내 .css 제외" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    // 일반 .css
+    tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "" }) catch unreachable;
+
+    // node_modules/ 하위 .css — 제외되어야 함
+    tmp.dir.makePath("node_modules/pkg") catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/lib.css", .data = "" }) catch unreachable;
+
+    var out: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (out.items) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+
+    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+
+    // node_modules 내 .css는 제외 → 1개만
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expect(std.mem.endsWith(u8, out.items[0], "style.css"));
+}
+
+test "collectCssFiles: 숨김 폴더(.git) 내 .css 제외" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    tmp.dir.writeFile(.{ .sub_path = "main.css", .data = "" }) catch unreachable;
+
+    // .git/ 하위 .css — 숨김 폴더이므로 제외되어야 함
+    tmp.dir.makePath(".git/hooks") catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = ".git/hooks/style.css", .data = "" }) catch unreachable;
+
+    var out: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (out.items) |p| allocator.free(p);
+        out.deinit(allocator);
+    }
+
+    DevServer.collectCssFiles(allocator, tmp.dir, "/root", &out);
+
+    // .git 내 .css는 제외 → 1개만
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expect(std.mem.endsWith(u8, out.items[0], "main.css"));
+}
+
+test "buildHmrUpdateFromModules: 모듈 0개 → null 반환" {
+    const result = DevServer.buildHmrUpdateFromModules(
+        std.testing.allocator,
+        &.{},
+    );
+    try std.testing.expect(result == null);
+}
+
+test "buildHmrUpdateFromModules: 모듈 1개 → update JSON" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const modules = [_]BundleResult.ModuleDevCode{
+        .{ .id = "src/app.ts", .code = "console.log(1)" },
+    };
+
+    const json = DevServer.buildHmrUpdateFromModules(allocator, &modules) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer allocator.free(json);
+
+    // "type":"update" 포함
+    try testing.expect(std.mem.indexOf(u8, json, "\"type\":\"update\"") != null);
+    // "modules":[ 포함
+    try testing.expect(std.mem.indexOf(u8, json, "\"modules\":[") != null);
+    // 모듈 id 포함
+    try testing.expect(std.mem.indexOf(u8, json, "src/app.ts") != null);
+    // 모듈 code 포함
+    try testing.expect(std.mem.indexOf(u8, json, "console.log(1)") != null);
+}
+
+test "buildHmrUpdateFromModules: 모듈 2개 → 콤마로 구분된 배열" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const modules = [_]BundleResult.ModuleDevCode{
+        .{ .id = "a.ts", .code = "code_a" },
+        .{ .id = "b.ts", .code = "code_b" },
+    };
+
+    const json = DevServer.buildHmrUpdateFromModules(allocator, &modules) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer allocator.free(json);
+
+    // 두 모듈 모두 포함
+    try testing.expect(std.mem.indexOf(u8, json, "a.ts") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "b.ts") != null);
+
+    // },{  패턴 → 콤마로 구분된 배열 항목
+    try testing.expect(std.mem.indexOf(u8, json, "},{") != null);
+
+    // 전체 JSON이 올바르게 닫히는지 확인
+    try testing.expect(std.mem.endsWith(u8, json, "]}"));
+}

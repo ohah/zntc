@@ -115,6 +115,110 @@ test "FileWatcher: detects file modification" {
     try std.testing.expect(std.mem.endsWith(u8, changes[0].path, "mod.txt"));
 }
 
+test "FileWatcher: detects multiple file modifications" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "a.txt", .data = "aaa" });
+    try tmp.dir.writeFile(.{ .sub_path = "b.txt", .data = "bbb" });
+    const path_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a.txt");
+    defer std.testing.allocator.free(path_a);
+    const path_b = try tmp.dir.realpathAlloc(std.testing.allocator, "b.txt");
+    defer std.testing.allocator.free(path_b);
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    try watcher.addPath(path_a);
+    try watcher.addPath(path_b);
+
+    // 별도 스레드에서 두 파일 동시 수정
+    const write_thread = try std.Thread.spawn(.{}, struct {
+        fn run(dir: std.fs.Dir) void {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            dir.writeFile(.{ .sub_path = "a.txt", .data = "aaa modified" }) catch {};
+            dir.writeFile(.{ .sub_path = "b.txt", .data = "bbb modified" }) catch {};
+        }
+    }.run, .{tmp.dir});
+
+    // 첫 번째 waitForChanges로 최소 1개 이벤트 수집
+    var total_changes: usize = 0;
+    var found_a = false;
+    var found_b = false;
+
+    // kqueue는 한 번에 모두 반환할 수도, 따로 반환할 수도 있으므로 반복 수집
+    for (0..5) |_| {
+        const changes = try watcher.waitForChanges(500);
+        for (changes) |change| {
+            if (std.mem.endsWith(u8, change.path, "a.txt")) found_a = true;
+            if (std.mem.endsWith(u8, change.path, "b.txt")) found_b = true;
+        }
+        total_changes += changes.len;
+        if (found_a and found_b) break;
+    }
+
+    write_thread.join();
+
+    try std.testing.expect(total_changes >= 2);
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
+}
+
+test "FileWatcher: detects file deletion" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "del.txt", .data = "to be deleted" });
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "del.txt");
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    try watcher.addPath(path);
+
+    // 별도 스레드에서 파일 삭제
+    const del_thread = try std.Thread.spawn(.{}, struct {
+        fn run(dir: std.fs.Dir) void {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            dir.deleteFile("del.txt") catch {};
+        }
+    }.run, .{tmp.dir});
+
+    const changes = try watcher.waitForChanges(3000);
+    del_thread.join();
+
+    // 플랫폼마다 .deleted 또는 .modified를 보낼 수 있으므로 이벤트 존재만 확인
+    try std.testing.expect(changes.len > 0);
+    try std.testing.expect(std.mem.endsWith(u8, changes[0].path, "del.txt"));
+}
+
+test "FileWatcher: removePath stops watching" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "ignore.txt", .data = "watch me" });
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "ignore.txt");
+    defer std.testing.allocator.free(path);
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    try watcher.addPath(path);
+    try std.testing.expectEqual(@as(usize, 1), watcher.watchCount());
+
+    // 감시 해제
+    watcher.removePath(path);
+    try std.testing.expectEqual(@as(usize, 0), watcher.watchCount());
+
+    // 감시 해제 후 파일 수정
+    try tmp.dir.writeFile(.{ .sub_path = "ignore.txt", .data = "modified after remove" });
+
+    // 짧은 timeout → 감시 해제했으므로 이벤트 없어야 함
+    const changes = try watcher.waitForChanges(200);
+    try std.testing.expectEqual(@as(usize, 0), changes.len);
+}
+
 test "FileWatcher: add nonexistent path does not crash" {
     var watcher = try FileWatcher.init(std.testing.allocator);
     defer watcher.deinit();
