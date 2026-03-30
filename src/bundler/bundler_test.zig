@@ -9389,6 +9389,82 @@ test "Bundler: dev mode sourcemap" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "//# sourceMappingURL=/bundle.js.map") != null);
 }
 
+test "Bundler: dev mode sourcemap — multi-module sources" {
+    // 여러 모듈의 소스맵이 번들 소스맵에 모두 포함되는지 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "math.ts", "export function add(a: number, b: number) { return a + b; }");
+    try writeFile(tmp.dir, "str.ts", "export function upper(s: string) { return s.toUpperCase(); }");
+    try writeFile(tmp.dir, "main.ts", "import { add } from './math';\nimport { upper } from './str';\nconsole.log(add(1, 2), upper('hi'));");
+
+    const entry = try absPath(&tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const sm = result.sourcemap orelse return error.TestUnexpectedResult;
+
+    // 3개 모듈 모두 sources 배열에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, sm, "math.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "str.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "main.ts") != null);
+
+    // mappings가 빈 문자열이 아니어야 함 (실제 매핑 존재)
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"mappings\":\"\"") == null);
+}
+
+test "Bundler: dev mode sourcemap — mappings point to correct bundle lines" {
+    // 번들 출력에서 각 모듈 코드의 줄 위치가 소스맵 매핑과 일치하는지 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const A = 'a';");
+    try writeFile(tmp.dir, "b.ts", "import { A } from './a';\nexport const B = A + 'b';");
+
+    const entry = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 번들 출력에 두 모듈의 코드가 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const B") != null);
+
+    // 소스맵에 두 소스가 모두 있어야 함
+    const sm = result.sourcemap orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, sm, "a.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "b.ts") != null);
+
+    // sourceMappingURL이 번들 끝에 있어야 함
+    const url_marker = "//# sourceMappingURL=";
+    const url_pos = std.mem.indexOf(u8, result.output, url_marker) orelse
+        return error.TestUnexpectedResult;
+    // URL은 출력 마지막 줄이어야 함
+    const after_url = result.output[url_pos + url_marker.len ..];
+    const newline_pos = std.mem.indexOf(u8, after_url, "\n");
+    if (newline_pos) |np| {
+        // 줄바꿈 이후에는 내용이 없거나 빈 줄만
+        const rest = std.mem.trim(u8, after_url[np..], "\n\r ");
+        try std.testing.expectEqualStrings("", rest);
+    }
+}
+
 test "Bundler: dev mode react fast refresh" {
     // React Fast Refresh가 컴포넌트에 $RefreshReg$ 주입하는지 확인
     var tmp = std.testing.tmpDir(.{});

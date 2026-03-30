@@ -63,9 +63,9 @@ AST 안정화 ──────────────┬──→ WASM 공개
 번들러 성능 ─────────────┬──→ scan 파이프라인화 (배치 경계 제거)
                          └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS)
 
-번들러 기능 ─────────────┬──→ 로더 시스템 (JSON, text, file, dataurl)
-                         ├──→ CSS 번들링 (별도 파서)
-                         └──→ 플러그인 API (Zig builtin → N-API JS)
+번들러 기능 ─────────────┬──→ ✅ 로더 시스템 (JSON, text, file, dataurl)
+                         ├──→ CSS 번들링 (별도 파서, 플러그인으로 위임 가능)
+                         └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
 독립 (아무 때나): Flow, SIMD
 ```
@@ -84,11 +84,11 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
   `--asset-names`, `--public-path` 지원.
 
-- **플러그인 API** — 3단계로 구현 ([PLUGINS.md](../PLUGINS.md) 참조)
-  - 1단계: Zig Builtin 플러그인 (L, 3~5일) — Zig 함수 포인터, N-API 불필요
-  - 2단계: JS 플러그인 subprocess (M, 1주) — esbuild 방식 stdin/stdout JSON
+- ~~**플러그인 API**~~ — ✅ 1-2단계 완료 ([PLUGINS.md](../PLUGINS.md) 참조)
+  - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅
+  - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/core, CLI --plugin
   - 3단계: N-API .node addon (XL, 2~3주, 선택적) — in-process 호출 최적화
-  플러그인 API가 있으면 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
+  플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
 - **CSS 번들링** — `XL (2~3주)` | 선행: 플러그인 API | 우선순위 하향
   자체 CSS 파서 대신, 플러그인 API를 통해 Lightning CSS/PostCSS를 외부 도구로 위임 가능.
@@ -109,7 +109,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
 - **import.meta.glob** — `M` | 선행: 없음 | 배치: 단독
-- **Virtual modules** — `M` | 선행: 플러그인 API | 배치: 플러그인과 함께
+- ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
 
 ### 배치 그룹 & 구현 순서
 
@@ -122,8 +122,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   metafile + analyze + inject + legal comments + keepNames
 
 단독 XL ────────────────────────────────────────────────────────
-  CSS 번들링 (2~3주) — CSS 파서 새로 작성
-  플러그인 API (2~3주) — 파이프라인 훅 설계 + N-API
+  CSS 번들링 (2~3주) — CSS 파서 새로 작성 (플러그인으로 위임 가능)
+  플러그인 API ✅ 1-2단계 완료 — N-API 3단계는 선택적
   엔진 타겟 (1주+) — caniuse 데이터 테이블 구축
   mangleProps (1주+) — cross-module 프로퍼티 추적
 ```
