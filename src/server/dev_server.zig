@@ -1,10 +1,12 @@
 const std = @import("std");
 const http = std.http;
 const mime = @import("mime.zig");
+const FileWatcher = @import("file_watcher.zig").FileWatcher;
 const lib = @import("../root.zig");
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
 const BundleResult = lib.bundler.BundleResult;
+const IncrementalBundler = lib.bundler.IncrementalBundler;
 const plugin_mod = lib.bundler.plugin;
 
 fn getLog() std.fs.File.DeprecatedWriter {
@@ -435,9 +437,34 @@ pub const DevServer = struct {
     fn watchLoop(self: *DevServer) void {
         const abs_entry = self.abs_entry orelse return;
 
-        // 초기 번들 → 모듈 경로 수집
-        var watch_paths = collectModulePaths(self.allocator, abs_entry, self.plugins) orelse return;
-        defer freeWatchPaths(self.allocator, &watch_paths);
+        // 증분 번들러 초기화 (모듈 캐싱 + 변경 감지)
+        var inc_bundler = IncrementalBundler.init(self.allocator, .{
+            .entry_points = &.{abs_entry},
+            .platform = .browser,
+            .dev_mode = true,
+            .react_refresh = true,
+            .plugins = self.plugins,
+        });
+        defer inc_bundler.deinit();
+
+        // 초기 번들
+        const initial = inc_bundler.rebuild(&.{}) catch return;
+        var watch_paths: []const []const u8 = switch (initial) {
+            .success => |r| r.paths,
+            .build_error => |err_msg| {
+                self.allocator.free(err_msg);
+                return;
+            },
+            .fatal => return,
+        };
+
+        // OS 네이티브 파일 감시 (kqueue/inotify, 미지원 OS는 mtime 폴백)
+        var watcher = FileWatcher.init(self.allocator) catch return;
+        defer watcher.deinit();
+
+        for (watch_paths) |p| {
+            watcher.addPath(p) catch {};
+        }
 
         // root_dir의 CSS 파일을 watch 대상에 추가
         var css_paths: std.ArrayList([]const u8) = .empty;
@@ -445,83 +472,50 @@ pub const DevServer = struct {
             for (css_paths.items) |p| self.allocator.free(p);
             css_paths.deinit(self.allocator);
         }
-        {
-            const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
-            defer if (root_real) |r| self.allocator.free(r);
-            if (root_real) |root| {
-                collectCssFiles(self.allocator, self.root_dir, root, &css_paths);
-            }
-        }
-
-        // 초기 mtime 맵 구축
-        var mtime_map = std.StringHashMap(i128).init(self.allocator);
-        defer mtime_map.deinit();
-        for (watch_paths) |p| {
-            const stat = std.fs.cwd().statFile(p) catch continue;
-            mtime_map.put(p, stat.mtime) catch continue;
+        // root_path의 realpath는 서버 실행 중 불변이므로 1회만 계산
+        const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
+        defer if (root_real) |r| self.allocator.free(r);
+        if (root_real) |root| {
+            collectCssFiles(self.allocator, self.root_dir, root, &css_paths);
         }
         for (css_paths.items) |p| {
-            const stat = std.fs.cwd().statFile(p) catch continue;
-            mtime_map.put(p, stat.mtime) catch continue;
+            watcher.addPath(p) catch {};
         }
 
-        getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
+        getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
 
         while (true) {
-            std.Thread.sleep(watch_interval_ms * std.time.ns_per_ms);
+            const events = watcher.waitForChanges(watch_interval_ms) catch continue;
+            if (events.len == 0) continue;
 
-            // 변경된 파일 수집
             var changed_paths: std.ArrayList([]const u8) = .empty;
             defer changed_paths.deinit(self.allocator);
-
-            // JS 모듈 + CSS 파일 변경 감지
-            const all_paths = [_][]const []const u8{ watch_paths, css_paths.items };
-            for (all_paths) |paths| {
-                for (paths) |p| {
-                    const stat = std.fs.cwd().statFile(p) catch continue;
-                    const prev = mtime_map.get(p) orelse {
-                        mtime_map.put(p, stat.mtime) catch {};
-                        changed_paths.append(self.allocator, p) catch {};
-                        continue;
-                    };
-                    if (stat.mtime != prev) {
-                        mtime_map.put(p, stat.mtime) catch {};
-                        getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(p)}) catch {};
-                        changed_paths.append(self.allocator, p) catch {};
-                    }
-                }
+            for (events) |ev| {
+                getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)}) catch {};
+                changed_paths.append(self.allocator, ev.path) catch {};
             }
 
-            if (changed_paths.items.len == 0) continue;
-
-            // CSS 변경 → 번들 재빌드 없이 css-update 전송 (link tag swap)
+            // CSS 변경 → 번들 재빌드 없이 css-update 전송
             var has_css = false;
-            {
-                // root_real을 루프 밖에서 1회만 계산
-                const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
-                defer if (root_real) |r| self.allocator.free(r);
+            for (changed_paths.items) |cp| {
+                if (std.mem.endsWith(u8, cp, ".css")) {
+                    has_css = true;
+                    const rel = if (root_real) |root| blk: {
+                        if (std.mem.startsWith(u8, cp, root)) {
+                            var r = cp[root.len..];
+                            if (r.len > 0 and r[0] == '/') r = r[1..];
+                            break :blk r;
+                        }
+                        break :blk std.fs.path.basename(cp);
+                    } else std.fs.path.basename(cp);
 
-                for (changed_paths.items) |cp| {
-                    if (std.mem.endsWith(u8, cp, ".css")) {
-                        has_css = true;
-                        const rel = if (root_real) |root| blk: {
-                            if (std.mem.startsWith(u8, cp, root)) {
-                                var r = cp[root.len..];
-                                if (r.len > 0 and r[0] == '/') r = r[1..];
-                                break :blk r;
-                            }
-                            break :blk std.fs.path.basename(cp);
-                        } else std.fs.path.basename(cp);
-
-                        var msg_buf: [512]u8 = undefined;
-                        const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
-                        self.ws_clients.broadcast(css_msg);
-                        getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
-                    }
+                    var msg_buf: [512]u8 = undefined;
+                    const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
+                    self.ws_clients.broadcast(css_msg);
+                    getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
                 }
             }
 
-            // CSS만 변경되었으면 JS 재빌드 스킵
             var has_non_css = false;
             for (changed_paths.items) |cp| {
                 if (!std.mem.endsWith(u8, cp, ".css")) {
@@ -531,40 +525,63 @@ pub const DevServer = struct {
             }
             if (has_css and !has_non_css) continue;
 
-            // 재번들 시도 → 에러면 에러 오버레이, 성공이면 HMR update (폴백: full-reload)
-            const rebuild_result = tryRebuild(self.allocator, abs_entry, self.plugins);
+            // 증분 재번들: 변경된 모듈만 diff하여 전송
+            const rebuild_result = inc_bundler.rebuild(changed_paths.items) catch continue;
             switch (rebuild_result) {
                 .success => |result| {
-                    defer {
-                        if (result.dev_codes) |codes| {
-                            BundleResult.ModuleDevCode.freeAll(codes, self.allocator);
-                        }
-                    }
-
-                    // HMR update 메시지 빌드: 변경된 모듈만 포함
-                    const hmr_msg = buildHmrUpdateMessage(
-                        self.allocator,
-                        changed_paths.items,
-                        result.dev_codes,
-                    );
-
-                    if (hmr_msg) |msg| {
-                        defer self.allocator.free(msg);
-                        self.ws_clients.broadcast(msg);
-                        getLog().print("  [hmr] update sent ({d} modules)\n", .{changed_paths.items.len}) catch {};
-                    } else {
-                        // dev codes가 없거나 매칭 실패 → full-reload 폴백
+                    if (result.graph_changed) {
+                        // 그래프 구조 변경 → full-reload (새 import 추가 등)
                         self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                        getLog().print("  [hmr] graph changed, full-reload\n", .{}) catch {};
+                    } else if (result.changed_modules.len > 0) {
+                        // 변경 모듈만 HMR update
+                        const hmr_msg = buildHmrUpdateFromModules(
+                            self.allocator,
+                            result.changed_modules,
+                        );
+                        if (hmr_msg) |msg| {
+                            defer self.allocator.free(msg);
+                            self.ws_clients.broadcast(msg);
+                            getLog().print("  [hmr] incremental update ({d} modules)\n", .{result.changed_modules.len}) catch {};
+                        } else {
+                            self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                        }
+                    } else {
+                        // 코드 변경 없음 (타입만 변경 등) → 무시
+                        getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
                     }
 
-                    freeWatchPaths(self.allocator, &watch_paths);
-                    watch_paths = result.paths;
-                    mtime_map.clearAndFree();
-                    for (watch_paths) |p| {
-                        const stat = std.fs.cwd().statFile(p) catch continue;
-                        mtime_map.put(p, stat.mtime) catch {};
+                    // free changed_modules
+                    if (result.changed_modules.len > 0) {
+                        self.allocator.free(result.changed_modules);
                     }
-                    getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
+
+                    // watch 대상 diff 갱신: 새 경로만 추가, 제거된 경로만 해제
+                    const new_paths = result.paths;
+                    // 이전 경로 중 새 목록에 없는 것 제거
+                    for (watch_paths) |old_p| {
+                        var found = false;
+                        for (new_paths) |new_p| {
+                            if (std.mem.eql(u8, old_p, new_p)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) watcher.removePath(old_p);
+                    }
+                    // 새 경로 중 이전에 없던 것 추가
+                    for (new_paths) |new_p| {
+                        var found = false;
+                        for (watch_paths) |old_p| {
+                            if (std.mem.eql(u8, old_p, new_p)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) watcher.addPath(new_p) catch {};
+                    }
+                    watch_paths = new_paths;
+                    getLog().print("  [watch] watching {d} files for changes...\n", .{watcher.watchCount()}) catch {};
                 },
                 .build_error => |err_msg| {
                     defer self.allocator.free(err_msg);
@@ -576,134 +593,28 @@ pub const DevServer = struct {
         }
     }
 
-    const RebuildSuccess = struct {
-        paths: []const []const u8,
-        dev_codes: ?[]const BundleResult.ModuleDevCode,
-    };
-
-    const RebuildResult = union(enum) {
-        success: RebuildSuccess,
-        build_error: []const u8, // JSON 에러 메시지 (allocator 소유)
-        fatal, // 번들러 자체 실패
-    };
-
-    fn tryRebuild(allocator: std.mem.Allocator, abs_entry: []const u8, plugins: []const plugin_mod.Plugin) RebuildResult {
-        var bundler = Bundler.init(allocator, .{
-            .entry_points = &.{abs_entry},
-            .platform = .browser,
-            .dev_mode = true,
-            .react_refresh = true,
-            .plugins = plugins,
-        });
-        defer bundler.deinit();
-
-        var result = bundler.bundle() catch return .fatal;
-
-        // 파싱 에러(warning)도 dev server에서는 에러로 취급
-        const has_build_issues = blk: {
-            for (result.getDiagnostics()) |d| {
-                if (d.severity == .@"error" or d.code == .parse_error) break :blk true;
-            }
-            break :blk false;
-        };
-        if (has_build_issues) {
-            const diags = result.getDiagnostics();
-            var msg: std.ArrayList(u8) = .empty;
-            defer msg.deinit(allocator);
-            const w = msg.writer(allocator);
-            w.print("{{\"type\":\"error\",\"errors\":[", .{}) catch return .fatal;
-            for (diags, 0..) |d, i| {
-                if (i > 0) w.print(",", .{}) catch {};
-                w.print("{{\"file\":\"", .{}) catch {};
-                writeJsonEscaped(w, d.file_path) catch return .fatal;
-                w.print("\",\"message\":\"", .{}) catch {};
-                writeJsonEscaped(w, d.message) catch return .fatal;
-                w.print("\"}}", .{}) catch {};
-            }
-            w.print("]}}", .{}) catch return .fatal;
-
-            const err_json = allocator.dupe(u8, msg.items) catch return .fatal;
-            result.deinit(allocator);
-            return .{ .build_error = err_json };
-        }
-
-        const paths = result.module_paths;
-        result.module_paths = null;
-        const dev_codes = result.module_dev_codes;
-        result.module_dev_codes = null; // 소유권 이전
-        result.deinit(allocator);
-        return if (paths) |p| .{ .success = .{ .paths = p, .dev_codes = dev_codes } } else .fatal;
-    }
-
-    /// 변경된 파일 경로와 dev codes를 매칭하여 HMR update JSON 메시지를 빌드한다.
-    /// 매칭되는 모듈이 없으면 null 반환 (full-reload 폴백).
-    ///
-    /// 출력 형태: {"type":"update","modules":[{"id":"path","code":"__zts_register(...)"}]}
-    fn buildHmrUpdateMessage(
+    /// 변경 모듈 목록에서 HMR update JSON 메시지를 빌드한다.
+    fn buildHmrUpdateFromModules(
         allocator: std.mem.Allocator,
-        changed_paths: []const []const u8,
-        dev_codes: ?[]const BundleResult.ModuleDevCode,
+        modules: []const BundleResult.ModuleDevCode,
     ) ?[]const u8 {
-        const codes = dev_codes orelse return null;
-        if (codes.len == 0) return null;
+        if (modules.len == 0) return null;
 
         var msg: std.ArrayList(u8) = .empty;
         defer msg.deinit(allocator);
         const w = msg.writer(allocator);
 
         w.print("{{\"type\":\"update\",\"modules\":[", .{}) catch return null;
-        var count: usize = 0;
-
-        for (codes) |c| {
-            // dev code의 id (상대/절대) → 변경 경로와 매칭
-            var matched = false;
-            for (changed_paths) |cp| {
-                // 절대 경로가 id를 suffix로 포함하는지 확인 (경로 구분자 체크로 false positive 방지)
-                if (std.mem.eql(u8, cp, c.id) or
-                    (std.mem.endsWith(u8, cp, c.id) and
-                        cp.len > c.id.len and cp[cp.len - c.id.len - 1] == '/'))
-                {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) continue;
-
-            if (count > 0) w.print(",", .{}) catch {};
+        for (modules, 0..) |m, i| {
+            if (i > 0) w.print(",", .{}) catch {};
             w.print("{{\"id\":\"", .{}) catch return null;
-            writeJsonEscaped(w, c.id) catch return null;
+            writeJsonEscaped(w, m.id) catch return null;
             w.print("\",\"code\":\"", .{}) catch return null;
-            writeJsonEscaped(w, c.code) catch return null;
+            writeJsonEscaped(w, m.code) catch return null;
             w.print("\"}}", .{}) catch return null;
-            count += 1;
         }
-
-        if (count == 0) return null;
-
         w.print("]}}", .{}) catch return null;
         return allocator.dupe(u8, msg.items) catch return null;
-    }
-
-    fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8, plugins: []const plugin_mod.Plugin) ?[]const []const u8 {
-        var bundler = Bundler.init(allocator, .{
-            .entry_points = &.{abs_entry},
-            .platform = .browser,
-            .dev_mode = true,
-            .react_refresh = true,
-            .plugins = plugins,
-        });
-        defer bundler.deinit();
-
-        var result = bundler.bundle() catch return null;
-        const paths = result.module_paths;
-        result.module_paths = null; // deinit에서 해제하지 않도록 소유권 이전
-        result.deinit(allocator);
-        return paths;
-    }
-
-    fn freeWatchPaths(allocator: std.mem.Allocator, paths: *[]const []const u8) void {
-        for (paths.*) |p| allocator.free(p);
-        allocator.free(paths.*);
     }
 
     /// root_dir에서 .css 파일을 재귀 탐색하여 절대 경로 목록에 추가.

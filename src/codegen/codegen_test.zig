@@ -7,6 +7,8 @@ const Parser = @import("../parser/parser.zig").Parser;
 const transformer_mod = @import("../transformer/transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
+const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
+const Mapping = @import("sourcemap.zig").Mapping;
 
 /// Arena 기반 테스트 결과. deinit()으로 모든 메모리를 일괄 해제.
 const TestResult = struct {
@@ -17,6 +19,83 @@ const TestResult = struct {
         self.arena.deinit();
     }
 };
+
+/// 소스맵 테스트 결과. output + mappings 접근 가능.
+const SourceMapTestResult = struct {
+    output: []const u8,
+    mappings: []const Mapping,
+    source_map_json: []const u8,
+    arena: std.heap.ArenaAllocator,
+
+    fn deinit(self: *SourceMapTestResult) void {
+        self.arena.deinit();
+    }
+
+    /// 출력에서 target 문자열의 시작 위치에 매핑이 존재하는지 확인.
+    /// 매핑의 original_column이 expected_src_col과 일치하는지도 검증.
+    fn expectMappingAt(self: *const SourceMapTestResult, target: []const u8, expected_src_line: u32, expected_src_col: u32) !void {
+        // 출력에서 target의 위치 (줄/열) 계산
+        const pos = std.mem.indexOf(u8, self.output, target) orelse
+            return error.TargetNotFound;
+        var gen_line: u32 = 0;
+        var gen_col: u32 = 0;
+        for (self.output[0..pos]) |c| {
+            if (c == '\n') {
+                gen_line += 1;
+                gen_col = 0;
+            } else {
+                gen_col += 1;
+            }
+        }
+        // 해당 출력 위치에 가장 가까운 매핑 찾기
+        var best: ?Mapping = null;
+        for (self.mappings) |m| {
+            if (m.generated_line == gen_line and m.generated_column <= gen_col) {
+                if (best == null or m.generated_column > best.?.generated_column) {
+                    best = m;
+                }
+            }
+        }
+        const m = best orelse return error.NoMappingFound;
+        try std.testing.expectEqual(expected_src_line, m.original_line);
+        try std.testing.expectEqual(expected_src_col, m.original_column);
+    }
+};
+
+/// 소스맵 활성화 e2e. 매핑 결과에 접근 가능.
+fn e2eSourceMap(backing_allocator: std.mem.Allocator, source: []const u8) !SourceMapTestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var t = Transformer.init(allocator, &parser.ast, .{});
+    const root = try t.transform();
+
+    var cg = Codegen.initWithOptions(allocator, &t.new_ast, .{ .sourcemap = true });
+    cg.line_offsets = scanner.line_offsets.items;
+    try cg.addSourceFile("input.ts");
+    const output = try cg.generate(root);
+    const json = try cg.generateSourceMap("output.js") orelse "";
+    const json_copy = try allocator.dupe(u8, json);
+
+    // 매핑을 arena에 복사
+    const mappings = if (cg.sm_builder) |*sm|
+        try allocator.dupe(Mapping, sm.mappings.items)
+    else
+        &[_]Mapping{};
+
+    return .{
+        .output = output,
+        .mappings = mappings,
+        .source_map_json = json_copy,
+        .arena = arena,
+    };
+}
 
 /// 기본 e2e: minify 모드 (기존 테스트 호환)
 fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
@@ -421,11 +500,15 @@ test "Codegen: export default function" {
 }
 
 test "Codegen: export all re-export" {
-    // emitExportAll reads binary.left (exported_name), but source is binary.right
-    // NOTE: this is a known issue — source node is omitted in current codegen
     var r = try e2e(std.testing.allocator, "export * from './foo';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export * from ;", r.output);
+    try std.testing.expectEqualStrings("export * from \"./foo\";", r.output);
+}
+
+test "Codegen: export all as namespace" {
+    var r = try e2e(std.testing.allocator, "export * as ns from './foo';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export * as ns from \"./foo\";", r.output);
 }
 
 // ============================================================
@@ -588,11 +671,9 @@ test "Codegen CJS: import namespace" {
 }
 
 test "Codegen CJS: export all" {
-    // emitExportAll reads binary.left (exported_name=None) instead of binary.right (source)
-    // NOTE: this is a known issue — source node is omitted in current codegen
     var r = try e2eCJS(std.testing.allocator, "export * from './bar';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("Object.assign(exports,require());", r.output);
+    try std.testing.expectEqualStrings("Object.assign(exports,require(\"./bar\"));", r.output);
 }
 
 test "Codegen CJS: export named function" {
@@ -2082,4 +2163,78 @@ test "Minify: simple template literal without substitution" {
     var r = try e2eWithOptions(std.testing.allocator, "const s = `hello world`;", .{ .minify_whitespace = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "`hello world`") != null);
+}
+
+// ============================================================
+// Source Map accuracy tests
+// ============================================================
+
+test "SourceMap: variable declaration maps to correct position" {
+    var r = try e2eSourceMap(std.testing.allocator, "const x = 1;");
+    defer r.deinit();
+    // 매핑이 존재해야 한다
+    try std.testing.expect(r.mappings.len > 0);
+    // "const" → 원본 0행 0열
+    try r.expectMappingAt("const", 0, 0);
+}
+
+test "SourceMap: multi-line source maps each line" {
+    var r = try e2eSourceMap(std.testing.allocator, "const a = 1;\nconst b = 2;\n");
+    defer r.deinit();
+    try std.testing.expect(r.mappings.len >= 2);
+    // 첫 줄: "const a" → 0행 0열
+    try r.expectMappingAt("const a", 0, 0);
+    // 둘째 줄: "const b" → 1행 0열
+    try r.expectMappingAt("const b", 1, 0);
+}
+
+test "SourceMap: function declaration position" {
+    var r = try e2eSourceMap(std.testing.allocator, "function foo() { return 1; }");
+    defer r.deinit();
+    try std.testing.expect(r.mappings.len > 0);
+    // "function" → 0행 0열
+    try r.expectMappingAt("function", 0, 0);
+}
+
+test "SourceMap: export all re-export has source mapping" {
+    var r = try e2eSourceMap(std.testing.allocator, "export * from './foo';");
+    defer r.deinit();
+    // 소스 경로가 출력에 있어야 함 (A-1 버그 수정 검증)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"./foo\"") != null);
+    // "export" → 0행 0열
+    try r.expectMappingAt("export", 0, 0);
+}
+
+test "SourceMap: JSON contains version 3" {
+    var r = try e2eSourceMap(std.testing.allocator, "const x = 1;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.source_map_json, "\"version\":3") != null);
+}
+
+test "SourceMap: JSON contains source file" {
+    var r = try e2eSourceMap(std.testing.allocator, "const x = 1;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.source_map_json, "\"input.ts\"") != null);
+}
+
+test "SourceMap: JSON contains non-empty mappings" {
+    var r = try e2eSourceMap(std.testing.allocator, "const x = 1;\nconst y = 2;\n");
+    defer r.deinit();
+    // mappings 필드가 빈 문자열이 아닌지
+    try std.testing.expect(std.mem.indexOf(u8, r.source_map_json, "\"mappings\":\"\"") == null);
+}
+
+test "SourceMap: TS type stripping produces empty output" {
+    var r = try e2eSourceMap(std.testing.allocator, "type Foo = string;");
+    defer r.deinit();
+    // 타입 선언은 출력이 없어야 한다
+    try std.testing.expectEqualStrings("", r.output);
+}
+
+test "SourceMap: second line offset accuracy" {
+    // 2행째 코드의 원본 위치가 정확히 매핑되는지
+    var r = try e2eSourceMap(std.testing.allocator, "const a = 1;\nconst b = foo();");
+    defer r.deinit();
+    // "foo" → 원본 1행, 열은 "const b = " 다음 = 10
+    try r.expectMappingAt("foo", 1, 10);
 }

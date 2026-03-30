@@ -199,9 +199,7 @@ describe("Dev Server", () => {
     expect(receivedAuth).toBe("Bearer token123");
   });
 
-  // CI에서 subprocess plugin spawn + 번들이 느려 flaky.
-  // 로컬에서는 통과. CI 환경 개선 후 활성화.
-  test.skipIf(!!process.env.CI)(
+  test(
     "--serve with --plugin loads CSS via plugin",
     async () => {
       const CORE_PATH = join(import.meta.dir, "../../../packages/core/index.ts");
@@ -225,6 +223,7 @@ describe("Dev Server", () => {
       });
       cleanup = fixture.cleanup;
 
+      // CI에서 subprocess plugin spawn이 느리므로 대기 시간 확보
       const server = await startDevServer(
         [
           "--serve",
@@ -235,13 +234,14 @@ describe("Dev Server", () => {
           "--plugin",
           join(fixture.dir, "plugin.js"),
         ],
-        { timeout: 3000 },
+        { timeout: process.env.CI ? 6000 : 3000 },
       );
       killServer = server.kill;
 
-      // CI에서 서버 준비가 느릴 수 있으므로 retry
+      // retry: CI에서 최대 10회, 로컬 5회
+      const maxAttempts = process.env.CI ? 10 : 5;
       let text = "";
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
           const res = await fetch(`http://localhost:12393/bundle.js`);
           if (res.status === 200) {
@@ -249,13 +249,13 @@ describe("Dev Server", () => {
             break;
           }
         } catch {
-          await new Promise((r) => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, 1000));
         }
       }
 
       expect(text).toContain("style.css");
       expect(text).toContain("__zts_register");
     },
-    15000,
+    30000,
   );
 });

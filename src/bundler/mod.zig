@@ -61,6 +61,8 @@ pub const BundleResult = bundler_core.BundleResult;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
 pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
+pub const incremental = @import("incremental.zig");
+pub const IncrementalBundler = incremental.IncrementalBundler;
 
 test {
     _ = types;
@@ -99,4 +101,6 @@ test {
     _ = @import("types_test.zig");
     _ = @import("module_test.zig");
     _ = @import("plugin_test.zig");
+    _ = incremental;
+    _ = @import("incremental_test.zig");
 }
