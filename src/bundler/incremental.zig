@@ -17,7 +17,7 @@ const BundleOptions = @import("bundler.zig").BundleOptions;
 pub fn pathMatchesModuleId(abs_path: []const u8, module_id: []const u8) bool {
     return std.mem.eql(u8, abs_path, module_id) or
         (std.mem.endsWith(u8, abs_path, module_id) and
-        abs_path.len > module_id.len and abs_path[abs_path.len - module_id.len - 1] == '/');
+            abs_path.len > module_id.len and abs_path[abs_path.len - module_id.len - 1] == '/');
 }
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다.
