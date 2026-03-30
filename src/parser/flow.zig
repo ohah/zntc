@@ -55,7 +55,13 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .percent) {
         const next = try self.peekNextKind();
         if (next == .identifier) {
+            // %checks만 유효 — %foo 같은 임의 identifier는 무시
+            const saved = self.saveState();
             try self.advance(); // skip '%'
+            if (!std.mem.eql(u8, self.tokenText(), "checks")) {
+                self.restoreState(saved);
+                return ty;
+            }
             try self.advance(); // skip 'checks'
             // %checks(expr) 형태도 가능
             if (self.current() == .l_paren) {
@@ -617,6 +623,7 @@ fn parseExactObjectType(self: *Parser) ParseError2!NodeIndex {
     // |} 를 찾을 때까지 토큰 소비. 중첩된 {| |} 도 추적.
     var depth: u32 = 1;
     while (depth > 0 and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         if (self.current() == .l_curly) {
             // {| 중첩 감지
             if (try self.peekNextKind() == .pipe) {
@@ -636,6 +643,7 @@ fn parseExactObjectType(self: *Parser) ParseError2!NodeIndex {
             }
         }
         try self.advance();
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     return try self.ast.addNode(.{

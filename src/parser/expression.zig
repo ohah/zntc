@@ -1355,8 +1355,8 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // Flow TypeCast: (expr: Type) — 괄호 안에서 expression 뒤에 `: Type`이 오면
             if (self.is_flow and self.current() == .colon) {
                 try self.advance(); // skip ':'
-                const cast_type = try self.parseType();
-                _ = cast_type;
+                // 타입을 파싱하여 스캐너 위치를 진행시킴 (AST 노드는 스트리핑됨)
+                _ = try self.parseType();
                 try self.expect(.r_paren);
                 return try self.ast.addNode(.{
                     .tag = .flow_type_cast_expression,
