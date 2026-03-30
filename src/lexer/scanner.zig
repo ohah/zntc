@@ -930,10 +930,16 @@ pub const Scanner = struct {
         // Flow comment 감지: /*:: (블록) 또는 /*: (인라인 타입)
         if (self.has_flow_pragma and self.current < self.source.len and self.source[self.current] == ':') {
             if (self.current + 1 < self.source.len and self.source[self.current + 1] == ':') {
-                // /*:: — 블록 flow comment. 내용을 코드로 파싱.
-                self.current += 2; // skip '::'
-                self.in_flow_comment = true;
-                return false; // 주석 처리 종료 — 이후 next()가 내부 코드를 스캔
+                // /*:: — 블록 flow comment. 내용은 전부 type-only 선언이므로
+                // 스트리핑 대상 → 파싱하지 않고 */ 까지 통째로 스킵.
+                while (self.current + 1 < self.source.len) {
+                    if (self.source[self.current] == '*' and self.source[self.current + 1] == '/') {
+                        self.current += 2; // skip */
+                        break;
+                    }
+                    self.current += 1;
+                }
+                return false;
             }
             // /*: — 인라인 flow comment (: Type */). colon부터 코드로 파싱.
             self.in_flow_comment = true;
