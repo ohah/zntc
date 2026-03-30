@@ -74,6 +74,10 @@ const CliOptions = struct {
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
     /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
     flow: bool = false,
+    /// 커스텀 확장자 탐색 순서 (--resolve-extensions=.ios.ts,.ts,...)
+    resolve_extensions_list: std.ArrayList([]const u8) = .empty,
+    /// package.json 필드 해석 순서 (--main-fields=react-native,browser,main)
+    main_fields_list: std.ArrayList([]const u8) = .empty,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -193,6 +197,18 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.watch = true;
         } else if (std.mem.eql(u8, arg, "--flow")) {
             opts.flow = true;
+        } else if (std.mem.startsWith(u8, arg, "--resolve-extensions=")) {
+            const val = arg["--resolve-extensions=".len..];
+            var it = std.mem.splitScalar(u8, val, ',');
+            while (it.next()) |ext| {
+                if (ext.len > 0) try opts.resolve_extensions_list.append(allocator, ext);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--main-fields=")) {
+            const val = arg["--main-fields=".len..];
+            var it = std.mem.splitScalar(u8, val, ',');
+            while (it.next()) |field| {
+                if (field.len > 0) try opts.main_fields_list.append(allocator, field);
+            }
         } else if (std.mem.eql(u8, arg, "--timing")) {
             opts.timing = true;
         } else if (std.mem.eql(u8, arg, "--bundle")) {
@@ -1065,6 +1081,8 @@ pub fn main() !void {
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
             .flow = opts.flow,
+            .resolve_extensions = opts.resolve_extensions_list.items,
+            .main_fields = opts.main_fields_list.items,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -1737,6 +1755,10 @@ fn printUsage(writer: anytype) !void {
         \\
         \\Flow options:
         \\  --flow                            Enable Flow type stripping (auto-detected via @flow pragma)
+        \\
+        \\Resolve options:
+        \\  --resolve-extensions=<exts>       Comma-separated extension order (e.g. .ios.ts,.ts,.js)
+        \\  --main-fields=<fields>            Comma-separated package.json field order (e.g. react-native,browser,main)
         \\
     , .{});
 }

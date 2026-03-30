@@ -111,6 +111,8 @@ pub const ResolveCache = struct {
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
+        resolve_extensions: []const []const u8 = &.{},
+        main_fields: []const []const u8 = &.{},
     };
 
     pub fn init(
@@ -125,6 +127,8 @@ pub const ResolveCache = struct {
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
         r.alias = alias;
+        r.custom_extensions = options.resolve_extensions;
+        r.main_fields = options.main_fields;
         const has_custom = custom_conditions.len > 0;
         const cond_import = if (has_custom)
             buildConditions(allocator, baseConditionsFor(platform, .static_import), custom_conditions) catch baseConditionsFor(platform, .static_import)
