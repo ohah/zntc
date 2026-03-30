@@ -2548,6 +2548,24 @@ test "Flow: non-flow file ignores flow comments" {
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
 
+test "Flow: empty block comment /*::*/ is harmless" {
+    var r = try e2eFlow(std.testing.allocator, "/*::*/\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: multiply inside flow comment" {
+    var r = try e2eFlow(std.testing.allocator, "/*:: type X = 2; */\nlet y = 3 * 4;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let y=3*4;", r.output);
+}
+
+test "Flow: consecutive flow comments" {
+    var r = try e2eFlow(std.testing.allocator, "/*:: type A = string; */ /*:: type B = number; */\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
 // ================================================================
 // Flow Metro Smoke Test — Metro RN 실제 패턴 통합 테스트
 // ================================================================
