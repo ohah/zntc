@@ -791,19 +791,25 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
     // TS non-null assertion (expr!) — parseCallExpression 내부에서 처리
     // (체이닝 지원: foo()!.bar!.baz)
 
-    // TS: as Type / satisfies Type (체이닝 가능: x as A as B)
+    // TS/Flow: as Type / satisfies Type (체이닝 가능: x as A as B)
+    // Flow는 as만 지원 (satisfies 없음)
     // ASI: `bar\nas(null)` → 줄바꿈 뒤의 as는 타입 캐스트가 아니라 함수 호출
-    // esbuild: as/satisfies 앞에 줄바꿈이 있으면 ASI 적용
     while (self.current() == .identifier and !self.scanner.token.has_newline_before) {
         const text = self.tokenText();
         const is_as = std.mem.eql(u8, text, "as");
-        const is_satisfies = !is_as and std.mem.eql(u8, text, "satisfies");
+        const is_satisfies = !is_as and !self.is_flow and std.mem.eql(u8, text, "satisfies");
         if (!is_as and !is_satisfies) break;
         const expr_start = self.ast.getNode(expr).span.start;
         try self.advance();
         const ty = try self.parseType();
+        const tag: @import("ast.zig").Node.Tag = if (is_satisfies)
+            .ts_satisfies_expression
+        else if (self.is_flow)
+            .flow_as_expression
+        else
+            .ts_as_expression;
         expr = try self.ast.addNode(.{
-            .tag = if (is_satisfies) .ts_satisfies_expression else .ts_as_expression,
+            .tag = tag,
             .span = .{ .start = expr_start, .end = self.currentSpan().start },
             .data = .{ .binary = .{ .left = expr, .right = ty, .flags = 0 } },
         });

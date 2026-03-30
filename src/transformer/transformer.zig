@@ -401,6 +401,7 @@ pub const Transformer = struct {
             .ts_non_null_expression,
             .ts_type_assertion,
             .ts_instantiation_expression,
+            .flow_as_expression,
             => self.visitTsExpression(node),
 
             // === 리스트 노드: 자식을 하나씩 방문하며 복사 ===
@@ -467,7 +468,8 @@ pub const Transformer = struct {
                     if (inner_tag == .ts_as_expression or
                         inner_tag == .ts_satisfies_expression or
                         inner_tag == .ts_non_null_expression or
-                        inner_tag == .ts_type_assertion)
+                        inner_tag == .ts_type_assertion or
+                        inner_tag == .flow_as_expression)
                     {
                         return self.visitNode(inner);
                     }
