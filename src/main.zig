@@ -71,6 +71,7 @@ const CliOptions = struct {
     inject_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
     plugin_paths: std.ArrayList([]const u8) = .empty,
+    proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -212,6 +213,33 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--open")) {
             opts.serve_open = true;
+        } else if (std.mem.startsWith(u8, arg, "--proxy")) {
+            // --proxy /api=http://localhost:8080
+            if (i + 1 < args.len) {
+                i += 1;
+                const kv = args[i];
+                if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                    const path_str = kv[0..eq_pos];
+                    const target_str = kv[eq_pos + 1 ..];
+                    // target에서 host:port 추출 (http://host:port)
+                    const after_scheme = if (std.mem.indexOf(u8, target_str, "://")) |s| target_str[s + 3 ..] else target_str;
+                    var target_host: []const u8 = after_scheme;
+                    var target_port: u16 = 80;
+                    if (std.mem.indexOf(u8, after_scheme, ":")) |colon| {
+                        target_host = after_scheme[0..colon];
+                        target_port = std.fmt.parseInt(u16, after_scheme[colon + 1 ..], 10) catch 80;
+                    }
+                    try opts.proxy_list.append(allocator, .{
+                        .path = path_str,
+                        .target = target_str,
+                        .target_host = target_host,
+                        .target_port = target_port,
+                    });
+                } else {
+                    try stderr.print("zts: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
+                    return null;
+                }
+            }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             opts.splitting = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
@@ -900,6 +928,7 @@ pub fn main() !void {
             .open = opts.serve_open,
             .entry_point = entry,
             .plugins = serve_plugin_list.items,
+            .proxy = opts.proxy_list.items,
         }) catch |err| {
             try stderr.print("Error: failed to start dev server: {}\n", .{err});
             return;
