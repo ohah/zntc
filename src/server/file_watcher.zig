@@ -217,142 +217,147 @@ const KqueueBackend = struct {
 };
 
 // ============================================================
-// inotify 백엔드 (Linux)
+// inotify 백엔드 (Linux) — 디렉토리 단위 감시
+//
+// 파일 단위 감시의 구조적 결함(atomic write, inode 추적, 재등록 복잡성)을
+// 해결하기 위해 부모 디렉토리를 감시한다. chokidar/Vite와 동일한 접근.
 // ============================================================
 
 const InotifyBackend = struct {
     inotify_fd: i32,
-    /// watch descriptor → path 매핑
-    wd_map: std.AutoHashMap(i32, []const u8),
-    /// path → wd 역매핑
-    path_map: std.StringHashMap(i32),
+    /// 감시 대상 파일 경로 (allocator 소유)
+    watched_files: std.StringHashMap(void),
+    /// 디렉토리 → wd 매핑
+    dir_wds: std.StringHashMap(i32),
+    /// wd → 디렉토리 경로 역매핑
+    wd_dirs: std.AutoHashMap(i32, []const u8),
     /// 읽기 버퍼
-    read_buf: [4096]u8 = undefined,
+    read_buf: [8192]u8 = undefined,
     result_buf: std.ArrayList(ChangeEvent),
+
+    // 디렉토리 이벤트: 파일 생성/수정/이동/삭제 감지
+    const dir_mask = std.os.linux.IN.MODIFY |
+        std.os.linux.IN.CLOSE_WRITE |
+        std.os.linux.IN.CREATE |
+        std.os.linux.IN.DELETE |
+        std.os.linux.IN.MOVED_FROM |
+        std.os.linux.IN.MOVED_TO;
 
     fn init(allocator: std.mem.Allocator) !InotifyBackend {
         const fd = try posix.inotify_init1(std.os.linux.IN.NONBLOCK | std.os.linux.IN.CLOEXEC);
         return .{
             .inotify_fd = fd,
-            .wd_map = std.AutoHashMap(i32, []const u8).init(allocator),
-            .path_map = std.StringHashMap(i32).init(allocator),
+            .watched_files = std.StringHashMap(void).init(allocator),
+            .dir_wds = std.StringHashMap(i32).init(allocator),
+            .wd_dirs = std.AutoHashMap(i32, []const u8).init(allocator),
             .result_buf = .empty,
         };
     }
 
     fn deinit(self: *InotifyBackend, allocator: std.mem.Allocator) void {
-        var it = self.wd_map.iterator();
-        while (it.next()) |entry| {
-            allocator.free(entry.value_ptr.*);
-        }
-        self.wd_map.deinit();
-        self.path_map.deinit();
+        // watched_files 키 해제
+        var fit = self.watched_files.keyIterator();
+        while (fit.next()) |key| allocator.free(key.*);
+        self.watched_files.deinit();
+
+        // dir_wds 키 해제 (wd_dirs의 value와 같은 메모리)
+        var dit = self.dir_wds.keyIterator();
+        while (dit.next()) |key| allocator.free(key.*);
+        self.dir_wds.deinit();
+        self.wd_dirs.deinit();
+
         self.result_buf.deinit(allocator);
         posix.close(self.inotify_fd);
     }
 
-    // Node.js writeFile 등이 CLOSE_WRITE를 발생시키므로 MODIFY만으로는 부족.
-    // atomic write (rename)를 감지하려면 부모 디렉토리 감시가 필요하지만,
-    // 파일 단위 감시에서는 DELETE_SELF/MOVE_SELF 후 재등록으로 대응.
-    const watch_mask = std.os.linux.IN.MODIFY |
-        std.os.linux.IN.CLOSE_WRITE |
-        std.os.linux.IN.DELETE_SELF |
-        std.os.linux.IN.MOVE_SELF;
-
     fn addPath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) !void {
-        if (self.path_map.contains(path)) return;
+        if (self.watched_files.contains(path)) return;
 
-        // 존재하지 않는 파일은 스킵 (kqueue와 동일 동작)
-        const wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch return;
+        // 파일의 부모 디렉토리 추출
+        const dir_path = std.fs.path.dirname(path) orelse return;
+
+        // 디렉토리를 아직 감시하지 않으면 등록
+        if (!self.dir_wds.contains(dir_path)) {
+            const wd = posix.inotify_add_watch(self.inotify_fd, dir_path, dir_mask) catch return;
+            const dir_owned = try allocator.dupe(u8, dir_path);
+            try self.dir_wds.put(dir_owned, wd);
+            try self.wd_dirs.put(wd, dir_owned);
+        }
 
         const path_owned = try allocator.dupe(u8, path);
-        try self.wd_map.put(wd, path_owned);
-        try self.path_map.put(path_owned, wd);
+        try self.watched_files.put(path_owned, {});
     }
 
     fn removePath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) void {
-        if (self.path_map.fetchRemove(path)) |kv| {
-            const wd = kv.value;
-            // inotify_rm_watch
-            _ = std.os.linux.inotify_rm_watch(self.inotify_fd, wd);
-            if (self.wd_map.fetchRemove(wd)) |wkv| {
-                allocator.free(wkv.value);
-            }
+        if (self.watched_files.fetchRemove(path)) |kv| {
+            allocator.free(kv.key);
         }
+        // 디렉토리 watch는 유지 (다른 파일이 같은 디렉토리에 있을 수 있으므로)
     }
 
     fn clearPaths(self: *InotifyBackend, allocator: std.mem.Allocator) void {
-        var it = self.wd_map.iterator();
-        while (it.next()) |entry| {
-            _ = std.os.linux.inotify_rm_watch(self.inotify_fd, entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
+        var fit = self.watched_files.keyIterator();
+        while (fit.next()) |key| allocator.free(key.*);
+        self.watched_files.clearRetainingCapacity();
+
+        // 디렉토리 watch도 해제
+        var dit = self.dir_wds.iterator();
+        while (dit.next()) |entry| {
+            _ = std.os.linux.inotify_rm_watch(self.inotify_fd, entry.value_ptr.*);
+            allocator.free(entry.key_ptr.*);
         }
-        self.wd_map.clearRetainingCapacity();
-        self.path_map.clearRetainingCapacity();
+        self.dir_wds.clearRetainingCapacity();
+        self.wd_dirs.clearRetainingCapacity();
     }
 
     fn waitForChanges(self: *InotifyBackend, allocator: std.mem.Allocator, timeout_ms: u32) ![]const ChangeEvent {
         self.result_buf.clearRetainingCapacity();
 
-        // poll로 timeout 대기
         var fds = [_]std.posix.pollfd{.{
             .fd = self.inotify_fd,
             .events = std.posix.POLL.IN,
             .revents = 0,
         }};
         const poll_result = try std.posix.poll(&fds, @intCast(timeout_ms));
-        if (poll_result == 0) return self.result_buf.items; // timeout
+        if (poll_result == 0) return self.result_buf.items;
 
-        // inotify 이벤트 읽기
         const n = std.posix.read(self.inotify_fd, &self.read_buf) catch return self.result_buf.items;
         var offset: usize = 0;
-        // 재등록이 필요한 경로 (atomic write로 inode가 바뀐 경우)
-        var rewatch_count: usize = 0;
-        var rewatch_paths: [64][]const u8 = undefined;
 
         while (offset < n) {
             const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&self.read_buf[offset]));
             offset += @sizeOf(std.os.linux.inotify_event) + event.len;
 
-            const path = self.wd_map.get(event.wd) orelse continue;
-            const is_delete = event.mask & std.os.linux.IN.DELETE_SELF != 0;
-            const is_move = event.mask & std.os.linux.IN.MOVE_SELF != 0;
+            // 이벤트에서 파일 이름 추출
+            if (event.len == 0) continue;
+            const name_ptr: [*]const u8 = @ptrCast(@as([*]const u8, @ptrCast(event)) + @sizeOf(std.os.linux.inotify_event));
+            const name = std.mem.sliceTo(name_ptr[0..event.len], 0);
+            if (name.len == 0) continue;
 
-            const kind: ChangeKind = if (is_delete or is_move) .deleted else .modified;
-            try self.result_buf.append(allocator, .{ .path = path, .kind = kind });
+            // wd → 디렉토리 경로, 디렉토리 + 파일명 → 절대 경로
+            const dir_path = self.wd_dirs.get(event.wd) orelse continue;
 
-            // atomic write (새 파일 → rename)로 inode가 바뀌면 watch가 해제됨.
-            // 같은 경로로 재등록하여 새 inode를 감시.
-            if ((is_delete or is_move) and rewatch_count < rewatch_paths.len) {
-                rewatch_paths[rewatch_count] = path;
-                rewatch_count += 1;
-            }
-        }
+            // 감시 대상 파일인지 확인 (디렉토리 내 모든 파일이 아닌 등록된 파일만)
+            // 절대 경로를 구성하여 watched_files에서 조회
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, name }) catch continue;
 
-        // 삭제/이동된 파일의 watch 재등록 시도
-        for (rewatch_paths[0..rewatch_count]) |path| {
-            // 이전 watch 해제
-            if (self.path_map.get(path)) |old_wd| {
-                _ = self.wd_map.remove(old_wd);
-            }
-            // 새 inode로 재등록 (파일이 아직 없으면 실패)
-            const new_wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch {
-                // 재등록 실패 → path_map에서도 제거하여 메모리 일관성 유지.
-                // path 메모리는 wd_map에서 이미 제거되었으므로 여기서 해제.
-                if (self.path_map.fetchRemove(path)) |kv| {
-                    allocator.free(kv.key);
-                }
-                continue;
-            };
-            self.wd_map.put(new_wd, path) catch {};
-            self.path_map.put(path, new_wd) catch {};
+            if (!self.watched_files.contains(full_path)) continue;
+
+            const is_delete = event.mask & std.os.linux.IN.DELETE != 0;
+            const is_moved_from = event.mask & std.os.linux.IN.MOVED_FROM != 0;
+            const kind: ChangeKind = if (is_delete or is_moved_from) .deleted else .modified;
+
+            // path는 watched_files의 키를 가리키므로 안전
+            const watched_path = self.watched_files.getKey(full_path) orelse continue;
+            try self.result_buf.append(allocator, .{ .path = watched_path, .kind = kind });
         }
 
         return self.result_buf.items;
     }
 
     fn watchCount(self: *const InotifyBackend) usize {
-        return self.path_map.count();
+        return self.watched_files.count();
     }
 };
 

@@ -121,8 +121,6 @@ test.describe("Dev Server E2E", () => {
     expect(sm.mappings.length).toBeGreaterThan(0);
   });
 
-  // Linux CI에서 inotify 타이밍 불안정 — macOS kqueue/로컬에서는 통과
-  test.skip(!!process.env.CI && process.platform === "linux", "inotify timing on Linux CI");
   test("파일 변경 시 HMR update 메시지를 수신한다", async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
 
