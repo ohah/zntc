@@ -251,12 +251,19 @@ const InotifyBackend = struct {
         posix.close(self.inotify_fd);
     }
 
+    // Node.js writeFile 등이 CLOSE_WRITE를 발생시키므로 MODIFY만으로는 부족.
+    // atomic write (rename)를 감지하려면 부모 디렉토리 감시가 필요하지만,
+    // 파일 단위 감시에서는 DELETE_SELF/MOVE_SELF 후 재등록으로 대응.
+    const watch_mask = std.os.linux.IN.MODIFY |
+        std.os.linux.IN.CLOSE_WRITE |
+        std.os.linux.IN.DELETE_SELF |
+        std.os.linux.IN.MOVE_SELF;
+
     fn addPath(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) !void {
         if (self.path_map.contains(path)) return;
 
-        const mask = std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF;
         // 존재하지 않는 파일은 스킵 (kqueue와 동일 동작)
-        const wd = posix.inotify_add_watch(self.inotify_fd, path, mask) catch return;
+        const wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch return;
 
         const path_owned = try allocator.dupe(u8, path);
         try self.wd_map.put(wd, path_owned);
@@ -299,19 +306,39 @@ const InotifyBackend = struct {
         // inotify 이벤트 읽기
         const n = std.posix.read(self.inotify_fd, &self.read_buf) catch return self.result_buf.items;
         var offset: usize = 0;
+        // 재등록이 필요한 경로 (atomic write로 inode가 바뀐 경우)
+        var rewatch_count: usize = 0;
+        var rewatch_paths: [64][]const u8 = undefined;
+
         while (offset < n) {
             const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&self.read_buf[offset]));
             offset += @sizeOf(std.os.linux.inotify_event) + event.len;
 
             const path = self.wd_map.get(event.wd) orelse continue;
-            const kind: ChangeKind = if (event.mask & std.os.linux.IN.DELETE_SELF != 0)
-                .deleted
-            else if (event.mask & std.os.linux.IN.MOVE_SELF != 0)
-                .deleted
-            else
-                .modified;
+            const is_delete = event.mask & std.os.linux.IN.DELETE_SELF != 0;
+            const is_move = event.mask & std.os.linux.IN.MOVE_SELF != 0;
 
+            const kind: ChangeKind = if (is_delete or is_move) .deleted else .modified;
             try self.result_buf.append(allocator, .{ .path = path, .kind = kind });
+
+            // atomic write (새 파일 → rename)로 inode가 바뀌면 watch가 해제됨.
+            // 같은 경로로 재등록하여 새 inode를 감시.
+            if ((is_delete or is_move) and rewatch_count < rewatch_paths.len) {
+                rewatch_paths[rewatch_count] = path;
+                rewatch_count += 1;
+            }
+        }
+
+        // 삭제/이동된 파일의 watch 재등록 시도
+        for (rewatch_paths[0..rewatch_count]) |path| {
+            // 이전 watch 해제
+            if (self.path_map.get(path)) |old_wd| {
+                _ = self.wd_map.remove(old_wd);
+            }
+            // 새 inode로 재등록 (파일이 아직 없으면 실패 → 다음 rebuild에서 처리)
+            const new_wd = posix.inotify_add_watch(self.inotify_fd, path, watch_mask) catch continue;
+            self.wd_map.put(new_wd, path) catch {};
+            self.path_map.put(path, new_wd) catch {};
         }
 
         return self.result_buf.items;
