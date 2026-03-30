@@ -34,7 +34,9 @@ const CliOptions = struct {
     is_tokenize: bool = false,
     is_bundle: bool = false,
     is_serve: bool = false,
-    serve_port: u16 = 3000,
+    serve_port: u16 = 12300,
+    serve_host: []const u8 = "localhost",
+    serve_open: bool = false,
     splitting: bool = false,
     external_list: std.ArrayList([]const u8) = .empty,
     define_list: std.ArrayList(DefineEntry) = .empty,
@@ -200,6 +202,16 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     return null;
                 };
             }
+        } else if (std.mem.eql(u8, arg, "--host")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                opts.serve_host = args[i];
+            } else {
+                // --host만 쓰면 0.0.0.0 (네트워크 노출)
+                opts.serve_host = "0.0.0.0";
+            }
+        } else if (std.mem.eql(u8, arg, "--open")) {
+            opts.serve_open = true;
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             opts.splitting = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
@@ -884,6 +896,8 @@ pub fn main() !void {
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
             .port = opts.serve_port,
+            .host = opts.serve_host,
+            .open = opts.serve_open,
             .entry_point = entry,
             .plugins = serve_plugin_list.items,
         }) catch |err| {

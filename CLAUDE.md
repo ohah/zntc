@@ -93,7 +93,9 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 ```
 --serve [dir]                    정적 파일 서버 (기본: .)
 --serve --bundle <entry.ts>      번들+서빙 (HMR 지원)
---port <number>                  서버 포트 (기본: 3000)
+--port <number>                  서버 포트 (기본: 12300)
+--host [addr]                    바인딩 주소 (기본: localhost, 생략 시 0.0.0.0)
+--open                           브라우저 자동 열기
 ```
 
 ### 자동 동작 (esbuild 호환)

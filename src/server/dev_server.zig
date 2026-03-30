@@ -96,6 +96,8 @@ pub const DevServer = struct {
     root_dir: std.fs.Dir,
     root_path: []const u8,
     port: u16,
+    host: []const u8,
+    open: bool,
     tcp_server: ?std.net.Server,
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
@@ -108,7 +110,9 @@ pub const DevServer = struct {
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
-        port: u16 = 3000,
+        port: u16 = 12300,
+        host: []const u8 = "localhost",
+        open: bool = false,
         entry_point: ?[]const u8 = null,
         plugins: []const plugin_mod.Plugin = &.{},
     };
@@ -147,6 +151,8 @@ pub const DevServer = struct {
             .root_dir = root_dir,
             .root_path = options.root_dir,
             .port = options.port,
+            .host = options.host,
+            .open = options.open,
             .tcp_server = null,
             .entry_point = options.entry_point,
             .abs_entry = abs_entry,
@@ -161,22 +167,35 @@ pub const DevServer = struct {
     }
 
     pub fn start(self: *DevServer) !void {
-        const address = std.net.Address.parseIp4("0.0.0.0", self.port) catch unreachable;
+        // host 바인딩: "localhost" → 127.0.0.1, "0.0.0.0" → 모든 인터페이스
+        const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
+        const address = std.net.Address.parseIp4(bind_ip, self.port) catch {
+            getLog().print("zts: invalid host address: {s}\n", .{self.host}) catch {};
+            return error.InvalidAddress;
+        };
         self.tcp_server = address.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            getLog().print("zts: failed to listen on port {d}: {}\n", .{ self.port, err }) catch {};
+            getLog().print("zts: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
             return err;
         };
 
         const w = getLog();
         w.print("\n  zts dev server\n\n", .{}) catch {};
-        w.print("  Local: http://localhost:{d}/\n", .{self.port}) catch {};
+        w.print("  Local: http://{s}:{d}/\n", .{ self.host, self.port }) catch {};
+        if (std.mem.eql(u8, self.host, "0.0.0.0")) {
+            w.print("  Network: http://0.0.0.0:{d}/\n", .{self.port}) catch {};
+        }
         w.print("  Root:  {s}\n", .{self.root_path}) catch {};
         if (self.entry_point) |ep| {
             w.print("  Entry: {s}\n", .{ep}) catch {};
         }
         w.print("\n", .{}) catch {};
+
+        // --open: 브라우저 자동 열기
+        if (self.open) {
+            self.openBrowser();
+        }
 
         // entry가 있으면 watch 스레드 시작
         if (self.abs_entry != null) {
@@ -188,6 +207,24 @@ pub const DevServer = struct {
         }
 
         self.acceptLoop();
+    }
+
+    fn openBrowser(self: *DevServer) void {
+        const url_buf = std.fmt.allocPrint(self.allocator, "http://{s}:{d}/", .{ self.host, self.port }) catch return;
+        defer self.allocator.free(url_buf);
+        // macOS: open, Linux: xdg-open
+        var child = std.process.Child.init(
+            &.{ "open", url_buf },
+            self.allocator,
+        );
+        child.spawn() catch {
+            // Linux fallback
+            var child2 = std.process.Child.init(
+                &.{ "xdg-open", url_buf },
+                self.allocator,
+            );
+            child2.spawn() catch {};
+        };
     }
 
     fn acceptLoop(self: *DevServer) void {
