@@ -196,6 +196,9 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 if (!next.has_newline_before and
                     (next.kind == .identifier or next.kind == .l_curly or next.kind == .string_literal))
                 {
+                    if (self.is_flow) {
+                        break :blk @import("flow.zig").parseFlowTypeAliasDeclaration(self);
+                    }
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "namespace") or std.mem.eql(u8, text, "module")) {
