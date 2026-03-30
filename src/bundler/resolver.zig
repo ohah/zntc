@@ -41,17 +41,6 @@ pub const ResolveError = error{
     OutOfMemory,
 };
 
-/// JSON object에서 문자열 필드를 읽는다. package.json의 임의 필드 조회용.
-fn getJsonStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    if (obj.get(key)) |val| {
-        switch (val) {
-            .string => |s| return s,
-            else => return null,
-        }
-    }
-    return null;
-}
-
 /// 기본 확장자 탐색 순서.
 /// TypeScript 확장자가 먼저 (TS 프로젝트에서 .ts가 .js보다 우선).
 /// .mts/.cts는 ESM/CJS 모듈 전용 TypeScript 확장자.
@@ -215,25 +204,15 @@ pub const Resolver = struct {
         // 예: fp-ts/function/package.json → { "main": "../lib/function.js", "module": "../es6/function.js" }
         if (try self.tryDirectoryPackageJson(path)) |result| return result;
 
-        // custom_extensions가 있으면 "index" + 각 확장자로 탐색
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
-        if (self.custom_extensions.len > 0) {
-            for (extensions) |ext| {
-                const index_name = std.mem.concat(self.allocator, u8, &.{ "index", ext }) catch
-                    return error.OutOfMemory;
-                defer self.allocator.free(index_name);
-                const index_path = std.fs.path.resolve(self.allocator, &.{ path, index_name }) catch
-                    return error.OutOfMemory;
-                defer self.allocator.free(index_path);
-                if (self.fileExists(index_path)) return self.makeResult(index_path);
-            }
-        } else {
-            for (index_files) |index_name| {
-                const index_path = std.fs.path.resolve(self.allocator, &.{ path, index_name }) catch
-                    return error.OutOfMemory;
-                defer self.allocator.free(index_path);
-                if (self.fileExists(index_path)) return self.makeResult(index_path);
-            }
+        for (extensions) |ext| {
+            const index_name = std.mem.concat(self.allocator, u8, &.{ "index", ext }) catch
+                return error.OutOfMemory;
+            defer self.allocator.free(index_name);
+            const index_path = std.fs.path.resolve(self.allocator, &.{ path, index_name }) catch
+                return error.OutOfMemory;
+            defer self.allocator.free(index_path);
+            if (self.fileExists(index_path)) return self.makeResult(index_path);
         }
         return null;
     }
@@ -247,13 +226,17 @@ pub const Resolver = struct {
         var parsed = pkg_json.parsePackageJson(self.allocator, dir) catch return null;
         defer parsed.deinit();
 
-        const pkg = &parsed.pkg;
+        return self.resolveByMainFields(&parsed, dir_path);
+    }
 
+    /// package.json의 main_fields 또는 기본 순서(module → main)로 엔트리포인트를 찾는다.
+    /// resolvePackage와 tryDirectoryPackageJson에서 공용.
+    fn resolveByMainFields(self: *Resolver, parsed: *pkg_json.ParsedPackageJson, base_dir: []const u8) ResolveError!?ResolveResult {
         if (self.main_fields.len > 0) {
             const obj = parsed.parsed.value.object;
             for (self.main_fields) |field| {
-                if (getJsonStr(obj, field)) |value| {
-                    const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, value }) catch
+                if (pkg_json.getStr(obj, field)) |value| {
+                    const abs_path = std.fs.path.resolve(self.allocator, &.{ base_dir, value }) catch
                         return error.OutOfMemory;
                     defer self.allocator.free(abs_path);
                     if (self.fileExists(abs_path)) {
@@ -265,9 +248,9 @@ pub const Resolver = struct {
                 }
             }
         } else {
-            // module 필드 우선 (ESM)
+            const pkg = &parsed.pkg;
             if (pkg.module) |mod| {
-                const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, mod }) catch
+                const abs_path = std.fs.path.resolve(self.allocator, &.{ base_dir, mod }) catch
                     return error.OutOfMemory;
                 defer self.allocator.free(abs_path);
                 if (self.fileExists(abs_path)) {
@@ -276,10 +259,8 @@ pub const Resolver = struct {
                     return result;
                 }
             }
-
-            // main 필드
             if (pkg.main) |main| {
-                const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, main }) catch
+                const abs_path = std.fs.path.resolve(self.allocator, &.{ base_dir, main }) catch
                     return error.OutOfMemory;
                 defer self.allocator.free(abs_path);
                 if (self.fileExists(abs_path)) return self.makeResult(abs_path);
@@ -381,45 +362,7 @@ pub const Resolver = struct {
             return null;
         }
 
-        // main_fields가 설정되면 지정된 순서로 필드 탐색
-        if (self.main_fields.len > 0) {
-            const obj = parsed.parsed.value.object;
-            for (self.main_fields) |field| {
-                if (getJsonStr(obj, field)) |value| {
-                    const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, value }) catch
-                        return error.OutOfMemory;
-                    defer self.allocator.free(abs_path);
-                    if (self.fileExists(abs_path)) {
-                        var result = (try self.makeResult(abs_path)) orelse return null;
-                        result.is_module_field = std.mem.eql(u8, field, "module");
-                        return result;
-                    }
-                    if (try self.tryExtensions(abs_path)) |result| return result;
-                }
-            }
-        } else {
-            // 기본 순서: module → main
-            // 2. module 필드 (ESM 엔트리, exports 없을 때)
-            if (pkg.module) |mod| {
-                const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, mod }) catch
-                    return error.OutOfMemory;
-                defer self.allocator.free(abs_path);
-                if (self.fileExists(abs_path)) {
-                    var result = (try self.makeResult(abs_path)) orelse return null;
-                    result.is_module_field = true;
-                    return result;
-                }
-            }
-
-            // 3. main 필드 (CJS 엔트리)
-            if (pkg.main) |main| {
-                const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, main }) catch
-                    return error.OutOfMemory;
-                defer self.allocator.free(abs_path);
-                if (self.fileExists(abs_path)) return self.makeResult(abs_path);
-                if (try self.tryExtensions(abs_path)) |result| return result;
-            }
-        }
+        if (try self.resolveByMainFields(&parsed, pkg_dir_path)) |result| return result;
 
         // 4. index 파일 폴백
         return self.tryDirectoryIndex(pkg_dir_path);
