@@ -995,7 +995,7 @@ pub fn main() !void {
         }
 
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
-        const bundle_opts: BundleOptions = .{
+        var bundle_opts: BundleOptions = .{
             .entry_points = &.{abs_entry},
             .format = opts.bundle_format,
             .platform = opts.platform,
@@ -1138,6 +1138,15 @@ pub fn main() !void {
                 }
             }
 
+            // config 파일도 감시 대상에 추가
+            for (opts.plugin_paths.items) |config_path| {
+                const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
+                const config_mt = getFileMtime(abs_config) catch 0;
+                mtime_map.put(abs_config, config_mt) catch {
+                    allocator.free(abs_config);
+                };
+            }
+
             try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
 
             while (true) {
@@ -1145,6 +1154,7 @@ pub fn main() !void {
 
                 // mtime 변경 확인
                 var changed = false;
+                var config_changed = false;
                 var mit = mtime_map.iterator();
                 while (mit.next()) |entry| {
                     const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
@@ -1152,12 +1162,40 @@ pub fn main() !void {
                         try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
                         entry.value_ptr.* = current_mtime;
                         changed = true;
+                        // config 파일이 변경되었는지 확인
+                        for (opts.plugin_paths.items) |config_path| {
+                            const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
+                            defer allocator.free(abs_config);
+                            if (std.mem.eql(u8, entry.key_ptr.*, abs_config)) {
+                                config_changed = true;
+                                break;
+                            }
+                        }
                     }
                 }
 
                 if (!changed) continue;
 
-                // 재번들 (플러그인은 그대로 유지, 새 Bundler 인스턴스 생성)
+                // config 변경 시 플러그인 프로세스 재시작
+                if (config_changed) {
+                    try stderr.print("[watch] Config changed, restarting plugins...\n", .{});
+                    for (subprocess_list.items) |sp| sp.shutdown();
+                    subprocess_list.clearRetainingCapacity();
+                    plugin_list.clearRetainingCapacity();
+
+                    for (opts.plugin_paths.items) |config_path| {
+                        const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
+                            try stderr.print("[watch] Plugin restart failed: {}\n", .{err});
+                            continue;
+                        };
+                        try subprocess_list.append(allocator, sp);
+                        try plugin_list.append(allocator, sp.toPlugin());
+                    }
+                    // bundle_opts의 plugins를 갱신
+                    bundle_opts.plugins = plugin_list.items;
+                }
+
+                // 재번들
                 var rebundler = Bundler.init(allocator, bundle_opts);
                 defer rebundler.deinit();
 
