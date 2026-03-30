@@ -915,7 +915,8 @@ pub fn main() !void {
             try plugin_list.append(allocator, sp.toPlugin());
         }
 
-        var bundler = Bundler.init(allocator, .{
+        // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
+        const bundle_opts: BundleOptions = .{
             .entry_points = &.{abs_entry},
             .format = opts.bundle_format,
             .platform = opts.platform,
@@ -950,7 +951,9 @@ pub fn main() !void {
             .inject = opts.inject_list.items,
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
-        });
+        };
+
+        var bundler = Bundler.init(allocator, bundle_opts);
         defer bundler.deinit();
 
         const result = bundler.bundle() catch |err| {
@@ -1076,42 +1079,7 @@ pub fn main() !void {
                 if (!changed) continue;
 
                 // 재번들 (플러그인은 그대로 유지, 새 Bundler 인스턴스 생성)
-                var rebundler = Bundler.init(allocator, .{
-                    .entry_points = &.{abs_entry},
-                    .format = opts.bundle_format,
-                    .platform = opts.platform,
-                    .external = opts.external_list.items,
-                    .minify_whitespace = opts.minify_whitespace,
-                    .minify_identifiers = opts.minify_identifiers,
-                    .minify_syntax = opts.minify_syntax,
-                    .code_splitting = opts.splitting,
-                    .define = opts.define_list.items,
-                    .experimental_decorators = opts.experimental_decorators orelse false,
-                    .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
-                    .target = opts.target,
-                    .conditions = opts.conditions_list.items,
-                    .timing = opts.timing,
-                    .preserve_symlinks = opts.preserve_symlinks,
-                    .alias = opts.alias_list.items,
-                    .public_path = opts.public_path orelse "",
-                    .banner_js = opts.banner_js,
-                    .footer_js = opts.footer_js,
-                    .global_name = opts.global_name,
-                    .out_extension_js = opts.out_extension_js,
-                    .source_root = opts.source_root,
-                    .sources_content = opts.sources_content,
-                    .charset_utf8 = opts.charset_utf8,
-                    .entry_names = opts.entry_names,
-                    .chunk_names = opts.chunk_names,
-                    .asset_names = opts.asset_names,
-                    .loader_overrides = opts.loader_list.items,
-                    .metafile = opts.metafile_path != null or opts.analyze,
-                    .analyze = opts.analyze,
-                    .legal_comments = opts.legal_comments,
-                    .inject = opts.inject_list.items,
-                    .keep_names = opts.keep_names,
-                    .plugins = plugin_list.items,
-                });
+                var rebundler = Bundler.init(allocator, bundle_opts);
                 defer rebundler.deinit();
 
                 const rebuild_result = rebundler.bundle() catch |err| {
@@ -1140,10 +1108,19 @@ pub fn main() !void {
                     try stderr.print("[watch] Rebuilt → {s} ({d} bytes)\n", .{ out_path, rebuild_result.output.len });
                 }
 
-                // watch 대상 갱신 (새 모듈이 추가되었을 수 있음)
-                if (rebuild_result.module_paths) |paths| {
-                    for (paths) |p| {
-                        if (!mtime_map.contains(p)) {
+                // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
+                {
+                    var kit = mtime_map.keyIterator();
+                    while (kit.next()) |k| allocator.free(k.*);
+                    mtime_map.clearRetainingCapacity();
+
+                    // 엔트리 재추가
+                    const re_entry = allocator.dupe(u8, abs_entry) catch continue;
+                    const re_mtime = getFileMtime(abs_entry) catch 0;
+                    mtime_map.put(re_entry, re_mtime) catch continue;
+
+                    if (rebuild_result.module_paths) |paths| {
+                        for (paths) |p| {
                             const duped = allocator.dupe(u8, p) catch continue;
                             const mt = getFileMtime(p) catch continue;
                             mtime_map.put(duped, mt) catch continue;
