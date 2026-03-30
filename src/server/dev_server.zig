@@ -103,10 +103,22 @@ pub const DevServer = struct {
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
     plugins: []const plugin_mod.Plugin = &.{},
+    proxy: []const ProxyRule = &.{},
     sourcemap_cache: struct {
         mutex: std.Thread.Mutex = .{},
         data: ?[]const u8 = null,
     } = .{},
+
+    pub const ProxyRule = struct {
+        /// 매칭할 경로 prefix (예: "/api")
+        path: []const u8,
+        /// 프록시 대상 (예: "http://localhost:8080")
+        target: []const u8,
+        /// target에서 추출한 host (예: "localhost")
+        target_host: []const u8,
+        /// target에서 추출한 port
+        target_port: u16,
+    };
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
@@ -115,6 +127,7 @@ pub const DevServer = struct {
         open: bool = false,
         entry_point: ?[]const u8 = null,
         plugins: []const plugin_mod.Plugin = &.{},
+        proxy: []const ProxyRule = &.{},
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -157,6 +170,7 @@ pub const DevServer = struct {
             .entry_point = options.entry_point,
             .abs_entry = abs_entry,
             .plugins = options.plugins,
+            .proxy = options.proxy,
         };
     }
 
@@ -207,6 +221,65 @@ pub const DevServer = struct {
         }
 
         self.acceptLoop();
+    }
+
+    /// HTTP 프록시: 클라이언트 요청을 백엔드 서버로 TCP 전달
+    fn handleProxy(self: *DevServer, request: *http.Server.Request, rule: ProxyRule) !void {
+        _ = self;
+        // 백엔드 서버에 TCP 연결
+        const address = std.net.Address.parseIp4(rule.target_host, rule.target_port) catch
+            return error.InvalidAddress;
+        const backend = std.net.tcpConnectToAddress(address) catch
+            return error.ConnectionRefused;
+        defer backend.close();
+
+        // HTTP 요청 재구성: 원본 메서드 + 경로 + 헤더 + 바디를 그대로 전달
+        const method_str = @tagName(request.head.method);
+        var req_buf: [8192]u8 = undefined;
+        // 요청 라인: "GET /api/data HTTP/1.1\r\n"
+        const req_line = std.fmt.bufPrint(&req_buf, "{s} {s} HTTP/1.1\r\nHost: {s}:{d}\r\nConnection: close\r\n\r\n", .{
+            method_str, request.head.target, rule.target_host, rule.target_port,
+        }) catch return error.BufferOverflow;
+        try backend.writeAll(req_line);
+
+        // 백엔드 응답을 읽어서 클라이언트에 전달
+        var response_buf: [64 * 1024]u8 = undefined;
+        var total: usize = 0;
+        while (total < response_buf.len) {
+            const n = backend.read(response_buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+
+        if (total == 0) return error.EmptyResponse;
+
+        // HTTP 응답에서 바디 시작 위치 찾기
+        const header_end = std.mem.indexOf(u8, response_buf[0..total], "\r\n\r\n");
+        if (header_end) |pos| {
+            const body = response_buf[pos + 4 .. total];
+            // Content-Type 추출 시도
+            const headers_section = response_buf[0..pos];
+            var content_type: []const u8 = "application/json";
+            var line_iter = std.mem.splitSequence(u8, headers_section, "\r\n");
+            while (line_iter.next()) |line| {
+                if (std.ascii.startsWithIgnoreCase(line, "content-type:")) {
+                    content_type = std.mem.trimLeft(u8, line["content-type:".len..], " ");
+                    break;
+                }
+            }
+
+            const proxy_headers = cors_headers ++ [_]http.Header{
+                .{ .name = "Content-Type", .value = content_type },
+            };
+            try request.respond(body, .{
+                .extra_headers = &proxy_headers,
+            });
+        } else {
+            // 헤더/바디 구분 없으면 raw 데이터 그대로 반환
+            try request.respond(response_buf[0..total], .{
+                .extra_headers = &cors_headers,
+            });
+        }
     }
 
     fn openBrowser(self: *DevServer) void {
@@ -635,6 +708,19 @@ pub const DevServer = struct {
                 .extra_headers = &cors_headers,
             });
             return;
+        }
+
+        // 프록시 매칭: 경로 prefix가 일치하면 백엔드로 전달
+        for (self.proxy) |rule| {
+            if (std.mem.startsWith(u8, request.head.target, rule.path)) {
+                self.handleProxy(request, rule) catch {
+                    request.respond("502 Bad Gateway", .{
+                        .status = .bad_gateway,
+                        .extra_headers = &cors_headers,
+                    }) catch {};
+                };
+                return;
+            }
         }
 
         if (request.head.method != .GET and request.head.method != .HEAD) {
