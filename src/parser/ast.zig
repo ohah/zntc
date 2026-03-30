@@ -314,6 +314,42 @@ pub const Node = struct {
         ts_class_implements,
 
         // ==============================================================
+        // Flow Types
+        // ==============================================================
+        flow_any_keyword,
+        flow_string_keyword,
+        flow_boolean_keyword,
+        flow_number_keyword,
+        flow_never_keyword,
+        flow_null_keyword,
+        flow_void_keyword,
+        flow_symbol_keyword,
+        flow_bigint_keyword,
+        flow_this_type,
+        /// mixed — Flow의 unknown에 해당하는 top type
+        flow_mixed_keyword,
+        /// empty — Flow의 never에 해당하는 bottom type
+        flow_empty_keyword,
+        flow_type_reference,
+        flow_qualified_name,
+        flow_array_type,
+        flow_tuple_type,
+        flow_union_type,
+        flow_intersection_type,
+        flow_function_type,
+        flow_parenthesized_type,
+        flow_literal_type,
+        flow_type_query,
+        /// ?Type — Flow nullable type (TS에 없는 전용 구문)
+        flow_nullable_type,
+        flow_type_parameter,
+        flow_type_parameter_declaration,
+        flow_type_parameter_instantiation,
+        flow_this_parameter,
+        /// type Foo = Type — Flow type alias
+        flow_type_alias_declaration,
+
+        // ==============================================================
         // TypeScript Expressions
         // ==============================================================
         ts_as_expression,

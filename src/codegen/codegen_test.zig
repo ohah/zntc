@@ -2264,3 +2264,112 @@ test "SourceMap: export all as namespace has mapping" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "utils") != null);
     try r.expectMappingAt("export", 0, 0);
 }
+
+// ================================================================
+// Flow Type Stripping Tests
+// ================================================================
+
+/// Flow e2e: @flow pragma가 포함된 소스를 Flow 모드로 파싱+변환.
+fn e2eFlow(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    parser.is_flow = true; // Flow 모드 강제 활성화
+    _ = try parser.parse();
+
+    var t = Transformer.init(allocator, &parser.ast, .{});
+    const root = try t.transform();
+
+    var cg = Codegen.initWithOptions(allocator, &t.new_ast, .{ .minify_whitespace = true });
+    const output = try cg.generate(root);
+
+    return .{ .output = output, .arena = arena };
+}
+
+test "Flow: basic type annotation stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: string = 'hello';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=\"hello\";", r.output);
+}
+
+test "Flow: number type annotation stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: number = 42;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=42;", r.output);
+}
+
+test "Flow: nullable type ?string stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: ?string = null;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=null;", r.output);
+}
+
+test "Flow: mixed type stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: mixed = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: empty type stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: empty = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: generic type Array<number> stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: Array<number> = [];");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=[];", r.output);
+}
+
+test "Flow: function param and return type stripped" {
+    var r = try e2eFlow(std.testing.allocator, "function f(x: number): string { return ''; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x){return \"\";}", r.output);
+}
+
+test "Flow: type alias declaration stripped" {
+    var r = try e2eFlow(std.testing.allocator, "type ID = string;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: nullable with union ?string | number stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: ?string | number = null;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=null;", r.output);
+}
+
+test "Flow: union type A | B stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: string | number = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: intersection type A & B stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: A & B = {};");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: boolean (bool alias) stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: bool = true;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=true;", r.output);
+}
+
+test "Flow: array type T[] stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: number[] = [];");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=[];", r.output);
+}
+
+test "Flow: type alias with generic stripped" {
+    var r = try e2eFlow(std.testing.allocator, "type List<T> = Array<T>;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}

@@ -22,6 +22,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const jsx = @import("jsx.zig");
 const ts = @import("ts.zig");
+const flow = @import("flow.zig");
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 /// 재귀 함수용 명시적 에러 타입.
@@ -1875,10 +1876,12 @@ pub const Parser = struct {
     }
 
     pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.parseTypeParameterDeclaration(self);
         return ts.parseTsTypeParameterDeclaration(self);
     }
 
     pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.tryParseTypeAnnotation(self);
         return ts.tryParseTypeAnnotation(self);
     }
 
@@ -1898,10 +1901,12 @@ pub const Parser = struct {
     }
 
     pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.tryParseReturnType(self);
         return ts.tryParseReturnType(self);
     }
 
     pub fn parseType(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.parseType(self);
         return ts.parseType(self);
     }
 
@@ -1910,12 +1915,14 @@ pub const Parser = struct {
     }
 
     pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.parseTypeArguments(self);
         return ts.parseTypeArguments(self);
     }
 
     /// 식 컨텍스트에서의 타입 인자 파싱 (speculative).
     /// 최외곽 닫는 `>`가 정확히 `.r_angle`일 때만 성공한다.
     pub fn parseTypeArgumentsInExpression(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_flow) return flow.parseTypeArgumentsInExpression(self);
         return ts.parseTypeArgumentsInExpression(self);
     }
 
