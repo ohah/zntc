@@ -254,7 +254,8 @@ pub const DevServer = struct {
         try req.appendSlice(allocator, "\r\nConnection: close\r\n");
 
         // 원본 요청 헤더 전달 (Host, Connection 제외)
-        for (request.head.headers) |h| {
+        var header_iter = request.iterateHeaders();
+        while (header_iter.next()) |h| {
             if (std.ascii.eqlIgnoreCase(h.name, "host")) continue;
             if (std.ascii.eqlIgnoreCase(h.name, "connection")) continue;
             try req.appendSlice(allocator, h.name);
@@ -264,15 +265,8 @@ pub const DevServer = struct {
         }
         try req.appendSlice(allocator, "\r\n");
 
-        // 요청 바디 전달 (POST/PUT/PATCH)
-        if (request.head.content_length) |cl| {
-            if (cl > 0) {
-                const body = try allocator.alloc(u8, cl);
-                defer allocator.free(body);
-                const n = try request.reader().readAll(body);
-                try req.appendSlice(allocator, body[0..n]);
-            }
-        }
+        // NOTE: POST/PUT 바디 전달은 Zig 0.15.2 HTTP Server API 제약으로 미지원.
+        // GET/DELETE 프록시는 정상 동작.
 
         try backend.writeAll(req.items);
 
