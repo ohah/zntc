@@ -2428,3 +2428,27 @@ test "Flow: export opaque type stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
+
+test "Flow: import type stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "import type { Foo } from 'bar';\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: import typeof default stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "import typeof Foo from 'bar';\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: import typeof namespace stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "import typeof * as ns from 'bar';\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: export type re-export stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "export type { Foo } from 'bar';\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}

@@ -56,12 +56,25 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
     try self.advance(); // skip 'import'
 
-    // TS: import type — type-only import (완전 제거)
+    // TS/Flow: import type — type-only import (완전 제거)
     // import type Foo from 'bar'
     // import type { Foo } from 'bar'
     // import type * as ns from 'bar'
+    // Flow: import typeof — type-only import (완전 제거)
+    // import typeof Foo from 'bar'
+    // import typeof * as ns from 'bar'
     var is_type_only = false;
-    if (self.current() == .identifier and self.isContextual("type")) {
+
+    // Flow: import typeof — typeof는 키워드(.kw_typeof)이므로 별도 감지
+    if (self.is_flow and self.current() == .kw_typeof) {
+        const next = try self.peekNextKind();
+        if (next == .star or next == .identifier or next == .l_curly) {
+            is_type_only = true;
+            try self.advance(); // skip 'typeof'
+        }
+    }
+
+    if (!is_type_only and self.current() == .identifier and self.isContextual("type")) {
         const next = try self.peekNextKind();
         // import type { ... } / import type * / import type Foo from
         // 주의: import type from 'bar'는 'type'이라는 이름의 default import
