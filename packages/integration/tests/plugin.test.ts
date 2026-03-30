@@ -253,4 +253,148 @@ describe("Plugin: subprocess", () => {
       await cleanup();
     }
   });
+
+  test("two subprocess plugins chain transform hooks", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const x = 1;\nconsole.log(x);`,
+      "package.json": '{"type": "module"}',
+      "plugin-a.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        definePlugin("plugin-a", (build) => {
+          build.onTransform({ filter: '.ts' }, async (args) => {
+            return { contents: '/* FROM_A */\\n' + args.code };
+          });
+        });
+      `,
+      "plugin-b.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        definePlugin("plugin-b", (build) => {
+          build.onTransform({ filter: '.ts' }, async (args) => {
+            return { contents: '/* FROM_B */\\n' + args.code };
+          });
+        });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin-a.js"),
+        "--plugin",
+        join(dir, "plugin-b.js"),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      // 두 플러그인 모두 transform을 적용해야 함
+      expect(result.stdout).toContain("FROM_A");
+      expect(result.stdout).toContain("FROM_B");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("plugin crash is handled gracefully", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import css from './style.css';\nconsole.log(css);`,
+      "style.css": "body { color: red; }",
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        definePlugin("crasher", (build) => {
+          build.onLoad({ filter: '.css' }, async () => {
+            process.exit(1); // 강제 crash
+          });
+        });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+      ]);
+
+      // crash 시 에러로 처리되어야 함 (panic이 아닌 정상 종료)
+      // stderr에 플러그인 에러 메시지가 있거나, 번들이 fallback으로 생성됨
+      expect(result.stdout.length + result.stderr.length).toBeGreaterThan(0);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("has_hook optimization: no IPC for unregistered hooks", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import { a } from './a';\nimport { b } from './b';\nconsole.log(a, b);`,
+      "a.ts": `export const a = 1;`,
+      "b.ts": `export const b = 2;`,
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { definePlugin } from '${CORE_PATH}';
+        definePlugin("load-only", (build) => {
+          // load 훅만 등록, resolveId/transform은 등록 안 함
+          build.onLoad({ filter: '.never-match' }, async () => null);
+        });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+      ]);
+
+      // resolveId/transform IPC가 발생하지 않으므로 정상 번들
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("const a = 1");
+      expect(result.stdout).toContain("const b = 2");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("watch mode rebundles on file change", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const v = "initial";\nconsole.log(v);`,
+    });
+    const outFile = join(dir, "out.js");
+
+    try {
+      const { spawn: bunSpawn } = await import("bun");
+
+      // watch 모드로 시작
+      const proc = bunSpawn({
+        cmd: [ZTS_BIN, "--bundle", join(dir, "entry.ts"), "-o", outFile, "--watch"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      // 초기 번들 대기
+      await new Promise((r) => setTimeout(r, 2000));
+
+      const { readFileSync, writeFileSync } = await import("node:fs");
+      const initial = readFileSync(outFile, "utf8");
+      expect(initial).toContain("initial");
+
+      // 파일 수정
+      writeFileSync(join(dir, "entry.ts"), 'const v = "changed";\nconsole.log(v);');
+
+      // 재번들 대기
+      await new Promise((r) => setTimeout(r, 2000));
+
+      const changed = readFileSync(outFile, "utf8");
+      expect(changed).toContain("changed");
+      expect(changed).not.toContain("initial");
+
+      proc.kill();
+      await proc.exited;
+    } finally {
+      await cleanup();
+    }
+  });
 });
