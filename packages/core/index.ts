@@ -2,10 +2,9 @@
  * @zts/core — ZTS Plugin API
  *
  * Vite/Rollup 호환 플러그인 인터페이스.
- * ZTS 바이너리가 config 파일을 Node.js로 실행하고 stdin/stdout JSON으로 통신한다.
+ * ZTS 바이너리가 config 파일을 실행하고 stdin/stdout JSON으로 통신한다.
  *
  * 사용법:
- *   // zts.config.js
  *   import { defineConfig } from '@zts/core';
  *
  *   export default defineConfig({
@@ -19,42 +18,97 @@
  *       }
  *     ]
  *   });
- *
- * 플러그인 훅 (Rollup 호환):
- *   resolveId(source, importer) → { path } | string | null
- *   load(id)                    → string | { contents } | null
- *   transform(code, id)         → string | { contents } | null
  */
 
 import { createInterface } from "node:readline";
 
+// ===== 타입 정의 =====
+
+export interface ResolveResult {
+  path: string;
+}
+
+export interface LoadResult {
+  contents: string;
+}
+
+export interface OutputFile {
+  path: string;
+}
+
+export interface Plugin {
+  name: string;
+  resolveId?(
+    source: string,
+    importer: string,
+  ): Promise<ResolveResult | string | null> | ResolveResult | string | null;
+  load?(id: string): Promise<LoadResult | string | null> | LoadResult | string | null;
+  transform?(
+    code: string,
+    id: string,
+  ): Promise<LoadResult | string | null> | LoadResult | string | null;
+  renderChunk?(
+    code: string,
+    chunkName: string,
+  ): Promise<LoadResult | string | null> | LoadResult | string | null;
+  generateBundle?(outputs: OutputFile[]): Promise<void> | void;
+}
+
+export interface ZtsConfig {
+  plugins: Plugin[];
+}
+
+// ===== IPC 메시지 타입 =====
+
+interface IpcMessage {
+  id: number;
+  type: string;
+  specifier?: string;
+  importer?: string;
+  path?: string;
+  code?: string;
+  moduleId?: string;
+  chunkName?: string;
+  outputs?: OutputFile[];
+}
+
+interface IpcResponse {
+  id: number;
+  result?: unknown;
+  error: string | null;
+  name?: string;
+  filters?: Record<string, string[]>;
+  hooks?: Record<string, boolean>;
+}
+
+// ===== PluginHost =====
+
 class PluginHost {
-  constructor(plugins) {
+  private plugins: Plugin[];
+
+  constructor(plugins: Plugin[]) {
     this.plugins = plugins || [];
   }
 
-  getFilters() {
-    const filters = { resolveId: [], load: [], transform: [] };
-    // Rollup 스타일 플러그인에는 명시적 필터가 없으므로 빈 배열 반환
-    // (Zig 측에서 빈 필터 = 모든 대상에 적용)
-    return filters;
+  getFilters(): Record<string, string[]> {
+    return { resolveId: [], load: [], transform: [] };
   }
 
-  getHooks() {
+  getHooks(): Record<string, boolean> {
     return {
-      resolveId: this.plugins.some((p) => p.resolveId),
-      load: this.plugins.some((p) => p.load),
-      transform: this.plugins.some((p) => p.transform),
-      renderChunk: this.plugins.some((p) => p.renderChunk),
-      generateBundle: this.plugins.some((p) => p.generateBundle),
+      resolveId: this.plugins.some((p) => !!p.resolveId),
+      load: this.plugins.some((p) => !!p.load),
+      transform: this.plugins.some((p) => !!p.transform),
+      renderChunk: this.plugins.some((p) => !!p.renderChunk),
+      generateBundle: this.plugins.some((p) => !!p.generateBundle),
     };
   }
 
-  getPluginNames() {
+  getPluginNames(): string {
     return this.plugins.map((p) => p.name || "unnamed").join(", ");
   }
 
-  async handleMessage(msg) {
+  async handleMessage(msg: IpcMessage): Promise<IpcResponse> {
     switch (msg.type) {
       case "init":
         return {
@@ -81,49 +135,44 @@ class PluginHost {
     }
   }
 
-  // resolveId: first 모드 — 첫 번째 non-null 반환
-  async runResolveId(msg) {
+  private async runResolveId(msg: IpcMessage): Promise<IpcResponse> {
     for (const plugin of this.plugins) {
       if (!plugin.resolveId) continue;
       try {
-        const result = await plugin.resolveId(msg.specifier, msg.importer);
+        const result = await plugin.resolveId(msg.specifier!, msg.importer!);
         if (result == null) continue;
-        // string 반환 시 → { path: string }
         const resolved = typeof result === "string" ? { path: result } : result;
         return { id: msg.id, result: resolved, error: null };
       } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
     return { id: msg.id, result: null, error: null };
   }
 
-  // load: first 모드 — 첫 번째 non-null 반환
-  async runLoad(msg) {
+  private async runLoad(msg: IpcMessage): Promise<IpcResponse> {
     for (const plugin of this.plugins) {
       if (!plugin.load) continue;
       try {
-        const result = await plugin.load(msg.path);
+        const result = await plugin.load(msg.path!);
         if (result == null) continue;
-        // string 반환 시 → { contents: string }
         const loaded = typeof result === "string" ? { contents: result } : result;
         return { id: msg.id, result: loaded, error: null };
       } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
     return { id: msg.id, result: null, error: null };
   }
 
-  // transform: chain 모드 — 모든 플러그인 순차 적용
-  async runTransform(msg) {
-    let currentCode = msg.code;
+  private async runTransform(msg: IpcMessage): Promise<IpcResponse> {
+    let currentCode = msg.code!;
     let changed = false;
 
     for (const plugin of this.plugins) {
       if (!plugin.transform) continue;
       try {
-        const result = await plugin.transform(currentCode, msg.moduleId);
+        const result = await plugin.transform(currentCode, msg.moduleId!);
         if (result == null) continue;
         const code = typeof result === "string" ? result : result.contents;
         if (code != null) {
@@ -131,25 +180,23 @@ class PluginHost {
           changed = true;
         }
       } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
 
-    if (changed) {
-      return { id: msg.id, result: { contents: currentCode }, error: null };
-    }
-    return { id: msg.id, result: null, error: null };
+    return changed
+      ? { id: msg.id, result: { contents: currentCode }, error: null }
+      : { id: msg.id, result: null, error: null };
   }
 
-  // renderChunk: chain 모드 — 청크 코드 후처리
-  async runRenderChunk(msg) {
-    let currentCode = msg.code;
+  private async runRenderChunk(msg: IpcMessage): Promise<IpcResponse> {
+    let currentCode = msg.code!;
     let changed = false;
 
     for (const plugin of this.plugins) {
       if (!plugin.renderChunk) continue;
       try {
-        const result = await plugin.renderChunk(currentCode, msg.chunkName);
+        const result = await plugin.renderChunk(currentCode, msg.chunkName!);
         if (result == null) continue;
         const code = typeof result === "string" ? result : result.contents;
         if (code != null) {
@@ -157,70 +204,54 @@ class PluginHost {
           changed = true;
         }
       } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
 
-    if (changed) {
-      return { id: msg.id, result: { contents: currentCode }, error: null };
-    }
-    return { id: msg.id, result: null, error: null };
+    return changed
+      ? { id: msg.id, result: { contents: currentCode }, error: null }
+      : { id: msg.id, result: null, error: null };
   }
 
-  // generateBundle: 모든 플러그인에 알림
-  async runGenerateBundle(msg) {
+  private async runGenerateBundle(msg: IpcMessage): Promise<IpcResponse> {
     for (const plugin of this.plugins) {
       if (!plugin.generateBundle) continue;
       try {
         await plugin.generateBundle(msg.outputs || []);
       } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name || "plugin"}] ${err}` };
+        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
     return { id: msg.id, result: null, error: null };
   }
 }
 
-/**
- * ZTS config를 정의한다. plugins 배열에 Rollup/Vite 스타일 플러그인 객체를 전달.
- *
- * @param {{ plugins: Plugin[] }} config
- *
- * 사용법:
- *   export default defineConfig({ plugins: [myPlugin()] });
- */
-export function defineConfig(config) {
+// ===== Public API =====
+
+export function defineConfig(config: ZtsConfig): ZtsConfig {
   const host = new PluginHost(config.plugins);
   startIPC(host);
   return config;
 }
 
-/**
- * 단일 플러그인을 직접 실행. config 없이 플러그인 하나만 테스트할 때 사용.
- *
- * @param {Plugin} plugin
- *
- * 사용법:
- *   export default definePlugin({ name: 'my', load(id) { ... } });
- */
-export function definePlugin(plugin) {
+export function definePlugin(plugin: Plugin): Plugin {
   const host = new PluginHost([plugin]);
   startIPC(host);
   return plugin;
 }
 
-function startIPC(host) {
+function startIPC(host: PluginHost): void {
   const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
 
   let processing = false;
-  const queue = [];
+  const queue: string[] = [];
 
-  async function processNext() {
+  async function processNext(): Promise<void> {
     if (processing || queue.length === 0) return;
     processing = true;
-    const line = queue.shift();
+    const line = queue.shift()!;
     try {
-      const msg = JSON.parse(line);
+      const msg: IpcMessage = JSON.parse(line);
       const response = await host.handleMessage(msg);
       process.stdout.write(`${JSON.stringify(response)}\n`);
     } catch (err) {
@@ -230,7 +261,7 @@ function startIPC(host) {
     processNext();
   }
 
-  rl.on("line", (line) => {
+  rl.on("line", (line: string) => {
     queue.push(line);
     processNext();
   });
