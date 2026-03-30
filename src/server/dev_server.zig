@@ -448,7 +448,7 @@ pub const DevServer = struct {
         defer inc_bundler.deinit();
 
         // 초기 번들
-        const initial = inc_bundler.rebuild(&.{}) catch return;
+        const initial = inc_bundler.rebuild() catch return;
         const initial_paths: []const []const u8 = switch (initial) {
             .success => |r| r.paths,
             .build_error => |err_msg| {
@@ -526,7 +526,7 @@ pub const DevServer = struct {
             if (has_css and !has_non_css) continue;
 
             // 증분 재번들: 변경된 모듈만 diff하여 전송
-            const rebuild_result = inc_bundler.rebuild(changed_paths.items) catch continue;
+            const rebuild_result = inc_bundler.rebuild() catch continue;
             switch (rebuild_result) {
                 .success => |result| {
                     if (result.graph_changed) {
