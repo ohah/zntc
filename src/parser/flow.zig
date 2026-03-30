@@ -647,3 +647,48 @@ pub fn parseFlowTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
         .data = .{ .extra = extra },
     });
 }
+
+/// opaque type Foo = Type;
+/// opaque type Foo: SuperType = Type;
+/// export opaque type Foo: SuperType = Type;
+pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'opaque'
+    // 'type' 키워드가 와야 함
+    if (!self.isContextual("type")) {
+        try self.addError(self.currentSpan(), "Expected 'type' after 'opaque'");
+        return try self.ast.addNode(.{ .tag = .invalid, .span = self.currentSpan(), .data = .{ .none = 0 } });
+    }
+    try self.advance(); // skip 'type'
+
+    const name = try self.parseSimpleIdentifier();
+
+    // 선택적 타입 파라미터: opaque type Foo<T>
+    var type_params = NodeIndex.none;
+    if (self.isAtOpeningAngleBracket()) {
+        type_params = try parseTypeParameterDeclaration(self);
+    }
+
+    // 선택적 supertype constraint: opaque type Foo: string
+    var supertype = NodeIndex.none;
+    if (self.current() == .colon) {
+        try self.advance();
+        supertype = try parseType(self);
+    }
+
+    try self.expect(.eq);
+    const value = try parseType(self);
+    _ = try self.eat(.semicolon);
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(name),
+        @intFromEnum(type_params),
+        @intFromEnum(supertype),
+        @intFromEnum(value),
+    });
+    return try self.ast.addNode(.{
+        .tag = .flow_opaque_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
+}

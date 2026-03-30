@@ -2373,3 +2373,39 @@ test "Flow: type alias with generic stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
+
+test "Flow: opaque type stripped" {
+    var r = try e2eFlow(std.testing.allocator, "opaque type ID = string;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: opaque type with supertype stripped" {
+    var r = try e2eFlow(std.testing.allocator, "opaque type ID: string = string;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: opaque type with generic stripped" {
+    var r = try e2eFlow(std.testing.allocator, "opaque type Box<T>: T = T;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: object type with variance stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: { +name: string, -age: number } = {};");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: nested object type stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x: { a: { b: number } } = {};");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: covariant type parameter stripped" {
+    var r = try e2eFlow(std.testing.allocator, "type ReadOnly<+T> = T;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
