@@ -531,12 +531,14 @@ fn transpileFile(
     parser.configureFromExtension(std.fs.path.extension(file_path));
 
     // Flow 모드 설정: --flow CLI 또는 .js.flow 확장자 또는 @flow pragma
-    if (options.flow) {
-        parser.is_flow = true;
-    } else {
-        parser.configureFlowFromPath(file_path);
+    // is_ts와 is_flow는 상호 배타 — TS 파일에서 --flow는 무시
+    if (!parser.is_ts) {
+        if (options.flow) {
+            parser.is_flow = true;
+        } else {
+            parser.configureFlowFromPath(file_path);
+        }
     }
-    // @flow pragma는 첫 토큰 스캔 시 주석에서 감지됨 → parse() 내부에서 applyFlowPragma() 호출
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
