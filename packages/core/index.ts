@@ -6,6 +6,7 @@
  *
  * 사용법:
  *   import { defineConfig } from '@zts/core';
+ *   import fs from 'node:fs';
  *
  *   export default defineConfig({
  *     plugins: [
@@ -13,7 +14,8 @@
  *         name: 'css-loader',
  *         load(id) {
  *           if (!id.endsWith('.css')) return null;
- *           return fs.readFileSync(id, 'utf8');
+ *           const css = fs.readFileSync(id, 'utf8');
+ *           return `export default ${JSON.stringify(css)};`;
  *         }
  *       }
  *     ]
