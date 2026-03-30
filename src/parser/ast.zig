@@ -348,6 +348,8 @@ pub const Node = struct {
         flow_this_parameter,
         /// type Foo = Type — Flow type alias
         flow_type_alias_declaration,
+        /// opaque type Foo = Type — Flow opaque type (supertype constraint 포함 가능)
+        flow_opaque_type,
 
         // ==============================================================
         // TypeScript Expressions
