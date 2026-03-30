@@ -2520,6 +2520,35 @@ test "Flow: parenthesized as cast stripped" {
 }
 
 // ================================================================
+// Flow Comment Types (/*:: */ and /*: */)
+// ================================================================
+
+test "Flow: block comment type /*:: type */ stripped" {
+    var r = try e2eFlow(std.testing.allocator, "/*:: type ID = string; */\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: inline comment type /*: Type */ stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x /*: number */ = 42;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=42;", r.output);
+}
+
+test "Flow: block comment import type stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "/*:: import type {Foo} from 'bar'; */\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: non-flow file ignores flow comments" {
+    // @flow pragma 없으면 /*:: */는 일반 주석으로 처리
+    var r = try e2e(std.testing.allocator, "/*:: type ID = string; */\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+// ================================================================
 // Flow Metro Smoke Test — Metro RN 실제 패턴 통합 테스트
 // ================================================================
 
