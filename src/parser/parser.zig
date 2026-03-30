@@ -102,6 +102,10 @@ pub const Parser = struct {
     /// TypeScript 모드 (.ts/.tsx/.mts). TS에서는 function overload, duplicate export 등이 합법.
     is_ts: bool = false,
 
+    /// Flow 모드 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI).
+    /// Flow 타입 어노테이션 파싱 및 스트리핑을 활성화한다.
+    is_flow: bool = false,
+
     // ================================================================
     // 개별 파서 상태 플래그
     // ================================================================
@@ -273,6 +277,23 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
             self.is_jsx = true;
+        }
+    }
+
+    /// 파일 경로에서 .js.flow 이중 확장자를 감지하여 Flow 모드를 설정한다.
+    /// std.fs.path.extension()은 마지막 확장자(.flow)만 반환하므로
+    /// 전체 경로를 확인해야 한다.
+    pub fn configureFlowFromPath(self: *Parser, file_path: []const u8) void {
+        if (std.mem.endsWith(u8, file_path, ".js.flow")) {
+            self.is_flow = true;
+        }
+    }
+
+    /// 스캐너가 @flow pragma를 감지했으면 is_flow를 활성화한다.
+    /// 파싱 시작 전에 호출해야 한다 (첫 토큰 스캔 시 주석이 이미 처리되므로).
+    pub fn applyFlowPragma(self: *Parser) void {
+        if (self.scanner.has_flow_pragma) {
+            self.is_flow = true;
         }
     }
 

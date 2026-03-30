@@ -70,6 +70,8 @@ pub const ModuleGraph = struct {
     inject_files: []const []const u8 = &.{},
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
+    /// Flow 모드 강제 활성화 (--flow). bundler에서 전파.
+    flow: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -539,6 +541,13 @@ pub const ModuleGraph = struct {
         const ext = std.fs.path.extension(module.path);
         parser.configureForBundler(ext);
 
+        // Flow 모드: --flow CLI 또는 .js.flow 확장자 (pragma는 parse() 내부에서 감지)
+        if (self.flow) {
+            parser.is_flow = true;
+        } else {
+            parser.configureFlowFromPath(module.path);
+        }
+
         // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
         module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
             .esm_mjs
@@ -600,6 +609,7 @@ pub const ModuleGraph = struct {
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
         analyzer.is_ts = parser.is_ts;
+        analyzer.is_flow = parser.is_flow;
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
         // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)

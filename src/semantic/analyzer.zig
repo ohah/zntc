@@ -65,6 +65,9 @@ pub const SemanticAnalyzer = struct {
     /// TS에서는 function overload, duplicate export 등이 합법
     is_ts: bool = false,
 
+    /// Flow 모드 여부 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI)
+    is_flow: bool = false,
+
     /// Top-Level Await 감지 결과. 모듈의 top-level에서 await가 사용되면 true.
     /// 함수/arrow 내부의 await는 포함하지 않음.
     has_top_level_await: bool = false,

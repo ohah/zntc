@@ -1179,6 +1179,65 @@ test "Scanner: no pragma in normal comment" {
     try std.testing.expect(scanner.jsx_frag_pragma == null);
 }
 
+// ================================================================
+// @flow pragma 감지 테스트
+// ================================================================
+
+test "Scanner: @flow pragma in single-line comment" {
+    const source = "// @flow\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
+    try std.testing.expect(scanner.has_flow_pragma);
+}
+
+test "Scanner: @flow pragma in multi-line comment" {
+    const source = "/* @flow */\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(scanner.has_flow_pragma);
+}
+
+test "Scanner: @flow strict pragma" {
+    const source = "// @flow strict\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(scanner.has_flow_pragma);
+}
+
+test "Scanner: @flow in doc comment" {
+    const source = "/**\n * @flow\n */\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(scanner.has_flow_pragma);
+}
+
+test "Scanner: @flowtype is not @flow pragma" {
+    const source = "// @flowtype something\nconst x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(!scanner.has_flow_pragma);
+}
+
+test "Scanner: no @flow pragma in normal comment" {
+    const source = "/* just a comment */ const x = 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expect(!scanner.has_flow_pragma);
+}
+
 // ============================================================
 // Annex B: HTML-like comment tests
 // ============================================================

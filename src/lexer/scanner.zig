@@ -93,6 +93,10 @@ pub const Scanner = struct {
     /// `@jsxImportSource preact` → jsx_import_source_pragma = "preact"
     jsx_import_source_pragma: ?[]const u8 = null,
 
+    /// Flow pragma 감지: 파일 상단 주석에서 `@flow` 또는 `@flow strict`를 발견하면 true.
+    /// 파서가 is_flow 모드를 결정하는 데 사용한다.
+    has_flow_pragma: bool = false,
+
     /// 스캔 중 발견된 주석 리스트 (소스 순서).
     /// codegen에서 주석 보존에 사용한다.
     comments: std.ArrayList(Comment),
@@ -961,8 +965,32 @@ pub const Scanner = struct {
             self.token.has_no_side_effects_comment = true;
         }
 
+        // Flow pragma 감지: @flow 또는 @flow strict
+        self.checkFlowPragma(comment_text);
+
         // JSX pragma 감지 (D026)
         self.checkJSXPragma(comment_text);
+    }
+
+    /// 주석에서 @flow pragma를 감지한다.
+    /// `// @flow`, `/* @flow */`, `// @flow strict` 등을 인식.
+    /// @flow 뒤에 공백/줄끝/주석끝이 아닌 문자가 바로 오면 무시한다
+    /// (예: @flowtype 같은 다른 어노테이션과 구분).
+    fn checkFlowPragma(self: *Scanner, comment_text: []const u8) void {
+        if (self.has_flow_pragma) return; // 이미 감지됨
+        const idx = std.mem.indexOf(u8, comment_text, "@flow") orelse return;
+        const after_pos = idx + "@flow".len;
+        // @flow 뒤에 아무것도 없거나, 공백/*/줄바꿈이면 유효한 pragma
+        if (after_pos >= comment_text.len) {
+            self.has_flow_pragma = true;
+            return;
+        }
+        const next_char = comment_text[after_pos];
+        if (next_char == ' ' or next_char == '\t' or next_char == '\n' or
+            next_char == '\r' or next_char == '*')
+        {
+            self.has_flow_pragma = true;
+        }
     }
 
     /// 주석에서 JSX pragma 디렉티브를 감지한다 (D026).

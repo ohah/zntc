@@ -72,6 +72,8 @@ const CliOptions = struct {
     keep_names: bool = false,
     plugin_paths: std.ArrayList([]const u8) = .empty,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
+    /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
+    flow: bool = false,
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -189,6 +191,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
             opts.watch = true;
+        } else if (std.mem.eql(u8, arg, "--flow")) {
+            opts.flow = true;
         } else if (std.mem.eql(u8, arg, "--timing")) {
             opts.timing = true;
         } else if (std.mem.eql(u8, arg, "--bundle")) {
@@ -445,6 +449,8 @@ const TranspileOptions = struct {
     sources_content: bool = true,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
+    /// Flow 모드 강제 활성화 (--flow)
+    flow: bool = false,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -523,6 +529,14 @@ fn transpileFile(
     var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
+
+    // Flow 모드 설정: --flow CLI 또는 .js.flow 확장자 또는 @flow pragma
+    if (options.flow) {
+        parser.is_flow = true;
+    } else {
+        parser.configureFlowFromPath(file_path);
+    }
+    // @flow pragma는 첫 토큰 스캔 시 주석에서 감지됨 → parse() 내부에서 applyFlowPragma() 호출
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
@@ -545,6 +559,7 @@ fn transpileFile(
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.is_module = parser.is_module;
     analyzer.is_ts = parser.is_ts;
+    analyzer.is_flow = parser.is_flow;
     try analyzer.analyze();
     if (timer) |*t| {
         t_semantic = t.read();
@@ -1046,6 +1061,7 @@ pub fn main() !void {
             .inject = opts.inject_list.items,
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
+            .flow = opts.flow,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -1359,6 +1375,7 @@ pub fn main() !void {
         .source_root = opts.source_root orelse "",
         .sources_content = opts.sources_content,
         .charset_utf8 = opts.charset_utf8,
+        .flow = opts.flow,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
@@ -1714,6 +1731,9 @@ fn printUsage(writer: anytype) !void {
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)
         \\  --use-define-for-class-fields=false  Move fields to constructor (assign semantics)
+        \\
+        \\Flow options:
+        \\  --flow                            Enable Flow type stripping (auto-detected via @flow pragma)
         \\
     , .{});
 }
