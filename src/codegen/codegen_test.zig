@@ -2500,3 +2500,21 @@ test "Flow: declare export type stripped" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
+
+test "Flow: as type cast stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x = {} as Foo;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x={};", r.output);
+}
+
+test "Flow: chained as cast stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x = y as Foo as Bar;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=y;", r.output);
+}
+
+test "Flow: parenthesized as cast stripped" {
+    var r = try e2eFlow(std.testing.allocator, "let x = (y as Foo);");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=y;", r.output);
+}

@@ -352,6 +352,8 @@ pub const Node = struct {
         flow_opaque_type,
         /// interface Foo extends Bar { ... } — Flow interface declaration
         flow_interface_declaration,
+        /// expr as Type — Flow type cast expression
+        flow_as_expression,
 
         // ==============================================================
         // TypeScript Expressions
