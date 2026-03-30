@@ -207,17 +207,17 @@ describe("Dev Server", () => {
       "style.css": "body { color: green; }",
       "package.json": '{"type": "module"}',
       "plugin.js": `
-        import { defineConfig } from '${CORE_PATH}';
-        defineConfig({ plugins: [{
-          name: 'css-loader',
-          async load(id) {
-            if (!id.endsWith('.css')) return null;
-            const fs = await import('node:fs');
-            const css = await fs.promises.readFile(id, 'utf8');
-            return 'export default ' + JSON.stringify(css) + ';';
-          }
-        }] });
-      `,
+          import { defineConfig } from '${CORE_PATH}';
+          defineConfig({ plugins: [{
+            name: 'css-loader',
+            async load(id) {
+              if (!id.endsWith('.css')) return null;
+              const fs = await import('node:fs');
+              const css = await fs.promises.readFile(id, 'utf8');
+              return 'export default ' + JSON.stringify(css) + ';';
+            }
+          }] });
+        `,
     });
     cleanup = fixture.cleanup;
 
@@ -231,13 +231,13 @@ describe("Dev Server", () => {
         "--plugin",
         join(fixture.dir, "plugin.js"),
       ],
-      { timeout: 5000 },
+      { timeout: 3000 },
     );
     killServer = server.kill;
 
     // CI에서 서버 준비가 느릴 수 있으므로 retry
     let text = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const res = await fetch(`http://localhost:12393/bundle.js`);
         if (res.status === 200) {
@@ -245,11 +245,11 @@ describe("Dev Server", () => {
           break;
         }
       } catch {
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
 
     expect(text).toContain("style.css");
     expect(text).toContain("__zts_register");
-  });
+  }, 15000);
 });
