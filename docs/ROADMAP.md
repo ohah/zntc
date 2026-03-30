@@ -23,6 +23,8 @@
 | 10. 배치 B | content hash + naming 패턴 (--entry-names, --chunk-names) | ✅ |
 | 11. 배치 C | Asset 로더 (file, dataurl, text, binary, copy) + --loader CLI | ✅ |
 | 12. 배치 D | metafile, analyze, legal-comments, inject, keepNames | ✅ |
+| 13. Flow | Flow 타입 스트리핑 (TIER 1+2+3), flow.zig 독립 파싱, Metro 410/410 통과 | ✅ |
+| 14. RN Resolve | --resolve-extensions, --main-fields (플랫폼 확장자 + package.json 필드 순서) | ✅ |
 
 ## 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -67,7 +69,7 @@ AST 안정화 ──────────────┬──→ WASM 공개
                          ├──→ CSS 번들링 (별도 파서, 플러그인으로 위임 가능)
                          └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
-독립 (아무 때나): Flow, SIMD
+독립 (아무 때나): ✅ Flow (완료), SIMD
 ```
 
 ## 미지원 기능 (상용 번들러 대비)

@@ -222,14 +222,14 @@ const Module = struct {
   - Haste 모듈 시스템 — Node.js 표준 해석으로 대체
   - 의존성 맵 (숫자 ID) — 표준 import로 대체
   - RAM 번들 — code splitting으로 대체
-- **필요한 RN 특화 기능** (플러그인으로 구현):
-  - `platformResolverPlugin` — `.ios.js`/`.android.js` 확장자 + mainFields: `['react-native', 'browser', 'main']`
-  - `flowStripPlugin` — Flow 타입 제거 (방식 미결정: 직접 구현 vs Hermes C++ 링크 vs WASM)
-  - `preludePlugin` — polyfill/InitializeCore 주입
-  - `assetPlugin` — 이미지 등 에셋 처리
-  - `hermesCompatPlugin` — Hermes 호환 변환
-  - `react-refresh` — HMR (React Fast Refresh)
-  - 글로벌 주입: `__DEV__`, `Platform.OS` 등 — define 치환 (이미 ZTS에 구현됨)
+- **필요한 RN 특화 기능**:
+  - ~~`platformResolverPlugin`~~ — ✅ 코어 옵션으로 구현 (`--resolve-extensions`, `--main-fields`)
+  - ~~`flowStripPlugin`~~ — ✅ ZTS 코어에서 직접 구현 (`--flow`, flow.zig)
+  - `preludePlugin` — polyfill/InitializeCore 주입 (Bungae에서 플러그인으로)
+  - `assetPlugin` — 이미지 등 에셋 처리 (Bungae에서 플러그인으로)
+  - ~~`hermesCompatPlugin`~~ — ✅ `--target=es5`로 대응
+  - ~~`react-refresh`~~ — ✅ ZTS dev server에 내장
+  - ~~글로벌 주입~~ — ✅ `--define:__DEV__=true` 등
 - **핵심 설정**: `strictExecutionOrder: true` (ESM 실행 순서 보장)
 - **Hermes 바이트코드**: `.hbc` 출력 — Hermes 컴파일러와 C ABI 연동
 

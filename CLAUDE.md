@@ -84,6 +84,9 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --legal-comments=<mode>      라이센스 주석 처리 (none, inline, eof, linked, external)
 --inject:<path>              모든 엔트리에 자동 import (반복 가능)
 --keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
+--resolve-extensions=<exts>  확장자 탐색 순서 (쉼표 구분, 예: .ios.ts,.ts,.js)
+--main-fields=<fields>       package.json 필드 순서 (쉼표 구분, 예: react-native,browser,main)
+--flow                       Flow 타입 스트리핑 (@flow pragma 자동 감지)
 --plugin <path>                  JS 플러그인 (subprocess JSON IPC)
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
