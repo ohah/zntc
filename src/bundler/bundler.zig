@@ -99,6 +99,8 @@ pub const BundleOptions = struct {
     keep_names: bool = false,
     /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
     plugins: []const plugin_mod.Plugin = &.{},
+    /// Flow 모드 강제 활성화 (--flow). @flow pragma 없이도 .js/.jsx를 Flow로 파싱.
+    flow: bool = false,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -270,6 +272,7 @@ pub const Bundler = struct {
         graph.asset_names = self.options.asset_names;
         graph.inject_files = self.options.inject;
         graph.plugins = self.options.plugins;
+        graph.flow = self.options.flow;
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);

@@ -22,6 +22,10 @@ const ParseError2 = @import("parser.zig").ParseError2;
 pub fn parse(self: *Parser) !NodeIndex {
     try self.advance(); // 첫 토큰 로드
 
+    // Flow pragma 감지: 첫 토큰 스캔 시 파일 상단 주석이 처리되므로
+    // 이 시점에서 scanner.has_flow_pragma가 설정되어 있다.
+    self.applyFlowPragma();
+
     // module 모드면 항상 strict (D054)
     if (self.is_module) {
         self.is_strict_mode = true;

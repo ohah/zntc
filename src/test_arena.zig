@@ -23,6 +23,7 @@ fn runPipeline(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.is_module = parser.is_module;
     analyzer.is_ts = parser.is_ts;
+    analyzer.is_flow = parser.is_flow;
     try analyzer.analyze();
     if (analyzer.errors.items.len > 0) return error.SemanticError;
 
