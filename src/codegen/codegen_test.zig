@@ -2269,8 +2269,17 @@ test "SourceMap: export all as namespace has mapping" {
 // Flow Type Stripping Tests
 // ================================================================
 
-/// Flow e2e: @flow pragma가 포함된 소스를 Flow 모드로 파싱+변환.
+/// Flow e2e: Flow 모드로 파싱+변환 (script 모드).
 fn e2eFlow(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFlowImpl(backing_allocator, source, false);
+}
+
+/// Flow e2e: Flow 모드로 파싱+변환 (module 모드 — export/import 포함 소스용).
+fn e2eFlowModule(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFlowImpl(backing_allocator, source, true);
+}
+
+fn e2eFlowImpl(backing_allocator: std.mem.Allocator, source: []const u8, is_module: bool) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
@@ -2278,7 +2287,11 @@ fn e2eFlow(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".js");
-    parser.is_flow = true; // Flow 모드 강제 활성화
+    parser.is_flow = true;
+    if (is_module) {
+        parser.is_module = true;
+        scanner.is_module = true;
+    }
     _ = try parser.parse();
 
     var t = Transformer.init(allocator, &parser.ast, .{});
@@ -2406,6 +2419,12 @@ test "Flow: nested object type stripped" {
 
 test "Flow: covariant type parameter stripped" {
     var r = try e2eFlow(std.testing.allocator, "type ReadOnly<+T> = T;\nlet x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: export opaque type stripped" {
+    var r = try e2eFlowModule(std.testing.allocator, "export opaque type ID: string = string;\nlet x = 1;");
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
 }
