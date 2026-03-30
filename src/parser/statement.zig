@@ -201,6 +201,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     }
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
+            } else if (self.is_flow and std.mem.eql(u8, text, "opaque")) {
+                // opaque type Foo = Type; (Flow 전용)
+                const next_opaque = try self.peekNext();
+                if (!next_opaque.has_newline_before and next_opaque.kind == .identifier) {
+                    break :blk self.parseFlowOpaqueType();
+                }
             } else if (!self.is_flow and (std.mem.eql(u8, text, "namespace") or std.mem.eql(u8, text, "module"))) {
                 // namespace/module — TS 전용 (Flow에서는 일반 식별자)
                 const next_ns = try self.peekNext();
