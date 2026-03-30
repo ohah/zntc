@@ -45,11 +45,27 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
-/// Flow는 TS의 type predicate 대신 %checks를 사용하지만, 여기서는 타입만 파싱.
+/// Flow의 `%checks` predicate도 여기서 소비한다 (타입 뒤에 붙을 수 있음).
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
     try self.advance();
-    return parseType(self);
+    const ty = try parseType(self);
+    // %checks — Flow type guard predicate. 타입 스트리핑에서는 무시.
+    // `%`는 .percent 토큰, `checks`는 identifier.
+    if (self.current() == .percent) {
+        const next = try self.peekNextKind();
+        if (next == .identifier) {
+            try self.advance(); // skip '%'
+            try self.advance(); // skip 'checks'
+            // %checks(expr) 형태도 가능
+            if (self.current() == .l_paren) {
+                try self.advance(); // skip '('
+                _ = try self.parseAssignmentExpression();
+                try self.expect(.r_paren);
+            }
+        }
+    }
+    return ty;
 }
 
 /// Flow 타입을 파싱한다.
@@ -247,8 +263,13 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         .identifier => return parseTypeReference(self),
         // 괄호 타입: (Type) 또는 함수 타입: (a: Type) => Type
         .l_paren => return parseParenOrFunctionType(self),
-        // 객체 타입 리터럴: { key: Type, ... }
-        .l_curly => return parseObjectType(self),
+        // exact object type: {| key: Type |} 또는 일반 object type: { key: Type }
+        .l_curly => {
+            if (try self.peekNextKind() == .pipe) {
+                return parseExactObjectType(self);
+            }
+            return parseObjectType(self);
+        },
         // 제네릭 함수 타입: <T>(x: T) => R
         .l_angle => {
             const type_params = try parseTypeParameterDeclaration(self);
@@ -581,6 +602,44 @@ fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     try self.expect(.r_curly);
     return try self.ast.addNode(.{
         .tag = .flow_literal_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .none = 0 },
+    });
+}
+
+/// Exact object type: {| key: Type, ... |}
+/// balanced brace+pipe counting으로 전체를 소비. {| 뒤의 |} 까지.
+fn parseExactObjectType(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip '{'
+    try self.advance(); // skip '|'
+
+    // |} 를 찾을 때까지 토큰 소비. 중첩된 {| |} 도 추적.
+    var depth: u32 = 1;
+    while (depth > 0 and self.current() != .eof) {
+        if (self.current() == .l_curly) {
+            // {| 중첩 감지
+            if (try self.peekNextKind() == .pipe) {
+                depth += 1;
+                try self.advance(); // skip '{'
+                try self.advance(); // skip '|'
+                continue;
+            }
+        }
+        if (self.current() == .pipe) {
+            if (try self.peekNextKind() == .r_curly) {
+                depth -= 1;
+                try self.advance(); // skip '|'
+                try self.advance(); // skip '}'
+                if (depth == 0) break;
+                continue;
+            }
+        }
+        try self.advance();
+    }
+
+    return try self.ast.addNode(.{
+        .tag = .flow_exact_object_type,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .none = 0 },
     });

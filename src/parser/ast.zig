@@ -354,6 +354,10 @@ pub const Node = struct {
         flow_interface_declaration,
         /// expr as Type — Flow type cast expression
         flow_as_expression,
+        /// (expr: Type) — Flow TypeCast expression
+        flow_type_cast_expression,
+        /// {| key: Type |} — Flow exact object type
+        flow_exact_object_type,
 
         // ==============================================================
         // TypeScript Expressions
