@@ -101,6 +101,10 @@ pub const BundleOptions = struct {
     plugins: []const plugin_mod.Plugin = &.{},
     /// Flow 모드 강제 활성화 (--flow). @flow pragma 없이도 .js/.jsx를 Flow로 파싱.
     flow: bool = false,
+    /// 커스텀 확장자 탐색 순서 (--resolve-extensions). 비어있으면 기본값 사용.
+    resolve_extensions: []const []const u8 = &.{},
+    /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 (module → main).
+    main_fields: []const []const u8 = &.{},
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -216,6 +220,8 @@ pub const Bundler = struct {
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
                 .alias = options.alias,
+                .resolve_extensions = options.resolve_extensions,
+                .main_fields = options.main_fields,
             }),
         };
     }
