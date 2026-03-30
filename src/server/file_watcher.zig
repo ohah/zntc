@@ -334,22 +334,22 @@ const InotifyBackend = struct {
             const name = std.mem.sliceTo(name_ptr[0..event.len], 0);
             if (name.len == 0) continue;
 
-            // wd → 디렉토리 경로, 디렉토리 + 파일명 → 절대 경로
             const dir_path = self.wd_dirs.get(event.wd) orelse continue;
 
-            // 감시 대상 파일인지 확인 (디렉토리 내 모든 파일이 아닌 등록된 파일만)
-            // 절대 경로를 구성하여 watched_files에서 조회
+            // 디렉토리 + "/" + 파일명 → 절대 경로 (memcpy, bufPrint 오버헤드 회피)
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, name }) catch continue;
+            if (dir_path.len + 1 + name.len > path_buf.len) continue;
+            @memcpy(path_buf[0..dir_path.len], dir_path);
+            path_buf[dir_path.len] = '/';
+            @memcpy(path_buf[dir_path.len + 1 ..][0..name.len], name);
+            const full_path = path_buf[0 .. dir_path.len + 1 + name.len];
 
-            if (!self.watched_files.contains(full_path)) continue;
+            // getKey 1회로 존재 확인 + 소유 키 획득 (contains+getKey 이중 조회 제거)
+            const watched_path = self.watched_files.getKey(full_path) orelse continue;
 
             const is_delete = event.mask & std.os.linux.IN.DELETE != 0;
             const is_moved_from = event.mask & std.os.linux.IN.MOVED_FROM != 0;
             const kind: ChangeKind = if (is_delete or is_moved_from) .deleted else .modified;
-
-            // path는 watched_files의 키를 가리키므로 안전
-            const watched_path = self.watched_files.getKey(full_path) orelse continue;
             try self.result_buf.append(allocator, .{ .path = watched_path, .kind = kind });
         }
 

@@ -587,7 +587,7 @@ pub const DevServer = struct {
         if (modules.len == 0) return null;
 
         var msg: std.ArrayList(u8) = .empty;
-        defer msg.deinit(allocator);
+        errdefer msg.deinit(allocator);
         const w = msg.writer(allocator);
 
         w.print("{{\"type\":\"update\",\"modules\":[", .{}) catch return null;
@@ -600,7 +600,7 @@ pub const DevServer = struct {
             w.print("\"}}", .{}) catch return null;
         }
         w.print("]}}", .{}) catch return null;
-        return allocator.dupe(u8, msg.items) catch return null;
+        return msg.toOwnedSlice(allocator) catch return null;
     }
 
     /// root_dir에서 .css 파일을 재귀 탐색하여 절대 경로 목록에 추가.
@@ -1006,9 +1006,9 @@ test "collectCssFiles: .css만 수집하고 .js는 제외" {
     defer tmp.cleanup();
 
     // .css 파일 2개 + .js 파일 1개 생성
-    tmp.dir.writeFile(.{ .sub_path = "a.css", .data = "" }) catch unreachable;
-    tmp.dir.writeFile(.{ .sub_path = "b.css", .data = "" }) catch unreachable;
-    tmp.dir.writeFile(.{ .sub_path = "c.js", .data = "" }) catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "a.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(.{ .sub_path = "b.css", .data = "" }) catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(.{ .sub_path = "c.js", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1035,11 +1035,11 @@ test "collectCssFiles: node_modules 내 .css 제외" {
     defer tmp.cleanup();
 
     // 일반 .css
-    tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "" }) catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "style.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     // node_modules/ 하위 .css — 제외되어야 함
-    tmp.dir.makePath("node_modules/pkg") catch unreachable;
-    tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/lib.css", .data = "" }) catch unreachable;
+    tmp.dir.makePath("node_modules/pkg") catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/lib.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1061,11 +1061,11 @@ test "collectCssFiles: 숨김 폴더(.git) 내 .css 제외" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    tmp.dir.writeFile(.{ .sub_path = "main.css", .data = "" }) catch unreachable;
+    tmp.dir.writeFile(.{ .sub_path = "main.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     // .git/ 하위 .css — 숨김 폴더이므로 제외되어야 함
-    tmp.dir.makePath(".git/hooks") catch unreachable;
-    tmp.dir.writeFile(.{ .sub_path = ".git/hooks/style.css", .data = "" }) catch unreachable;
+    tmp.dir.makePath(".git/hooks") catch return error.TestUnexpectedResult;
+    tmp.dir.writeFile(.{ .sub_path = ".git/hooks/style.css", .data = "" }) catch return error.TestUnexpectedResult;
 
     var out: std.ArrayList([]const u8) = .empty;
     defer {

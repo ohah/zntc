@@ -1,12 +1,8 @@
 const std = @import("std");
 const IncrementalBundler = @import("incremental.zig").IncrementalBundler;
-const writeFile = @import("test_helpers.zig").writeFile;
-
-fn absPath(tmp: *std.testing.TmpDir, rel: []const u8) ![]const u8 {
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dp);
-    return try std.fs.path.resolve(std.testing.allocator, &.{ dp, rel });
-}
+const test_helpers = @import("test_helpers.zig");
+const writeFile = test_helpers.writeFile;
+const absPath = test_helpers.absPath;
 
 test "IncrementalBundler: first build is full rebuild" {
     var tmp = std.testing.tmpDir(.{});
