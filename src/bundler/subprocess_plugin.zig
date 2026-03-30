@@ -338,9 +338,13 @@ pub const SubprocessPlugin = struct {
 
 const JsRuntime = enum { bun, node };
 
+var cached_runtime: ?JsRuntime = null;
+
 fn detectRuntime() JsRuntime {
-    if (canExec("bun")) return .bun;
-    return .node;
+    if (cached_runtime) |r| return r;
+    const r: JsRuntime = if (canExec("bun")) .bun else .node;
+    cached_runtime = r;
+    return r;
 }
 
 fn canExec(name: []const u8) bool {
@@ -474,4 +478,19 @@ test "escapeJsonString: windows path backslash" {
     const result = try escapeJsonString(std.testing.allocator, "C:\\Users\\test\\file.ts");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("C:\\\\Users\\\\test\\\\file.ts", result);
+}
+
+test "detectRuntime: returns bun or node" {
+    const runtime = detectRuntime();
+    // 어떤 런타임이든 유효해야 함
+    try std.testing.expect(runtime == .bun or runtime == .node);
+}
+
+test "canExec: valid command returns true" {
+    // 'true'는 POSIX 필수 유틸리티, 항상 exit 0
+    try std.testing.expect(canExec("true"));
+}
+
+test "canExec: invalid command returns false" {
+    try std.testing.expect(!canExec("nonexistent_binary_zts_test_12345"));
 }

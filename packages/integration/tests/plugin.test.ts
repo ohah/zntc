@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts, ZTS_BIN } from "./helpers";
+import { createFixture, runZts, runZtsInDir, ZTS_BIN } from "./helpers";
 import { join, resolve } from "node:path";
 
 const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.js");
@@ -408,6 +408,114 @@ describe("Plugin: subprocess", () => {
 
       proc.kill();
       await proc.exited;
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("Plugin: auto config detection", () => {
+  test("zts.config.js is auto-detected without --plugin", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import css from './style.css';\nconsole.log(css);`,
+      "style.css": "body { color: auto; }",
+      "package.json": '{"type": "module"}',
+      "zts.config.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'auto-css',
+          async load(id) {
+            if (!id.endsWith('.css')) return null;
+            const fs = await import('node:fs');
+            const css = await fs.promises.readFile(id, 'utf8');
+            return 'export default ' + JSON.stringify(css) + ';';
+          }
+        }] });
+      `,
+    });
+
+    try {
+      // --plugin 없이 실행 — zts.config.js 자동 감지
+      const result = await runZtsInDir(dir, ["--bundle", "entry.ts"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain("Using config: zts.config.js");
+      expect(result.stdout).toContain("body { color: auto; }");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("zts.config.ts is auto-detected", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const x: number = 42;\nconsole.log(x);`,
+      "package.json": '{"type": "module"}',
+      "zts.config.ts": `
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'ts-banner',
+          transform(code: string, id: string) {
+            if (!id.endsWith('.ts') || id.includes('zts.config')) return null;
+            return '/* TS-CONFIG */\\n' + code;
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZtsInDir(dir, ["--bundle", "entry.ts"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain("Using config: zts.config.ts");
+      expect(result.stdout).toContain("/* TS-CONFIG */");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("explicit --plugin overrides auto-detection", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const x = 1;\nconsole.log(x);`,
+      "package.json": '{"type": "module"}',
+      "zts.config.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'should-not-load',
+          transform(code) { return '/* AUTO */\\n' + code; }
+        }] });
+      `,
+      "custom.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'custom',
+          transform(code) { return '/* CUSTOM */\\n' + code; }
+        }] });
+      `,
+    });
+
+    try {
+      // --plugin 명시 → 자동 감지 안 함
+      const result = await runZtsInDir(dir, ["--bundle", "entry.ts", "--plugin", "custom.js"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("/* CUSTOM */");
+      expect(result.stdout).not.toContain("/* AUTO */");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("no config file does not cause error", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const x = 42;\nconsole.log(x);`,
+    });
+
+    try {
+      const result = await runZtsInDir(dir, ["--bundle", "entry.ts"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).not.toContain("Using config");
+      expect(result.stdout).toContain("const x = 42");
     } finally {
       await cleanup();
     }

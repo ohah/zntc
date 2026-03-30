@@ -45,6 +45,19 @@ export async function runZts(
   return runCmd([ZTS_BIN, ...args]);
 }
 
+export async function runZtsInDir(
+  dir: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const proc = spawn({ cmd: [ZTS_BIN, ...args], stdout: "pipe", stderr: "pipe", cwd: dir });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 export async function bundleAndRun(
   files: Record<string, string>,
   entry: string = "index.ts",
