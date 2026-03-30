@@ -3220,6 +3220,7 @@ pub const Transformer = struct {
             .flow_this_parameter,
             .flow_type_alias_declaration,
             .flow_opaque_type,
+            .flow_interface_declaration,
             => true,
             else => false,
         };
