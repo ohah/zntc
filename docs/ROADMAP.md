@@ -14,7 +14,7 @@
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 125개 패키지, avg 0.94x, ❌ 0개 | ✅ |
+| Smoke | 131개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.94x, ❌ 0개 | ✅ |
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
@@ -27,6 +27,7 @@
 | 14. RN Resolve | --resolve-extensions, --main-fields (플랫폼 확장자 + package.json 필드 순서) | ✅ |
 | 15. ES 타겟 | --target=es2015~esnext, ES 버전별 다운레벨링 (es2015~es2024 트랜스포머) | ✅ |
 | 16. 엔진 타겟 | --target=chrome80,safari14 엔진 버전별 feature-level 다운레벨링 | ✅ |
+| 17. Web Worker | new Worker(new URL(...)) 자동 감지 → 별도 IIFE 번들 (esbuild 미지원) | ✅ |
 
 ## 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -132,6 +133,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   CSS 번들링 — 현재 플러그인 위임 (자체 CSS 파서는 후순위)
   플러그인 API ✅ 1-2단계 완료 — N-API 3단계는 선택적
   엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
+  Web Worker ✅ 완료 — new Worker(new URL(...)) 자동 감지+IIFE 번들 (esbuild 미지원)
   mangleProps (1주+) — cross-module 프로퍼티 추적
 ```
 
@@ -148,6 +150,12 @@ CSS 번들링/플러그인 API는 JS 전용 경계를 넘어야 함.
 | Tree Shaker | tree_shaker.zig | CSS는 ast=null → side_effects=true 고정 |
 | Emitter 필터 | emitter.zig | CSS 포함으로 필터 확장 + 타입별 emit 분기 |
 | Chunk | chunk.zig | CSS 별도 청크 타입 추가 |
+
+### 최근 버그 수정
+- ✅ JSX 파서: closing tag 뒤 텍스트 파싱 실패 (advanceAfterJSXClose — Vite 템플릿 번들링 가능)
+- ✅ enum re-export: `enum Foo {} export { Foo }` semantic 에러 (predeclareEnumDecl 추가)
+- ✅ CLI memory leak: `--plugin`, `--proxy` 옵션의 ArrayList 미해제
+- ✅ `--external=pkg` 형태 미지원 (기존 `--external pkg`만 가능)
 
 ### 알려진 제한 (Known Limitations)
 
