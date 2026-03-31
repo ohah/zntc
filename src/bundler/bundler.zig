@@ -24,6 +24,7 @@ const OutputFile = emitter.OutputFile;
 const chunk_mod = @import("chunk.zig");
 const Linker = @import("linker.zig").Linker;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
+const module_store = @import("module_store.zig");
 
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
@@ -105,6 +106,9 @@ pub const BundleOptions = struct {
     resolve_extensions: []const []const u8 = &.{},
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 (module → main).
     main_fields: []const []const u8 = &.{},
+    /// 증분 빌드용 모듈 파싱 캐시. null이면 매번 전체 파싱.
+    /// IncrementalBundler가 소유하고 빌드 간 보존한다.
+    module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -209,6 +213,8 @@ pub const Bundler = struct {
     allocator: std.mem.Allocator,
     options: BundleOptions,
     resolve_cache: ResolveCache,
+    /// 외부 소유 ResolveCache 포인터. non-null이면 이것을 사용하고 resolve_cache 필드는 무시.
+    resolve_cache_ref: ?*ResolveCache = null,
 
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) Bundler {
         return .{
@@ -226,8 +232,26 @@ pub const Bundler = struct {
         };
     }
 
+    /// 외부에서 소유하는 ResolveCache를 사용하는 생성자.
+    /// resolve_cache_ref 포인터를 저장하므로 얕은 복사 없이 원본을 직접 참조한다.
+    pub fn initWithResolveCache(allocator: std.mem.Allocator, options: BundleOptions, rc: *ResolveCache) Bundler {
+        return .{
+            .allocator = allocator,
+            .options = options,
+            .resolve_cache = rc.*, // resolve_cache_ref가 우선이므로 이 값은 사용 안 됨
+            .resolve_cache_ref = rc,
+        };
+    }
+
+    /// 실제 사용할 ResolveCache 포인터를 반환.
+    fn getResolveCache(self: *Bundler) *ResolveCache {
+        return self.resolve_cache_ref orelse &self.resolve_cache;
+    }
+
     pub fn deinit(self: *Bundler) void {
-        self.resolve_cache.deinit();
+        if (self.resolve_cache_ref == null) {
+            self.resolve_cache.deinit();
+        }
     }
 
     /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
@@ -322,7 +346,7 @@ pub const Bundler = struct {
         const arena_alloc = arena.allocator();
 
         // worker용 resolve cache (부모와 공유하지 않음)
-        var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.resolve_cache.platform });
+        var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.getResolveCache().platform });
 
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
         worker_graph.loader_overrides = self.options.loader_overrides;
@@ -365,7 +389,6 @@ pub const Bundler = struct {
     }
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
-    /// graph는 함수 내에서 생성+해제. &self.resolve_cache 포인터는 self가 살아있는 동안 유효.
     pub fn bundle(self: *Bundler) !BundleResult {
         const timing = self.options.timing;
         var t_graph: u64 = 0;
@@ -376,8 +399,7 @@ pub const Bundler = struct {
         var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
 
         // 1. 모듈 그래프 구축
-        // graph가 &self.resolve_cache를 참조 — self가 move되지 않으므로 포인터 안전.
-        var graph = ModuleGraph.init(self.allocator, &self.resolve_cache);
+        var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.timing = timing;
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
@@ -387,7 +409,13 @@ pub const Bundler = struct {
         graph.flow = self.options.flow;
         defer graph.deinit();
 
-        try graph.build(self.options.entry_points);
+        // graph.build() 또는 buildIncremental() 호출
+        if (self.options.module_store) |store| {
+            const inc_result = try graph.buildIncremental(self.options.entry_points, store);
+            self.allocator.free(inc_result.reparsed_indices);
+        } else {
+            try graph.build(self.options.entry_points);
+        }
 
         // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드
         var worker_output_map = std.StringHashMap([]const u8).init(self.allocator);
@@ -658,6 +686,17 @@ pub const Bundler = struct {
             }
             break :blk merged;
         } else asset_outputs;
+
+        // 증분 빌드: graph.deinit() 전에 모듈을 store로 이전.
+        // putModule이 parse_arena 소유권을 store로 가져가므로
+        // graph.deinit()에서 이중 해제가 발생하지 않는다.
+        if (self.options.module_store) |store| {
+            for (graph.modules.items) |*m| {
+                if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
+                const mtime = ModuleGraph.getMtime(m.path) catch 0;
+                store.putModule(m.path, m, mtime);
+            }
+        }
 
         return .{
             .output = output,

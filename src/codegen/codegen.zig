@@ -31,6 +31,12 @@ pub const Platform = enum {
     browser,
     node,
     neutral,
+    react_native,
+
+    /// browser와 동일한 동작을 하는 플랫폼인지 (Node 빌트인 대체, browser 필드 등).
+    pub fn isBrowserLike(self: Platform) bool {
+        return self == .browser or self == .react_native;
+    }
 };
 
 /// 들여쓰기 문자 (D044)

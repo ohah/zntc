@@ -34,6 +34,7 @@ pub const bundler_core = @import("bundler.zig");
 pub const mpsc_channel = @import("mpsc_channel.zig");
 pub const plugin = @import("plugin.zig");
 pub const subprocess_plugin = @import("subprocess_plugin.zig");
+pub const module_store = @import("module_store.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -62,6 +63,7 @@ pub const BundleResult = bundler_core.BundleResult;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
 pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
+pub const PersistentModuleStore = module_store.PersistentModuleStore;
 pub const incremental = @import("incremental.zig");
 pub const IncrementalBundler = incremental.IncrementalBundler;
 
@@ -84,6 +86,7 @@ test {
     _ = bundler_core;
     _ = plugin;
     _ = subprocess_plugin;
+    _ = module_store;
 
     // test files
     _ = @import("bundler_test.zig");

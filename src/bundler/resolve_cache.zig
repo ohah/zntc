@@ -77,11 +77,13 @@ pub const ResolveCache = struct {
                 .node => &.{ "require", "node", "default" },
                 .browser => &.{ "require", "browser", "default" },
                 .neutral => &.{ "require", "default" },
+                .react_native => &.{ "require", "react-native", "browser", "default" },
             },
             else => switch (platform) {
                 .node => &.{ "node", "import", "module", "default" },
                 .browser => &.{ "browser", "import", "module", "default" },
                 .neutral => &.{ "import", "module", "default" },
+                .react_native => &.{ "react-native", "browser", "import", "module", "default" },
             },
         };
     }
@@ -269,7 +271,7 @@ pub const ResolveCache = struct {
             if (thread_safe) self.cache_mutex.lock();
             defer if (thread_safe) self.cache_mutex.unlock();
 
-            if (self.platform == .browser and self.isBrowserDisabled(result.path)) {
+            if (self.platform.isBrowserLike() and self.isBrowserDisabled(result.path)) {
                 const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
                 self.putCache(cache_key, .{ .disabled = .{
                     .path = cache_path,

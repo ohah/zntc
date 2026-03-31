@@ -10,7 +10,6 @@ pub fn MpscChannel(comptime T: type) type {
         mutex: std.Thread.Mutex = .{},
         cond: std.Thread.Condition = .{},
         /// 큐 저장소. send()가 뒤에 append, recv()가 앞에서 꺼냄.
-        /// 큐 깊이가 스레드 풀 크기(CPU 코어 수) 수준이므로 orderedRemove(0) 비용 무시 가능.
         queue: std.ArrayListUnmanaged(T) = .empty,
         allocator: std.mem.Allocator,
 
@@ -37,7 +36,7 @@ pub fn MpscChannel(comptime T: type) type {
             while (self.queue.items.len == 0) {
                 self.cond.wait(&self.mutex);
             }
-            return self.queue.orderedRemove(0);
+            return self.queue.swapRemove(0);
         }
     };
 }
