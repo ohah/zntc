@@ -44,10 +44,8 @@ pub const ModuleGraph = struct {
     path_to_module: std.StringHashMap(ModuleIndex),
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
-    /// 병렬 파싱 시 diagnostics 보호용 mutex
+    /// 병렬 워커에서 diagnostics 접근 보호용 mutex
     diag_mutex: std.Thread.Mutex = .{},
-    /// 스캔 파이프라인: 그래프 변형 (addModule, addDependency, sideEffects 캐시) 보호
-    graph_mutex: std.Thread.Mutex = .{},
 
     /// 패키지별 sideEffects 캐시. pkg_dir_path → SideEffects.
     /// 같은 패키지의 여러 모듈이 동일 package.json을 반복 읽지 않도록.
@@ -146,9 +144,10 @@ pub const ModuleGraph = struct {
             try inject_indices.append(self.allocator, idx);
         }
 
-        // Phase 1: 파이프라인 스캔 — 배치 경계 없이 모듈 발견 즉시 파싱+resolve.
-        // 각 워커: parseModule → applySideEffects → resolveImports → 새 모듈 발견 시 스폰.
-        // graph_mutex로 그래프 변형 보호, pending atomic으로 완료 감지.
+        // Phase 1: Producer-Consumer 스캔 (bun/esbuild 방식).
+        // 워커: parseModule + resolve (그래프 변형 없음)
+        // 메인: 결과 적용 + addModule + sideEffects (sole writer)
+        // 워커 실행 중 addModule이 없으므로 modules 배열 realloc 없음 → 포인터 안전.
         for (entry_points) |entry_path| {
             _ = try self.addModule(entry_path);
         }
@@ -159,49 +158,66 @@ pub const ModuleGraph = struct {
 
         var scan_timer: ?std.time.Timer = if (self.timing) std.time.Timer.start() catch null else null;
 
-        if (pool_ok) {
-            // 포인터 안정성: parseModule이 &modules.items[idx] 포인터를 파싱 동안 유지하므로,
-            // 다른 워커의 addModule → modules.append가 ArrayList를 realloc하면 dangling pointer 발생.
-            // 충분한 capacity를 미리 확보하여 스캔 중 realloc을 방지한다.
-            // Module ~300 bytes × 16384 = ~4.8MB. 빌드 종료 시 graph.deinit()에서 해제.
-            // 근본 해결은 Producer-Consumer 모델 (bun/esbuild 방식)로 전환하는 것.
-            try self.modules.ensureTotalCapacity(self.allocator, @max(16384, entry_points.len * 4096));
+        var parse_start: usize = 0;
+        while (parse_start < self.modules.items.len) {
+            const parse_end = self.modules.items.len;
+            const batch_size = parse_end - parse_start;
 
-            // 파이프라인 모드: 각 모듈을 scanWorker로 스폰
-            var wg: std.Thread.WaitGroup = .{};
-            const initial_count = self.modules.items.len;
-            for (0..initial_count) |i| {
-                pool.spawnWg(&wg, scanWorker, .{ self, &pool, &wg, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) });
-            }
-            pool.waitAndWork(&wg);
-        } else {
-            // 스레드 풀 실패 시 순차 폴백 (기존 동작)
-            var parse_start: usize = 0;
-            while (parse_start < self.modules.items.len) {
-                const parse_end = self.modules.items.len;
+            if (batch_size >= 2 and pool_ok) {
+                // resolve 결과 슬롯 할당 (워커가 기록, 메인이 적용)
+                var resolve_outputs = try self.allocator.alloc([]ResolveOutput, batch_size);
+                defer {
+                    for (resolve_outputs) |r| if (r.len > 0) self.allocator.free(r);
+                    self.allocator.free(resolve_outputs);
+                }
+                for (resolve_outputs) |*r| r.* = &.{};
+
+                // 워커 스폰: parse + resolve (그래프 변형 없음)
+                var wg: std.Thread.WaitGroup = .{};
+                for (parse_start..parse_end) |i| {
+                    pool.spawnWg(&wg, scanProducer, .{
+                        self,
+                        @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))),
+                        &resolve_outputs[i - parse_start],
+                    });
+                }
+                pool.waitAndWork(&wg);
+
+                // 메인: 결과 적용 (sole writer — addModule, addDependency, sideEffects)
+                for (parse_start..parse_end) |i| {
+                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
+                    self.modules.items[i].state = .ready;
+
+                    const resolves = resolve_outputs[i - parse_start];
+                    const records = self.modules.items[i].import_records;
+                    for (records, 0..) |record, rec_i| {
+                        if (rec_i < resolves.len) {
+                            try self.applyResolveResult(i, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
+                        }
+                    }
+                }
+            } else {
+                // 순차 폴백 (단일 모듈 또는 스레드 풀 없음)
                 for (parse_start..parse_end) |j| {
                     self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
                 }
-                var i: usize = parse_start;
-                while (i < parse_end) : (i += 1) {
-                    const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
-                    self.applySideEffectsFromPackageJson(&self.modules.items[@intFromEnum(idx)]);
-                    self.modules.items[@intFromEnum(idx)].state = .ready;
+                for (parse_start..parse_end) |i| {
+                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
+                    self.modules.items[i].state = .ready;
                 }
-                i = parse_start;
-                while (i < parse_end) : (i += 1) {
-                    const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
-                    try self.resolveModuleImports(idx);
+                for (parse_start..parse_end) |i| {
+                    try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
                 }
-                parse_start = parse_end;
             }
+
+            parse_start = parse_end;
         }
 
         if (self.timing) {
             if (scan_timer) |*t| {
                 const stderr = std.fs.File.stderr().deprecatedWriter();
                 stderr.print(
-                    \\  Graph scan: {d:.3} ms  ({d} modules, pool={s}, pipeline)
+                    \\  Graph scan: {d:.3} ms  ({d} modules, pool={s})
                     \\
                 , .{
                     @as(f64, @floatFromInt(t.read())) / 1_000_000.0,
@@ -379,30 +395,32 @@ pub const ModuleGraph = struct {
         }
     }
 
-    /// 파이프라인 스캔 워커: parse → sideEffects → resolve → 새 모듈 스폰.
-    /// 배치 경계 없이 모듈 발견 즉시 다음 파싱을 시작한다 (esbuild/bun 방식).
-    /// graph_mutex로 그래프 변형을 보호하고, WaitGroup으로 완료를 감지한다.
-    fn scanWorker(self: *ModuleGraph, pool: *std.Thread.Pool, wg: *std.Thread.WaitGroup, idx: ModuleIndex) void {
+    /// resolve 결과를 저장하는 구조체. scanProducer가 기록, 메인 스레드가 적용.
+    const ResolveOutput = struct {
+        resolved: ?resolver_mod.ResolveResult = null,
+        is_error: bool = false,
+    };
+
+    /// Producer-Consumer 스캔 워커: parse + resolve (그래프 변형 없음).
+    /// 메인 스레드만 addModule/addDependency를 호출하므로,
+    /// 워커 실행 중 modules 배열 realloc이 일어나지 않아 포인터가 안전하다.
+    fn scanProducer(self: *ModuleGraph, idx: ModuleIndex, resolve_out: *[]ResolveOutput) void {
+        // 1. parse (modules[idx]에 직접 기록 — realloc 없으므로 안전)
         self.parseModule(idx);
 
         const mod_idx = @intFromEnum(idx);
-
-        // sideEffects 캐시 + state 전환은 그래프 변형이므로 mutex 보호
-        {
-            self.graph_mutex.lock();
-            defer self.graph_mutex.unlock();
-            if (mod_idx < self.modules.items.len) {
-                self.applySideEffectsFromPackageJson(&self.modules.items[mod_idx]);
-                self.modules.items[mod_idx].state = .ready;
-            }
-        }
-
         if (mod_idx >= self.modules.items.len) return;
+
+        const records = self.modules.items[mod_idx].import_records;
+        if (records.len == 0) return;
+
+        // 2. resolve (thread-safe, 그래프 변형 없음)
+        var results = self.allocator.alloc(ResolveOutput, records.len) catch return;
+        for (results) |*r| r.* = .{};
+
         const module_path = self.modules.items[mod_idx].path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
-        const records = self.modules.items[mod_idx].import_records;
 
-        // Plugin: resolveId 훅용 runner
         const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
             plugin_mod.PluginRunner.init(self.plugins)
         else
@@ -418,54 +436,30 @@ pub const ModuleGraph = struct {
                     },
                 };
                 if (resolve_result) |plugin_result| {
-                    self.graph_mutex.lock();
-                    defer self.graph_mutex.unlock();
-                    self.applyResolveResultAndSpawn(pool, wg, mod_idx, rec_i, record, plugin_result, false);
+                    results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
                     continue;
                 }
             }
 
-            const resolved = self.resolve_cache.resolveThreadSafe(
-                source_dir,
-                record.specifier,
-                record.kind,
-            ) catch |err| switch (err) {
-                error.ModuleNotFound => {
-                    self.graph_mutex.lock();
-                    defer self.graph_mutex.unlock();
-                    self.applyResolveResultAndSpawn(pool, wg, mod_idx, rec_i, record, null, true);
-                    continue;
-                },
-                error.OutOfMemory => {
-                    self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
-                    continue;
+            results[rec_i] = .{
+                .resolved = self.resolve_cache.resolveThreadSafe(
+                    source_dir,
+                    record.specifier,
+                    record.kind,
+                ) catch |err| switch (err) {
+                    error.ModuleNotFound => {
+                        results[rec_i] = .{ .is_error = true };
+                        continue;
+                    },
+                    error.OutOfMemory => {
+                        self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
+                        continue;
+                    },
                 },
             };
-
-            self.graph_mutex.lock();
-            defer self.graph_mutex.unlock();
-            self.applyResolveResultAndSpawn(pool, wg, mod_idx, rec_i, record, resolved, false);
         }
-    }
 
-    /// applyResolveResult + 새 모듈 발견 시 scanWorker 스폰.
-    /// graph_mutex를 이미 잡은 상태에서 호출해야 한다.
-    fn applyResolveResultAndSpawn(
-        self: *ModuleGraph,
-        pool: *std.Thread.Pool,
-        wg: *std.Thread.WaitGroup,
-        mod_idx: usize,
-        rec_i: usize,
-        record: types.ImportRecord,
-        resolved: ?resolver_mod.ResolveResult,
-        is_error: bool,
-    ) void {
-        const prev_count = self.modules.items.len;
-        self.applyResolveResult(mod_idx, rec_i, record, resolved, is_error) catch return;
-        const new_count = self.modules.items.len;
-        for (prev_count..new_count) |i| {
-            pool.spawnWg(wg, scanWorker, .{ self, pool, wg, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) });
-        }
+        resolve_out.* = results;
     }
 
     /// 단일 모듈을 파싱하고 import를 추출한다.
