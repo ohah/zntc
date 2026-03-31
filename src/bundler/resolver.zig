@@ -147,11 +147,20 @@ pub const DirEntryCache = struct {
         while (iter.next() catch null) |entry| {
             const name = self.allocator.dupe(u8, entry.name) catch continue;
             switch (entry.kind) {
-                .file, .sym_link => files.put(name, {}) catch {
+                .file => files.put(name, {}) catch {
                     self.allocator.free(name);
                 },
                 .directory => dirs.put(name, {}) catch {
                     self.allocator.free(name);
+                },
+                .sym_link => {
+                    // symlink는 대상이 파일인지 디렉토리인지 readdir만으로 알 수 없으므로 양쪽에 등록.
+                    // Linux의 bun install이 node_modules에 symlink 디렉토리를 만들기 때문에 필수.
+                    files.put(name, {}) catch {};
+                    const name2 = self.allocator.dupe(u8, entry.name) catch continue;
+                    dirs.put(name2, {}) catch {
+                        self.allocator.free(name2);
+                    };
                 },
                 else => self.allocator.free(name),
             }
