@@ -25,7 +25,7 @@ export async function createFixture(
   };
 }
 
-export async function runCmd(
+async function runCmd(
   cmd: string[],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" });
