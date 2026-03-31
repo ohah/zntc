@@ -4,7 +4,6 @@
 /// `--target=es2020` 같은 ES 버전 타겟도 동일한 bitmask로 수렴.
 ///
 /// 데이터 소스: esbuild compat-table.go + kangax/compat-table 교차검증 (2026-03-31 기준)
-
 const std = @import("std");
 
 // ─── 타겟 엔진 ───
