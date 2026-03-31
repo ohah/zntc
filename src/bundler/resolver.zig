@@ -60,6 +60,118 @@ const index_files: []const []const u8 = &.{ "index.ts", "index.tsx", "index.js",
 
 pub const AliasEntry = types.AliasEntry;
 
+/// 디렉토리 엔트리 캐시 (esbuild 방식).
+/// 디렉토리를 처음 접근할 때 readdir()로 파일 목록을 통째로 읽어 캐시.
+/// 이후 같은 디렉토리의 파일 존재 확인은 syscall 없이 메모리 조회.
+/// 멀티스레드 resolve에서 공유되므로 mutex로 보호.
+pub const DirEntryCache = struct {
+    /// 디렉토리 절대 경로 → 엔트리 집합. null이면 디렉토리가 존재하지 않음.
+    cache: std.StringHashMap(?EntrySet),
+    mutex: std.Thread.Mutex = .{},
+    allocator: std.mem.Allocator,
+
+    const EntrySet = struct {
+        files: std.StringHashMap(void),
+        dirs: std.StringHashMap(void),
+    };
+
+    pub fn init(allocator: std.mem.Allocator) DirEntryCache {
+        return .{
+            .cache = std.StringHashMap(?EntrySet).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *DirEntryCache) void {
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*) |*set| {
+                var fit = set.files.keyIterator();
+                while (fit.next()) |k| self.allocator.free(k.*);
+                set.files.deinit();
+                var dit = set.dirs.keyIterator();
+                while (dit.next()) |k| self.allocator.free(k.*);
+                set.dirs.deinit();
+            }
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.cache.deinit();
+    }
+
+    /// 디렉토리 내 파일 존재 확인. 캐시 미스 시 readdir() 후 캐시.
+    pub fn hasFile(self: *DirEntryCache, dir_path: []const u8, file_name: []const u8) bool {
+        const set = self.getOrLoad(dir_path) orelse return false;
+        return set.files.contains(file_name);
+    }
+
+    /// 디렉토리 내 서브디렉토리 존재 확인.
+    pub fn hasDir(self: *DirEntryCache, dir_path: []const u8, dir_name: []const u8) bool {
+        const set = self.getOrLoad(dir_path) orelse return false;
+        return set.dirs.contains(dir_name);
+    }
+
+    /// 디렉토리 자체가 존재하는지 확인.
+    pub fn dirExists(self: *DirEntryCache, path: []const u8) bool {
+        // 부모 디렉토리의 캐시에서 이 디렉토리 이름을 찾기
+        const parent = std.fs.path.dirname(path) orelse return false;
+        const name = std.fs.path.basename(path);
+        if (name.len == 0) return false;
+        return self.hasDir(parent, name);
+    }
+
+    fn getOrLoad(self: *DirEntryCache, dir_path: []const u8) ?*const EntrySet {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.cache.get(dir_path)) |maybe_set| {
+            if (maybe_set) |*set| return set;
+            return null; // 디렉토리 없음 (캐시된 negative)
+        }
+
+        // 캐시 미스 → readdir
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+            // 디렉토리 없음 → negative 캐시
+            const key = self.allocator.dupe(u8, dir_path) catch return null;
+            self.cache.put(key, null) catch {
+                self.allocator.free(key);
+                return null;
+            };
+            return null;
+        };
+        defer dir.close();
+
+        var files = std.StringHashMap(void).init(self.allocator);
+        var dirs = std.StringHashMap(void).init(self.allocator);
+
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            const name = self.allocator.dupe(u8, entry.name) catch continue;
+            switch (entry.kind) {
+                .file, .sym_link => files.put(name, {}) catch {
+                    self.allocator.free(name);
+                },
+                .directory => dirs.put(name, {}) catch {
+                    self.allocator.free(name);
+                },
+                else => self.allocator.free(name),
+            }
+        }
+
+        const key = self.allocator.dupe(u8, dir_path) catch return null;
+        const set = EntrySet{ .files = files, .dirs = dirs };
+        self.cache.put(key, set) catch {
+            self.allocator.free(key);
+            return null;
+        };
+
+        // cache.get은 포인터 안정적 (StringHashMap 내부 포인터)
+        if (self.cache.getPtr(key)) |ptr| {
+            if (ptr.*) |*s| return s;
+        }
+        return null;
+    }
+};
+
 pub const Resolver = struct {
     allocator: std.mem.Allocator,
     /// 조건 세트 (D064: import kind별로 다를 수 있음).
@@ -79,6 +191,8 @@ pub const Resolver = struct {
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 순서 (module → main).
     /// RN 예: react-native, browser, main, module
     main_fields: []const []const u8 = &.{},
+    /// 디렉토리 엔트리 캐시. null이면 캐시 없이 매번 stat() 호출 (테스트용).
+    dir_cache: ?*DirEntryCache = null,
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
         return .{ .allocator = allocator };
@@ -427,12 +541,22 @@ pub const Resolver = struct {
         };
     }
 
-    fn fileExists(_: *const Resolver, path: []const u8) bool {
+    fn fileExists(self: *const Resolver, path: []const u8) bool {
+        if (self.dir_cache) |cache| {
+            const dir_path = std.fs.path.dirname(path) orelse return false;
+            const file_name = std.fs.path.basename(path);
+            if (file_name.len == 0) return false;
+            // constCast: getOrLoad 내부에서 캐시 write를 위해 mutex 사용
+            return @constCast(cache).hasFile(dir_path, file_name);
+        }
         const stat = std.fs.cwd().statFile(path) catch return false;
         return stat.kind == .file;
     }
 
-    fn dirExists(_: *const Resolver, path: []const u8) bool {
+    fn dirExists(self: *const Resolver, path: []const u8) bool {
+        if (self.dir_cache) |cache| {
+            return @constCast(cache).dirExists(path);
+        }
         var dir = std.fs.cwd().openDir(path, .{}) catch return false;
         dir.close();
         return true;

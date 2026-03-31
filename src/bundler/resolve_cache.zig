@@ -49,6 +49,9 @@ pub const ResolveCache = struct {
     /// 병렬 resolve 시 캐시 접근 보호용 mutex.
     cache_mutex: std.Thread.Mutex = .{},
 
+    /// 디렉토리 엔트리 캐시 — readdir() 결과를 메모리에 보관하여 stat() syscall 대폭 감소.
+    dir_cache: resolver_mod.DirEntryCache,
+
     /// 패키지 디렉토리별 browser 필드 disabled 파일 캐시.
     /// pkg_dir_path → disabled 상대 경로 집합 (null이면 browser 필드 없음).
     browser_disabled_cache: std.StringHashMap(?BrowserDisabledSet),
@@ -139,20 +142,24 @@ pub const ResolveCache = struct {
         else
             baseConditionsFor(platform, .require);
         r.conditions = cond_import;
-        return .{
+        const rc = ResolveCache{
             .allocator = allocator,
             .resolver = r,
             .cache = std.StringHashMap(CachedResult).init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
+            .dir_cache = resolver_mod.DirEntryCache.init(allocator),
             .browser_disabled_cache = std.StringHashMap(?BrowserDisabledSet).init(allocator),
             .conditions_import = cond_import,
             .conditions_require = cond_require,
             .conditions_allocated = has_custom,
         };
+        return rc;
     }
 
     pub fn deinit(self: *ResolveCache) void {
+        self.dir_cache.deinit();
+
         // 캐시된 경로 문자열 해제
         var it = self.cache.iterator();
         while (it.next()) |entry| {
@@ -240,6 +247,7 @@ pub const ResolveCache = struct {
         // 실제 resolve — thread_safe 모드에서는 resolver를 스택 복사하여 conditions 수정 방지
         var local_resolver = self.resolver;
         local_resolver.conditions = self.conditionsFor(kind);
+        local_resolver.dir_cache = &self.dir_cache;
         if (!thread_safe) {
             // 단일 스레드: self.resolver의 conditions를 직접 교체 후 복원
             self.resolver.conditions = local_resolver.conditions;

@@ -264,6 +264,29 @@ pub const Scanner = struct {
     // 공백 스킵
     // ====================================================================
 
+    /// SIMD로 16바이트씩 스캔하여 sentinel 문자가 아닌 바이트를 건너뜀.
+    /// 첫 번째 sentinel 위치에서 멈추거나, 남은 바이트가 16 미만이면 종료.
+    /// comptime sentinels는 컴파일 타임 상수, extra는 런타임 값(예: quote 문자).
+    inline fn simdSkipUntilAny(self: *Scanner, comptime sentinels: []const u8, extra: ?u8) void {
+        while (self.current + 16 <= self.source.len) {
+            const chunk: @Vector(16, u8) = self.source[self.current..][0..16].*;
+            var mask: @Vector(16, bool) = @splat(false);
+            inline for (sentinels) |s| {
+                mask = mask | (chunk == @as(@Vector(16, u8), @splat(s)));
+            }
+            if (extra) |e| {
+                mask = mask | (chunk == @as(@Vector(16, u8), @splat(e)));
+            }
+            const bits = @as(u16, @bitCast(mask));
+            if (bits == 0) {
+                self.current += 16;
+            } else {
+                self.current += @ctz(bits);
+                return;
+            }
+        }
+    }
+
     /// 공백 문자를 스킵한다.
     /// 줄바꿈을 만나면 has_newline_before를 true로 설정.
     fn skipWhitespace(self: *Scanner) !void {
@@ -1548,6 +1571,10 @@ pub const Scanner = struct {
     /// - 문자열 안 줄바꿈 (JS 스펙 위반) → syntax_error
     fn scanStringLiteral(self: *Scanner, quote: u8) !Kind {
         while (!self.isAtEnd()) {
+            // SIMD fast path: quote/\/\n/\r 이외의 일반 문자를 16바이트씩 건너뜀
+            self.simdSkipUntilAny(&.{ '\\', '\n', '\r' }, quote);
+            if (self.isAtEnd()) break;
+
             const c = self.peek();
 
             if (c == quote) {
@@ -1675,6 +1702,10 @@ pub const Scanner = struct {
     /// backtick을 만나면 complete_kind, ${를 만나면 interpolation_kind를 반환.
     fn scanTemplateContent(self: *Scanner, complete_kind: Kind, interpolation_kind: Kind) !Kind {
         while (!self.isAtEnd()) {
+            // SIMD fast path: backtick/$/\/\n/\r 이외의 일반 문자를 16바이트씩 건너뜀
+            self.simdSkipUntilAny(&.{ '`', '$', '\\', '\n', '\r' }, null);
+            if (self.isAtEnd()) break;
+
             const c = self.peek();
 
             if (c == '`') {
