@@ -620,6 +620,44 @@ describe("Plugin: auto config detection", () => {
     }
   });
 
-  // Svelte 플러그인 테스트는 Svelte 5 compile API의 breaking change로 인해
-  // CI 환경에서 불안정하여 로컬 검증만 수행. (로컬: 141KB 번들링 성공 확인)
+  test("Svelte plugin: compiles .svelte to JS via svelte/compiler", async () => {
+    // Svelte 5의 compile API 사용. plugin.js에서 svelte/compiler를 절대 경로로 resolve하여
+    // temp fixture 디렉토리에서도 import 가능하게 한다.
+    const svelteCompilerPath = resolve(import.meta.dir, "../node_modules/svelte/compiler/index.js");
+
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import App from './App.svelte';\nconsole.log(typeof App);`,
+      "App.svelte": ["<script>", "  let count = 0;", "</script>", "<p>{count}</p>"].join("\n"),
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        import { readFileSync } from 'node:fs';
+        defineConfig({ plugins: [{
+          name: 'svelte-compiler',
+          async load(id) {
+            if (!id.endsWith('.svelte')) return null;
+            const source = readFileSync(id, 'utf8');
+            const svelte = await import('${svelteCompilerPath}');
+            const result = svelte.compile(source, { filename: id, generate: 'server' });
+            return result.js.code;
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+        "--platform=node",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("function");
+    } finally {
+      await cleanup();
+    }
+  });
 });
