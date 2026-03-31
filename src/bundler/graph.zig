@@ -38,6 +38,7 @@ const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
 const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
+pub const module_store = @import("module_store.zig");
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -290,7 +291,12 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // Phase 2: DFS로 exec_index + 순환 감지
+        try self.finalizeGraph(entry_points);
+    }
+
+    /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
+    /// build()와 buildIncremental() 양쪽에서 호출.
+    fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
         const count = self.modules.items.len;
         if (count == 0) return;
 
@@ -305,11 +311,122 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // Phase 3: ExportsKind.none 모듈을 소비하는 쪽에 따라 승격
         self.promoteExportsKinds();
-
-        // Phase 4: TLA 전파 — TLA 모듈을 static import하는 모듈도 TLA로 표시
         self.propagateTopLevelAwait();
+    }
+
+    /// 증분 빌드 결과.
+    pub const IncrementalBuildResult = struct {
+        /// 그래프 구조 또는 내용이 변경되었는지
+        graph_changed: bool,
+        /// 재파싱된 모듈 인덱스 목록 (graph allocator 소유)
+        reparsed_indices: []const types.ModuleIndex,
+    };
+
+    /// 증분 그래프 빌드. store에서 캐시 히트된 모듈은 파싱 스킵.
+    /// 캐시 미스된 모듈만 parseModule()을 실행한다.
+    /// build()와 동일한 Phase 2~4를 실행하여 exec_index, ExportsKind, TLA를 보장.
+    pub fn buildIncremental(
+        self: *ModuleGraph,
+        entry_points: []const []const u8,
+        store: *module_store.PersistentModuleStore,
+    ) !IncrementalBuildResult {
+        // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
+        if (self.entry_dir.len == 0 and entry_points.len > 0) {
+            self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        }
+
+        // --inject 파일을 먼저 모듈 그래프에 추가
+        var inject_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer inject_indices.deinit(self.allocator);
+        for (self.inject_files) |inject_path| {
+            const idx = try self.addModule(inject_path);
+            try inject_indices.append(self.allocator, idx);
+        }
+
+        for (entry_points) |entry_path| {
+            _ = try self.addModule(entry_path);
+        }
+
+        var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
+        var graph_changed = false;
+
+        // 순차 처리 — 증분 빌드는 캐시 히트가 대부분이므로 스레드 풀 오버헤드보다 효율적.
+        var parse_start: usize = 0;
+        while (parse_start < self.modules.items.len) {
+            const parse_end = self.modules.items.len;
+            for (parse_start..parse_end) |i| {
+                var mod = &self.modules.items[i];
+                if (mod.state == .ready) continue; // disabled 모듈 등
+
+                const mod_path = mod.path;
+                const mtime = getMtime(mod_path) catch 0;
+
+                // 캐시 조회
+                if (store.getIfFresh(mod_path, mtime)) |cached| {
+                    // 캐시 히트: struct assign으로 전체 복원 후 graph-specific 필드만 override.
+                    // Module에 새 필드가 추가되어도 누락 없이 복사됨.
+                    const saved_index = mod.index;
+                    const saved_path = mod.path;
+                    const saved_deps = mod.dependencies;
+                    const saved_importers = mod.importers;
+                    const saved_dynamic = mod.dynamic_imports;
+                    mod.* = cached.module;
+                    mod.index = saved_index;
+                    mod.path = saved_path;
+                    mod.dependencies = saved_deps;
+                    mod.importers = saved_importers;
+                    mod.dynamic_imports = saved_dynamic;
+                    // parse_arena 소유권 이전: store → graph
+                    cached.module.parse_arena = null;
+                    mod.state = .ready;
+                } else {
+                    // 캐시 미스: 정상 파싱
+                    self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
+                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
+                    self.modules.items[i].state = .ready;
+                    try reparsed.append(self.allocator, @enumFromInt(@as(u32, @intCast(i))));
+                }
+            }
+
+            // resolve + addModule (새 의존성 등록)
+            for (parse_start..parse_end) |i| {
+                try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+            }
+
+            // 새 모듈이 추가되었으면 그래프 변경
+            if (self.modules.items.len > parse_end) {
+                graph_changed = true;
+            }
+            parse_start = parse_end;
+        }
+
+        // --inject: inject 파일을 각 엔트리 모듈의 의존성으로 추가
+        if (inject_indices.items.len > 0) {
+            for (entry_points) |entry_path| {
+                if (self.path_to_module.get(entry_path)) |entry_idx| {
+                    const ei = @intFromEnum(entry_idx);
+                    if (ei < self.modules.items.len) {
+                        for (inject_indices.items) |inject_idx| {
+                            try self.modules.items[ei].addDependency(self.allocator, inject_idx, self.modules.items);
+                        }
+                    }
+                }
+            }
+        }
+
+        try self.finalizeGraph(entry_points);
+
+        return .{
+            .graph_changed = graph_changed or reparsed.items.len > 0,
+            .reparsed_indices = try reparsed.toOwnedSlice(self.allocator),
+        };
+    }
+
+    /// 파일의 mtime을 나노초로 반환.
+    pub fn getMtime(path: []const u8) !i128 {
+        const stat = try std.fs.cwd().statFile(path);
+        return stat.mtime;
     }
 
     /// 모듈을 그래프에 추가하고 파싱한다.
@@ -385,7 +502,7 @@ pub const ModuleGraph = struct {
                 return;
             }
             // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
-            if (self.resolve_cache.platform == .browser and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
+            if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
                 self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
                 if (record.kind == .dynamic_import) {

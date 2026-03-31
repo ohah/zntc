@@ -45,12 +45,20 @@ test "IncrementalBundler: second build without changes has no changed modules" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .build_error => |e| std.testing.allocator.free(e),
+            .fatal => {},
+        }
+    }
 
     // 두 번째 빌드: 변경 없음 → changed_modules 비어있어야 함
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
+            defer std.testing.allocator.free(r.changed_modules);
             try std.testing.expectEqual(false, r.graph_changed);
             try std.testing.expectEqual(@as(usize, 0), r.changed_modules.len);
         },
@@ -77,7 +85,14 @@ test "IncrementalBundler: detects code change in modified file" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .build_error => |e| std.testing.allocator.free(e),
+            .fatal => {},
+        }
+    }
 
     // util.ts 수정
     try writeFile(tmp.dir, "util.ts", "export const x = 42;");
@@ -86,12 +101,8 @@ test "IncrementalBundler: detects code change in modified file" {
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
-            // 코드가 변경되었으므로 changed_modules에 포함
+            defer std.testing.allocator.free(r.changed_modules);
             try std.testing.expect(r.changed_modules.len > 0);
-            // changed_modules 해제
-            if (r.changed_modules.len > 0) {
-                std.testing.allocator.free(r.changed_modules);
-            }
         },
         .build_error => return error.TestUnexpectedResult,
         .fatal => return error.TestUnexpectedResult,
@@ -113,7 +124,14 @@ test "IncrementalBundler: detects graph change (new import)" {
     defer ib.deinit();
 
     // 첫 빌드 (1개 모듈)
-    _ = try ib.rebuild();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .build_error => |e| std.testing.allocator.free(e),
+            .fatal => {},
+        }
+    }
 
     // 새 모듈 추가 + import 추가
     try writeFile(tmp.dir, "extra.ts", "export const y = 2;");
@@ -123,10 +141,8 @@ test "IncrementalBundler: detects graph change (new import)" {
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
+            defer std.testing.allocator.free(r.changed_modules);
             try std.testing.expect(r.graph_changed);
-            if (r.changed_modules.len > 0) {
-                std.testing.allocator.free(r.changed_modules);
-            }
         },
         .build_error => return error.TestUnexpectedResult,
         .fatal => return error.TestUnexpectedResult,
@@ -149,7 +165,14 @@ test "IncrementalBundler: detects graph change when import removed (module delet
     defer ib.deinit();
 
     // 첫 빌드 (2개 모듈: index.ts + extra.ts)
-    _ = try ib.rebuild();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .build_error => |e| std.testing.allocator.free(e),
+            .fatal => {},
+        }
+    }
 
     // import 제거 → extra.ts가 그래프에서 빠짐
     try writeFile(tmp.dir, "index.ts", "console.log('no import');");
@@ -158,10 +181,8 @@ test "IncrementalBundler: detects graph change when import removed (module delet
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
+            defer std.testing.allocator.free(r.changed_modules);
             try std.testing.expect(r.graph_changed);
-            if (r.changed_modules.len > 0) {
-                std.testing.allocator.free(r.changed_modules);
-            }
         },
         .build_error => return error.TestUnexpectedResult,
         .fatal => return error.TestUnexpectedResult,
@@ -183,7 +204,14 @@ test "IncrementalBundler: build error returns error message" {
     defer ib.deinit();
 
     // 첫 빌드
-    _ = try ib.rebuild();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .build_error => |e| std.testing.allocator.free(e),
+            .fatal => {},
+        }
+    }
 
     // 구문 에러 삽입
     try writeFile(tmp.dir, "index.ts", "console.log(;);");
@@ -193,9 +221,7 @@ test "IncrementalBundler: build error returns error message" {
     // 파서 에러 복구 수준에 따라 build_error 또는 success
     switch (result) {
         .success => |r| {
-            if (r.changed_modules.len > 0) {
-                std.testing.allocator.free(r.changed_modules);
-            }
+            std.testing.allocator.free(r.changed_modules);
         },
         .build_error => |err_msg| {
             defer std.testing.allocator.free(err_msg);

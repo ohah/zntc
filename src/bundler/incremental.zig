@@ -11,8 +11,10 @@ const std = @import("std");
 const Bundler = @import("bundler.zig").Bundler;
 const BundleResult = @import("bundler.zig").BundleResult;
 const BundleOptions = @import("bundler.zig").BundleOptions;
+const ResolveCache = @import("resolve_cache.zig").ResolveCache;
+const module_store = @import("module_store.zig");
 
-/// JSON 문자열 값 내부의 특수 문자를 이스케이프한다.
+/// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
     for (s) |c| {
         switch (c) {
@@ -21,7 +23,11 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
             '\n' => try writer.writeAll("\\n"),
             '\r' => try writer.writeAll("\\r"),
             '\t' => try writer.writeAll("\\t"),
-            else => try writer.writeByte(c),
+            else => if (c < 0x20) {
+                try writer.print("\\u{x:0>4}", .{@as(u16, c)});
+            } else {
+                try writer.writeByte(c);
+            },
         }
     }
 }
@@ -47,6 +53,8 @@ fn buildErrorJson(allocator: std.mem.Allocator, result: *const BundleResult) ?[]
 }
 
 /// 증분 dev 번들러. 모듈별 코드를 캐싱하여 변경 시 부분 재빌드.
+/// 파싱 캐시(PersistentModuleStore)와 resolve 캐시(ResolveCache)를 빌드 간 보존하여
+/// 변경되지 않은 모듈의 재파싱을 스킵한다.
 pub const IncrementalBundler = struct {
     allocator: std.mem.Allocator,
     options: BundleOptions,
@@ -58,6 +66,11 @@ pub const IncrementalBundler = struct {
     /// 전체 재빌드가 필요한지 (첫 빌드 또는 그래프 변경)
     needs_full_rebuild: bool = true,
 
+    /// 모듈 파싱 캐시 (장기 보존). 변경 안 된 모듈의 AST/semantic을 빌드 간 재사용.
+    persistent_store: module_store.PersistentModuleStore,
+    /// resolve 캐시 (장기 보존). dir_cache 포함.
+    resolve_cache: ?ResolveCache = null,
+
     const CachedModule = struct {
         id: []const u8,
         code: []const u8,
@@ -68,12 +81,15 @@ pub const IncrementalBundler = struct {
             .allocator = allocator,
             .options = options,
             .module_cache = std.StringHashMap(CachedModule).init(allocator),
+            .persistent_store = module_store.PersistentModuleStore.init(allocator),
         };
     }
 
     pub fn deinit(self: *IncrementalBundler) void {
         self.clearCache();
         self.module_cache.deinit();
+        self.persistent_store.deinit();
+        if (self.resolve_cache) |*rc| rc.deinit();
     }
 
     fn clearCache(self: *IncrementalBundler) void {
@@ -101,8 +117,27 @@ pub const IncrementalBundler = struct {
     }
 
     fn doBuild(self: *IncrementalBundler, is_first: bool) !RebuildResult {
-        var bundler = Bundler.init(self.allocator, self.options);
-        defer bundler.deinit();
+        // resolve_cache 초기화 (첫 빌드 시) 또는 재사용
+        if (self.resolve_cache == null) {
+            self.resolve_cache = ResolveCache.init(self.allocator, .{
+                .platform = self.options.platform,
+                .external_patterns = self.options.external,
+                .custom_conditions = self.options.conditions,
+                .preserve_symlinks = self.options.preserve_symlinks,
+                .alias = self.options.alias,
+                .resolve_extensions = self.options.resolve_extensions,
+                .main_fields = self.options.main_fields,
+            });
+        }
+
+        // 증분 빌드: 첫 빌드가 아니면 module_store를 전달하여 파싱 캐시 활용
+        var opts = self.options;
+        if (!is_first) {
+            opts.module_store = &self.persistent_store;
+        }
+
+        var bundler = Bundler.initWithResolveCache(self.allocator, opts, &self.resolve_cache.?);
+        defer bundler.deinit(); // resolve_cache_external=true이므로 resolve_cache는 해제 안 됨
 
         var result = bundler.bundle() catch return .fatal;
 

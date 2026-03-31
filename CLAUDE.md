@@ -53,7 +53,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 ### 공통 옵션
 ```
 --format=esm|cjs|iife            모듈 포맷 (기본: esm, --platform=browser 시 iife)
---platform=browser|node|neutral  타겟 플랫폼 (기본: browser)
+--platform=browser|node|neutral|react-native  타겟 플랫폼 (기본: browser)
 --minify                         출력 압축
 --sourcemap                      소스맵 생성 (.js.map)
 --ascii-only                     non-ASCII를 \uXXXX로 이스케이프
@@ -89,6 +89,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --flow                       Flow 타입 스트리핑 (@flow pragma 자동 감지)
 --plugin <path>                  JS 플러그인 (subprocess JSON IPC)
 -w, --watch                      파일 변경 감시
+--watch-json                     --watch + NDJSON 이벤트 stdout 출력 (외부 도구 연동용)
 -p, --project <path>             tsconfig.json 경로
 ```
 
@@ -108,7 +109,31 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 - `--platform=browser` → Node 내장 모듈(fs, path, util 등) 빈 모듈로 대체
 - `--platform=browser` → `package.json "browser"` 필드에서 disabled 파일 감지
 - `--platform=node` → Node 내장 모듈 + 서브패스(fs/promises, stream/web) 자동 external
+- `--platform=react-native` → RN 프리셋 자동 적용 (아래 참조)
 - `import.meta` → CJS+node: `require("url").pathToFileURL(__filename).href` / CJS+browser: `""`
+- `--watch` / `--serve` → 증분 빌드 (변경 모듈만 재파싱, 나머지 캐시)
+
+### React Native 프리셋 (`--platform=react-native`)
+- resolve-extensions: `.tsx, .ts, .jsx, .js, .json` (사용자 미지정 시)
+- main-fields: `react-native, browser, module, main` (사용자 미지정 시)
+- exports 조건: `react-native, browser, import, module, default`
+- `--flow` 자동 활성화
+- browser와 동일: IIFE 기본, NODE_ENV define, Node 빌트인 빈 모듈, browser disabled
+
+### `--watch-json` (외부 번들러 연동)
+`--watch-json`은 `--watch`와 동일하되, 리빌드 이벤트를 stdout에 NDJSON으로 출력한다.
+번개(bungae) 같은 외부 도구가 stdout을 파싱하여 HMR 메시지를 생성하는 용도.
+
+```jsonl
+{"type":"ready","files":2592}
+{"type":"rebuild","success":true,"changed":["/src/app.tsx"],"modules":["/src/app.tsx","/src/util.ts"],"bytes":123456}
+{"type":"rebuild","success":false,"error":"ModuleNotFound"}
+```
+
+사용 예:
+```bash
+zts --bundle index.js -o dist/bundle.js --platform=react-native --watch-json
+```
 
 ## Development Workflow
 

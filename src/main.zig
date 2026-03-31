@@ -30,6 +30,7 @@ const CliOptions = struct {
     ascii_only: bool = false,
     quote_style: lib.codegen.QuoteStyle = .double,
     watch: bool = false,
+    watch_json: bool = false,
     is_test262: bool = false,
     is_tokenize: bool = false,
     is_bundle: bool = false,
@@ -214,6 +215,9 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 i += 1;
                 opts.project_path = args[i];
             }
+        } else if (std.mem.eql(u8, arg, "--watch-json")) {
+            opts.watch = true;
+            opts.watch_json = true;
         } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
             opts.watch = true;
         } else if (std.mem.eql(u8, arg, "--flow")) {
@@ -310,6 +314,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.platform = .browser;
         } else if (std.mem.eql(u8, arg, "--platform=neutral")) {
             opts.platform = .neutral;
+        } else if (std.mem.eql(u8, arg, "--platform=react-native") or std.mem.eql(u8, arg, "--platform=react_native")) {
+            opts.platform = .react_native;
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
@@ -444,14 +450,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     // --bundle + --platform=browser + --format 미지정이면 IIFE로 기본 설정 (esbuild 호환).
     // 브라우저 <script> 태그에서 로드할 때 top-level 선언이 글로벌을 오염시키지 않도록
     // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
-    if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit) {
+    if (opts.is_bundle and opts.platform.isBrowserLike() and !opts.bundle_format_explicit) {
         opts.bundle_format = .iife;
     }
 
     // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
     // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
     // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
-    if (opts.is_bundle and opts.platform == .browser) {
+    if (opts.is_bundle and opts.platform.isBrowserLike()) {
         var has_node_env = false;
         for (opts.define_list.items) |d| {
             if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
@@ -1079,6 +1085,17 @@ pub fn main() !void {
             try plugin_list.append(allocator, sp.toPlugin());
         }
 
+        // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
+        if (opts.platform == .react_native) {
+            if (opts.resolve_extensions_list.items.len == 0) {
+                try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".tsx", ".ts", ".jsx", ".js", ".json" });
+            }
+            if (opts.main_fields_list.items.len == 0) {
+                try opts.main_fields_list.appendSlice(allocator, &.{ "react-native", "browser", "module", "main" });
+            }
+            opts.flow = true;
+        }
+
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
         var bundle_opts: BundleOptions = .{
             .entry_points = &.{abs_entry},
@@ -1229,6 +1246,25 @@ pub fn main() !void {
 
         // --watch: 파일 변경 감지 후 재번들
         if (opts.watch) {
+            // 증분 빌드용 파싱 캐시 + resolve 캐시 (watch 전체 수명동안 보존)
+            const module_store_mod = @import("zts_lib").bundler.module_store;
+            const ResolveCache = @import("zts_lib").bundler.ResolveCache;
+            var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
+            defer persistent_store.deinit();
+            var persistent_resolve_cache = ResolveCache.init(allocator, .{
+                .platform = bundle_opts.platform,
+                .external_patterns = bundle_opts.external,
+                .custom_conditions = bundle_opts.conditions,
+                .preserve_symlinks = bundle_opts.preserve_symlinks,
+                .alias = bundle_opts.alias,
+                .resolve_extensions = bundle_opts.resolve_extensions,
+                .main_fields = bundle_opts.main_fields,
+            });
+            defer persistent_resolve_cache.deinit();
+
+            // 첫 빌드 결과의 모듈을 store에 저장 (bundler가 이미 deinit된 후이므로 직접 수집)
+            // 첫 빌드는 module_store 없이 실행되었으므로 두 번째 빌드부터 캐시가 유효함.
+
             // 초기 module_paths에서 mtime 수집
             var mtime_map = std.StringHashMap(i128).init(allocator);
             defer {
@@ -1259,21 +1295,31 @@ pub fn main() !void {
                 };
             }
 
-            try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
+            if (opts.watch_json) {
+                try stdout.print("{{\"type\":\"ready\",\"files\":{d}}}\n", .{mtime_map.count()});
+            } else {
+                try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
+            }
 
             while (true) {
                 std.Thread.sleep(500 * std.time.ns_per_ms);
 
-                // mtime 변경 확인
+                // mtime 변경 확인 + 변경 파일 수집
                 var changed = false;
                 var config_changed = false;
+                var changed_files: std.ArrayList([]const u8) = .empty;
+                defer changed_files.deinit(allocator);
+
                 var mit = mtime_map.iterator();
                 while (mit.next()) |entry| {
                     const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
                     if (current_mtime != entry.value_ptr.*) {
-                        try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
+                        if (!opts.watch_json) {
+                            try stderr.print("[watch] Changed: {s}\n", .{entry.key_ptr.*});
+                        }
                         entry.value_ptr.* = current_mtime;
                         changed = true;
+                        changed_files.append(allocator, entry.key_ptr.*) catch {};
                         // config 파일이 변경되었는지 확인
                         for (opts.plugin_paths.items) |config_path| {
                             const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
@@ -1307,20 +1353,28 @@ pub fn main() !void {
                     bundle_opts.plugins = plugin_list.items;
                 }
 
-                // 재번들
-                var rebundler = Bundler.init(allocator, bundle_opts);
-                defer rebundler.deinit();
+                // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
+                var incremental_opts = bundle_opts;
+                incremental_opts.module_store = &persistent_store;
+                var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
+                defer rebundler.deinit(); // resolve_cache는 외부 소유이므로 해제 안 됨
 
                 const rebuild_result = rebundler.bundle() catch |err| {
-                    try stderr.print("[watch] Bundle failed: {}\n", .{err});
+                    if (opts.watch_json) {
+                        try stdout.print("{{\"type\":\"rebuild\",\"success\":false,\"error\":\"{}\"}}\n", .{err});
+                    } else {
+                        try stderr.print("[watch] Bundle failed: {}\n", .{err});
+                    }
                     continue;
                 };
                 defer rebuild_result.deinit(allocator);
 
                 // 출력 파일 다시 쓰기
+                var output_bytes: usize = 0;
                 if (rebuild_result.outputs) |outputs| {
                     const out_dir = opts.output_dir orelse ".";
                     for (outputs) |o| {
+                        output_bytes += o.contents.len;
                         const full_path = std.fs.path.join(allocator, &.{ out_dir, o.path }) catch continue;
                         defer allocator.free(full_path);
                         if (std.fs.path.dirname(full_path)) |dir| std.fs.cwd().makePath(dir) catch {};
@@ -1328,13 +1382,35 @@ pub fn main() !void {
                         defer file.close();
                         file.writeAll(o.contents) catch continue;
                     }
-                    try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});
+                    if (!opts.watch_json) {
+                        try stderr.print("[watch] Rebuilt → {d} chunks\n", .{outputs.len});
+                    }
                 } else if (opts.output_file) |out_path| {
+                    output_bytes = rebuild_result.output.len;
                     if (std.fs.path.dirname(out_path)) |dir| std.fs.cwd().makePath(dir) catch {};
                     const file = std.fs.cwd().createFile(out_path, .{}) catch continue;
                     defer file.close();
                     file.writeAll(rebuild_result.output) catch continue;
-                    try stderr.print("[watch] Rebuilt → {s} ({d} bytes)\n", .{ out_path, rebuild_result.output.len });
+                    if (!opts.watch_json) {
+                        try stderr.print("[watch] Rebuilt → {s} ({d} bytes)\n", .{ out_path, rebuild_result.output.len });
+                    }
+                }
+
+                // --watch-json: 재번들 성공 JSON 이벤트를 stdout에 NDJSON으로 출력
+                if (opts.watch_json) {
+                    try stdout.print("{{\"type\":\"rebuild\",\"success\":true,\"changed\":[", .{});
+                    for (changed_files.items, 0..) |path, i| {
+                        if (i > 0) try stdout.print(",", .{});
+                        try writeJsonString(stdout, path);
+                    }
+                    try stdout.print("],\"modules\":[", .{});
+                    if (rebuild_result.module_paths) |paths| {
+                        for (paths, 0..) |p, i| {
+                            if (i > 0) try stdout.print(",", .{});
+                            try writeJsonString(stdout, p);
+                        }
+                    }
+                    try stdout.print("],\"bytes\":{d}}}\n", .{output_bytes});
                 }
 
                 // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
@@ -1606,6 +1682,27 @@ fn watchDirectory(
             }
         }
     }
+}
+
+/// JSON 문자열을 이스케이프하여 출력한다 (--watch-json용).
+fn writeJsonString(writer: anytype, s: []const u8) !void {
+    try writer.writeByte('"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => if (c < 0x20) {
+                // RFC 8259: 제어 문자 (0x00-0x1F)는 \u00XX로 이스케이프
+                try writer.print("\\u{x:0>4}", .{@as(u16, c)});
+            } else {
+                try writer.writeByte(c);
+            },
+        }
+    }
+    try writer.writeByte('"');
 }
 
 /// 파일의 mtime(수정 시각)을 i128 나노초 단위로 반환한다.

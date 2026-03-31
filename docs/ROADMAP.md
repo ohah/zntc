@@ -30,6 +30,9 @@
 | 17. Web Worker | new Worker(new URL(...)) 자동 감지 → 별도 IIFE 번들 (esbuild 미지원) | ✅ |
 | 18. scan 파이프라인 | 배치→파이프라인 (scanWorker: parse→resolve→spawn), 총합 -15% | ✅ |
 | 19. Producer-Consumer | 워커: parse+resolve만, 메인: sole writer. pre-allocation 제거, 포인터 안전 | ✅ |
+| 20. RN 플랫폼 | `--platform=react-native` 프리셋 (resolve-extensions, main-fields, Flow, exports 조건) | ✅ |
+| 21. watch-json | `--watch-json` NDJSON 이벤트 출력 (외부 번들러 연동용) | ✅ |
+| 22. 증분 빌드 | PersistentModuleStore 파싱 캐시 + ResolveCache 보존 (watch/serve 리빌드 최적화) | ✅ |
 
 ## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
 ZTS 136ms vs esbuild 110ms (**1.24배**).
@@ -187,5 +190,6 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 | resolve 병렬화 | ✅ 완료 | 191ms → 134ms (-30%, 캐시 히트율 높아 제한적) |
 | fixpoint oscillation 수정 | ✅ 완료 | 100회 → 2회 수렴, tree-shake 238ms → 51ms |
 | scan 파이프라인화 | ✅ 완료 | 배치→파이프라인→Producer-Consumer, pre-allocation 제거, 포인터 안전 |
+| 증분 빌드 (파싱 캐시) | ✅ 완료 | PersistentModuleStore + ResolveCache 보존, watch/serve 리빌드 시 변경 모듈만 재파싱 |
 | tree-shake 병렬화 | 후순위 | 현재 15ms, StmtInfo 병렬화로 ~5ms 절감 가능하나 ROI 낮음 |
 | SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
