@@ -36,23 +36,33 @@ ZTS 134ms vs esbuild 107ms (**1.25배**).
 | 단계 | ZTS | esbuild | 배율 | 비고 |
 |------|-----|---------|------|------|
 | scan (resolve+parse) | 101ms | ~80ms | 1.3x | 파이프라인화 완료 |
-| tree-shake | 51ms | 1ms | 51x | fixpoint+stmtinfo+crossBFS |
+| tree-shake | 15ms | 1ms | 15x | fixpoint 2회 + stmtinfo + crossBFS |
 | link | 16ms | 54ms | 0.3x | ZTS가 빠름 |
 | emit | 15ms | 32ms | 0.5x | ZTS가 빠름 |
 | **총합** | **134ms** | **107ms** | **1.25x** | |
 
 ## 🔜 다음 우선순위
 
-**scan Producer-Consumer 전환**
+**SIMD 렉서 가속**
+- scan이 총합의 75% (101ms) — 대부분이 parse (렉서+파서)
+- 렉서 공백/식별자/문자열 스캔에 SIMD 적용 → parse 10-20% 개선 예상
+- scan ~10ms 절감 가능 (134ms → ~124ms)
+
+**CSS 번들링**
+- 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
+- 실사용에서 가장 자주 부딪히는 부재 기능
+- 자체 CSS 파서 (Zig 네이티브 `@import` 해석, CSS Modules) — XL급
+
+**import.meta.glob**
+- Vite 호환 기능, DX 개선 — M급 (1~2일)
+
+**scan Producer-Consumer 전환** (후순위)
 - 현재: scanWorker가 직접 그래프 변형 (Shared Graph + Mutex) + modules ArrayList pre-allocation (~4.8MB)
 - 목표: bun/esbuild처럼 워커는 파싱만, 단일 스레드가 그래프 변형 (포인터 안정성 근본 해결)
-  - Bun: bundle thread가 sole writer, MultiArrayList(InputFile)
-  - esbuild: goroutine + channel → main goroutine이 sole writer
 
-**tree-shake 알고리즘 개선**
-- 현재: fixpoint 2회 + stmtinfo 15ms + crossBFS 25ms = 51ms
-- esbuild는 Part 시스템으로 단일 패스 1ms
-- 점진적 개선: stmtinfo 병렬화, used_exports를 BitSet으로 교체 등
+**tree-shake 병렬화** (후순위, ROI 낮음)
+- 현재 15ms — 이미 fixpoint oscillation 수정으로 51ms → 15ms 개선됨
+- StmtInfo 구축 병렬화로 ~5ms 절감 가능하나 총합 대비 체감 미미
 
 ## ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
@@ -176,4 +186,5 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 | resolve 병렬화 | ✅ 완료 | 191ms → 134ms (-30%, 캐시 히트율 높아 제한적) |
 | fixpoint oscillation 수정 | ✅ 완료 | 100회 → 2회 수렴, tree-shake 238ms → 51ms |
 | scan 파이프라인화 | ✅ 완료 | 배치→파이프라인, graph_mutex+WaitGroup, 총합 157ms→134ms (-15%) |
-| SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 |
+| tree-shake 병렬화 | 후순위 | 현재 15ms, StmtInfo 병렬화로 ~5ms 절감 가능하나 ROI 낮음 |
+| SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
