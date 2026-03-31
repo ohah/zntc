@@ -28,27 +28,26 @@
 | 15. ES 타겟 | --target=es2015~esnext, ES 버전별 다운레벨링 (es2015~es2024 트랜스포머) | ✅ |
 | 16. 엔진 타겟 | --target=chrome80,safari14 엔진 버전별 feature-level 다운레벨링 | ✅ |
 | 17. Web Worker | new Worker(new URL(...)) 자동 감지 → 별도 IIFE 번들 (esbuild 미지원) | ✅ |
+| 18. scan 파이프라인 | 배치→파이프라인 (scanWorker: parse→resolve→spawn), 총합 -15% | ✅ |
 
-## 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
-ZTS 279ms vs esbuild 182ms (**1.5배**).
+## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
+ZTS 134ms vs esbuild 107ms (**1.25배**).
 
 | 단계 | ZTS | esbuild | 배율 | 비고 |
 |------|-----|---------|------|------|
-| scan (resolve+parse) | 240ms | 125ms | 1.9x | 배치 구조 한계 |
+| scan (resolve+parse) | 101ms | ~80ms | 1.3x | 파이프라인화 완료 |
 | tree-shake | 51ms | 1ms | 51x | fixpoint+stmtinfo+crossBFS |
 | link | 16ms | 54ms | 0.3x | ZTS가 빠름 |
 | emit | 15ms | 32ms | 0.5x | ZTS가 빠름 |
-| **총합** | **279ms** | **182ms** | **1.5x** | |
+| **총합** | **134ms** | **107ms** | **1.25x** | |
 
 ## 🔜 다음 우선순위
 
-**scan 파이프라인화 (배치 경계 제거)**
-- 현재: parse 배치 → resolve 배치 → parse 배치 (배치 경계에서 대기 발생)
-- 목표: Bun/esbuild처럼 모듈 발견 즉시 다음 파싱 시작 (태스크 큐 기반 파이프라인)
-  - Bun: io_pool + worker_pool 2단계 ParseTask
-  - esbuild: goroutine + channel
-  - ZTS: 스레드 풀 + atomic 큐로 구현 가능 (Zig 0.16 async 불필요)
-- 예상: scan 240ms → ~130ms
+**scan Producer-Consumer 전환**
+- 현재: scanWorker가 직접 그래프 변형 (Shared Graph + Mutex) + modules ArrayList pre-allocation (~4.8MB)
+- 목표: bun/esbuild처럼 워커는 파싱만, 단일 스레드가 그래프 변형 (포인터 안정성 근본 해결)
+  - Bun: bundle thread가 sole writer, MultiArrayList(InputFile)
+  - esbuild: goroutine + channel → main goroutine이 sole writer
 
 **tree-shake 알고리즘 개선**
 - 현재: fixpoint 2회 + stmtinfo 15ms + crossBFS 25ms = 51ms
@@ -65,7 +64,8 @@ ZTS 279ms vs esbuild 182ms (**1.5배**).
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
                          └──→ .d.ts (isolatedDeclarations)
 
-번들러 성능 ─────────────┬──→ scan 파이프라인화 (배치 경계 제거)
+번들러 성능 ─────────────┬──→ ✅ scan 파이프라인화 (완료, Shared Graph + Mutex)
+                         ├──→ scan Producer-Consumer 전환 (포인터 안정성 근본 해결)
                          └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS)
 
 번들러 기능 ─────────────┬──→ ✅ 로더 시스템 (JSON, text, file, dataurl)
@@ -175,5 +175,5 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 | emit 병렬화 | ✅ 완료 | 74ms → 15ms (-80%) |
 | resolve 병렬화 | ✅ 완료 | 191ms → 134ms (-30%, 캐시 히트율 높아 제한적) |
 | fixpoint oscillation 수정 | ✅ 완료 | 100회 → 2회 수렴, tree-shake 238ms → 51ms |
-| scan 파이프라인화 | 🔜 | 배치 경계 제거 → 240ms → ~130ms 예상 |
+| scan 파이프라인화 | ✅ 완료 | 배치→파이프라인, graph_mutex+WaitGroup, 총합 157ms→134ms (-15%) |
 | SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 |
