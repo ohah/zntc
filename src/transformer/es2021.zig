@@ -44,7 +44,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
 
-            if (self.options.target.needsNullishCoalescing()) {
+            if (self.options.unsupported.nullish_coalescing) {
                 const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
                 const null_span = try self.new_ast.addString("null");
                 const null_node = try self.new_ast.addNode(.{

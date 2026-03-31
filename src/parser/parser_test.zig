@@ -1139,6 +1139,106 @@ test "Parser: JSX with expression" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+// --- JSX: children 모드 복원 (closing tag 뒤 텍스트) ---
+
+fn parseJSXOk(source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_jsx = true;
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "Parser: JSX text after closing child" {
+    try parseJSXOk("const x = <p><code>x</code> text</p>;");
+}
+
+test "Parser: JSX text between two children" {
+    try parseJSXOk("const x = <p><b>a</b> and <i>b</i></p>;");
+}
+
+test "Parser: JSX multiple inline code elements" {
+    try parseJSXOk("const x = <p>Edit <code>src/App.tsx</code> and save to test <code>HMR</code></p>;");
+}
+
+test "Parser: JSX self-closing child then text" {
+    try parseJSXOk("const x = <p><br /> hello</p>;");
+}
+
+test "Parser: JSX fragment with mixed children" {
+    try parseJSXOk("const x = <>text <b>bold</b> more</>;");
+}
+
+test "Parser: JSX nested fragment" {
+    try parseJSXOk("const x = <div><>a<b>x</b>c</></div>;");
+}
+
+test "Parser: JSX deeply nested text" {
+    try parseJSXOk("const x = <div><ul><li><a href=\"#\">link</a> desc</li></ul></div>;");
+}
+
+test "Parser: JSX sibling elements" {
+    try parseJSXOk("const x = <><h1>title</h1><p>body</p></>;");
+}
+
+test "Parser: JSX expression between elements" {
+    try parseJSXOk("const x = <p>count: {n} items</p>;");
+}
+
+test "Parser: JSX SVG with use" {
+    try parseJSXOk("const x = <svg className=\"icon\"><use href=\"/icons.svg#doc\" /></svg>;");
+}
+
+test "Parser: JSX multiline attributes" {
+    try parseJSXOk(
+        \\const x = <button
+        \\  className="counter"
+        \\  onClick={() => console.log('hi')}
+        \\>
+        \\  Click
+        \\</button>;
+    );
+}
+
+test "Parser: JSX Vite-style complex template" {
+    try parseJSXOk(
+        \\function App() {
+        \\  return (
+        \\    <>
+        \\      <section id="center">
+        \\        <div className="hero">
+        \\          <img src="a.png" className="base" width="170" alt="" />
+        \\        </div>
+        \\        <h1>Vite + React</h1>
+        \\        <div className="card">
+        \\          <button onClick={() => console.log('x')}>
+        \\            count is {0}
+        \\          </button>
+        \\        </div>
+        \\      </section>
+        \\      <div className="ticks"></div>
+        \\      <section id="next-steps">
+        \\        <svg className="icon" role="presentation">
+        \\          <use href="/icons.svg#doc" />
+        \\        </svg>
+        \\        <h2>Documentation</h2>
+        \\        <p>Edit <code>src/App.tsx</code> and save to test <code>HMR</code></p>
+        \\        <ul>
+        \\          <li>
+        \\            <a href="https://react.dev/" target="_blank">
+        \\              Learn React
+        \\            </a>
+        \\          </li>
+        \\        </ul>
+        \\      </section>
+        \\    </>
+        \\  );
+        \\}
+    );
+}
+
 test "Parser: function call with division in args" {
     // arrow lookahead가 prev_token_kind를 복구하지 않으면
     // / 가 regex로 해석되어 실패하던 버그 테스트

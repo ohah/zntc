@@ -825,3 +825,96 @@ test "Reference: update expression counts as reference" {
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
+
+// ============================================================
+// Enum predeclare & export binding
+// ============================================================
+
+const AnalyzeResult = struct {
+    scanner: Scanner,
+    parser: Parser,
+    analyzer: SemanticAnalyzer,
+
+    fn deinit(self: *AnalyzeResult) void {
+        self.analyzer.deinit();
+        self.parser.deinit();
+        self.scanner.deinit();
+    }
+};
+
+fn analyzeModule(source: []const u8) !AnalyzeResult {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    errdefer scanner.deinit();
+    scanner.is_module = true;
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    errdefer parser.deinit();
+    parser.is_ts = true;
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    ana.is_module = true;
+    errdefer ana.deinit();
+    try ana.analyze();
+    return .{ .scanner = scanner, .parser = parser, .analyzer = ana };
+}
+
+fn analyzeNoErrors(source: []const u8) !void {
+    var r = try analyzeModule(source);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 0), r.parser.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+}
+
+fn analyzeHasError(source: []const u8, needle: []const u8) !void {
+    var r = try analyzeModule(source);
+    defer r.deinit();
+    for (r.analyzer.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, needle) != null) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "Enum: re-export via export specifier" {
+    try analyzeNoErrors("enum Direction { Up, Down }\nexport { Direction };");
+}
+
+test "Enum: re-export with alias" {
+    try analyzeNoErrors("enum Fruit { Apple }\nexport { Fruit as F };");
+}
+
+test "Enum: export enum declaration" {
+    try analyzeNoErrors("export enum Color { Red, Green }");
+}
+
+test "Enum: default export" {
+    try analyzeNoErrors("enum Status { Active }\nexport default Status;");
+}
+
+test "Enum: mixed re-export with class and var" {
+    try analyzeNoErrors(
+        \\enum Dir { Up }
+        \\class Store {}
+        \\const name = "x";
+        \\export { Dir, Store, name };
+    );
+}
+
+test "Enum: const enum re-export" {
+    try analyzeNoErrors("const enum Color { Red }\nexport { Color };");
+}
+
+test "Enum: string enum re-export" {
+    try analyzeNoErrors(
+        \\enum HttpMethod { Get = "GET", Post = "POST" }
+        \\export { HttpMethod };
+    );
+}
+
+test "Enum: used in expression after declaration" {
+    try analyzeNoErrors("enum Dir { Up = 0 }\nconst d = Dir.Up;\nexport { d };");
+}
+
+test "Enum: undefined export still errors" {
+    try analyzeHasError("export { Nonexistent };", "not defined");
+}

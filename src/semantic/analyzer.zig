@@ -1233,6 +1233,7 @@ pub const SemanticAnalyzer = struct {
                 .variable_declaration => try self.predeclareVarDecl(node),
                 .function_declaration => try self.predeclareFuncDecl(node),
                 .class_declaration => try self.predeclareClassDecl(node),
+                .ts_enum_declaration => try self.predeclareEnumDecl(node),
                 .export_named_declaration => {
                     // export const x = ..., export function f() {}, export class C {}
                     const extra_start = node.data.extra;
@@ -1245,6 +1246,7 @@ pub const SemanticAnalyzer = struct {
                         .variable_declaration => try self.predeclareVarDecl(decl_node),
                         .function_declaration => try self.predeclareFuncDecl(decl_node),
                         .class_declaration => try self.predeclareClassDecl(decl_node),
+                        .ts_enum_declaration => try self.predeclareEnumDecl(decl_node),
                         else => {},
                     }
                 },
@@ -1400,6 +1402,20 @@ pub const SemanticAnalyzer = struct {
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+        }
+    }
+
+    /// ts_enum_declaration의 이름만 등록.
+    /// extra = [name, members_start, members_len, flags]
+    fn predeclareEnumDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 3 >= extras.len) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+
+        if (!name_idx.isNone()) {
+            const name_node = self.ast.getNode(name_idx);
+            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
         }
     }
 
