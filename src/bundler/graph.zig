@@ -72,6 +72,18 @@ pub const ModuleGraph = struct {
     plugins: []const plugin_mod.Plugin = &.{},
     /// Flow 모드 강제 활성화 (--flow). bundler에서 전파.
     flow: bool = false,
+    /// Worker 엔트리: new Worker(new URL(...)) 패턴에서 수집된 worker 파일 경로.
+    /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
+    worker_entries: std.ArrayList(WorkerEntry) = .empty,
+
+    pub const WorkerEntry = struct {
+        /// resolve된 worker 파일 절대 경로
+        resolved_path: []const u8,
+        /// worker를 참조하는 모듈 인덱스
+        source_module: ModuleIndex,
+        /// 해당 모듈의 import_records 내 인덱스
+        record_index: u32,
+    };
 
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
@@ -100,6 +112,10 @@ pub const ModuleGraph = struct {
         while (se_it.next()) |se| se.deinit(self.allocator);
         self.side_effects_cache.deinit();
         self.diagnostics.deinit(self.allocator);
+        for (self.worker_entries.items) |we| {
+            self.allocator.free(we.resolved_path);
+        }
+        self.worker_entries.deinit(self.allocator);
     }
 
     /// 확장자에 대한 로더를 결정한다.
@@ -339,6 +355,11 @@ pub const ModuleGraph = struct {
         is_error: bool,
     ) !void {
         if (is_error) {
+            // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음)
+            if (record.kind == .worker) {
+                self.addDiag(.unresolved_import, .warning, self.modules.items[mod_idx].path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
+                return;
+            }
             // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
             if (self.resolve_cache.platform == .browser and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
@@ -357,6 +378,17 @@ pub const ModuleGraph = struct {
 
         if (resolved) |r| {
             defer self.allocator.free(r.path);
+
+            // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
+            if (record.kind == .worker) {
+                const path_dupe = try self.allocator.dupe(u8, r.path);
+                try self.worker_entries.append(self.allocator, .{
+                    .resolved_path = path_dupe,
+                    .source_module = @enumFromInt(mod_idx),
+                    .record_index = @intCast(rec_i),
+                });
+                return;
+            }
 
             if (r.disabled) {
                 const dep_idx = try self.addDisabledModule(record.specifier);

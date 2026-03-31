@@ -90,6 +90,11 @@ pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const 
                     try records.append(allocator, record);
                 }
             },
+            .new_expression => {
+                if (tryExtractWorkerNew(ast, node)) |record| {
+                    try records.append(allocator, record);
+                }
+            },
             .assignment_expression => {
                 if (!has_module_exports and isModuleExportsAssign(ast, node)) {
                     has_module_exports = true;
@@ -283,6 +288,102 @@ fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     if (node.tag != .string_literal) return null;
 
     return stripQuotes(ast.source[node.span.start..node.span.end]);
+}
+
+/// new Worker(new URL('./worker.ts', import.meta.url)) 패턴 감지.
+/// new_expression extra: [callee, args_start, args_len, flags]
+fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+
+    // callee가 "Worker" 또는 "SharedWorker"인지 확인
+    const callee_idx = ast.readExtraNode(e, 0);
+    if (callee_idx.isNone()) return null;
+    const callee_ni = @intFromEnum(callee_idx);
+    if (callee_ni >= ast.nodes.items.len) return null;
+    const callee = ast.nodes.items[callee_ni];
+    if (callee.tag != .identifier_reference) return null;
+    const callee_text = ast.getText(callee.span);
+    if (!std.mem.eql(u8, callee_text, "Worker") and !std.mem.eql(u8, callee_text, "SharedWorker")) return null;
+
+    // 인수가 1개 이상인지
+    const args_len = ast.readExtra(e, 2);
+    if (args_len < 1) return null;
+
+    // 첫 번째 인수: new URL(...)인지 확인
+    const args_start = ast.readExtra(e, 1);
+    if (args_start >= ast.extra_data.items.len) return null;
+    const url_new_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    if (url_new_idx.isNone()) return null;
+    const url_ni = @intFromEnum(url_new_idx);
+    if (url_ni >= ast.nodes.items.len) return null;
+    const url_new = ast.nodes.items[url_ni];
+    if (url_new.tag != .new_expression) return null;
+
+    // new URL의 callee가 "URL"인지
+    const ue = url_new.data.extra;
+    if (!ast.hasExtra(ue, 2)) return null;
+    const url_callee_idx = ast.readExtraNode(ue, 0);
+    if (url_callee_idx.isNone()) return null;
+    const uc_ni = @intFromEnum(url_callee_idx);
+    if (uc_ni >= ast.nodes.items.len) return null;
+    const url_callee = ast.nodes.items[uc_ni];
+    if (url_callee.tag != .identifier_reference) return null;
+    if (!std.mem.eql(u8, ast.getText(url_callee.span), "URL")) return null;
+
+    // new URL의 인수가 2개인지
+    const url_args_len = ast.readExtra(ue, 2);
+    if (url_args_len < 2) return null;
+
+    const url_args_start = ast.readExtra(ue, 1);
+    if (url_args_start + 1 >= ast.extra_data.items.len) return null;
+
+    // 첫 번째 인수: string_literal (worker 경로)
+    const spec_idx: NodeIndex = @enumFromInt(ast.extra_data.items[url_args_start]);
+    const specifier = getStringLiteralText(ast, spec_idx) orelse return null;
+    const spec_node = ast.getNode(spec_idx);
+
+    // 두 번째 인수: import.meta.url 패턴 확인
+    const meta_url_idx: NodeIndex = @enumFromInt(ast.extra_data.items[url_args_start + 1]);
+    if (!isImportMetaUrl(ast, meta_url_idx)) return null;
+
+    return .{
+        .specifier = specifier,
+        .kind = .worker,
+        .span = spec_node.span,
+        .url_span = url_new.span, // new URL(...) 전체 범위
+    };
+}
+
+/// static_member_expression(object=meta_property "import.meta", property="url")인지 확인.
+fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+    if (node.tag != .static_member_expression) return false;
+
+    const me = node.data.extra;
+    if (!ast.hasExtra(me, 1)) return false;
+
+    // object: meta_property (import.meta)
+    const obj_idx = ast.readExtraNode(me, 0);
+    if (obj_idx.isNone()) return false;
+    const obj_ni = @intFromEnum(obj_idx);
+    if (obj_ni >= ast.nodes.items.len) return false;
+    const obj = ast.nodes.items[obj_ni];
+    if (obj.tag != .meta_property) return false;
+    if (!std.mem.eql(u8, ast.getText(obj.span), "import.meta")) return false;
+
+    // property: "url"
+    const prop_idx = ast.readExtraNode(me, 1);
+    if (prop_idx.isNone()) return false;
+    const prop_ni = @intFromEnum(prop_idx);
+    if (prop_ni >= ast.nodes.items.len) return false;
+    const prop = ast.nodes.items[prop_ni];
+    if (!std.mem.eql(u8, ast.getText(prop.span), "url")) return false;
+
+    return true;
 }
 
 /// 따옴표(`'`, `"`)를 벗긴다. 최소 2글자 이상이어야 함.
