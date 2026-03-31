@@ -333,6 +333,8 @@ pub const BundlerDiagnostic = struct {
         parse_error,
         /// 파일 읽기 실패
         read_error,
+        /// resolve 중 메모리 부족
+        resolve_error,
         /// JSON 파싱 실패
         json_parse_error,
     };
