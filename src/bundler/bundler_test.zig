@@ -11355,3 +11355,180 @@ test "Batch D: inject — inject file included in metafile inputs" {
     // inject 파일도 metafile inputs에 포함
     try std.testing.expect(std.mem.indexOf(u8, result.metafile_json.?, "shim.js") != null);
 }
+
+// ============================================================
+// Web Worker auto-bundling
+// ============================================================
+
+test "Worker: new Worker(new URL) produces separate IIFE bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL('./worker.ts', import.meta.url));
+        \\w.postMessage('hi');
+    );
+    try writeFile(tmp.dir, "worker.ts",
+        \\self.onmessage = (e) => self.postMessage('pong');
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 메인 번들에 worker URL이 교체됨 (new URL 대신 문자열)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".js\")") != null);
+    // new URL이 사라짐
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+
+    // worker 번들이 asset_outputs에 포함
+    try std.testing.expect(result.asset_outputs != null);
+    const assets = result.asset_outputs.?;
+    try std.testing.expect(assets.len >= 1);
+
+    // worker 번들이 IIFE로 래핑
+    var found_worker = false;
+    for (assets) |a| {
+        if (std.mem.startsWith(u8, a.path, "worker-")) {
+            found_worker = true;
+            try std.testing.expect(std.mem.indexOf(u8, a.contents, "self.onmessage") != null);
+            try std.testing.expect(std.mem.startsWith(u8, a.contents, "(function() {"));
+        }
+    }
+    try std.testing.expect(found_worker);
+}
+
+test "Worker: no Worker pattern means no extra assets" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1; console.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // worker가 없으면 asset_outputs가 null
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Worker: multiple workers produce separate bundles" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w1 = new Worker(new URL('./worker-a.ts', import.meta.url));
+        \\const w2 = new Worker(new URL('./worker-b.ts', import.meta.url));
+        \\w1.postMessage('a');
+        \\w2.postMessage('b');
+    );
+    try writeFile(tmp.dir, "worker-a.ts", "self.onmessage = (e) => self.postMessage('a');");
+    try writeFile(tmp.dir, "worker-b.ts", "self.onmessage = (e) => self.postMessage('b');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 두 worker URL이 모두 교체됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-a-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-b-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+
+    // 2개 worker 번들이 asset_outputs에 포함
+    try std.testing.expect(result.asset_outputs != null);
+    try std.testing.expect(result.asset_outputs.?.len >= 2);
+
+    var found_a = false;
+    var found_b = false;
+    for (result.asset_outputs.?) |a| {
+        if (std.mem.startsWith(u8, a.path, "worker-a-")) found_a = true;
+        if (std.mem.startsWith(u8, a.path, "worker-b-")) found_b = true;
+    }
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
+}
+
+test "Worker: duplicate references to same worker build only once" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w1 = new Worker(new URL('./worker.ts', import.meta.url));
+        \\const w2 = new Worker(new URL('./worker.ts', import.meta.url));
+        \\w1.postMessage('first');
+        \\w2.postMessage('second');
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = (e) => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // 두 참조 모두 같은 파일명으로 교체
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-") != null);
+    // new URL은 전부 사라짐
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+
+    // asset_outputs에 worker 번들 1개만 (중복 빌드 방지)
+    try std.testing.expect(result.asset_outputs != null);
+    var worker_count: usize = 0;
+    for (result.asset_outputs.?) |a| {
+        if (std.mem.startsWith(u8, a.path, "worker-")) worker_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), worker_count);
+}
+
+test "Worker: SharedWorker is also detected" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const sw = new SharedWorker(new URL('./shared.ts', import.meta.url));
+        \\sw.port.postMessage('hi');
+    );
+    try writeFile(tmp.dir, "shared.ts", "self.onconnect = (e) => {};");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new SharedWorker(\"./shared-") != null);
+    try std.testing.expect(result.asset_outputs != null);
+}

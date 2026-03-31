@@ -49,6 +49,8 @@ pub const ImportKind = enum {
     side_effect,
     /// require("./foo") (CJS)
     require,
+    /// new Worker(new URL('./worker.ts', import.meta.url))
+    worker,
 };
 
 // ============================================================
@@ -290,6 +292,8 @@ pub const ImportRecord = struct {
     kind: ImportKind,
     /// 소스 코드에서의 위치 (에러 메시지용)
     span: Span,
+    /// worker: new URL(...) 전체 범위 (리라이트 대상)
+    url_span: ?Span = null,
     /// resolve 완료 후 채워지는 모듈 인덱스
     resolved: ModuleIndex = .none,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)

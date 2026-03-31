@@ -258,6 +258,112 @@ pub const Bundler = struct {
         };
     }
 
+    /// 출력 코드에서 Worker의 new URL("specifier", ...) 패턴을 worker 파일명 문자열로 교체.
+    /// 코드를 한 번만 스캔하면서 모든 new URL( 패턴을 매칭 (다중 worker 순서 독립).
+    fn rewriteWorkerURLs(self: *Bundler, code: []u8, graph: *ModuleGraph, worker_map: *std.StringHashMap([]const u8)) ![]const u8 {
+        // specifier → worker filename 매핑 구축
+        var spec_to_filename = std.StringHashMap([]const u8).init(self.allocator);
+        defer spec_to_filename.deinit();
+        for (graph.worker_entries.items) |we| {
+            const filename = worker_map.get(we.resolved_path) orelse continue;
+            const mod = &graph.modules.items[@intFromEnum(we.source_module)];
+            if (we.record_index >= mod.import_records.len) continue;
+            try spec_to_filename.put(mod.import_records[we.record_index].specifier, filename);
+        }
+
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        defer result.deinit(self.allocator);
+        try result.ensureTotalCapacity(self.allocator, code.len);
+
+        const needle = "new URL(";
+        var pos: usize = 0;
+        while (std.mem.indexOf(u8, code[pos..], needle)) |rel| {
+            const abs_start = pos + rel;
+            const after = abs_start + needle.len;
+            // new URL("specifier", ...) — 따옴표 시작 확인
+            if (after < code.len and code[after] == '"') {
+                // specifier 끝 따옴표 찾기
+                if (std.mem.indexOf(u8, code[after + 1 ..], "\"")) |quote_end| {
+                    const spec = code[after + 1 .. after + 1 + quote_end];
+                    // 닫는 괄호 찾기
+                    if (std.mem.indexOf(u8, code[abs_start..], ")")) |paren_end| {
+                        const replace_end = abs_start + paren_end + 1;
+                        if (spec_to_filename.get(spec)) |filename| {
+                            try result.appendSlice(self.allocator, code[pos..abs_start]);
+                            try result.append(self.allocator, '"');
+                            try result.appendSlice(self.allocator, "./");
+                            try result.appendSlice(self.allocator, filename);
+                            try result.append(self.allocator, '"');
+                            pos = replace_end;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // 매칭 안 되면 needle 지나서 계속
+            try result.appendSlice(self.allocator, code[pos .. abs_start + needle.len]);
+            pos = abs_start + needle.len;
+        }
+        try result.appendSlice(self.allocator, code[pos..]);
+
+        self.allocator.free(code);
+        return try result.toOwnedSlice(self.allocator);
+    }
+
+    const WorkerBuildResult = struct {
+        filename: []const u8,
+        contents: []const u8,
+    };
+
+    /// Worker 파일을 독립 IIFE 번들로 빌드한다.
+    fn buildWorker(self: *Bundler, worker_path: []const u8) !WorkerBuildResult {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        // worker용 resolve cache (부모와 공유하지 않음)
+        var worker_resolve_cache = ResolveCache.init(arena_alloc, .{ .platform = self.resolve_cache.platform });
+
+        var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
+        worker_graph.loader_overrides = self.options.loader_overrides;
+        worker_graph.public_path = self.options.public_path;
+        worker_graph.plugins = self.options.plugins;
+        worker_graph.flow = self.options.flow;
+        defer worker_graph.deinit();
+
+        const entry_path = try arena_alloc.dupe(u8, worker_path);
+        const entry_arr: [1][]const u8 = .{entry_path};
+        try worker_graph.build(&entry_arr);
+
+        // 링킹
+        var worker_linker = Linker.init(arena_alloc, worker_graph.modules.items);
+        try worker_linker.link();
+        try worker_linker.computeRenames();
+        if (self.options.minify_identifiers) {
+            try worker_linker.computeMangling();
+        }
+        defer worker_linker.deinit();
+
+        // emit (IIFE 포맷)
+        var emit_opts = self.makeEmitOptions();
+        emit_opts.format = .iife;
+        const worker_output = try emitter.emitWithTreeShaking(
+            arena_alloc,
+            &worker_graph,
+            emit_opts,
+            &worker_linker,
+            null,
+        );
+
+        // content hash로 파일명 생성
+        const hash = std.hash.Crc32.hash(worker_output);
+        const basename = std.fs.path.stem(std.fs.path.basename(worker_path));
+        const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}.js", .{ basename, hash });
+        const contents = try self.allocator.dupe(u8, worker_output);
+
+        return .{ .filename = filename, .contents = contents };
+    }
+
     /// 번들 파이프라인 실행: resolve → graph → emit.
     /// graph는 함수 내에서 생성+해제. &self.resolve_cache 포인터는 self가 살아있는 동안 유효.
     pub fn bundle(self: *Bundler) !BundleResult {
@@ -282,6 +388,30 @@ pub const Bundler = struct {
         defer graph.deinit();
 
         try graph.build(self.options.entry_points);
+
+        // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드
+        var worker_output_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var it = worker_output_map.valueIterator();
+            while (it.next()) |v| self.allocator.free(v.*);
+            worker_output_map.deinit();
+        }
+        var worker_output_files: std.ArrayList(OutputFile) = .empty;
+        defer worker_output_files.deinit(self.allocator);
+
+        for (graph.worker_entries.items) |we| {
+            // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
+            if (worker_output_map.contains(we.resolved_path)) continue;
+
+            const worker_result = self.buildWorker(we.resolved_path) catch {
+                continue;
+            };
+            try worker_output_map.put(we.resolved_path, worker_result.filename);
+            try worker_output_files.append(self.allocator, .{
+                .path = try self.allocator.dupe(u8, worker_result.filename),
+                .contents = worker_result.contents,
+            });
+        }
 
         if (timer) |*t| {
             t_graph = t.read();
@@ -389,6 +519,11 @@ pub const Bundler = struct {
             );
         }
         errdefer self.allocator.free(output);
+
+        // Worker URL 교체: 출력 코드에서 new URL("./worker.ts", "") → "./worker-[hash].js"
+        if (graph.worker_entries.items.len > 0 and output.len > 0) {
+            output = try self.rewriteWorkerURLs(@constCast(output), &graph, &worker_output_map);
+        }
 
         if (timer) |*t| {
             t_emit = t.read();
@@ -509,6 +644,21 @@ pub const Bundler = struct {
             runner.runGenerateBundle(gen_outputs);
         }
 
+        // Worker 출력 파일을 asset_outputs에 합침
+        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null) blk: {
+            const existing = if (asset_outputs) |a| a.len else 0;
+            const total = existing + worker_output_files.items.len;
+            const merged = try self.allocator.alloc(OutputFile, total);
+            if (asset_outputs) |a| {
+                @memcpy(merged[0..a.len], a);
+                self.allocator.free(a);
+            }
+            for (worker_output_files.items, 0..) |wf, i| {
+                merged[existing + i] = wf;
+            }
+            break :blk merged;
+        } else asset_outputs;
+
         return .{
             .output = output,
             .sourcemap = dev_sourcemap,
@@ -516,7 +666,7 @@ pub const Bundler = struct {
             .diagnostics = diagnostics,
             .module_paths = module_paths,
             .module_dev_codes = module_dev_codes,
-            .asset_outputs = asset_outputs,
+            .asset_outputs = final_asset_outputs,
             .metafile_json = metafile_json,
         };
     }
