@@ -25,6 +25,8 @@
 | 12. 배치 D | metafile, analyze, legal-comments, inject, keepNames | ✅ |
 | 13. Flow | Flow 타입 스트리핑 (TIER 1+2+3), flow.zig 독립 파싱, Metro 410/410 통과 | ✅ |
 | 14. RN Resolve | --resolve-extensions, --main-fields (플랫폼 확장자 + package.json 필드 순서) | ✅ |
+| 15. ES 타겟 | --target=es2015~esnext, ES 버전별 다운레벨링 (es2015~es2024 트랜스포머) | ✅ |
+| 16. 엔진 타겟 | --target=chrome80,safari14 엔진 버전별 feature-level 다운레벨링 | ✅ |
 
 ## 번들러 성능 현황 (3242모듈, 2026-03-29 실측)
 ZTS 279ms vs esbuild 182ms (**1.5배**).
@@ -92,10 +94,11 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   - 3단계: N-API .node addon (XL, 2~3주, 선택적) — in-process 호출 최적화
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
-- **CSS 번들링** — `XL (2~3주)` | 선행: 플러그인 API | 우선순위 하향
-  자체 CSS 파서 대신, 플러그인 API를 통해 Lightning CSS/PostCSS를 외부 도구로 위임 가능.
-  현재 `--loader:.css=empty`로 CSS import 무시 후 별도 CSS 빌드 도구 사용 가능.
-  자체 CSS 파서는 플러그인만으로 부족할 때 검토. Bun도 자체 CSS 번들링 미지원.
+- **CSS 번들링** — 현재 플러그인 위임, 자체 구현은 후순위
+  현재: `--loader:.css=text`로 문자열 export 또는 플러그인으로 PostCSS/Lightning CSS 위임.
+  `--loader:.css=empty`로 CSS import 무시 후 별도 빌드 도구 사용도 가능.
+  자체 CSS 파서(Zig 네이티브 `@import` 해석, CSS tree-shaking, CSS Modules)는
+  플러그인만으로 부족할 때 검토. Bun도 자체 CSS 번들링 미지원.
 
 - ~~**metafile**~~ — ✅ 완료. `--metafile=meta.json` esbuild 호환 JSON.
 - ~~**analyze**~~ — ✅ 완료. `--analyze` metafile JSON stderr 출력 (향후 트리 포맷 개선 예정).
@@ -105,7 +108,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 ### Important (프로덕션 배포에 자주 필요)
 
-- **엔진 타겟** (chrome, firefox, safari, node 버전) — `XL` | 선행: 없음 | 배치: 단독
+- ~~**엔진 타겟**~~ — ✅ 완료. `--target=chrome80,safari14,node16` 엔진 버전 타겟 지원.
+  esbuild compat-table 기반, 8개 엔진(chrome/firefox/safari/edge/node/deno/ios/hermes) × 18개 feature.
+  ES 버전 타겟(`--target=es2015~esnext`)도 동일한 UnsupportedFeatures bitmask로 통합.
 
 ### Nice to Have
 
@@ -124,9 +129,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   metafile + analyze + inject + legal comments + keepNames
 
 단독 XL ────────────────────────────────────────────────────────
-  CSS 번들링 (2~3주) — CSS 파서 새로 작성 (플러그인으로 위임 가능)
+  CSS 번들링 — 현재 플러그인 위임 (자체 CSS 파서는 후순위)
   플러그인 API ✅ 1-2단계 완료 — N-API 3단계는 선택적
-  엔진 타겟 (1주+) — caniuse 데이터 테이블 구축
+  엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
   mangleProps (1주+) — cross-module 프로퍼티 추적
 ```
 

@@ -590,7 +590,7 @@ test "experimentalDecorators + es5: inheritance + all decorators" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "class Base {} @sealed class C extends Base { constructor(@dec p: any) { super(); } @log greet() {} }",
-        .{ .experimental_decorators = true, .target = .es5 },
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     // function Base() {} + function C(p) { Base.call(this); } + __extends(C, Base)
@@ -624,7 +624,7 @@ test "experimentalDecorators + es5: class decorator" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "@tag class Foo { greet() { return 'hi'; } }",
-        .{ .experimental_decorators = true, .target = .es5 },
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     // function Foo() {} + prototype assign + Foo = __decorateClass(...) = 3 statements
@@ -635,7 +635,7 @@ test "experimentalDecorators + es5: method decorator" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "class Foo { @log greet() {} }",
-        .{ .experimental_decorators = true, .target = .es5 },
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     // function Foo() {} + prototype assign + __decorateClass member call = 3 statements
@@ -646,7 +646,7 @@ test "experimentalDecorators + es5: ctor param decorator" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "class Foo { constructor(@dec p: number) {} }",
-        .{ .experimental_decorators = true, .target = .es5 },
+        .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     // function Foo(p) {} + Foo = __decorateClass([__decorateParam(0, dec)], Foo) = 2 statements
@@ -663,7 +663,7 @@ test "ES2015 arrow: this capture inserts var _this = this" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function outer() { const fn = () => this.x; }",
-        .{ .target = .es5 },
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     // program → 1 statement (function declaration)
@@ -674,7 +674,7 @@ test "ES2015 arrow: arguments capture inserts var _arguments = arguments" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function outer() { const fn = () => arguments[0]; }",
-        .{ .target = .es5 },
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
@@ -684,7 +684,7 @@ test "ES2015 arrow: no this → no capture variable" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function outer() { const fn = () => 42; }",
-        .{ .target = .es5 },
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
@@ -695,7 +695,7 @@ test "ES2015 arrow: nested arrow shares same _this" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function outer() { const a = () => { const b = () => this.x; }; }",
-        .{ .target = .es5 },
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
@@ -706,7 +706,7 @@ test "ES2015 arrow: inner function resets this scope" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function outer() { const a = () => { function inner() { const c = () => this.w; } }; }",
-        .{ .target = .es5 },
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());

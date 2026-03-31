@@ -70,62 +70,11 @@ pub const TransformOptions = struct {
     /// false(기본값)이면 decorator를 TC39 Stage 3 형태로 그대로 출력.
     /// true이면 class/method/property decorator를 esbuild 호환 __decorateClass 호출로 변환.
     experimental_decorators: bool = false,
-    /// ES 타겟 레벨. 이 버전 이하의 문법을 하위 호환 코드로 변환.
-    /// esnext(기본값)이면 변환 없음.
-    target: Target = .esnext,
+    /// Unsupported features bitmask. feature별로 다운레벨링 여부를 결정.
+    /// ESTarget(es2020) 또는 엔진 버전(chrome80,safari14)에서 변환됨.
+    unsupported: compat.UnsupportedFeatures = .{},
 
-    pub const Target = enum {
-        es5,
-        es2015,
-        es2016,
-        es2017,
-        es2018,
-        es2019,
-        es2020,
-        es2021,
-        es2022,
-        es2024,
-        esnext,
-
-        /// 해당 타겟에서 ES2015 변환이 필요한지 (target < es2015, 즉 es5).
-        /// arrow, template literal, class, destructuring, for-of, let/const,
-        /// default/rest params, spread, computed property, shorthand, generator.
-        pub fn needsES2015(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2015);
-        }
-        /// 해당 타겟에서 exponentiation operator (**) 변환이 필요한지
-        pub fn needsExponentiation(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2016);
-        }
-        /// 해당 타겟에서 nullish coalescing (??) 변환이 필요한지
-        pub fn needsNullishCoalescing(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2020);
-        }
-        /// 해당 타겟에서 optional chaining (?.) 변환이 필요한지
-        pub fn needsOptionalChaining(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2020);
-        }
-        /// 해당 타겟에서 logical assignment (??=, ||=, &&=) 변환이 필요한지
-        pub fn needsLogicalAssignment(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2021);
-        }
-        /// 해당 타겟에서 class static block 변환이 필요한지
-        pub fn needsClassStaticBlock(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2022);
-        }
-        /// 해당 타겟에서 optional catch binding 변환이 필요한지
-        pub fn needsOptionalCatchBinding(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2019);
-        }
-        /// 해당 타겟에서 async/await 변환이 필요한지
-        pub fn needsAsyncAwait(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2017);
-        }
-        /// 해당 타겟에서 object spread 변환이 필요한지
-        pub fn needsObjectSpread(self: Target) bool {
-            return @intFromEnum(self) < @intFromEnum(Target.es2018);
-        }
-    };
+    pub const compat = @import("compat.zig");
 };
 
 /// 런타임 헬퍼 사용 추적 비트맵.
@@ -417,7 +366,7 @@ pub const Transformer = struct {
             => self.visitListNode(node),
 
             .template_literal => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.template_literal) {
                     return es2015_template.ES2015Template(Transformer).lowerTemplateLiteral(self, node);
                 }
                 // no-substitution template (data.none == 0)은 리프 노드 — visitListNode으로 처리하면
@@ -428,7 +377,7 @@ pub const Transformer = struct {
 
             // array_expression: spread(ES2015) 다운레벨링
             .array_expression => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.spread) {
                     if (es2015_spread.ES2015Spread(Transformer).hasSpreadInArray(self, node)) {
                         return es2015_spread.ES2015Spread(Transformer).lowerSpreadArray(self, node);
                     }
@@ -438,12 +387,12 @@ pub const Transformer = struct {
 
             // object_expression: spread(ES2018) 또는 computed property(ES2015) 다운레벨링
             .object_expression => {
-                if (self.options.target.needsObjectSpread()) {
+                if (self.options.unsupported.object_spread) {
                     if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
                         return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
                     }
                 }
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.object_extensions) {
                     if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {
                         return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
                     }
@@ -479,7 +428,7 @@ pub const Transformer = struct {
                 return self.visitUnaryNode(node);
             },
             .await_expression => {
-                if (self.options.target.needsAsyncAwait()) {
+                if (self.options.unsupported.async_await) {
                     return es2017_mod.ES2017(Transformer).lowerAwaitExpression(self, node);
                 }
                 return self.visitUnaryNode(node);
@@ -504,14 +453,14 @@ pub const Transformer = struct {
             .logical_expression,
             => {
                 // ES 다운레벨링: ** → Math.pow (target < es2016)
-                if (self.options.target.needsExponentiation() and node.tag == .binary_expression) {
+                if (self.options.unsupported.exponentiation and node.tag == .binary_expression) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .star2) {
                         return es2016.ES2016(Transformer).lowerExponentiation(self, node);
                     }
                 }
                 // ES 다운레벨링: ?? → ternary
-                if (self.options.target.needsNullishCoalescing() and node.tag == .logical_expression) {
+                if (self.options.unsupported.nullish_coalescing and node.tag == .logical_expression) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .question2) {
                         return es2020.ES2020(Transformer).lowerNullishCoalescing(self, node);
@@ -521,14 +470,14 @@ pub const Transformer = struct {
             },
             .assignment_expression => {
                 // ES 다운레벨링: **= → a = Math.pow(a, b) (es2016)
-                if (self.options.target.needsExponentiation()) {
+                if (self.options.unsupported.exponentiation) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .star2_eq) {
                         return es2016.ES2016(Transformer).lowerExponentiationAssignment(self, node);
                     }
                 }
                 // ES 다운레벨링: ??=, ||=, &&= (es2021)
-                if (self.options.target.needsLogicalAssignment()) {
+                if (self.options.unsupported.logical_assignment) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .question2_eq) {
                         return es2021.ES2021(Transformer).lowerNullishAssignment(self, node);
@@ -539,7 +488,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: this.#x = v → _x.set(this, v)
-                if (self.options.target.needsES2015() and self.current_private_fields.len > 0) {
+                if (self.options.unsupported.class and self.current_private_fields.len > 0) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
                         const left_node = self.old_ast.getNode(left_idx);
@@ -551,7 +500,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: assignment destructuring → sequence expression
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.destructuring) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
                         const left_node = self.old_ast.getNode(left_idx);
@@ -575,13 +524,13 @@ pub const Transformer = struct {
             // === member expression: extra = [object, property, flags] ===
             .static_member_expression => {
                 // ES 다운레벨링: ?. → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining()) {
+                if (self.options.unsupported.optional_chaining) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
                 // ES2015: super.method → Parent.prototype.method
-                if (self.options.target.needsES2015() and self.current_super_class != null) {
+                if (self.options.unsupported.class and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).isSuperMember(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperMember(self, node);
                     }
@@ -590,13 +539,13 @@ pub const Transformer = struct {
             },
             .private_field_expression => {
                 // ES2015: this.#x → _x.get(this)
-                if (self.options.target.needsES2015() and self.current_private_fields.len > 0) {
+                if (self.options.unsupported.class and self.current_private_fields.len > 0) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
                         return result;
                     }
                 }
                 // ES 다운레벨링: ?. → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining()) {
+                if (self.options.unsupported.optional_chaining) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
@@ -605,7 +554,7 @@ pub const Transformer = struct {
             },
             .computed_member_expression => {
                 // ES 다운레벨링: ?. → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining()) {
+                if (self.options.unsupported.optional_chaining) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
@@ -626,7 +575,7 @@ pub const Transformer = struct {
             .try_statement,
             => self.visitTernaryNode(node),
             .for_of_statement => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.for_of) {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
                 }
                 return self.visitTernaryNode(node);
@@ -638,7 +587,7 @@ pub const Transformer = struct {
             .function_declaration,
             .function_expression,
             => {
-                if (self.options.target.needsAsyncAwait()) {
+                if (self.options.unsupported.async_await) {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
@@ -646,7 +595,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: generator function → 상태 머신
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.generator) {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_generator) != 0) {
@@ -658,26 +607,26 @@ pub const Transformer = struct {
             .function,
             => self.visitFunction(node),
             .arrow_function_expression => {
-                if (self.options.target.needsAsyncAwait()) {
+                if (self.options.unsupported.async_await) {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
                         return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
                     }
                 }
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.arrow) {
                     return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, node);
                 }
                 return self.visitArrowFunction(node);
             },
             .class_declaration => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, node);
                 }
                 return self.visitClass(node);
             },
             .class_expression => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, node);
                 }
                 return self.visitClass(node);
@@ -687,14 +636,14 @@ pub const Transformer = struct {
             .switch_case => self.visitSwitchCase(node),
             .call_expression => {
                 // ES 다운레벨링: ?.() → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining()) {
+                if (self.options.unsupported.optional_chaining) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
                 // ES2015: super(args) → Parent.call(this, args)
                 // ES2015: super.method(args) → Parent.prototype.method.call(this, args)
-                if (self.options.target.needsES2015() and self.current_super_class != null) {
+                if (self.options.unsupported.class and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).isSuperCall(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, node);
                     }
@@ -703,7 +652,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: spread in call → .apply()
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.spread) {
                     if (es2015_spread.ES2015Spread(Transformer).hasSpreadArg(self, node)) {
                         return es2015_spread.ES2015Spread(Transformer).lowerSpreadCall(self, node);
                     }
@@ -711,7 +660,7 @@ pub const Transformer = struct {
                 return self.visitCallExpression(node);
             },
             .new_expression => {
-                if (self.options.target.needsES2015()) {
+                if (self.options.unsupported.spread) {
                     if (es2015_spread.ES2015Spread(Transformer).hasSpreadArg(self, node)) {
                         return es2015_spread.ES2015Spread(Transformer).lowerSpreadNew(self, node);
                     }
@@ -728,7 +677,7 @@ pub const Transformer = struct {
             .export_default_declaration => self.visitUnaryNode(node),
             .export_all_declaration => self.visitBinaryNode(node),
             .catch_clause => {
-                if (self.options.target.needsOptionalCatchBinding()) {
+                if (self.options.unsupported.optional_catch_binding) {
                     return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
                 }
                 return self.visitBinaryNode(node);
@@ -752,7 +701,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015 arrow this 캡처: arrow body 안의 this → _this
-                if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
+                if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                     self.needs_this_var = true;
                     const this_span = try self.new_ast.addString("_this");
                     return self.new_ast.addNode(.{
@@ -773,7 +722,7 @@ pub const Transformer = struct {
             => self.copyNodeDirect(node),
             .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
-                if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
+                if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                     const text = self.old_ast.getText(node.data.string_ref);
                     if (std.mem.eql(u8, text, "arguments")) {
                         self.needs_arguments_var = true;
@@ -931,7 +880,7 @@ pub const Transformer = struct {
         if (e + 1 >= extras.len) return NodeIndex.none;
 
         // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
-        if (node.tag == .update_expression and self.options.target.needsES2015()) {
+        if (node.tag == .update_expression and self.options.unsupported.class) {
             const operand_idx: NodeIndex = @enumFromInt(extras[e]);
             const operand = self.old_ast.getNode(operand_idx);
             if (operand.tag == .private_field_expression) {
@@ -1289,17 +1238,17 @@ pub const Transformer = struct {
     fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         // ES2015: destructuring pattern → 개별 declarator로 분해
         // ES2018: object rest (...rest) → __rest 호출 (target < es2018)
-        if (self.options.target.needsES2015()) {
+        if (self.options.unsupported.destructuring) {
             if (es2015_destructuring.ES2015Destructuring(Transformer).hasDestructuring(self, node)) {
                 return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringDeclaration(self, node);
             }
-        } else if (self.options.target.needsObjectSpread()) {
+        } else if (self.options.unsupported.object_spread) {
             if (es2015_destructuring.ES2015Destructuring(Transformer).hasObjectRest(self, node)) {
                 return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringDeclaration(self, node);
             }
         }
         const e = node.data.extra;
-        const kind_flags = if (self.options.target.needsES2015())
+        const kind_flags = if (self.options.unsupported.block_scoping)
             es2015_block_scoping.lowerKindFlags(self.readU32(e, 0))
         else
             self.readU32(e, 0);
@@ -1364,7 +1313,7 @@ pub const Transformer = struct {
         var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
         defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
 
-        const pp = if (self.options.target.needsES2015() and
+        const pp = if (self.options.unsupported.default_params and
             es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
         blk: {
             const lower_result = try es2015_params.ES2015Params(Transformer).lowerParams(
@@ -1399,7 +1348,7 @@ pub const Transformer = struct {
 
         // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
         // var _this = this; / var _arguments = arguments; 를 바디 앞에 삽입.
-        if (self.options.target.needsES2015() and !new_body.isNone() and
+        if (self.options.unsupported.arrow and !new_body.isNone() and
             (self.needs_this_var or self.needs_arguments_var))
         {
             var capture_stmts: [2]NodeIndex = undefined;
@@ -1666,7 +1615,7 @@ pub const Transformer = struct {
             const new_super = try self.visitNode(self.readNodeIdx(e, 1));
 
             // ES2022 다운레벨링: static block → IIFE (target < es2022)
-            if (self.options.target.needsClassStaticBlock()) {
+            if (self.options.unsupported.class_static_block) {
                 var new_body: NodeIndex = .none;
                 var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
                 defer static_block_iifes.deinit(self.allocator);
@@ -1767,13 +1716,13 @@ pub const Transformer = struct {
             .member_decorators = &member_decorators,
             .existing_constructor = &existing_constructor,
             .existing_constructor_pos = &existing_constructor_pos,
-            .static_block_iifes = if (self.options.target.needsClassStaticBlock()) &static_block_iifes else null,
+            .static_block_iifes = if (self.options.unsupported.class_static_block) &static_block_iifes else null,
             .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
             .ctor_param_decos = &ctor_param_decos,
         };
 
         // ES2022 static block this 치환을 위한 클래스 이름 추출
-        if (self.options.target.needsClassStaticBlock()) {
+        if (self.options.unsupported.class_static_block) {
             ctx.class_name_span = self.getClassNameSpan(new_name);
         }
 
@@ -3002,7 +2951,7 @@ pub const Transformer = struct {
     /// object_property: binary = { left=key, right=value, flags }
     fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
         // ES2015: shorthand property 확장 ({ x } → { x: x })
-        if (self.options.target.needsES2015() and node.data.binary.right.isNone()) {
+        if (self.options.unsupported.object_extensions and node.data.binary.right.isNone()) {
             return es2015_shorthand.ES2015Shorthand(Transformer).expandShorthand(self, node);
         }
         const new_key = try self.visitNode(node.data.binary.left);

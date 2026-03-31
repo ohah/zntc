@@ -47,7 +47,7 @@ const CliOptions = struct {
     project_path: ?[]const u8 = null,
     use_define_for_class_fields: ?bool = null,
     experimental_decorators: ?bool = null,
-    target: lib.transformer.TransformOptions.Target = .esnext,
+    unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
     preserve_symlinks: bool = false,
@@ -105,6 +105,23 @@ const CliOptions = struct {
         self.main_fields_list.deinit(alloc);
     }
 };
+
+/// 엔진 타겟 문자열을 파싱. "chrome80,safari14,node16" → UnsupportedFeatures.
+fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.UnsupportedFeatures {
+    const compat = lib.transformer.TransformOptions.compat;
+    var targets: [16]compat.EngineVersion = undefined;
+    var count: usize = 0;
+    var iter = std.mem.splitScalar(u8, val, ',');
+    while (iter.next()) |part| {
+        if (part.len == 0) continue;
+        const ev = compat.EngineVersion.fromString(part) orelse return null;
+        if (count >= targets.len) return null;
+        targets[count] = ev;
+        count += 1;
+    }
+    if (count == 0) return null;
+    return compat.unsupportedFeatures(targets[0..count]);
+}
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
 /// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
@@ -269,7 +286,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;
-                try opts.external_list.append(allocator, args[i]);
+                if (args[i].len > 0) {
+                    try opts.external_list.append(allocator, args[i]);
+                }
+            }
+        } else if (std.mem.startsWith(u8, arg, "--external=")) {
+            const val = arg["--external=".len..];
+            if (val.len > 0) {
+                try opts.external_list.append(allocator, val);
             }
         } else if (std.mem.startsWith(u8, arg, "--conditions=")) {
             const val = arg["--conditions=".len..];
@@ -295,10 +319,17 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.use_define_for_class_fields = true;
         } else if (std.mem.startsWith(u8, arg, "--target=")) {
             const val = arg["--target=".len..];
-            opts.target = std.meta.stringToEnum(lib.transformer.TransformOptions.Target, val) orelse {
-                try stderr.print("zts: unknown target '{s}'\n", .{val});
-                return null;
-            };
+            const compat = lib.transformer.TransformOptions.compat;
+            // ES 타겟 먼저 시도 (es5, es2015, ..., esnext)
+            if (std.meta.stringToEnum(compat.ESTarget, val)) |es| {
+                opts.unsupported = compat.fromESTarget(es);
+            } else {
+                // 엔진 버전 파싱 (chrome80,safari14,node16)
+                opts.unsupported = parseEngineTargets(val) orelse {
+                    try stderr.print("zts: unknown target '{s}'\n", .{val});
+                    return null;
+                };
+            }
         } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
             opts.preserve_symlinks = true;
         } else if (std.mem.startsWith(u8, arg, "--alias:")) {
@@ -458,7 +489,7 @@ const TranspileOptions = struct {
     /// experimentalDecorators: legacy decorator → __decorateClass 호출
     experimental_decorators: bool = false,
     /// ES 타겟 레벨
-    target: lib.transformer.TransformOptions.Target = .esnext,
+    unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
     /// 파이프라인 단계별 소요시간 출력
     timing: bool = false,
     /// 소스맵 sourceRoot 필드
@@ -619,7 +650,7 @@ fn transpileFile(
         .define = options.define,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
-        .target = options.target,
+        .unsupported = options.unsupported,
     });
     // unused import 제거를 위해 semantic 데이터를 transformer에 전달
     transformer.old_symbol_ids = analyzer.symbol_ids.items;
@@ -1059,7 +1090,7 @@ pub fn main() !void {
             .define = opts.define_list.items,
             .experimental_decorators = opts.experimental_decorators orelse false,
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
-            .target = opts.target,
+            .unsupported = opts.unsupported,
             .conditions = opts.conditions_list.items,
             .timing = opts.timing,
             .preserve_symlinks = opts.preserve_symlinks,
@@ -1393,7 +1424,7 @@ pub fn main() !void {
         .platform = opts.platform,
         .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
         .experimental_decorators = opts.experimental_decorators orelse false,
-        .target = opts.target,
+        .unsupported = opts.unsupported,
         .timing = opts.timing,
         .source_root = opts.source_root orelse "",
         .sources_content = opts.sources_content,

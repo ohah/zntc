@@ -1022,7 +1022,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var new_body = try self.visitNode(body_idx);
 
             // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
-            if (self.options.target.needsES2015() and !new_body.isNone() and
+            if (self.options.unsupported.arrow and !new_body.isNone() and
                 (self.needs_this_var or self.needs_arguments_var))
             {
                 var capture_stmts: [2]NodeIndex = undefined;

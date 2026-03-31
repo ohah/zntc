@@ -441,6 +441,16 @@ const projects: ProjectConfig[] = [
     external: ["react"],
   },
   {
+    name: "mitt",
+    pkg: "mitt",
+    entry: `import mitt from 'mitt';\nconst e = mitt();\nlet v = 0;\ne.on('x', (n) => v = n);\ne.emit('x', 42);\nconsole.log(v);`,
+  },
+  {
+    name: "zustand",
+    pkg: "zustand",
+    entry: `import { createStore } from 'zustand/vanilla';\nconst store = createStore((set) => ({ count: 0, inc: () => set((s) => ({ count: s.count + 1 })) }));\nstore.getState().inc();\nconsole.log(store.getState().count);`,
+  },
+  {
     name: "valtio",
     pkg: "valtio",
     entry: `import { proxy, snapshot } from 'valtio/vanilla';\nconst state = proxy({ count: 0 });\nstate.count = 42;\nconsole.log(snapshot(state).count);`,
@@ -947,6 +957,35 @@ const projects: ProjectConfig[] = [
     pkg: "nanostores",
     entry: `import { atom } from 'nanostores';\nconst c = atom(0);\nc.set(42);\nconsole.log(c.get());`,
     target: "es2021",
+  },
+
+  // ============================================================
+  // Engine target tests — --target=chrome80,safari14 등
+  // ============================================================
+  {
+    name: "lodash-es@chrome80",
+    pkg: "lodash-es",
+    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';\nconsole.log(groupBy, sortBy, uniq);`,
+    target: "chrome80",
+  },
+  {
+    name: "clsx@chrome49",
+    pkg: "clsx",
+    entry: `import { clsx } from 'clsx';\nconsole.log(clsx('a', false, 'b', {c:true}));`,
+    target: "chrome49",
+  },
+  {
+    name: "dayjs@safari14",
+    pkg: "dayjs",
+    entry: `import dayjs from 'dayjs';\nconsole.log(dayjs().format('YYYY-MM-DD'));`,
+    target: "safari14",
+  },
+  {
+    name: "nanoid@node16",
+    pkg: "nanoid",
+    entry: `import { nanoid } from 'nanoid';\nconsole.log(nanoid());`,
+    target: "node16",
+    platform: "node",
   },
 ];
 

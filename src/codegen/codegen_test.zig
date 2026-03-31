@@ -236,6 +236,64 @@ test "Codegen: const enum removed" {
     try std.testing.expectEqualStrings("", r.output);
 }
 
+// --- enum re-export (semantic analyzer에서 enum을 symbol로 등록) ---
+
+test "Codegen: enum re-export via export specifier" {
+    var r = try e2e(std.testing.allocator, "enum Direction { Up, Down }\nexport { Direction };");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Direction") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export") != null);
+}
+
+test "Codegen: enum re-export with alias" {
+    var r = try e2e(std.testing.allocator, "enum Fruit { Apple, Banana }\nexport { Fruit as FruitEnum };");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Fruit as FruitEnum") != null);
+}
+
+test "Codegen: enum default export" {
+    var r = try e2e(std.testing.allocator, "enum Status { Active, Inactive }\nexport default Status;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export default Status") != null);
+}
+
+test "Codegen: export enum declaration" {
+    var r = try e2e(std.testing.allocator, "export enum Color { Red = 'RED', Green = 'GREEN' }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export var Color") != null);
+}
+
+test "Codegen: enum + class + var mixed re-export" {
+    var r = try e2e(std.testing.allocator,
+        \\enum Direction { Up, Down }
+        \\class Store { constructor() {} }
+        \\const name = "test";
+        \\export { Direction, Store, name };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Direction") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Store") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "name") != null);
+}
+
+test "Codegen: const enum re-export is stripped" {
+    var r = try e2e(std.testing.allocator, "const enum Color { Red, Green }\nexport { Color };");
+    defer r.deinit();
+    // const enum은 삭제되지만 export specifier는 남을 수 있음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Color[Color") == null);
+}
+
+test "Codegen: string enum re-export" {
+    var r = try e2e(std.testing.allocator,
+        \\enum HttpMethod { Get = "GET", Post = "POST", Put = "PUT", Delete = "DELETE" }
+        \\export { HttpMethod };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"GET\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"DELETE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "export") != null);
+}
+
 // ============================================================
 // E2E Tests: Class
 // ============================================================
@@ -533,6 +591,137 @@ test "Codegen: JSX fragment" {
     try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(React.Fragment,null,\"hello\");", r.output);
 }
 
+// --- JSX: closing tag 뒤 텍스트 (children 모드 복원) ---
+
+test "JSX: text after closing child element" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p><code>x</code> text</p>;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "const x=/* @__PURE__ */ React.createElement(\"p\",null,/* @__PURE__ */ React.createElement(\"code\",null,\"x\"),\" text\");",
+        r.output,
+    );
+}
+
+test "JSX: text between two child elements" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p><b>a</b> and <i>b</i></p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" and \"") != null);
+}
+
+test "JSX: multiple inline elements" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p>Edit <code>src/App.tsx</code> and save to test <code>HMR</code></p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"Edit \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" and save to test \"") != null);
+}
+
+test "JSX: nested elements with text at every level" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>before <span>inner</span> after</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"before \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"inner\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" after\"") != null);
+}
+
+test "JSX: self-closing child followed by text" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p><br /> hello</p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" hello\"") != null);
+}
+
+test "JSX: expression then text after child" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p><b>{x}</b> rest</p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" rest\"") != null);
+}
+
+// --- JSX: fragment children 모드 ---
+
+test "JSX: fragment with mixed children" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <>text <b>bold</b> more</>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"text \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"bold\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" more\"") != null);
+}
+
+test "JSX: nested fragment inside element" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div><>a<b>x</b>c</></div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"c\"") != null);
+}
+
+// --- JSX: 복잡한 실전 패턴 ---
+
+test "JSX: Vite-style multi-attribute + nested" {
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <section id="main">
+        \\  <a href="https://example.com" target="_blank">
+        \\    Learn more
+        \\  </a>
+        \\</section>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"https://example.com\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"_blank\"") != null);
+}
+
+test "JSX: SVG with use element" {
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <svg className="icon"><use href="/icons.svg#doc" /></svg>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"svg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"use\"") != null);
+}
+
+test "JSX: deeply nested children with text" {
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <div><ul><li><a href="#">link</a> desc</li></ul></div>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"link\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" desc\"") != null);
+}
+
+test "JSX: sibling elements in fragment" {
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <><h1>title</h1><p>body</p></>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"title\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"body\"") != null);
+}
+
+test "JSX: expression between elements" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <p>count: {n} items</p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"count: \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" items\"") != null);
+}
+
+test "JSX: empty expression container" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>{}</div>;");
+    defer r.deinit();
+    try std.testing.expect(r.output.len > 0);
+}
+
+test "JSX: spread attribute" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div {...props}>child</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "props") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"child\"") != null);
+}
+
+test "JSX: component with children" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <App><Header />content</App>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "App") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Header") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"content\"") != null);
+}
+
 // ============================================================
 // E2E Tests: Token splitting (>> → > + >, >= → > + = etc.)
 // ============================================================
@@ -813,8 +1002,8 @@ test "import.meta: unknown property CJS browser" {
 // ES Downlevel Tests (--target)
 // ============================================================
 
-fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.Target) !TestResult {
-    return e2eFull(allocator, source, .{ .target = target }, .{ .minify_whitespace = true }, ".ts");
+fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
+    return e2eFull(allocator, source, .{ .unsupported = TransformOptions.compat.fromESTarget(target) }, .{ .minify_whitespace = true }, ".ts");
 }
 
 // --- ?? (nullish coalescing) ---
@@ -1009,37 +1198,37 @@ test "ES2022: static block with methods preserved" {
 // --- ES2017: async/await → generator ---
 
 test "ES2017: async function declaration" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());}).call(this);}", r.output);
 }
 
 test "ES2017: async arrow block body" {
-    var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);}).call(this);", r.output);
 }
 
 test "ES2017: async arrow expression body" {
-    var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);}).call(this);", r.output);
 }
 
 test "ES2017: no transform on es2017" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .es2017 }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2017) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
 }
 
 test "ES2017: no transform on esnext" {
-    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .esnext }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .unsupported = TransformOptions.compat.fromESTarget(.esnext) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
 }
 
 test "ES2017: non-async function unchanged" {
-    var r = try e2eFull(std.testing.allocator, "export function foo() { return 1; }", .{ .target = .es2016 }, .{ .minify_whitespace = true }, ".mts");
+    var r = try e2eFull(std.testing.allocator, "export function foo() { return 1; }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2016) }, .{ .minify_whitespace = true }, ".mts");
     defer r.deinit();
     try std.testing.expectEqualStrings("export function foo(){return 1;}", r.output);
 }
@@ -2648,4 +2837,123 @@ test "Flow: Metro smoke — full module with all Flow features" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "interface") == null); // interface 제거
     try std.testing.expect(std.mem.indexOf(u8, r.output, "declare") == null); // declare 제거
     try std.testing.expect(std.mem.indexOf(u8, r.output, "export default greet") != null); // default export 유지
+}
+
+// ============================================================
+// 엔진 타겟 통합 테스트
+// ============================================================
+
+const compat = TransformOptions.compat;
+
+fn e2eEngine(allocator: std.mem.Allocator, source: []const u8, targets: []const compat.EngineVersion) !TestResult {
+    return e2eFull(allocator, source, .{ .unsupported = compat.unsupportedFeatures(targets) }, .{ .minify_whitespace = true }, ".ts");
+}
+
+// --- 엔진 타겟: arrow function ---
+
+test "engine target: chrome48 → arrow 다운레벨링" {
+    var r = try e2eEngine(std.testing.allocator, "const f = () => 1;", &.{.{ .engine = .chrome, .major = 48 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function") != null);
+}
+
+test "engine target: chrome49 → arrow 유지" {
+    var r = try e2eEngine(std.testing.allocator, "const f = () => 1;", &.{.{ .engine = .chrome, .major = 49 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=>") != null);
+}
+
+// --- 엔진 타겟: nullish coalescing ---
+
+test "engine target: chrome79 → ?? 다운레벨링" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a ?? b;", &.{.{ .engine = .chrome, .major = 79 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!=null") != null);
+}
+
+test "engine target: chrome80 → ?? 유지" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a ?? b;", &.{.{ .engine = .chrome, .major = 80 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "??") != null);
+}
+
+// --- 엔진 타겟: optional chaining ---
+
+test "engine target: chrome90 → ?. 다운레벨링" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a?.b;", &.{.{ .engine = .chrome, .major = 90 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+test "engine target: chrome91 → ?. 유지" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a?.b;", &.{.{ .engine = .chrome, .major = 91 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "?.") != null);
+}
+
+// --- 엔진 타겟: async/await ---
+
+test "engine target: chrome54 → async 다운레벨링" {
+    var r = try e2eEngine(std.testing.allocator, "async function foo() { await x; }", &.{.{ .engine = .chrome, .major = 54 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") != null);
+}
+
+test "engine target: chrome55 → async 유지" {
+    var r = try e2eEngine(std.testing.allocator, "async function foo() { await x; }", &.{.{ .engine = .chrome, .major = 55 }});
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") == null);
+}
+
+// --- 엔진 타겟: 복합 타겟 교집합 ---
+
+test "engine target: chrome91+safari13 → safari가 ?? 미지원이므로 다운레벨링" {
+    // chrome91: ?? 지원 (80), safari13.0: ?? 미지원 (13.1부터)
+    var r = try e2eEngine(std.testing.allocator, "const x = a ?? b;", &.{
+        .{ .engine = .chrome, .major = 91 },
+        .{ .engine = .safari, .major = 13, .minor = 0 },
+    });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!=null") != null);
+}
+
+test "engine target: chrome91+safari13.1 → 둘 다 ?? 지원, 유지" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a ?? b;", &.{
+        .{ .engine = .chrome, .major = 91 },
+        .{ .engine = .safari, .major = 13, .minor = 1 },
+    });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "??") != null);
+}
+
+// --- 엔진 타겟: feature 독립성 (한 feature만 다운레벨링, 나머지 유지) ---
+
+test "engine target: chrome80 → ??는 유지하지만 ?.는 다운레벨링" {
+    var r = try e2eEngine(std.testing.allocator, "const x = a ?? b; const y = c?.d;", &.{
+        .{ .engine = .chrome, .major = 80 },
+    });
+    defer r.deinit();
+    // ?? (chrome80 지원) → 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "??") != null);
+    // ?. (chrome91 미만) → 다운레벨링
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+// --- 엔진 타겟: safari minor 버전 정밀도 ---
+
+test "engine target: safari11.0 → object spread 미지원 (11.1부터)" {
+    var r = try e2eEngine(std.testing.allocator, "const x = { ...obj };", &.{
+        .{ .engine = .safari, .major = 11, .minor = 0 },
+    });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+}
+
+test "engine target: safari11.1 → object spread 지원" {
+    var r = try e2eEngine(std.testing.allocator, "const x = { ...obj };", &.{
+        .{ .engine = .safari, .major = 11, .minor = 1 },
+    });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...") != null);
 }

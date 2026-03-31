@@ -22,7 +22,7 @@ fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
         const loop_guard_pos = self.scanner.token.span.start;
         if (self.current() == .l_angle) {
             if (try self.peekNextKindJSX() == .slash) break;
-            const child = try parseJSXElement(self);
+            const child = try parseJSXElementAsChild(self);
             try self.scratch.append(self.allocator, child);
         } else if (self.current() == .l_curly) {
             const expr_start = self.currentSpan().start;
@@ -93,15 +93,35 @@ fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
     return children;
 }
 
+/// children 내부에서 호출되는 JSX element.
+/// closing tag 뒤에 nextJSXChild()로 JSX children 모드를 복원한다.
+fn parseJSXElementAsChild(self: *Parser) ParseError2!NodeIndex {
+    return parseJSXElementImpl(self, true);
+}
+
 /// <Tag ...>children</Tag> 또는 <Tag ... /> 또는 <>...</>
 pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
+    return parseJSXElementImpl(self, false);
+}
+
+/// JSX element/fragment closing tag 이후 스캐너 모드 복원.
+/// as_child이면 부모 children 모드(nextJSXChild), 아니면 일반 모드(next).
+inline fn advanceAfterJSXClose(self: *Parser, as_child: bool) !void {
+    if (as_child) {
+        try self.scanner.nextJSXChild();
+    } else {
+        try self.scanner.next();
+    }
+}
+
+fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.scanner.nextInsideJSXElement(); // '<' 이후 JSX 모드
 
     // Fragment: <>
     if (self.current() == .r_angle) {
         try self.scanner.nextJSXChild(); // '>' 이후 children 모드
-        return parseJSXFragment(self, start);
+        return parseJSXFragment(self, start, as_child);
     }
 
     // Opening tag: <TagName
@@ -131,8 +151,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     // Self-closing: />
     if (self.current() == .slash) {
         try self.scanner.nextInsideJSXElement(); // skip /
-        // expect >
-        try self.scanner.next(); // back to normal mode after >
+        try advanceAfterJSXClose(self, as_child);
 
         // 항상 5 fields: [tag, attrs_start, attrs_len, children_start, children_len]
         // self-closing은 children_len=0으로 통일하여 transformer에서 heuristic 불필요
@@ -161,8 +180,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
         try self.scanner.nextInsideJSXElement();
     }
-    // expect >
-    try self.scanner.next(); // back to normal mode
+    try advanceAfterJSXClose(self, as_child);
 
     const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
     _ = try self.ast.addExtra(attrs.start);
@@ -177,13 +195,13 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
+fn parseJSXFragment(self: *Parser, start: u32, as_child: bool) ParseError2!NodeIndex {
     const children = try parseJSXChildren(self);
 
     // </>
     try self.scanner.nextInsideJSXElement(); // <
     try self.scanner.nextInsideJSXElement(); // /
-    try self.scanner.next(); // >
+    try advanceAfterJSXClose(self, as_child);
 
     return try self.ast.addNode(.{
         .tag = .jsx_fragment,

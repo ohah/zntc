@@ -61,8 +61,8 @@ pub const EmitOptions = struct {
     experimental_decorators: bool = false,
     /// useDefineForClassFields=false
     use_define_for_class_fields: bool = true,
-    /// ES 타겟 레벨
-    target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
+    /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
+    unsupported: @import("../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures = .{},
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     platform: @import("../codegen/codegen.zig").Platform = .browser,
     /// 에셋/청크 URL prefix (동적 import 경로에 적용)
@@ -543,7 +543,7 @@ pub fn emitDevModule(
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
-        .target = options.target,
+        .unsupported = options.unsupported,
     });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
@@ -1487,7 +1487,7 @@ pub fn emitModule(
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
-        .target = options.target,
+        .unsupported = options.unsupported,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 new_ast 기준으로 재매핑
@@ -1941,7 +1941,7 @@ fn emitBundleRuntimeHelpers(
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
-    if (options.target.needsAsyncAwait()) {
+    if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
     }
 }
@@ -1970,7 +1970,7 @@ fn emitChunkRuntimeHelpers(
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
-    if (options.target.needsAsyncAwait()) {
+    if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
     }
     if (needs_to_binary) {
