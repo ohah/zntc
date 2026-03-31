@@ -21,7 +21,7 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
-    var linker = Linker.init(allocator, graph.modules.items);
+    var linker = Linker.init(allocator, graph.modules.items, .esm);
     try linker.link();
 
     return .{ .linker = linker, .graph = graph, .cache = cache };
@@ -176,7 +176,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -222,7 +222,7 @@ test "linker: external import not resolved (no binding)" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -451,7 +451,7 @@ test "isReservedName: JS reserved words" {
 
 test "isCandidateAvailable: 예약어/글로벌/nested 통합 확인" {
     // isCandidateAvailable은 Linker 인스턴스 필요 → 최소 셋업
-    var linker = Linker.init(std.testing.allocator, &.{});
+    var linker = Linker.init(std.testing.allocator, &.{}, .esm);
     defer linker.deinit();
 
     var name_to_owners = Linker.NameToOwnersMap.init(std.testing.allocator);
@@ -536,7 +536,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -575,7 +575,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
     defer linker.deinit();
     try linker.link();
     try linker.computeRenames();

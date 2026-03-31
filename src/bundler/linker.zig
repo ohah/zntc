@@ -152,9 +152,8 @@ pub const ResolvedBinding = struct {
 pub const Linker = struct {
     allocator: std.mem.Allocator,
     modules: []const Module,
-    /// 출력 포맷. JSON 모듈의 scope-hoist 판단에 사용.
-    /// ESM 포맷에서만 CJS importer 없는 JSON을 scope-hoist한다.
-    format: types.Format = .esm,
+    /// 출력 포맷. JSON scope-hoist 판단에 사용 (Module.isJsonScopeHoistable).
+    format: types.Format,
 
     /// 모듈별 export 맵: "module_index\x00exported_name" → ExportEntry
     export_map: std.StringHashMap(ExportEntry),
@@ -200,10 +199,11 @@ pub const Linker = struct {
         span_key: u64,
     };
 
-    pub fn init(allocator: std.mem.Allocator, modules: []const Module) Linker {
+    pub fn init(allocator: std.mem.Allocator, modules: []const Module, format: types.Format) Linker {
         return .{
             .allocator = allocator,
             .modules = modules,
+            .format = format,
             .export_map = std.StringHashMap(ExportEntry).init(allocator),
             .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
             .diagnostics = .empty,
@@ -900,13 +900,9 @@ pub const Linker = struct {
 
                 const canonical_mod = @intFromEnum(rec.resolved);
 
-                // JSON 모듈 (ESM 포맷 + CJS importer 없음): json_X 변수 직접 참조.
-                // esbuild 방식: scope-hoisted var json_X = {...}에 대한 직접 바인딩.
-                // ESM 출력 포맷에서만 적용. CJS/IIFE 포맷에서는 항상 __commonJS 래핑.
-                if (self.format == .esm and
-                    canonical_mod < self.modules.len and
-                    self.modules[canonical_mod].module_type == .json and
-                    !self.modules[canonical_mod].has_cjs_importer)
+                // JSON scope-hoist: __commonJS 대신 var json_X 직접 참조 (esbuild 방식).
+                if (canonical_mod < self.modules.len and
+                    self.modules[canonical_mod].isJsonScopeHoistable(self.format))
                 {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const json_var = try types.makeJsonVarName(self.allocator, self.modules[canonical_mod].path);
