@@ -101,6 +101,8 @@ const CliOptions = struct {
         self.loader_list.deinit(alloc);
         for (self.inject_list.items) |p| alloc.free(p);
         self.inject_list.deinit(alloc);
+        self.plugin_paths.deinit(alloc);
+        self.proxy_list.deinit(alloc);
         self.resolve_extensions_list.deinit(alloc);
         self.main_fields_list.deinit(alloc);
     }
