@@ -425,6 +425,7 @@ pub const Bundler = struct {
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.init(self.allocator, graph.modules.items);
+            l.format = self.options.format;
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();

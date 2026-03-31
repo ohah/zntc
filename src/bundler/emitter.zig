@@ -94,11 +94,7 @@ pub const EmitOptions = struct {
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
 
-    pub const Format = enum {
-        esm,
-        cjs,
-        iife,
-    };
+    pub const Format = types.Format;
 };
 
 pub const OutputFile = struct {
@@ -1758,11 +1754,10 @@ fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minif
 fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
 
-    // ESM 포맷: var json_X = <json_content>; (scope-hoisted)
-    // CJS 래핑 대신 직접 변수 할당으로 더 효율적인 출력.
-    // graph.zig에서 JSON 모듈은 항상 wrap_kind=cjs로 설정되지만,
-    // ESM 출력 시에는 __commonJS 래핑 없이 직접 변수로 출력한다.
-    if (options.format == .esm) {
+    // ESM 포맷 + CJS importer 없음: scope-hoisted var json_X = {...} 출력.
+    // linker가 json_X 변수를 직접 참조하는 preamble을 생성한다 (esbuild 동작).
+    // CJS/IIFE 포맷에서는 항상 __commonJS 래핑 필요.
+    if (options.format == .esm and !module.has_cjs_importer) {
         const var_name = try types.makeJsonVarName(allocator, module.path);
         defer allocator.free(var_name);
 
@@ -1779,7 +1774,8 @@ fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: 
         return try buf.toOwnedSlice(allocator);
     }
 
-    // CJS/IIFE 포맷: __commonJS 래핑 (JSON/Asset 공통)
+    // CJS/IIFE 포맷 또는 CJS importer가 있는 경우: __commonJS 래핑.
+    // linker가 require_X() 이름으로 참조.
     return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
 }
 
@@ -1924,13 +1920,12 @@ fn emitBundleRuntimeHelpers(
     sorted_modules: []const *const Module,
     options: EmitOptions,
 ) !void {
-    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입.
-    // ESM 포맷에서 JSON 모듈은 scope-hoisted 변수로 출력하므로
-    // __commonJS 래핑을 사용하지 않음 — 런타임 필요 여부 판정에서 제외.
+    // CJS 런타임 헬퍼 주입: __commonJS 래핑 모듈이 하나라도 있으면 주입.
+    // ESM 포맷에서 CJS importer 없는 JSON은 scope-hoisted var로 출력하므로 제외.
     var needs_cjs_runtime = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) {
-            if (options.format == .esm and m.module_type == .json) continue;
+            if (options.format == .esm and m.module_type == .json and !m.has_cjs_importer) continue;
             needs_cjs_runtime = true;
             break;
         }

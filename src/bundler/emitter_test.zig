@@ -990,7 +990,8 @@ test "globalName — with banner/footer" {
 // ============================================================
 
 test "JSON module — ESM format" {
-    // ESM 포맷에서 JSON이 var json_X = {...}; 형태로 출력되는지 확인
+    // ESM 포맷 + ESM-only import: scope-hoisted var json_X = {...} 출력.
+    // CJS importer가 없으므로 __commonJS 래핑 불필요 (esbuild 동작).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "import data from './data.json';\nconsole.log(data);");
@@ -1005,12 +1006,9 @@ test "JSON module — ESM format" {
     const output = try emit(std.testing.allocator, &result.graph, .{ .format = .esm }, null);
     defer std.testing.allocator.free(output);
 
-    // ESM: JSON 모듈이 var json_data = {...}; 형태로 출력
+    // ESM-only: scope-hoisted var
     try std.testing.expect(std.mem.indexOf(u8, output, "var json_data") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"key\":\"value\"") != null);
-    // JSON 모듈 자체는 __commonJS 래핑을 사용하지 않음 (var json_data = ... 사용).
-    // 단, linker 없이는 JS 모듈의 CJS require 호출이 남아 CJS 런타임이 주입될 수 있으므로
-    // 런타임 주입 여부는 검증하지 않음. JSON 변수 출력 형태만 확인.
     try std.testing.expect(std.mem.indexOf(u8, output, "var json_data =") != null);
 }
 
