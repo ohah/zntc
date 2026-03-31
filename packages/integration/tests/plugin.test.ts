@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts, runZtsInDir, ZTS_BIN } from "./helpers";
+import { createFixture, runZts, runZtsInDir, runCmd, ZTS_BIN } from "./helpers";
 import { join, resolve } from "node:path";
 
 const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.ts");
@@ -516,6 +516,160 @@ describe("Plugin: auto config detection", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stderr).not.toContain("Using config");
       expect(result.stdout).toContain("const x = 42");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("Vue SFC plugin: compiles .vue to JS via vue/compiler-sfc", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import App from './App.vue';\nconsole.log(typeof App);`,
+      "App.vue": [
+        '<script setup lang="ts">',
+        'import { ref } from "vue"',
+        "const count = ref(0)",
+        "</script>",
+        "<template>",
+        "  <button @click=\"count++\">{{ count }}</button>",
+        "</template>",
+      ].join("\n"),
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        import { readFileSync } from 'node:fs';
+        defineConfig({ plugins: [{
+          name: 'vue-sfc',
+          async load(id) {
+            if (!id.endsWith('.vue')) return null;
+            const source = readFileSync(id, 'utf8');
+            const { parse, compileScript } = await import('vue/compiler-sfc');
+            const { descriptor } = parse(source, { filename: id });
+            const result = compileScript(descriptor, { id, inlineTemplate: true });
+            return result.content;
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+        "--platform=node",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      // vue/compiler-sfc가 script setup을 컴파일하면 defineComponent가 포함됨
+      expect(result.stdout).toContain("defineComponent");
+      // ref(0) 호출이 포함됨
+      expect(result.stdout).toContain("ref(0)");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("Vue SFC plugin: multi-component app bundles and runs", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": [
+        'import { createSSRApp } from "vue";',
+        'import { renderToString } from "vue/server-renderer";',
+        'import App from "./App.vue";',
+        'const app = createSSRApp(App);',
+        'renderToString(app).then(html => console.log(html));',
+      ].join("\n"),
+      "App.vue": [
+        '<script setup lang="ts">',
+        'import Child from "./Child.vue"',
+        "</script>",
+        "<template><div><Child msg=\"hello\" /></div></template>",
+      ].join("\n"),
+      "Child.vue": [
+        "<script setup lang=\"ts\">",
+        "defineProps<{ msg: string }>()",
+        "</script>",
+        "<template><span>{{ msg }}</span></template>",
+      ].join("\n"),
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        import { readFileSync } from 'node:fs';
+        defineConfig({ plugins: [{
+          name: 'vue-sfc',
+          async load(id) {
+            if (!id.endsWith('.vue')) return null;
+            const source = readFileSync(id, 'utf8');
+            const { parse, compileScript } = await import('vue/compiler-sfc');
+            const { descriptor } = parse(source, { filename: id });
+            const result = compileScript(descriptor, { id, inlineTemplate: true });
+            return result.content;
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        join(dir, "out.js"),
+        "--plugin",
+        join(dir, "plugin.js"),
+        "--platform=node",
+        "--format=esm",
+      ]);
+      expect(result.exitCode).toBe(0);
+
+      // 번들 실행 — SSR 렌더링 결과 확인
+      const run = await runCmd(["node", join(dir, "out.js")]);
+      expect(run.exitCode).toBe(0);
+      expect(run.stdout).toContain("<div>");
+      expect(run.stdout).toContain("hello");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("Svelte plugin: compiles .svelte to JS via svelte/compiler", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import App from './App.svelte';\nconsole.log(typeof App);`,
+      "App.svelte": [
+        "<script>",
+        "  let count = $state(0);",
+        "</script>",
+        "<button onclick={() => count++}>count: {count}</button>",
+      ].join("\n"),
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        import { readFileSync } from 'node:fs';
+        defineConfig({ plugins: [{
+          name: 'svelte-compiler',
+          async load(id) {
+            if (!id.endsWith('.svelte')) return null;
+            const source = readFileSync(id, 'utf8');
+            const { compile } = await import('svelte/compiler');
+            const result = compile(source, { filename: id, generate: 'client' });
+            return result.js.code;
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+        "--platform=node",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      // svelte/compiler가 생성한 코드에는 $state 관련 내부 함수가 포함됨
+      expect(result.stdout).toContain("function");
     } finally {
       await cleanup();
     }

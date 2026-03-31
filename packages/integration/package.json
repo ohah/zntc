@@ -7,6 +7,8 @@
     "build:zts": "cd ../.. && zig build -Doptimize=ReleaseFast"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "svelte": "^5.55.1",
+    "vue": "^3.5.31"
   }
 }
