@@ -31,6 +31,7 @@ pub const stmt_info = @import("stmt_info.zig");
 pub const chunk = @import("chunk.zig");
 pub const runtime_helpers = @import("runtime_helpers.zig");
 pub const bundler_core = @import("bundler.zig");
+pub const mpsc_channel = @import("mpsc_channel.zig");
 pub const plugin = @import("plugin.zig");
 pub const subprocess_plugin = @import("subprocess_plugin.zig");
 

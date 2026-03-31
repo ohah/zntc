@@ -37,6 +37,7 @@ const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
+const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -144,10 +145,10 @@ pub const ModuleGraph = struct {
             try inject_indices.append(self.allocator, idx);
         }
 
-        // Phase 1: Producer-Consumer 스캔 (bun/esbuild 방식).
-        // 워커: parseModule + resolve (그래프 변형 없음)
-        // 메인: 결과 적용 + addModule + sideEffects (sole writer)
-        // 워커 실행 중 addModule이 없으므로 modules 배열 realloc 없음 → 포인터 안전.
+        // Phase 1: 이벤트 큐 기반 스캔 (esbuild 스타일).
+        // 워커: parseModule + resolve → 채널 send (그래프 변형 없음)
+        // 메인: 채널 recv → 결과 적용 + addModule → 즉시 새 워커 스폰
+        // 배치 경계 없이 모듈 발견 즉시 파싱 시작 → CPU 유휴 시간 최소화.
         for (entry_points) |entry_path| {
             _ = try self.addModule(entry_path);
         }
@@ -158,46 +159,94 @@ pub const ModuleGraph = struct {
 
         var scan_timer: ?std.time.Timer = if (self.timing) std.time.Timer.start() catch null else null;
 
-        var parse_start: usize = 0;
-        while (parse_start < self.modules.items.len) {
-            const parse_end = self.modules.items.len;
-            const batch_size = parse_end - parse_start;
+        if (pool_ok) {
+            var channel = MpscChannel(ScanResult).init(self.allocator);
+            defer channel.deinit();
 
-            if (batch_size >= 2 and pool_ok) {
-                // resolve 결과 슬롯 할당 (워커가 기록, 메인이 적용)
-                var resolve_outputs = try self.allocator.alloc([]ResolveOutput, batch_size);
-                defer {
-                    for (resolve_outputs) |r| if (r.len > 0) self.allocator.free(r);
-                    self.allocator.free(resolve_outputs);
-                }
-                for (resolve_outputs) |*r| r.* = &.{};
+            var inflight: usize = 0;
+            var spawned_up_to: usize = 0;
 
-                // 워커 스폰: parse + resolve (그래프 변형 없음)
-                var wg: std.Thread.WaitGroup = .{};
-                for (parse_start..parse_end) |i| {
-                    pool.spawnWg(&wg, scanProducer, .{
-                        self,
-                        @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))),
-                        &resolve_outputs[i - parse_start],
-                    });
-                }
-                pool.waitAndWork(&wg);
+            // 초기 모듈(엔트리 + inject) 스폰
+            while (spawned_up_to < self.modules.items.len) : (spawned_up_to += 1) {
+                const m = &self.modules.items[spawned_up_to];
+                if (m.state == .ready) continue; // disabled 모듈은 스킵
+                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
+                pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
+                    // 스레드 풀 스폰 실패 시 메인에서 직접 실행
+                    scanWorker(self, idx, &channel);
+                };
+                inflight += 1;
+            }
 
-                // 메인: 결과 적용 (sole writer — addModule, addDependency, sideEffects)
-                for (parse_start..parse_end) |i| {
-                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
-                    self.modules.items[i].state = .ready;
+            // 이벤트 루프: 워커 결과 수신 → 적용 → 새 모듈 즉시 스폰
+            while (inflight > 0) {
+                const result = channel.recv();
+                inflight -= 1;
 
-                    const resolves = resolve_outputs[i - parse_start];
-                    const records = self.modules.items[i].import_records;
-                    for (records, 0..) |record, rec_i| {
-                        if (rec_i < resolves.len) {
-                            try self.applyResolveResult(i, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
+                const mod_idx = @intFromEnum(result.module_idx);
+                self.applySideEffectsFromPackageJson(&self.modules.items[mod_idx]);
+                self.modules.items[mod_idx].state = .ready;
+
+                const records = self.modules.items[mod_idx].import_records;
+                const resolves = result.resolve_outputs;
+
+                // 포인터 안전: applyResolveResult → addModule → realloc 가능.
+                // 워커가 실행 중이면 realloc은 댕글링 포인터를 만듦.
+                // → capacity가 부족하면 inflight 워커를 전부 drain한 후 재할당.
+                const needed = self.modules.items.len + records.len;
+                if (needed > self.modules.capacity and inflight > 0) {
+                    // 결과를 버퍼에 모아두고 drain 후 일괄 적용
+                    var pending = std.ArrayListUnmanaged(ScanResult).initBuffer(
+                        self.allocator.alloc(ScanResult, inflight) catch &.{},
+                    );
+                    defer if (pending.capacity > 0) self.allocator.free(pending.allocatedSlice());
+                    while (inflight > 0) {
+                        pending.appendAssumeCapacity(channel.recv());
+                        inflight -= 1;
+                    }
+                    // 워커가 모두 종료됨 → 안전하게 realloc
+                    try self.modules.ensureTotalCapacity(self.allocator, needed * 2);
+
+                    // 버퍼에 모아둔 결과 적용
+                    for (pending.items) |pending_result| {
+                        const p_idx = @intFromEnum(pending_result.module_idx);
+                        self.applySideEffectsFromPackageJson(&self.modules.items[p_idx]);
+                        self.modules.items[p_idx].state = .ready;
+                        const p_records = self.modules.items[p_idx].import_records;
+                        const p_resolves = pending_result.resolve_outputs;
+                        for (p_records, 0..) |rec, ri| {
+                            if (ri < p_resolves.len) {
+                                try self.applyResolveResult(p_idx, ri, rec, p_resolves[ri].resolved, p_resolves[ri].is_error);
+                            }
                         }
+                        if (p_resolves.len > 0) self.allocator.free(p_resolves);
                     }
                 }
-            } else {
-                // 순차 폴백 (단일 모듈 또는 스레드 풀 없음)
+
+                // resolve 결과 적용 (capacity 충분 보장됨)
+                for (records, 0..) |record, rec_i| {
+                    if (rec_i < resolves.len) {
+                        try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
+                    }
+                }
+                if (resolves.len > 0) self.allocator.free(resolves);
+
+                // 새로 발견된 모듈 즉시 워커에 디스패치
+                while (spawned_up_to < self.modules.items.len) : (spawned_up_to += 1) {
+                    const m = &self.modules.items[spawned_up_to];
+                    if (m.state == .ready) continue;
+                    const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
+                    pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
+                        scanWorker(self, idx, &channel);
+                    };
+                    inflight += 1;
+                }
+            }
+        } else {
+            // 순차 폴백 (스레드 풀 없음)
+            var parse_start: usize = 0;
+            while (parse_start < self.modules.items.len) {
+                const parse_end = self.modules.items.len;
                 for (parse_start..parse_end) |j| {
                     self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
                 }
@@ -208,9 +257,8 @@ pub const ModuleGraph = struct {
                 for (parse_start..parse_end) |i| {
                     try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
                 }
+                parse_start = parse_end;
             }
-
-            parse_start = parse_end;
         }
 
         if (self.timing) {
@@ -395,26 +443,38 @@ pub const ModuleGraph = struct {
         }
     }
 
-    /// resolve 결과를 저장하는 구조체. scanProducer가 기록, 메인 스레드가 적용.
+    /// resolve 결과를 저장하는 구조체. scanWorker가 기록, 메인 스레드가 적용.
     const ResolveOutput = struct {
         resolved: ?resolver_mod.ResolveResult = null,
         is_error: bool = false,
     };
 
-    /// Producer-Consumer 스캔 워커: parse + resolve (그래프 변형 없음).
-    /// 메인 스레드만 addModule/addDependency를 호출하므로,
-    /// 워커 실행 중 modules 배열 realloc이 일어나지 않아 포인터가 안전하다.
-    fn scanProducer(self: *ModuleGraph, idx: ModuleIndex, resolve_out: *[]ResolveOutput) void {
+    /// 이벤트 큐 기반 스캔 결과. 워커가 채널로 전송, 메인이 수신.
+    const ScanResult = struct {
+        module_idx: ModuleIndex,
+        resolve_outputs: []ResolveOutput,
+    };
+
+    /// 이벤트 큐 스캔 워커: parse + resolve 후 결과를 채널로 전송.
+    /// 그래프 변형(addModule 등)은 하지 않으므로 메인 스레드의 sole writer 보장.
+    fn scanWorker(self: *ModuleGraph, idx: ModuleIndex, channel: *MpscChannel(ScanResult)) void {
         self.parseModule(idx);
 
         const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) return;
+        if (mod_idx >= self.modules.items.len) {
+            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
+            return;
+        }
 
         const records = self.modules.items[mod_idx].import_records;
-        if (records.len == 0) return;
+        if (records.len == 0) {
+            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
+            return;
+        }
 
         var results = self.allocator.alloc(ResolveOutput, records.len) catch {
             self.addDiag(.resolve_error, .@"error", self.modules.items[mod_idx].path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
+            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
             return;
         };
         for (results) |*r| r.* = .{};
@@ -459,7 +519,7 @@ pub const ModuleGraph = struct {
             results[rec_i] = .{ .resolved = resolved };
         }
 
-        resolve_out.* = results;
+        channel.send(.{ .module_idx = idx, .resolve_outputs = results });
     }
 
     /// 단일 모듈을 파싱하고 import를 추출한다.
