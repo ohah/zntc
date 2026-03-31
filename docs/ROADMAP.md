@@ -29,9 +29,10 @@
 | 16. 엔진 타겟 | --target=chrome80,safari14 엔진 버전별 feature-level 다운레벨링 | ✅ |
 | 17. Web Worker | new Worker(new URL(...)) 자동 감지 → 별도 IIFE 번들 (esbuild 미지원) | ✅ |
 | 18. scan 파이프라인 | 배치→파이프라인 (scanWorker: parse→resolve→spawn), 총합 -15% | ✅ |
+| 19. Producer-Consumer | 워커: parse+resolve만, 메인: sole writer. pre-allocation 제거, 포인터 안전 | ✅ |
 
 ## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
-ZTS 134ms vs esbuild 107ms (**1.25배**).
+ZTS 136ms vs esbuild 110ms (**1.24배**).
 
 | 단계 | ZTS | esbuild | 배율 | 비고 |
 |------|-----|---------|------|------|
@@ -56,9 +57,10 @@ ZTS 134ms vs esbuild 107ms (**1.25배**).
 **import.meta.glob**
 - Vite 호환 기능, DX 개선 — M급 (1~2일)
 
-**scan Producer-Consumer 전환** (후순위)
-- 현재: scanWorker가 직접 그래프 변형 (Shared Graph + Mutex) + modules ArrayList pre-allocation (~4.8MB)
-- 목표: bun/esbuild처럼 워커는 파싱만, 단일 스레드가 그래프 변형 (포인터 안정성 근본 해결)
+**scan Producer-Consumer** ✅ 완료
+- bun/esbuild 방식: 워커는 parse+resolve만, 메인 스레드가 sole writer (addModule/addDependency)
+- 워커 실행 중 modules realloc 없음 → pre-allocation 해킹 제거, 포인터 안정성 근본 해결
+- 성능: 파이프라인 대비 ~10ms 느리나 (배치 경계), 안전성 확보가 우선
 
 **tree-shake 병렬화** (후순위, ROI 낮음)
 - 현재 15ms — 이미 fixpoint oscillation 수정으로 51ms → 15ms 개선됨
@@ -74,9 +76,8 @@ ZTS 134ms vs esbuild 107ms (**1.25배**).
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
                          └──→ .d.ts (isolatedDeclarations)
 
-번들러 성능 ─────────────┬──→ ✅ scan 파이프라인화 (완료, Shared Graph + Mutex)
-                         ├──→ scan Producer-Consumer 전환 (포인터 안정성 근본 해결)
-                         └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS)
+번들러 성능 ─────────────┬──→ ✅ scan 파이프라인화 + Producer-Consumer (완료)
+                         └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS, 후순위)
 
 번들러 기능 ─────────────┬──→ ✅ 로더 시스템 (JSON, text, file, dataurl)
                          ├──→ CSS 번들링 (별도 파서, 플러그인으로 위임 가능)
@@ -185,6 +186,6 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 | emit 병렬화 | ✅ 완료 | 74ms → 15ms (-80%) |
 | resolve 병렬화 | ✅ 완료 | 191ms → 134ms (-30%, 캐시 히트율 높아 제한적) |
 | fixpoint oscillation 수정 | ✅ 완료 | 100회 → 2회 수렴, tree-shake 238ms → 51ms |
-| scan 파이프라인화 | ✅ 완료 | 배치→파이프라인, graph_mutex+WaitGroup, 총합 157ms→134ms (-15%) |
+| scan 파이프라인화 | ✅ 완료 | 배치→파이프라인→Producer-Consumer, pre-allocation 제거, 포인터 안전 |
 | tree-shake 병렬화 | 후순위 | 현재 15ms, StmtInfo 병렬화로 ~5ms 절감 가능하나 ROI 낮음 |
 | SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
