@@ -127,6 +127,12 @@ pub const Module = struct {
         ready,
     };
 
+    /// ESM 포맷에서 이 JSON 모듈을 scope-hoist 가능한지 판단.
+    /// CJS require()로 참조되지 않는 JSON만 var json_X = {...} 출력 가능.
+    pub fn isJsonScopeHoistable(self: *const Module, format: types.Format) bool {
+        return format == .esm and self.module_type == .json and !self.has_cjs_importer;
+    }
+
     /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
     /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
     pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {

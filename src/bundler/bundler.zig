@@ -336,7 +336,7 @@ pub const Bundler = struct {
         try worker_graph.build(&entry_arr);
 
         // 링킹
-        var worker_linker = Linker.init(arena_alloc, worker_graph.modules.items);
+        var worker_linker = Linker.init(arena_alloc, worker_graph.modules.items, .iife);
         try worker_linker.link();
         try worker_linker.computeRenames();
         if (self.options.minify_identifiers) {
@@ -424,8 +424,7 @@ pub const Bundler = struct {
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
-            var l = Linker.init(self.allocator, graph.modules.items);
-            l.format = self.options.format;
+            var l = Linker.init(self.allocator, graph.modules.items, self.options.format);
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();

@@ -1754,10 +1754,8 @@ fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minif
 fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
 
-    // ESM 포맷 + CJS importer 없음: scope-hoisted var json_X = {...} 출력.
-    // linker가 json_X 변수를 직접 참조하는 preamble을 생성한다 (esbuild 동작).
-    // CJS/IIFE 포맷에서는 항상 __commonJS 래핑 필요.
-    if (options.format == .esm and !module.has_cjs_importer) {
+    // JSON scope-hoist: ESM + CJS importer 없음 → var json_X = {...} 출력.
+    if (module.isJsonScopeHoistable(options.format)) {
         const var_name = try types.makeJsonVarName(allocator, module.path);
         defer allocator.free(var_name);
 
@@ -1921,11 +1919,11 @@ fn emitBundleRuntimeHelpers(
     options: EmitOptions,
 ) !void {
     // CJS 런타임 헬퍼 주입: __commonJS 래핑 모듈이 하나라도 있으면 주입.
-    // ESM 포맷에서 CJS importer 없는 JSON은 scope-hoisted var로 출력하므로 제외.
+    // scope-hoist된 JSON 모듈은 __commonJS를 사용하지 않으므로 제외.
     var needs_cjs_runtime = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) {
-            if (options.format == .esm and m.module_type == .json and !m.has_cjs_importer) continue;
+            if (m.isJsonScopeHoistable(options.format)) continue;
             needs_cjs_runtime = true;
             break;
         }
