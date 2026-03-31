@@ -405,7 +405,6 @@ pub const ModuleGraph = struct {
     /// 메인 스레드만 addModule/addDependency를 호출하므로,
     /// 워커 실행 중 modules 배열 realloc이 일어나지 않아 포인터가 안전하다.
     fn scanProducer(self: *ModuleGraph, idx: ModuleIndex, resolve_out: *[]ResolveOutput) void {
-        // 1. parse (modules[idx]에 직접 기록 — realloc 없으므로 안전)
         self.parseModule(idx);
 
         const mod_idx = @intFromEnum(idx);
@@ -414,8 +413,10 @@ pub const ModuleGraph = struct {
         const records = self.modules.items[mod_idx].import_records;
         if (records.len == 0) return;
 
-        // 2. resolve (thread-safe, 그래프 변형 없음)
-        var results = self.allocator.alloc(ResolveOutput, records.len) catch return;
+        var results = self.allocator.alloc(ResolveOutput, records.len) catch {
+            self.addDiag(.resolve_error, .@"error", self.modules.items[mod_idx].path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
+            return;
+        };
         for (results) |*r| r.* = .{};
 
         const module_path = self.modules.items[mod_idx].path;
@@ -441,22 +442,21 @@ pub const ModuleGraph = struct {
                 }
             }
 
-            results[rec_i] = .{
-                .resolved = self.resolve_cache.resolveThreadSafe(
-                    source_dir,
-                    record.specifier,
-                    record.kind,
-                ) catch |err| switch (err) {
-                    error.ModuleNotFound => {
-                        results[rec_i] = .{ .is_error = true };
-                        continue;
-                    },
-                    error.OutOfMemory => {
-                        self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
-                        continue;
-                    },
+            const resolved = self.resolve_cache.resolveThreadSafe(
+                source_dir,
+                record.specifier,
+                record.kind,
+            ) catch |err| switch (err) {
+                error.ModuleNotFound => {
+                    results[rec_i] = .{ .is_error = true };
+                    continue;
+                },
+                error.OutOfMemory => {
+                    self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
+                    continue;
                 },
             };
+            results[rec_i] = .{ .resolved = resolved };
         }
 
         resolve_out.* = results;
