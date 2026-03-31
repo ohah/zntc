@@ -889,6 +889,11 @@ pub const ModuleGraph = struct {
                         target.exports_kind = .commonjs;
                         target.wrap_kind = .cjs;
                     }
+                    // JSON 모듈이 CJS require()로 참조되면 마킹.
+                    // emitter가 ESM 포맷에서 scope-hoist vs __commonJS 래핑을 결정할 때 사용.
+                    if (target.module_type == .json) {
+                        target.has_cjs_importer = true;
+                    }
                 } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                     // ESM import로 소비 → .none이면 승격
                     if (target.exports_kind == .none) {
