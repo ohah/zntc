@@ -53,7 +53,12 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     const saved_flag = self.flow_in_return_type;
     self.flow_in_return_type = true;
     defer self.flow_in_return_type = saved_flag;
-    const ty = try parseType(self);
+    var ty = try parseType(self);
+    // type predicate: value is Type — Flow type guard (TS와 동일 구문)
+    if (self.current() == .identifier and self.isContextual("is")) {
+        try self.advance(); // skip 'is'
+        ty = try parseType(self);
+    }
     // %checks — Flow type guard predicate. 타입 스트리핑에서는 무시.
     // `%`는 .percent 토큰, `checks`는 identifier.
     if (self.current() == .percent) {
@@ -82,6 +87,21 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
 /// Babel: flowParseType → flowParseUnionType
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
     const t = try parseUnionType(self);
+
+    // conditional type: T extends X ? Y : Z
+    if (self.current() == .kw_extends) {
+        try self.advance(); // skip 'extends'
+        _ = try parseType(self); // check type
+        try self.expect(.question);
+        _ = try parseType(self); // true branch
+        try self.expect(.colon);
+        _ = try parseType(self); // false branch
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = self.ast.getNode(t).span,
+            .data = .{ .none = 0 },
+        });
+    }
 
     // shorthand 함수 타입: Type => ReturnType (괄호 없는 단일 파라미터)
     // 반환 타입 컨텍스트에서는 금지 — (): any => {} 에서 =>는 arrow function body
@@ -540,55 +560,67 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    // speculative: 함수 파라미터인지 단순 타입인지 판별
-    // AST 노드/extra도 롤백해야 하므로 길이를 저장 (ts.zig tryParseFunctionTypeWithBacktracking 패턴)
-    const saved = self.saveState();
-    const err_count = self.errors.items.len;
-    const saved_nodes_len = self.ast.nodes.items.len;
-    const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
+    // 함수 타입 vs 괄호 타입 판별:
+    // - `(name:` 또는 `(...` → 함수 타입 시도
+    // - 그 외 → 괄호 타입 (내부에 단일 타입)
+    const is_likely_fn = blk: {
+        if (self.current() == .dot3) break :blk true;
+        if (self.current() == .identifier) {
+            const next = try self.peekNextKind();
+            break :blk (next == .colon or next == .question);
+        }
+        break :blk false;
+    };
 
-    // 함수 타입 시도: (a: T, b: U) => R
-    const params = parseFunctionTypeParamList(self) catch {
+    if (is_likely_fn) {
+        // 함수 타입 시도: (a: T, b: U) => R
+        const saved = self.saveState();
+        const err_count = self.errors.items.len;
+        const saved_nodes_len = self.ast.nodes.items.len;
+        const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
+
+        const params = parseFunctionTypeParamList(self) catch {
+            self.restoreState(saved);
+            self.errors.shrinkRetainingCapacity(err_count);
+            self.ast.nodes.items.len = saved_nodes_len;
+            self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
+            const inner = try parseType(self);
+            try self.expect(.r_paren);
+            return try self.ast.addNode(.{
+                .tag = .flow_parenthesized_type,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+            });
+        };
+
+        if (self.current() == .r_paren) {
+            try self.advance();
+            if (self.current() == .arrow) {
+                try self.advance();
+                const return_type = try parseType(self);
+                const extra = try self.ast.addExtras(&.{
+                    @intFromEnum(NodeIndex.none),
+                    params.start,
+                    params.len,
+                    @intFromEnum(return_type),
+                });
+                return try self.ast.addNode(.{
+                    .tag = .flow_function_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = extra },
+                });
+            }
+        }
+
+        // 화살표 없으면 rollback → 괄호 타입
         self.restoreState(saved);
         self.errors.shrinkRetainingCapacity(err_count);
         self.ast.nodes.items.len = saved_nodes_len;
         self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-        // 단순 괄호 타입으로 폴백
-        const inner = try parseType(self);
-        try self.expect(.r_paren);
-        return try self.ast.addNode(.{
-            .tag = .flow_parenthesized_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
-        });
-    };
-
-    if (self.current() == .r_paren) {
-        try self.advance(); // skip ')'
-        if (self.current() == .arrow) {
-            // 함수 타입: (params) => ReturnType
-            try self.advance(); // skip '=>'
-            const return_type = try parseType(self);
-            const extra = try self.ast.addExtras(&.{
-                @intFromEnum(NodeIndex.none), // no type params
-                params.start,
-                params.len,
-                @intFromEnum(return_type),
-            });
-            return try self.ast.addNode(.{
-                .tag = .flow_function_type,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .extra = extra },
-            });
-        }
+        try self.advance(); // skip '(' again
     }
 
-    // 화살표가 없으면 — 파싱 상태 + AST 복원 후 괄호 타입으로 재시도
-    self.restoreState(saved);
-    self.errors.shrinkRetainingCapacity(err_count);
-    self.ast.nodes.items.len = saved_nodes_len;
-    self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-    try self.advance(); // skip '(' again
+    // 괄호 타입: (Type) — 내부에 단일 타입
     const inner = try parseType(self);
     try self.expect(.r_paren);
     return try self.ast.addNode(.{
