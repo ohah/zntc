@@ -2117,6 +2117,24 @@ test "ES2015: template nested" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "+") != null);
 }
 
+test "ES2015: template with actual newline" {
+    var r = try e2eTarget(std.testing.allocator, "var s=`hello\nworld`;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var s=\"hello\\nworld\";", r.output);
+}
+
+test "ES2015: template with newline and substitution" {
+    var r = try e2eTarget(std.testing.allocator, "var s=`a\n${b}\nc`;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var s=\"a\\n\" + b + \"\\nc\";", r.output);
+}
+
+test "ES2015: template with carriage return" {
+    var r = try e2eTarget(std.testing.allocator, "var s=`a\r\nb`;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var s=\"a\\r\\nb\";", r.output);
+}
+
 // --- combined features ---
 
 test "ES2015: class with generator method" {
