@@ -218,7 +218,14 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
             });
         }
         // 문자열 모듈 이름은 flags=1로 표시하여 ambient임을 알림
-        const body = try self.parseBlockStatement();
+        // ambient module body 안에서는 export/import 허용 (named namespace와 동일)
+        const saved_namespace = self.in_namespace;
+        const saved_ctx = self.ctx;
+        defer self.in_namespace = saved_namespace;
+        defer self.ctx = saved_ctx;
+        self.in_namespace = true;
+        self.ctx.is_top_level = true;
+        const body = try parseNamespaceBlock(self);
         return try self.ast.addNode(.{
             .tag = .ts_module_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },

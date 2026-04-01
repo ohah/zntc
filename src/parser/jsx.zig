@@ -270,7 +270,13 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
         } else if (self.current() == .l_curly) {
             try self.advance();
             value = try self.parseAssignmentExpression();
-            try self.expect(.r_curly);
+            // expect(.r_curly) 대신 수동 체크: JSX 속성에서는 nextInsideJSXElement()로
+            // 스캔해야 함. scanner.next()를 사용하면 r_curly 뒤 `/>`의 `/`를
+            // 정규식으로 잘못 스캔하는 문제 발생 (r_curly.slashIsRegex() == true)
+            if (self.current() != .r_curly) {
+                try self.addError(self.currentSpan(), "}");
+            }
+            try self.scanner.nextInsideJSXElement();
         }
     }
 
