@@ -235,7 +235,15 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .dot3) {
             try self.advance();
             const expr = try self.parseAssignmentExpression();
-            try self.expect(.r_curly);
+            // r_curly 뒤 scanner.next()는 `/>`의 `/`를 정규식으로 오스캔
+            if (self.current() != .r_curly) {
+                try self.errors.append(self.allocator, .{
+                    .span = self.currentSpan(),
+                    .message = Kind.r_curly.symbol(),
+                    .found = self.current().symbol(),
+                });
+            }
+            try self.scanner.nextInsideJSXElement();
             return try self.ast.addNode(.{
                 .tag = .jsx_spread_attribute,
                 .span = .{ .start = start, .end = self.currentSpan().start },

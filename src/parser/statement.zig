@@ -245,6 +245,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     }
                     break :blk self.parseTsDeclareStatement();
                 }
+            } else if (self.is_flow and (std.mem.eql(u8, text, "component") or std.mem.eql(u8, text, "hook"))) {
+                // Flow Component/Hook Syntax: component Foo(...) { } / hook useFoo(...) { }
+                const next_comp = try self.peekNext();
+                if (!next_comp.has_newline_before and next_comp.kind == .identifier) {
+                    break :blk self.parseFlowComponentDeclaration();
+                }
             } else if (!self.is_flow and std.mem.eql(u8, text, "abstract")) {
                 // abstract — TS 전용 (Flow에서는 일반 식별자)
                 const next = try self.peekNext();

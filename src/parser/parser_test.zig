@@ -2653,3 +2653,97 @@ test "Flow+JSX: nullable ref type in class" {
         \\}
     );
 }
+
+// ============================================================
+// Flow Component/Hook Syntax
+// ============================================================
+
+test "Flow: component declaration" {
+    try expectNoParseErrorFlow(
+        \\component Greeting(name: string) {
+        \\  return name;
+        \\}
+    );
+}
+
+test "Flow+JSX: component with JSX body" {
+    try expectNoParseErrorFlowJSX(
+        \\component View(ref?: any, ...props: any) {
+        \\  return <div {...props} />;
+        \\}
+    );
+}
+
+test "Flow: component with renders clause" {
+    try expectNoParseErrorFlowJSX(
+        \\component App(name: string) renders React.Node {
+        \\  return <div>{name}</div>;
+        \\}
+    );
+}
+
+test "Flow: component with generics" {
+    try expectNoParseErrorFlow(
+        \\component List<T>(items: Array<T>) {
+        \\  return null;
+        \\}
+    );
+}
+
+test "Flow: hook declaration" {
+    try expectNoParseErrorFlow(
+        \\hook useCounter(initial: number) {
+        \\  return initial;
+        \\}
+    );
+}
+
+test "Flow: component type annotation" {
+    try expectNoParseErrorFlow(
+        \\const Foo: component(ref?: any, ...props: Props) = (props) => null;
+    );
+}
+
+test "Flow: declare component" {
+    try expectNoParseErrorFlow(
+        \\declare component Foo(name: string) renders React.Node;
+    );
+}
+
+// ============================================================
+// Flow Indexed Access Type
+// ============================================================
+
+test "Flow: indexed access type" {
+    try expectNoParseErrorFlow("var x: Props['key'] = null;");
+}
+
+test "Flow: nullable indexed access type" {
+    try expectNoParseErrorFlow("var x: ?TextProps['accessibilityState'] = null;");
+}
+
+test "Flow: indexed access type with string literal" {
+    try expectNoParseErrorFlow(
+        \\const f = (x: ScrollViewMethods['scrollTo']): void => {};
+    );
+}
+
+// ============================================================
+// JSX Spread Attribute (regex 오스캔 수정)
+// ============================================================
+
+test "JSX spread attribute in function body" {
+    try expectNoParseErrorWithExt(
+        \\function View(props: any) {
+        \\  return <ViewNative {...props} />;
+        \\}
+    , ".tsx");
+}
+
+test "JSX spread + regular attributes" {
+    try expectNoParseErrorWithExt(
+        \\function View(props: any) {
+        \\  return <Comp {...props} extra={true} />;
+        \\}
+    , ".tsx");
+}
