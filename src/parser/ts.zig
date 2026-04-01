@@ -218,14 +218,7 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
             });
         }
         // 문자열 모듈 이름은 flags=1로 표시하여 ambient임을 알림
-        // ambient module body 안에서는 export/import 허용 (named namespace와 동일)
-        const saved_namespace = self.in_namespace;
-        const saved_ctx = self.ctx;
-        defer self.in_namespace = saved_namespace;
-        defer self.ctx = saved_ctx;
-        self.in_namespace = true;
-        self.ctx.is_top_level = true;
-        const body = try parseNamespaceBlock(self);
+        const body = try parseNamespaceBodyInContext(self);
         return try self.ast.addNode(.{
             .tag = .ts_module_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -245,17 +238,9 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     }
 
     // namespace body에서는 export/import 허용 (모듈과 동일한 컨텍스트)
-    // parseBlockStatement는 내부에서 is_top_level=false로 설정하므로
-    // 여기서 직접 블록을 파싱하여 is_top_level=true를 유지한다
-    // in_namespace 설정: namespace body 안에서는 await를 식별자로 사용 가능
-    // (namespace는 IIFE로 변환되므로 top-level module code가 아님)
-    const saved_namespace = self.in_namespace;
-    const saved_ctx = self.ctx;
-    defer self.in_namespace = saved_namespace;
-    defer self.ctx = saved_ctx;
-    self.in_namespace = true;
-    self.ctx.is_top_level = true;
-    const body = try parseNamespaceBlock(self);
+    // in_namespace: await를 식별자로 사용 가능 (IIFE 변환 대상)
+    // is_top_level: export/import 허용
+    const body = try parseNamespaceBodyInContext(self);
 
     return try self.ast.addNode(.{
         .tag = .ts_module_declaration,
@@ -287,6 +272,18 @@ pub fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
         .span = .{ .start = block_start, .end = end },
         .data = .{ .list = node_list },
     });
+}
+
+/// namespace/ambient module body를 파싱하면서 in_namespace + is_top_level 컨텍스트를 설정.
+/// body 안에서 export/import 허용, await를 식별자로 사용 가능 (IIFE 변환 대상).
+fn parseNamespaceBodyInContext(self: *Parser) ParseError2!NodeIndex {
+    const saved_namespace = self.in_namespace;
+    const saved_ctx = self.ctx;
+    defer self.in_namespace = saved_namespace;
+    defer self.ctx = saved_ctx;
+    self.in_namespace = true;
+    self.ctx.is_top_level = true;
+    return parseNamespaceBlock(self);
 }
 
 /// declare var/let/const/function/class/...
