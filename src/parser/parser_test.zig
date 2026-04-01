@@ -2442,3 +2442,89 @@ test "accessor static with newline in class body" {
         \\}
     );
 }
+
+// ============================================================
+// declare module ambient body: export/import 허용
+// ============================================================
+
+fn expectNoParseErrorWithExt(source: []const u8, ext: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(ext);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+fn expectNoParseErrorBundler(source: []const u8, ext: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureForBundler(ext);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "declare module: export inside ambient module body" {
+    try expectNoParseErrorWithExt(
+        \\declare module "*.css" { export default css; }
+    , ".ts");
+}
+
+test "declare module: multiple statements in ambient body" {
+    try expectNoParseErrorWithExt(
+        \\declare module "*.svg" { const src: string; export default src; }
+    , ".ts");
+}
+
+test "declare module: export in bundler mode" {
+    try expectNoParseErrorBundler(
+        \\declare module "*.css" { export default css; }
+    , ".ts");
+}
+
+test "declare module: named exports in ambient body" {
+    try expectNoParseErrorWithExt(
+        \\declare module "*.module.css" {
+        \\  const classes: { readonly [key: string]: string };
+        \\  export default classes;
+        \\}
+    , ".ts");
+}
+
+// ============================================================
+// JSX attribute {expr} + self-closing: regex 오스캔 방지
+// ============================================================
+
+test "JSX attr expr: self-closing in bundler mode" {
+    try expectNoParseErrorBundler(
+        \\function App() { return <Badge count={3} />; }
+    , ".tsx");
+}
+
+test "JSX attr expr: siblings in bundler mode" {
+    try expectNoParseErrorBundler(
+        \\const x = <div><A a={1} /><B /></div>;
+    , ".tsx");
+}
+
+test "JSX attr expr: nested components in bundler mode" {
+    try expectNoParseErrorBundler(
+        \\function App() {
+        \\  return (
+        \\    <div className={"app"}>
+        \\      <Badge count={3} visible={true} />
+        \\      <span>{3}</span>
+        \\    </div>
+        \\  );
+        \\}
+    , ".tsx");
+}
+
+test "JSX attr expr: self-closing in CLI mode" {
+    try expectNoParseErrorWithExt(
+        \\function App() { return <Badge count={3} />; }
+    , ".tsx");
+}
