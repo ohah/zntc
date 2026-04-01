@@ -87,6 +87,11 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --resolve-extensions=<exts>  확장자 탐색 순서 (쉼표 구분, 예: .ios.ts,.ts,.js)
 --main-fields=<fields>       package.json 필드 순서 (쉼표 구분, 예: react-native,browser,main)
 --flow                       Flow 타입 스트리핑 (@flow pragma 자동 감지)
+--jsx=<mode>                 JSX 런타임 (classic|automatic|automatic-dev, tsconfig "jsx" 연동)
+--jsx-dev                    JSX 개발 모드 (jsxDEV + source info, --jsx=automatic-dev 단축)
+--jsx-factory=<fn>           classic 모드 JSX factory (기본: React.createElement)
+--jsx-fragment=<fn>          classic 모드 Fragment factory (기본: React.Fragment)
+--jsx-import-source=<pkg>    automatic 모드 import source (기본: react, tsconfig "jsxImportSource" 연동)
 --plugin <path>                  JS 플러그인 (subprocess JSON IPC)
 -w, --watch                      파일 변경 감시
 --watch-json                     --watch + NDJSON 이벤트 stdout 출력 (외부 도구 연동용)

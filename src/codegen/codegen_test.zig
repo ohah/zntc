@@ -2957,3 +2957,117 @@ test "engine target: safari11.1 → object spread 지원" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...") != null);
 }
+
+// ============================================================
+// JSX Runtime 모드 테스트
+// ============================================================
+
+fn e2eJSXAutomatic(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{}, .{
+        .jsx_runtime = .automatic,
+        .jsx_import_source = "react",
+    }, ".tsx");
+}
+
+fn e2eJSXDev(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{}, .{
+        .jsx_runtime = .automatic_dev,
+        .jsx_import_source = "react",
+        .jsx_filename = "test.tsx",
+    }, ".tsx");
+}
+
+test "JSX automatic: simple element" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div id=\"app\">hello</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: \"hello\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id: \"app\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import { jsx as _jsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"react/jsx-runtime\"") != null);
+}
+
+test "JSX automatic: multiple children uses jsxs" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div><span>a</span><span>b</span></div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import { jsx as _jsx, jsxs as _jsxs") != null);
+}
+
+test "JSX automatic: fragment" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <><span>a</span><span>b</span></>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(_Fragment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Fragment as _Fragment") != null);
+}
+
+test "JSX automatic: key is separated from props" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App key=\"k\" name=\"zts\" />;");
+    defer r.deinit();
+    // key는 3번째 인수로 분리
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ name: \"zts\" }, \"k\"") != null);
+    // key는 props에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "key:") == null);
+}
+
+test "JSX automatic: self-closing no children" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <br />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"br\", {})") != null);
+}
+
+test "JSX automatic: custom import source" {
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
+        .jsx_runtime = .automatic,
+        .jsx_import_source = "preact",
+    }, ".tsx");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"preact/jsx-runtime\"") != null);
+}
+
+test "JSX dev: source info included" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div>hello</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxDEV(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "fileName: \"test.tsx\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "lineNumber: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "columnNumber: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"react/jsx-dev-runtime\"") != null);
+}
+
+test "JSX dev: isStaticChildren true for multiple children" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div><a/><b/></div>;");
+    defer r.deinit();
+    // 다수 children → isStaticChildren = true
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", true, {") != null);
+}
+
+test "JSX dev: isStaticChildren false for single child" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div><a/></div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", false, {") != null);
+}
+
+test "JSX classic: custom factory" {
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
+        .minify_whitespace = true,
+        .jsx_factory = "h",
+        .jsx_fragment = "Fragment",
+    }, ".tsx");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "h(\"div\"") != null);
+    // React.createElement가 아닌 h 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement") == null);
+}
+
+test "JSX classic: custom fragment factory" {
+    var r = try e2eFull(std.testing.allocator, "const x = <>hello</>;", .{}, .{
+        .minify_whitespace = true,
+        .jsx_factory = "h",
+        .jsx_fragment = "Fragment",
+    }, ".tsx");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "h(Fragment,") != null);
+}

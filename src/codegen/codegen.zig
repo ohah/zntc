@@ -55,6 +55,16 @@ pub const QuoteStyle = enum {
     preserve, // 원본 유지
 };
 
+/// JSX 런타임 모드. tsconfig "jsx" 필드 또는 CLI --jsx 옵션으로 결정.
+pub const JsxRuntime = enum {
+    /// React.createElement (또는 커스텀 factory). import 자동 주입 없음.
+    classic,
+    /// jsx/jsxs from "<importSource>/jsx-runtime". import 자동 주입.
+    automatic,
+    /// jsxDEV from "<importSource>/jsx-dev-runtime". source info 포함.
+    automatic_dev,
+};
+
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
     /// 문자열 따옴표 스타일 (기본: 쌍따옴표, esbuild/oxc 호환)
@@ -87,6 +97,16 @@ pub const CodegenOptions = struct {
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존.
     /// codegen이 rename 감지 후 __name() 호출을 수집, 선언 직후에 append.
     keep_names: bool = false,
+    /// JSX 런타임 모드 (classic / automatic / automatic_dev)
+    jsx_runtime: JsxRuntime = .classic,
+    /// classic 모드 JSX factory (기본: "React.createElement")
+    jsx_factory: []const u8 = "React.createElement",
+    /// classic 모드 Fragment factory (기본: "React.Fragment")
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// automatic 모드 import source (기본: "react")
+    jsx_import_source: []const u8 = "react",
+    /// 현재 파일 경로 (jsxDEV의 fileName 출력용)
+    jsx_filename: []const u8 = "",
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -135,6 +155,11 @@ pub const Codegen = struct {
     declared_names: std.StringHashMapUnmanaged(void) = .{},
     /// keepNames: rename된 함수/클래스 선언 정보. generate() 완료 후 emitter에서 __name() 호출 생성에 사용.
     keep_names_entries: std.ArrayList(KeepNameEntry) = .empty,
+    /// automatic JSX: 사용된 헬퍼 추적 (import 주입용)
+    jsx_used_jsx: bool = false,
+    jsx_used_jsxs: bool = false,
+    jsx_used_jsxDEV: bool = false,
+    jsx_used_fragment: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -184,7 +209,57 @@ pub const Codegen = struct {
             }
         }
 
+        // automatic JSX: 사용된 헬퍼의 import문을 output 선두에 삽입.
+        // 번들 모드에서는 linker가 import를 처리하므로 주입하지 않음.
+        if (self.options.jsx_runtime != .classic and self.options.linking_metadata == null) {
+            try self.prependJsxImport();
+        }
+
         return self.buf.items;
+    }
+
+    /// automatic JSX import문을 buf 선두에 삽입.
+    /// import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "<source>/jsx-runtime";
+    fn prependJsxImport(self: *Codegen) !void {
+        if (!self.jsx_used_jsx and !self.jsx_used_jsxs and !self.jsx_used_jsxDEV and !self.jsx_used_fragment) return;
+
+        var import_buf: std.ArrayList(u8) = .empty;
+        const is_dev = self.options.jsx_runtime == .automatic_dev;
+        const source = self.options.jsx_import_source;
+
+        try import_buf.appendSlice(self.allocator, "import { ");
+        var first = true;
+        if (is_dev) {
+            if (self.jsx_used_jsxDEV) {
+                try import_buf.appendSlice(self.allocator, "jsxDEV as _jsxDEV");
+                first = false;
+            }
+        } else {
+            if (self.jsx_used_jsx) {
+                try import_buf.appendSlice(self.allocator, "jsx as _jsx");
+                first = false;
+            }
+            if (self.jsx_used_jsxs) {
+                if (!first) try import_buf.appendSlice(self.allocator, ", ");
+                try import_buf.appendSlice(self.allocator, "jsxs as _jsxs");
+                first = false;
+            }
+        }
+        if (self.jsx_used_fragment) {
+            if (!first) try import_buf.appendSlice(self.allocator, ", ");
+            try import_buf.appendSlice(self.allocator, "Fragment as _Fragment");
+        }
+        try import_buf.appendSlice(self.allocator, " } from \"");
+        try import_buf.appendSlice(self.allocator, source);
+        if (is_dev) {
+            try import_buf.appendSlice(self.allocator, "/jsx-dev-runtime\";\n");
+        } else {
+            try import_buf.appendSlice(self.allocator, "/jsx-runtime\";\n");
+        }
+
+        // buf 선두에 삽입
+        try self.buf.insertSlice(self.allocator, 0, import_buf.items);
+        import_buf.deinit(self.allocator);
     }
 
     /// top-level function/class/var/let/const 이름을 declared_names에 수집.
@@ -2215,13 +2290,10 @@ pub const Codegen = struct {
     }
 
     // ================================================================
-    // JSX → React.createElement 출력
+    // JSX 출력 — classic / automatic / automatic_dev 3모드 지원
     // ================================================================
 
-    /// <div className="foo">hello</div> →
-    /// React.createElement("div",{className:"foo"},"hello")
     /// jsx_element: extra = [tag, attrs_start, attrs_len, children_start, children_len]
-    /// 항상 5 fields. self-closing은 children_len=0.
     fn emitJSXElement(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const tag_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -2230,19 +2302,106 @@ pub const Codegen = struct {
         const children_start = self.ast.extra_data.items[e + 3];
         const children_len = self.ast.extra_data.items[e + 4];
 
-        try self.write("/* @__PURE__ */ React.createElement(");
-        try self.emitJSXTagName(tag_name_idx);
-        try self.emitJSXAttrs(attrs_start, attrs_len);
-        try self.emitJSXChildren(children_start, children_len);
-        try self.writeByte(')');
+        switch (self.options.jsx_runtime) {
+            .classic => {
+                try self.write("/* @__PURE__ */ ");
+                try self.write(self.options.jsx_factory);
+                try self.writeByte('(');
+                try self.emitJSXTagName(tag_name_idx);
+                try self.emitJSXAttrsClassic(attrs_start, attrs_len);
+                try self.emitJSXChildrenClassic(children_start, children_len);
+                try self.writeByte(')');
+            },
+            .automatic, .automatic_dev => {
+                const effective_children = self.countEffectiveChildren(children_start, children_len);
+                const is_static = effective_children > 1;
+                const is_dev = self.options.jsx_runtime == .automatic_dev;
+
+                try self.write("/* @__PURE__ */ ");
+                if (is_dev) {
+                    self.jsx_used_jsxDEV = true;
+                    try self.write("_jsxDEV(");
+                } else if (is_static) {
+                    self.jsx_used_jsxs = true;
+                    try self.write("_jsxs(");
+                } else {
+                    self.jsx_used_jsx = true;
+                    try self.write("_jsx(");
+                }
+                try self.emitJSXTagName(tag_name_idx);
+                try self.write(", ");
+
+                // key를 attrs에서 분리
+                const key_idx = self.findJSXKeyAttr(attrs_start, attrs_len);
+                try self.emitJSXPropsAutomatic(attrs_start, attrs_len, children_start, children_len, key_idx);
+
+                // key argument
+                if (is_dev) {
+                    try self.write(", ");
+                    if (key_idx) |ki| {
+                        const key_attr = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[attrs_start + ki]));
+                        try self.emitNode(key_attr.data.binary.right);
+                    } else {
+                        try self.write("undefined");
+                    }
+                    // isStaticChildren
+                    if (is_static) try self.write(", true") else try self.write(", false");
+                    // source info: { fileName, lineNumber, columnNumber }
+                    try self.emitJSXDevSource(node.span);
+                    try self.write(", this");
+                } else if (key_idx != null) {
+                    try self.write(", ");
+                    const key_attr = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[attrs_start + key_idx.?]));
+                    try self.emitNode(key_attr.data.binary.right);
+                }
+
+                try self.writeByte(')');
+            },
+        }
     }
 
-    /// <>{children}</> → React.createElement(React.Fragment,null,...children)
+    /// Fragment: <>{children}</>
     fn emitJSXFragment(self: *Codegen, node: Node) !void {
-        try self.write("/* @__PURE__ */ React.createElement(React.Fragment,null");
         const list = node.data.list;
-        try self.emitJSXChildren(list.start, list.len);
-        try self.writeByte(')');
+        switch (self.options.jsx_runtime) {
+            .classic => {
+                try self.write("/* @__PURE__ */ ");
+                try self.write(self.options.jsx_factory);
+                try self.writeByte('(');
+                try self.write(self.options.jsx_fragment);
+                if (self.options.minify_whitespace) try self.write(",null") else try self.write(", null");
+                try self.emitJSXChildrenClassic(list.start, list.len);
+                try self.writeByte(')');
+            },
+            .automatic, .automatic_dev => {
+                self.jsx_used_fragment = true;
+                const effective_children = self.countEffectiveChildren(list.start, list.len);
+                const is_static = effective_children > 1;
+                const is_dev = self.options.jsx_runtime == .automatic_dev;
+
+                try self.write("/* @__PURE__ */ ");
+                if (is_dev) {
+                    self.jsx_used_jsxDEV = true;
+                    try self.write("_jsxDEV(");
+                } else if (is_static) {
+                    self.jsx_used_jsxs = true;
+                    try self.write("_jsxs(");
+                } else {
+                    self.jsx_used_jsx = true;
+                    try self.write("_jsx(");
+                }
+                try self.write("_Fragment, ");
+                // props with children
+                try self.emitJSXPropsAutomatic(0, 0, list.start, list.len, null);
+                if (is_dev) {
+                    try self.write(", undefined, ");
+                    if (is_static) try self.write("true") else try self.write("false");
+                    try self.emitJSXDevSource(node.span);
+                    try self.write(", this");
+                }
+                try self.writeByte(')');
+            },
+        }
     }
 
     /// tag name 출력: 소문자면 문자열("div"), 그 외 식별자(MyComp)
@@ -2258,8 +2417,8 @@ pub const Codegen = struct {
         }
     }
 
-    /// attributes → ,{key:val,...} or ,null
-    fn emitJSXAttrs(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
+    /// classic 모드: attributes → ,{key:val,...} or ,null
+    fn emitJSXAttrsClassic(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
         if (attrs_len > 0) {
             if (self.options.minify_whitespace) try self.write(",{") else try self.write(", { ");
             const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
@@ -2281,30 +2440,68 @@ pub const Codegen = struct {
         }
     }
 
-    /// children 출력 (공통 헬퍼)
-    fn emitJSXChildren(self: *Codegen, start: u32, len: u32) !void {
+    /// automatic 모드: { ...attrs(key제외), children } props 객체 출력
+    fn emitJSXPropsAutomatic(self: *Codegen, attrs_start: u32, attrs_len: u32, children_start: u32, children_len: u32, key_idx: ?u32) !void {
+        const effective_children = self.countEffectiveChildren(children_start, children_len);
+        const has_attrs = attrs_len > (if (key_idx != null) @as(u32, 1) else @as(u32, 0));
+
+        if (!has_attrs and effective_children == 0) {
+            try self.write("{}");
+            return;
+        }
+
+        try self.write("{ ");
+        var first = true;
+
+        // attrs (key 제외)
+        if (attrs_len > 0) {
+            const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
+            for (attr_indices, 0..) |raw_idx, i| {
+                if (key_idx != null and i == key_idx.?) continue;
+                if (!first) try self.write(", ");
+                first = false;
+                const attr = self.ast.getNode(@enumFromInt(raw_idx));
+                if (attr.tag == .jsx_attribute) {
+                    try self.emitJSXAttribute(attr);
+                } else if (attr.tag == .jsx_spread_attribute) {
+                    try self.write("...");
+                    try self.emitNode(attr.data.unary.operand);
+                }
+            }
+        }
+
+        // children
+        if (effective_children > 0) {
+            if (!first) try self.write(", ");
+            try self.write("children: ");
+            if (effective_children > 1) {
+                try self.writeByte('[');
+                try self.emitJSXChildrenAutomatic(children_start, children_len);
+                try self.writeByte(']');
+            } else {
+                // 단일 child: 배열 아닌 값으로
+                try self.emitJSXSingleChild(children_start, children_len);
+            }
+        }
+
+        try self.write(" }");
+    }
+
+    /// classic 모드: children을 가변 인수로 출력
+    fn emitJSXChildrenClassic(self: *Codegen, start: u32, len: u32) !void {
         if (len == 0) return;
         const indices = self.ast.extra_data.items[start .. start + len];
         for (indices) |raw_idx| {
             const child = self.ast.getNode(@enumFromInt(raw_idx));
             if (child.tag == .jsx_text) {
-                const text = self.ast.source[child.span.start..child.span.end];
-                // JSX text: 줄바꿈 포함 공백은 trim, 줄바꿈 없는 공백은 유지
-                // esbuild 호환: 줄바꿈이 있으면 해당 시퀀스를 제거/공백으로 치환
-                // 공백/줄바꿈만으로 이루어진 텍스트는 스킵
-                const all_whitespace = std.mem.trim(u8, text, " \t\n\r").len == 0;
-                if (all_whitespace) continue;
-                // 줄바꿈이 포함되면 전체 trim, 아니면 원본 유지 (후행 공백 보존)
-                const has_newline = std.mem.indexOfAny(u8, text, "\n\r") != null;
-                const trimmed = if (has_newline) std.mem.trim(u8, text, " \t\n\r") else text;
+                const trimmed = self.trimJSXText(child);
+                if (trimmed.len == 0) continue;
                 if (self.options.minify_whitespace) try self.write(",\"") else try self.write(", \"");
                 try self.write(trimmed);
                 try self.writeByte('"');
             } else {
-                // 빈 expression container {} 는 스킵 (esbuild 호환)
                 if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
                 if (self.options.minify_whitespace) try self.writeByte(',') else try self.write(", ");
-                // JSX spread child: {...expr} → ...expr (spread argument)
                 if (child.tag == .jsx_spread_child) {
                     try self.write("...");
                     try self.emitNode(child.data.unary.operand);
@@ -2313,6 +2510,137 @@ pub const Codegen = struct {
                 }
             }
         }
+    }
+
+    /// automatic 모드: children을 배열 요소로 출력 (쉼표 구분)
+    fn emitJSXChildrenAutomatic(self: *Codegen, start: u32, len: u32) !void {
+        if (len == 0) return;
+        var first = true;
+        const indices = self.ast.extra_data.items[start .. start + len];
+        for (indices) |raw_idx| {
+            const child = self.ast.getNode(@enumFromInt(raw_idx));
+            if (child.tag == .jsx_text) {
+                const trimmed = self.trimJSXText(child);
+                if (trimmed.len == 0) continue;
+                if (!first) try self.write(", ");
+                first = false;
+                try self.writeByte('"');
+                try self.write(trimmed);
+                try self.writeByte('"');
+            } else {
+                if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
+                if (!first) try self.write(", ");
+                first = false;
+                if (child.tag == .jsx_spread_child) {
+                    try self.write("...");
+                    try self.emitNode(child.data.unary.operand);
+                } else {
+                    try self.emitNode(@enumFromInt(raw_idx));
+                }
+            }
+        }
+    }
+
+    /// 단일 child를 출력 (배열 아닌 값)
+    fn emitJSXSingleChild(self: *Codegen, start: u32, len: u32) !void {
+        const indices = self.ast.extra_data.items[start .. start + len];
+        for (indices) |raw_idx| {
+            const child = self.ast.getNode(@enumFromInt(raw_idx));
+            if (child.tag == .jsx_text) {
+                const trimmed = self.trimJSXText(child);
+                if (trimmed.len == 0) continue;
+                try self.writeByte('"');
+                try self.write(trimmed);
+                try self.writeByte('"');
+                return;
+            }
+            if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
+            if (child.tag == .jsx_spread_child) {
+                try self.write("...");
+                try self.emitNode(child.data.unary.operand);
+            } else {
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
+            return;
+        }
+    }
+
+    /// JSX text 공백 트리밍 (esbuild 호환)
+    fn trimJSXText(self: *Codegen, child: Node) []const u8 {
+        const text = self.ast.source[child.span.start..child.span.end];
+        if (std.mem.trim(u8, text, " \t\n\r").len == 0) return "";
+        if (std.mem.indexOfAny(u8, text, "\n\r") != null) return std.mem.trim(u8, text, " \t\n\r");
+        return text;
+    }
+
+    /// 유효 children 수 카운트 (공백만인 text 제외)
+    fn countEffectiveChildren(self: *Codegen, start: u32, len: u32) u32 {
+        if (len == 0) return 0;
+        var count: u32 = 0;
+        const indices = self.ast.extra_data.items[start .. start + len];
+        for (indices) |raw_idx| {
+            const child = self.ast.getNode(@enumFromInt(raw_idx));
+            if (child.tag == .jsx_text) {
+                if (self.trimJSXText(child).len == 0) continue;
+            } else if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) {
+                continue;
+            }
+            count += 1;
+        }
+        return count;
+    }
+
+    /// attrs에서 key={...} 속성의 인덱스를 찾는다 (automatic 모드에서 분리용)
+    fn findJSXKeyAttr(self: *Codegen, attrs_start: u32, attrs_len: u32) ?u32 {
+        if (attrs_len == 0) return null;
+        const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
+        for (attr_indices, 0..) |raw_idx, i| {
+            const attr = self.ast.getNode(@enumFromInt(raw_idx));
+            if (attr.tag == .jsx_attribute) {
+                const key_node = self.ast.getNode(attr.data.binary.left);
+                const name = self.ast.source[key_node.span.start..key_node.span.end];
+                if (std.mem.eql(u8, name, "key")) return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    /// jsxDEV source info 출력: , { fileName: "...", lineNumber: N, columnNumber: N }
+    fn emitJSXDevSource(self: *Codegen, span: Span) !void {
+        try self.write(", { fileName: \"");
+        try self.write(self.options.jsx_filename);
+        try self.write("\", lineNumber: ");
+
+        // span → line:col 계산
+        const loc = self.spanToLineCol(span.start);
+        var line_buf: [16]u8 = undefined;
+        const line_str = std.fmt.bufPrint(&line_buf, "{}", .{loc.line}) catch "0";
+        try self.write(line_str);
+        try self.write(", columnNumber: ");
+        var col_buf: [16]u8 = undefined;
+        const col_str = std.fmt.bufPrint(&col_buf, "{}", .{loc.col}) catch "0";
+        try self.write(col_str);
+        try self.write(" }");
+    }
+
+    const LineLoc = struct { line: u32, col: u32 };
+
+    fn spanToLineCol(self: *Codegen, offset: u32) LineLoc {
+        if (self.line_offsets.len == 0) return .{ .line = 1, .col = 1 };
+        // binary search for line
+        var lo: u32 = 0;
+        var hi: u32 = @intCast(self.line_offsets.len);
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (self.line_offsets[mid] <= offset) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        const line = lo; // 1-based
+        const line_start = if (line > 1) self.line_offsets[line - 1] else 0;
+        return .{ .line = line, .col = offset - line_start + 1 };
     }
 
     /// JSX attribute: name={value} or name="value"

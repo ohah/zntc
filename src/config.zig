@@ -26,6 +26,8 @@ pub const TsConfig = struct {
     jsx_factory: []const u8 = "React.createElement",
     /// "jsxFragmentFactory": JSX Fragment 팩토리 (기본: "React.Fragment")
     jsx_fragment_factory: []const u8 = "React.Fragment",
+    /// "jsxImportSource": automatic 모드 import source (기본: "react")
+    jsx_import_source: []const u8 = "react",
     /// "outDir": 출력 디렉토리 경로
     out_dir: ?[]const u8 = null,
     /// "rootDir": 소스 루트 디렉토리 경로
@@ -174,6 +176,7 @@ pub const TsConfig = struct {
                 if (try dupeJsonString(co, "jsx", allocator, &config._allocated_strings.?)) |v| config.jsx = v;
                 if (try dupeJsonString(co, "jsxFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_factory = v;
                 if (try dupeJsonString(co, "jsxFragmentFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_fragment_factory = v;
+                if (try dupeJsonString(co, "jsxImportSource", allocator, &config._allocated_strings.?)) |v| config.jsx_import_source = v;
                 if (try dupeJsonString(co, "outDir", allocator, &config._allocated_strings.?)) |v| config.out_dir = v;
                 if (try dupeJsonString(co, "rootDir", allocator, &config._allocated_strings.?)) |v| config.root_dir = v;
 
@@ -231,6 +234,13 @@ pub const TsConfig = struct {
                 const duped = try allocator.dupe(u8, base.jsx_fragment_factory);
                 try target._allocated_strings.?.append(allocator, duped);
                 target.jsx_fragment_factory = duped;
+            }
+        }
+        if (!std.mem.eql(u8, base.jsx_import_source, "react")) {
+            if (std.mem.eql(u8, target.jsx_import_source, "react")) {
+                const duped = try allocator.dupe(u8, base.jsx_import_source);
+                try target._allocated_strings.?.append(allocator, duped);
+                target.jsx_import_source = duped;
             }
         }
 

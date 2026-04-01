@@ -75,6 +75,14 @@ const CliOptions = struct {
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
     /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
     flow: bool = false,
+    /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
+    jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
+    /// JSX factory (--jsx-factory=h)
+    jsx_factory: []const u8 = "React.createElement",
+    /// JSX fragment factory (--jsx-fragment=Fragment)
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// JSX import source (--jsx-import-source=preact)
+    jsx_import_source: []const u8 = "react",
     /// 커스텀 확장자 탐색 순서 (--resolve-extensions=.ios.ts,.ts,...)
     resolve_extensions_list: std.ArrayList([]const u8) = .empty,
     /// package.json 필드 해석 순서 (--main-fields=react-native,browser,main)
@@ -222,6 +230,23 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.watch = true;
         } else if (std.mem.eql(u8, arg, "--flow")) {
             opts.flow = true;
+        } else if (std.mem.startsWith(u8, arg, "--jsx=")) {
+            const val = arg["--jsx=".len..];
+            if (std.mem.eql(u8, val, "automatic")) {
+                opts.jsx_runtime = .automatic;
+            } else if (std.mem.eql(u8, val, "automatic-dev") or std.mem.eql(u8, val, "react-jsxdev")) {
+                opts.jsx_runtime = .automatic_dev;
+            } else {
+                opts.jsx_runtime = .classic;
+            }
+        } else if (std.mem.eql(u8, arg, "--jsx-dev")) {
+            opts.jsx_runtime = .automatic_dev;
+        } else if (std.mem.startsWith(u8, arg, "--jsx-factory=")) {
+            opts.jsx_factory = arg["--jsx-factory=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--jsx-fragment=")) {
+            opts.jsx_fragment = arg["--jsx-fragment=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--jsx-import-source=")) {
+            opts.jsx_import_source = arg["--jsx-import-source=".len..];
         } else if (std.mem.startsWith(u8, arg, "--resolve-extensions=")) {
             const val = arg["--resolve-extensions=".len..];
             var it = std.mem.splitScalar(u8, val, ',');
@@ -508,6 +533,14 @@ const TranspileOptions = struct {
     charset_utf8: bool = false,
     /// Flow 모드 강제 활성화 (--flow)
     flow: bool = false,
+    /// JSX 런타임 모드
+    jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
+    /// classic 모드 JSX factory
+    jsx_factory: []const u8 = "React.createElement",
+    /// classic 모드 Fragment factory
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// automatic 모드 import source
+    jsx_import_source: []const u8 = "react",
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -713,6 +746,11 @@ fn transpileFile(
         .platform = options.platform,
         .source_root = options.source_root,
         .sources_content = options.sources_content,
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = file_path,
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {
@@ -1487,6 +1525,25 @@ pub fn main() !void {
     // (TS 5.0+에서는 experimentalDecorators 여부와 무관하게 true가 기본)
     // 여기서는 사용자가 명시하지 않은 경우 TS 5.0+ 기본값(true)을 따른다.
 
+    // JSX: CLI가 미지정(classic)이면 tsconfig에서 가져옴
+    if (opts.jsx_runtime == .classic) {
+        if (tsconfig.jsx) |jsx_mode| {
+            if (std.mem.eql(u8, jsx_mode, "react-jsx") or std.mem.eql(u8, jsx_mode, "react-jsxdev")) {
+                opts.jsx_runtime = if (std.mem.eql(u8, jsx_mode, "react-jsxdev")) .automatic_dev else .automatic;
+            }
+        }
+    }
+    // jsxFactory/jsxFragmentFactory: CLI 기본값이면 tsconfig에서 가져옴
+    if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) {
+        opts.jsx_factory = tsconfig.jsx_factory;
+    }
+    if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) {
+        opts.jsx_fragment = tsconfig.jsx_fragment_factory;
+    }
+    if (std.mem.eql(u8, opts.jsx_import_source, "react")) {
+        opts.jsx_import_source = tsconfig.jsx_import_source;
+    }
+
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
         .module_format = opts.module_format,
@@ -1508,6 +1565,10 @@ pub fn main() !void {
         .sources_content = opts.sources_content,
         .charset_utf8 = opts.charset_utf8,
         .flow = opts.flow,
+        .jsx_runtime = opts.jsx_runtime,
+        .jsx_factory = opts.jsx_factory,
+        .jsx_fragment = opts.jsx_fragment,
+        .jsx_import_source = opts.jsx_import_source,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");

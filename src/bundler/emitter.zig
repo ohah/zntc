@@ -91,6 +91,14 @@ pub const EmitOptions = struct {
     legal_comments: types.LegalComments = .default,
     /// --keep-names: minify 시 함수/클래스 .name 프로퍼티 보존
     keep_names: bool = false,
+    /// JSX 런타임 모드
+    jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+    /// classic 모드 JSX factory
+    jsx_factory: []const u8 = "React.createElement",
+    /// classic 모드 Fragment factory
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// automatic 모드 import source
+    jsx_import_source: []const u8 = "react",
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
 
@@ -1636,6 +1644,12 @@ pub fn emitModule(
         .sources_content = options.sources_content,
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
+        // JSX 런타임 설정
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = module.path,
     });
     var code = try cg.generate(root);
 
