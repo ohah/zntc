@@ -3071,3 +3071,127 @@ test "JSX classic: custom fragment factory" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "h(Fragment,") != null);
 }
+
+// --- automatic 모드: 누락 케이스 ---
+
+test "JSX automatic: spread attribute" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div {...props} id=\"a\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id: \"a\"") != null);
+}
+
+test "JSX automatic: nested elements" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div><span><b>deep</b></span></div>;");
+    defer r.deinit();
+    // 바깥: 단일 child → _jsx, 안쪽도 단일 → _jsx
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"span\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"b\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: \"deep\"") != null);
+}
+
+test "JSX automatic: expression child" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div>{value}</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: value") != null);
+}
+
+test "JSX automatic: text and element mixed children" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <p>hello <b>world</b></p>;");
+    defer r.deinit();
+    // 다수 children → _jsxs + children 배열
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(\"p\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"hello \"") != null);
+}
+
+test "JSX automatic: component (uppercase tag)" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <MyComponent title=\"t\">child</MyComponent>;");
+    defer r.deinit();
+    // 대문자 태그는 문자열이 아닌 식별자로 출력
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(MyComponent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"MyComponent\"") == null);
+}
+
+test "JSX automatic: empty fragment" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <></>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(_Fragment, {})") != null);
+}
+
+test "JSX automatic: classic mode does NOT inject import" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement") != null);
+}
+
+test "JSX automatic: no JSX usage means no import" {
+    // JSX가 없는 파일에서는 import 미주입
+    var r = try e2eFull(std.testing.allocator, "const x = 42;", .{}, .{
+        .jsx_runtime = .automatic,
+        .jsx_import_source = "react",
+    }, ".tsx");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import {") == null);
+}
+
+// --- dev 모드: 누락 케이스 ---
+
+test "JSX dev: key in dev mode" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <Item key=\"k\" id=\"1\" />;");
+    defer r.deinit();
+    // key는 3번째 인수, props에서 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ id: \"1\" }, \"k\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "key:") == null);
+}
+
+test "JSX dev: fragment with children" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <><a/><b/></>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxDEV(_Fragment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", true, {") != null);
+}
+
+test "JSX dev: empty element has correct source info" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <br />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxDEV(\"br\", {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "fileName: \"test.tsx\"") != null);
+}
+
+test "JSX dev: custom import source" {
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
+        .jsx_runtime = .automatic_dev,
+        .jsx_import_source = "preact",
+        .jsx_filename = "app.tsx",
+    }, ".tsx");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"preact/jsx-dev-runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "fileName: \"app.tsx\"") != null);
+}
+
+// --- classic 모드: 누락 케이스 ---
+
+test "JSX classic: spread attribute preserved" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div {...props} />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement") != null);
+}
+
+test "JSX classic: expression child" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>{val}</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement(\"div\",null,val)") != null);
+}
+
+test "JSX classic: component uppercase" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <App name=\"z\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement(App,{name:\"z\"})") != null);
+    // App은 문자열이 아닌 식별자
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"App\"") == null);
+}
