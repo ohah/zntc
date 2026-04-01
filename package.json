@@ -18,7 +18,7 @@
     "lint:fix": "oxlint --fix packages/",
     "fmt": "oxfmt format packages/",
     "fmt:check": "oxfmt format --check packages/",
-    "playwright:install": "bunx playwright install --with-deps chromium"
+    "playwright:install": "cd packages/e2e && bunx playwright install --with-deps chromium"
   },
   "devDependencies": {
     "oxfmt": "^0.41.0",
