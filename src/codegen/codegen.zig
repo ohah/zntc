@@ -209,57 +209,62 @@ pub const Codegen = struct {
             }
         }
 
-        // automatic JSX: 사용된 헬퍼의 import문을 output 선두에 삽입.
+        // automatic JSX: 사용된 헬퍼의 import문을 output 선두에 결합.
         // 번들 모드에서는 linker가 import를 처리하므로 주입하지 않음.
         if (self.options.jsx_runtime != .classic and self.options.linking_metadata == null) {
-            try self.prependJsxImport();
+            if (self.buildJsxImport()) |import_str| {
+                // import문 + 기존 출력을 새 버퍼에 결합 (insertSlice(0) O(n) memmove 회피)
+                var combined: std.ArrayList(u8) = .empty;
+                try combined.ensureTotalCapacity(self.allocator, import_str.len + self.buf.items.len);
+                combined.appendSliceAssumeCapacity(import_str);
+                combined.appendSliceAssumeCapacity(self.buf.items);
+                self.buf.deinit(self.allocator);
+                self.buf = combined;
+            }
         }
 
         return self.buf.items;
     }
 
-    /// automatic JSX import문을 buf 선두에 삽입.
-    /// import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "<source>/jsx-runtime";
-    fn prependJsxImport(self: *Codegen) !void {
-        if (!self.jsx_used_jsx and !self.jsx_used_jsxs and !self.jsx_used_jsxDEV and !self.jsx_used_fragment) return;
+    /// automatic JSX import문을 생성. 사용된 헬퍼가 없으면 null.
+    fn buildJsxImport(self: *Codegen) ?[]const u8 {
+        if (!self.jsx_used_jsx and !self.jsx_used_jsxs and !self.jsx_used_jsxDEV and !self.jsx_used_fragment) return null;
 
         var import_buf: std.ArrayList(u8) = .empty;
         const is_dev = self.options.jsx_runtime == .automatic_dev;
         const source = self.options.jsx_import_source;
 
-        try import_buf.appendSlice(self.allocator, "import { ");
+        import_buf.appendSlice(self.allocator, "import { ") catch return null;
         var first = true;
         if (is_dev) {
             if (self.jsx_used_jsxDEV) {
-                try import_buf.appendSlice(self.allocator, "jsxDEV as _jsxDEV");
+                import_buf.appendSlice(self.allocator, "jsxDEV as _jsxDEV") catch return null;
                 first = false;
             }
         } else {
             if (self.jsx_used_jsx) {
-                try import_buf.appendSlice(self.allocator, "jsx as _jsx");
+                import_buf.appendSlice(self.allocator, "jsx as _jsx") catch return null;
                 first = false;
             }
             if (self.jsx_used_jsxs) {
-                if (!first) try import_buf.appendSlice(self.allocator, ", ");
-                try import_buf.appendSlice(self.allocator, "jsxs as _jsxs");
+                if (!first) import_buf.appendSlice(self.allocator, ", ") catch return null;
+                import_buf.appendSlice(self.allocator, "jsxs as _jsxs") catch return null;
                 first = false;
             }
         }
         if (self.jsx_used_fragment) {
-            if (!first) try import_buf.appendSlice(self.allocator, ", ");
-            try import_buf.appendSlice(self.allocator, "Fragment as _Fragment");
+            if (!first) import_buf.appendSlice(self.allocator, ", ") catch return null;
+            import_buf.appendSlice(self.allocator, "Fragment as _Fragment") catch return null;
         }
-        try import_buf.appendSlice(self.allocator, " } from \"");
-        try import_buf.appendSlice(self.allocator, source);
+        import_buf.appendSlice(self.allocator, " } from \"") catch return null;
+        import_buf.appendSlice(self.allocator, source) catch return null;
         if (is_dev) {
-            try import_buf.appendSlice(self.allocator, "/jsx-dev-runtime\";\n");
+            import_buf.appendSlice(self.allocator, "/jsx-dev-runtime\";\n") catch return null;
         } else {
-            try import_buf.appendSlice(self.allocator, "/jsx-runtime\";\n");
+            import_buf.appendSlice(self.allocator, "/jsx-runtime\";\n") catch return null;
         }
 
-        // buf 선두에 삽입
-        try self.buf.insertSlice(self.allocator, 0, import_buf.items);
-        import_buf.deinit(self.allocator);
+        return import_buf.items;
     }
 
     /// top-level function/class/var/let/const 이름을 declared_names에 수집.
@@ -2333,7 +2338,7 @@ pub const Codegen = struct {
 
                 // key를 attrs에서 분리
                 const key_idx = self.findJSXKeyAttr(attrs_start, attrs_len);
-                try self.emitJSXPropsAutomatic(attrs_start, attrs_len, children_start, children_len, key_idx);
+                try self.emitJSXPropsAutomatic(attrs_start, attrs_len, children_start, children_len, key_idx, effective_children);
 
                 // key argument
                 if (is_dev) {
@@ -2392,7 +2397,7 @@ pub const Codegen = struct {
                 }
                 try self.write("_Fragment, ");
                 // props with children
-                try self.emitJSXPropsAutomatic(0, 0, list.start, list.len, null);
+                try self.emitJSXPropsAutomatic(0, 0, list.start, list.len, null, effective_children);
                 if (is_dev) {
                     try self.write(", undefined, ");
                     if (is_static) try self.write("true") else try self.write("false");
@@ -2441,8 +2446,7 @@ pub const Codegen = struct {
     }
 
     /// automatic 모드: { ...attrs(key제외), children } props 객체 출력
-    fn emitJSXPropsAutomatic(self: *Codegen, attrs_start: u32, attrs_len: u32, children_start: u32, children_len: u32, key_idx: ?u32) !void {
-        const effective_children = self.countEffectiveChildren(children_start, children_len);
+    fn emitJSXPropsAutomatic(self: *Codegen, attrs_start: u32, attrs_len: u32, children_start: u32, children_len: u32, key_idx: ?u32, effective_children: u32) !void {
         const has_attrs = attrs_len > (if (key_idx != null) @as(u32, 1) else @as(u32, 0));
 
         if (!has_attrs and effective_children == 0) {
@@ -2565,12 +2569,14 @@ pub const Codegen = struct {
         }
     }
 
-    /// JSX text 공백 트리밍 (esbuild 호환)
+    /// JSX text 공백 트리밍 (esbuild 호환).
+    /// 줄바꿈 있으면 전체 trim, 없으면 원본 유지. 공백만이면 빈 문자열.
     fn trimJSXText(self: *Codegen, child: Node) []const u8 {
         const text = self.ast.source[child.span.start..child.span.end];
-        if (std.mem.trim(u8, text, " \t\n\r").len == 0) return "";
-        if (std.mem.indexOfAny(u8, text, "\n\r") != null) return std.mem.trim(u8, text, " \t\n\r");
-        return text;
+        const trimmed = std.mem.trim(u8, text, " \t\n\r");
+        if (trimmed.len == 0) return "";
+        if (std.mem.indexOfAny(u8, text, "\n\r") == null) return text;
+        return trimmed;
     }
 
     /// 유효 children 수 카운트 (공백만인 text 제외)
@@ -2610,17 +2616,26 @@ pub const Codegen = struct {
         try self.write(", { fileName: \"");
         try self.write(self.options.jsx_filename);
         try self.write("\", lineNumber: ");
-
-        // span → line:col 계산
         const loc = self.spanToLineCol(span.start);
-        var line_buf: [16]u8 = undefined;
-        const line_str = std.fmt.bufPrint(&line_buf, "{}", .{loc.line}) catch "0";
-        try self.write(line_str);
+        try self.writeU32(loc.line);
         try self.write(", columnNumber: ");
-        var col_buf: [16]u8 = undefined;
-        const col_str = std.fmt.bufPrint(&col_buf, "{}", .{loc.col}) catch "0";
-        try self.write(col_str);
+        try self.writeU32(loc.col);
         try self.write(" }");
+    }
+
+    fn writeU32(self: *Codegen, n: u32) !void {
+        var buf: [10]u8 = undefined;
+        var len: u8 = 0;
+        var v = n;
+        if (v == 0) {
+            try self.writeByte('0');
+            return;
+        }
+        while (v > 0) : (v /= 10) {
+            buf[9 - len] = @intCast('0' + @as(u8, @intCast(v % 10)));
+            len += 1;
+        }
+        try self.write(buf[10 - len .. 10]);
     }
 
     const LineLoc = struct { line: u32, col: u32 };
