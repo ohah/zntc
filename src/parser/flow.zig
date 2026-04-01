@@ -780,6 +780,37 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
 }
 
 // ================================================================
+// Flow 공통 헬퍼
+// ================================================================
+
+/// balanced parenthesis skip: `(...)` 전체를 소비한다.
+/// 타입 스트리핑에서 내부 구조가 불필요한 경우 사용.
+fn skipBalancedParens(self: *Parser) !void {
+    if (self.current() != .l_paren) return;
+    try self.advance();
+    var depth: u32 = 1;
+    while (depth > 0 and self.current() != .eof) {
+        switch (self.current()) {
+            .l_paren => depth += 1,
+            .r_paren => depth -= 1,
+            else => {},
+        }
+        if (depth > 0) try self.advance();
+    }
+    try self.expect(.r_paren);
+}
+
+/// `renders Type` / `renders? Type` / `renders* Type` 절이 있으면 소비.
+fn trySkipRendersClause(self: *Parser) !void {
+    if (self.current() == .identifier and self.isContextual("renders")) {
+        try self.advance();
+        _ = try self.eat(.question);
+        _ = try self.eat(.star);
+        _ = try parseType(self);
+    }
+}
+
+// ================================================================
 // Flow Component/Hook Type Annotation
 // ================================================================
 
@@ -794,28 +825,8 @@ fn parseFlowComponentOrHookType(self: *Parser) ParseError2!NodeIndex {
         _ = try parseTypeParameterDeclaration(self);
     }
 
-    // 파라미터: (...) — balanced paren skip
-    if (self.current() == .l_paren) {
-        try self.advance();
-        var depth: u32 = 1;
-        while (depth > 0 and self.current() != .eof) {
-            switch (self.current()) {
-                .l_paren => depth += 1,
-                .r_paren => depth -= 1,
-                else => {},
-            }
-            if (depth > 0) try self.advance();
-        }
-        try self.expect(.r_paren);
-    }
-
-    // renders 절: component() renders Type
-    if (self.current() == .identifier and self.isContextual("renders")) {
-        try self.advance();
-        _ = try self.eat(.question);
-        _ = try self.eat(.star);
-        _ = try parseType(self);
-    }
+    try skipBalancedParens(self);
+    try trySkipRendersClause(self);
 
     return try self.ast.addNode(.{
         .tag = .flow_literal_type,
@@ -864,14 +875,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
     self.in_formal_parameters = false;
     try self.expect(.r_paren);
 
-    // renders 절 스킵: component Foo() renders React.Node { }
-    if (self.current() == .identifier and self.isContextual("renders")) {
-        try self.advance(); // skip 'renders'
-        // renders? / renders* 변형
-        _ = try self.eat(.question);
-        _ = try self.eat(.star);
-        _ = try parseType(self);
-    }
+    try trySkipRendersClause(self);
 
     // 반환 타입 어노테이션 스킵: component Foo(): Type { }
     _ = try tryParseReturnType(self);
@@ -961,31 +965,11 @@ pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         if (next_comp == .identifier) {
             try self.advance(); // skip 'component'/'hook'
             try self.advance(); // skip name
-            // 제네릭 타입 파라미터
             if (self.isAtOpeningAngleBracket()) {
                 _ = try parseTypeParameterDeclaration(self);
             }
-            // 파라미터: (...) — balanced paren skip
-            if (self.current() == .l_paren) {
-                try self.advance();
-                var depth: u32 = 1;
-                while (depth > 0 and self.current() != .eof) {
-                    switch (self.current()) {
-                        .l_paren => depth += 1,
-                        .r_paren => depth -= 1,
-                        else => {},
-                    }
-                    if (depth > 0) try self.advance();
-                }
-                try self.expect(.r_paren);
-            }
-            // renders 절
-            if (self.current() == .identifier and self.isContextual("renders")) {
-                try self.advance();
-                _ = try self.eat(.question);
-                _ = try self.eat(.star);
-                _ = try parseType(self);
-            }
+            try skipBalancedParens(self);
+            try trySkipRendersClause(self);
             _ = try self.eat(.semicolon);
             return NodeIndex.none;
         }
