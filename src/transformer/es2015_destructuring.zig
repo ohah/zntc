@@ -193,13 +193,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx = prop.data.binary.left;
                 if (key_idx.isNone()) continue;
 
-                // _ref.key
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const key_node = self.old_ast.getNode(key_idx);
                 const new_key = try self.visitNode(key_idx);
-                const access = try es_helpers.makeStaticMember(self, ref, new_key, span);
+                const access = try es_helpers.makeMemberFromKey(self, ref, new_key, key_node.tag, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
-                    const key_node = self.old_ast.getNode(key_idx);
                     const target_node = try self.new_ast.addNode(.{
                         .tag = .identifier_reference,
                         .span = key_node.span,
@@ -211,7 +210,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const is_shorthand_default = (prop.data.binary.flags & 0x01) != 0;
                     const rhs = if (is_shorthand_default and !prop.data.binary.right.isNone()) blk: {
                         const default_val = try self.visitNode(prop.data.binary.right);
-                        break :blk try buildDefaulted(self, access, default_val, ref_span, key_idx, span);
+                        break :blk try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
                     } else access;
 
                     const assign = try self.new_ast.addNode(.{
@@ -228,7 +227,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     if (right_node.tag == .assignment_target_with_default) {
                         const target_node = try self.visitNode(right_node.data.binary.left);
                         const default_val = try self.visitNode(right_node.data.binary.right);
-                        const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, span);
+                        const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
                         const assign = try self.new_ast.addNode(.{
                             .tag = .assignment_expression,
                             .span = span,
@@ -356,21 +355,15 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx = prop.data.binary.left;
                 const value_idx = prop.data.binary.right;
 
-                // _ref.key (static member access)
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.old_ast.getNode(key_idx);
 
                 const member_access = if (key_node.tag == .computed_property_key) blk: {
                     const inner = try self.visitNode(key_node.data.unary.operand);
-                    const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(inner), 0 });
-                    break :blk try self.new_ast.addNode(.{
-                        .tag = .computed_member_expression,
-                        .span = span,
-                        .data = .{ .extra = me },
-                    });
+                    break :blk try es_helpers.makeComputedMember(self, ref, inner, span);
                 } else blk: {
                     const new_key = try self.visitNode(key_idx);
-                    break :blk try es_helpers.makeStaticMember(self, ref, new_key, span);
+                    break :blk try es_helpers.makeMemberFromKey(self, ref, new_key, key_node.tag, span);
                 };
 
                 // value 처리: shorthand vs long-form, default value
@@ -389,7 +382,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
                         const binding = try self.visitNode(value_node.data.binary.left);
                         const default_val = try self.visitNode(value_node.data.binary.right);
-                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, span);
+                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
                         const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
                         try self.scratch.append(self.allocator, decl);
                     } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
@@ -465,18 +458,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
         }
 
-        /// _ref.key === void 0 ? default : _ref.key
-        fn buildDefaulted(self: *Transformer, access: NodeIndex, default_val: NodeIndex, ref_span: Span, key_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        /// _ref.key === void 0 ? default : _ref.key (또는 _ref["key"])
+        fn buildDefaulted(self: *Transformer, access: NodeIndex, default_val: NodeIndex, ref_span: Span, key_idx: NodeIndex, key_tag: Node.Tag, span: Span) Transformer.Error!NodeIndex {
             const void_zero = try es_helpers.makeVoidZero(self, span);
             const eq_check = try self.new_ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
             });
-            // _ref.key 다시 생성 (access는 이미 eq_check에서 소비)
+            // access는 이미 eq_check에서 소비되었으므로 다시 생성
             const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
             const new_key = try self.visitNode(key_idx);
-            const access2 = try es_helpers.makeStaticMember(self, ref2, new_key, span);
+            const access2 = try es_helpers.makeMemberFromKey(self, ref2, new_key, key_tag, span);
             return self.new_ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
@@ -488,14 +481,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn makeArrayAccess(self: *Transformer, ref_span: Span, idx: usize, span: Span) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(idx));
-            const access_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(ref), @intFromEnum(idx_node), 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .computed_member_expression,
-                .span = span,
-                .data = .{ .extra = access_extra },
-            });
+            return es_helpers.makeComputedMember(self, ref, idx_node, span);
         }
 
         /// _ref.slice(N) 호출 생성 (array rest 변환용).

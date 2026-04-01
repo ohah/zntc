@@ -98,6 +98,28 @@ pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Sp
     });
 }
 
+/// obj[prop] computed member expression 생성.
+/// 문자열 키("aria-busy")나 숫자 키처럼 dot notation이 불가능한 경우 사용.
+/// extra = [object, property, flags=0]
+pub fn makeComputedMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
+    const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    return self.new_ast.addNode(.{
+        .tag = .computed_member_expression,
+        .span = span,
+        .data = .{ .extra = me },
+    });
+}
+
+/// 프로퍼티 키의 타입에 따라 static(dot) 또는 computed(bracket) member expression 생성.
+/// string_literal, numeric_literal → bracket notation (_ref["aria-busy"], _ref[0])
+/// 그 외 (identifier 등) → dot notation (_ref.key)
+pub fn makeMemberFromKey(self: anytype, obj: NodeIndex, prop: NodeIndex, key_tag: ast_mod.Node.Tag, span: Span) !NodeIndex {
+    return switch (key_tag) {
+        .string_literal, .numeric_literal => makeComputedMember(self, obj, prop, span),
+        else => makeStaticMember(self, obj, prop, span),
+    };
+}
+
 /// callee(args...) call expression 생성.
 /// extra = [callee, args_start, args_len, flags=0]
 pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, span: Span) !NodeIndex {
