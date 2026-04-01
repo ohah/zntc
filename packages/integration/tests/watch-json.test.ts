@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { createFixture, ZTS_BIN } from "./helpers";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 
 /**
@@ -28,21 +28,31 @@ async function waitForNdjsonLines(
   timeoutMs = 10000,
 ): Promise<Record<string, unknown>[]> {
   const deadline = Date.now() + timeoutMs;
+  let lastContent = "";
   while (Date.now() < deadline) {
-    if (existsSync(jsonOutPath)) {
+    try {
       const content = readFileSync(jsonOutPath, "utf8").trim();
+      lastContent = content;
       if (content) {
-        const lines = content.split("\n").filter(Boolean);
-        if (lines.length >= minLines) {
-          return lines.map((l) => JSON.parse(l));
+        const parsed: Record<string, unknown>[] = [];
+        for (const line of content.split("\n").filter(Boolean)) {
+          try {
+            parsed.push(JSON.parse(line));
+          } catch {
+            break; // partial line — 다음 폴링에서 재시도
+          }
+        }
+        if (parsed.length >= minLines) {
+          return parsed;
         }
       }
+    } catch {
+      // 파일이 아직 없음 — 다음 폴링에서 재시도
     }
     await new Promise((r) => setTimeout(r, 200));
   }
-  const content = existsSync(jsonOutPath) ? readFileSync(jsonOutPath, "utf8") : "(file not found)";
   throw new Error(
-    `Timeout waiting for ${minLines} NDJSON line(s). Content: ${JSON.stringify(content)}`,
+    `Timeout waiting for ${minLines} NDJSON line(s). Content: ${JSON.stringify(lastContent)}`,
   );
 }
 
@@ -53,8 +63,11 @@ function killAndWait(proc: ChildProcess): Promise<void> {
       resolve();
       return;
     }
-    proc.on("exit", () => resolve());
-    setTimeout(resolve, 2000);
+    const fallback = setTimeout(resolve, 2000);
+    proc.on("exit", () => {
+      clearTimeout(fallback);
+      resolve();
+    });
     proc.kill();
   });
 }

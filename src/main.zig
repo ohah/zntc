@@ -1252,7 +1252,7 @@ pub fn main() !void {
 
         // 출력
         // --watch-json 모드에서는 stdout이 NDJSON 전용이므로
-        // 상태 메시지는 stderr로, raw 번들 출력은 억제
+        // 상태 메시지와 raw 번들 출력은 억제
         var initial_bytes: usize = 0;
         if (result.outputs) |outputs| {
             // Code splitting: 다중 파일 출력 → --outdir 필수

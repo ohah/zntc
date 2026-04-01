@@ -130,7 +130,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 번개(bungae) 같은 외부 도구가 stdout을 파싱하여 HMR 메시지를 생성하는 용도.
 
 ```jsonl
-{"type":"ready","files":2592}
+{"type":"ready","files":2592,"bytes":123456}
 {"type":"rebuild","success":true,"changed":["/src/app.tsx"],"modules":["/src/app.tsx","/src/util.ts"],"bytes":123456}
 {"type":"rebuild","success":false,"error":"ModuleNotFound"}
 ```
