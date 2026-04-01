@@ -87,10 +87,6 @@ pub const Module = struct {
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,
-    /// JSON 모듈이 CJS require()로 참조되는지 여부.
-    /// true면 ESM 포맷에서도 __commonJS 래핑 필요 (linker가 require_X() 이름 생성).
-    /// false면 ESM에서 scope-hoisted var로 출력 가능.
-    has_cjs_importer: bool = false,
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
@@ -126,12 +122,6 @@ pub const Module = struct {
         /// import 추출 완료, 사용 가능
         ready,
     };
-
-    /// ESM 포맷에서 이 JSON 모듈을 scope-hoist 가능한지 판단.
-    /// CJS require()로 참조되지 않는 JSON만 var json_X = {...} 출력 가능.
-    pub fn isJsonScopeHoistable(self: *const Module, format: types.Format) bool {
-        return format == .esm and self.module_type == .json and !self.has_cjs_importer;
-    }
 
     /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
     /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.

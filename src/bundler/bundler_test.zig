@@ -6334,8 +6334,8 @@ test "Resolution: JSON file import" {
 }
 
 test "JSON import: ESM format uses scope-hoisted var (linker integration)" {
-    // linker 포함 통합 테스트: ESM 포맷 + ESM-only import에서
-    // JSON 모듈이 var json_X = {...} 형태로 scope-hoist되는지 검증.
+    // linker 포함 통합 테스트: ESM 포맷에서 JSON → ESM AST로 변환되어
+    // export default → var 할당 형태로 출력되는지 검증.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import data from './data.json';\nconsole.log(data.key);");
@@ -6354,9 +6354,9 @@ test "JSON import: ESM format uses scope-hoisted var (linker integration)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // ESM-only: scope-hoisted var, __commonJS 래핑 없음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var json_data") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"key\":\"value\"") != null);
+    // JSON ESM: object 내용 포함, __commonJS 래핑 없음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"key\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"value\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
 }
 

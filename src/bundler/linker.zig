@@ -152,7 +152,7 @@ pub const ResolvedBinding = struct {
 pub const Linker = struct {
     allocator: std.mem.Allocator,
     modules: []const Module,
-    /// 출력 포맷. JSON scope-hoist 판단에 사용 (Module.isJsonScopeHoistable).
+    /// 출력 포맷.
     format: types.Format,
 
     /// 모듈별 export 맵: "module_index\x00exported_name" → ExportEntry
@@ -899,17 +899,6 @@ pub const Linker = struct {
                 }
 
                 const canonical_mod = @intFromEnum(rec.resolved);
-
-                // JSON scope-hoist: __commonJS 대신 var json_X 직접 참조 (esbuild 방식).
-                if (canonical_mod < self.modules.len and
-                    self.modules[canonical_mod].isJsonScopeHoistable(self.format))
-                {
-                    const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
-                    const json_var = try types.makeJsonVarName(self.allocator, self.modules[canonical_mod].path);
-                    defer self.allocator.free(json_var);
-                    try appendJsonImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name, ib.imported_name, json_var, ib.kind == .namespace);
-                    continue;
-                }
 
                 // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
@@ -2211,29 +2200,4 @@ fn appendCjsImportPreamble(
         try buf.appendSlice(allocator, imported_name);
         try buf.appendSlice(allocator, ";\n");
     }
-}
-
-/// JSON 모듈 (ESM-only) import preamble 한 줄을 buf에 추가.
-/// JSON은 단일 default export이므로:
-/// - default import: var local = json_var;
-/// - namespace import: var local = json_var; (JSON 전체가 namespace)
-/// - named import: 미지원 (JSON은 default export만 가능)
-fn appendJsonImportPreamble(
-    buf: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    local_name: []const u8,
-    imported_name: []const u8,
-    json_var: []const u8,
-    is_namespace: bool,
-) !void {
-    try buf.appendSlice(allocator, "var ");
-    try buf.appendSlice(allocator, local_name);
-    try buf.appendSlice(allocator, " = ");
-    try buf.appendSlice(allocator, json_var);
-    // named import: json_var.prop (JSON top-level 키 접근)
-    if (!is_namespace and !std.mem.eql(u8, imported_name, "default")) {
-        try buf.appendSlice(allocator, ".");
-        try buf.appendSlice(allocator, imported_name);
-    }
-    try buf.appendSlice(allocator, ";\n");
 }

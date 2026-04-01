@@ -29,6 +29,7 @@ const ResolveCache = resolve_cache_mod.ResolveCache;
 const resolver_mod = @import("resolver.zig");
 const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
+const json_to_esm = @import("json_to_esm.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -675,14 +676,51 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // JSON 모듈: 파싱 불필요, CJS로 래핑만
+        // JSON 모듈: ESM AST로 변환 → 일반 JS와 동일한 파이프라인
+        // `export default <json_value>;` 형태의 AST를 생성하여
+        // semantic → import_scanner → binding_scanner를 공유한다.
         if (module.module_type == .json) {
             module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
             const arena_alloc = module.parse_arena.?.allocator();
             module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 10 * 1024 * 1024) catch "";
-            module.exports_kind = .commonjs;
-            module.wrap_kind = .cjs;
-            module.state = .ready;
+
+            module.ast = json_to_esm.convert(arena_alloc, module.source) catch {
+                self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Invalid JSON", null);
+                module.state = .ready;
+                return;
+            };
+
+            // JSON은 항상 ESM, side-effects 없음
+            module.exports_kind = .esm;
+            module.wrap_kind = .none;
+            module.side_effects = false;
+
+            // semantic analysis — export default가 제대로 추적되도록
+            var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
+            analyzer.is_module = true;
+            if (analyzer.analyze()) |_| {
+                module.semantic = .{
+                    .symbols = analyzer.symbols.items,
+                    .scopes = analyzer.scopes.items,
+                    .scope_maps = analyzer.scope_maps.items,
+                    .exported_names = analyzer.exported_names,
+                    .symbol_ids = analyzer.symbol_ids.items,
+                    .unresolved_references = analyzer.unresolved_references,
+                    .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                };
+            } else |_| {}
+
+            // import/export 스캔 — JSON에는 import가 없지만 export default가 있음
+            const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &(module.ast.?)) catch {
+                module.state = .ready;
+                return;
+            };
+            module.import_records = scan_result.records;
+            module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &(module.ast.?), scan_result.records) catch &.{};
+            binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &(module.ast.?), module.import_bindings) catch {};
+            module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
+
+            module.state = .parsed;
             return;
         }
 
@@ -1066,11 +1104,9 @@ pub const ModuleGraph = struct {
                         target.exports_kind = .commonjs;
                         target.wrap_kind = .cjs;
                     }
-                    // JSON 모듈이 CJS require()로 참조되면 마킹.
-                    // emitter가 ESM 포맷에서 scope-hoist vs __commonJS 래핑을 결정할 때 사용.
-                    if (target.module_type == .json) {
-                        target.has_cjs_importer = true;
-                    }
+                    // JSON 모듈이 require()로 참조되면 ESM→CJS 강제 변환.
+                    // 일반 ESM 모듈과 동일하게 처리 (위의 exports_kind 변환에 의해).
+
                 } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                     // ESM import로 소비 → .none이면 승격
                     if (target.exports_kind == .none) {
