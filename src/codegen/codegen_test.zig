@@ -2017,6 +2017,30 @@ test "ES2015: destructuring with computed key" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
 }
 
+test "ES2015: destructuring with string key uses bracket notation" {
+    // 하이픈 포함 문자열 키: _ref["aria-busy"] (bracket), _ref.ariaBusy (dot) 아님
+    var r = try e2eTarget(std.testing.allocator,
+        \\var {"aria-busy":busy,"aria-checked":checked}=obj;
+    , .es5);
+    defer r.deinit();
+    // bracket notation 사용 확인
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"aria-busy\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"aria-checked\"]") != null);
+    // dot notation이 아닌지 확인
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, ".\"aria-busy\""), null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, ".\"aria-checked\""), null);
+}
+
+test "ES2015: destructuring with string key and default uses bracket notation" {
+    // 문자열 키 + 기본값: _ref["aria-busy"] === void 0 ? false : _ref["aria-busy"]
+    var r = try e2eTarget(std.testing.allocator,
+        \\var {"aria-busy":busy=false}=obj;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"aria-busy\"]") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, ".\"aria-busy\""), null);
+}
+
 test "ES2015: for-of with destructuring" {
     var r = try e2eTarget(std.testing.allocator, "for(const [k,v] of arr){}", .es5);
     defer r.deinit();
