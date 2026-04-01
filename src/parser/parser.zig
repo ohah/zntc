@@ -154,6 +154,9 @@ pub const Parser = struct {
     has_cover_init_name: bool = false,
     /// formal parameter 파싱 중인지 (yield/await expression 금지).
     in_formal_parameters: bool = false,
+    /// Flow 반환 타입 파싱 중 — shorthand 함수 타입 `Type => Type` 금지.
+    /// (): any => {} 에서 any 뒤 =>가 arrow body인지 shorthand인지 구분.
+    flow_in_return_type: bool = false,
     /// enum 멤버 초기값 파싱 중인지.
     /// true이면 await/yield를 키워드가 아닌 식별자로 취급한다.
     /// (enum 내에서 다른 멤버를 참조: `enum X { await = 1, y = await }`)
