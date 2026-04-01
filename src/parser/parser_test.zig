@@ -2534,47 +2534,37 @@ test "JSX attr expr: self-closing in CLI mode" {
 // --jsx-in-js 또는 --platform=react-native가 .js에서 JSX를 활성화
 // ============================================================
 
-fn expectNoParseErrorFlow(source: []const u8) !void {
+const FlowTestOpts = struct { jsx: bool = false, expect_error: bool = false };
+
+fn expectFlowParseResult(source: []const u8, opts: FlowTestOpts) !void {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
     parser.is_flow = true;
+    parser.is_jsx = opts.jsx;
     scanner.has_flow_pragma = true;
     parser.is_module = true;
     scanner.is_module = true;
     parser.is_unambiguous = true;
     _ = try parser.parse();
-    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    if (opts.expect_error) {
+        try std.testing.expect(parser.errors.items.len > 0);
+    } else {
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
+fn expectNoParseErrorFlow(source: []const u8) !void {
+    return expectFlowParseResult(source, .{});
 }
 
 fn expectNoParseErrorFlowJSX(source: []const u8) !void {
-    var scanner = try Scanner.init(std.testing.allocator, source);
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    parser.is_flow = true;
-    parser.is_jsx = true;
-    scanner.has_flow_pragma = true;
-    parser.is_module = true;
-    scanner.is_module = true;
-    parser.is_unambiguous = true;
-    _ = try parser.parse();
-    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    return expectFlowParseResult(source, .{ .jsx = true });
 }
 
 fn expectParseErrorFlow(source: []const u8) !void {
-    var scanner = try Scanner.init(std.testing.allocator, source);
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    parser.is_flow = true;
-    scanner.has_flow_pragma = true;
-    parser.is_module = true;
-    scanner.is_module = true;
-    parser.is_unambiguous = true;
-    _ = try parser.parse();
-    try std.testing.expect(parser.errors.items.len > 0);
+    return expectFlowParseResult(source, .{ .expect_error = true });
 }
 
 // --- Flow 단독 (JSX 비활성) ---

@@ -776,7 +776,7 @@ pub const ModuleGraph = struct {
             }
         }
         // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
-        if (self.jsx_in_js and !parser.is_jsx) {
+        if (self.jsx_in_js) {
             parser.is_jsx = true;
         }
 
