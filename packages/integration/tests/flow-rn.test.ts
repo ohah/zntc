@@ -6,9 +6,6 @@ import { resolve } from "node:path";
  * React Native Flow 파싱 회귀 테스트.
  * references/react-native에서 복사한 실제 RN Libraries 파일 50개를
  * --flow --jsx-in-js로 트랜스파일하여 파서 호환성을 추적한다.
- *
- * 현재 통과하는 파일은 expectPass, 실패하는 파일은 expectFail로 분류.
- * Flow 파서를 개선할 때마다 expectFail → expectPass로 전환하여 진행률을 확인.
  */
 
 const FIXTURES = resolve(import.meta.dir, "fixtures/react-native");
@@ -28,13 +25,7 @@ async function expectPass(file: string) {
   expect(result.stderr).not.toContain("error:");
 }
 
-async function expectFail(file: string) {
-  const result = await transpile(file);
-  const hasError = result.exitCode !== 0 || result.stderr.includes("error:");
-  expect(hasError).toBe(true);
-}
-
-describe("Flow RN: passing files (47/50)", () => {
+describe("Flow RN: all 50 files passing", () => {
   test("__flowtests__/ReactNativeTypes-flowtest.js", () =>
     expectPass("__flowtests__/ReactNativeTypes-flowtest.js"));
   test("ActionSheetIOS/ActionSheetIOS.js", () => expectPass("ActionSheetIOS/ActionSheetIOS.js"));
@@ -72,12 +63,16 @@ describe("Flow RN: passing files (47/50)", () => {
     expectPass("Animated/components/AnimatedFlatList.js"));
   test("Animated/components/AnimatedImage.js", () =>
     expectPass("Animated/components/AnimatedImage.js"));
+  test("Animated/components/AnimatedScrollView.js", () =>
+    expectPass("Animated/components/AnimatedScrollView.js"));
   test("Animated/components/AnimatedSectionList.js", () =>
     expectPass("Animated/components/AnimatedSectionList.js"));
   test("Animated/components/AnimatedText.js", () =>
     expectPass("Animated/components/AnimatedText.js"));
   test("Animated/components/AnimatedView.js", () =>
     expectPass("Animated/components/AnimatedView.js"));
+  test("Animated/createAnimatedComponent.js", () =>
+    expectPass("Animated/createAnimatedComponent.js"));
   test("Animated/nodes/AnimatedAddition.js", () =>
     expectPass("Animated/nodes/AnimatedAddition.js"));
   test("Animated/nodes/AnimatedColor.js", () => expectPass("Animated/nodes/AnimatedColor.js"));
@@ -85,6 +80,8 @@ describe("Flow RN: passing files (47/50)", () => {
     expectPass("Animated/nodes/AnimatedDiffClamp.js"));
   test("Animated/nodes/AnimatedDivision.js", () =>
     expectPass("Animated/nodes/AnimatedDivision.js"));
+  test("Animated/nodes/AnimatedInterpolation.js", () =>
+    expectPass("Animated/nodes/AnimatedInterpolation.js"));
   test("Animated/nodes/AnimatedModulo.js", () => expectPass("Animated/nodes/AnimatedModulo.js"));
   test("Animated/nodes/AnimatedMultiplication.js", () =>
     expectPass("Animated/nodes/AnimatedMultiplication.js"));
@@ -105,16 +102,4 @@ describe("Flow RN: passing files (47/50)", () => {
   test("Animated/shouldUseTurboAnimatedModule.js", () =>
     expectPass("Animated/shouldUseTurboAnimatedModule.js"));
   test("Animated/useAnimatedColor.js", () => expectPass("Animated/useAnimatedColor.js"));
-});
-
-describe("Flow RN: failing files (3/50) — fix하면 expectPass로 전환", () => {
-  // conditional type + infer + mapped type
-  test("Animated/createAnimatedComponent.js", () =>
-    expectFail("Animated/createAnimatedComponent.js"));
-  // shorthand 함수 타입이 반환 타입 위치에서 충돌
-  test("Animated/nodes/AnimatedInterpolation.js", () =>
-    expectFail("Animated/nodes/AnimatedInterpolation.js"));
-  // component syntax + cascading
-  test("Animated/components/AnimatedScrollView.js", () =>
-    expectFail("Animated/components/AnimatedScrollView.js"));
 });

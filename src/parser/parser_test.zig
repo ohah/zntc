@@ -2807,3 +2807,44 @@ test "Flow: type guard predicate" {
         \\}
     );
 }
+
+test "Flow: infer in conditional type" {
+    try expectNoParseErrorFlow("type X<T> = T extends Array<infer P> ? P : T;");
+}
+
+test "Flow: keyof type operator" {
+    try expectNoParseErrorFlow("type K = keyof Obj;");
+}
+
+test "Flow: interface type in extends bound" {
+    try expectNoParseErrorFlow("type X<O extends interface {}> = O;");
+}
+
+test "Flow: JSX comment inside element" {
+    try expectNoParseErrorFlowJSX(
+        \\function f() {
+        \\  return (
+        \\    <View
+        \\      // comment
+        \\      style={style}
+        \\    />
+        \\  );
+        \\}
+    );
+}
+
+test "Flow: typed arrow with return type" {
+    try expectFlowParseResult(
+        \\const f = (x: number): number => x;
+    , .{ .jsx = true });
+}
+
+test "Flow: shorthand function type as method return" {
+    try expectNoParseErrorFlow(
+        \\class C {
+        \\  _getInterpolation(): number => OutputT {
+        \\    return null;
+        \\  }
+        \\}
+    );
+}
