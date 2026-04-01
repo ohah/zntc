@@ -49,10 +49,6 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
     try self.advance();
-    // 반환 타입에서는 shorthand 함수 타입 금지: (): any => {} 에서 =>는 arrow body
-    const saved_flag = self.flow_in_return_type;
-    self.flow_in_return_type = true;
-    defer self.flow_in_return_type = saved_flag;
     var ty = try parseType(self);
     // type predicate: value is Type — Flow type guard (TS와 동일 구문)
     if (self.current() == .identifier and self.isContextual("is")) {
@@ -104,7 +100,7 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
     }
 
     // shorthand 함수 타입: Type => ReturnType (괄호 없는 단일 파라미터)
-    // 반환 타입 컨텍스트에서는 금지 — (): any => {} 에서 =>는 arrow function body
+    // arrow 파라미터의 반환 타입 컨텍스트에서는 금지 — (): any => {} / (): any => 1
     if (self.current() == .arrow and !self.flow_in_return_type) {
         try self.advance();
         _ = try parseType(self);
@@ -225,6 +221,33 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
 fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
+    // keyof T — 타입 연산자 (Flow 최신)
+    if (self.current() == .identifier and self.isContextual("keyof")) {
+        try self.advance(); // skip 'keyof'
+        _ = try parsePrefixType(self);
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = span,
+            .data = .{ .none = 0 },
+        });
+    }
+
+    // infer T — conditional type의 타입 추론 변수
+    if (self.current() == .identifier and self.isContextual("infer")) {
+        try self.advance(); // skip 'infer'
+        try self.advance(); // skip type variable name
+        // infer T extends Bound (constrained infer)
+        if (self.current() == .kw_extends) {
+            try self.advance();
+            _ = try parseType(self);
+        }
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = span,
+            .data = .{ .none = 0 },
+        });
+    }
+
     // Flow 키워드 타입 (mixed, empty, any, string 등)
     if (self.current() == .identifier) {
         const text = self.tokenText();
@@ -276,6 +299,18 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             return try self.ast.addNode(.{
                 .tag = .flow_void_keyword,
                 .span = span,
+                .data = .{ .none = 0 },
+            });
+        },
+        // interface {} — Flow inline interface type
+        .kw_interface => {
+            try self.advance();
+            if (self.current() == .l_curly) {
+                try skipBalancedBraces(self);
+            }
+            return try self.ast.addNode(.{
+                .tag = .flow_literal_type,
+                .span = .{ .start = span.start, .end = self.currentSpan().start },
                 .data = .{ .none = 0 },
             });
         },
@@ -886,6 +921,22 @@ fn skipBalancedParens(self: *Parser) !void {
         if (depth > 0) try self.advance();
     }
     try self.expect(.r_paren);
+}
+
+/// balanced brace skip: `{...}` 전체를 소비.
+fn skipBalancedBraces(self: *Parser) !void {
+    if (self.current() != .l_curly) return;
+    try self.advance();
+    var depth: u32 = 1;
+    while (depth > 0 and self.current() != .eof) {
+        switch (self.current()) {
+            .l_curly => depth += 1,
+            .r_curly => depth -= 1,
+            else => {},
+        }
+        if (depth > 0) try self.advance();
+    }
+    try self.expect(.r_curly);
 }
 
 /// `renders Type` / `renders? Type` / `renders* Type` 절이 있으면 소비.

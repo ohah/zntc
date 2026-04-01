@@ -616,7 +616,37 @@ pub const Scanner = struct {
     /// 파서가 `<` 뒤에서 이 함수를 호출한다.
     pub fn nextInsideJSXElement(self: *Scanner) !void {
         self.token.has_newline_before = false;
-        try self.skipWhitespace();
+
+        // JSX element 내에서 주석 스킵 (// line comment, /* block comment */)
+        while (true) {
+            try self.skipWhitespace();
+            if (self.current + 1 < self.source.len and self.source[self.current] == '/') {
+                if (self.source[self.current + 1] == '/') {
+                    // line comment: 줄 끝까지 스킵
+                    self.current += 2;
+                    while (self.current < self.source.len and
+                        self.source[self.current] != '\n' and self.source[self.current] != '\r')
+                    {
+                        self.current += 1;
+                    }
+                    continue;
+                } else if (self.source[self.current + 1] == '*') {
+                    // block comment: */ 까지 스킵
+                    self.current += 2;
+                    while (self.current + 1 < self.source.len) {
+                        if (self.source[self.current] == '*' and self.source[self.current + 1] == '/') {
+                            self.current += 2;
+                            break;
+                        }
+                        if (self.source[self.current] == '\n') self.token.has_newline_before = true;
+                        self.current += 1;
+                    }
+                    continue;
+                }
+            }
+            break;
+        }
+
         self.start = self.current;
 
         if (self.isAtEnd()) {
