@@ -16,15 +16,9 @@ import { spawn, type ChildProcess } from "node:child_process";
  */
 
 /** zts --watch-json을 shell 경유로 spawn하고 stdout을 파일로 리다이렉트 */
-function spawnWatchJson(
-  args: string[],
-  jsonOutPath: string,
-): ChildProcess {
+function spawnWatchJson(args: string[], jsonOutPath: string): ChildProcess {
   const quotedArgs = args.map((a) => `"${a}"`).join(" ");
-  return spawn("sh", [
-    "-c",
-    `"${ZTS_BIN}" ${quotedArgs} > "${jsonOutPath}" 2>/dev/null`,
-  ]);
+  return spawn("sh", ["-c", `"${ZTS_BIN}" ${quotedArgs} > "${jsonOutPath}" 2>/dev/null`]);
 }
 
 /** NDJSON 출력 파일에서 특정 라인이 나타날 때까지 폴링 */
@@ -47,7 +41,9 @@ async function waitForNdjsonLines(
     await new Promise((r) => setTimeout(r, 200));
   }
   const content = existsSync(jsonOutPath) ? readFileSync(jsonOutPath, "utf8") : "(file not found)";
-  throw new Error(`Timeout waiting for ${minLines} NDJSON line(s). Content: ${JSON.stringify(content)}`);
+  throw new Error(
+    `Timeout waiting for ${minLines} NDJSON line(s). Content: ${JSON.stringify(content)}`,
+  );
 }
 
 /** 프로세스를 kill하고 종료를 기다림 */
@@ -82,9 +78,9 @@ describe("--watch-json", () => {
 
       expect(ready.type).toBe("ready");
       expect(typeof ready.files).toBe("number");
-      expect((ready.files as number)).toBeGreaterThan(0);
+      expect(ready.files as number).toBeGreaterThan(0);
       expect(typeof ready.bytes).toBe("number");
-      expect((ready.bytes as number)).toBeGreaterThan(0);
+      expect(ready.bytes as number).toBeGreaterThan(0);
 
       // 초기 빌드에서 번들 파일이 생성되어야 함
       const bundled = readFileSync(outFile, "utf8");
@@ -95,31 +91,35 @@ describe("--watch-json", () => {
     }
   });
 
-  test("stdout contains only valid NDJSON, no human-readable messages", { timeout: 30000 }, async () => {
-    const { dir, cleanup } = await createFixture({
-      "entry.ts": `export const x = 42;`,
-    });
-    const outFile = join(dir, "out.js");
-    const jsonOut = join(dir, "ndjson.txt");
+  test(
+    "stdout contains only valid NDJSON, no human-readable messages",
+    { timeout: 30000 },
+    async () => {
+      const { dir, cleanup } = await createFixture({
+        "entry.ts": `export const x = 42;`,
+      });
+      const outFile = join(dir, "out.js");
+      const jsonOut = join(dir, "ndjson.txt");
 
-    const proc = spawnWatchJson(
-      ["--bundle", join(dir, "entry.ts"), "-o", outFile, "--watch-json"],
-      jsonOut,
-    );
+      const proc = spawnWatchJson(
+        ["--bundle", join(dir, "entry.ts"), "-o", outFile, "--watch-json"],
+        jsonOut,
+      );
 
-    try {
-      const events = await waitForNdjsonLines(jsonOut, 1);
-      const ready = events[0];
+      try {
+        const events = await waitForNdjsonLines(jsonOut, 1);
+        const ready = events[0];
 
-      // 첫 번째 stdout 라인이 valid JSON이어야 함
-      expect(ready.type).toBe("ready");
-      // "Bundled →" 같은 인간용 메시지가 없어야 함
-      expect(JSON.stringify(ready)).not.toContain("Bundled");
-    } finally {
-      await killAndWait(proc);
-      await cleanup();
-    }
-  });
+        // 첫 번째 stdout 라인이 valid JSON이어야 함
+        expect(ready.type).toBe("ready");
+        // "Bundled →" 같은 인간용 메시지가 없어야 함
+        expect(JSON.stringify(ready)).not.toContain("Bundled");
+      } finally {
+        await killAndWait(proc);
+        await cleanup();
+      }
+    },
+  );
 
   test("rebuild event emitted on file change", { timeout: 30000 }, async () => {
     const { dir, cleanup } = await createFixture({
@@ -166,10 +166,7 @@ describe("--watch-json", () => {
     });
     const jsonOut = join(dir, "ndjson.txt");
 
-    const proc = spawnWatchJson(
-      ["--bundle", join(dir, "entry.ts"), "--watch-json"],
-      jsonOut,
-    );
+    const proc = spawnWatchJson(["--bundle", join(dir, "entry.ts"), "--watch-json"], jsonOut);
 
     try {
       const events = await waitForNdjsonLines(jsonOut, 1);
@@ -200,8 +197,13 @@ describe("--watch-json", () => {
 
     const proc = spawnWatchJson(
       [
-        "--bundle", join(dir, "entry.ts"),
-        "--splitting", "--outdir", outDir, "--format=esm", "--watch-json",
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--splitting",
+        "--outdir",
+        outDir,
+        "--format=esm",
+        "--watch-json",
       ],
       jsonOut,
     );
@@ -211,8 +213,8 @@ describe("--watch-json", () => {
       const ready = events[0];
 
       expect(ready.type).toBe("ready");
-      expect((ready.files as number)).toBeGreaterThan(0);
-      expect((ready.bytes as number)).toBeGreaterThan(0);
+      expect(ready.files as number).toBeGreaterThan(0);
+      expect(ready.bytes as number).toBeGreaterThan(0);
     } finally {
       await killAndWait(proc);
       await cleanup();
