@@ -14,10 +14,10 @@
     "test:e2e": "bun run --cwd tests/e2e test",
     "test:all": "bun run test:integration && bun run test:e2e",
     "build:zts": "zig build -Doptimize=ReleaseFast",
-    "lint": "oxlint packages/ tests/",
-    "lint:fix": "oxlint --fix packages/ tests/",
-    "fmt": "oxfmt format packages/ tests/",
-    "fmt:check": "oxfmt format --check packages/ tests/",
+    "lint": "oxlint packages/ tests/integration tests/e2e tests/benchmark",
+    "lint:fix": "oxlint --fix packages/ tests/integration tests/e2e tests/benchmark",
+    "fmt": "oxfmt format packages/ tests/integration tests/e2e tests/benchmark",
+    "fmt:check": "oxfmt format --check packages/ tests/integration tests/e2e tests/benchmark",
     "playwright:install": "cd tests/e2e && bunx playwright install --with-deps chromium"
   },
   "devDependencies": {
