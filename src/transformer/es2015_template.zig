@@ -122,7 +122,8 @@ fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
 }
 
 /// template 텍스트를 string_literal 노드로 변환한다.
-/// \` → ` (backtick escape 제거), " → \" (quote escape 추가).
+/// \` → ` (backtick escape 제거), " → \" (quote escape 추가),
+/// 실제 줄바꿈(\n, \r) → 이스케이프 시퀀스로 변환.
 fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
@@ -140,6 +141,12 @@ fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
         } else if (c == '\\' and j + 1 < text.len and text[j + 1] == '`') {
             buf.appendAssumeCapacity('`');
             j += 1;
+        } else if (c == '\n') {
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('n');
+        } else if (c == '\r') {
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('r');
         } else {
             buf.appendAssumeCapacity(c);
         }
