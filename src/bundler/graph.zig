@@ -804,7 +804,14 @@ pub const ModuleGraph = struct {
         };
 
         if (parser.errors.items.len > 0) {
-            self.addDiag(.parse_error, .warning, module.path, Span.EMPTY, .parse, "Parse completed with errors", null);
+            // 파싱 에러가 있으면 AST가 불완전 → transformer/codegen 크래시 방지
+            // 에러 메시지를 기록하고 이 모듈을 스킵
+            for (parser.errors.items) |err| {
+                const msg = if (err.message.len > 0) err.message else "Parse error";
+                self.addDiag(.parse_error, .@"error", module.path, err.span, .parse, msg, null);
+            }
+            module.state = .ready;
+            return;
         }
 
         // Legal comments 수집 (eof/linked/external 모드용)
