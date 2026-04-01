@@ -317,14 +317,17 @@ var arr = [
       );
     });
     test("globalThisAmbientModules", async () => {
-      await expectError(
+      // tsc는 typeof globalThis에서 ambient module 참조를 타입 에러로 잡지만,
+      // ZTS는 타입 체킹을 하지 않으므로 트랜스파일은 성공해야 함.
+      // (이전에는 declare module body 내 export 파서 에러로 우연히 실패했음)
+      await expectPass(
         `declare module "ambientModule" {
     export type typ = 1
     export var val: typ
 }
 namespace valueModule { export var val = 1 }
 namespace namespaceModule { export type typ = 1 }
-// should error
+// should error (type-level only, not transpilation error)
 type GlobalBad1 = (typeof globalThis)["\\"ambientModule\\""]
 type GlobalOk1 = (typeof globalThis)["valueModule"]
 type GlobalOk2 = globalThis.namespaceModule.typ
