@@ -49,6 +49,10 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
     try self.advance();
+    // 반환 타입에서는 shorthand 함수 타입 금지: (): any => {} 에서 =>는 arrow body
+    const saved_flag = self.flow_in_return_type;
+    self.flow_in_return_type = true;
+    defer self.flow_in_return_type = saved_flag;
     const ty = try parseType(self);
     // %checks — Flow type guard predicate. 타입 스트리핑에서는 무시.
     // `%`는 .percent 토큰, `checks`는 identifier.
@@ -77,7 +81,21 @@ pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
 /// Flow 타입을 파싱한다.
 /// Babel: flowParseType → flowParseUnionType
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
-    return parseUnionType(self);
+    const t = try parseUnionType(self);
+
+    // shorthand 함수 타입: Type => ReturnType (괄호 없는 단일 파라미터)
+    // 반환 타입 컨텍스트에서는 금지 — (): any => {} 에서 =>는 arrow function body
+    if (self.current() == .arrow and !self.flow_in_return_type) {
+        try self.advance();
+        _ = try parseType(self);
+        return try self.ast.addNode(.{
+            .tag = .flow_literal_type,
+            .span = self.ast.getNode(t).span,
+            .data = .{ .none = 0 },
+        });
+    }
+
+    return t;
 }
 
 // ================================================================
@@ -473,9 +491,12 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
 
     try self.advance(); // type param name
 
-    // constraint: T: Type (Flow는 extends 대신 : 사용)
+    // constraint: T: Type (Flow 클래식) 또는 T extends Type (Flow 최신, RN 0.76+)
     var constraint = NodeIndex.none;
     if (self.current() == .colon) {
+        try self.advance();
+        constraint = try parseType(self);
+    } else if (self.current() == .kw_extends) {
         try self.advance();
         constraint = try parseType(self);
     }
@@ -578,6 +599,8 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 함수 타입 파라미터 리스트: name: Type, name?: Type, ...rest: Type
+/// Flow는 `(t: number) => void` 형태에서 `t`가 파라미터 이름.
+/// 이름이 없는 `(number) => void` 형태도 허용 (positional).
 fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
@@ -588,7 +611,40 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
             try self.advance();
         }
 
-        // name: Type 또는 Type (이름 없는 파라미터도 Flow에서 허용)
+        // name: Type 또는 name?: Type — 이름 뒤에 : 또는 ?: 가 오면 named param
+        if (self.current() == .identifier) {
+            const next = try self.peekNextKind();
+            if (next == .colon) {
+                // name: Type
+                try self.advance(); // skip name
+                try self.advance(); // skip :
+                const param_type = try parseType(self);
+                try self.scratch.append(self.allocator, param_type);
+                if (!try self.eat(.comma)) break;
+                if (try self.ensureLoopProgress(loop_guard_pos)) break;
+                continue;
+            } else if (next == .question) {
+                // name?: Type (optional)
+                try self.advance(); // skip name
+                try self.advance(); // skip ?
+                if (try self.eat(.colon)) {
+                    const param_type = try parseType(self);
+                    try self.scratch.append(self.allocator, param_type);
+                } else {
+                    // name? without colon — treat as type
+                    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                        .tag = .flow_literal_type,
+                        .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+                        .data = .{ .none = 0 },
+                    }));
+                }
+                if (!try self.eat(.comma)) break;
+                if (try self.ensureLoopProgress(loop_guard_pos)) break;
+                continue;
+            }
+        }
+
+        // positional: Type (이름 없는 파라미터)
         const param_type = try parseType(self);
         try self.scratch.append(self.allocator, param_type);
 

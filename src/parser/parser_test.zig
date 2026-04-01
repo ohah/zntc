@@ -2747,3 +2747,43 @@ test "JSX spread + regular attributes" {
         \\}
     , ".tsx");
 }
+
+// ============================================================
+// Flow 함수 타입 파라미터
+// ============================================================
+
+test "Flow: function type with named params" {
+    try expectNoParseErrorFlow("type F = (t: number) => number;");
+}
+
+test "Flow: function type with optional param" {
+    try expectNoParseErrorFlow("type F = (callback?: ?Function) => void;");
+}
+
+test "Flow: function type with multiple params" {
+    try expectNoParseErrorFlow("type F = (id: number, value: string) => void;");
+}
+
+test "Flow: shorthand function type with identifier" {
+    try expectNoParseErrorFlow("type F = AnimatedNode => number;");
+}
+
+test "Flow: shorthand function type with keyword type" {
+    try expectNoParseErrorFlow("type F = string => void;");
+}
+
+test "Flow: return type any does not trigger shorthand" {
+    try expectNoParseErrorFlowJSX(
+        \\const App = (props: {count: number}): any => {
+        \\  return <span>{props.count}</span>;
+        \\};
+    );
+}
+
+test "Flow: generic extends constraint" {
+    try expectNoParseErrorFlow(
+        \\class C {
+        \\  foo<T extends number | string>(x: T): T { return x; }
+        \\}
+    );
+}
