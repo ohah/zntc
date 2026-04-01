@@ -2135,6 +2135,20 @@ test "ES2015: template with carriage return" {
     try std.testing.expectEqualStrings("var s=\"a\\r\\nb\";", r.output);
 }
 
+test "ES2015: template with U+2028 line separator" {
+    // U+2028 (UTF-8: 0xE2 0x80 0xA8) — 템플릿에서는 유효, ES5 문자열에서는 줄바꿈 취급
+    var r = try e2eTarget(std.testing.allocator, "var s=`a\xe2\x80\xa8b`;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var s=\"a\\u2028b\";", r.output);
+}
+
+test "ES2015: template with U+2029 paragraph separator" {
+    // U+2029 (UTF-8: 0xE2 0x80 0xA9)
+    var r = try e2eTarget(std.testing.allocator, "var s=`a\xe2\x80\xa9b`;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var s=\"a\\u2029b\";", r.output);
+}
+
 // --- combined features ---
 
 test "ES2015: class with generator method" {

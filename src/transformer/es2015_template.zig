@@ -123,12 +123,12 @@ fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
 
 /// template 텍스트를 string_literal 노드로 변환한다.
 /// \` → ` (backtick escape 제거), " → \" (quote escape 추가),
-/// 실제 줄바꿈(\n, \r) → 이스케이프 시퀀스로 변환.
+/// 실제 줄바꿈(\n, \r) 및 U+2028/U+2029 → 이스케이프 시퀀스로 변환.
 fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
 
-    // 최악: 모든 문자가 이스케이프 확장 (2배) + 양쪽 따옴표
+    // 최악: U+2028/2029가 3바이트→6바이트(2배), 그 외 최대 2배 + 양쪽 따옴표
     try buf.ensureUnusedCapacity(self.allocator, text.len * 2 + 2);
     buf.appendAssumeCapacity('"');
 
@@ -147,6 +147,13 @@ fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
         } else if (c == '\r') {
             buf.appendAssumeCapacity('\\');
             buf.appendAssumeCapacity('r');
+        } else if (c == 0xe2 and j + 2 < text.len and text[j + 1] == 0x80 and (text[j + 2] == 0xa8 or text[j + 2] == 0xa9)) {
+            // U+2028 (Line Separator) / U+2029 (Paragraph Separator)
+            // 템플릿 리터럴에서는 유효하지만 ES5 문자열 리터럴에서는 줄바꿈으로 취급
+            const sep: u8 = if (text[j + 2] == 0xa8) '8' else '9';
+            try buf.appendSlice(self.allocator, "\\u202");
+            try buf.append(self.allocator, sep);
+            j += 2;
         } else {
             buf.appendAssumeCapacity(c);
         }
