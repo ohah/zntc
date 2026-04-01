@@ -75,6 +75,8 @@ const CliOptions = struct {
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
     /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
     flow: bool = false,
+    /// .js 파일에서도 JSX 파싱 활성화. --platform=react-native 프리셋에서 자동 설정.
+    jsx_in_js: bool = false,
     /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
     jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
     /// JSX factory (--jsx-factory=h)
@@ -230,6 +232,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.watch = true;
         } else if (std.mem.eql(u8, arg, "--flow")) {
             opts.flow = true;
+        } else if (std.mem.eql(u8, arg, "--jsx-in-js")) {
+            opts.jsx_in_js = true;
         } else if (std.mem.startsWith(u8, arg, "--jsx=")) {
             const val = arg["--jsx=".len..];
             if (std.mem.eql(u8, val, "automatic")) {
@@ -533,6 +537,8 @@ const TranspileOptions = struct {
     charset_utf8: bool = false,
     /// Flow 모드 강제 활성화 (--flow)
     flow: bool = false,
+    /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋)
+    jsx_in_js: bool = false,
     /// JSX 런타임 모드
     jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
     /// classic 모드 JSX factory
@@ -626,9 +632,19 @@ fn transpileFile(
         if (options.flow) {
             parser.is_flow = true;
             scanner.has_flow_pragma = true; // flow comment (/*:: */, /*: */) 활성화
+            // .js 파일은 import/export 감지를 위해 Unambiguous 모드
+            if (!parser.is_module) {
+                parser.is_module = true;
+                scanner.is_module = true;
+                parser.is_unambiguous = true;
+            }
         } else {
             parser.configureFlowFromPath(file_path);
         }
+    }
+    // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
+    if (options.jsx_in_js and !parser.is_jsx) {
+        parser.is_jsx = true;
     }
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
@@ -1132,6 +1148,7 @@ pub fn main() !void {
                 try opts.main_fields_list.appendSlice(allocator, &.{ "react-native", "browser", "module", "main" });
             }
             opts.flow = true;
+            opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
         }
 
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
@@ -1171,6 +1188,7 @@ pub fn main() !void {
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
             .flow = opts.flow,
+            .jsx_in_js = opts.jsx_in_js,
             .resolve_extensions = opts.resolve_extensions_list.items,
             .main_fields = opts.main_fields_list.items,
         };
@@ -1565,6 +1583,7 @@ pub fn main() !void {
         .sources_content = opts.sources_content,
         .charset_utf8 = opts.charset_utf8,
         .flow = opts.flow,
+        .jsx_in_js = opts.jsx_in_js,
         .jsx_runtime = opts.jsx_runtime,
         .jsx_factory = opts.jsx_factory,
         .jsx_fragment = opts.jsx_fragment,

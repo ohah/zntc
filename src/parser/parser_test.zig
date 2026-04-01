@@ -2528,3 +2528,138 @@ test "JSX attr expr: self-closing in CLI mode" {
         \\function App() { return <Badge count={3} />; }
     , ".tsx");
 }
+
+// ============================================================
+// Flow + JSX 분리: --flow는 JSX를 활성화하지 않음 (Babel 동일)
+// --jsx-in-js 또는 --platform=react-native가 .js에서 JSX를 활성화
+// ============================================================
+
+fn expectNoParseErrorFlow(source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    scanner.has_flow_pragma = true;
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.is_unambiguous = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+fn expectNoParseErrorFlowJSX(source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    parser.is_jsx = true;
+    scanner.has_flow_pragma = true;
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.is_unambiguous = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+fn expectParseErrorFlow(source: []const u8) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_flow = true;
+    scanner.has_flow_pragma = true;
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.is_unambiguous = true;
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+// --- Flow 단독 (JSX 비활성) ---
+
+test "Flow: type annotation stripped without JSX" {
+    try expectNoParseErrorFlow("function foo(x: string): number { return 1; }");
+}
+
+test "Flow: nullable generic type" {
+    try expectNoParseErrorFlow("var x: ?Array<number> = null;");
+}
+
+test "Flow: union type in parameter" {
+    try expectNoParseErrorFlow("function f(x: string | number): void {}");
+}
+
+test "Flow: inexact object type in parameter" {
+    try expectNoParseErrorFlow("function f(props: {name: string, ...}): void {}");
+}
+
+test "Flow: optional parameter with nullable" {
+    try expectNoParseErrorFlow("function f(x?: ?boolean): void {}");
+}
+
+test "Flow: import type statement" {
+    try expectNoParseErrorFlow("import type {Foo} from './foo';");
+}
+
+test "Flow: export type statement" {
+    try expectNoParseErrorFlow("export type {Foo} from './foo';");
+}
+
+test "Flow: class with generic extends" {
+    try expectNoParseErrorFlow(
+        \\class MyList<T> extends React.Component<Props<T>> {
+        \\  render() { return null; }
+        \\}
+    );
+}
+
+test "Flow: JSX rejected without is_jsx" {
+    try expectParseErrorFlow("const x = <div />;");
+}
+
+// --- Flow + JSX (--jsx-in-js 또는 --platform=react-native) ---
+
+test "Flow+JSX: basic element" {
+    try expectNoParseErrorFlowJSX("const x = <div />;");
+}
+
+test "Flow+JSX: component with typed props" {
+    try expectNoParseErrorFlowJSX(
+        \\import * as React from 'react';
+        \\function App(props: {name: string}): React.Node {
+        \\  return <div>{props.name}</div>;
+        \\}
+    );
+}
+
+test "Flow+JSX: class component with generics" {
+    try expectNoParseErrorFlowJSX(
+        \\import * as React from 'react';
+        \\class ImageBackground extends React.Component<{style: any}> {
+        \\  render(): React.Node {
+        \\    return <View style={this.props.style} />;
+        \\  }
+        \\}
+    );
+}
+
+test "Flow+JSX: arrow with typed params returning JSX" {
+    try expectNoParseErrorFlowJSX(
+        \\const App = (props: {count: number}): any => {
+        \\  return <span>{props.count}</span>;
+        \\};
+    );
+}
+
+test "Flow+JSX: nullable ref type in class" {
+    try expectNoParseErrorFlowJSX(
+        \\import * as React from 'react';
+        \\class C extends React.Component<{}> {
+        \\  _ref: ?React.ElementRef<any> = null;
+        \\  _capture = (ref: null | Object) => { this._ref = ref; };
+        \\  render(): React.Node { return <div ref={this._capture} />; }
+        \\}
+    );
+}

@@ -102,6 +102,8 @@ pub const BundleOptions = struct {
     plugins: []const plugin_mod.Plugin = &.{},
     /// Flow 모드 강제 활성화 (--flow). @flow pragma 없이도 .js/.jsx를 Flow로 파싱.
     flow: bool = false,
+    /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
+    jsx_in_js: bool = false,
     /// 커스텀 확장자 탐색 순서 (--resolve-extensions). 비어있으면 기본값 사용.
     resolve_extensions: []const []const u8 = &.{},
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 (module → main).
@@ -353,6 +355,7 @@ pub const Bundler = struct {
         worker_graph.public_path = self.options.public_path;
         worker_graph.plugins = self.options.plugins;
         worker_graph.flow = self.options.flow;
+        worker_graph.jsx_in_js = self.options.jsx_in_js;
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
@@ -407,6 +410,7 @@ pub const Bundler = struct {
         graph.inject_files = self.options.inject;
         graph.plugins = self.options.plugins;
         graph.flow = self.options.flow;
+        graph.jsx_in_js = self.options.jsx_in_js;
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출

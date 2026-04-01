@@ -75,6 +75,8 @@ pub const ModuleGraph = struct {
     plugins: []const plugin_mod.Plugin = &.{},
     /// Flow 모드 강제 활성화 (--flow). bundler에서 전파.
     flow: bool = false,
+    /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
+    jsx_in_js: bool = false,
     /// Worker 엔트리: new Worker(new URL(...)) 패턴에서 수집된 worker 파일 경로.
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
@@ -772,6 +774,10 @@ pub const ModuleGraph = struct {
             } else {
                 parser.configureFlowFromPath(module.path);
             }
+        }
+        // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
+        if (self.jsx_in_js and !parser.is_jsx) {
+            parser.is_jsx = true;
         }
 
         // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
