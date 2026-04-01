@@ -2033,8 +2033,8 @@ pub const Parser = struct {
         // Flow: shorthand 함수 타입 금지 — (): any => {} 에서 =>는 arrow body
         const saved_flow_flag = self.flow_in_return_type;
         self.flow_in_return_type = true;
+        defer self.flow_in_return_type = saved_flow_flag;
         _ = try self.tryParseReturnType();
-        self.flow_in_return_type = saved_flow_flag;
 
         // => 확인
         if (self.current() != .arrow or self.scanner.token.has_newline_before) {

@@ -906,37 +906,31 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
 // Flow 공통 헬퍼
 // ================================================================
 
-/// balanced parenthesis skip: `(...)` 전체를 소비한다.
+const Kind = @import("../lexer/token.zig").Kind;
+
+/// balanced token skip: 여는 토큰부터 닫는 토큰까지 전체를 소비.
 /// 타입 스트리핑에서 내부 구조가 불필요한 경우 사용.
-fn skipBalancedParens(self: *Parser) !void {
-    if (self.current() != .l_paren) return;
+fn skipBalanced(self: *Parser, open: Kind, close: Kind) !void {
+    if (self.current() != open) return;
     try self.advance();
     var depth: u32 = 1;
     while (depth > 0 and self.current() != .eof) {
-        switch (self.current()) {
-            .l_paren => depth += 1,
-            .r_paren => depth -= 1,
-            else => {},
+        if (self.current() == open) {
+            depth += 1;
+        } else if (self.current() == close) {
+            depth -= 1;
         }
         if (depth > 0) try self.advance();
     }
-    try self.expect(.r_paren);
+    try self.expect(close);
 }
 
-/// balanced brace skip: `{...}` 전체를 소비.
+fn skipBalancedParens(self: *Parser) !void {
+    return skipBalanced(self, .l_paren, .r_paren);
+}
+
 fn skipBalancedBraces(self: *Parser) !void {
-    if (self.current() != .l_curly) return;
-    try self.advance();
-    var depth: u32 = 1;
-    while (depth > 0 and self.current() != .eof) {
-        switch (self.current()) {
-            .l_curly => depth += 1,
-            .r_curly => depth -= 1,
-            else => {},
-        }
-        if (depth > 0) try self.advance();
-    }
-    try self.expect(.r_curly);
+    return skipBalanced(self, .l_curly, .r_curly);
 }
 
 /// `renders Type` / `renders? Type` / `renders* Type` 절이 있으면 소비.
