@@ -2787,3 +2787,23 @@ test "Flow: generic extends constraint" {
         \\}
     );
 }
+
+test "Flow: nested paren function type" {
+    try expectNoParseErrorFlow("type X = ((err: Error) => void);");
+}
+
+test "Flow: union with paren function type" {
+    try expectNoParseErrorFlow("type X = Function | ((err: Error) => void);");
+}
+
+test "Flow: conditional type" {
+    try expectNoParseErrorFlow("type X<T> = T extends string ? number : boolean;");
+}
+
+test "Flow: type guard predicate" {
+    try expectNoParseErrorFlow(
+        \\function isObj(value: mixed): value is {[string]: unknown} {
+        \\  return typeof value === "object";
+        \\}
+    );
+}

@@ -34,16 +34,19 @@ async function expectFail(file: string) {
   expect(hasError).toBe(true);
 }
 
-describe("Flow RN: passing files (43/50)", () => {
+describe("Flow RN: passing files (47/50)", () => {
   test("__flowtests__/ReactNativeTypes-flowtest.js", () =>
     expectPass("__flowtests__/ReactNativeTypes-flowtest.js"));
+  test("ActionSheetIOS/ActionSheetIOS.js", () => expectPass("ActionSheetIOS/ActionSheetIOS.js"));
   test("ActionSheetIOS/NativeActionSheetManager.js", () =>
     expectPass("ActionSheetIOS/NativeActionSheetManager.js"));
+  test("Alert/Alert.js", () => expectPass("Alert/Alert.js"));
   test("Alert/NativeAlertManager.js", () => expectPass("Alert/NativeAlertManager.js"));
   test("Alert/RCTAlertManager.js", () => expectPass("Alert/RCTAlertManager.js"));
   test("Alert/RCTAlertManager.android.js", () => expectPass("Alert/RCTAlertManager.android.js"));
   test("Alert/RCTAlertManager.ios.js", () => expectPass("Alert/RCTAlertManager.ios.js"));
   test("Animated/Animated.js", () => expectPass("Animated/Animated.js"));
+  test("Animated/AnimatedEvent.js", () => expectPass("Animated/AnimatedEvent.js"));
   test("Animated/AnimatedExports.js", () => expectPass("Animated/AnimatedExports.js"));
   test("Animated/AnimatedImplementation.js", () =>
     expectPass("Animated/AnimatedImplementation.js"));
@@ -86,6 +89,7 @@ describe("Flow RN: passing files (43/50)", () => {
   test("Animated/nodes/AnimatedMultiplication.js", () =>
     expectPass("Animated/nodes/AnimatedMultiplication.js"));
   test("Animated/nodes/AnimatedNode.js", () => expectPass("Animated/nodes/AnimatedNode.js"));
+  test("Animated/nodes/AnimatedObject.js", () => expectPass("Animated/nodes/AnimatedObject.js"));
   test("Animated/nodes/AnimatedProps.js", () => expectPass("Animated/nodes/AnimatedProps.js"));
   test("Animated/nodes/AnimatedStyle.js", () => expectPass("Animated/nodes/AnimatedStyle.js"));
   test("Animated/nodes/AnimatedSubtraction.js", () =>
@@ -103,15 +107,14 @@ describe("Flow RN: passing files (43/50)", () => {
   test("Animated/useAnimatedColor.js", () => expectPass("Animated/useAnimatedColor.js"));
 });
 
-describe("Flow RN: failing files (7/50) — fix하면 expectPass로 전환", () => {
-  test("ActionSheetIOS/ActionSheetIOS.js", () => expectFail("ActionSheetIOS/ActionSheetIOS.js"));
-  test("Alert/Alert.js", () => expectFail("Alert/Alert.js"));
-  test("Animated/AnimatedEvent.js", () => expectFail("Animated/AnimatedEvent.js"));
-  test("Animated/components/AnimatedScrollView.js", () =>
-    expectFail("Animated/components/AnimatedScrollView.js"));
+describe("Flow RN: failing files (3/50) — fix하면 expectPass로 전환", () => {
+  // conditional type + infer + mapped type
   test("Animated/createAnimatedComponent.js", () =>
     expectFail("Animated/createAnimatedComponent.js"));
+  // shorthand 함수 타입이 반환 타입 위치에서 충돌
   test("Animated/nodes/AnimatedInterpolation.js", () =>
     expectFail("Animated/nodes/AnimatedInterpolation.js"));
-  test("Animated/nodes/AnimatedObject.js", () => expectFail("Animated/nodes/AnimatedObject.js"));
+  // component syntax + cascading
+  test("Animated/components/AnimatedScrollView.js", () =>
+    expectFail("Animated/components/AnimatedScrollView.js"));
 });
