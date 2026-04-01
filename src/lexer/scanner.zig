@@ -629,6 +629,7 @@ pub const Scanner = struct {
                     {
                         self.current += 1;
                     }
+                    self.token.has_newline_before = true;
                     continue;
                 } else if (self.source[self.current + 1] == '*') {
                     // block comment: */ 까지 스킵
