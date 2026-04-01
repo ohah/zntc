@@ -865,6 +865,30 @@ test "Codegen CJS: export all" {
     try std.testing.expectEqualStrings("Object.assign(exports,require(\"./bar\"));", r.output);
 }
 
+test "Codegen CJS: re-export named" {
+    var r = try e2eCJS(std.testing.allocator, "export { foo } from './bar';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("exports.foo=require(\"./bar\").foo;", r.output);
+}
+
+test "Codegen CJS: re-export default" {
+    var r = try e2eCJS(std.testing.allocator, "export { default } from './foo';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("exports.default=require(\"./foo\").default;", r.output);
+}
+
+test "Codegen CJS: re-export default as named" {
+    var r = try e2eCJS(std.testing.allocator, "export { default as Foo } from './bar';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("exports.Foo=require(\"./bar\").default;", r.output);
+}
+
+test "Codegen CJS: re-export named as default" {
+    var r = try e2eCJS(std.testing.allocator, "export { foo as default } from './bar';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("exports.default=require(\"./bar\").foo;", r.output);
+}
+
 test "Codegen CJS: export named function" {
     var r = try e2eCJS(std.testing.allocator, "export function foo() {}");
     defer r.deinit();

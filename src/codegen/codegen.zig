@@ -2162,6 +2162,8 @@ pub const Codegen = struct {
     }
 
     /// CJS: export const x = 1 → const x=1;exports.x=x;
+    /// CJS: export { foo } → exports.foo=foo;
+    /// CJS: export { foo, default as Bar } from './bar' → exports.foo=require("./bar").foo;exports.Bar=require("./bar").default;
     fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
         if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
             // export const x = 1 → const x=1; + exports.x=x;
@@ -2169,16 +2171,28 @@ pub const Codegen = struct {
             // 선언에서 이름 추출하여 exports.name = name
             try self.emitCJSExportBinding(decl);
         } else {
-            // export { foo, bar } → exports.foo=foo;exports.bar=bar;
-            _ = source;
+            const has_source = !source.isNone() and @intFromEnum(source) < self.ast.nodes.items.len;
             const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
             for (spec_indices) |raw_idx| {
                 const spec = self.ast.getNode(@enumFromInt(raw_idx));
-                const spec_text = self.ast.source[spec.span.start..spec.span.end];
+                if (spec.tag != .export_specifier) continue;
+
+                // export_specifier: { left=local/imported, right=exported }
+                // alias 없으면 exported == local (파서가 동일 인덱스 할당)
+                const local_idx = spec.data.binary.left;
+                const exported_idx = spec.data.binary.right;
+                const exported_text = self.ast.getText(self.ast.getNode(exported_idx).span);
+                const local_text = self.ast.getText(self.ast.getNode(local_idx).span);
+
                 try self.write("exports.");
-                try self.write(spec_text);
+                try self.write(exported_text);
                 try self.writeByte('=');
-                try self.write(spec_text);
+                if (has_source) {
+                    try self.write("require(");
+                    try self.emitNode(source);
+                    try self.write(").");
+                }
+                try self.write(local_text);
                 try self.writeByte(';');
             }
         }
