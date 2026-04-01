@@ -162,7 +162,15 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
                     .data = .{ .unary = .{ .operand = base, .flags = 0 } },
                 });
             } else {
-                break; // 인덱스 접근은 후속 PR에서 구현
+                // Indexed access type: Type['key'] / Type[number]
+                try self.advance(); // skip [
+                _ = try parseType(self);
+                try self.expect(.r_bracket);
+                base = try self.ast.addNode(.{
+                    .tag = .flow_literal_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .none = 0 },
+                });
             }
         } else break;
     }
@@ -181,7 +189,18 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
 
     // Flow 키워드 타입 (mixed, empty, any, string 등)
     if (self.current() == .identifier) {
-        const flow_keyword_tag = flow_type_keywords.get(self.tokenText());
+        const text = self.tokenText();
+
+        // component(...) / hook(...) 타입 어노테이션
+        // const Foo: component(ref?: any, ...props: Props) = ...
+        if (std.mem.eql(u8, text, "component") or std.mem.eql(u8, text, "hook")) {
+            const next = try self.peekNextKind();
+            if (next == .l_paren or next == .l_angle) {
+                return parseFlowComponentOrHookType(self);
+            }
+        }
+
+        const flow_keyword_tag = flow_type_keywords.get(text);
         if (flow_keyword_tag) |tag| {
             try self.advance();
             // 키워드 뒤에 '.'이 오면 qualified name → type reference로 처리
@@ -761,6 +780,123 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
 }
 
 // ================================================================
+// Flow Component/Hook Type Annotation
+// ================================================================
+
+/// `component(ref?: any, ...props: Props)` / `hook(x: number)` 타입.
+/// 타입 스트리핑이므로 balanced paren skip으로 소비하고 flow_literal_type 반환.
+fn parseFlowComponentOrHookType(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'component' / 'hook'
+
+    // 선택적 타입 파라미터: component<T>(...)
+    if (self.isAtOpeningAngleBracket()) {
+        _ = try parseTypeParameterDeclaration(self);
+    }
+
+    // 파라미터: (...) — balanced paren skip
+    if (self.current() == .l_paren) {
+        try self.advance();
+        var depth: u32 = 1;
+        while (depth > 0 and self.current() != .eof) {
+            switch (self.current()) {
+                .l_paren => depth += 1,
+                .r_paren => depth -= 1,
+                else => {},
+            }
+            if (depth > 0) try self.advance();
+        }
+        try self.expect(.r_paren);
+    }
+
+    // renders 절: component() renders Type
+    if (self.current() == .identifier and self.isContextual("renders")) {
+        try self.advance();
+        _ = try self.eat(.question);
+        _ = try self.eat(.star);
+        _ = try parseType(self);
+    }
+
+    return try self.ast.addNode(.{
+        .tag = .flow_literal_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .none = 0 },
+    });
+}
+
+// ================================================================
+// Flow Component/Hook Declaration
+// ================================================================
+
+/// Flow Component Syntax: `component View(ref?, ...props: Props) { ... }`
+/// Hook Syntax: `hook useFoo(x: number) { ... }`
+/// 타입 스트리핑 시 함수 선언으로 변환한다.
+/// 파라미터의 타입 어노테이션, renders 절, 제네릭은 모두 제거된다.
+pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'component' / 'hook'
+
+    // 함수 이름
+    const name = try self.parseSimpleIdentifier();
+
+    // 선택적 제네릭 타입 파라미터: component Foo<T>(...)
+    if (self.isAtOpeningAngleBracket()) {
+        _ = try parseTypeParameterDeclaration(self);
+    }
+
+    // 파라미터 파싱: component의 파라미터를 일반 함수 파라미터로 변환
+    // component 파라미터: ref?, propName: Type, ...rest: Type
+    // → 함수 파라미터: ref, propName, ...rest (타입 제거)
+    try self.expect(.l_paren);
+    self.in_formal_parameters = true;
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try self.parseBindingIdentifier();
+        try self.scratch.append(self.allocator, param);
+        try self.checkRestParameterLast(param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const param_items = self.scratch.items[scratch_top..];
+    const params = try self.ast.addNodeList(param_items);
+    self.restoreScratch(scratch_top);
+    self.in_formal_parameters = false;
+    try self.expect(.r_paren);
+
+    // renders 절 스킵: component Foo() renders React.Node { }
+    if (self.current() == .identifier and self.isContextual("renders")) {
+        try self.advance(); // skip 'renders'
+        // renders? / renders* 변형
+        _ = try self.eat(.question);
+        _ = try self.eat(.star);
+        _ = try parseType(self);
+    }
+
+    // 반환 타입 어노테이션 스킵: component Foo(): Type { }
+    _ = try tryParseReturnType(self);
+
+    // 함수 컨텍스트 진입 (return 허용)
+    const saved_ctx = self.enterFunctionContext(false, false);
+    const body = try self.parseBlockStatement();
+    self.restoreFunctionContext(saved_ctx);
+
+    // 함수 선언 노드로 생성 (extra: [name, params_start, params_len, body, flags, return_type])
+    const extra_start = try self.ast.addExtra(@intFromEnum(name));
+    _ = try self.ast.addExtra(params.start);
+    _ = try self.ast.addExtra(params.len);
+    _ = try self.ast.addExtra(@intFromEnum(body));
+    _ = try self.ast.addExtra(0); // flags: 0 (not async, not generator)
+    _ = try self.ast.addExtra(@intFromEnum(NodeIndex.none)); // return_type: stripped
+
+    return try self.ast.addNode(.{
+        .tag = .function_declaration,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra_start },
+    });
+}
+
+// ================================================================
 // Flow Declare Statement
 // ================================================================
 
@@ -812,6 +948,44 @@ pub fn parseFlowDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         // declare export default — skip to semicolon
         if (try self.eat(.kw_default)) {
             _ = try parseType(self);
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+    }
+
+    // declare component/hook — 선언만 있고 body 없음, 전체 스킵
+    if (self.current() == .identifier and
+        (self.isContextual("component") or self.isContextual("hook")))
+    {
+        const next_comp = try self.peekNextKind();
+        if (next_comp == .identifier) {
+            try self.advance(); // skip 'component'/'hook'
+            try self.advance(); // skip name
+            // 제네릭 타입 파라미터
+            if (self.isAtOpeningAngleBracket()) {
+                _ = try parseTypeParameterDeclaration(self);
+            }
+            // 파라미터: (...) — balanced paren skip
+            if (self.current() == .l_paren) {
+                try self.advance();
+                var depth: u32 = 1;
+                while (depth > 0 and self.current() != .eof) {
+                    switch (self.current()) {
+                        .l_paren => depth += 1,
+                        .r_paren => depth -= 1,
+                        else => {},
+                    }
+                    if (depth > 0) try self.advance();
+                }
+                try self.expect(.r_paren);
+            }
+            // renders 절
+            if (self.current() == .identifier and self.isContextual("renders")) {
+                try self.advance();
+                _ = try self.eat(.question);
+                _ = try self.eat(.star);
+                _ = try parseType(self);
+            }
             _ = try self.eat(.semicolon);
             return NodeIndex.none;
         }
