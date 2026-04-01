@@ -1251,11 +1251,15 @@ pub fn main() !void {
         }
 
         // 출력
+        // --watch-json 모드에서는 stdout이 NDJSON 전용이므로
+        // 상태 메시지는 stderr로, raw 번들 출력은 억제
+        var initial_bytes: usize = 0;
         if (result.outputs) |outputs| {
             // Code splitting: 다중 파일 출력 → --outdir 필수
             const out_dir = opts.output_dir orelse ".";
             std.fs.cwd().makePath(out_dir) catch {};
             for (outputs) |o| {
+                initial_bytes += o.contents.len;
                 const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
                 defer allocator.free(full_path);
                 // naming 패턴에 디렉토리가 포함된 경우 (예: chunks/[name]-[hash])
@@ -1266,9 +1270,13 @@ pub fn main() !void {
                 const file = try std.fs.cwd().createFile(full_path, .{});
                 defer file.close();
                 try file.writeAll(o.contents);
-                try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
+                if (!opts.watch_json) {
+                    try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
+                }
             }
-            try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
+            if (!opts.watch_json) {
+                try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
+            }
             try writeAssetOutputs(allocator, result.asset_outputs, out_dir);
         } else if (opts.output_file) |out_path| {
             // 단일 파일 출력
@@ -1278,10 +1286,17 @@ pub fn main() !void {
             const file = try std.fs.cwd().createFile(out_path, .{});
             defer file.close();
             try file.writeAll(result.output);
-            try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
+            initial_bytes = result.output.len;
+            if (!opts.watch_json) {
+                try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
+            }
             try writeAssetOutputs(allocator, result.asset_outputs, std.fs.path.dirname(out_path) orelse ".");
         } else {
-            try stdout.print("{s}", .{result.output});
+            // --watch-json: stdout은 NDJSON 전용이므로 raw 번들 출력 억제
+            if (!opts.watch_json) {
+                try stdout.print("{s}", .{result.output});
+            }
+            initial_bytes = result.output.len;
         }
 
         // metafile 출력
@@ -1352,7 +1367,7 @@ pub fn main() !void {
             }
 
             if (opts.watch_json) {
-                try stdout.print("{{\"type\":\"ready\",\"files\":{d}}}\n", .{mtime_map.count()});
+                try stdout.print("{{\"type\":\"ready\",\"files\":{d},\"bytes\":{d}}}\n", .{ mtime_map.count(), initial_bytes });
             } else {
                 try stderr.print("[watch] Watching {d} files for changes...\n", .{mtime_map.count()});
             }
