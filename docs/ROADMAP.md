@@ -47,31 +47,32 @@ ZTS 136ms vs esbuild 110ms (**1.24배**).
 
 ## 🔜 다음 우선순위
 
-**SIMD 렉서 가속**
-- scan이 총합의 75% (101ms) — 대부분이 parse (렉서+파서)
-- 렉서 공백/식별자/문자열 스캔에 SIMD 적용 → parse 10-20% 개선 예상
-- scan ~10ms 절감 가능 (134ms → ~124ms)
+**배치 E (S급 일괄)** — 반나절~1일
+- esbuild/rolldown 호환 CLI 옵션 ~20개 일괄 추가
+- `--outbase`, `--packages=external`, `--drop-labels`, `--pure:fn`, `--line-limit` 등
+- 개별 난이도 S, 한 PR로 묶어서 처리
 
-**CSS 번들링**
+**jsx-dev** — M (1~2일)
+- React 개발 모드 `jsxDEV` + `__source`/`__self` 정보 삽입
+- dev server HMR에서 에러 위치 표시에 필수
+
+**CSS 번들링** — XL (1주+)
 - 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
 - 실사용에서 가장 자주 부딪히는 부재 기능
-- 자체 CSS 파서 (Zig 네이티브 `@import` 해석, CSS Modules) — XL급
+- 자체 CSS 파서 (Zig 네이티브 `@import` 해석, CSS Modules)
 
-**import.meta.glob**
-- Vite 호환 기능, DX 개선 — M급 (1~2일)
+**import.meta.glob** — M (1~2일)
+- Vite 호환 기능, DX 개선
 
-**scan Producer-Consumer** ✅ 완료
-- bun/esbuild 방식: 워커는 parse+resolve만, 메인 스레드가 sole writer (addModule/addDependency)
-- 워커 실행 중 modules realloc 없음 → pre-allocation 해킹 제거, 포인터 안정성 근본 해결
-- 성능: 파이프라인 대비 ~10ms 느리나 (배치 경계), 안전성 확보가 우선
+**using 다운레벨링** — L (3~5일)
+- `using`/`await using` → try-finally (TC39 Stage 3 확정, ES2024 이하 타겟)
 
-**tree-shake 병렬화** (후순위, ROI 낮음)
-- 현재 15ms — 이미 fixpoint oscillation 수정으로 51ms → 15ms 개선됨
-- StmtInfo 구축 병렬화로 ~5ms 절감 가능하나 총합 대비 체감 미미
+**설정 파일 + JS Build API** — L (3~5일)
+- `zts.config.js`로 빌드 옵션 정의 + 프로그래밍 `build()` 호출
 
 ## ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
-- **SIMD** — 렉서 공백/식별자/문자열 스캔 가속 (parse 10-20% 개선 예상)
+- **SIMD 추가** — 렉서 공백/식별자 스캔 가속 (parse 10-20% 개선 예상)
 - **WASM 공개 AST API** — AST 안정화 후
 
 ## 의존성 관계
@@ -82,11 +83,12 @@ AST 안정화 ──────────────┬──→ WASM 공개
 번들러 성능 ─────────────┬──→ ✅ scan 파이프라인화 + Producer-Consumer (완료)
                          └──→ tree-shake 알고리즘 개선 (stmtinfo/crossBFS, 후순위)
 
-번들러 기능 ─────────────┬──→ ✅ 로더 시스템 (JSON, text, file, dataurl)
+번들러 기능 ─────────────┬──→ ✅ 로더 시스템 (JSON ESM, text, file, dataurl)
                          ├──→ CSS 번들링 (별도 파서, 플러그인으로 위임 가능)
+                         ├──→ 배치 E (S급 CLI 옵션 일괄)
                          └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
-독립 (아무 때나): ✅ Flow (완료), SIMD
+독립 (아무 때나): ✅ Flow (완료), SIMD, jsx-dev, using 다운레벨링
 ```
 
 ## 미지원 기능 (상용 번들러 대비)
@@ -127,11 +129,26 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   esbuild compat-table 기반, 8개 엔진(chrome/firefox/safari/edge/node/deno/ios/hermes) × 18개 feature.
   ES 버전 타겟(`--target=es2015~esnext`)도 동일한 UnsupportedFeatures bitmask로 통합.
 
+- **jsx-dev** — `M` | React 개발 모드 `jsxDEV` + `__source`/`__self` 정보 삽입
+- **UMD/AMD 포맷** — `M` | `--format=umd` / `--format=amd` 출력 (라이브러리 빌드)
+- **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
+- **preserveModules** — `L` | 모듈 구조 유지 출력 (라이브러리 빌드용)
+- **using 다운레벨링** — `L` | `using`/`await using` → try-finally (TC39 Stage 3 확정)
+- **설정 파일 (zts.config.js)** — `L` | 복잡한 프로젝트에서 CLI 한계
+- **JS Build API** — `L` | 프로그래밍 연동 (`build()`, `rebuild()`, `cancel()`)
+- **HTTPS dev server** — `M` | `--certfile`/`--keyfile` TLS 지원
+
 ### Nice to Have
 
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
 - **import.meta.glob** — `M` | 선행: 없음 | 배치: 단독
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
+- **Stage 3 decorators** — `XL` | TC39 최신 데코레이터 다운레벨링 (현재 legacy만)
+- **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
+- **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
+- **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
+- **realContentHash** — `M` | 최종 콘텐츠 기반 정확한 해시
+- **sourcemapDebugIds** — `S` | Sentry 등 모니터링 도구 연동
 
 ### 배치 그룹 & 구현 순서
 
@@ -143,12 +160,22 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 배치 D ✅ 완료 ──────────────────────────────────────────────────
   metafile + analyze + inject + legal comments + keepNames
 
+배치 E (S급 일괄) ──────────────────────────────────────────────
+  --outbase, --packages=external, --drop-labels, --pure:fn,
+  --line-limit, --allow-overwrite, --log-limit, --tsconfig-raw,
+  --node-paths, output.intro/outro, output.globals,
+  inlineDynamicImports, cleanDir, --jsx-side-effects,
+  --ignore-annotations, --watch-delay, --servedir,
+  shimMissingExports, extensionAlias, sanitizeFileName
+
 단독 XL ────────────────────────────────────────────────────────
   CSS 번들링 — 현재 플러그인 위임 (자체 CSS 파서는 후순위)
   플러그인 API ✅ 1-2단계 완료 — N-API 3단계는 선택적
   엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
   Web Worker ✅ 완료 — new Worker(new URL(...)) 자동 감지+IIFE 번들 (esbuild 미지원)
   mangleProps (1주+) — cross-module 프로퍼티 추적
+  Stage 3 decorators — TC39 최신 데코레이터 (현재 legacy만)
+  Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
 ```
 
 ### 기술부채 & 구조적 제약
@@ -173,11 +200,11 @@ CSS 번들링/플러그인 API는 JS 전용 경계를 넘어야 함.
 
 ### 알려진 제한 (Known Limitations)
 
-**CJS wrap 모듈의 tree-shaking 미지원**
-Asset/JSON 모듈은 `exports_kind = .commonjs`, `wrap_kind = .cjs`로 처리됨.
+**CJS wrap Asset 모듈의 tree-shaking 미지원**
+Asset 모듈은 `exports_kind = .commonjs`, `wrap_kind = .cjs`로 처리됨.
 미사용 import라도 `require_X()` 호출이 side-effect로 간주되어 tree-shaker가 제거하지 못함.
 esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 tree-shaker는 CJS wrap에 대해 아직 이 최적화를 수행하지 않음.
-별도 이슈로 개선 필요 — Asset 로더뿐 아니라 JSON 모듈, 기타 CJS 모듈 전체에 영향.
+(JSON 모듈은 ESM AST 변환으로 tree-shaking 가능 — PR #589)
 
 ## 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
