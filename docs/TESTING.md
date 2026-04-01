@@ -21,11 +21,11 @@ zig build test                          # 모든 모듈 테스트
 
 ## 통합 테스트 (Bun)
 ```bash
-cd packages/integration && bun test     # CLI 통합 테스트
-cd packages/e2e && bun test             # Playwright E2E (dev server)
+cd tests/integration && bun test     # CLI 통합 테스트
+cd tests/e2e && bun test             # Playwright E2E (dev server)
 ```
 
 ## 스모크 테스트 (실제 패키지 빌드)
 ```bash
-cd packages/benchmark && bun run smoke.ts  # 125개 패키지 빌드+실행 검증 (avg 0.74x)
+cd tests/benchmark && bun run smoke.ts  # 125개 패키지 빌드+실행 검증 (avg 0.74x)
 ```

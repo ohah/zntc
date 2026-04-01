@@ -91,11 +91,12 @@ src/
     mod.zig                 #   Test262 엔트리
     runner.zig              #   메타데이터 파서 + 테스트 실행기
 packages/
+  core/                     # N-API 바인딩 (npm 패키지)
+tests/
+  test262/                  # TC39 공식 Test262 (서브모듈)
   integration/              # Bun 기반 CLI 통합 테스트
   e2e/                      # Playwright E2E 테스트 (dev server)
   benchmark/                # 스모크 테스트 + 벤치마크 (smoke.ts)
-tests/
-  test262/                  # TC39 공식 Test262 (서브모듈)
 references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
   bun/                      #   Zig — 파서/렉서/SIMD 참고
   esbuild/                  #   Go — 번들러 아키텍처/모듈 해석/설정 참고

@@ -4,21 +4,21 @@
   "version": "0.1.0",
   "workspaces": [
     "./packages/core",
-    "./packages/integration",
-    "./packages/e2e",
-    "./packages/benchmark"
+    "./tests/integration",
+    "./tests/e2e",
+    "./tests/benchmark"
   ],
   "scripts": {
     "test": "bun run test:integration",
-    "test:integration": "bun test --cwd packages/integration",
-    "test:e2e": "bun run --cwd packages/e2e test",
+    "test:integration": "bun test --cwd tests/integration",
+    "test:e2e": "bun run --cwd tests/e2e test",
     "test:all": "bun run test:integration && bun run test:e2e",
     "build:zts": "zig build -Doptimize=ReleaseFast",
-    "lint": "oxlint packages/",
-    "lint:fix": "oxlint --fix packages/",
-    "fmt": "oxfmt format packages/",
-    "fmt:check": "oxfmt format --check packages/",
-    "playwright:install": "cd packages/e2e && bunx playwright install --with-deps chromium"
+    "lint": "oxlint packages/ tests/",
+    "lint:fix": "oxlint --fix packages/ tests/",
+    "fmt": "oxfmt format packages/ tests/",
+    "fmt:check": "oxfmt format --check packages/ tests/",
+    "playwright:install": "cd tests/e2e && bunx playwright install --with-deps chromium"
   },
   "devDependencies": {
     "oxfmt": "^0.41.0",

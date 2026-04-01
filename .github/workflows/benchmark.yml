@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'packages/benchmark/**'
+      - 'tests/benchmark/**'
   workflow_dispatch:
 
 permissions:
@@ -39,19 +39,19 @@ jobs:
         run: zig build -Doptimize=ReleaseFast
 
       - name: Install benchmark dependencies
-        run: bun install --cwd packages/benchmark
+        run: bun install --cwd tests/benchmark
 
       - name: Run benchmark
         shell: bash
         run: |
-          cd packages/benchmark
+          cd tests/benchmark
           bun run bench.ts 2>&1 | tee bench-output.txt
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-${{ matrix.os }}
-          path: packages/benchmark/bench-output.txt
+          path: tests/benchmark/bench-output.txt
 
   comment:
     name: Post Results

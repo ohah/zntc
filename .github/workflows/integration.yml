@@ -6,11 +6,13 @@ on:
     paths:
       - 'src/**'
       - 'packages/**'
+      - 'tests/**'
   pull_request:
     branches: [main]
     paths:
       - 'src/**'
       - 'packages/**'
+      - 'tests/**'
 
 jobs:
   integration:
@@ -63,10 +65,10 @@ jobs:
       - uses: ./.github/actions/setup-zts
 
       - name: Install smoke dependencies
-        run: cd packages/benchmark && bun install
+        run: cd tests/benchmark && bun install
 
       - name: Run smoke tests
-        run: bun run packages/benchmark/smoke.ts 2>&1 | tee smoke-output.txt
+        run: bun run tests/benchmark/smoke.ts 2>&1 | tee smoke-output.txt
 
       - name: Upload smoke results
         if: github.event_name == 'pull_request'
