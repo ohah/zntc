@@ -1430,7 +1430,9 @@ pub const Transformer = struct {
         };
 
         for (old_params) |raw_idx| {
-            const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+            const param_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (param_idx.isNone()) continue;
+            const param_node = self.old_ast.getNode(param_idx);
             // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             // flags != 0 → parameter property (public/private/protected/readonly/override)
             if (param_node.tag == .formal_parameter and self.old_ast.extra_data.items[param_node.data.extra + 3] != 0) {
@@ -1942,7 +1944,9 @@ pub const Transformer = struct {
         raw_idx: u32,
         ctx: *ClassMemberContext,
     ) Error!void {
-        const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+        const member_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (member_idx.isNone()) return;
+        const member = self.old_ast.getNode(member_idx);
 
         // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
         if (member.tag == .property_definition) {
@@ -2170,7 +2174,9 @@ pub const Transformer = struct {
     /// decorator 노드에서 expression 부분을 visit하여 반환.
     /// decorator 태그이면 operand(expression)를, 아니면 노드 자체를 visit.
     pub fn visitDecoratorExpression(self: *Transformer, raw_idx: u32) Error!NodeIndex {
-        const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+        const deco_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (deco_idx.isNone()) return .none;
+        const deco_node = self.old_ast.getNode(deco_idx);
         return if (deco_node.tag == .decorator)
             self.visitNode(deco_node.data.unary.operand)
         else
@@ -2244,7 +2250,9 @@ pub const Transformer = struct {
         const zero_span = Span{ .start = 0, .end = 0 };
         const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
         for (old_params, 0..) |raw_idx, param_index| {
-            const param = self.old_ast.getNode(@enumFromInt(raw_idx));
+            const p_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (p_idx.isNone()) continue;
+            const param = self.old_ast.getNode(p_idx);
             if (param.tag != .formal_parameter) continue;
             const pe = param.data.extra;
             const pdeco_start = self.old_ast.extra_data.items[pe + 4];

@@ -3195,3 +3195,63 @@ test "JSX classic: component uppercase" {
     // App은 문자열이 아닌 식별자
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"App\"") == null);
 }
+
+// ============================================================
+// None-node safety: transformer/codegen must not crash on .none NodeIndex
+// These tests ensure Flow type stripping produces valid AST without
+// index-out-of-bounds panics (previously crashed with index 4294967295).
+// ============================================================
+
+test "Flow: import typeof does not crash" {
+    // import typeof * as Foo from './bar' — Flow type-only import, should be stripped
+    var r = try e2eFlowModule(std.testing.allocator,
+        \\import typeof * as Foo from './bar';
+        \\console.log("hello");
+    );
+    defer r.deinit();
+    // import typeof should be removed, only console.log remains
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log") != null);
+}
+
+test "Flow: import typeof named does not crash" {
+    var r = try e2eFlowModule(std.testing.allocator,
+        \\import typeof { Foo, Bar } from './baz';
+        \\export const x = 1;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=1") != null);
+}
+
+test "Flow: type alias with object type does not crash codegen" {
+    var r = try e2eFlowModule(std.testing.allocator,
+        \\type Props = { name: string, age: number };
+        \\const x = 42;
+    );
+    defer r.deinit();
+    // Flow type alias should be stripped
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Props") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "42") != null);
+}
+
+test "Flow: mixed import type and value import does not crash" {
+    var r = try e2eFlowModule(std.testing.allocator,
+        \\import typeof * as API from './api';
+        \\import { useState } from 'react';
+        \\const x = useState(0);
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "useState") != null);
+}
+
+test "Flow: class with typed methods does not crash transformer" {
+    var r = try e2eFlowModule(std.testing.allocator,
+        \\class Foo {
+        \\  bar(x: string): number { return 1; }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "bar") != null);
+}

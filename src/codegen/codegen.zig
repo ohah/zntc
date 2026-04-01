@@ -792,11 +792,15 @@ pub const Codegen = struct {
     fn emitProgram(self: *Codegen, node: Node) !void {
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices, 0..) |raw_idx, i| {
-            if (i > 0) try self.writeNewline();
-            try self.emitNode(@enumFromInt(raw_idx));
+        var emitted = false;
+        for (indices) |raw_idx| {
+            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (node_idx.isNone()) continue;
+            if (emitted) try self.writeNewline();
+            try self.emitNode(node_idx);
+            emitted = true;
         }
-        if (indices.len > 0) try self.writeNewline();
+        if (emitted) try self.writeNewline();
         // 파일 끝에 남은 주석들 출력
         try self.emitComments(null);
     }
@@ -1353,6 +1357,7 @@ pub const Codegen = struct {
     fn emitObjectProperty(self: *Codegen, node: Node) !void {
         const key = node.data.binary.left;
         const value = node.data.binary.right;
+        if (key.isNone()) return;
         if (value.isNone()) {
             // shorthand: { x } — key만 출력.
             // 단, scope hoisting으로 식별자가 리네임된 경우 shorthand를 풀어야 함:
@@ -1383,6 +1388,7 @@ pub const Codegen = struct {
     /// 식별자 노드가 scope hoisting에 의해 리네임되는지 확인.
     /// linking_metadata.renames 또는 ns_prefix 치환 대상이면 true.
     fn identifierHasRename(self: *Codegen, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
         const key_node = self.ast.getNode(idx);
         // linking_metadata renames 확인
         if (self.options.linking_metadata) |meta| {
@@ -3242,9 +3248,13 @@ pub const Codegen = struct {
     fn emitNodeList(self: *Codegen, start: u32, len: u32, sep: []const u8) !void {
         if (len == 0) return;
         const indices = self.ast.extra_data.items[start .. start + len];
-        for (indices, 0..) |raw_idx, i| {
-            if (i > 0) try self.write(sep);
-            try self.emitNode(@enumFromInt(raw_idx));
+        var first = true;
+        for (indices) |raw_idx| {
+            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (node_idx.isNone()) continue;
+            if (!first) try self.write(sep);
+            first = false;
+            try self.emitNode(node_idx);
         }
     }
 };

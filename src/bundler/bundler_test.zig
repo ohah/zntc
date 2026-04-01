@@ -11531,3 +11531,76 @@ test "Worker: SharedWorker is also detected" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "new SharedWorker(\"./shared-") != null);
     try std.testing.expect(result.asset_outputs != null);
 }
+
+// ============================================================
+// None-node crash prevention: parse errors must not crash transformer/codegen
+// Previously, modules with parse errors had incomplete ASTs containing
+// .none (0xFFFFFFFF) node indices, causing index-out-of-bounds panics.
+// ============================================================
+
+test "Bundle: Flow file with parse errors does not crash" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Entry imports a Flow file with import typeof (requires --flow or @flow pragma)
+    try writeFile(tmp.dir, "entry.js",
+        \\const x = require('./lib');
+        \\console.log(x);
+    );
+    // Flow file with @flow pragma and import typeof — Flow type-only import
+    try writeFile(tmp.dir, "lib.js",
+        \\// @flow
+        \\import typeof * as API from './api';
+        \\module.exports = { value: 42 };
+    );
+    try writeFile(tmp.dir, "api.js",
+        \\module.exports = {};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .flow = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // Should not crash — either succeeds or reports errors gracefully
+    try std.testing.expect(result.output.len > 0 or result.hasErrors());
+}
+
+test "Bundle: module with syntax errors does not crash transformer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Entry file is valid
+    try writeFile(tmp.dir, "entry.js",
+        \\const x = require('./broken');
+        \\console.log(x);
+    );
+    // Broken file with intentional syntax error
+    try writeFile(tmp.dir, "broken.js",
+        \\export const x = {
+        \\  a: 1,
+        \\  ...  // incomplete spread — parse error
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // Should not crash — broken module is skipped, bundle still produced
+    try std.testing.expect(result.output.len > 0 or result.hasErrors());
+}
