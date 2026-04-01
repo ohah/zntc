@@ -127,9 +127,8 @@ pub fn emitWithTreeShaking(
 
     for (graph.modules.items, 0..) |*m, i| {
         const is_asset = m.loader.isAsset() and m.source.len > 0;
-        const is_js = m.module_type == .javascript and (m.ast != null or m.is_disabled or is_asset);
-        const is_json = m.module_type == .json;
-        if (is_js or is_json) {
+        const is_js = (m.module_type == .javascript or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
+        if (is_js) {
             // tree-shaking: 미포함 모듈 스킵
             if (shaker) |s| {
                 if (!s.isIncluded(@intCast(i))) continue;
@@ -1451,11 +1450,6 @@ pub fn emitModule(
     shaker: ?*const TreeShaker,
     helpers_out: ?*RuntimeHelpers,
 ) !?[]const u8 {
-    // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
-    if (module.module_type == .json) {
-        return emitJsonModule(allocator, module, options);
-    }
-
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
@@ -1751,33 +1745,7 @@ fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minif
     return try buf.toOwnedSlice(allocator);
 }
 
-fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
-    if (module.source.len == 0) return null;
-
-    // JSON scope-hoist: ESM + CJS importer 없음 → var json_X = {...} 출력.
-    if (module.isJsonScopeHoistable(options.format)) {
-        const var_name = try types.makeJsonVarName(allocator, module.path);
-        defer allocator.free(var_name);
-
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, var_name);
-        if (options.minify_whitespace) {
-            try buf.appendSlice(allocator, "=");
-        } else {
-            try buf.appendSlice(allocator, " = ");
-        }
-        try buf.appendSlice(allocator, module.source);
-        try buf.appendSlice(allocator, ";\n");
-        return try buf.toOwnedSlice(allocator);
-    }
-
-    // CJS/IIFE 포맷 또는 CJS importer가 있는 경우: __commonJS 래핑.
-    // linker가 require_X() 이름으로 참조.
-    return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
-}
-
-/// Asset 모듈을 출력한다 (JSON 모듈과 동일한 CJS wrap 패턴).
+/// Asset 모듈을 출력한다 (CJS wrap 패턴).
 /// source에 값 표현식이 저장되어 있고, __commonJS wrapper로 래핑.
 /// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
 fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
@@ -1785,7 +1753,7 @@ fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options:
     return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
 }
 
-/// __commonJS wrapper 출력 (JSON/Asset 모듈 공통).
+/// __commonJS wrapper 출력 (Asset 모듈용).
 /// var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });
 fn emitCjsWrapper(allocator: std.mem.Allocator, path: []const u8, source: []const u8, minify: bool) !?[]const u8 {
     const var_name = try types.makeRequireVarName(allocator, path);
@@ -1919,11 +1887,9 @@ fn emitBundleRuntimeHelpers(
     options: EmitOptions,
 ) !void {
     // CJS 런타임 헬퍼 주입: __commonJS 래핑 모듈이 하나라도 있으면 주입.
-    // scope-hoist된 JSON 모듈은 __commonJS를 사용하지 않으므로 제외.
     var needs_cjs_runtime = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) {
-            if (m.isJsonScopeHoistable(options.format)) continue;
             needs_cjs_runtime = true;
             break;
         }

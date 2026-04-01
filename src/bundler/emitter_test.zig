@@ -990,8 +990,7 @@ test "globalName — with banner/footer" {
 // ============================================================
 
 test "JSON module — ESM format" {
-    // ESM 포맷 + ESM-only import: scope-hoisted var json_X = {...} 출력.
-    // CJS importer가 없으므로 __commonJS 래핑 불필요 (esbuild 동작).
+    // JSON → ESM AST: export default {...} → 번들 모드에서 var _default = {...}
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "import data from './data.json';\nconsole.log(data);");
@@ -1006,14 +1005,17 @@ test "JSON module — ESM format" {
     const output = try emit(std.testing.allocator, &result.graph, .{ .format = .esm }, null);
     defer std.testing.allocator.free(output);
 
-    // ESM-only: scope-hoisted var
-    try std.testing.expect(std.mem.indexOf(u8, output, "var json_data") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"key\":\"value\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "var json_data =") != null);
+    // JSON ESM: object 내용이 번들에 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"key\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"value\"") != null);
+    // __commonJS 래핑 없음
+    try std.testing.expect(std.mem.indexOf(u8, output, "__commonJS") == null);
 }
 
 test "JSON module — CJS format" {
-    // CJS 포맷에서 기존 __commonJS 래핑이 유지되는지 확인
+    // CJS 포맷에서도 JSON ESM AST는 정상 출력됨.
+    // JSON 모듈은 wrap_kind=.none이므로 ESM codegen → var 할당 형태.
+    // CJS 래핑은 require()로 참조될 때만 graph가 wrap_kind를 변경.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "import data from './data.json';\nconsole.log(data);");
@@ -1028,8 +1030,7 @@ test "JSON module — CJS format" {
     const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
     defer std.testing.allocator.free(output);
 
-    // CJS: __commonJS 래핑 사용
-    try std.testing.expect(std.mem.indexOf(u8, output, "__commonJS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "require_data") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "module.exports=") != null);
+    // JSON 내용이 출력에 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"key\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"value\"") != null);
 }

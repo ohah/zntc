@@ -321,10 +321,11 @@ test "graph: JSON module — no AST, in graph" {
     try graph.build(&.{entry});
 
     try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
-    // JSON 모듈은 AST 없음 (파싱 안 함)
+    // JSON 모듈은 ESM AST로 변환됨 (export default <json>)
     const json_mod = graph.modules.items[1];
-    try std.testing.expect(json_mod.ast == null);
+    try std.testing.expect(json_mod.ast != null);
     try std.testing.expectEqual(types.ModuleType.json, json_mod.module_type);
+    try std.testing.expectEqual(types.ExportsKind.esm, json_mod.exports_kind);
 }
 
 test "graph: semantic data preserved after build" {
@@ -377,8 +378,8 @@ test "graph: semantic data null for non-JS modules" {
 
     // a.ts는 semantic 있음
     try std.testing.expect(graph.modules.items[0].semantic != null);
-    // data.json은 semantic 없음
-    try std.testing.expect(graph.modules.items[1].semantic == null);
+    // data.json도 ESM AST로 변환되므로 semantic 있음
+    try std.testing.expect(graph.modules.items[1].semantic != null);
 }
 
 test "graph: semantic exported_names tracks default export" {
