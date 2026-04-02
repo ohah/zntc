@@ -1189,13 +1189,8 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 // Flow Match Expression
 // ================================================================
 
-/// Flow match expression: match (expr) { Pattern => expr, ... }
-/// match는 contextual keyword이므로 예약어가 아니다.
-/// 타입 스트리핑 전용이므로 내부를 개별 파싱하지 않고
-/// balanced brace counting으로 전체를 소비한 뒤 단일 노드를 생성한다.
 /// Flow match expression: match (expr) { Pattern => body, ... }
-/// discriminant와 arms를 파싱하여 flow_match_expression 노드 생성.
-/// codegen에서 if-else chain IIFE로 변환.
+/// discriminant와 arms를 재귀 파싱. transformer에서 if-else IIFE로 변환.
 pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'match'
@@ -1232,7 +1227,7 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
         try self.expect(.arrow);
 
         // body: { ... } (block) 또는 expression
-        var body: NodeIndex = undefined;
+        var body: NodeIndex = .none;
         if (self.current() == .l_curly) {
             body = try self.parseBlockStatement();
         } else {
