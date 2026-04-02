@@ -2527,7 +2527,7 @@ pub const Codegen = struct {
                 const trimmed = self.trimJSXText(child);
                 if (trimmed.len == 0) continue;
                 if (self.options.minify_whitespace) try self.write(",\"") else try self.write(", \"");
-                try self.write(trimmed);
+                try self.writeJSXTextEscaped(trimmed);
                 try self.writeByte('"');
             } else {
                 if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
@@ -2555,7 +2555,7 @@ pub const Codegen = struct {
                 if (!first) try self.write(", ");
                 first = false;
                 try self.writeByte('"');
-                try self.write(trimmed);
+                try self.writeJSXTextEscaped(trimmed);
                 try self.writeByte('"');
             } else {
                 if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
@@ -2597,6 +2597,40 @@ pub const Codegen = struct {
 
     /// JSX text 공백 트리밍 (esbuild 호환).
     /// 줄바꿈 있으면 전체 trim, 없으면 원본 유지. 공백만이면 빈 문자열.
+    /// JSX 텍스트: 줄바꿈+주변 공백을 단일 스페이스로 정규화, 특수문자 이스케이프
+    fn writeJSXTextEscaped(self: *Codegen, text: []const u8) !void {
+        var in_whitespace = false;
+        for (text) |c| {
+            switch (c) {
+                '\n', '\r', '\t' => {
+                    if (!in_whitespace) {
+                        try self.writeByte(' ');
+                        in_whitespace = true;
+                    }
+                },
+                ' ' => {
+                    if (!in_whitespace) {
+                        try self.writeByte(' ');
+                    }
+                    // 줄바꿈 주변 공백은 이미 스페이스 출력했으면 무시
+                    // 연속 스페이스는 유지 (JSX 스펙: 같은 줄의 공백은 보존)
+                },
+                '"' => {
+                    in_whitespace = false;
+                    try self.write("\\\"");
+                },
+                '\\' => {
+                    in_whitespace = false;
+                    try self.write("\\\\");
+                },
+                else => {
+                    in_whitespace = false;
+                    try self.writeByte(c);
+                },
+            }
+        }
+    }
+
     fn trimJSXText(self: *Codegen, child: Node) []const u8 {
         const text = self.ast.source[child.span.start..child.span.end];
         const trimmed = std.mem.trim(u8, text, " \t\n\r");
@@ -2697,8 +2731,32 @@ pub const Codegen = struct {
 
     /// JSX text (공백 트리밍은 caller에서 처리)
     fn emitJSXText(self: *Codegen, node: Node) !void {
+        const text = self.ast.source[node.span.start..node.span.end];
+        // JSX 텍스트: 줄바꿈+주변 공백을 단일 스페이스로 정규화, 특수문자 이스케이프
         try self.writeByte('"');
-        try self.writeNodeSpan(node);
+        var in_whitespace = false;
+        for (text) |c| {
+            switch (c) {
+                '\n', '\r', '\t', ' ' => {
+                    if (!in_whitespace) {
+                        try self.writeByte(' ');
+                        in_whitespace = true;
+                    }
+                },
+                '"' => {
+                    in_whitespace = false;
+                    try self.write("\\\"");
+                },
+                '\\' => {
+                    in_whitespace = false;
+                    try self.write("\\\\");
+                },
+                else => {
+                    in_whitespace = false;
+                    try self.writeByte(c);
+                },
+            }
+        }
         try self.writeByte('"');
     }
 
