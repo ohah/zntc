@@ -798,29 +798,13 @@ pub const Linker = struct {
         // 단, 내부 require() 호출은 번들된 require_xxx()로 치환해야 함.
         if (m.wrap_kind == .cjs) {
             const node_count = new_ast.nodes.items.len;
-            var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
-            for (m.import_records) |rec| {
-                if (rec.resolved.isNone()) continue;
-                const target = @intFromEnum(rec.resolved);
-                if (target >= self.modules.len) continue;
-                // 번들된 모듈을 가리키는 require() → require_xxx()로 치환
-                // __commonJS로 래핑되는 모듈만 대상 (CJS, JSON 모두 wrap_kind=.cjs)
-                if (self.modules[target].wrap_kind == .cjs) {
-                    // 동일 specifier의 기존 값이 있으면 해제 (중복 require 방지)
-                    if (require_rewrites.get(rec.specifier)) |old| {
-                        self.allocator.free(old);
-                    }
-                    const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
-                    try require_rewrites.put(self.allocator, rec.specifier, var_name);
-                }
-            }
             return .{
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
                 .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
                 .cjs_import_preamble = null,
-                .require_rewrites = require_rewrites,
+                .require_rewrites = try self.buildRequireRewrites(&m),
                 .allocator = self.allocator,
             };
         }
@@ -1098,12 +1082,17 @@ pub const Linker = struct {
         const ns_inlines = ns_result.inlines;
         const combined_preamble = ns_result.combined_preamble;
 
+        // ESM+CJS 혼합 모듈(esm_with_dynamic_fallback)이 scope hoisting될 때
+        // 내부 require() 호출도 require_xxx()로 치환해야 함.
+        const require_rewrites = try self.buildRequireRewrites(&m);
+
         return .{
             .skip_nodes = skip_nodes,
             .renames = renames,
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
             .cjs_import_preamble = combined_preamble,
+            .require_rewrites = require_rewrites,
             .default_export_name = default_export_name,
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
@@ -1111,6 +1100,25 @@ pub const Linker = struct {
             .owned_rename_values = owned_nested_renames,
             .allocator = self.allocator,
         };
+    }
+
+    /// 모듈의 import_records에서 require() → CJS 모듈 대상의 specifier → require_xxx() 맵 구축.
+    /// CJS 래핑 모듈과 scope hoisted ESM+CJS 혼합 모듈 모두에서 사용.
+    fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHashMapUnmanaged([]const u8) {
+        var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
+        for (m.import_records) |rec| {
+            if (rec.resolved.isNone()) continue;
+            const target = @intFromEnum(rec.resolved);
+            if (target >= self.modules.len) continue;
+            if (self.modules[target].wrap_kind == .cjs) {
+                if (require_rewrites.get(rec.specifier)) |old| {
+                    self.allocator.free(old);
+                }
+                const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
+                try require_rewrites.put(self.allocator, rec.specifier, var_name);
+            }
+        }
+        return require_rewrites;
     }
 
     /// 엔트리 포인트의 최종 export 문을 생성한다. (e.g. "export { x, y$1 as y };\n")
