@@ -1335,6 +1335,96 @@ test "ES5: async with destructuring var hoisting" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var {") == null);
 }
 
+// --- yield/await in expression position ---
+
+test "ES5: await in if condition (logical AND)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo(x) { if (x && (await check())) { doSomething(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
+}
+
+test "ES5: await in if condition (logical OR)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo(x) { if (x || (await fallback())) { run(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in if condition (simple)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { if (await check()) { run(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in while condition" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { while (await hasNext()) { process(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in for test condition" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { for (var i = 0; await check(i); i++) { run(i); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in return expression (nested in call)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return bar(await x); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: multiple awaits in call args" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { bar(await x, await y); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in binary expression" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return (await a) + (await b); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in unary expression (negation)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { if (!(await check())) { fallback(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in ternary expression" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo(x) { return x ? await a() : await b(); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: double await (await (await nested()))" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return await (await getPromise()); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in var init (nested in call)" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { var x = bar(await y); return x; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x") != null);
+}
+
+test "ES5: generator with yield in if condition" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(x) { if (x && (yield check())) { run(); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+}
+
+test "ES5: generator with yield in return expression" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen() { return foo(yield x); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+}
+
 test "ES5: generator with destructuring var hoisting" {
     var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
     defer r.deinit();

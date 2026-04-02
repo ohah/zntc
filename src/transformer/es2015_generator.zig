@@ -200,7 +200,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     if (expr.tag == .yield_expression or expr.tag == .await_expression) {
                         const value_idx = expr.data.unary.operand;
                         const is_delegate = if (expr.tag == .yield_expression) (expr.data.unary.flags & 1) != 0 else false;
-                        const new_value = if (!value_idx.isNone()) try self.visitNode(value_idx) else NodeIndex.none;
+                        const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
                         // yield* → [5, iter], yield/await → [4, value]
                         const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
                         try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
@@ -215,7 +215,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const right = self.old_ast.getNode(right_idx);
                         if (right.tag == .yield_expression or right.tag == .await_expression) {
                             const yield_value_idx = right.data.unary.operand;
-                            const new_yield_value = if (!yield_value_idx.isNone()) try self.visitNode(yield_value_idx) else NodeIndex.none;
+                            const new_yield_value = try visitExprWithYieldExtraction(self, yield_value_idx, ops, next_label);
                             try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_yield_value } });
                             next_label.* += 1;
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -227,6 +227,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             const new_stmt = try self.visitNode(stmt_idx);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                         }
+                    } else if (containsYield(self, expr_idx)) {
+                        // foo(await x) — 중첩 yield를 추출 후 expression statement
+                        const new_expr = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
+                        const new_stmt = try es_helpers.makeExprStmt(self, new_expr, stmt.span);
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -239,7 +244,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
                             // return yield/await x → yield x + return _state.sent()
                             const inner_value = value_node.data.unary.operand;
-                            const new_inner = if (!inner_value.isNone()) try self.visitNode(inner_value) else NodeIndex.none;
+                            const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
                             const is_delegate = if (value_node.tag == .yield_expression) (value_node.data.unary.flags & 1) != 0 else false;
                             const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
                             try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_inner } });
@@ -247,6 +252,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                             const sent = try buildSentCall(self, stmt.span);
                             try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = sent } });
+                        } else if (containsYield(self, value_idx)) {
+                            // return foo(await x) — 중첩 yield를 추출 후 return
+                            const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
+                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
                         } else {
                             const new_value = try self.visitNode(value_idx);
                             try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
@@ -328,11 +337,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const then_body = stmt.data.ternary.b;
             const else_body = stmt.data.ternary.c;
 
-            // yield가 if 안에 있는지 빠른 체크
-            const has_yield = containsYield(self, then_body) or containsYield(self, else_body);
-            // yield 없어도 return/break/continue가 있으면 ops로 처리해야 함
-            // (generator 컨텍스트에서 return → return [2]로 변환 필요)
-            if (!has_yield and !containsReturn(self, then_body) and !containsReturn(self, else_body)) {
+            const has_yield_in_body = containsYield(self, then_body) or containsYield(self, else_body);
+            const has_yield_in_cond = containsYield(self, condition);
+            if (!has_yield_in_body and !has_yield_in_cond and !containsReturn(self, then_body) and !containsReturn(self, else_body)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -340,7 +347,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            const new_cond = try self.visitNode(condition);
+            // 조건식에 yield/await가 있으면 먼저 추출 (short-circuit 미보존)
+            const new_cond = if (has_yield_in_cond)
+                try visitExprWithYieldExtraction(self, condition, ops, next_label)
+            else
+                try self.visitNode(condition);
             const has_else = !else_body.isNone();
             // else 없으면 else_label 할당하지 않음 (nop 수와 label 수 일치)
             const else_label = if (has_else) blk: {
@@ -388,7 +399,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const update_idx: NodeIndex = @enumFromInt(extras[e + 2]);
             const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
 
-            if (!containsYield(self, body_idx)) {
+            if (!containsYield(self, body_idx) and !containsYield(self, test_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -421,7 +432,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const for_end_sent = LABEL_SENTINEL_BASE; // for loop 전용 sentinel
             const for_ops_start = ops.items.len;
             if (!test_idx.isNone()) {
-                const new_test = try self.visitNode(test_idx);
+                const new_test = if (containsYield(self, test_idx))
+                    try visitExprWithYieldExtraction(self, test_idx, ops, next_label)
+                else
+                    try self.visitNode(test_idx);
                 try ops.append(self.allocator, .{
                     .code = .break_when_false,
                     .arg = .{ .label_and_node = .{ .label = for_end_sent, .node = new_test } },
@@ -463,7 +477,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!containsYield(self, body_idx)) {
+            if (!containsYield(self, body_idx) and !containsYield(self, condition)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -476,9 +490,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
-            // end_label을 sentinel로 설정 (body 처리 후 실제 값으로 fixup)
             const cond_false_idx = ops.items.len;
-            const new_cond = try self.visitNode(condition);
+            const new_cond = if (containsYield(self, condition))
+                try visitExprWithYieldExtraction(self, condition, ops, next_label)
+            else
+                try self.visitNode(condition);
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
                 .arg = .{ .label_and_node = .{ .label = 0, .node = new_cond } }, // placeholder
@@ -1011,7 +1027,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (init_node.tag == .yield_expression or init_node.tag == .await_expression) {
                     // var x = yield/await value → yield value + x = _state.sent()
                     const yield_val = init_node.data.unary.operand;
-                    const new_val = if (!yield_val.isNone()) try self.visitNode(yield_val) else NodeIndex.none;
+                    const new_val = try visitExprWithYieldExtraction(self, yield_val, ops, next_label);
                     try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_val } });
                     next_label.* += 1;
                     try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -1020,6 +1036,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const new_binding = try self.visitNode(binding);
                     const sent_call = try buildSentCall(self, stmt.span);
                     const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span);
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                } else if (containsYield(self, init_idx)) {
+                    // var x = foo(await y) → 중첩 yield 추출 후 x = foo(_state.sent())
+                    const new_binding = try self.visitNode(binding);
+                    const new_init = try visitExprWithYieldExtraction(self, init_idx, ops, next_label);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else {
                     // var x = expr (no yield) → x = expr
@@ -1071,6 +1093,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .spread_element,
                 .rest_element,
                 .parenthesized_expression,
+                .unary_expression,
+                .update_expression,
                 => containsYield(self, node.data.unary.operand),
                 .assignment_expression,
                 .binary_expression,
@@ -1115,6 +1139,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const stmts_len = extras[e + 2];
                     const stmts = extras[stmts_start .. stmts_start + stmts_len];
                     for (stmts) |raw_idx| {
+                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .call_expression, .new_expression => {
+                    // extra = [callee, args_start, args_len, flags]
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    if (containsYield(self, @enumFromInt(extras[e]))) return true; // callee
+                    const args_start = extras[e + 1];
+                    const args_len = extras[e + 2];
+                    const args = extras[args_start .. args_start + args_len];
+                    for (args) |raw_idx| {
                         if (containsYield(self, @enumFromInt(raw_idx))) return true;
                     }
                     return false;
@@ -1206,6 +1244,138 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// expression body (arrow function 등)를 state machine으로 변환.
         /// expression을 implicit return으로 처리.
+        /// expression 내부의 yield/await를 별도 yield operation으로 추출하고
+        /// 해당 위치를 _state.sent()로 치환한 expression을 반환.
+        /// 조건식(if, while, for test) 등에서 yield/await가 중첩된 경우 사용.
+        /// 주의: short-circuit 평가(&&, ||)가 보존되지 않음 — await가 항상 평가됨.
+        fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
+            if (expr_idx.isNone()) return .none;
+            const node = self.old_ast.getNode(expr_idx);
+
+            // yield/await → yield operation 추출 + _state.sent() 반환
+            if (node.tag == .yield_expression or node.tag == .await_expression) {
+                const value_idx = node.data.unary.operand;
+                // operand에도 yield/await가 중첩될 수 있음 (await(await x))
+                const new_value = if (!value_idx.isNone())
+                    try visitExprWithYieldExtraction(self, value_idx, ops, next_label)
+                else
+                    NodeIndex.none;
+                const is_delegate = if (node.tag == .yield_expression) (node.data.unary.flags & 1) != 0 else false;
+                const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
+                try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
+                next_label.* += 1;
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                return buildSentCall(self, node.span);
+            }
+
+            // yield를 포함하지 않으면 일반 visit
+            if (!containsYield(self, expr_idx)) {
+                return self.visitNode(expr_idx);
+            }
+
+            // parenthesized_expression: 내부 재귀
+            if (node.tag == .parenthesized_expression) {
+                const inner = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+                });
+            }
+
+            // logical/binary expression: 양쪽 재귀
+            if (node.tag == .logical_expression or node.tag == .binary_expression) {
+                const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = node.data.binary.flags } },
+                });
+            }
+
+            // conditional expression (ternary): a ? b : c
+            if (node.tag == .conditional_expression) {
+                const new_a = try visitExprWithYieldExtraction(self, node.data.ternary.a, ops, next_label);
+                const new_b = try visitExprWithYieldExtraction(self, node.data.ternary.b, ops, next_label);
+                const new_c = try visitExprWithYieldExtraction(self, node.data.ternary.c, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = node.span,
+                    .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
+                });
+            }
+
+            // unary/update expression (!, ~, typeof, ++x 등): operand 재귀
+            if (node.tag == .unary_expression or node.tag == .update_expression) {
+                const new_operand = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
+                });
+            }
+
+            // assignment expression: left = right
+            if (node.tag == .assignment_expression) {
+                const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = node.data.binary.flags } },
+                });
+            }
+
+            // member expression: object.property
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
+                const new_object = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                const new_prop = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = new_object, .right = new_prop, .flags = node.data.binary.flags } },
+                });
+            }
+
+            // call/new expression: callee + args 재귀
+            if (node.tag == .call_expression or node.tag == .new_expression) {
+                const extras = self.old_ast.extra_data.items;
+                const e = node.data.extra;
+                const callee_idx: NodeIndex = @enumFromInt(extras[e]);
+                const args_start = extras[e + 1];
+                const args_len = extras[e + 2];
+
+                const new_callee = try visitExprWithYieldExtraction(self, callee_idx, ops, next_label);
+
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                const args = extras[args_start .. args_start + args_len];
+                for (args) |arg_raw| {
+                    const new_arg = try visitExprWithYieldExtraction(self, @enumFromInt(arg_raw), ops, next_label);
+                    try self.scratch.append(self.allocator, new_arg);
+                }
+                const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_callee),
+                    new_args.start,
+                    new_args.len,
+                    extras[e + 3], // flags
+                });
+                return self.new_ast.addNode(.{
+                    .tag = node.tag, // call_expression or new_expression
+                    .span = node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            }
+
+            // 미지원 expression 타입: visitNode fallback (yield가 남을 수 있음)
+            if (std.debug.runtime_safety) {
+                std.log.warn("visitExprWithYieldExtraction: unhandled tag {}", .{node.tag});
+            }
+            return self.visitNode(expr_idx);
+        }
+
         fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
             // expression body는 최대 3개 연산 (yield + nop + return)
             var ops_buf: [3]Operation = undefined;
