@@ -433,4 +433,29 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("1,3,6");
   });
+
+  test("CJS import 변수명 scope 충돌 해결", async () => {
+    // 두 모듈이 같은 이름(StyleSheet)을 top-level에 선언할 때
+    // CJS preamble 변수와 ESM export가 충돌하지 않아야 함
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { StyleSheet } from "./styles";
+          import { render } from "./renderer";
+          console.log(StyleSheet.create({}) + "," + render());
+        `,
+        "styles.ts": `
+          export const StyleSheet = { create(s: any) { return "created"; } };
+        `,
+        "renderer.ts": `
+          const StyleSheet = { flatten(s: any) { return "flat"; } };
+          export function render() { return StyleSheet.flatten({}); }
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("created,flat");
+  });
 });
