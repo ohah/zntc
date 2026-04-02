@@ -1967,10 +1967,16 @@ pub const Parser = struct {
         // (): Type => ... — 빈 파라미터 + 리턴 타입
         if (self.current() == .r_paren) {
             try self.advance();
-            // ): 이면 typed arrow (리턴 타입 어노테이션)
-            // ternary consequent 안에서는 `:` 가 ternary separator일 수 있으므로 여기서 판단하지 않는다.
-            // parseConditionalExpression의 speculative reinterpret에서 처리한다.
-            return self.current() == .colon and !self.in_ternary_consequent;
+            if (self.current() != .colon) return false;
+            // ternary consequent 안에서는 `:` 가 ternary separator일 수 있다.
+            if (!self.in_ternary_consequent) return true;
+            // Flow: `:` 뒤에 type keyword가 오면 return type annotation 확정.
+            // void, number 등은 expression start로 사용되지 않으므로 ternary `:` 와 구분 가능.
+            if (self.is_flow) {
+                const after = try self.peekNextKind();
+                if (after == .kw_void or after == .kw_typeof) return true;
+            }
+            return false;
         }
 
         // (...rest: Type) => ... — rest parameter with type

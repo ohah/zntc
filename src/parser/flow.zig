@@ -639,9 +639,10 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     }
 
     // `) =>` → single positional param function type
+    // return type context에서는 `=>` 가 arrow function body이므로 function type으로 해석하지 않는다.
     if (self.current() == .r_paren) {
         try self.advance();
-        if (self.current() == .arrow) {
+        if (self.current() == .arrow and !self.flow_in_return_type) {
             try self.advance();
             _ = try parseType(self);
         }
