@@ -895,8 +895,6 @@ pub const Linker = struct {
                 // ESM 번들도 import 구문 없이 출력되므로 Node가 CJS로 파싱 (esbuild 동일).
                 if (rec.resolved.isNone()) {
                     if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                        // minify 시 computeMangling이 이름을 축약하므로, preamble 변수 선언도
-                        // canonical name을 사용해야 코드 참조와 일치한다.
                         const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, preamble_name);

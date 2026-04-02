@@ -2267,7 +2267,19 @@ pub const Codegen = struct {
                     try self.emitNode(inner);
                 } else {
                     // anonymous function/class 또는 expression → var _default = ...;
-                    try self.emitDefaultVarAssignment(self.options.linking_metadata.?.default_export_name, inner);
+                    // self-reference 방지: export default X에서 X가 이미 같은 이름의
+                    // const로 선언되어 있으면 var X = X; 재선언이 불필요
+                    const def_name = self.options.linking_metadata.?.default_export_name;
+                    const is_self_ref = blk: {
+                        if (inner_node.tag == .identifier_reference) {
+                            const ref_text = self.ast.source[inner_node.span.start..inner_node.span.end];
+                            break :blk std.mem.eql(u8, ref_text, def_name);
+                        }
+                        break :blk false;
+                    };
+                    if (!is_self_ref) {
+                        try self.emitDefaultVarAssignment(def_name, inner);
+                    }
                 }
             }
             return;

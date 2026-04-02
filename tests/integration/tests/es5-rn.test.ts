@@ -197,8 +197,7 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     }
     const errorCount = (stderr.match(/error:/g) || []).length;
     console.log(`hermesc errors: ${errorCount}`);
-    // ExceptionsManager self-reference 1건 잔여 — 별도 이슈
-    expect(errorCount).toBeLessThanOrEqual(1);
+    expect(errorCount).toBe(0);
   }, 60_000);
 });
 
