@@ -2800,6 +2800,46 @@ test "Flow: conditional type" {
     try expectNoParseErrorFlow("type X<T> = T extends string ? number : boolean;");
 }
 
+test "Flow: positional function type params" {
+    // () => T as positional param
+    try expectNoParseErrorFlow("type X = (() => AnimatedProps, props: $ReadOnly<{[string]: mixed}>) => AnimatedProps;");
+    // generic function type as positional param
+    try expectNoParseErrorFlow("type X = (<T>(x: T) => T, y: number) => void;");
+    // $ReadOnly<{...}> as positional param
+    try expectNoParseErrorFlow("type X = ($ReadOnly<{logs: LogBoxLogs}>) => void;");
+    // multiple positional params
+    try expectNoParseErrorFlow("type X = ($ReadOnly<{a: number}>, string) => void;");
+}
+
+test "Flow: const type parameter" {
+    try expectNoParseErrorFlow("function f<const T: {[string]: true}>(x: T): T { return x; }");
+}
+
+test "Flow: static covariant class property" {
+    try expectNoParseErrorFlow("class Event { static +NONE: 0; static +AT_TARGET: 2; +bubbles: boolean; }");
+}
+
+test "Flow: match expression" {
+    try expectNoParseErrorFlow(
+        \\function f(mode: number): string {
+        \\  return match (mode) {
+        \\    0 => 'a',
+        \\    1 => 'b',
+        \\    _ => 'c',
+        \\  };
+        \\}
+    );
+}
+
+test "Flow: import typeof specifier" {
+    try expectNoParseErrorFlow("import {typeof VirtualizedList as VirtualizedListT} from './VirtualizedList';");
+}
+
+test "Flow: typed arrow in multi-param" {
+    try expectNoParseErrorFlow("const f = (a, b: number) => a + b;");
+    try expectNoParseErrorFlow("const f = (a, b, c: string) => c;");
+}
+
 test "Flow: type guard predicate" {
     try expectNoParseErrorFlow(
         \\function isObj(value: mixed): value is {[string]: unknown} {

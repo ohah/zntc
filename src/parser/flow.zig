@@ -578,99 +578,86 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
 // Parenthesized / Function Type
 // ================================================================
 
-/// 괄호 타입 (Type) 또는 함수 타입 (a: Type) => Type
+/// 괄호 타입 (Type) 또는 함수 타입 (a: Type) => Type (Babel 방식).
+/// 1단계: `()`, `...`, `identifier:` → 확정적 function type
+/// 2단계: 그 외 → grouped type으로 먼저 파싱, `,` 또는 `) =>` 따르면 function type
+/// backtracking 없이 동작. 타입 스트리핑 전용이므로 결과는 flow_literal_type.
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '('
 
-    // 빈 괄호: () => Type (함수 타입)
+    // 빈 괄호: () => Type
     if (self.current() == .r_paren) {
-        try self.advance(); // skip ')'
+        try self.advance();
         try self.expect(.arrow);
-        const return_type = try parseType(self);
-        const extra = try self.ast.addExtras(&.{
-            @intFromEnum(NodeIndex.none), // no type params
-            0, // params start
-            0, // params len
-            @intFromEnum(return_type),
-        });
-        return try self.ast.addNode(.{
-            .tag = .flow_function_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .extra = extra },
-        });
+        _ = try parseType(self);
+        return makeLiteralType(self, start);
     }
 
-    // 함수 타입 vs 괄호 타입 판별 — 함수 타입일 가능성이 있으면 backtracking으로 시도.
-    // Flow는 positional params를 허용하므로 `({obj}, Type | null, ...) => R` 같은
-    // 패턴도 감지해야 한다.
-    const is_likely_fn = blk: {
+    // ...rest 또는 identifier: → 확정적 named/rest function param
+    const is_definite_fn = blk: {
         if (self.current() == .dot3) break :blk true;
-        // Flow: positional params — object/tuple 타입이 첫 param으로 올 수 있음
-        if (self.current() == .l_curly or self.current() == .l_bracket) break :blk true;
-        if (self.current() == .identifier) {
+        if (self.current() == .identifier or (self.current().isKeyword() and !self.current().isReservedKeyword())) {
             const next = try self.peekNextKind();
-            if (next == .colon or next == .question) break :blk true;
-            if (next == .comma or next == .pipe or next == .amp or next == .l_bracket) break :blk true;
+            break :blk (next == .colon or next == .question);
         }
         break :blk false;
     };
 
-    if (is_likely_fn) {
-        // 함수 타입 시도: (a: T, b: U) => R
-        const saved = self.saveState();
-        const err_count = self.errors.items.len;
-        const saved_nodes_len = self.ast.nodes.items.len;
-        const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
-
-        const params = parseFunctionTypeParamList(self) catch {
-            self.restoreState(saved);
-            self.errors.shrinkRetainingCapacity(err_count);
-            self.ast.nodes.items.len = saved_nodes_len;
-            self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-            const inner = try parseType(self);
-            try self.expect(.r_paren);
-            return try self.ast.addNode(.{
-                .tag = .flow_parenthesized_type,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
-            });
-        };
-
-        if (self.current() == .r_paren) {
-            try self.advance();
-            if (self.current() == .arrow) {
-                try self.advance();
-                const return_type = try parseType(self);
-                const extra = try self.ast.addExtras(&.{
-                    @intFromEnum(NodeIndex.none),
-                    params.start,
-                    params.len,
-                    @intFromEnum(return_type),
-                });
-                return try self.ast.addNode(.{
-                    .tag = .flow_function_type,
-                    .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .extra = extra },
-                });
-            }
-        }
-
-        // 화살표 없으면 rollback → 괄호 타입
-        self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
-        self.ast.nodes.items.len = saved_nodes_len;
-        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-        try self.advance(); // skip '(' again
+    if (is_definite_fn) {
+        _ = try parseFunctionTypeParamList(self);
+        try self.expect(.r_paren);
+        try self.expect(.arrow);
+        _ = try parseType(self);
+        return makeLiteralType(self, start);
     }
 
-    // 괄호 타입: (Type) — 내부에 단일 타입
-    const inner = try parseType(self);
+    // grouped type으로 먼저 파싱
+    _ = try parseType(self);
+
+    // `,` → function type (positional params) — 나머지 params 소비
+    if (try self.eat(.comma)) {
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
+            if (self.current() == .dot3) try self.advance();
+            // named param 감지: identifier + (`:` | `?`)
+            if (self.current() == .identifier or (self.current().isKeyword() and !self.current().isReservedKeyword())) {
+                const next = try self.peekNextKind();
+                if (next == .colon or next == .question) {
+                    _ = try parseFunctionTypeParamList(self);
+                    break;
+                }
+            }
+            _ = try parseType(self);
+            if (!try self.eat(.comma)) break;
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+        }
+        try self.expect(.r_paren);
+        try self.expect(.arrow);
+        _ = try parseType(self);
+        return makeLiteralType(self, start);
+    }
+
+    // `) =>` → single positional param function type
+    if (self.current() == .r_paren) {
+        try self.advance();
+        if (self.current() == .arrow) {
+            try self.advance();
+            _ = try parseType(self);
+        }
+        return makeLiteralType(self, start);
+    }
+
+    // 그 외: 단순 괄호 타입
     try self.expect(.r_paren);
-    return try self.ast.addNode(.{
-        .tag = .flow_parenthesized_type,
+    return makeLiteralType(self, start);
+}
+
+fn makeLiteralType(self: *Parser, start: u32) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .flow_literal_type,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+        .data = .{ .none = 0 },
     });
 }
 
