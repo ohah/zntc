@@ -206,6 +206,28 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     console.log(`hermesc errors: ${errorCount}`);
     expect(errorCount).toBe(0);
   }, 60_000);
+
+  test("번들 내 미변환 require() 호출 검출", async () => {
+    // __commonJS 래퍼 안에서 ESM import가 require()로 변환될 때
+    // require_xxx()로 치환되어야 함. raw require("specifier")가 남아있으면 런타임 에러.
+    const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
+    const output = await Bun.file(outFile).text();
+
+    // 번들 내 raw require("...") 패턴 검출 (require_ 접두사가 아닌 것만)
+    // __commonJS 런타임 정의 내의 require는 제외
+    const rawRequires = output.match(/(?<!_)require\s*\(\s*["'][^"']+["']\s*\)/g) || [];
+
+    // 현재 알려진 미해결 케이스 수 기록 (점진적 개선 추적)
+    console.log(`Raw require() calls remaining: ${rawRequires.length}`);
+    if (rawRequires.length > 0) {
+      // 처음 5개 출력 (디버깅용)
+      console.log("Examples:", rawRequires.slice(0, 5));
+    }
+
+    // scope hoisted esm_with_dynamic_fallback 내 require()는 아직 미해결이므로
+    // 현재 기준선보다 악화되지 않는 것만 검증 (기준선은 점진적으로 낮춤)
+    expect(rawRequires.length).toBeLessThanOrEqual(280);
+  }, 60_000);
 });
 
 describe("RN ES5 다운레벨링: 기존 flow-rn fixtures", () => {

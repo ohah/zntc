@@ -2050,9 +2050,12 @@ pub const Codegen = struct {
     fn emitImportCJS(self: *Codegen, source: NodeIndex, specs_start: u32, specs_len: u32) !void {
         if (specs_len == 0) {
             // side-effect import: import './bar' → require('./bar');
-            try self.write("require(");
-            try self.emitNode(source);
-            try self.write(");");
+            if (try self.tryEmitRequireRewrite(source)) |_| {} else {
+                try self.write("require(");
+                try self.emitNode(source);
+                try self.writeByte(')');
+            }
+            try self.writeByte(';');
             return;
         }
 
@@ -2107,15 +2110,42 @@ pub const Codegen = struct {
             try self.writeByte('}');
         }
 
-        try self.write("=require(");
-        try self.emitNode(source);
-        try self.writeByte(')');
+        // require_rewrites 맵에 있으면 require_xxx()로 치환, 없으면 require("specifier")
+        try self.writeByte('=');
+        if (try self.tryEmitRequireRewrite(source)) |_| {} else {
+            try self.write("require(");
+            try self.emitNode(source);
+            try self.writeByte(')');
+        }
 
         if (has_default and !has_namespace and named_count == 0) {
             try self.write(".default");
         }
 
         try self.writeByte(';');
+    }
+
+    /// source node에서 specifier를 추출하여 require_rewrites 맵에서 찾으면
+    /// require_xxx()를 출력하고 true를 반환. 없으면 아무것도 출력하지 않고 null 반환.
+    fn tryEmitRequireRewrite(self: *Codegen, source: NodeIndex) !?void {
+        const meta = self.options.linking_metadata orelse return null;
+        if (meta.require_rewrites.count() == 0) return null;
+        if (source.isNone()) return null;
+
+        const source_node = self.ast.getNode(source);
+        if (source_node.tag != .string_literal) return null;
+
+        // 따옴표 제거: "path" 또는 'path' → path
+        const raw = self.ast.source[source_node.data.string_ref.start..source_node.data.string_ref.end];
+        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        const req_var = meta.require_rewrites.get(specifier) orelse return null;
+        try self.write(req_var);
+        try self.write("()");
+        return {};
     }
 
     /// import specifier의 imported + rename separator + local 출력.

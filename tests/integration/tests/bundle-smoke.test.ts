@@ -458,4 +458,69 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("created,flat");
   });
+
+  test("CJS 래핑된 ESM 모듈의 import가 require_xxx()로 변환 — 번들 출력 검증", async () => {
+    // ESM 모듈이 require()로 소비되어 __commonJS 래핑될 때,
+    // 내부 import 문의 require()가 require_xxx()로 치환되어야 함.
+    // raw require("specifier")가 남아있으면 런타임에서 require 미정의 에러 발생.
+    const fixture = await createFixture({
+      "index.ts": `const lib = require('./esm-lib.js'); console.log(lib.greet());`,
+      "esm-lib.js": `
+        import * as helper from './helper.cjs';
+        export function greet() { return helper.default(); }
+      `,
+      "helper.cjs": `module.exports = function() { return 'hello-from-cjs'; };`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const output = await Bun.file(outFile).text();
+    // default import: require_helper()로 변환되어야 함
+    expect(output).toContain("require_helper()");
+    // raw require("./helper.cjs")가 남아있으면 안 됨
+    expect(output).not.toContain('require("./helper.cjs")');
+    expect(output).not.toContain("require('./helper.cjs')");
+  });
+
+  test("CJS 래핑된 ESM 모듈의 named import — 번들 출력 검증", async () => {
+    const fixture = await createFixture({
+      "index.ts": `const lib = require('./consumer.js'); console.log(lib.compute());`,
+      "consumer.js": `
+        import { multiply } from './math.cjs';
+        export function compute() { return multiply(6, 7); }
+      `,
+      "math.cjs": `exports.multiply = function(a, b) { return a * b; };`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const output = await Bun.file(outFile).text();
+    expect(output).toContain("require_math()");
+    expect(output).not.toContain('require("./math.cjs")');
+    expect(output).not.toContain("require('./math.cjs')");
+  });
+
+  test("CJS 래핑된 ESM 모듈의 side-effect import — 번들 출력 검증", async () => {
+    const fixture = await createFixture({
+      "index.ts": `const lib = require('./app.js'); console.log(lib.value);`,
+      "app.js": `
+        import './setup.cjs';
+        export const value = globalThis.__SETUP_DONE;
+      `,
+      "setup.cjs": `globalThis.__SETUP_DONE = 'setup-ok';`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const output = await Bun.file(outFile).text();
+    expect(output).toContain("require_setup()");
+    expect(output).not.toContain('require("./setup.cjs")');
+    expect(output).not.toContain("require('./setup.cjs')");
+  });
 });
