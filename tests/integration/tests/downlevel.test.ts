@@ -902,6 +902,28 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("empty");
     });
 
+    test("flow match expression", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.js": `// @flow
+            function classify(x) {
+              return match (x) {
+                1 => "one",
+                2 => "two",
+                _ => "other",
+              };
+            }
+            console.log([classify(1), classify(2), classify(3)].join(","));
+          `,
+        },
+        "index.js",
+        ["--flow"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("one,two,other");
+    });
+
     test("async for-of with await", async () => {
       const result = await bundleAndRun(
         {
