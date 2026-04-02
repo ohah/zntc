@@ -190,6 +190,10 @@ pub const Transformer = struct {
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
     runtime_helpers: RuntimeHelpers = .{},
 
+    /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
+    /// unsupported.arrow일 때 자동 설정.
+    runtime_es5_compat: bool = false,
+
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
@@ -232,7 +236,7 @@ pub const Transformer = struct {
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
-        return .{
+        var self: Transformer = .{
             .old_ast = old_ast,
             .new_ast = Ast.init(allocator, old_ast.source),
             .options = opts,
@@ -240,6 +244,8 @@ pub const Transformer = struct {
             .scratch = .empty,
             .pending_nodes = .empty,
         };
+        if (opts.unsupported.arrow) self.runtime_es5_compat = true;
+        return self;
     }
 
     pub fn deinit(self: *Transformer) void {
@@ -591,6 +597,10 @@ pub const Transformer = struct {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
+                        // async + generator 둘 다 unsupported → 직접 state machine 생성
+                        if (self.options.unsupported.generator) {
+                            return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
+                        }
                         return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
                     }
                 }
@@ -611,6 +621,10 @@ pub const Transformer = struct {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
+                        // async + generator 둘 다 unsupported → 직접 state machine 생성
+                        if (self.options.unsupported.generator) {
+                            return es2017_mod.ES2017(Transformer).lowerAsyncArrowToStateMachine(self, node);
+                        }
                         return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
                     }
                 }

@@ -14,6 +14,7 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const es_helpers = @import("es_helpers.zig");
+const es2015_generator = @import("es2015_generator.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
@@ -125,6 +126,112 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
+        /// async function → __async(__generator(function(_state) { switch... })).call(this)
+        /// async_await + generator 둘 다 unsupported일 때 호출.
+        /// body를 pre-visit하지 않고 원본 body에서 직접 state machine 생성.
+        /// await_expression은 es2015_generator의 collectOperations에서 yield처럼 처리됨.
+        pub fn lowerAsyncToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const GenMod = es2015_generator.ES2015Generator(Transformer);
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            const span = node.span;
+
+            const name_idx: NodeIndex = @enumFromInt(extras[e]);
+            const params_start = extras[e + 1];
+            const params_len = extras[e + 2];
+            const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
+            const flags = extras[e + 4];
+
+            const new_name = try self.visitNode(name_idx);
+            const new_params = try self.visitExtraList(params_start, params_len);
+
+            const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            if (sm_result.body.isNone()) return .none;
+
+            const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
+            const async_call = try buildAsyncHelperCall(self, gen_call, span);
+
+            const return_stmt = try self.new_ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
+            });
+
+            // hoisted var 선언을 __generator 밖에 배치
+            const body_list = if (sm_result.var_decl.isNone())
+                try self.new_ast.addNodeList(&.{return_stmt})
+            else
+                try self.new_ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
+            const wrapper_body = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+
+            // 일반 function으로 변환 (async + generator 플래그 모두 제거)
+            const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
+            const new_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(new_name),
+                new_params.start,
+                new_params.len,
+                @intFromEnum(wrapper_body),
+                new_flags,
+                @intFromEnum(NodeIndex.none),
+            });
+            return self.new_ast.addNode(.{
+                .tag = node.tag,
+                .span = span,
+                .data = .{ .extra = new_extra },
+            });
+        }
+
+        /// async arrow → () => __async(__generator(function(_state) { switch... }).call(this))
+        /// async_await + generator 둘 다 unsupported일 때 호출.
+        pub fn lowerAsyncArrowToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const GenMod = es2015_generator.ES2015Generator(Transformer);
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            const span = node.span;
+
+            const params_idx: NodeIndex = @enumFromInt(extras[e]);
+            const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
+            const flags = extras[e + 2];
+
+            const new_params = try self.visitNode(params_idx);
+
+            const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            if (sm_result.body.isNone()) return .none;
+
+            const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
+            const async_call = try buildAsyncHelperCall(self, gen_call, span);
+
+            // hoisted vars가 있으면 block body, 없으면 expression body
+            const final_body = if (sm_result.var_decl.isNone()) async_call else blk: {
+                const return_stmt = try self.new_ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
+                });
+                const body_list = try self.new_ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
+                break :blk try self.new_ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = body_list },
+                });
+            };
+            const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
+            const new_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(new_params),
+                @intFromEnum(final_body),
+                new_flags,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .arrow_function_expression,
+                .span = span,
+                .data = .{ .extra = new_extra },
+            });
+        }
+
         fn buildGeneratorWrapper(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const empty_params = try self.new_ast.addNodeList(&.{});
             const gen_extra = try self.new_ast.addExtras(&.{
@@ -142,43 +249,15 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
-        /// __async(function*() { ... })() — 즉시 호출.
-        /// __async는 래퍼 함수를 반환하므로 ()로 즉시 실행해야 Promise를 얻음.
+        /// __async(gen).call(this) — this 바인딩 보존.
         fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const async_span = try self.new_ast.addString("__async");
-            const async_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = async_span,
-                .data = .{ .string_ref = async_span },
-            });
-            const args = try self.new_ast.addNodeList(&.{gen_func});
-            const inner_call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(async_ref),
-                args.start,
-                args.len,
-                0,
-            });
-            const inner_call = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = inner_call_extra },
-            });
-            // __async(gen).call(this) — this 바인딩 보존
+            self.runtime_helpers.async_helper = true;
+            const async_ref = try es_helpers.makeIdentifierRef(self, "__async");
+            const inner_call = try es_helpers.makeCallExpr(self, async_ref, &.{gen_func}, span);
             const call_prop = try es_helpers.makeIdentifierRef(self, "call");
             const member = try es_helpers.makeStaticMember(self, inner_call, call_prop, span);
             const this_ref = try es_helpers.makeIdentifierRef(self, "this");
-            const this_args = try self.new_ast.addNodeList(&.{this_ref});
-            const outer_call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(member),
-                this_args.start,
-                this_args.len,
-                0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = outer_call_extra },
-            });
+            return es_helpers.makeCallExpr(self, member, &.{this_ref}, span);
         }
     };
 }

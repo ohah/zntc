@@ -78,6 +78,28 @@ pub const ASYNC_RUNTIME =
 ;
 pub const ASYNC_RUNTIME_MIN = "var __async=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
 
+/// __async ES5 호환: arrow function, rest params 없이 동일 동작.
+pub const ASYNC_RUNTIME_ES5 =
+    \\var __async = function(fn) {
+    \\  return function() {
+    \\    var args = Array.prototype.slice.call(arguments);
+    \\    var self = this;
+    \\    return new Promise(function(resolve, reject) {
+    \\      var gen = fn.apply(self, args);
+    \\      function step(key, arg) {
+    \\        try { var info = gen[key](arg); var value = info.value; }
+    \\        catch (error) { reject(error); return; }
+    \\        if (info.done) resolve(value);
+    \\        else Promise.resolve(value).then(function(val) { step("next", val); }, function(err) { step("throw", err); });
+    \\      }
+    \\      step("next");
+    \\    });
+    \\  };
+    \\};
+    \\
+;
+pub const ASYNC_RUNTIME_ES5_MIN = "var __async=function(fn){return function(){var args=Array.prototype.slice.call(arguments);var self=this;return new Promise(function(resolve,reject){var gen=fn.apply(self,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(function(val){step(\"next\",val)},function(err){step(\"throw\",err)})}step(\"next\")})}};";
+
 /// __extends: class 상속 prototype chain (ES2015). TypeScript __extends 호환.
 pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
 pub const EXTENDS_RUNTIME_MIN = "var __extends=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
@@ -202,7 +224,7 @@ pub const HMR_RUNTIME_LINES = blk: {
 
 /// 런타임 헬퍼 문자열을 ArrayList에 주입한다.
 /// standalone 트랜스파일(main.zig)에서도 사용할 수 있도록 pub으로 노출.
-pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, helpers: RuntimeHelpers, minify: bool) !void {
+pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, helpers: RuntimeHelpers, minify: bool, es5_compat: bool) !void {
     if (helpers.extends) {
         try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
     }
@@ -213,7 +235,11 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
         try buf.appendSlice(allocator, if (minify) REST_RUNTIME_MIN else REST_RUNTIME);
     }
     if (helpers.async_helper) {
-        try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
+        if (es5_compat) {
+            try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_ES5_MIN else ASYNC_RUNTIME_ES5);
+        } else {
+            try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
+        }
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
