@@ -86,6 +86,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
 --resolve-extensions=<exts>  확장자 탐색 순서 (쉼표 구분, 예: .ios.ts,.ts,.js)
 --main-fields=<fields>       package.json 필드 순서 (쉼표 구분, 예: react-native,browser,main)
+--rn-platform=ios|android    RN 서브 플랫폼 (.ios.*/.android.* + .native.* 확장자 자동 추가)
 --flow                       Flow 타입 스트리핑 (@flow pragma 자동 감지)
 --jsx=<mode>                 JSX 런타임 (classic|automatic|automatic-dev, tsconfig "jsx" 연동)
 --jsx-dev                    JSX 개발 모드 (jsxDEV + source info, --jsx=automatic-dev 단축)
@@ -119,7 +120,10 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 - `--watch` / `--serve` → 증분 빌드 (변경 모듈만 재파싱, 나머지 캐시)
 
 ### React Native 프리셋 (`--platform=react-native`)
-- resolve-extensions: `.tsx, .ts, .jsx, .js, .json` (사용자 미지정 시)
+- resolve-extensions (사용자 미지정 시):
+  - `--rn-platform=ios`: `.ios.tsx, .ios.ts, .ios.jsx, .ios.js, .native.tsx, .native.ts, .native.jsx, .native.js, .tsx, .ts, .jsx, .js, .json`
+  - `--rn-platform=android`: `.android.tsx, .android.ts, .android.jsx, .android.js, .native.tsx, .native.ts, .native.jsx, .native.js, .tsx, .ts, .jsx, .js, .json`
+  - 미지정: `.tsx, .ts, .jsx, .js, .json`
 - main-fields: `react-native, browser, module, main` (사용자 미지정 시)
 - exports 조건: `react-native, browser, import, module, default`
 - `--flow` 자동 활성화

@@ -142,12 +142,13 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     const metroOutput = await Bun.file(resolve(EXAMPLE_APP, "metro-out.js")).text();
     const metroModules = (metroOutput.match(/^__d\(function/gm) || []).length;
 
-    // ZTS 번들
+    // ZTS 번들 (--rn-platform=ios: Metro의 --platform ios와 동일한 확장자 해석)
     const zts = Bun.spawnSync([
       ZTS_BIN,
       "--bundle",
       resolve(EXAMPLE_APP, "index.js"),
       "--platform=react-native",
+      "--rn-platform=ios",
       "--flow",
       "--metafile=" + resolve(EXAMPLE_APP, "meta.json"),
       "-o",
