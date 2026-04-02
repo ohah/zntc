@@ -1097,12 +1097,13 @@ pub const ModuleGraph = struct {
         }
     }
 
-    /// ExportsKind.none 모듈을 소비하는 쪽에 따라 승격한다.
-    /// - 다른 모듈이 `import`하면 → .esm
-    /// - 다른 모듈이 `require()`하면 → .commonjs + wrap_kind = .cjs
-    /// 모든 모듈의 import_records를 순회하여, 대상 모듈이 .none이면 승격.
-    /// require가 import보다 우선: 이미 .esm으로 승격된 모듈도 require가 있으면 .commonjs로 변경.
+    /// 모듈의 exports_kind와 wrap_kind를 소비자에 따라 결정한다. (esbuild 모델)
+    /// 2-pass: require()를 먼저 처리하여 래핑을 결정하고, import는 나중에 처리.
+    /// - ESM 모듈 + require 소비 → WrapKind.esm (__esm 래퍼)
+    /// - CJS/none 모듈 + require 소비 → WrapKind.cjs (__commonJS 래퍼)
+    /// - .none 모듈 + import 소비 → .esm 승격 (래핑된 모듈은 변경하지 않음)
     fn promoteExportsKinds(self: *ModuleGraph) void {
+        // Pass 1: require() 소비 처리 (래핑 결정)
         for (self.modules.items) |m| {
             for (m.import_records) |rec| {
                 if (rec.resolved.isNone()) continue;
@@ -1112,22 +1113,32 @@ pub const ModuleGraph = struct {
                 var target = &self.modules.items[target_idx];
 
                 if (rec.kind == .require) {
-                    // require()로 소비 → CJS로 승격 (이미 ESM으로 승격된 것도 덮어씀, esbuild 동작)
-                    // esm_with_dynamic_fallback: ESM+CJS 혼합 모듈도 require()로 불리면 CJS 래핑 필요
-                    if (target.exports_kind == .none or target.exports_kind == .esm or
-                        target.exports_kind == .esm_with_dynamic_fallback)
-                    {
+                    // require()로 소비 → 래핑 필요 (esbuild WrapKind 결정 로직)
+                    // 원본 ExportsKind가 ESM → WrapESM, 그 외 → WrapCJS
+                    if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                        target.wrap_kind = .esm;
+                    } else {
                         target.exports_kind = .commonjs;
                         target.wrap_kind = .cjs;
                     }
-                    // JSON 모듈이 require()로 참조되면 ESM→CJS 강제 변환.
-                    // 일반 ESM 모듈과 동일하게 처리 (위의 exports_kind 변환에 의해).
+                }
+            }
+        }
 
-                } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                    // ESM import로 소비 → .none이면 승격
+        // Pass 2: import 소비 처리 (래핑 안 된 .none 모듈만 승격)
+        for (self.modules.items) |m| {
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                const target_idx = @intFromEnum(rec.resolved);
+                if (target_idx >= self.modules.items.len) continue;
+
+                var target = &self.modules.items[target_idx];
+
+                if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                    // 이미 래핑된 모듈은 건드리지 않음
+                    if (target.wrap_kind != .none) continue;
+
                     if (target.exports_kind == .none) {
-                        // node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주 (Node.js 기본값)
-                        // package.json "type": "module"인 경우만 ESM
                         if (self.isImplicitCjs(target)) {
                             target.exports_kind = .commonjs;
                             target.wrap_kind = .cjs;

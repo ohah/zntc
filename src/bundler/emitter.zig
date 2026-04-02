@@ -1529,7 +1529,7 @@ pub fn emitModule(
         // statement-level tree-shaking: StmtInfo 기반 도달성 분석으로 미사용 statement 제거.
         // rolldown 방식: 심볼 인덱스로 추적하여 linker rename 후에도 정확한 판정.
         if (used_export_names) |names| {
-            if (!is_entry and module.wrap_kind != .cjs) {
+            if (!is_entry and !module.wrap_kind.isWrapped()) {
                 stmt_shake: {
                     const sem = module.semantic orelse {
                         statement_shaker.markUnusedStatements(
@@ -1698,6 +1698,68 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
             // 내부 코드 들여쓰기
+            for (code) |c| {
+                try wrapped.append(allocator, c);
+                if (c == '\n') try wrapped.append(allocator, '\t');
+            }
+            try wrapped.appendSlice(allocator, "\n\t}\n});\n");
+        }
+
+        return try allocator.dupe(u8, wrapped.items);
+    }
+
+    // ESM 래핑: __esm 팩토리 함수로 감싸기 (ESM 모듈이 require()로 소비될 때)
+    // 출력: var foo_exports = {};
+    //       __export(foo_exports, { name: () => name, ... });
+    //       var init_foo = __esm({ "foo.js"() { ...code... } });
+    if (module.wrap_kind == .esm) {
+        const basename = std.fs.path.basename(module.path);
+
+        const init_name = try types.makeInitVarName(allocator, module.path);
+        defer allocator.free(init_name);
+        const exports_name = try types.makeExportsVarName(allocator, module.path);
+        defer allocator.free(exports_name);
+
+        var wrapped: std.ArrayList(u8) = .empty;
+        defer wrapped.deinit(allocator);
+
+        // 1. exports namespace 객체 선언
+        try wrapped.appendSlice(allocator, "var ");
+        try wrapped.appendSlice(allocator, exports_name);
+        try wrapped.appendSlice(allocator, " = {};\n");
+
+        // 2. __export로 live getter 등록 (export bindings에서 추출)
+        if (module.export_bindings.len > 0) {
+            try wrapped.appendSlice(allocator, "__export(");
+            try wrapped.appendSlice(allocator, exports_name);
+            try wrapped.appendSlice(allocator, ", {\n");
+            for (module.export_bindings) |eb| {
+                if (eb.kind == .local or eb.kind == .re_export) {
+                    try wrapped.appendSlice(allocator, "\t");
+                    try wrapped.appendSlice(allocator, eb.exported_name);
+                    try wrapped.appendSlice(allocator, ": () => ");
+                    try wrapped.appendSlice(allocator, eb.local_name);
+                    try wrapped.appendSlice(allocator, ",\n");
+                }
+            }
+            try wrapped.appendSlice(allocator, "});\n");
+        }
+
+        // 3. init 함수 + __esm 래핑
+        if (options.minify_whitespace) {
+            try wrapped.appendSlice(allocator, "var ");
+            try wrapped.appendSlice(allocator, init_name);
+            try wrapped.appendSlice(allocator, "=__esm({\"");
+            try wrapped.appendSlice(allocator, basename);
+            try wrapped.appendSlice(allocator, "\"(){");
+            try wrapped.appendSlice(allocator, code);
+            try wrapped.appendSlice(allocator, "}});");
+        } else {
+            try wrapped.appendSlice(allocator, "var ");
+            try wrapped.appendSlice(allocator, init_name);
+            try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
+            try wrapped.appendSlice(allocator, basename);
+            try wrapped.appendSlice(allocator, "\"() {\n");
             for (code) |c| {
                 try wrapped.append(allocator, c);
                 if (c == '\n') try wrapped.append(allocator, '\t');
@@ -1900,16 +1962,19 @@ fn emitBundleRuntimeHelpers(
     sorted_modules: []const *const Module,
     options: EmitOptions,
 ) !void {
-    // CJS 런타임 헬퍼 주입: __commonJS 래핑 모듈이 하나라도 있으면 주입.
+    // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
     var needs_cjs_runtime = false;
+    var needs_esm_wrap_runtime = false;
     for (sorted_modules) |m| {
-        if (m.wrap_kind == .cjs) {
-            needs_cjs_runtime = true;
-            break;
-        }
+        if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
+        if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
     }
-    if (needs_cjs_runtime) {
+    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+        // __toESM, __copyProps, __defProp은 CJS/ESM 양쪽에서 공유
         try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (needs_esm_wrap_runtime) {
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
@@ -1929,16 +1994,21 @@ fn emitChunkRuntimeHelpers(
     options: EmitOptions,
 ) !void {
     var needs_cjs_runtime = false;
+    var needs_esm_wrap_runtime = false;
     var needs_to_binary = false;
     for (chunk.modules.items) |mod_idx| {
         const mi = @intFromEnum(mod_idx);
         if (mi < modules.len) {
             if (modules[mi].wrap_kind == .cjs) needs_cjs_runtime = true;
+            if (modules[mi].wrap_kind == .esm) needs_esm_wrap_runtime = true;
             if (modules[mi].loader == .binary) needs_to_binary = true;
         }
     }
-    if (needs_cjs_runtime) {
+    if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (needs_esm_wrap_runtime) {
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);

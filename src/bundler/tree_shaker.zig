@@ -182,7 +182,7 @@ pub const TreeShaker = struct {
                     if (target >= self.modules.len) continue;
                     if (self.included.isSet(target)) continue;
                     if (rec.kind == .require or self.modules[target].side_effects or
-                        self.modules[target].wrap_kind == .cjs)
+                        self.modules[target].wrap_kind.isWrapped())
                     {
                         self.included.set(target);
                         changed = true;
@@ -196,7 +196,7 @@ pub const TreeShaker = struct {
         // fixpoint 후 미사용 sideEffects=false 모듈 제거 (1회만 수행, oscillation 방지)
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
-            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
+            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (!self.hasAnyUsedExport(@intCast(i))) {
                 self.included.unset(i);
             }
@@ -216,7 +216,7 @@ pub const TreeShaker = struct {
         // StmtInfo 구축 (entry, CJS 제외)
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
-            if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
+            if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped()) continue;
             const sem = m.semantic orelse continue;
             const ast = &(m.ast orelse continue);
             module_stmt_infos[i] = stmt_info_mod.build(
@@ -234,7 +234,7 @@ pub const TreeShaker = struct {
         // 미사용 sideEffects=false 모듈 제거
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
-            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
+            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
                 self.included.unset(i);
             }
@@ -402,7 +402,7 @@ pub const TreeShaker = struct {
         for (self.modules, 0..) |m, i| {
             const infos = module_stmt_infos[i] orelse {
                 // StmtInfo 없는 포함 모듈 (entry, CJS): import를 직접 시드
-                if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind == .cjs)) {
+                if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())) {
                     try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
                 }
                 continue;
