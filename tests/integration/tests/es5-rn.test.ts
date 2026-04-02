@@ -108,9 +108,12 @@ describe("RN ES5: ExampleApp 번들 테스트", () => {
     expect(bundle.stderr.toString()).not.toContain("panic");
 
     const output = await Bun.file(resolve(EXAMPLE_APP, "out-es5.js")).text();
-    // yield/function*이 남아있으면 안 됨
-    expect(output).not.toContain("yield ");
+    // generator 구문이 남아있으면 안 됨
     expect(output).not.toContain("function*");
+    expect(output).not.toMatch(/\bfunction\s*\*/);
+    // yield 키워드 체크: 문자열 리터럴 내 "yield" 오탐 방지를 위해
+    // 세미콜론/줄바꿈/공백 뒤에 오는 실제 yield 키워드만 감지
+    expect(output).not.toMatch(/(?:^|[;,=({\n])\s*yield[\s;]/m);
     // ES5 출력 크기 (100KB+)
     expect(output.length).toBeGreaterThan(100_000);
   });
