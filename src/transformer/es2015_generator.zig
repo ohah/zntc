@@ -218,17 +218,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             const new_yield_value = if (!yield_value_idx.isNone()) try self.visitNode(yield_value_idx) else NodeIndex.none;
                             try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_yield_value } });
                             next_label.* += 1;
-                            // x = _state.sent() (nop + assign)
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                            // assignment: left = _state.sent()
                             const new_left = try self.visitNode(expr.data.binary.left);
                             const sent_call = try buildSentCall(self, stmt.span);
-                            const assign = try self.new_ast.addNode(.{
-                                .tag = .assignment_expression,
-                                .span = stmt.span,
-                                .data = .{ .binary = .{ .left = new_left, .right = sent_call, .flags = 0 } },
-                            });
-                            const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
+                            const assign_stmt = try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                         } else {
                             const new_stmt = try self.visitNode(stmt_idx);
@@ -864,6 +857,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// generator body에서 모든 var 선언의 binding name을 수집 (호이스팅).
         /// let/const는 block-scoped이므로 호이스팅하지 않음 (ES2015 변환에서 var로 바뀌므로 포함).
+        /// destructuring 패턴은 개별 identifier로 분해하여 호이스팅.
+        /// (var {a, b} = expr → var a, b; 로 호이스팅. var {a, b}; 는 문법 에러)
         fn collectHoistedVars(self: *Transformer, stmts: []const u32, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             for (stmts) |raw_idx| {
                 const node = self.old_ast.getNode(@enumFromInt(raw_idx));
@@ -878,8 +873,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         if (decl.tag != .variable_declarator) continue;
                         const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
                         if (!binding.isNone()) {
-                            const new_binding = try self.visitNode(binding);
-                            try hoisted.append(self.allocator, new_binding);
+                            try collectBindingIdentifiers(self, binding, hoisted);
                         }
                     }
                 } else if (node.tag == .block_statement or node.tag == .function_body) {
@@ -923,11 +917,75 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     if (decl.tag != .variable_declarator) continue;
                     const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
                     if (!binding.isNone()) {
-                        const new_binding = try self.visitNode(binding);
-                        try hoisted.append(self.allocator, new_binding);
+                        try collectBindingIdentifiers(self, binding, hoisted);
                     }
                 }
             }
+        }
+
+        /// binding 패턴에서 모든 binding_identifier를 추출.
+        /// destructuring 패턴(object_pattern, array_pattern)은 재귀적으로 분해.
+        /// `var {a, b}` → `var a, b` (destructuring 없이 개별 identifier로 호이스팅)
+        fn collectBindingIdentifiers(self: *Transformer, binding_idx: NodeIndex, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            if (binding_idx.isNone()) return;
+            const node = self.old_ast.getNode(binding_idx);
+            switch (node.tag) {
+                .binding_identifier => {
+                    const new_binding = try self.visitNode(binding_idx);
+                    try hoisted.append(self.allocator, new_binding);
+                },
+                .object_pattern => {
+                    const props = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    for (props) |raw_idx| {
+                        const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+                        if (prop.tag == .binding_property) {
+                            // {key: value} → value 쪽에서 identifier 추출
+                            try collectBindingIdentifiers(self, prop.data.binary.right, hoisted);
+                        } else if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
+                            try collectBindingIdentifiers(self, prop.data.unary.operand, hoisted);
+                        } else if (prop.tag == .assignment_pattern) {
+                            // {x = default} → x
+                            try collectBindingIdentifiers(self, prop.data.binary.left, hoisted);
+                        }
+                    }
+                },
+                .array_pattern => {
+                    const elements = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    for (elements) |raw_idx| {
+                        const elem_idx: NodeIndex = @enumFromInt(raw_idx);
+                        if (elem_idx.isNone()) continue; // array hole
+                        try collectBindingIdentifiers(self, elem_idx, hoisted);
+                    }
+                },
+                .assignment_pattern => {
+                    // [x = default] → x
+                    try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
+                },
+                .rest_element, .binding_rest_element => {
+                    try collectBindingIdentifiers(self, node.data.unary.operand, hoisted);
+                },
+                else => unreachable,
+            }
+        }
+
+        /// assignment_expression을 expression_statement로 만들되,
+        /// object_pattern이 좌변이면 괄호로 감싸서 block statement와 구분.
+        /// ({a, b} = expr); vs {a, b} = expr; (후자는 syntax error)
+        fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = lhs, .right = rhs, .flags = 0 } },
+            });
+            const expr = if (self.new_ast.getNode(lhs).tag == .object_pattern)
+                try self.new_ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                })
+            else
+                assign;
+            return es_helpers.makeExprStmt(self, expr, span);
         }
 
         /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
@@ -961,23 +1019,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // x = _state.sent()
                     const new_binding = try self.visitNode(binding);
                     const sent_call = try buildSentCall(self, stmt.span);
-                    const assign = try self.new_ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = stmt.span,
-                        .data = .{ .binary = .{ .left = new_binding, .right = sent_call, .flags = 0 } },
-                    });
-                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else {
                     // var x = expr (no yield) → x = expr
                     const new_binding = try self.visitNode(binding);
                     const new_init = try self.visitNode(init_idx);
-                    const assign = try self.new_ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = stmt.span,
-                        .data = .{ .binary = .{ .left = new_binding, .right = new_init, .flags = 0 } },
-                    });
-                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
             }

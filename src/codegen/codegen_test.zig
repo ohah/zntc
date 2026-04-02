@@ -1324,6 +1324,24 @@ test "ES5: async function with if/await" {
     try expectAsyncStateMachine(r.output);
 }
 
+test "ES5: async with destructuring var hoisting" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { var {a, b} = await getObj(); return a + b; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    // destructuring은 개별 identifier로 호이스팅: var a, b; (not var {a, b};)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a,b") != null or
+        std.mem.indexOf(u8, r.output, "var a, b") != null);
+    // destructuring 패턴이 초기화 없이 나오면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var {") == null);
+}
+
+test "ES5: generator with destructuring var hoisting" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var {") == null);
+}
+
 test "ES5: __async runtime ES5 compatibility" {
     const rt = @import("../bundler/runtime_helpers.zig");
     // ES5 런타임 상수에 arrow function / rest params가 없어야 함
