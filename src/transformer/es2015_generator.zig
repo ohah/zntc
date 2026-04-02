@@ -172,7 +172,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // var 선언을 __generator 콜백 밖으로 분리하여 함수 스코프에 배치.
             // 콜백 안에 두면 매 호출마다 var가 재선언되어 상태가 리셋됨.
             var var_decl_node: NodeIndex = .none;
-            if (hoisted_vars.items.len > 0) {
+            const has_temp_vars = self.generator_temp_var_spans.items.len > 0;
+            if (hoisted_vars.items.len > 0 or has_temp_vars) {
                 const scratch_top2 = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top2);
 
@@ -180,6 +181,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                     try self.scratch.append(self.allocator, declarator);
                 }
+                // for-of 변환에서 생성한 임시 변수도 호이스팅
+                for (self.generator_temp_var_spans.items) |temp_span| {
+                    const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                    const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
+                    try self.scratch.append(self.allocator, declarator);
+                }
+                self.generator_temp_var_spans.clearRetainingCapacity();
                 var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top2..], 0, span);
             }
 
@@ -288,6 +296,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .switch_statement => {
                     try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
+                },
+                .for_of_statement, .for_in_statement => {
+                    if (containsYield(self, stmt_idx)) {
+                        try collectForOfOperations(self, stmt_idx, stmt, ops, next_label);
+                    } else {
+                        const new_stmt = try self.visitNode(stmt_idx);
+                        if (!new_stmt.isNone()) {
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                        }
+                    }
                 },
                 .break_statement, .continue_statement => {
                     const label_idx = stmt.data.unary.operand;
@@ -469,6 +487,159 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             fixupSentinel(ops.items[for_ops_start..], for_end_sent, end_label);
 
             // mark end_label
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        /// for-of/for-in 문의 연산 수집.
+        /// for (const x of arr) { yield ... }
+        /// → for (var _i = 0, _arr = arr; _i < _arr.length; _i++) { var x = _arr[_i]; yield ... }
+        /// 배열 기반 변환 후 collectForOperations와 동일한 yield 추출.
+        fn collectForOfOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const span = stmt.span;
+            const left = stmt.data.ternary.a; // loop variable
+            const right = stmt.data.ternary.b; // iterable
+            const body_idx = stmt.data.ternary.c; // body
+
+            // for-in: yield가 있으면 그대로 visitNode (for-in은 배열 변환 불가)
+            if (stmt.tag == .for_in_statement) {
+                const new_stmt = try self.visitNode(stmt_idx);
+                if (!new_stmt.isNone()) {
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                }
+                return;
+            }
+
+            // for-of → for 변환: _i (index), _arr (array)
+            const idx_span = try es_helpers.makeTempVarSpan(self);
+            const arr_span = try es_helpers.makeTempVarSpan(self);
+            // 임시 변수를 호이스팅 리스트에 등록 (buildGeneratorBody에서 var 선언 생성)
+            try self.generator_temp_var_spans.append(self.allocator, idx_span);
+            try self.generator_temp_var_spans.append(self.allocator, arr_span);
+            const new_right = try self.visitNode(right);
+
+            // init: _i = 0, _arr = iterable (assignment)
+            // __generator 콜백은 매 호출마다 새 실행 컨텍스트이므로
+            // var 선언은 콜백 안에 두면 매번 undefined로 리셋됨.
+            // assignment만 사용하고 var는 collectHoistedVars에서 처리.
+            const idx_ref_init = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+            const zero = try es_helpers.makeNumericLiteral(self, 0);
+            const idx_assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = idx_ref_init, .right = zero, .flags = 0 } },
+            });
+            const idx_stmt = try es_helpers.makeExprStmt(self, idx_assign, span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = idx_stmt } });
+
+            const arr_ref_init = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+            const arr_assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = arr_ref_init, .right = new_right, .flags = 0 } },
+            });
+            const arr_stmt = try es_helpers.makeExprStmt(self, arr_assign, span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = arr_stmt } });
+
+            // cond_label
+            const cond_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            // test: _i < _arr.length
+            const for_end_sent = LABEL_SENTINEL_BASE;
+            const for_ops_start = ops.items.len;
+            const idx_ref_test = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+            const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+            const length_prop = try es_helpers.makeIdentifierRef(self, "length");
+            const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
+            const test_expr = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{
+                    .left = idx_ref_test,
+                    .right = arr_length,
+                    .flags = @intFromEnum(token_mod.Kind.l_angle),
+                } },
+            });
+            try ops.append(self.allocator, .{
+                .code = .break_when_false,
+                .arg = .{ .label_and_node = .{ .label = for_end_sent, .node = test_expr } },
+            });
+
+            // body 앞에 var x = _arr[_i] 삽입
+            const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
+            const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+            const elem_access_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
+            });
+            const elem_access = try self.new_ast.addNode(.{
+                .tag = .computed_member_expression,
+                .span = span,
+                .data = .{ .extra = elem_access_extra },
+            });
+
+            // loop variable assignment: x = _arr[_i]
+            const left_node = self.old_ast.getNode(left);
+            if (left_node.tag == .variable_declaration) {
+                // const/let/var x → x = _arr[_i]
+                const decl_extras = self.old_ast.extra_data.items;
+                const decl_e = left_node.data.extra;
+                const decl_start = decl_extras[decl_e + 1];
+                const decl_len = decl_extras[decl_e + 2];
+                if (decl_len > 0) {
+                    const declarator = self.old_ast.getNode(@enumFromInt(decl_extras[decl_start]));
+                    if (declarator.tag == .variable_declarator) {
+                        const binding: NodeIndex = @enumFromInt(decl_extras[declarator.data.extra]);
+                        const new_binding = try self.visitNode(binding);
+                        const assign = try self.new_ast.addNode(.{
+                            .tag = .assignment_expression,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = new_binding, .right = elem_access, .flags = 0 } },
+                        });
+                        const assign_stmt = try es_helpers.makeExprStmt(self, assign, span);
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                    }
+                }
+            } else {
+                // expression: x = _arr[_i]
+                const new_left = try self.visitNode(left);
+                const assign = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = new_left, .right = elem_access, .flags = 0 } },
+                });
+                const assign_stmt = try es_helpers.makeExprStmt(self, assign, span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+            }
+
+            // body 수집 (yield 추출)
+            try collectBodyOperations(self, body_idx, ops, next_label);
+
+            // update: _i++
+            const update_label = next_label.*;
+            next_label.* += 1;
+            self.generator_for_update_label = update_label;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
+            const update_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(idx_ref_update),
+                @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
+            });
+            const update_expr = try self.new_ast.addNode(.{
+                .tag = .update_expression,
+                .span = span,
+                .data = .{ .extra = update_extra },
+            });
+            const update_stmt = try es_helpers.makeExprStmt(self, update_expr, span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
+
+            // goto cond_label
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
+
+            // end_label
+            const end_label = next_label.*;
+            next_label.* += 1;
+            fixupSentinel(ops.items[for_ops_start..], for_end_sent, end_label);
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
         }
 
@@ -915,6 +1086,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
                     try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
                 } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
+                    // loop variable (const/let/var x)도 호이스팅 — state machine에서 접근 필요
+                    try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
                     try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
                 } else if (node.tag == .try_statement) {
                     // try body + catch body + finally body 재귀
