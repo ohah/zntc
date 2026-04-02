@@ -88,13 +88,18 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     const default_idx: NodeIndex = @enumFromInt(extras[pe + 2]);
 
                     if (!default_idx.isNone()) {
-                        // default parameter: x = val → x; body에 x = x === void 0 ? val : x 삽입
-                        const new_pattern = try self.visitNode(pattern_idx);
-                        try self.scratch.append(self.allocator, new_pattern);
-
-                        const new_default = try self.visitNode(default_idx);
-                        const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
-                        try body_stmts.append(self.allocator, default_stmt);
+                        const pat_node = self.old_ast.getNode(pattern_idx);
+                        if (pat_node.tag == .object_pattern or pat_node.tag == .array_pattern) {
+                            // destructuring + default → temp 변수 경유
+                            const result = try buildDestructuringDefault(self, pattern_idx, default_idx, &body_stmts, span);
+                            try self.scratch.append(self.allocator, result);
+                        } else {
+                            const new_pattern = try self.visitNode(pattern_idx);
+                            try self.scratch.append(self.allocator, new_pattern);
+                            const new_default = try self.visitNode(default_idx);
+                            const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
+                            try body_stmts.append(self.allocator, default_stmt);
+                        }
                         param_index += 1;
                         continue;
                     }
@@ -102,12 +107,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
                 if (param.tag == .assignment_pattern) {
                     // assignment_pattern: binary { left=pattern, right=default }
-                    const new_pattern = try self.visitNode(param.data.binary.left);
-                    try self.scratch.append(self.allocator, new_pattern);
-
-                    const new_default = try self.visitNode(param.data.binary.right);
-                    const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
-                    try body_stmts.append(self.allocator, default_stmt);
+                    const pattern_node = self.old_ast.getNode(param.data.binary.left);
+                    if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
+                        const result = try buildDestructuringDefault(self, param.data.binary.left, param.data.binary.right, &body_stmts, span);
+                        try self.scratch.append(self.allocator, result);
+                    } else {
+                        const new_pattern = try self.visitNode(param.data.binary.left);
+                        try self.scratch.append(self.allocator, new_pattern);
+                        const new_default = try self.visitNode(param.data.binary.right);
+                        const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
+                        try body_stmts.append(self.allocator, default_stmt);
+                    }
                     param_index += 1;
                     continue;
                 }
@@ -132,6 +142,37 @@ pub fn ES2015Params(comptime Transformer: type) type {
             new_params: NodeList,
             body_stmts: std.ArrayList(NodeIndex),
         };
+
+        /// destructuring + default parameter → temp 변수 경유.
+        /// ({a = 1} = {}) → (_ref); body에 _ref = _ref === void 0 ? {} : _ref; var {a} = _ref;
+        fn buildDestructuringDefault(
+            self: *Transformer,
+            pattern_idx: NodeIndex,
+            default_idx: NodeIndex,
+            body_stmts: *std.ArrayList(NodeIndex),
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+
+            const new_default = try self.visitNode(default_idx);
+            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const default_stmt = try buildDefaultCheck(self, temp_ref, new_default, span);
+            try body_stmts.append(self.allocator, default_stmt);
+
+            // var {a} = _ref
+            const new_pattern = try self.visitNode(pattern_idx);
+            const temp_ref2 = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const destruct_decl = try es_helpers.makeVarDeclaration(
+                self,
+                &.{try es_helpers.makeDeclarator(self, new_pattern, temp_ref2, span)},
+                0,
+                span,
+            );
+            try body_stmts.append(self.allocator, destruct_decl);
+
+            return temp_binding;
+        }
 
         /// x = x === void 0 ? default_value : x
         /// → expression_statement 생성
