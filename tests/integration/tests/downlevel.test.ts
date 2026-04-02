@@ -883,6 +883,48 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("2,4,6");
     });
 
+    test("generator for-of with empty array", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* gen(arr: number[]) {
+              for (const x of arr) { yield x; }
+            }
+            var it = gen([]);
+            console.log(it.next().done ? "empty" : "not empty");
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("empty");
+    });
+
+    test("async for-of with await", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function process(items: number[]) {
+              var results: number[] = [];
+              for (const item of items) {
+                var val = await Promise.resolve(item * 10);
+                results.push(val);
+              }
+              return results;
+            }
+            process([1, 2, 3]).then(r => console.log(r.join(",")));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10,20,30");
+    });
+
     test("async with try/catch/finally", async () => {
       const result = await bundleAndRun(
         {

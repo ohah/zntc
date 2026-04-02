@@ -500,7 +500,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const right = stmt.data.ternary.b; // iterable
             const body_idx = stmt.data.ternary.c; // body
 
-            // for-in: yield가 있으면 그대로 visitNode (for-in은 배열 변환 불가)
+            // for-in: yield를 포함한 state machine 변환은 미지원.
+            // for-in은 iterable protocol이 아닌 object key 열거이므로 배열 변환 불가.
+            // yield는 방문되지만 state machine 추출 없이 그대로 출력됨.
             if (stmt.tag == .for_in_statement) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
