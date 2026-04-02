@@ -149,7 +149,10 @@ pub fn ES2017(comptime Transformer: type) type {
             if (sm_result.body.isNone()) return .none;
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-            const async_call = try buildAsyncHelperCall(self, gen_call, span);
+            // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
+            // function() { return __generator(cb); } 로 감싸야 함.
+            const gen_wrapper_func = try wrapInFunction(self, gen_call, span);
+            const async_call = try buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
@@ -203,7 +206,8 @@ pub fn ES2017(comptime Transformer: type) type {
             if (sm_result.body.isNone()) return .none;
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-            const async_call = try buildAsyncHelperCall(self, gen_call, span);
+            const gen_wrapper_func = try wrapInFunction(self, gen_call, span);
+            const async_call = try buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // hoisted vars가 있으면 block body, 없으면 expression body
             const final_body = if (sm_result.var_decl.isNone()) async_call else blk: {
@@ -229,6 +233,36 @@ pub fn ES2017(comptime Transformer: type) type {
                 .tag = .arrow_function_expression,
                 .span = span,
                 .data = .{ .extra = new_extra },
+            });
+        }
+
+        /// function() { return expr; } — 일반 함수로 expression 감싸기.
+        /// ES5에서 __async에 __generator() iterator를 전달할 때 사용.
+        pub fn wrapInFunction(self: *Transformer, expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const ret = try self.new_ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+            });
+            const body_list = try self.new_ast.addNodeList(&.{ret});
+            const body_block = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+            const empty_params = try self.new_ast.addNodeList(&.{});
+            const func_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(NodeIndex.none),
+                empty_params.start,
+                empty_params.len,
+                @intFromEnum(body_block),
+                0,
+                @intFromEnum(NodeIndex.none),
+            });
+            return self.new_ast.addNode(.{
+                .tag = .function_expression,
+                .span = span,
+                .data = .{ .extra = func_extra },
             });
         }
 

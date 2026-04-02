@@ -803,6 +803,147 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     });
   });
 
+  // ===== ES5: async + generator 결합 (state machine) =====
+
+  describe("ES5: async → state machine", () => {
+    test("async function with multiple awaits", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function add(a: number, b: number) {
+              const x = await Promise.resolve(a);
+              const y = await Promise.resolve(b);
+              return x + y;
+            }
+            add(10, 32).then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("async arrow function", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const double = async (x: number) => x * 2; double(21).then(v => console.log(v));",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("async with await in condition", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function check(x: number) {
+              if (x > 0 && (await Promise.resolve(true))) {
+                return "yes";
+              }
+              return "no";
+            }
+            check(1).then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("yes");
+    });
+
+    test.skip("async with try/catch/finally", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function safe() {
+              try {
+                throw new Error("oops");
+              } catch (e: any) {
+                return await Promise.resolve(e.message);
+              }
+            }
+            safe().then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("oops");
+    });
+
+    test("class async method", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Calculator {
+              async add(a: number, b: number) {
+                const x = await Promise.resolve(a);
+                return x + b;
+              }
+            }
+            new Calculator().add(10, 32).then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("multiple awaits in expression (temp vars)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function sum() {
+              const result = (await Promise.resolve(10)) + (await Promise.resolve(32));
+              return result;
+            }
+            sum().then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("destructuring default parameter", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function greet({name = "world"} = {}) {
+              return "hello " + name;
+            }
+            console.log(greet());
+            console.log(greet({name: "zts"}));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toContain("hello world");
+      expect(result.runOutput).toContain("hello zts");
+    });
+  });
+
   // ===== ES2018 (target=es2017) =====
 
   describe("ES2018 → es2017", () => {

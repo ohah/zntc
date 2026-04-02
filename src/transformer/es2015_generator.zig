@@ -724,7 +724,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const condition = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
 
-            if (!containsYield(self, body_idx)) {
+            if (!containsYield(self, body_idx) and !containsYield(self, condition)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -741,7 +741,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try collectBodyOperations(self, body_idx, ops, next_label);
 
             // condition → if true, goto body_label
-            const new_cond = try self.visitNode(condition);
+            const new_cond = if (containsYield(self, condition))
+                try visitExprWithYieldExtraction(self, condition, ops, next_label)
+            else
+                try self.visitNode(condition);
             try ops.append(self.allocator, .{
                 .code = .break_when_true,
                 .arg = .{ .label_and_node = .{ .label = body_label, .node = new_cond } },
