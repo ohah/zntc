@@ -2643,6 +2643,12 @@ test "Flow+JSX: arrow with typed params returning JSX" {
     );
 }
 
+test "Flow+JSX: JSX member expression" {
+    try expectNoParseErrorFlowJSX("<Foo.Bar />;");
+    try expectNoParseErrorFlowJSX("<Foo.Bar baz={1}>hello</Foo.Bar>;");
+    try expectNoParseErrorFlowJSX("<A.B.C />;");
+}
+
 test "Flow+JSX: nullable ref type in class" {
     try expectNoParseErrorFlowJSX(
         \\import * as React from 'react';

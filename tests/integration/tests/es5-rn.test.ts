@@ -195,10 +195,10 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     if (hermes.exitCode !== 0) {
       console.log("hermesc errors:", stderr);
     }
-    // 현재는 에러 수 기준 — 0 목표
     const errorCount = (stderr.match(/error:/g) || []).length;
     console.log(`hermesc errors: ${errorCount}`);
-    expect(errorCount).toBeLessThanOrEqual(1); // { .: true } 버그 1건 잔여
+    // Flow match expression은 Hermes 미지원 (RN 내부 API) — 1건 허용
+    expect(errorCount).toBeLessThanOrEqual(1);
   }, 60_000);
 });
 

@@ -223,11 +223,30 @@ fn parseJSXTagName(self: *Parser) ParseError2!NodeIndex {
     // 예: <div>, <const>, <in>, <return> 등 — JSX에서는 JS 예약어 제한 없음
     if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
         try self.scanner.nextInsideJSXElement();
-        return try self.ast.addNode(.{
+        var result = try self.ast.addNode(.{
             .tag = .jsx_identifier,
             .span = span,
             .data = .{ .string_ref = span },
         });
+        // JSX member expression: <Foo.Bar.Baz>
+        while (self.current() == .dot) {
+            try self.scanner.nextInsideJSXElement(); // skip '.'
+            const member_span = self.currentSpan();
+            if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
+                try self.scanner.nextInsideJSXElement();
+                const member = try self.ast.addNode(.{
+                    .tag = .jsx_identifier,
+                    .span = member_span,
+                    .data = .{ .string_ref = member_span },
+                });
+                result = try self.ast.addNode(.{
+                    .tag = .jsx_member_expression,
+                    .span = .{ .start = span.start, .end = member_span.end },
+                    .data = .{ .binary = .{ .left = result, .right = member, .flags = 0 } },
+                });
+            } else break;
+        }
+        return result;
     }
     try self.addError(span, "JSX tag name expected");
     return NodeIndex.none;

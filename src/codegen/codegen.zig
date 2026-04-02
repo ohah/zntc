@@ -768,6 +768,9 @@ pub const Codegen = struct {
 
             .formal_parameter => try self.emitFormalParam(node),
 
+            // Flow match expression: 원본 텍스트 그대로 출력 (런타임 기능)
+            .flow_match_expression => try self.writeNodeSpan(node),
+
             // JSX → React.createElement
             .jsx_element => try self.emitJSXElement(node),
             .jsx_fragment => try self.emitJSXFragment(node),
