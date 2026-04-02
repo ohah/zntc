@@ -52,8 +52,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_body = try self.visitNode(body_idx);
             const new_params = try self.visitExtraList(params_start, params_len);
 
-            const gen_func = try buildGeneratorWrapper(self, new_body, node.span);
-            const async_call = try buildAsyncHelperCall(self, gen_func, node.span);
+            const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
+            const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
@@ -110,8 +110,8 @@ pub fn ES2017(comptime Transformer: type) type {
                 });
             } else new_body;
 
-            const gen_func = try buildGeneratorWrapper(self, gen_body, node.span);
-            const async_call = try buildAsyncHelperCall(self, gen_func, node.span);
+            const gen_func = try es_helpers.buildGeneratorWrapper(self, gen_body, node.span);
+            const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
             const new_extra = try self.new_ast.addExtras(&.{
@@ -151,8 +151,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             // __async는 fn.apply()로 함수를 호출하므로 iterator를 직접 전달 불가.
             // function() { return __generator(cb); } 로 감싸야 함.
-            const gen_wrapper_func = try wrapInFunction(self, gen_call, span);
-            const async_call = try buildAsyncHelperCall(self, gen_wrapper_func, span);
+            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
+            const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
@@ -206,8 +206,8 @@ pub fn ES2017(comptime Transformer: type) type {
             if (sm_result.body.isNone()) return .none;
 
             const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-            const gen_wrapper_func = try wrapInFunction(self, gen_call, span);
-            const async_call = try buildAsyncHelperCall(self, gen_wrapper_func, span);
+            const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
+            const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
             // hoisted vars가 있으면 block body, 없으면 expression body
             const final_body = if (sm_result.var_decl.isNone()) async_call else blk: {
@@ -236,62 +236,5 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
-        /// function() { return expr; } — 일반 함수로 expression 감싸기.
-        /// ES5에서 __async에 __generator() iterator를 전달할 때 사용.
-        pub fn wrapInFunction(self: *Transformer, expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const ret = try self.new_ast.addNode(.{
-                .tag = .return_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
-            });
-            const body_list = try self.new_ast.addNodeList(&.{ret});
-            const body_block = try self.new_ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
-            const empty_params = try self.new_ast.addNodeList(&.{});
-            const func_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(NodeIndex.none),
-                empty_params.start,
-                empty_params.len,
-                @intFromEnum(body_block),
-                0,
-                @intFromEnum(NodeIndex.none),
-            });
-            return self.new_ast.addNode(.{
-                .tag = .function_expression,
-                .span = span,
-                .data = .{ .extra = func_extra },
-            });
-        }
-
-        pub fn buildGeneratorWrapper(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const empty_params = try self.new_ast.addNodeList(&.{});
-            const gen_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(NodeIndex.none), // name
-                empty_params.start,
-                empty_params.len,
-                @intFromEnum(body),
-                ast_mod.FunctionFlags.is_generator,
-                @intFromEnum(NodeIndex.none), // return type
-            });
-            return self.new_ast.addNode(.{
-                .tag = .function_expression,
-                .span = span,
-                .data = .{ .extra = gen_extra },
-            });
-        }
-
-        /// __async(gen).call(this) — this 바인딩 보존.
-        pub fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            self.runtime_helpers.async_helper = true;
-            const async_ref = try es_helpers.makeIdentifierRef(self, "__async");
-            const inner_call = try es_helpers.makeCallExpr(self, async_ref, &.{gen_func}, span);
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
-            const member = try es_helpers.makeStaticMember(self, inner_call, call_prop, span);
-            const this_ref = try es_helpers.makeIdentifierRef(self, "this");
-            return es_helpers.makeCallExpr(self, member, &.{this_ref}, span);
-        }
     };
 }

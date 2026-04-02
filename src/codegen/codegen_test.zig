@@ -3719,3 +3719,110 @@ test "Flow: class with typed methods does not crash transformer" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "bar") != null);
 }
+
+// ============================================================
+// Private Method (#method → WeakSet + standalone function)
+// ============================================================
+
+test "private method: es2021 → WeakSet + standalone function (class preserved)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #bar() { return 1; }
+        \\  method() { return this.#bar(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // WeakSet 선언
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
+    // standalone function
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _bar_fn()") != null);
+    // class 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo") != null);
+    // brand check init
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_bar)") != null);
+    // brand check get + .call
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_bar,_bar_fn).call(this)") != null);
+}
+
+test "private method: es5 → WeakSet + function + prototype" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #bar() { return 1; }
+        \\  method() { return this.#bar(); }
+        \\}
+    , .es5);
+    defer r.deinit();
+    // class → function
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
+    // WeakSet
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
+    // prototype method
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
+    // brand check
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_bar)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_bar,_bar_fn).call(this)") != null);
+}
+
+test "private method: multiple methods" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #bar() { return 1; }
+        \\  #baz(x: number) { return x + 1; }
+        \\  method() { return this.#bar() + this.#baz(2); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // 두 WeakSet
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _baz=new WeakSet") != null);
+    // 두 standalone function
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _bar_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _baz_fn(x)") != null);
+    // 호출부에 인자 전달
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_baz,_baz_fn).call(this,2)") != null);
+}
+
+test "private method: with existing constructor (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Greeter {
+        \\  name: string;
+        \\  constructor(name: string) { this.name = name; }
+        \\  #format() { return "Hello, " + this.name; }
+        \\  greet() { return this.#format(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // constructor에 init 주입
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_format)") != null);
+    // 기존 constructor body 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.name=name") != null);
+}
+
+test "private method: with extends generates super() (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Base { value = 10; }
+        \\class Child extends Base {
+        \\  #helper() { return this.value; }
+        \\  run() { return this.#helper(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // extends가 있고 constructor가 없을 때 super(...args) 포함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super(...args)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_helper)") != null);
+}
+
+test "private method: es2022 target preserves original" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #bar() { return 1; }
+        \\  method() { return this.#bar(); }
+        \\}
+    , .es2022);
+    defer r.deinit();
+    // 원본 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#bar()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#bar()") != null);
+    // WeakSet 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "WeakSet") == null);
+}

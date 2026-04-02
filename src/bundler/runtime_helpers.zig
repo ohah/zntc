@@ -136,6 +136,33 @@ pub const KEEP_NAMES_RUNTIME = "var __name = (target, value) => Object.definePro
 pub const KEEP_NAMES_RUNTIME_MIN = "var __name=(target,value)=>Object.defineProperty(target,\"name\",{value,configurable:true});";
 
 // ============================================================
+// Private Method (ES2022 downlevel)
+// ============================================================
+
+/// __classPrivateMethodInit: WeakSet brand check + add (SWC 호환).
+/// private method가 있는 class의 constructor에서 호출.
+/// 이미 등록된 인스턴스면 TypeError (재초기화 방지).
+pub const PRIVATE_METHOD_INIT_RUNTIME =
+    \\var __classPrivateMethodInit = function(obj, privateSet) {
+    \\  if (privateSet.has(obj)) throw new TypeError("Cannot initialize the same private elements twice on an object");
+    \\  privateSet.add(obj);
+    \\};
+    \\
+;
+pub const PRIVATE_METHOD_INIT_RUNTIME_MIN = "var __classPrivateMethodInit=function(obj,privateSet){if(privateSet.has(obj))throw new TypeError(\"Cannot initialize the same private elements twice on an object\");privateSet.add(obj)};";
+
+/// __classPrivateMethodGet: brand check + private method 접근 (SWC 호환).
+/// this.#method() 호출 시 brand check 후 함수 참조 반환.
+pub const PRIVATE_METHOD_GET_RUNTIME =
+    \\var __classPrivateMethodGet = function(receiver, privateSet, fn) {
+    \\  if (!privateSet.has(receiver)) throw new TypeError("attempted to get private field on non-instance");
+    \\  return fn;
+    \\};
+    \\
+;
+pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var __classPrivateMethodGet=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn}";
+
+// ============================================================
 // HMR (Dev Server)
 // ============================================================
 
@@ -246,6 +273,12 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.keep_names) {
         try buf.appendSlice(allocator, if (minify) KEEP_NAMES_RUNTIME_MIN else KEEP_NAMES_RUNTIME);
+    }
+    if (helpers.class_private_method_init) {
+        try buf.appendSlice(allocator, if (minify) PRIVATE_METHOD_INIT_RUNTIME_MIN else PRIVATE_METHOD_INIT_RUNTIME);
+    }
+    if (helpers.class_private_method_get) {
+        try buf.appendSlice(allocator, if (minify) PRIVATE_METHOD_GET_RUNTIME_MIN else PRIVATE_METHOD_GET_RUNTIME);
     }
 }
 

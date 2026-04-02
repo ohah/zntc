@@ -20,7 +20,6 @@
 //!   → Object.defineProperty(Foo.prototype, "prop", { get: function() {}, ... })
 //!
 //! 제한사항:
-//!   - private members (#field): 미지원
 //!   - class expression: 미지원 (declaration만)
 //!   - static blocks: 무시 (ES2022 변환이 먼저 처리)
 //!
@@ -103,16 +102,39 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.current_private_fields = saved_private_fields;
             }
 
+            // private method 매핑 설정 (method body 방문 시 this.#method() → _fn.call(this) 변환)
+            const saved_private_methods = self.current_private_methods;
+            if (cm.private_methods.items.len > 0) {
+                self.current_private_methods = cm.private_methods.items;
+            }
+            defer self.current_private_methods = saved_private_methods;
+
             // --- private fields → WeakMap 선언 (function 앞에 배치) ---
             // var _x = new WeakMap();
             for (cm.private_fields.items) |pf| {
-                const wm_decl = try buildWeakMapDecl(self, pf.name, span);
+                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span);
                 try self.pending_nodes.append(self.allocator, wm_decl);
+            }
+
+            // --- private methods → WeakSet 선언 + standalone function (function 앞에 배치) ---
+            for (cm.private_methods.items) |pm| {
+                // var _method = new WeakSet();
+                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span);
+                try self.pending_nodes.append(self.allocator, ws_decl);
+                // function _method_fn(...) { ... }
+                const func_decl = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span);
+                try self.pending_nodes.append(self.allocator, func_decl);
             }
 
             // --- private field 초기화 → _x.set(this, init) (constructor body에 삽입) ---
             for (cm.private_fields.items) |pf| {
                 const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                try cm.instance_fields.append(self.allocator, init_stmt);
+            }
+
+            // --- private method 초기화 → _method.add(this) (constructor body에 삽입) ---
+            for (cm.private_methods.items) |pm| {
+                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
@@ -124,7 +146,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try buildEmptyFunction(self, new_name, span);
 
-            // instance fields → constructor body 앞에 삽입
+            // instance fields + private init → constructor body 앞에 삽입
             if (cm.instance_fields.items.len > 0) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
@@ -230,9 +252,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.current_private_fields = saved_private_fields;
             }
 
+            // private method 매핑 설정
+            const saved_private_methods = self.current_private_methods;
+            if (cm.private_methods.items.len > 0) {
+                self.current_private_methods = cm.private_methods.items;
+            }
+            defer self.current_private_methods = saved_private_methods;
+
             // private field 초기화 → constructor body에 삽입
             for (cm.private_fields.items) |pf| {
                 const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                try cm.instance_fields.append(self.allocator, init_stmt);
+            }
+
+            // private method 초기화 → constructor body에 삽입
+            for (cm.private_methods.items) |pm| {
+                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
@@ -251,6 +286,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 메서드/static/extends/private가 없으면 단순 function expression으로 변환
             const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
+                cm.private_methods.items.len > 0 or
                 cm.static_block_stmts.items.len > 0 or (has_super and super_span != null);
 
             if (!has_extra) {
@@ -268,8 +304,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // WeakMap 선언 (IIFE 안에 배치)
             for (cm.private_fields.items) |pf| {
-                const wm_decl = try buildWeakMapDecl(self, pf.name, span);
+                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span);
                 try self.scratch.append(self.allocator, wm_decl);
+            }
+
+            // WeakSet + standalone function 선언 (IIFE 안에 배치)
+            for (cm.private_methods.items) |pm| {
+                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span);
+                try self.scratch.append(self.allocator, ws_decl);
+                const func_decl = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span);
+                try self.scratch.append(self.allocator, func_decl);
             }
 
             try self.scratch.append(self.allocator, func_node);
@@ -659,7 +703,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex, // 초기값 (none이면 undefined)
         };
 
-        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors, private_fields.
+        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors, private_fields, private_methods.
         const ClassifiedMembers = struct {
             constructor_idx: ?NodeIndex,
             methods: std.ArrayList(MethodInfo),
@@ -667,17 +711,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
             static_fields: std.ArrayList(FieldInfo),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
+            private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
             static_block_stmts: std.ArrayList(NodeIndex),
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
                     allocator.free(pf.name);
                 }
+                for (cm.private_methods.items) |pm| {
+                    allocator.free(pm.weakset_name);
+                    allocator.free(pm.func_name);
+                }
                 cm.methods.deinit(allocator);
                 cm.instance_fields.deinit(allocator);
                 cm.static_fields.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
+                cm.private_methods.deinit(allocator);
                 cm.static_block_stmts.deinit(allocator);
             }
         };
@@ -694,6 +744,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .static_fields = .empty,
                 .accessors = .empty,
                 .private_fields = .empty,
+                .private_methods = .empty,
                 .static_block_stmts = .empty,
             };
 
@@ -710,6 +761,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (!is_static and isConstructorKey(self, key)) {
                         cm.constructor_idx = @enumFromInt(raw_idx);
                         continue;
+                    }
+
+                    // private method (#method) → WeakSet + standalone function 분류
+                    if (!key.isNone()) {
+                        const key_node = self.old_ast.getNode(key);
+                        if (key_node.tag == .private_identifier) {
+                            const orig_name = self.old_ast.source[key_node.span.start..key_node.span.end]; // "#bar"
+
+                            const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
+
+                            try cm.private_methods.append(self.allocator, .{
+                                .member_idx = @enumFromInt(raw_idx),
+                                .original_name = orig_name,
+                                .weakset_name = names.ws_name,
+                                .func_name = names.fn_name,
+                            });
+                            continue;
+                        }
                     }
 
                     if (kind == 1 or kind == 2) {
@@ -782,22 +851,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return cm;
         }
 
-        /// var _x = new WeakMap(); 선언 생성.
-        fn buildWeakMapDecl(self: *Transformer, name: []const u8, span: Span) Transformer.Error!NodeIndex {
-            // new WeakMap()
-            const wm_ref = try es_helpers.makeIdentifierRef(self, "WeakMap");
-            const empty_args = try self.new_ast.addNodeList(&.{});
-            const new_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(wm_ref), empty_args.start, empty_args.len, 0,
-            });
-            const new_expr = try self.new_ast.addNode(.{
-                .tag = .new_expression,
-                .span = span,
-                .data = .{ .extra = new_extra },
-            });
 
-            return self.buildVarDecl(name, new_expr, span);
-        }
 
         /// _x.set(this, init) expression_statement 생성.
         fn buildPrivateFieldInit(self: *Transformer, name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
@@ -1081,7 +1135,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 여기서 직접 async → state machine 변환을 수행해야 함.
             // (new_ast에 생성된 function_expression은 transformer가 재방문하지 않음)
             if (is_async and self.options.unsupported.async_await) {
-                const ES2017 = @import("es2017.zig").ES2017(@TypeOf(self.*));
                 const GenMod = @import("es2015_generator.zig").ES2015Generator(@TypeOf(self.*));
 
                 if (self.options.unsupported.generator) {
@@ -1090,15 +1143,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
                     if (!sm_result.body.isNone()) {
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-                        const gen_wrapper = try ES2017.wrapInFunction(self, gen_call, span);
-                        const async_call = try ES2017.buildAsyncHelperCall(self, gen_wrapper, span);
+                        const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
+                        const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(self, async_call, sm_result.var_decl, new_params, span);
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
                 }
                 // async만 unsupported → __async(function*() { ... })
-                const gen_wrapper = try ES2017.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
-                const async_call = try ES2017.buildAsyncHelperCall(self, gen_wrapper, span);
+                const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
+                const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }

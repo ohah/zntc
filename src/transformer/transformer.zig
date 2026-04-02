@@ -97,7 +97,11 @@ pub const RuntimeHelpers = packed struct(u16) {
     to_binary: bool = false,
     /// __name: 함수/클래스 .name 프로퍼티 보존 (--keep-names)
     keep_names: bool = false,
-    _padding: u8 = 0,
+    /// __classPrivateMethodInit: private method brand check (WeakSet.add with error)
+    class_private_method_init: bool = false,
+    /// __classPrivateMethodGet: private method access with brand check
+    class_private_method_get: bool = false,
+    _padding: u6 = 0,
 };
 
 /// AST-to-AST 변환기.
@@ -183,6 +187,10 @@ pub const Transformer = struct {
     /// class body 방문 중 설정되어, this.#x → _x.get(this), this.#x = v → _x.set(this, v) 변환에 사용.
     current_private_fields: []const PrivateFieldMapping = &.{},
 
+    /// ES2022 class private methods: "#name" → WeakSet + standalone function 매핑.
+    /// class body 방문 중 설정되어, this.#method() → _method_fn.call(this) 변환에 사용.
+    current_private_methods: []const PrivateMethodMapping = &.{},
+
     /// 현재 함수 스코프에서 arrow body가 this를 사용하여 var _this = this 삽입이 필요한지.
     needs_this_var: bool = false,
 
@@ -215,6 +223,13 @@ pub const Transformer = struct {
     pub const PrivateFieldMapping = struct {
         original_name: []const u8, // "#x"
         var_name: []const u8, // "_x"
+    };
+
+    pub const PrivateMethodMapping = struct {
+        original_name: []const u8, // "#method" (원본 소스 텍스트)
+        weakset_name: []const u8, // "_method" (WeakSet 변수명)
+        func_name: []const u8, // "_method_fn" (추출 함수명)
+        member_idx: NodeIndex = NodeIndex.none, // method_definition 노드 (ES2015 경로에서 사용)
     };
 
     const RefreshRegistration = struct {
@@ -551,6 +566,12 @@ pub const Transformer = struct {
                 return self.visitMemberExpression(node);
             },
             .private_field_expression => {
+                // ES2022: this.#method → _method_fn.bind(this) (참조만, 호출 아닌 경우)
+                if (self.current_private_methods.len > 0) {
+                    if (es2022.ES2022(Transformer).lowerPrivateMethodGet(self, node)) |result| {
+                        return result;
+                    }
+                }
                 // ES2015: this.#x → _x.get(this)
                 if (self.options.unsupported.class and self.current_private_fields.len > 0) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
@@ -656,6 +677,12 @@ pub const Transformer = struct {
             .switch_statement => self.visitSwitchStatement(node),
             .switch_case => self.visitSwitchCase(node),
             .call_expression => {
+                // ES2022: this.#method(args) → _method_fn.call(this, args)
+                if (self.current_private_methods.len > 0) {
+                    if (es2022.ES2022(Transformer).lowerPrivateMethodCall(self, node)) |result| {
+                        return result;
+                    }
+                }
                 // ES 다운레벨링: ?.() → ternary (target < es2020)
                 if (self.options.unsupported.optional_chaining) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
@@ -1796,8 +1823,51 @@ pub const Transformer = struct {
             const new_name = try self.visitNode(self.readNodeIdx(e, 0));
             const new_super = try self.visitNode(self.readNodeIdx(e, 1));
 
+            var current_body_idx = self.readNodeIdx(e, 2);
+
+            // ES2022 다운레벨링: private method → WeakSet + standalone function
+            var pm_pre_stmts: std.ArrayList(NodeIndex) = .empty;
+            defer pm_pre_stmts.deinit(self.allocator);
+            var pm_ctor_stmts: std.ArrayList(NodeIndex) = .empty;
+            defer pm_ctor_stmts.deinit(self.allocator);
+            var pm_mappings: std.ArrayList(PrivateMethodMapping) = .empty;
+            defer {
+                for (pm_mappings.items) |pm| {
+                    self.allocator.free(pm.weakset_name);
+                    self.allocator.free(pm.func_name);
+                }
+                pm_mappings.deinit(self.allocator);
+            }
+
+            var had_private_methods = false;
+            if (self.options.unsupported.class_private_method) {
+                var pm_body: NodeIndex = .none;
+
+                // private method 변환 중 current_private_methods 설정
+                // (body 내부의 this.#method() 호출이 변환되도록)
+                const has_super = !self.readNodeIdx(e, 1).isNone();
+                had_private_methods = try es2022.ES2022(Transformer).lowerPrivateMethods(
+                    self,
+                    current_body_idx,
+                    &pm_body,
+                    &pm_pre_stmts,
+                    &pm_ctor_stmts,
+                    &pm_mappings,
+                    has_super,
+                );
+
+                if (had_private_methods) {
+                    current_body_idx = pm_body;
+                    // lowerPrivateMethods가 내부적으로 current_private_methods를 설정/해제하므로
+                    // 여기서는 body가 이미 변환된 상태. 추가 설정 불필요.
+                }
+            }
+
             // ES2022 다운레벨링: static block → IIFE (target < es2022)
-            if (self.options.unsupported.class_static_block) {
+            // had_private_methods가 true이면 lowerPrivateMethods가 이미 body를
+            // new_ast로 변환했으므로, lowerStaticBlocks(old_ast 기반)를 건너뛴다.
+            // lowerPrivateMethods 내의 visitNode가 static block도 이미 처리.
+            if (self.options.unsupported.class_static_block and !had_private_methods) {
                 var new_body: NodeIndex = .none;
                 var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
                 defer static_block_iifes.deinit(self.allocator);
@@ -1807,22 +1877,27 @@ pub const Transformer = struct {
 
                 const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
                     self,
-                    self.readNodeIdx(e, 2),
+                    current_body_idx,
                     &new_body,
                     &static_block_iifes,
                     class_name_span,
                 );
 
                 if (had_static_blocks) {
+                    current_body_idx = new_body;
+
                     const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
                     const none = @intFromEnum(NodeIndex.none);
                     const class_result = try self.addExtraNode(node.tag, node.span, &.{
-                        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
                         none,                   0,                       0,
                         new_decos.start,        new_decos.len,
                     });
 
-                    // class 노드를 pending_nodes에 넣고, static block IIFE를 그 뒤에 추가
+                    // pre_stmts (WeakSet + function) → class → static block IIFE
+                    for (pm_pre_stmts.items) |stmt| {
+                        try self.pending_nodes.append(self.allocator, stmt);
+                    }
                     try self.pending_nodes.append(self.allocator, class_result);
                     for (static_block_iifes.items) |iife| {
                         try self.pending_nodes.append(self.allocator, iife);
@@ -1831,7 +1906,24 @@ pub const Transformer = struct {
                 }
             }
 
-            const new_body = try self.visitNode(self.readNodeIdx(e, 2));
+            // private method만 있고 static block은 없는 경우
+            if (had_private_methods) {
+                const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+                const none = @intFromEnum(NodeIndex.none);
+                const class_result = try self.addExtraNode(node.tag, node.span, &.{
+                    @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
+                    none,                   0,                       0,
+                    new_decos.start,        new_decos.len,
+                });
+
+                for (pm_pre_stmts.items) |stmt| {
+                    try self.pending_nodes.append(self.allocator, stmt);
+                }
+                try self.pending_nodes.append(self.allocator, class_result);
+                return .none;
+            }
+
+            const new_body = try self.visitNode(current_body_idx);
             const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
             const none = @intFromEnum(NodeIndex.none);
             return self.addExtraNode(node.tag, node.span, &.{
