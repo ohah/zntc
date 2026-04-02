@@ -197,8 +197,8 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     }
     const errorCount = (stderr.match(/error:/g) || []).length;
     console.log(`hermesc errors: ${errorCount}`);
-    // 번들러 scope hoisting 변수 충돌 (Identifier already declared) — 별도 이슈
-    expect(errorCount).toBeLessThanOrEqual(9);
+    // ExceptionsManager self-reference 1건 잔여 — 별도 이슈
+    expect(errorCount).toBeLessThanOrEqual(1);
   }, 60_000);
 });
 

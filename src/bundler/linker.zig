@@ -265,12 +265,27 @@ pub const Linker = struct {
             const sym_name = scope_entry.key_ptr.*;
             if (std.mem.eql(u8, sym_name, "default")) continue;
 
-            // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님.
-            // namespace import도 인라인(ns.prop → prop)되어 preamble 변수가 생성되지 않으므로
-            // 충돌 대상이 아님.
+            // import binding은 일반적으로 인라인되어 변수가 생성되지 않으므로 충돌 대상 아님.
+            // 단, CJS 모듈을 import하면 preamble에서 `var X = require_xxx().X`로 변수가 생성되므로
+            // 충돌 대상에 포함해야 한다.
             const sym_idx = scope_entry.value_ptr.*;
             if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                continue;
+                // CJS preamble 변수가 생성되는 경우에만 충돌 대상에 포함
+                const generates_preamble = blk: {
+                    for (m.import_bindings) |ib| {
+                        if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
+                        if (ib.import_record_index >= m.import_records.len) break :blk false;
+                        const rec = m.import_records[ib.import_record_index];
+                        // unresolved import → require() preamble
+                        if (rec.resolved.isNone()) break :blk true;
+                        // CJS 모듈 import → require_xxx() preamble
+                        const cmod = @intFromEnum(rec.resolved);
+                        if (cmod < self.modules.len and self.modules[cmod].wrap_kind == .cjs) break :blk true;
+                        break :blk false;
+                    }
+                    break :blk false;
+                };
+                if (!generates_preamble) continue;
             }
 
             const entry = try name_to_owners.getOrPut(sym_name);
