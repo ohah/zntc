@@ -38,6 +38,22 @@ jobs:
       - name: Run integration tests
         run: bun run test:integration
 
+  hermes:
+    name: Hermes Validation (RN Bundle)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-zts
+
+      - name: Install RN example app dependencies
+        run: cd tests/integration/tests/fixtures/rn-example-app && bun install
+
+      - name: Run Hermes validation
+        run: cd tests/integration && bun run test:hermes
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
