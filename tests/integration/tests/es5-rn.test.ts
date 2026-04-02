@@ -165,11 +165,10 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
       `Metro bytes: ${metroOutput.length}, ZTS bytes: ${(await Bun.file(resolve(EXAMPLE_APP, "zts-out.js")).text()).length}`,
     );
 
-    // ZTS가 Metro와 동일한 모듈 수를 resolve해야 함 (100% 목표)
-    // 현재는 84% 수준 — #613 이슈로 추적 중
+    // ZTS가 Metro 이상의 모듈을 resolve해야 함
     const ratio = ztsModules / metroModules;
     console.log(`Module resolve ratio: ${(ratio * 100).toFixed(1)}%`);
-    expect(ratio).toBeGreaterThanOrEqual(0.8); // 80% 최소 기준 (100% 목표)
+    expect(ratio).toBeGreaterThanOrEqual(1.0);
   }, 60_000); // Metro 번들은 ~20초 소요
 });
 
