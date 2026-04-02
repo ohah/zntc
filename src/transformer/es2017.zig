@@ -232,7 +232,7 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
-        fn buildGeneratorWrapper(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildGeneratorWrapper(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const empty_params = try self.new_ast.addNodeList(&.{});
             const gen_extra = try self.new_ast.addExtras(&.{
                 @intFromEnum(NodeIndex.none), // name
@@ -250,7 +250,7 @@ pub fn ES2017(comptime Transformer: type) type {
         }
 
         /// __async(gen).call(this) — this 바인딩 보존.
-        fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             self.runtime_helpers.async_helper = true;
             const async_ref = try es_helpers.makeIdentifierRef(self, "__async");
             const inner_call = try es_helpers.makeCallExpr(self, async_ref, &.{gen_func}, span);

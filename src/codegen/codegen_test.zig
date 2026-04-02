@@ -1458,6 +1458,32 @@ test "ES5: multiple awaits in array literal use temp vars" {
         std.mem.indexOf(u8, r.output, "= _state.sent()") != null);
 }
 
+test "ES5: class async method → state machine (RN KeyboardAvoidingView pattern)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  async bar(x) {
+        \\    if (x && (await check())) { return 0; }
+        \\    const y = await compute(x);
+        \\    return y;
+        \\  }
+        \\}
+    , .es5);
+    defer r.deinit();
+    // class async method도 state machine으로 변환되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
+    // async 키워드가 메서드 선언에 남아있으면 안 됨 (async function은 __async 헬퍼 제외)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function") == null);
+}
+
+test "ES5: class static async method → state machine" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { static async fetch() { return await getData(); } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+}
+
 test "ES5: generator with destructuring var hoisting" {
     var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
     defer r.deinit();

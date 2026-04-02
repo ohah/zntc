@@ -1095,9 +1095,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .spread_element,
                 .rest_element,
                 .parenthesized_expression,
-                .unary_expression,
-                .update_expression,
                 => containsYield(self, node.data.unary.operand),
+                .unary_expression, .update_expression => {
+                    // extra = [operand, operator_and_flags]
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e >= extras.len) return false;
+                    return containsYield(self, @enumFromInt(extras[e]));
+                },
                 .assignment_expression,
                 .binary_expression,
                 .logical_expression,
@@ -1278,17 +1283,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 // temp 변수에 _state.sent() 결과 저장
+                // temp_span을 node.span 대신 사용 — 번들러에서 다른 모듈의 source span과 충돌 방지
                 const temp_span = try es_helpers.makeTempVarSpan(self);
-                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, node.span);
-                const sent_call = try buildSentCall(self, node.span);
+                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const sent_call = try buildSentCall(self, temp_span);
                 const assign = try self.new_ast.addNode(.{
                     .tag = .assignment_expression,
-                    .span = node.span,
+                    .span = temp_span,
                     .data = .{ .binary = .{ .left = temp_ref, .right = sent_call, .flags = 0 } },
                 });
-                const assign_stmt = try es_helpers.makeExprStmt(self, assign, node.span);
+                const assign_stmt = try es_helpers.makeExprStmt(self, assign, temp_span);
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
-                return es_helpers.makeTempVarRef(self, temp_span, node.span);
+                return es_helpers.makeTempVarRef(self, temp_span, temp_span);
             }
 
             // yield를 포함하지 않으면 일반 visit
@@ -1329,13 +1335,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
             }
 
-            // unary/update expression (!, ~, typeof, ++x 등): operand 재귀
+            // unary/update expression: extra = [operand, operator_and_flags]
             if (node.tag == .unary_expression or node.tag == .update_expression) {
-                const new_operand = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+                const extras = self.old_ast.extra_data.items;
+                const e = node.data.extra;
+                const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                const new_operand = try visitExprWithYieldExtraction(self, operand_idx, ops, next_label);
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_operand),
+                    extras[e + 1], // operator_and_flags
+                });
                 return self.new_ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
-                    .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
+                    .data = .{ .extra = new_extra },
                 });
             }
 
