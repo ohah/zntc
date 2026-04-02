@@ -89,6 +89,14 @@ const CliOptions = struct {
     resolve_extensions_list: std.ArrayList([]const u8) = .empty,
     /// package.json 필드 해석 순서 (--main-fields=react-native,browser,main)
     main_fields_list: std.ArrayList([]const u8) = .empty,
+    /// React Native 서브 플랫폼 (--rn-platform=ios|android)
+    rn_platform: RnPlatform = .none,
+
+    const RnPlatform = enum {
+        none,
+        ios,
+        android,
+    };
 
     const AliasEntry = BundleOptions.AliasEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
@@ -345,6 +353,10 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.platform = .neutral;
         } else if (std.mem.eql(u8, arg, "--platform=react-native") or std.mem.eql(u8, arg, "--platform=react_native")) {
             opts.platform = .react_native;
+        } else if (std.mem.eql(u8, arg, "--rn-platform=ios")) {
+            opts.rn_platform = .ios;
+        } else if (std.mem.eql(u8, arg, "--rn-platform=android")) {
+            opts.rn_platform = .android;
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
@@ -1142,7 +1154,29 @@ pub fn main() !void {
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
         if (opts.platform == .react_native) {
             if (opts.resolve_extensions_list.items.len == 0) {
-                try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".tsx", ".ts", ".jsx", ".js", ".json" });
+                // --rn-platform에 따라 플랫폼별 확장자를 우선 배치한다.
+                // 예: ios → .ios.tsx, .ios.ts, ... → .native.tsx, ... → .tsx, .ts, ... → .json
+                switch (opts.rn_platform) {
+                    .ios => {
+                        try opts.resolve_extensions_list.appendSlice(allocator, &.{
+                            ".ios.tsx",    ".ios.ts",    ".ios.jsx",    ".ios.js",
+                            ".native.tsx", ".native.ts", ".native.jsx", ".native.js",
+                            ".tsx",        ".ts",        ".jsx",        ".js",
+                            ".json",
+                        });
+                    },
+                    .android => {
+                        try opts.resolve_extensions_list.appendSlice(allocator, &.{
+                            ".android.tsx", ".android.ts", ".android.jsx", ".android.js",
+                            ".native.tsx",  ".native.ts",  ".native.jsx",  ".native.js",
+                            ".tsx",         ".ts",         ".jsx",         ".js",
+                            ".json",
+                        });
+                    },
+                    .none => {
+                        try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".tsx", ".ts", ".jsx", ".js", ".json" });
+                    },
+                }
             }
             if (opts.main_fields_list.items.len == 0) {
                 try opts.main_fields_list.appendSlice(allocator, &.{ "react-native", "browser", "module", "main" });
@@ -1975,6 +2009,7 @@ fn printUsage(writer: anytype) !void {
         \\  --external <pkg>                 Exclude package (repeatable)
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
+        \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
         \\
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)
