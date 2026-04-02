@@ -2732,31 +2732,8 @@ pub const Codegen = struct {
     /// JSX text (공백 트리밍은 caller에서 처리)
     fn emitJSXText(self: *Codegen, node: Node) !void {
         const text = self.ast.source[node.span.start..node.span.end];
-        // JSX 텍스트: 줄바꿈+주변 공백을 단일 스페이스로 정규화, 특수문자 이스케이프
         try self.writeByte('"');
-        var in_whitespace = false;
-        for (text) |c| {
-            switch (c) {
-                '\n', '\r', '\t', ' ' => {
-                    if (!in_whitespace) {
-                        try self.writeByte(' ');
-                        in_whitespace = true;
-                    }
-                },
-                '"' => {
-                    in_whitespace = false;
-                    try self.write("\\\"");
-                },
-                '\\' => {
-                    in_whitespace = false;
-                    try self.write("\\\\");
-                },
-                else => {
-                    in_whitespace = false;
-                    try self.writeByte(c);
-                },
-            }
-        }
+        try self.writeJSXTextEscaped(text);
         try self.writeByte('"');
     }
 
