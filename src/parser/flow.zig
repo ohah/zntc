@@ -596,16 +596,11 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    // 함수 타입 vs 괄호 타입 판별:
-    // - `(name:` 또는 `(...` → 함수 타입 시도
-    // - Flow에서 positional params도 허용: `(number, string) => boolean`
-    //   → `(Type, Type) => R` 형태는 named param이 아니라서 별도 감지 필요
-    //   → Flow 모드에서는 항상 함수 타입 시도 (backtracking으로 안전하게 처리)
+    // 함수 타입 vs 괄호 타입 판별 — 함수 타입일 가능성이 있으면 backtracking으로 시도.
+    // Flow는 positional params를 허용하므로 `({obj}, Type | null, ...) => R` 같은
+    // 패턴도 감지해야 한다.
     const is_likely_fn = blk: {
         if (self.current() == .dot3) break :blk true;
-        // Flow: positional params — `({msg: string}, number) => void`, `(Type | null, ...) => void`
-        // object/tuple/generic 등 다양한 타입이 첫 param으로 올 수 있으므로,
-        // backtracking으로 안전하게 function type 시도
         if (self.current() == .l_curly or self.current() == .l_bracket) break :blk true;
         if (self.current() == .identifier) {
             const next = try self.peekNextKind();
