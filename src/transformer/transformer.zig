@@ -1268,10 +1268,12 @@ pub const Transformer = struct {
 
         for (self.options.define, 0..) |entry, i| {
             if (std.mem.eql(u8, text, entry.key)) {
-                // transform() 시작 시 캐싱된 string_table Span 사용 (addString 중복 방지)
                 const value_span = self.define_spans[i];
+                // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
+                // "production" → string_literal, false/true/숫자 → identifier_reference.
+                const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
                 return self.new_ast.addNode(.{
-                    .tag = .string_literal,
+                    .tag = if (is_string) .string_literal else .identifier_reference,
                     .span = value_span,
                     .data = .{ .string_ref = value_span },
                 });

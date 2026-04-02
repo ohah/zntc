@@ -497,21 +497,27 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         opts.bundle_format = .iife;
     }
 
-    // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
+    // --bundle + --platform=browser/react-native이면 자동 define (esbuild 호환).
     // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
-    // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
+    // 사용자가 이미 동일 키를 --define: 로 지정한 경우 덮어쓰지 않음.
     if (opts.is_bundle and opts.platform.isBrowserLike()) {
         var has_node_env = false;
+        var has_dev = false;
         for (opts.define_list.items) |d| {
-            if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
-                has_node_env = true;
-                break;
-            }
+            if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) has_node_env = true;
+            if (std.mem.eql(u8, d.key, "__DEV__")) has_dev = true;
         }
         if (!has_node_env) {
             try opts.define_list.append(allocator, .{
                 .key = "process.env.NODE_ENV",
                 .value = "\"production\"",
+            });
+        }
+        // RN: __DEV__를 자동 define (Metro 호환). production → false.
+        if (!has_dev) {
+            try opts.define_list.append(allocator, .{
+                .key = "__DEV__",
+                .value = "false",
             });
         }
     }
