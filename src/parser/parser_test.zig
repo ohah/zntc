@@ -2840,6 +2840,22 @@ test "Flow: typed arrow in multi-param" {
     try expectNoParseErrorFlow("const f = (a, b, c: string) => c;");
 }
 
+test "Flow: nullable return type with arrow" {
+    // ?(T) return type이 function type이 아닌 nullable paren type으로 해석되어야 함
+    try expectNoParseErrorFlow(
+        \\class C {
+        \\  _getItem = (data: Array<ItemT>, index: number): ?(ItemT | string) => {
+        \\    return data[index];
+        \\  };
+        \\}
+    );
+}
+
+test "Flow: typed arrow in ternary consequent" {
+    // (): void => {} — 삼항 안에서 typed empty-param arrow
+    try expectNoParseErrorFlow("const x = true ? (): void => { return; } : null;");
+}
+
 test "Flow: type guard predicate" {
     try expectNoParseErrorFlow(
         \\function isObj(value: mixed): value is {[string]: unknown} {
