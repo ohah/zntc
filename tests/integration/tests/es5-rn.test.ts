@@ -170,6 +170,36 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
     console.log(`Module resolve ratio: ${(ratio * 100).toFixed(1)}%`);
     expect(ratio).toBeGreaterThanOrEqual(1.0);
   }, 60_000); // Metro 번들은 ~20초 소요
+
+  test("Hermes 구문 검증 (hermesc)", async () => {
+    const hermesc = resolve(EXAMPLE_APP, "node_modules/hermes-compiler/hermesc/osx-bin/hermesc");
+
+    // ZTS 번들
+    const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
+    const zts = Bun.spawnSync([
+      ZTS_BIN,
+      "--bundle",
+      resolve(EXAMPLE_APP, "index.js"),
+      "--platform=react-native",
+      "--rn-platform=ios",
+      "--flow",
+      "-o",
+      outFile,
+    ]);
+    expect(zts.exitCode).toBe(0);
+
+    // hermesc로 구문 검증
+    const hbc = resolve(EXAMPLE_APP, "zts-hermes.hbc");
+    const hermes = Bun.spawnSync([hermesc, "-emit-binary", "-out", hbc, outFile]);
+    const stderr = hermes.stderr?.toString() ?? "";
+    if (hermes.exitCode !== 0) {
+      console.log("hermesc errors:", stderr);
+    }
+    // 현재는 에러 수 기준 — 0 목표
+    const errorCount = (stderr.match(/error:/g) || []).length;
+    console.log(`hermesc errors: ${errorCount}`);
+    expect(errorCount).toBeLessThanOrEqual(1); // { .: true } 버그 1건 잔여
+  }, 60_000);
 });
 
 describe("RN ES5 다운레벨링: 기존 flow-rn fixtures", () => {
