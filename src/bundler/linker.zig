@@ -839,6 +839,10 @@ pub const Linker = struct {
 
         // CJS import preamble writer
         var preamble = PreambleWriter.init(self.allocator);
+
+        // __esm 모듈의 init_xxx() 호출 중복 방지 (같은 모듈을 여러 binding이 참조할 때)
+        var esm_init_set = std.AutoHashMap(u32, void).init(self.allocator);
+        defer esm_init_set.deinit();
         defer preamble.deinit();
 
         // namespace member rewrite 엔트리 수집 (esbuild 방식)
@@ -900,6 +904,20 @@ pub const Linker = struct {
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
                     try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     continue;
+                }
+
+                // __esm 래핑 모듈에서 import: init_xxx() 호출을 preamble에 추가.
+                // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
+                // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
+                if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .esm) {
+                    if (!esm_init_set.contains(@intCast(canonical_mod))) {
+                        try esm_init_set.put(@intCast(canonical_mod), {});
+                        const init_name = try types.makeInitVarName(self.allocator, self.modules[canonical_mod].path);
+                        defer self.allocator.free(init_name);
+                        try preamble.write(init_name);
+                        try preamble.write("();\n");
+                    }
+                    // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
                 }
 
                 // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
