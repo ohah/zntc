@@ -746,14 +746,16 @@ pub const Linker = struct {
 
     /// AST에서 import/export 노드를 식별하여 스킵 비트셋을 생성한다.
     /// buildMetadataForAst와 buildDevMetadataForAst에서 공유.
-    fn buildSkipNodes(allocator: std.mem.Allocator, new_ast: *const Ast) !std.DynamicBitSet {
+    fn buildSkipNodes(allocator: std.mem.Allocator, new_ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
         const node_count = new_ast.nodes.items.len;
         var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, node_count);
         errdefer skip_nodes.deinit();
 
         for (new_ast.nodes.items, 0..) |node, node_idx| {
             switch (node.tag) {
-                .import_declaration => skip_nodes.set(node_idx),
+                // 래핑 모듈: import는 emitImportCJS가 처리 → skip하지 않음.
+                // scope hoisted 타겟 import만 import_bindings 루프에서 개별 skip.
+                .import_declaration => if (skip_imports) skip_nodes.set(node_idx),
                 .export_named_declaration => {
                     const e = node.data.extra;
                     if (e + 3 < new_ast.extra_data.items.len) {
@@ -794,22 +796,26 @@ pub const Linker = struct {
 
         const m = self.modules[module_index];
 
-        // CJS/ESM 래핑 모듈은 스코프 호이스팅 대상이 아님.
-        // 단, 내부 require() 호출은 번들된 require_xxx()로 치환해야 함.
-        if (m.wrap_kind == .cjs or m.wrap_kind == .esm) {
+        // 래핑 모듈 + semantic 없음: require_rewrites만 구축하고 조기 반환.
+        // semantic 있으면 import_bindings 처리 경로로 진행하여
+        // scope hoisted ESM 타겟에 대한 rename/preamble도 생성.
+        if (m.wrap_kind.isWrapped() and m.semantic == null) {
             const node_count = new_ast.nodes.items.len;
             return .{
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
-                .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
+                .symbol_ids = &.{},
                 .cjs_import_preamble = null,
                 .require_rewrites = try self.buildRequireRewrites(&m),
                 .allocator = self.allocator,
             };
         }
 
-        var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
+        // 래핑 모듈: import를 skip하지 않음 (emitImportCJS가 처리).
+        // scope hoisted 타겟 import만 import_bindings 루프에서 개별 skip.
+        const skip_imports = !m.wrap_kind.isWrapped();
+        var skip_nodes = try buildSkipNodes(self.allocator, new_ast, skip_imports);
         errdefer skip_nodes.deinit();
 
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
@@ -999,6 +1005,42 @@ pub const Linker = struct {
                 if (!isReservedName(target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
+                    }
+                }
+            }
+
+            // 래핑 모듈: scope hoisted 타겟의 import_declaration을 skip.
+            // import binding rename이 외부 scope 변수를 직접 참조하므로 import 선언 불필요.
+            if (m.wrap_kind.isWrapped()) {
+                // scope hoisted 타겟의 import_record specifier 수집
+                var hoisted_specifiers = std.StringHashMap(void).init(self.allocator);
+                defer hoisted_specifiers.deinit();
+                for (m.import_records) |rec| {
+                    if (rec.resolved.isNone()) continue;
+                    const tidx = @intFromEnum(rec.resolved);
+                    if (tidx >= self.modules.len) continue;
+                    if (self.modules[tidx].wrap_kind == .none) {
+                        try hoisted_specifiers.put(rec.specifier, {});
+                    }
+                }
+                // AST에서 해당 specifier의 import_declaration 노드를 skip
+                if (hoisted_specifiers.count() > 0) {
+                    for (new_ast.nodes.items, 0..) |inode, inode_idx| {
+                        if (inode.tag != .import_declaration) continue;
+                        const ie = inode.data.extra;
+                        if (ie + 3 > new_ast.extra_data.items.len) continue;
+                        const source_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[ie + 2]);
+                        if (source_idx.isNone()) continue;
+                        const src_node = new_ast.getNode(source_idx);
+                        if (src_node.tag != .string_literal) continue;
+                        const raw = new_ast.source[src_node.data.string_ref.start..src_node.data.string_ref.end];
+                        const spec = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+                            raw[1 .. raw.len - 1]
+                        else
+                            raw;
+                        if (hoisted_specifiers.contains(spec)) {
+                            skip_nodes.set(inode_idx);
+                        }
                     }
                 }
             }
@@ -1284,7 +1326,7 @@ pub const Linker = struct {
             };
         }
 
-        var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
+        var skip_nodes = try buildSkipNodes(self.allocator, new_ast, true);
         errdefer skip_nodes.deinit();
 
         // 2. __zts_require preamble 생성
