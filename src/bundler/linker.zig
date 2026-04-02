@@ -847,9 +847,9 @@ pub const Linker = struct {
             .allocator = self.allocator,
         };
 
-        // CJS import preamble 빌드용 버퍼
-        var cjs_preamble_buf: std.ArrayList(u8) = .empty;
-        defer cjs_preamble_buf.deinit(self.allocator);
+        // CJS import preamble writer
+        var preamble = PreambleWriter.init(self.allocator);
+        defer preamble.deinit();
 
         // namespace member rewrite 엔트리 수집 (esbuild 방식)
         var ns_rewrite_list: std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry) = .empty;
@@ -896,17 +896,7 @@ pub const Linker = struct {
                 if (rec.resolved.isNone()) {
                     if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                         const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
-                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, preamble_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
-                        try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
-                        try cjs_preamble_buf.appendSlice(self.allocator, "\")");
-                        // named import만 .property 접근 추가 (namespace/default는 모듈 전체)
-                        if (ib.kind != .namespace and !std.mem.eql(u8, ib.imported_name, "default")) {
-                            try cjs_preamble_buf.appendSlice(self.allocator, ".");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
-                        }
-                        try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
+                        try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
                     }
                     continue;
                 }
@@ -918,7 +908,7 @@ pub const Linker = struct {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
+                    try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     continue;
                 }
 
@@ -953,7 +943,7 @@ pub const Linker = struct {
                         const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                         const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name, ib.imported_name, req_var, false, interop_mode2);
+                        try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, false, interop_mode2);
                         continue;
                     }
                 }
@@ -1081,10 +1071,7 @@ pub const Linker = struct {
         }
 
         // CJS import preamble 저장
-        var cjs_import_preamble: ?[]const u8 = null;
-        if (cjs_preamble_buf.items.len > 0) {
-            cjs_import_preamble = try self.allocator.dupe(u8, cjs_preamble_buf.items);
-        }
+        const cjs_import_preamble = try preamble.toOwned();
 
         // export default의 합성 변수명 계산 (이름 충돌 시 _default$1 등)
         var default_export_name: []const u8 = "_default";
@@ -1225,24 +1212,12 @@ pub const Linker = struct {
         ns_inline_list.deinit(allocator);
 
         // namespace 변수 선언을 preamble에 추가: var gql = {parse: parse, ...};
-        var ns_preamble_buf: std.ArrayList(u8) = .empty;
-        defer ns_preamble_buf.deinit(allocator);
+        var ns_preamble = PreambleWriter.init(allocator);
+        defer ns_preamble.deinit();
         for (ns_inlines.entries) |entry| {
-            try ns_preamble_buf.appendSlice(allocator, "var ");
-            try ns_preamble_buf.appendSlice(allocator, entry.var_name);
-            try ns_preamble_buf.appendSlice(allocator, " = ");
-            try ns_preamble_buf.appendSlice(allocator, entry.object_literal);
-            try ns_preamble_buf.appendSlice(allocator, ";\n");
+            try ns_preamble.writeNamespaceObject(entry.var_name, entry.object_literal);
         }
-        const combined_preamble: ?[]const u8 = if (ns_preamble_buf.items.len > 0) blk: {
-            // ns preamble이 있으면 cjs preamble과 합침
-            const combined = try std.mem.concat(allocator, u8, &.{
-                cjs_import_preamble orelse "",
-                ns_preamble_buf.items,
-            });
-            if (cjs_import_preamble) |p| allocator.free(p);
-            break :blk combined;
-        } else cjs_import_preamble;
+        const combined_preamble = try ns_preamble.concatWith(cjs_import_preamble);
 
         return .{
             .rewrites = ns_rewrites,
@@ -1291,90 +1266,73 @@ pub const Linker = struct {
         errdefer skip_nodes.deinit();
 
         // 2. __zts_require preamble 생성
-        var preamble_buf: std.ArrayList(u8) = .empty;
-        defer preamble_buf.deinit(self.allocator);
+        var dev_preamble = PreambleWriter.init(self.allocator);
+        defer dev_preamble.deinit();
 
-        // import binding을 import_record_index별로 그룹핑하여 출력
-        // 같은 소스에서 여러 이름을 가져오면: const { a, b } = __zts_require("./dep");
-        var rec_idx: u32 = 0;
-        while (rec_idx < m.import_records.len) : (rec_idx += 1) {
-            const rec = m.import_records[rec_idx];
+        // bindings를 import_record_index별로 분류
+        const RecordInfo = struct {
+            default_local: ?[]const u8 = null,
+            namespace_local: ?[]const u8 = null,
+            named_start: u32 = 0,
+            named_count: u32 = 0,
+        };
+        const record_infos = try self.allocator.alloc(RecordInfo, m.import_records.len);
+        defer self.allocator.free(record_infos);
+        @memset(record_infos, RecordInfo{});
+
+        var total_named: u32 = 0;
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const info = &record_infos[ib.import_record_index];
+            switch (ib.kind) {
+                .default => info.default_local = ib.local_name,
+                .namespace => info.namespace_local = ib.local_name,
+                .named => total_named += 1,
+            }
+        }
+
+        // prefix sum + write cursor 리셋을 한 패스로
+        var prefix: u32 = 0;
+        for (record_infos) |*info| {
+            info.named_start = prefix;
+            prefix += info.named_count;
+            info.named_count = 0;
+        }
+
+        const named_bindings = try self.allocator.alloc(PreambleWriter.NamePair, total_named);
+        defer self.allocator.free(named_bindings);
+
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            if (ib.kind != .named) continue;
+            const info = &record_infos[ib.import_record_index];
+            named_bindings[info.named_start + info.named_count] = .{ .local = ib.local_name, .imported = ib.imported_name };
+            info.named_count += 1;
+        }
+
+        for (m.import_records, 0..) |rec, i| {
             if (rec.resolved.isNone()) continue;
             if (rec.kind == .dynamic_import) continue;
 
-            // 이 record에 해당하는 binding 수집
-            var has_default = false;
-            var has_namespace = false;
-            var default_local: []const u8 = "";
-            var namespace_local: []const u8 = "";
-            var named_count: usize = 0;
+            const info = record_infos[i];
+            if (info.default_local == null and info.namespace_local == null and info.named_count == 0) continue;
 
-            for (m.import_bindings) |ib| {
-                if (ib.import_record_index != rec_idx) continue;
-                switch (ib.kind) {
-                    .default => {
-                        has_default = true;
-                        default_local = ib.local_name;
-                    },
-                    .namespace => {
-                        has_namespace = true;
-                        namespace_local = ib.local_name;
-                    },
-                    .named => named_count += 1,
-                }
-            }
-
-            if (!has_default and !has_namespace and named_count == 0) continue;
-
-            // resolve된 모듈 경로
             const resolved_mod = @intFromEnum(rec.resolved);
             const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].path else rec.specifier;
 
-            if (has_namespace) {
-                // import * as ns from './dep' → const ns = __zts_require("./path");
-                try preamble_buf.appendSlice(self.allocator, "var ");
-                try preamble_buf.appendSlice(self.allocator, namespace_local);
-                try preamble_buf.appendSlice(self.allocator, " = __zts_require(\"");
-                try preamble_buf.appendSlice(self.allocator, resolved_path);
-                try preamble_buf.appendSlice(self.allocator, "\");\n");
+            if (info.namespace_local) |ns_local| {
+                try dev_preamble.writeDevRequire(ns_local, resolved_path, null);
             }
-
-            if (has_default) {
-                // import foo from './dep' → var foo = __zts_require("./path").default;
-                try preamble_buf.appendSlice(self.allocator, "var ");
-                try preamble_buf.appendSlice(self.allocator, default_local);
-                try preamble_buf.appendSlice(self.allocator, " = __zts_require(\"");
-                try preamble_buf.appendSlice(self.allocator, resolved_path);
-                try preamble_buf.appendSlice(self.allocator, "\").default;\n");
+            if (info.default_local) |def_local| {
+                try dev_preamble.writeDevRequire(def_local, resolved_path, ".default");
             }
-
-            if (named_count > 0) {
-                // import { a, b } from './dep' → var { a, b } = __zts_require("./path");
-                try preamble_buf.appendSlice(self.allocator, "var { ");
-                var first = true;
-                for (m.import_bindings) |ib| {
-                    if (ib.import_record_index != rec_idx or ib.kind != .named) continue;
-                    if (!first) try preamble_buf.appendSlice(self.allocator, ", ");
-                    first = false;
-                    // import { foo as bar } → foo: bar
-                    if (!std.mem.eql(u8, ib.imported_name, ib.local_name)) {
-                        try preamble_buf.appendSlice(self.allocator, ib.imported_name);
-                        try preamble_buf.appendSlice(self.allocator, ": ");
-                        try preamble_buf.appendSlice(self.allocator, ib.local_name);
-                    } else {
-                        try preamble_buf.appendSlice(self.allocator, ib.local_name);
-                    }
-                }
-                try preamble_buf.appendSlice(self.allocator, " } = __zts_require(\"");
-                try preamble_buf.appendSlice(self.allocator, resolved_path);
-                try preamble_buf.appendSlice(self.allocator, "\");\n");
+            if (info.named_count > 0) {
+                const start = info.named_start;
+                try dev_preamble.writeDevRequireNamed(named_bindings[start .. start + info.named_count], resolved_path);
             }
         }
 
-        var cjs_import_preamble: ?[]const u8 = null;
-        if (preamble_buf.items.len > 0) {
-            cjs_import_preamble = try self.allocator.dupe(u8, preamble_buf.items);
-        }
+        const cjs_import_preamble = try dev_preamble.toOwned();
 
         // 3. __zts_exports 할당 생성 (모든 모듈, entry 여부 무관)
         var final_exports: ?[]const u8 = null;
@@ -2163,8 +2121,138 @@ pub const Linker = struct {
 };
 
 // ============================================================
-// CJS preamble 헬퍼 (buildMetadataForAst에서 2곳에서 사용)
+// PreambleWriter — CJS/dev preamble 생성용 구조체
 // ============================================================
+
+const PreambleWriter = struct {
+    buf: std.ArrayList(u8) = .empty,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) PreambleWriter {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *PreambleWriter) void {
+        self.buf.deinit(self.allocator);
+    }
+
+    fn isEmpty(self: *const PreambleWriter) bool {
+        return self.buf.items.len == 0;
+    }
+
+    /// 버퍼 내용을 allocator로 복제하여 반환. 비어있으면 null.
+    fn toOwned(self: *const PreambleWriter) !?[]const u8 {
+        if (self.isEmpty()) return null;
+        return try self.allocator.dupe(u8, self.buf.items);
+    }
+
+    /// 버퍼 내용을 다른 슬라이스와 concat하여 반환. 비어있으면 other를 그대로 반환.
+    fn concatWith(self: *const PreambleWriter, other: ?[]const u8) !?[]const u8 {
+        if (self.isEmpty()) return other;
+        const combined = try std.mem.concat(self.allocator, u8, &.{
+            other orelse "",
+            self.buf.items,
+        });
+        if (other) |p| self.allocator.free(p);
+        return combined;
+    }
+
+    inline fn write(self: *PreambleWriter, s: []const u8) !void {
+        try self.buf.appendSlice(self.allocator, s);
+    }
+
+    fn writeUnresolvedRequire(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        specifier: []const u8,
+        imported_name: []const u8,
+        is_namespace: bool,
+    ) !void {
+        try self.write("var ");
+        try self.write(local_name);
+        try self.write(" = require(\"");
+        try self.write(specifier);
+        try self.write("\")");
+        // named import만 .property 접근 추가 (namespace/default는 모듈 전체)
+        if (!is_namespace and !std.mem.eql(u8, imported_name, "default")) {
+            try self.write(".");
+            try self.write(imported_name);
+        }
+        try self.write(";\n");
+    }
+
+    fn writeCjsImport(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        imported_name: []const u8,
+        req_var: []const u8,
+        is_namespace: bool,
+        interop: types.Interop,
+    ) !void {
+        try self.write("var ");
+        try self.write(local_name);
+        // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
+        const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
+        if (is_namespace) {
+            try self.write(" = __toESM(");
+            try self.write(req_var);
+            try self.write(toesm_suffix);
+            try self.write(";\n");
+        } else if (std.mem.eql(u8, imported_name, "default")) {
+            try self.write(" = __toESM(");
+            try self.write(req_var);
+            try self.write(toesm_suffix);
+            try self.write(".default;\n");
+        } else {
+            try self.write(" = ");
+            try self.write(req_var);
+            try self.write("().");
+            try self.write(imported_name);
+            try self.write(";\n");
+        }
+    }
+
+    fn writeDevRequire(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8) !void {
+        try self.write("var ");
+        try self.write(local_name);
+        try self.write(" = __zts_require(\"");
+        try self.write(path);
+        try self.write("\")");
+        if (suffix) |s| try self.write(s);
+        try self.write(";\n");
+    }
+
+    const NamePair = struct { local: []const u8, imported: []const u8 };
+
+    fn writeDevRequireNamed(
+        self: *PreambleWriter,
+        named_bindings: []const NamePair,
+        path: []const u8,
+    ) !void {
+        try self.write("var { ");
+        for (named_bindings, 0..) |nb, i| {
+            if (i > 0) try self.write(", ");
+            if (!std.mem.eql(u8, nb.imported, nb.local)) {
+                try self.write(nb.imported);
+                try self.write(": ");
+                try self.write(nb.local);
+            } else {
+                try self.write(nb.local);
+            }
+        }
+        try self.write(" } = __zts_require(\"");
+        try self.write(path);
+        try self.write("\");\n");
+    }
+
+    fn writeNamespaceObject(self: *PreambleWriter, var_name: []const u8, object_literal: []const u8) !void {
+        try self.write("var ");
+        try self.write(var_name);
+        try self.write(" = ");
+        try self.write(object_literal);
+        try self.write(";\n");
+    }
+};
 
 /// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.
 fn getOrCreateRequireVar(
@@ -2177,40 +2265,4 @@ fn getOrCreateRequireVar(
     const name = try types.makeRequireVarName(self.allocator, target_path);
     try cache.put(mod_idx, name);
     return name;
-}
-
-/// CJS import preamble 한 줄을 buf에 추가.
-/// namespace: var local = __toESM(req_var());
-/// default:   var local = __toESM(req_var()).default;
-/// named:     var local = req_var().imported;
-fn appendCjsImportPreamble(
-    buf: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    local_name: []const u8,
-    imported_name: []const u8,
-    req_var: []const u8,
-    is_namespace: bool,
-    interop: types.Interop,
-) !void {
-    try buf.appendSlice(allocator, "var ");
-    try buf.appendSlice(allocator, local_name);
-    // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
-    const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
-    if (is_namespace) {
-        try buf.appendSlice(allocator, " = __toESM(");
-        try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, toesm_suffix);
-        try buf.appendSlice(allocator, ";\n");
-    } else if (std.mem.eql(u8, imported_name, "default")) {
-        try buf.appendSlice(allocator, " = __toESM(");
-        try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, toesm_suffix);
-        try buf.appendSlice(allocator, ".default;\n");
-    } else {
-        try buf.appendSlice(allocator, " = ");
-        try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, "().");
-        try buf.appendSlice(allocator, imported_name);
-        try buf.appendSlice(allocator, ";\n");
-    }
 }
