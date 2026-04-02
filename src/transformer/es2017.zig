@@ -235,6 +235,5 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .extra = new_extra },
             });
         }
-
     };
 }

@@ -851,8 +851,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return cm;
         }
 
-
-
         /// _x.set(this, init) expression_statement 생성.
         fn buildPrivateFieldInit(self: *Transformer, name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const wm_ref = try es_helpers.makeIdentifierRef(self, name);
