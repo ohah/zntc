@@ -8087,6 +8087,218 @@ test "CJS: scope hoisted esm_with_dynamic_fallback — internal require() rewrit
 }
 
 // ============================================================
+// WrapKind.esm (__esm 래퍼) Tests
+// ============================================================
+
+test "ESM wrap: pure ESM module required — WrapKind.esm (graph)" {
+    // 순수 ESM 모듈이 require()로 소비 → WrapKind.esm (CJS가 아님)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./esm-mod.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "esm-mod.js",
+        \\export function hello() { return 'world'; }
+        \\export const value = 42;
+    );
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "esm-mod.js")) {
+            try std.testing.expectEqual(types.ExportsKind.esm, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.esm, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "ESM wrap: CJS module required — still WrapKind.cjs (graph)" {
+    // CJS 모듈은 require() 소비 시 WrapKind.cjs 유지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./cjs-mod.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "cjs-mod.js", "module.exports = { value: 42 };");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "cjs-mod.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "ESM wrap: none module required — WrapKind.cjs (graph)" {
+    // exports_kind == .none (ESM/CJS 신호 없음) + require 소비 → CJS
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./plain.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "plain.js", "const x = 1;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "plain.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "ESM wrap: __esm runtime injected in bundle output" {
+    // WrapKind.esm 모듈이 있으면 __esm 런타임이 번들에 주입되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./esm.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "esm.js", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toCommonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_esm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_esm") != null);
+}
+
+test "ESM wrap: CJS requires ESM — (init_xxx(), __toCommonJS(exports_xxx)) pattern" {
+    // CJS 모듈에서 ESM 모듈을 require() → (init_xxx(), __toCommonJS(exports_xxx))
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "const lib = require('./esm.js');\nconsole.log(lib.value);");
+    try writeFile(tmp.dir, "esm.js", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // require("./esm.js")가 (init_esm(), __toCommonJS(exports_esm))으로 변환
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_esm()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toCommonJS(exports_esm)") != null);
+    // raw require가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./esm.js\")") == null);
+}
+
+test "ESM wrap: 2-pass promotion — require before import" {
+    // 같은 모듈을 import + require → require가 우선 (2-pass)
+    // ESM 모듈이면 WrapKind.esm, import가 나중에 와도 변경 안 됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './importer.ts';
+        \\import './requirer.ts';
+    );
+    try writeFile(tmp.dir, "importer.ts", "import { value } from './shared.js';\nconsole.log(value);");
+    try writeFile(tmp.dir, "requirer.ts", "const s = require('./shared.js');\nconsole.log(s);");
+    try writeFile(tmp.dir, "shared.js", "export const value = 42;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    // shared.js: ESM + require 소비 → WrapKind.esm (import가 CJS로 덮어쓰지 않음)
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "shared.js")) {
+            try std.testing.expectEqual(types.WrapKind.esm, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "ESM wrap: CJS wrapper imports scope-hoisted ESM — no raw require" {
+    // CJS 래핑 모듈이 scope hoisted ESM 모듈을 import할 때
+    // import가 skip되고 preamble/rename으로 직접 참조
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { greet } from './lib.js';
+        \\console.log(greet());
+    );
+    // lib.js: CJS (require 사용) → __commonJS 래핑
+    try writeFile(tmp.dir, "lib.js",
+        \\const helper = require('./helper.cjs');
+        \\import { util } from './util.js';
+        \\exports.greet = function() { return helper() + util(); };
+    );
+    try writeFile(tmp.dir, "helper.cjs", "module.exports = function() { return 'hi'; };");
+    // util.js: 순수 ESM → scope hoisted
+    try writeFile(tmp.dir, "util.js", "export function util() { return ' world'; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // require("./util.js")가 남아있으면 안 됨 (scope hoisted → 직접 참조)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./util.js\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./util.js')") == null);
+}
+
+// ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
 

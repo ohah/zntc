@@ -573,6 +573,14 @@ pub const Ast = struct {
     /// Span이 가리키는 텍스트를 반환한다.
     /// bit 31이 설정되어 있으면 string_table에서, 아니면 source에서 읽는다.
     /// 기존 getSourceText와 달리, 합성 문자열도 투명하게 처리한다.
+    /// string_literal의 raw 텍스트에서 따옴표를 제거한 specifier 반환.
+    /// "path" → path, 'path' → path. 따옴표가 없으면 그대로 반환.
+    pub fn stripStringQuotes(raw: []const u8) []const u8 {
+        if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+            return raw[1 .. raw.len - 1];
+        return raw;
+    }
+
     pub fn getText(self: *const Ast, span: Span) []const u8 {
         if (span.start & STRING_TABLE_BIT != 0) {
             // string_table 참조

@@ -1571,10 +1571,7 @@ pub const Codegen = struct {
         if (node.tag != .string_literal) return null;
 
         const raw = self.ast.source[node.data.string_ref.start..node.data.string_ref.end];
-        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
-            raw[1 .. raw.len - 1]
-        else
-            raw;
+        const specifier = Ast.stripStringQuotes(raw);
 
         return meta.require_rewrites.get(specifier);
     }
