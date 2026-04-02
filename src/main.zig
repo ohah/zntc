@@ -353,10 +353,16 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.platform = .neutral;
         } else if (std.mem.eql(u8, arg, "--platform=react-native") or std.mem.eql(u8, arg, "--platform=react_native")) {
             opts.platform = .react_native;
-        } else if (std.mem.eql(u8, arg, "--rn-platform=ios")) {
-            opts.rn_platform = .ios;
-        } else if (std.mem.eql(u8, arg, "--rn-platform=android")) {
-            opts.rn_platform = .android;
+        } else if (std.mem.startsWith(u8, arg, "--rn-platform=")) {
+            const val = arg["--rn-platform=".len..];
+            if (std.mem.eql(u8, val, "ios")) {
+                opts.rn_platform = .ios;
+            } else if (std.mem.eql(u8, val, "android")) {
+                opts.rn_platform = .android;
+            } else {
+                try stderr.print("zts: invalid --rn-platform value: '{s}' (expected ios or android)\n", .{val});
+                return null;
+            }
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
@@ -1156,22 +1162,23 @@ pub fn main() !void {
             if (opts.resolve_extensions_list.items.len == 0) {
                 // --rn-platform에 따라 플랫폼별 확장자를 우선 배치한다.
                 // 예: ios → .ios.tsx, .ios.ts, ... → .native.tsx, ... → .tsx, .ts, ... → .json
+                const native_and_base = &[_][]const u8{
+                    ".native.tsx", ".native.ts", ".native.jsx", ".native.js",
+                    ".tsx",        ".ts",        ".jsx",        ".js",
+                    ".json",
+                };
                 switch (opts.rn_platform) {
                     .ios => {
                         try opts.resolve_extensions_list.appendSlice(allocator, &.{
-                            ".ios.tsx",    ".ios.ts",    ".ios.jsx",    ".ios.js",
-                            ".native.tsx", ".native.ts", ".native.jsx", ".native.js",
-                            ".tsx",        ".ts",        ".jsx",        ".js",
-                            ".json",
+                            ".ios.tsx", ".ios.ts", ".ios.jsx", ".ios.js",
                         });
+                        try opts.resolve_extensions_list.appendSlice(allocator, native_and_base);
                     },
                     .android => {
                         try opts.resolve_extensions_list.appendSlice(allocator, &.{
                             ".android.tsx", ".android.ts", ".android.jsx", ".android.js",
-                            ".native.tsx",  ".native.ts",  ".native.jsx",  ".native.js",
-                            ".tsx",         ".ts",         ".jsx",         ".js",
-                            ".json",
                         });
+                        try opts.resolve_extensions_list.appendSlice(allocator, native_and_base);
                     },
                     .none => {
                         try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".tsx", ".ts", ".jsx", ".js", ".json" });
