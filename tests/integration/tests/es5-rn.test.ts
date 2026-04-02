@@ -210,7 +210,19 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
   test("번들 내 미변환 require() 호출 검출", async () => {
     // __commonJS 래퍼 안에서 ESM import가 require()로 변환될 때
     // require_xxx()로 치환되어야 함. raw require("specifier")가 남아있으면 런타임 에러.
-    const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
+    // 이전 ��스트(Hermes 구문 검증)에 의존하지 않고 자체 번들 생성
+    const outFile = resolve(EXAMPLE_APP, "zts-require-check.js");
+    const zts = Bun.spawnSync([
+      ZTS_BIN,
+      "--bundle",
+      resolve(EXAMPLE_APP, "index.js"),
+      "--platform=react-native",
+      "--rn-platform=ios",
+      "--flow",
+      "-o",
+      outFile,
+    ]);
+    expect(zts.exitCode).toBe(0);
     const output = await Bun.file(outFile).text();
 
     // 번들 내 raw require("...") 패턴 검출 (require_ 접두사가 아닌 것만)

@@ -1561,10 +1561,40 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
+    /// string_literal 노드에서 specifier를 추출하고 require_rewrites 맵에서 조회.
+    /// 매칭되면 변수명 반환, 아니면 null. 출력은 하지 않음.
+    fn resolveRequireRewrite(self: *Codegen, source: ast_mod.NodeIndex) ?[]const u8 {
+        const meta = self.options.linking_metadata orelse return null;
+        if (meta.require_rewrites.count() == 0 or source.isNone()) return null;
+
+        const node = self.ast.getNode(source);
+        if (node.tag != .string_literal) return null;
+
+        const raw = self.ast.source[node.data.string_ref.start..node.data.string_ref.end];
+        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        return meta.require_rewrites.get(specifier);
+    }
+
+    /// require_xxx()를 출력. 성공 시 true.
+    fn emitRequireRewriteOrCall(self: *Codegen, source: ast_mod.NodeIndex) !bool {
+        if (self.resolveRequireRewrite(source)) |req_var| {
+            try self.write(req_var);
+            try self.write("()");
+            return true;
+        }
+        try self.write("require(");
+        try self.emitNode(source);
+        try self.writeByte(')');
+        return false;
+    }
+
     /// CJS require('specifier') → require_xxx() 치환. 성공 시 true.
     fn tryRewriteRequire(self: *Codegen, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
-        const meta = self.options.linking_metadata orelse return false;
-        if (meta.require_rewrites.count() == 0 or callee.isNone() or args_len != 1) return false;
+        if (callee.isNone() or args_len != 1) return false;
 
         const callee_node = self.ast.getNode(callee);
         if (callee_node.tag != .identifier_reference) return false;
@@ -1574,22 +1604,13 @@ pub const Codegen = struct {
 
         if (args_start >= self.ast.extra_data.items.len) return false;
         const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
-        if (arg_idx.isNone()) return false;
 
-        const arg_node = self.ast.getNode(arg_idx);
-        if (arg_node.tag != .string_literal) return false;
-
-        // 따옴표 제거: "path" 또는 'path' → path
-        const raw = self.ast.source[arg_node.data.string_ref.start..arg_node.data.string_ref.end];
-        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
-            raw[1 .. raw.len - 1]
-        else
-            raw;
-
-        const req_var = meta.require_rewrites.get(specifier) orelse return false;
-        try self.write(req_var);
-        try self.write("()");
-        return true;
+        if (self.resolveRequireRewrite(arg_idx)) |req_var| {
+            try self.write(req_var);
+            try self.write("()");
+            return true;
+        }
+        return false;
     }
 
     fn emitNew(self: *Codegen, node: Node) !void {
@@ -2049,12 +2070,8 @@ pub const Codegen = struct {
     /// CJS: import * as bar from './bar' → const bar=require('./bar');
     fn emitImportCJS(self: *Codegen, source: NodeIndex, specs_start: u32, specs_len: u32) !void {
         if (specs_len == 0) {
-            // side-effect import: import './bar' → require('./bar');
-            if (try self.tryEmitRequireRewrite(source)) |_| {} else {
-                try self.write("require(");
-                try self.emitNode(source);
-                try self.writeByte(')');
-            }
+            // side-effect import: import './bar' → require_bar(); or require('./bar');
+            _ = try self.emitRequireRewriteOrCall(source);
             try self.writeByte(';');
             return;
         }
@@ -2110,42 +2127,14 @@ pub const Codegen = struct {
             try self.writeByte('}');
         }
 
-        // require_rewrites 맵에 있으면 require_xxx()로 치환, 없으면 require("specifier")
         try self.writeByte('=');
-        if (try self.tryEmitRequireRewrite(source)) |_| {} else {
-            try self.write("require(");
-            try self.emitNode(source);
-            try self.writeByte(')');
-        }
+        _ = try self.emitRequireRewriteOrCall(source);
 
         if (has_default and !has_namespace and named_count == 0) {
             try self.write(".default");
         }
 
         try self.writeByte(';');
-    }
-
-    /// source node에서 specifier를 추출하여 require_rewrites 맵에서 찾으면
-    /// require_xxx()를 출력하고 true를 반환. 없으면 아무것도 출력하지 않고 null 반환.
-    fn tryEmitRequireRewrite(self: *Codegen, source: NodeIndex) !?void {
-        const meta = self.options.linking_metadata orelse return null;
-        if (meta.require_rewrites.count() == 0) return null;
-        if (source.isNone()) return null;
-
-        const source_node = self.ast.getNode(source);
-        if (source_node.tag != .string_literal) return null;
-
-        // 따옴표 제거: "path" 또는 'path' → path
-        const raw = self.ast.source[source_node.data.string_ref.start..source_node.data.string_ref.end];
-        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
-            raw[1 .. raw.len - 1]
-        else
-            raw;
-
-        const req_var = meta.require_rewrites.get(specifier) orelse return null;
-        try self.write(req_var);
-        try self.write("()");
-        return {};
     }
 
     /// import specifier의 imported + rename separator + local 출력.
