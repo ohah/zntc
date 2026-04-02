@@ -916,6 +916,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
                 } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
                     try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+                } else if (node.tag == .try_statement) {
+                    // try body + catch body + finally body 재귀
+                    try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
+                    if (!node.data.ternary.b.isNone()) {
+                        const catch_node = self.old_ast.getNode(node.data.ternary.b);
+                        // catch 파라미터를 var로 호이스팅 (state machine에서 접근 가능하도록)
+                        if (!catch_node.data.binary.left.isNone()) {
+                            try collectBindingIdentifiers(self, catch_node.data.binary.left, hoisted);
+                        }
+                        try collectHoistedVarFromNode(self, catch_node.data.binary.right, hoisted);
+                    }
+                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
                 }
             }
         }
