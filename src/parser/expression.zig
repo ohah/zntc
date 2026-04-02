@@ -1181,15 +1181,10 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             !self.current().isLiteralKeyword() and self.current() != .kw_async))
     {
         // Flow match expression: match (expr) { Pattern => expr, ... }
-        // match는 예약어가 아닌 contextual keyword이므로 식별자로 파싱되기 전에 감지한다.
-        // 타입 스트리핑 전용이므로 balanced brace counting으로 전체를 소비한다.
-        if (self.is_flow and self.current() == .identifier) {
-            const text = self.resolveIdentifierText(span);
-            if (std.mem.eql(u8, text, "match")) {
-                const next_kind = try self.peekNextKind();
-                if (next_kind == .l_paren) {
-                    return try flow.parseMatchExpression(self);
-                }
+        if (self.is_flow and self.isContextual("match")) {
+            const next_kind = try self.peekNextKind();
+            if (next_kind == .l_paren) {
+                return try flow.parseMatchExpression(self);
             }
         }
 

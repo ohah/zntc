@@ -1208,33 +1208,8 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'match'
-
-    // match (expr) — 괄호 안의 discriminant를 소비
-    try self.expect(.l_paren);
-    var paren_depth: u32 = 1;
-    while (paren_depth > 0 and self.current() != .eof) {
-        switch (self.current()) {
-            .l_paren => paren_depth += 1,
-            .r_paren => paren_depth -= 1,
-            else => {},
-        }
-        if (paren_depth > 0) try self.advance();
-    }
-    try self.expect(.r_paren);
-
-    // match body { ... } — balanced brace counting으로 전체를 소비
-    try self.expect(.l_curly);
-    var brace_depth: u32 = 1;
-    while (brace_depth > 0 and self.current() != .eof) {
-        switch (self.current()) {
-            .l_curly => brace_depth += 1,
-            .r_curly => brace_depth -= 1,
-            else => {},
-        }
-        if (brace_depth > 0) try self.advance();
-    }
-    try self.expect(.r_curly);
-
+    try skipBalancedParens(self); // match (expr)
+    try skipBalancedBraces(self); // match body { ... }
     return try self.ast.addNode(.{
         .tag = .flow_match_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
