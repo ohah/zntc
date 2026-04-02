@@ -2103,14 +2103,28 @@ pub const Codegen = struct {
                 }
             }
         } else if (named_count > 0) {
-            // import { foo, bar } from './bar' → const {foo,bar}=require('./bar');
+            // import { foo, bar as baz } from './bar' → const {foo,bar:baz}=require('./bar');
+            // ESM의 `as` rename을 CJS destructuring의 `:` rename으로 변환
             try self.writeByte('{');
             var first = true;
             for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+                const spec = self.ast.getNode(spec_idx);
                 if (spec.tag == .import_specifier) {
                     if (!first) try self.writeByte(',');
-                    try self.writeNodeSpan(spec);
+                    const imported = spec.data.binary.left;
+                    const local = spec.data.binary.right;
+                    try self.emitNode(imported);
+                    if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
+                        const imp_node = self.ast.getNode(imported);
+                        const loc_node = self.ast.getNode(local);
+                        const imp_text = self.ast.source[imp_node.span.start..imp_node.span.end];
+                        const loc_text = self.ast.source[loc_node.span.start..loc_node.span.end];
+                        if (!std.mem.eql(u8, imp_text, loc_text)) {
+                            try self.writeByte(':');
+                            try self.emitNode(local);
+                        }
+                    }
                     first = false;
                 }
             }

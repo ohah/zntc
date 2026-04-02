@@ -841,10 +841,30 @@ test "Codegen: non-null assertion stripped" {
 // ============================================================
 
 test "Codegen CJS: import named" {
-    // CJS named import uses writeNodeSpan which preserves trailing space from source
     var r = try e2eCJS(std.testing.allocator, "import { foo } from './bar';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const {foo }=require(\"./bar\");", r.output);
+    try std.testing.expectEqualStrings("const {foo}=require(\"./bar\");", r.output);
+}
+
+test "Codegen CJS: import named with rename" {
+    // ESM `as` → CJS `:` 변환: import { X as Y } → const {X:Y}=require(...)
+    var r = try e2eCJS(std.testing.allocator, "import { Commands as ViewCommands } from './view';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const {Commands:ViewCommands}=require(\"./view\");", r.output);
+}
+
+test "Codegen CJS: import named multiple with rename" {
+    // 여러 named import 중 일부만 rename
+    var r = try e2eCJS(std.testing.allocator, "import { foo, bar as baz, qux } from './mod';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const {foo,bar:baz,qux}=require(\"./mod\");", r.output);
+}
+
+test "Codegen CJS: import named same name" {
+    // imported == local (rename 없음) — `:` 출력하지 않음
+    var r = try e2eCJS(std.testing.allocator, "import { foo as foo } from './bar';");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const {foo}=require(\"./bar\");", r.output);
 }
 
 test "Codegen CJS: import default" {
