@@ -1425,6 +1425,39 @@ test "ES5: generator with yield in return expression" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
 }
 
+test "ES5: await in object literal" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return {x: await a, y: await b}; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in template literal" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return `hello ${await name()}`; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in spread element" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return bar(...await getArgs()); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: await in member expression (a.b.method(await x))" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { if (a.b && (await a.c())) { run(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: multiple awaits in array literal use temp vars" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return [await a, await b]; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    // 각 yield 결과가 temp 변수에 저장되어야 함 (직접 _state.sent() 중복 호출 방지)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=_state.sent()") != null or
+        std.mem.indexOf(u8, r.output, "= _state.sent()") != null);
+}
+
 test "ES5: generator with destructuring var hoisting" {
     var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
     defer r.deinit();
