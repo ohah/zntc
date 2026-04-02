@@ -32,6 +32,14 @@ zig build test     # 유닛 테스트
 zig build test262  # Test262 러너 테스트
 ```
 
+### 통합 테스트 (Bun)
+```bash
+cd tests/integration && bun test              # 전체 통합 테스트
+cd tests/integration && bun test tests/bundle-smoke.test.ts   # 번들 스모크
+cd tests/integration && bun test tests/es5-rn.test.ts         # RN ES5 + Hermes
+```
+**주의**: 통합 테스트는 반드시 `tests/integration/` 디렉토리에서 실행해야 한다. 프로젝트 루트에서 실행하면 경로 해석 문제로 대부분 실패한다.
+
 ## ZTS CLI 옵션 (현재 지원)
 
 ### 트랜스파일

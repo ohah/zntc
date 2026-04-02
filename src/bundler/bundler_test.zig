@@ -7972,6 +7972,89 @@ test "CJS: esm_with_dynamic_fallback module required — wrapped in __commonJS (
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hybrid") != null);
 }
 
+test "CJS: ESM import inside __commonJS wrapper rewritten to require_xxx()" {
+    // ESM 모듈이 require()로 소비되어 __commonJS 래핑될 때,
+    // 내부 import 문이 require("specifier")로 변환되는데,
+    // 이 변환된 require()도 require_xxx()로 치환되어야 한다.
+    // (emitImportCJS에서 require_rewrites 맵 미참조 버그 수정 검증)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./esm-lib.js');\nconsole.log(lib);");
+    // esm-lib.js: ESM import 사용, require()로 소비되어 CJS 래핑됨
+    try writeFile(tmp.dir, "esm-lib.js",
+        \\import helper from './helper.cjs';
+        \\export function greet() { return helper(); }
+    );
+    try writeFile(tmp.dir, "helper.cjs", "module.exports = function() { return 'hello'; };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // esm-lib.js의 import helper from './helper.cjs'가
+    // require_helper()로 변환되어야 함 (require("./helper.cjs")가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_helper") != null);
+    // 번들 내에 raw require("./helper.cjs")가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./helper.cjs\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./helper.cjs')") == null);
+}
+
+test "CJS: side-effect import inside __commonJS wrapper rewritten to require_xxx()" {
+    // side-effect import (import './foo') 도 require_xxx()로 변환되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./side-lib.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "side-lib.js",
+        \\import './setup.cjs';
+        \\export const value = 42;
+    );
+    try writeFile(tmp.dir, "setup.cjs", "global.__SETUP = true;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // side-effect import도 require_setup()으로 변환
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./setup.cjs\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./setup.cjs')") == null);
+}
+
+test "CJS: named import inside __commonJS wrapper rewritten to require_xxx()" {
+    // import { foo } from './bar' → const {foo}=require_bar(); (require("./bar") 아님)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./named-lib.js');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "named-lib.js",
+        \\import { value } from './util.cjs';
+        \\export function compute() { return value * 2; }
+    );
+    try writeFile(tmp.dir, "util.cjs", "exports.value = 21;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_util") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./util.cjs\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./util.cjs')") == null);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
