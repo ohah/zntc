@@ -87,6 +87,10 @@ pub const CodegenOptions = struct {
     sources_content: bool = true,
     /// 번들러 linker 메타데이터. 설정 시 import 스킵 + 식별자 리네임 적용.
     linking_metadata: ?*const LinkingMetadata = null,
+    /// __esm 래핑 모듈: CJS import 변환 시 const 대신 var 사용.
+    /// ESM의 import는 hoisted이지만 CJS 변환 시 선언 위치에 출력되어 TDZ 발생.
+    /// var는 TDZ가 없으므로 선언 전 접근이 undefined (에러 아님).
+    use_var_for_imports: bool = false,
     /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
@@ -2073,15 +2077,15 @@ pub const Codegen = struct {
     /// CJS: import { foo } from './bar' → const {foo}=require('./bar');
     /// CJS: import bar from './bar' → const bar=require('./bar').default;
     /// CJS: import * as bar from './bar' → const bar=require('./bar');
+    /// __esm 래핑 모듈: const → var (호이스팅 지원)
     fn emitImportCJS(self: *Codegen, source: NodeIndex, specs_start: u32, specs_len: u32) !void {
         if (specs_len == 0) {
-            // side-effect import: import './bar' → require_bar(); or require('./bar');
             _ = try self.emitRequireRewriteOrCall(source);
             try self.writeByte(';');
             return;
         }
 
-        try self.write("const ");
+        try self.write(if (self.options.use_var_for_imports) "var " else "const ");
 
         // specifier 유형 분석
         const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];

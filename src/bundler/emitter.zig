@@ -1432,115 +1432,6 @@ const EmitResult = struct {
     helpers: RuntimeHelpers = .{},
 };
 
-/// __esm 모듈의 codegen 출력에서 top-level function 선언을 래퍼 밖으로 호이스팅.
-/// function 선언 → 통째로 밖으로 (중괄호 균형 추적)
-/// 나머지 → 래퍼 안에 유지
-/// 반환: { .hoisted = 래퍼 밖 코드, .body = 래퍼 안 코드 }
-fn hoistEsmDeclarations(allocator: std.mem.Allocator, code: []const u8) !struct { hoisted: []const u8, body: []const u8 } {
-    var hoisted: std.ArrayList(u8) = .empty;
-    errdefer hoisted.deinit(allocator);
-    var body: std.ArrayList(u8) = .empty;
-    errdefer body.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < code.len) {
-        if (isTopLevelFunction(code, i)) {
-            const fn_end = findBalancedEnd(code, i);
-            try hoisted.appendSlice(allocator, code[i..fn_end]);
-            if (fn_end < code.len and code[fn_end] == '\n')
-                try hoisted.append(allocator, '\n');
-            i = fn_end;
-            if (i < code.len and code[i] == '\n') i += 1;
-            continue;
-        }
-
-        const line_end = std.mem.indexOfScalar(u8, code[i..], '\n') orelse code.len - i;
-        try body.appendSlice(allocator, code[i .. i + line_end]);
-        i += line_end;
-        if (i < code.len and code[i] == '\n') {
-            try body.append(allocator, '\n');
-            i += 1;
-        }
-    }
-
-    return .{
-        .hoisted = try hoisted.toOwnedSlice(allocator),
-        .body = try body.toOwnedSlice(allocator),
-    };
-}
-
-fn isTopLevelFunction(code: []const u8, i: usize) bool {
-    if (i + 9 <= code.len and std.mem.eql(u8, code[i .. i + 9], "function ")) return true;
-    if (i + 15 <= code.len and std.mem.eql(u8, code[i .. i + 15], "async function ")) return true;
-    return false;
-}
-
-/// 중괄호 균형으로 함수 본문의 끝을 찾는다.
-/// 파라미터 괄호 안의 destructuring {}를 건너뛰고 함수 본문의 {} 균형만 추적.
-/// 문자열/템플릿 리터럴(${} 포함) 안의 중괄호는 무시.
-fn findBalancedEnd(code: []const u8, start: usize) usize {
-    var j = start;
-    var in_string: u8 = 0;
-    var template_depth: u32 = 0; // 중첩 template literal 깊이
-    var paren_depth: u32 = 0;
-    var found_body = false;
-    var brace_depth: u32 = 0;
-
-    while (j < code.len) : (j += 1) {
-        const c = code[j];
-        if (in_string != 0) {
-            if (c == '\\') {
-                j += 1;
-                continue;
-            }
-            if (c == in_string) in_string = 0;
-            continue;
-        }
-        if (template_depth > 0) {
-            if (c == '\\') {
-                j += 1;
-                continue;
-            }
-            if (c == '`') {
-                template_depth -= 1;
-                continue;
-            }
-            // ${...} 안으로 진입 → 일반 파싱 모드로 전환
-            if (c == '$' and j + 1 < code.len and code[j + 1] == '{') {
-                j += 1; // { 건너뛰기
-                brace_depth += 1;
-                found_body = true;
-                continue;
-            }
-            continue;
-        }
-        switch (c) {
-            '"', '\'' => in_string = c,
-            '`' => template_depth += 1,
-            '(' => paren_depth += 1,
-            ')' => if (paren_depth > 0) {
-                paren_depth -= 1;
-            },
-            '{' => {
-                if (paren_depth == 0) {
-                    found_body = true;
-                    brace_depth += 1;
-                }
-            },
-            '}' => {
-                if (paren_depth == 0 and found_body) {
-                    brace_depth -= 1;
-                    if (brace_depth == 0) return j + 1;
-                }
-                // template ${} 닫기 → 다시 template 모드로
-                // (template_depth > 0일 때 위의 template 분기에서 처리)
-            },
-            else => {},
-        }
-    }
-    return code.len;
-}
-
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
 fn needsPropertyQuote(name: []const u8) bool {
     if (name.len == 0) return true;
@@ -1896,24 +1787,16 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, "});\n");
         }
 
-        // 3. top-level function 선언 호이스팅 (esbuild/rolldown 모델)
-        const hoist = try hoistEsmDeclarations(allocator, code);
-        defer allocator.free(hoist.hoisted);
-        defer allocator.free(hoist.body);
-
-        // 호이스팅된 선언을 래퍼 밖에 출력
-        if (hoist.hoisted.len > 0) {
-            try wrapped.appendSlice(allocator, hoist.hoisted);
-        }
-
-        // 4. init 함수 + __esm 래핑 (호이스팅 후 남은 body만)
+        // 3. init 함수 + __esm 래핑
+        // 모든 코드를 래퍼 안에 유지. exec_index 순서에 의해
+        // 의존 모듈이 먼저 출력되므로 init_xxx() 호출 시 정상 초기화.
         if (options.minify_whitespace) {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, init_name);
             try wrapped.appendSlice(allocator, "=__esm({\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(){");
-            try wrapped.appendSlice(allocator, hoist.body);
+            try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "}});");
         } else {
             try wrapped.appendSlice(allocator, "var ");
@@ -1921,7 +1804,7 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"() {\n");
-            try appendIndented(&wrapped, allocator, hoist.body);
+            try appendIndented(&wrapped, allocator, code);
             try wrapped.appendSlice(allocator, "\n\t}\n});\n");
         }
 
