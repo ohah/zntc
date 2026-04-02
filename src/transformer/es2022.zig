@@ -243,7 +243,6 @@ pub fn ES2022(comptime Transformer: type) type {
             return true;
         }
 
-
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
         fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
             const node = self.new_ast.getNode(method_node_idx);
@@ -261,9 +260,9 @@ pub fn ES2022(comptime Transformer: type) type {
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
             const new_me = try self.new_ast.addExtras(&.{
-                saved_key, saved_ps, saved_pl,
-                @intFromEnum(new_body),
-                saved_flags, saved_deco_start, saved_deco_len,
+                saved_key,              saved_ps,    saved_pl,
+                @intFromEnum(new_body), saved_flags, saved_deco_start,
+                saved_deco_len,
             });
             return self.new_ast.addNode(.{
                 .tag = .method_definition,
