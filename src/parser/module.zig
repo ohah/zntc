@@ -298,8 +298,18 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // 주의: import { type as alias } from ... → 'type'을 alias로 import (modifier 아님)
     // \u0074ype 같은 unicode escape도 type modifier로 인식 (esbuild 호환)
     var is_type_only: u16 = 0;
-    if (self.isContextual("type") or
-        (self.current() == .identifier and self.scanner.token.has_escape and self.isEscapedKeyword("type")))
+
+    // Flow: import { typeof X as Y } — typeof는 키워드(.kw_typeof)이므로 별도 감지
+    if (self.is_flow and self.current() == .kw_typeof) {
+        const next = try self.peekNextKind();
+        if (next == .identifier or next == .string_literal or (next.isKeyword() and next != .r_curly and next != .comma)) {
+            is_type_only = 1;
+            try self.advance(); // skip 'typeof'
+        }
+    }
+
+    if (is_type_only == 0 and (self.isContextual("type") or
+        (self.current() == .identifier and self.scanner.token.has_escape and self.isEscapedKeyword("type"))))
     {
         const next = try self.peekNextKind();
         // 다음이 바인딩 이름으로 사용 가능한 토큰이면 type modifier
