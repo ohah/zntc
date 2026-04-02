@@ -1077,7 +1077,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .block_statement,
                 .function_body,
                 .array_expression,
+                .object_expression,
                 .sequence_expression,
+                .template_literal,
                 .formal_parameters,
                 .class_body,
                 => {
@@ -1099,7 +1101,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .assignment_expression,
                 .binary_expression,
                 .logical_expression,
+                .object_property,
                 => containsYield(self, node.data.binary.left) or containsYield(self, node.data.binary.right),
+                // extra = [child0, child1, flags] — child 2개만 재귀
+                .static_member_expression,
+                .computed_member_expression,
+                .tagged_template_expression,
+                => {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    return containsYield(self, @enumFromInt(extras[e])) or containsYield(self, @enumFromInt(extras[e + 1]));
+                },
                 .conditional_expression,
                 .if_statement,
                 .for_in_statement,
@@ -1252,10 +1264,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (expr_idx.isNone()) return .none;
             const node = self.old_ast.getNode(expr_idx);
 
-            // yield/await → yield operation 추출 + _state.sent() 반환
+            // yield/await → yield operation 추출 + temp 변수에 결과 저장
+            // 하나의 expression에 여러 yield가 있으면 각 결과를 temp에 저장해야 함
             if (node.tag == .yield_expression or node.tag == .await_expression) {
                 const value_idx = node.data.unary.operand;
-                // operand에도 yield/await가 중첩될 수 있음 (await(await x))
                 const new_value = if (!value_idx.isNone())
                     try visitExprWithYieldExtraction(self, value_idx, ops, next_label)
                 else
@@ -1265,7 +1277,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                return buildSentCall(self, node.span);
+                // temp 변수에 _state.sent() 결과 저장
+                const temp_span = try es_helpers.makeTempVarSpan(self);
+                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, node.span);
+                const sent_call = try buildSentCall(self, node.span);
+                const assign = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = temp_ref, .right = sent_call, .flags = 0 } },
+                });
+                const assign_stmt = try es_helpers.makeExprStmt(self, assign, node.span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                return es_helpers.makeTempVarRef(self, temp_span, node.span);
             }
 
             // yield를 포함하지 않으면 일반 visit
@@ -1327,14 +1350,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
             }
 
-            // member expression: object.property
-            if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
-                const new_object = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
-                const new_prop = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+            // extra = [child0, child1, flags] — member expression, tagged template
+            if (node.tag == .static_member_expression or node.tag == .computed_member_expression or
+                node.tag == .tagged_template_expression)
+            {
+                const extras = self.old_ast.extra_data.items;
+                const e = node.data.extra;
+                const new_child0 = try visitExprWithYieldExtraction(self, @enumFromInt(extras[e]), ops, next_label);
+                const new_child1 = try visitExprWithYieldExtraction(self, @enumFromInt(extras[e + 1]), ops, next_label);
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_child0),
+                    @intFromEnum(new_child1),
+                    extras[e + 2],
+                });
                 return self.new_ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
-                    .data = .{ .binary = .{ .left = new_object, .right = new_prop, .flags = node.data.binary.flags } },
+                    .data = .{ .extra = new_extra },
                 });
             }
 
@@ -1369,7 +1401,50 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 });
             }
 
-            // 미지원 expression 타입: visitNode fallback (yield가 남을 수 있음)
+            // list 기반: array, object, sequence, template literal
+            if (node.tag == .array_expression or node.tag == .object_expression or
+                node.tag == .sequence_expression or node.tag == .template_literal)
+            {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                const elements = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (elements) |raw_idx| {
+                    const new_elem = try visitExprWithYieldExtraction(self, @enumFromInt(raw_idx), ops, next_label);
+                    try self.scratch.append(self.allocator, new_elem);
+                }
+                const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+                return self.new_ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .list = new_list },
+                });
+            }
+
+            // object_property: binary (key: value)
+            if (node.tag == .object_property) {
+                const new_key = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
+                const new_value = if (!node.data.binary.right.isNone())
+                    try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label)
+                else
+                    NodeIndex.none;
+                return self.new_ast.addNode(.{
+                    .tag = .object_property,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = new_key, .right = new_value, .flags = node.data.binary.flags } },
+                });
+            }
+
+            // spread_element: unary
+            if (node.tag == .spread_element) {
+                const new_operand = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
+                return self.new_ast.addNode(.{
+                    .tag = .spread_element,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
+                });
+            }
+
+            // 그 외: visitNode fallback (yield가 남을 수 있음)
             if (std.debug.runtime_safety) {
                 std.log.warn("visitExprWithYieldExtraction: unhandled tag {}", .{node.tag});
             }
