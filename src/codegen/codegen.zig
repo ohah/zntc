@@ -2032,21 +2032,7 @@ pub const Codegen = struct {
                 const spec_node = self.ast.getNode(spec);
                 if (spec_node.tag == .import_specifier) {
                     if (!named_first) try self.write(",");
-                    // binary: { left=imported, right=local }
-                    const imported = spec_node.data.binary.left;
-                    const local = spec_node.data.binary.right;
-                    try self.emitNode(imported);
-                    // imported != local이면 as 출력
-                    if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
-                        const imp_node = self.ast.getNode(imported);
-                        const loc_node = self.ast.getNode(local);
-                        const imp_text = self.ast.source[imp_node.span.start..imp_node.span.end];
-                        const loc_text = self.ast.source[loc_node.span.start..loc_node.span.end];
-                        if (!std.mem.eql(u8, imp_text, loc_text)) {
-                            try self.write(" as ");
-                            try self.emitNode(local);
-                        }
-                    }
+                    try self.emitImportSpecifierRename(spec_node, " as ");
                     named_first = false;
                 }
             }
@@ -2104,27 +2090,13 @@ pub const Codegen = struct {
             }
         } else if (named_count > 0) {
             // import { foo, bar as baz } from './bar' → const {foo,bar:baz}=require('./bar');
-            // ESM의 `as` rename을 CJS destructuring의 `:` rename으로 변환
             try self.writeByte('{');
             var first = true;
             for (spec_indices) |raw_idx| {
-                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
-                const spec = self.ast.getNode(spec_idx);
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
                 if (spec.tag == .import_specifier) {
                     if (!first) try self.writeByte(',');
-                    const imported = spec.data.binary.left;
-                    const local = spec.data.binary.right;
-                    try self.emitNode(imported);
-                    if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
-                        const imp_node = self.ast.getNode(imported);
-                        const loc_node = self.ast.getNode(local);
-                        const imp_text = self.ast.source[imp_node.span.start..imp_node.span.end];
-                        const loc_text = self.ast.source[loc_node.span.start..loc_node.span.end];
-                        if (!std.mem.eql(u8, imp_text, loc_text)) {
-                            try self.writeByte(':');
-                            try self.emitNode(local);
-                        }
-                    }
+                    try self.emitImportSpecifierRename(spec, ":");
                     first = false;
                 }
             }
@@ -2140,6 +2112,22 @@ pub const Codegen = struct {
         }
 
         try self.writeByte(';');
+    }
+
+    /// import specifier의 imported + rename separator + local 출력.
+    /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
+    fn emitImportSpecifierRename(self: *Codegen, spec_node: Node, sep: []const u8) !void {
+        const imported = spec_node.data.binary.left;
+        const local = spec_node.data.binary.right;
+        try self.emitNode(imported);
+        if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
+            const imp_text = self.ast.source[self.ast.getNode(imported).span.start..self.ast.getNode(imported).span.end];
+            const loc_text = self.ast.source[self.ast.getNode(local).span.start..self.ast.getNode(local).span.end];
+            if (!std.mem.eql(u8, imp_text, loc_text)) {
+                try self.write(sep);
+                try self.emitNode(local);
+            }
+        }
     }
 
     fn emitExportNamed(self: *Codegen, node: Node) !void {
