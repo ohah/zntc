@@ -7905,6 +7905,73 @@ test "CJS: multiple ESM modules importing same CJS module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
 }
 
+test "CJS: esm_with_dynamic_fallback module required — promoted to CJS wrap (graph)" {
+    // ESM+CJS 혼합 모듈(esm_with_dynamic_fallback)이 require()로 소비되면
+    // exports_kind가 .commonjs, wrap_kind가 .cjs로 승격되어야 한다.
+    // 이전에는 promoteExportsKinds()에서 .esm_with_dynamic_fallback을 처리하지 않아
+    // wrap_kind가 .none인 채 scope hoisting → require 미정의 런타임 에러 발생.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const h = require('./hybrid.js');\nconsole.log(h);");
+    // hybrid.js: ESM(export) + CJS(require) 모두 사용 → esm_with_dynamic_fallback
+    try writeFile(tmp.dir, "hybrid.js",
+        \\export const value = 42;
+        \\const other = require('./dep.js');
+        \\module.exports = { value, other };
+    );
+    try writeFile(tmp.dir, "dep.js", "module.exports = 'dep';");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    // hybrid.js: esm_with_dynamic_fallback → require()로 소비 → commonjs + cjs wrap
+    var hybrid_found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "hybrid.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            hybrid_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(hybrid_found);
+}
+
+test "CJS: esm_with_dynamic_fallback module required — wrapped in __commonJS (bundler)" {
+    // 번들 출력에서 ESM+CJS 혼합 모듈이 __commonJS 래퍼로 감싸지는지 검증.
+    // scope hoisting되면 require()가 정의되지 않아 런타임 에러 발생.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const h = require('./hybrid.js');\nconsole.log(h);");
+    try writeFile(tmp.dir, "hybrid.js",
+        \\export const value = 42;
+        \\const other = require('./dep.js');
+        \\module.exports = { value, other };
+    );
+    try writeFile(tmp.dir, "dep.js", "module.exports = 'dep';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // hybrid.js가 __commonJS로 래핑되어야 함 (scope hoisting 안 됨)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_hybrid") != null);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
