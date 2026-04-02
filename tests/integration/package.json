@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "test": "bun test",
+    "test:hermes": "bun test tests/es5-rn.test.ts --filter 'Hermes'",
+    "test:smoke": "bun test tests/bundle-smoke.test.ts",
+    "test:rn": "bun test tests/es5-rn.test.ts",
     "build:zts": "cd ../.. && zig build -Doptimize=ReleaseFast"
   },
   "devDependencies": {
