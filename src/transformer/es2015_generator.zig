@@ -840,13 +840,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             ops.items[try_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
             ops.items[catch_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
 
-            const actual_finally = finally_label orelse end_label;
-            const trys_push = try buildTrysPush(self, try_label, catch_label, actual_finally, end_label, stmt.span);
+            const trys_push = try buildTrysPush(self, try_label, catch_label, finally_label, end_label, stmt.span);
             ops.items[trys_push_slot] = .{ .code = .statement, .arg = .{ .node = trys_push } };
         }
 
         /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
-        fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: u32, finally_label: u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
+        /// finally_label이 null이면 void 0을 출력하여 런타임의 _.label < t[2] 체크를 skip시킨다.
+        fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
             const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
 
             // _state.trys
@@ -860,7 +860,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // [try_label, catch_label, finally_label, end_label] 배열 (TypeScript __generator 스펙)
             const n0 = try es_helpers.makeNumericLiteral(self, try_label);
             const n1 = try es_helpers.makeNumericLiteral(self, catch_label);
-            const n2 = try es_helpers.makeNumericLiteral(self, finally_label);
+            const n2 = if (finally_label) |fl|
+                try es_helpers.makeNumericLiteral(self, fl)
+            else
+                try es_helpers.makeVoidZero(self, span);
             const n3 = try es_helpers.makeNumericLiteral(self, end_label);
             const arr_list = try self.new_ast.addNodeList(&.{ n0, n1, n2, n3 });
             const arr = try self.new_ast.addNode(.{
