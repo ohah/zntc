@@ -1579,11 +1579,20 @@ pub const Codegen = struct {
         return meta.require_rewrites.get(specifier);
     }
 
-    /// require_xxx()를 출력. 성공 시 true.
+    /// rewrite 값을 출력한다. 값이 완전한 표현식('('로 시작)이면 그대로,
+    /// 변수명이면 "()"를 붙여 호출한다.
+    fn emitRewriteValue(self: *Codegen, req_var: []const u8) !void {
+        try self.write(req_var);
+        // (init_xxx(), __toCommonJS(...)) 같은 완전한 표현식은 ()를 붙이지 않음
+        if (req_var.len == 0 or req_var[0] != '(') {
+            try self.write("()");
+        }
+    }
+
+    /// require_xxx() 또는 (init_xxx(), __toCommonJS(...))를 출력. 성공 시 true.
     fn emitRequireRewriteOrCall(self: *Codegen, source: ast_mod.NodeIndex) !bool {
         if (self.resolveRequireRewrite(source)) |req_var| {
-            try self.write(req_var);
-            try self.write("()");
+            try self.emitRewriteValue(req_var);
             return true;
         }
         try self.write("require(");
@@ -1606,8 +1615,7 @@ pub const Codegen = struct {
         const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
 
         if (self.resolveRequireRewrite(arg_idx)) |req_var| {
-            try self.write(req_var);
-            try self.write("()");
+            try self.emitRewriteValue(req_var);
             return true;
         }
         return false;

@@ -1110,12 +1110,26 @@ pub const Linker = struct {
             if (rec.resolved.isNone()) continue;
             const target = @intFromEnum(rec.resolved);
             if (target >= self.modules.len) continue;
-            if (self.modules[target].wrap_kind == .cjs) {
+            const target_mod = &self.modules[target];
+
+            if (target_mod.wrap_kind == .cjs) {
+                // CJS 타겟: require("spec") → require_xxx()
                 if (require_rewrites.get(rec.specifier)) |old| {
                     self.allocator.free(old);
                 }
-                const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
+                const var_name = try types.makeRequireVarName(self.allocator, target_mod.path);
                 try require_rewrites.put(self.allocator, rec.specifier, var_name);
+            } else if (target_mod.wrap_kind == .esm) {
+                // ESM 타겟: require("spec") → (init_xxx(), __toCommonJS(exports_xxx))
+                if (require_rewrites.get(rec.specifier)) |old| {
+                    self.allocator.free(old);
+                }
+                const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
+                defer self.allocator.free(init_name);
+                const exports_name = try types.makeExportsVarName(self.allocator, target_mod.path);
+                defer self.allocator.free(exports_name);
+                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), __toCommonJS({s}))", .{ init_name, exports_name });
+                try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             }
         }
         return require_rewrites;
