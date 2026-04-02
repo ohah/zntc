@@ -1072,12 +1072,41 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function expression 생성
             const new_params = try self.visitExtraList(params_start, params_len);
-            const new_body = try visitMethodBody(self, body_idx, span);
 
+            const is_async = flags & 0x08 != 0;
+            const is_generator = flags & 0x10 != 0;
+
+            // async method + generator 다운레벨링: class lowering이 먼저 실행되어
+            // method_definition → function_expression으로 변환되므로,
+            // 여기서 직접 async → state machine 변환을 수행해야 함.
+            // (new_ast에 생성된 function_expression은 transformer가 재방문하지 않음)
+            if (is_async and self.options.unsupported.async_await) {
+                const ES2017 = @import("es2017.zig").ES2017(@TypeOf(self.*));
+                const GenMod = @import("es2015_generator.zig").ES2015Generator(@TypeOf(self.*));
+
+                if (self.options.unsupported.generator) {
+                    // async + generator 둘 다 unsupported → __async(__generator(state machine))
+                    // buildStateMachine이 old_ast에서 body를 읽고 내부에서 visitNode 수행
+                    const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+                    if (!sm_result.body.isNone()) {
+                        const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
+                        const async_call = try ES2017.buildAsyncHelperCall(self, gen_call, span);
+                        const func_expr = try buildWrappedFunc(self, async_call, sm_result.var_decl, new_params, span);
+                        return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+                    }
+                }
+                // async만 unsupported → __async(function*() { ... })
+                const gen_wrapper = try ES2017.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
+                const async_call = try ES2017.buildAsyncHelperCall(self, gen_wrapper, span);
+                const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
+                return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+            }
+
+            const new_body = try visitMethodBody(self, body_idx, span);
             const func_flags: u32 = blk: {
                 var f: u32 = 0;
-                if (flags & 0x08 != 0) f |= 0x01; // async
-                if (flags & 0x10 != 0) f |= 0x02; // generator
+                if (is_async) f |= 0x01;
+                if (is_generator) f |= 0x02;
                 break :blk f;
             };
 
@@ -1096,22 +1125,54 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
-            // ClassName 또는 ClassName.prototype
+            return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+        }
+
+        /// return call_expr 를 body로 하는 function expression 생성.
+        /// var_decl이 있으면 body 앞에 추가 (hoisted vars).
+        fn buildWrappedFunc(self: *Transformer, call_expr: NodeIndex, var_decl: NodeIndex, params: ast_mod.NodeList, span: Span) Transformer.Error!NodeIndex {
+            const return_stmt = try self.new_ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = call_expr, .flags = 0 } },
+            });
+            const body_list = if (var_decl.isNone())
+                try self.new_ast.addNodeList(&.{return_stmt})
+            else
+                try self.new_ast.addNodeList(&.{ var_decl, return_stmt });
+            const wrapper_body = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+            const none = @intFromEnum(NodeIndex.none);
+            const func_extra = try self.new_ast.addExtras(&.{
+                none,
+                params.start,
+                params.len,
+                @intFromEnum(wrapper_body),
+                0,
+                none,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .function_expression,
+                .span = span,
+                .data = .{ .extra = func_extra },
+            });
+        }
+
+        /// target.methodName = func_expr (expression_statement)
+        fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const target = if (info.is_static)
                 try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
             else
                 try buildPrototypeRef(self, class_name_span, span);
-
             const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
-
-            // target.methodName = function() {}
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = member_access, .right = func_expr, .flags = 0 } },
             });
-
-            // expression_statement
             return self.new_ast.addNode(.{
                 .tag = .expression_statement,
                 .span = span,
