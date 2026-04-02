@@ -1,0 +1,7 @@
+node_modules/
+out.js
+out-es5.js
+zts-out.js
+metro-out.js
+meta.json
+bun.lock
