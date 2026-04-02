@@ -1775,7 +1775,12 @@ pub fn emitModule(
                         try wrapped.appendSlice(allocator, eb.exported_name);
                     }
                     try wrapped.appendSlice(allocator, ": () => ");
-                    try wrapped.appendSlice(allocator, eb.local_name);
+                    // local_name이 JS 예약어(default 등)이면 linker가 생성한 합성 변수명 사용
+                    const local = if (std.mem.eql(u8, eb.local_name, "default"))
+                        (if (metadata) |md| md.default_export_name else "_default")
+                    else
+                        eb.local_name;
+                    try wrapped.appendSlice(allocator, local);
                     try wrapped.appendSlice(allocator, ",\n");
                 }
             }
