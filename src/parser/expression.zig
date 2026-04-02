@@ -21,6 +21,7 @@ const Kind = token_mod.Kind;
 const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
+const flow = @import("flow.zig");
 
 /// TypeScript의 canFollowTypeArgumentsInExpression 대응 (esbuild tsCanFollowTypeArgumentsInExpression).
 /// `f<Type>` 다음에 올 수 있는 토큰인지 판별한다.
@@ -1179,6 +1180,19 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
         (self.current().isKeyword() and !self.current().isReservedKeyword() and
             !self.current().isLiteralKeyword() and self.current() != .kw_async))
     {
+        // Flow match expression: match (expr) { Pattern => expr, ... }
+        // match는 예약어가 아닌 contextual keyword이므로 식별자로 파싱되기 전에 감지한다.
+        // 타입 스트리핑 전용이므로 balanced brace counting으로 전체를 소비한다.
+        if (self.is_flow and self.current() == .identifier) {
+            const text = self.resolveIdentifierText(span);
+            if (std.mem.eql(u8, text, "match")) {
+                const next_kind = try self.peekNextKind();
+                if (next_kind == .l_paren) {
+                    return try flow.parseMatchExpression(self);
+                }
+            }
+        }
+
         if (self.current() == .identifier) {
             if (self.in_class_field or self.in_static_initializer) {
                 const text = self.resolveIdentifierText(span);
