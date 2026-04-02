@@ -1193,14 +1193,78 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// match는 contextual keyword이므로 예약어가 아니다.
 /// 타입 스트리핑 전용이므로 내부를 개별 파싱하지 않고
 /// balanced brace counting으로 전체를 소비한 뒤 단일 노드를 생성한다.
+/// Flow match expression: match (expr) { Pattern => body, ... }
+/// discriminant와 arms를 파싱하여 flow_match_expression 노드 생성.
+/// codegen에서 if-else chain IIFE로 변환.
 pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip 'match'
-    try skipBalancedParens(self); // match (expr)
-    try skipBalancedBraces(self); // match body { ... }
+
+    // discriminant: (expr)
+    try self.expect(.l_paren);
+    const discriminant = try self.parseAssignmentExpression();
+    try self.expect(.r_paren);
+
+    // match body: { arm1, arm2, ... }
+    try self.expect(.l_curly);
+    const scratch_top = self.saveScratch();
+
+    while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+
+        // pattern 파싱 — `_ =>` wildcard는 arrow function으로 해석되므로 별도 처리
+        const pattern = blk: {
+            // `_` wildcard: `_ =>` 패턴이면 식별자만 파싱하고 `=>` 는 caller에서 소비
+            if (self.current() == .identifier) {
+                const text = self.ast.source[self.currentSpan().start..self.currentSpan().end];
+                if (std.mem.eql(u8, text, "_")) {
+                    const s = self.currentSpan();
+                    try self.advance();
+                    break :blk try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = s,
+                        .data = .{ .string_ref = s },
+                    });
+                }
+            }
+            break :blk try self.parseAssignmentExpression();
+        };
+        try self.expect(.arrow);
+
+        // body: { ... } (block) 또는 expression
+        var body: NodeIndex = undefined;
+        if (self.current() == .l_curly) {
+            body = try self.parseBlockStatement();
+        } else {
+            body = try self.parseAssignmentExpression();
+            _ = try self.eat(.comma);
+        }
+
+        // arm: binary { left=pattern, right=body }
+        const arm = try self.ast.addNode(.{
+            .tag = .flow_match_expression, // arm도 같은 태그 재사용 (구분은 위치로)
+            .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = pattern, .right = body, .flags = 0 } },
+        });
+        try self.scratch.append(self.allocator, arm);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    try self.expect(.r_curly);
+
+    const arms = self.scratch.items[scratch_top..];
+    const arms_list = try self.ast.addNodeList(arms);
+    self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    // flow_match_expression: extra = [discriminant, arms_start, arms_len]
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(discriminant),
+        arms_list.start,
+        arms_list.len,
+    });
     return try self.ast.addNode(.{
         .tag = .flow_match_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .none = 0 },
+        .data = .{ .extra = extra },
     });
 }
