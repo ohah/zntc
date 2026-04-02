@@ -2040,27 +2040,17 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
     const saved = self.saveState();
     const err_count = self.errors.items.len;
 
-    // 제네릭 타입 파라미터 파싱 시도 — 에러 발생 시 rollback
+    // 제네릭 타입 파라미터 파싱 시도 — 에러 발생 또는 에러 추가 시 rollback
     const saved_nodes_len = self.ast.nodes.items.len;
     const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
-    _ = self.parseTsTypeParameterDeclaration() catch {
-        self.ast.nodes.items.len = saved_nodes_len;
-        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-        self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
-        return null;
+    const type_param_failed = blk: {
+        _ = self.parseTsTypeParameterDeclaration() catch break :blk true;
+        // expect()는 에러를 추가하되 계속 진행하므로, 에러 수 증가로 실패 감지
+        break :blk self.errors.items.len > err_count;
     };
-    // expect()는 에러를 추가하되 계속 진행하므로, 에러 수 증가로 실패 감지
-    if (self.errors.items.len > err_count) {
+    if (type_param_failed or self.current() != .l_paren) {
         self.ast.nodes.items.len = saved_nodes_len;
         self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
-        self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
-        return null;
-    }
-
-    // ( 가 와야 arrow 파라미터
-    if (self.current() != .l_paren) {
         self.restoreState(saved);
         self.errors.shrinkRetainingCapacity(err_count);
         return null;
