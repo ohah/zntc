@@ -355,14 +355,10 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.platform = .react_native;
         } else if (std.mem.startsWith(u8, arg, "--rn-platform=")) {
             const val = arg["--rn-platform=".len..];
-            if (std.mem.eql(u8, val, "ios")) {
-                opts.rn_platform = .ios;
-            } else if (std.mem.eql(u8, val, "android")) {
-                opts.rn_platform = .android;
-            } else {
-                try stderr.print("zts: invalid --rn-platform value: '{s}' (expected ios or android)\n", .{val});
+            opts.rn_platform = std.meta.stringToEnum(CliOptions.RnPlatform, val) orelse {
+                try stderr.print("zts: unknown --rn-platform '{s}' (expected: ios, android)\n", .{val});
                 return null;
-            }
+            };
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
@@ -1157,11 +1153,15 @@ pub fn main() !void {
             try plugin_list.append(allocator, sp.toPlugin());
         }
 
+        // --rn-platform은 --platform=react-native와 함께 사용해야 한다
+        if (opts.rn_platform != .none and opts.platform != .react_native) {
+            try stderr.print("zts: --rn-platform requires --platform=react-native\n", .{});
+            return;
+        }
+
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
         if (opts.platform == .react_native) {
             if (opts.resolve_extensions_list.items.len == 0) {
-                // --rn-platform에 따라 플랫폼별 확장자를 우선 배치한다.
-                // 예: ios → .ios.tsx, .ios.ts, ... → .native.tsx, ... → .tsx, .ts, ... → .json
                 const native_and_base = &[_][]const u8{
                     ".native.tsx", ".native.ts", ".native.jsx", ".native.js",
                     ".tsx",        ".ts",        ".jsx",        ".js",
