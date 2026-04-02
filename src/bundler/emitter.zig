@@ -1438,13 +1438,12 @@ const EmitResult = struct {
 /// 반환: { .hoisted = 래퍼 밖 코드, .body = 래퍼 안 코드 }
 fn hoistEsmDeclarations(allocator: std.mem.Allocator, code: []const u8) !struct { hoisted: []const u8, body: []const u8 } {
     var hoisted: std.ArrayList(u8) = .empty;
-    defer hoisted.deinit(allocator);
+    errdefer hoisted.deinit(allocator);
     var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
+    errdefer body.deinit(allocator);
 
     var i: usize = 0;
     while (i < code.len) {
-        // top-level function 선언: "function " 또는 "async function "으로 시작
         if (isTopLevelFunction(code, i)) {
             const fn_end = findBalancedEnd(code, i);
             try hoisted.appendSlice(allocator, code[i..fn_end]);
@@ -1455,7 +1454,6 @@ fn hoistEsmDeclarations(allocator: std.mem.Allocator, code: []const u8) !struct 
             continue;
         }
 
-        // 그 외: body에 추가 (줄 단위)
         const line_end = std.mem.indexOfScalar(u8, code[i..], '\n') orelse code.len - i;
         try body.appendSlice(allocator, code[i .. i + line_end]);
         i += line_end;
@@ -1466,8 +1464,8 @@ fn hoistEsmDeclarations(allocator: std.mem.Allocator, code: []const u8) !struct 
     }
 
     return .{
-        .hoisted = try allocator.dupe(u8, hoisted.items),
-        .body = try allocator.dupe(u8, body.items),
+        .hoisted = try hoisted.toOwnedSlice(allocator),
+        .body = try body.toOwnedSlice(allocator),
     };
 }
 
@@ -1478,18 +1476,18 @@ fn isTopLevelFunction(code: []const u8, i: usize) bool {
 }
 
 /// 중괄호 균형으로 함수 본문의 끝을 찾는다.
-/// 먼저 파라미터 괄호를 건너뛴 후, 함수 본문의 `{...}`을 추적.
+/// 파라미터 괄호 안의 destructuring {}를 건너뛰고 함수 본문의 {} 균형만 추적.
+/// 문자열/템플릿 리터럴(${} 포함) 안의 중괄호는 무시.
 fn findBalancedEnd(code: []const u8, start: usize) usize {
     var j = start;
     var in_string: u8 = 0;
-    var in_template = false;
-    var paren_depth: i32 = 0;
+    var template_depth: u32 = 0; // 중첩 template literal 깊이
+    var paren_depth: u32 = 0;
     var found_body = false;
-    var brace_depth: i32 = 0;
+    var brace_depth: u32 = 0;
 
     while (j < code.len) : (j += 1) {
         const c = code[j];
-        // 문자열/템플릿 안에서는 구조 무시
         if (in_string != 0) {
             if (c == '\\') {
                 j += 1;
@@ -1498,31 +1496,44 @@ fn findBalancedEnd(code: []const u8, start: usize) usize {
             if (c == in_string) in_string = 0;
             continue;
         }
-        if (in_template) {
+        if (template_depth > 0) {
             if (c == '\\') {
                 j += 1;
                 continue;
             }
-            if (c == '`') in_template = false;
+            if (c == '`') {
+                template_depth -= 1;
+                continue;
+            }
+            // ${...} 안으로 진입 → 일반 파싱 모드로 전환
+            if (c == '$' and j + 1 < code.len and code[j + 1] == '{') {
+                j += 1; // { 건너뛰기
+                brace_depth += 1;
+                found_body = true;
+                continue;
+            }
             continue;
         }
         switch (c) {
             '"', '\'' => in_string = c,
-            '`' => in_template = true,
+            '`' => template_depth += 1,
             '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            ')' => if (paren_depth > 0) {
+                paren_depth -= 1;
+            },
             '{' => {
-                if (paren_depth <= 0) {
-                    // 괄호 밖의 { → 함수 본문 시작 또는 내부 블록
+                if (paren_depth == 0) {
                     found_body = true;
                     brace_depth += 1;
                 }
             },
             '}' => {
-                if (paren_depth <= 0 and found_body) {
+                if (paren_depth == 0 and found_body) {
                     brace_depth -= 1;
                     if (brace_depth == 0) return j + 1;
                 }
+                // template ${} 닫기 → 다시 template 모드로
+                // (template_depth > 0일 때 위의 template 분기에서 처리)
             },
             else => {},
         }
@@ -1885,8 +1896,7 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, "});\n");
         }
 
-        // 3. top-level 선언 호이스팅 (esbuild/rolldown 모델)
-        // function → 통째로 밖, var → 선언만 밖 + 초기화는 안
+        // 3. top-level function 선언 호이스팅 (esbuild/rolldown 모델)
         const hoist = try hoistEsmDeclarations(allocator, code);
         defer allocator.free(hoist.hoisted);
         defer allocator.free(hoist.body);
