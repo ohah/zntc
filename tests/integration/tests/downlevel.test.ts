@@ -861,7 +861,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("yes");
     });
 
-    test.skip("async with try/catch/finally", async () => {
+    test("async with try/catch/finally", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
