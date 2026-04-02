@@ -2105,6 +2105,29 @@ test "ES2015: class with computed method" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype") != null);
 }
 
+test "ES2015: class with computed method uses bracket notation" {
+    // [Symbol.iterator]() → prototype[Symbol.iterator] = function() (dot 없이)
+    var r = try e2eTarget(std.testing.allocator, "class F{[Symbol.iterator](){return this;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype[Symbol.iterator]") != null);
+    // prototype.[Symbol.iterator] (잘못된 dot notation) 금지
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "prototype.["), null);
+}
+
+test "ES2015: static computed field uses bracket notation" {
+    var r = try e2eTarget(std.testing.allocator, "var k='x';class F{static [k]=1;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F[k]=1") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "F.[k]"), null);
+}
+
+test "ES2015: instance computed field uses bracket notation" {
+    var r = try e2eTarget(std.testing.allocator, "var k='tag';class F{[k]='foo';}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this[k]") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "this.[k]"), null);
+}
+
 test "ES2015: class with multiple fields" {
     var r = try e2eTarget(std.testing.allocator, "class F{a=1;b='hi';c=true;}", .es5);
     defer r.deinit();
