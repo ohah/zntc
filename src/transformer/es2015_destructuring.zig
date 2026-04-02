@@ -358,13 +358,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.old_ast.getNode(key_idx);
 
-                const member_access = if (key_node.tag == .computed_property_key) blk: {
-                    const inner = try self.visitNode(key_node.data.unary.operand);
-                    break :blk try es_helpers.makeComputedMember(self, ref, inner, span);
-                } else blk: {
-                    const new_key = try self.visitNode(key_idx);
-                    break :blk try es_helpers.makeMemberFromKey(self, ref, new_key, key_node.tag, span);
-                };
+                const member_access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
 
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {

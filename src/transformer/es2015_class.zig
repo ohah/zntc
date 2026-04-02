@@ -819,11 +819,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// obj.key = init expression_statement 생성.
+        /// obj.key = init 또는 obj[computedKey] = init expression_statement 생성.
         /// instance field: obj = this, static field: obj = ClassName identifier.
         fn buildFieldAssign(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const new_key = try self.visitNode(key_idx);
-            const member = try es_helpers.makeStaticMember(self, obj, new_key, span);
+            const member = try es_helpers.makeMemberFromKeyIdx(self, obj, key_idx, span);
             const new_init = try self.visitNode(init_idx);
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
@@ -1103,9 +1102,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try buildPrototypeRef(self, class_name_span, span);
 
-            // target.methodName
-            const new_key = try self.visitNode(key_idx);
-            const member_access = try es_helpers.makeStaticMember(self, target, new_key, span);
+            const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
 
             // target.methodName = function() {}
             const assign = try self.new_ast.addNode(.{
