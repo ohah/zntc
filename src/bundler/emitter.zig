@@ -1678,6 +1678,7 @@ pub fn emitModule(
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
         const basename = std.fs.path.basename(module.path);
+        const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
         const var_name = try types.makeRequireVarName(allocator, module.path);
         defer allocator.free(var_name);
@@ -1691,6 +1692,7 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, "=__commonJS({\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports,module){");
+            if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "}});");
         } else {
@@ -1699,6 +1701,13 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
+            // preamble 삽입 (scope hoisted 변수 참조 등)
+            if (preamble_code) |p| {
+                for (p) |c| {
+                    try wrapped.append(allocator, c);
+                    if (c == '\n') try wrapped.append(allocator, '\t');
+                }
+            }
             // 내부 코드 들여쓰기
             for (code) |c| {
                 try wrapped.append(allocator, c);
