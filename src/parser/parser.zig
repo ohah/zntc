@@ -1989,6 +1989,30 @@ pub const Parser = struct {
             }
             // (a?: Type) — optional parameter
             if (self.current() == .question) return true;
+            // (a, b: Type) => ... — 첫 번째 파라미터에 타입이 없고 뒤에 타입이 있는 경우.
+            // `,` 뒤의 파라미터에서 `identifier :` 패턴을 찾으면 typed arrow로 판별.
+            // 예: (background, useForeground: boolean) => {}
+            //     (acc, edge: Edge) => {}
+            if (self.current() == .comma) {
+                while (self.current() == .comma) {
+                    try self.advance(); // skip ,
+                    // rest parameter with type
+                    if (self.current() == .dot3) return true;
+                    // destructuring with type
+                    if (self.current() == .l_curly or self.current() == .l_bracket) return true;
+                    if (self.current() == .identifier or self.current().isKeyword() or self.current() == .escaped_keyword) {
+                        try self.advance(); // skip identifier
+                        if (self.current() == .colon or self.current() == .question) return true;
+                        if (self.current() == .r_paren) {
+                            try self.advance();
+                            return self.current() == .colon and !self.in_ternary_consequent;
+                        }
+                        // 이 파라미터에도 타입이 없으면 다음 파라미터 확인
+                    } else {
+                        break;
+                    }
+                }
+            }
             return false;
         }
 

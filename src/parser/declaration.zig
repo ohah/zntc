@@ -550,6 +550,13 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
+    // Flow: class body variance — static +prop 또는 static -prop, 또는 +prop / -prop (non-static)
+    // Flow에서 `+`는 covariant(read-only), `-`는 contravariant(write-only) 프로퍼티를 의미한다.
+    // static 키워드 소비 후, 프로퍼티 키 파싱 전에 variance marker를 건너뛴다.
+    if (self.is_flow and (self.current() == .plus or self.current() == .minus)) {
+        try self.advance(); // skip variance marker
+    }
+
     // static 뒤의 TS modifier도 소비 (static readonly x 등)
     // 주의: 첫 번째 루프와 동일하게 멤버 이름으로 사용되는 경우를 처리
     while (self.current() == .kw_public or self.current() == .kw_private or

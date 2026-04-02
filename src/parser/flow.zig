@@ -545,6 +545,11 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
         try self.advance();
     }
 
+    // Flow const type parameter: <const T: {...}> — const modifier를 건너뛴다.
+    if (self.current() == .kw_const) {
+        try self.advance(); // skip 'const'
+    }
+
     try self.advance(); // type param name
 
     // constraint: T: Type (Flow 클래식) 또는 T extends Type (Flow 최신, RN 0.76+)
@@ -601,6 +606,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // 패턴도 감지해야 한다.
     const is_likely_fn = blk: {
         if (self.current() == .dot3) break :blk true;
+        // Flow: positional params — object/tuple 타입이 첫 param으로 올 수 있음
         if (self.current() == .l_curly or self.current() == .l_bracket) break :blk true;
         if (self.current() == .identifier) {
             const next = try self.peekNextKind();
@@ -1188,5 +1194,50 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         .tag = .flow_interface_declaration,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = extra },
+    });
+}
+
+// ================================================================
+// Flow Match Expression
+// ================================================================
+
+/// Flow match expression: match (expr) { Pattern => expr, ... }
+/// match는 contextual keyword이므로 예약어가 아니다.
+/// 타입 스트리핑 전용이므로 내부를 개별 파싱하지 않고
+/// balanced brace counting으로 전체를 소비한 뒤 단일 노드를 생성한다.
+pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'match'
+
+    // match (expr) — 괄호 안의 discriminant를 소비
+    try self.expect(.l_paren);
+    var paren_depth: u32 = 1;
+    while (paren_depth > 0 and self.current() != .eof) {
+        switch (self.current()) {
+            .l_paren => paren_depth += 1,
+            .r_paren => paren_depth -= 1,
+            else => {},
+        }
+        if (paren_depth > 0) try self.advance();
+    }
+    try self.expect(.r_paren);
+
+    // match body { ... } — balanced brace counting으로 전체를 소비
+    try self.expect(.l_curly);
+    var brace_depth: u32 = 1;
+    while (brace_depth > 0 and self.current() != .eof) {
+        switch (self.current()) {
+            .l_curly => brace_depth += 1,
+            .r_curly => brace_depth -= 1,
+            else => {},
+        }
+        if (brace_depth > 0) try self.advance();
+    }
+    try self.expect(.r_curly);
+
+    return try self.ast.addNode(.{
+        .tag = .flow_match_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .none = 0 },
     });
 }

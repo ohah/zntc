@@ -358,6 +358,8 @@ pub const Node = struct {
         flow_type_cast_expression,
         /// {| key: Type |} — Flow exact object type
         flow_exact_object_type,
+        /// match (expr) { ... } — Flow match expression
+        flow_match_expression,
 
         // ==============================================================
         // TypeScript Expressions
