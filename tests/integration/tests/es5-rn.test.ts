@@ -175,7 +175,11 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
   }, 60_000); // Metro 번들은 ~20초 소요
 
   test("Hermes 구문 검증 (hermesc)", async () => {
-    const hermesc = resolve(EXAMPLE_APP, "node_modules/hermes-compiler/hermesc/osx-bin/hermesc");
+    const hermescDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
+    const hermesc = resolve(
+      EXAMPLE_APP,
+      `node_modules/hermes-compiler/hermesc/${hermescDir}/hermesc`,
+    );
 
     // ZTS 번들
     const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
