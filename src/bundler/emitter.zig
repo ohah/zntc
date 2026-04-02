@@ -1432,6 +1432,35 @@ const EmitResult = struct {
     helpers: RuntimeHelpers = .{},
 };
 
+/// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
+fn needsPropertyQuote(name: []const u8) bool {
+    if (name.len == 0) return true;
+    // JS 예약어 중 export 이름으로 자주 등장하는 것만 체크
+    const reserved = [_][]const u8{
+        "default", "class",      "function", "var",    "let",    "const",
+        "if",      "else",       "for",      "while",  "do",     "switch",
+        "case",    "break",      "continue", "return", "throw",  "try",
+        "catch",   "finally",    "new",      "delete", "typeof", "void",
+        "in",      "instanceof", "this",     "with",   "yield",  "await",
+        "import",  "export",     "extends",  "super",  "enum",
+    };
+    for (reserved) |kw| {
+        if (std.mem.eql(u8, name, kw)) return true;
+    }
+    // 첫 문자가 숫자이거나 특수문자이면 따옴표 필요
+    if (name[0] >= '0' and name[0] <= '9') return true;
+    if (name[0] != '_' and name[0] != '$' and !(name[0] >= 'a' and name[0] <= 'z') and !(name[0] >= 'A' and name[0] <= 'Z')) return true;
+    return false;
+}
+
+/// 들여쓰기를 적용하여 텍스트를 ArrayList에 추가. 줄바꿈 뒤에 탭을 삽입.
+fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    for (text) |c| {
+        try wrapped.append(allocator, c);
+        if (c == '\n') try wrapped.append(allocator, '\t');
+    }
+}
+
 fn emitModuleThread(
     allocator: std.mem.Allocator,
     module: *const Module,
@@ -1701,18 +1730,8 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
-            // preamble 삽입 (scope hoisted 변수 참조 등)
-            if (preamble_code) |p| {
-                for (p) |c| {
-                    try wrapped.append(allocator, c);
-                    if (c == '\n') try wrapped.append(allocator, '\t');
-                }
-            }
-            // 내부 코드 들여쓰기
-            for (code) |c| {
-                try wrapped.append(allocator, c);
-                if (c == '\n') try wrapped.append(allocator, '\t');
-            }
+            if (preamble_code) |p| try appendIndented(&wrapped, allocator, p);
+            try appendIndented(&wrapped, allocator, code);
             try wrapped.appendSlice(allocator, "\n\t}\n});\n");
         }
 
@@ -1747,7 +1766,14 @@ pub fn emitModule(
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
                     try wrapped.appendSlice(allocator, "\t");
-                    try wrapped.appendSlice(allocator, eb.exported_name);
+                    // 예약어(default 등)나 비식별자는 따옴표로 감싸야 유효한 JS
+                    if (needsPropertyQuote(eb.exported_name)) {
+                        try wrapped.appendSlice(allocator, "\"");
+                        try wrapped.appendSlice(allocator, eb.exported_name);
+                        try wrapped.appendSlice(allocator, "\"");
+                    } else {
+                        try wrapped.appendSlice(allocator, eb.exported_name);
+                    }
                     try wrapped.appendSlice(allocator, ": () => ");
                     try wrapped.appendSlice(allocator, eb.local_name);
                     try wrapped.appendSlice(allocator, ",\n");
@@ -1771,10 +1797,7 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"() {\n");
-            for (code) |c| {
-                try wrapped.append(allocator, c);
-                if (c == '\n') try wrapped.append(allocator, '\t');
-            }
+            try appendIndented(&wrapped, allocator, code);
             try wrapped.appendSlice(allocator, "\n\t}\n});\n");
         }
 

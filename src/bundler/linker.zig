@@ -1034,10 +1034,7 @@ pub const Linker = struct {
                         const src_node = new_ast.getNode(source_idx);
                         if (src_node.tag != .string_literal) continue;
                         const raw = new_ast.source[src_node.data.string_ref.start..src_node.data.string_ref.end];
-                        const spec = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
-                            raw[1 .. raw.len - 1]
-                        else
-                            raw;
+                        const spec = Ast.stripStringQuotes(raw);
                         if (hoisted_specifiers.contains(spec)) {
                             skip_nodes.set(inode_idx);
                         }
