@@ -238,7 +238,7 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
 
     // scope hoisted esm_with_dynamic_fallback 내 require()는 아직 미해결이므로
     // 현재 기준선보다 악화되지 않는 것만 검증 (기준선은 점진적으로 낮춤)
-    expect(rawRequires.length).toBeLessThanOrEqual(280);
+    expect(rawRequires.length).toBeLessThanOrEqual(230);
   }, 60_000);
 });
 

@@ -8055,6 +8055,38 @@ test "CJS: named import inside __commonJS wrapper rewritten to require_xxx()" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./util.cjs')") == null);
 }
 
+test "CJS: scope hoisted esm_with_dynamic_fallback — internal require() rewritten" {
+    // ESM+CJS 혼합 모듈이 import로 소비되어 scope hoisting될 때,
+    // 내부 require() 호출이 require_xxx()로 변환되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // entry가 import로 소비 → hybrid.js는 ESM으로 승격 (scope hoisted)
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { greet } from './hybrid.js';
+        \\console.log(greet());
+    );
+    // hybrid.js: ESM(export) + CJS(require) → esm_with_dynamic_fallback, import로 소비 → scope hoisted
+    try writeFile(tmp.dir, "hybrid.js",
+        \\const dep = require('./dep.cjs');
+        \\export function greet() { return dep(); }
+    );
+    try writeFile(tmp.dir, "dep.cjs", "module.exports = function() { return 'hi'; };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // scope hoisted 모듈 내부 require('./dep.cjs') → require_dep()
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_dep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./dep.cjs\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./dep.cjs')") == null);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
