@@ -2029,15 +2029,22 @@ fn isTsxGenericArrowAfterAsync(self: *Parser) ParseError2!bool {
     return try checkTsxGenericArrowTypeParam(self);
 }
 
-/// `<` 다음 위치에서 `[const] Ident (,|=|extends|:)` 패턴을 확인.
-/// Flow는 `:` 로 constraint를 표기하므로 (예: `<T: {...}>(x) => ...`) colon도 허용.
+/// `<` 다음 위치에서 generic arrow function의 type parameter 패턴을 확인.
+/// `[const] Ident (,|=|extends|:)` 또는 Flow에서 `Ident > (` (단일 무제약 param).
 fn checkTsxGenericArrowTypeParam(self: *Parser) ParseError2!bool {
     if (self.current() == .kw_const) try self.advance();
     if (self.current() != .identifier and !self.current().isKeyword()) return false;
     try self.advance();
     const kind = self.current();
-    return kind == .comma or kind == .eq or kind == .kw_extends or
-        (self.is_flow and kind == .colon);
+    if (kind == .comma or kind == .eq or kind == .kw_extends) return true;
+    if (self.is_flow and kind == .colon) return true;
+    // Flow: <T>(...) => body — `>` 뒤에 `(` 가 오면 generic arrow로 판별.
+    // TSX에서는 <T> 가 JSX element일 수 있으므로, Flow 모드에서만 허용.
+    if (self.is_flow and kind == .r_angle) {
+        const after = try self.peekNextKind();
+        return after == .l_paren;
+    }
+    return false;
 }
 
 /// TS 제네릭 arrow function 파싱 시도: <T>() => body, <const T>() => body

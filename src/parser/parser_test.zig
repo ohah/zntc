@@ -2854,6 +2854,15 @@ test "Flow: nullable return type with arrow" {
 test "Flow: typed arrow in ternary consequent" {
     // (): void => {} — 삼항 안에서 typed empty-param arrow
     try expectNoParseErrorFlow("const x = true ? (): void => { return; } : null;");
+    // typeof도 type keyword로 감지
+    try expectNoParseErrorFlow("const x = true ? (): typeof a => { return a; } : null;");
+}
+
+test "Flow: single type param generic arrow in JSX mode" {
+    // <T>() => body — JSX+Flow에서 <T> 뒤에 ( 가 오면 generic arrow로 판별
+    try expectNoParseErrorFlow("const f = <T>(x: T): T => x;");
+    // object method
+    try expectNoParseErrorFlow("const obj = { select: <T>(spec: T): T => spec };");
 }
 
 test "Flow: type guard predicate" {
