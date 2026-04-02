@@ -175,6 +175,10 @@ pub const Transformer = struct {
     /// collectForOperations에서 update nop 추가 직전에 설정.
     generator_for_update_label: ?u32 = null,
 
+    /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
+    /// buildGeneratorBody에서 호이스팅 변수에 추가.
+    generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
+
     /// ES2015 class private fields: "#name" → "_name" 매핑.
     /// class body 방문 중 설정되어, this.#x → _x.get(this), this.#x = v → _x.set(this, v) 변환에 사용.
     current_private_fields: []const PrivateFieldMapping = &.{},
@@ -257,6 +261,7 @@ pub const Transformer = struct {
         for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
         self.refresh_signatures.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
+        self.generator_temp_var_spans.deinit(self.allocator);
     }
 
     // ================================================================

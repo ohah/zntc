@@ -861,6 +861,28 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("yes");
     });
 
+    test("generator for-of with yield", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* gen(arr: number[]) {
+              for (const x of arr) { yield x * 2; }
+            }
+            var it = gen([1, 2, 3]);
+            var r = it.next();
+            var result: number[] = [];
+            while (!r.done) { result.push(r.value); r = it.next(); }
+            console.log(result.join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2,4,6");
+    });
+
     test("async with try/catch/finally", async () => {
       const result = await bundleAndRun(
         {
