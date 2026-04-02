@@ -1484,6 +1484,21 @@ test "ES5: class static async method → state machine" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
 }
 
+test "ES5: destructuring default parameter with spread (AnimatedImplementation pattern)" {
+    var r = try e2eTarget(std.testing.allocator, "function foo() { return {...x}; }\nfunction bar({a = 1, b = true} = {}) { return a; }", .es5);
+    defer r.deinit();
+    // spread + destructuring default parameter → 크래시 없이 출력
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+test "ES5: destructuring default parameter in function" {
+    var r = try e2eTarget(std.testing.allocator, "function loop(animation, {iterations = -1, reset = true} = {}) { return iterations; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+    // destructuring은 var {iterations, reset} = _ref 형태로 분해
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+}
+
 test "ES5: generator with destructuring var hoisting" {
     var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
     defer r.deinit();

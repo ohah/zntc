@@ -1565,7 +1565,7 @@ pub const Codegen = struct {
         const callee_node = self.ast.getNode(callee);
         if (callee_node.tag != .identifier_reference) return false;
 
-        const callee_text = self.ast.source[callee_node.data.string_ref.start..callee_node.data.string_ref.end];
+        const callee_text = self.ast.getText(callee_node.data.string_ref);
         if (!std.mem.eql(u8, callee_text, "require")) return false;
 
         if (args_start >= self.ast.extra_data.items.len) return false;
