@@ -513,8 +513,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 .value = "\"production\"",
             });
         }
-        // RN: __DEV__를 자동 define (Metro 호환). production → false.
-        if (!has_dev) {
+        // RN만: __DEV__를 자동 define (Metro 호환). production → false.
+        if (!has_dev and opts.platform == .react_native) {
             try opts.define_list.append(allocator, .{
                 .key = "__DEV__",
                 .value = "false",
