@@ -1,6 +1,8 @@
 const std = @import("std");
-const Linker = @import("linker.zig").Linker;
-const ImportBinding = @import("linker.zig").ImportBinding;
+const linker_mod = @import("linker.zig");
+const Linker = linker_mod.Linker;
+const ImportBinding = linker_mod.ImportBinding;
+const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
@@ -1062,6 +1064,212 @@ test "export * as: does not pollute parent seen (name collision)" {
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
+
+// ============================================================
+// CJS Preamble 출력 검증 테스트
+// ============================================================
+
+const Ast = @import("../parser/ast.zig").Ast;
+
+/// buildMetadataForAst를 호출하여 preamble을 검증하는 헬퍼.
+/// computeRenames 후 원본 AST 기준 메타데이터를 생성한다.
+fn buildMetadataForModule(
+    r: *const TestResult,
+    module_index: u32,
+    is_entry: bool,
+) !LinkingMetadata {
+    const ast: *const Ast = &(r.linker.modules[module_index].ast orelse return error.NoAst);
+    return r.linker.buildMetadataForAst(ast, module_index, is_entry, null);
+}
+
+test "preamble: CJS module import — named import generates require_xxx" {
+    // ESM에서 CJS 모듈의 named import를 가져올 때
+    // preamble에 "var x = require_c().x;" 형태가 생성되는지 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './c';\nconsole.log(x);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { x: 42 };");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // c.js가 CJS로 감지되었는지 확인
+    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.modules.items[1].wrap_kind);
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    // preamble이 생성되어야 함
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    // require_xxx() 호출 포함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "require_") != null);
+    // named import이므로 .x 접근이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".x") != null);
+}
+
+test "preamble: CJS module import — default import generates __toESM" {
+    // ESM에서 CJS 모듈의 default import를 가져올 때
+    // __toESM 래퍼가 생성되는지 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import foo from './c';\nconsole.log(foo);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { default: 42 };");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    // __toESM 래퍼 포함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__toESM(") != null);
+    // .default 접근
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") != null);
+}
+
+test "preamble: CJS module import — namespace import generates __toESM without .default" {
+    // ESM에서 CJS 모듈을 namespace import할 때
+    // __toESM 래퍼가 생성되고, .default가 붙지 않는지 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as c from './c';\nconsole.log(c);");
+    try writeFile(tmp.dir, "c.js", "module.exports = { x: 1 };");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    // __toESM 래퍼 포함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__toESM(") != null);
+    // namespace import는 .default가 붙지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") == null);
+}
+
+test "preamble: unresolved import generates require()" {
+    // external/unresolved import는 require("specifier") 형태 preamble 생성
+    // 존재하지 않는 상대 경로를 사용하여 resolve 실패를 유도
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { readFile } from './nonexistent';\nconsole.log(readFile);");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    // require("./nonexistent") 형태
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "require(") != null);
+    // named import이므로 .readFile 접근
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".readFile") != null);
+}
+
+test "preamble: dev mode — __zts_require named destructuring" {
+    // dev mode에서 named import는 var { a } = __zts_require("./path") 형태
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { add } from './math';\nconsole.log(add(1,2));");
+    try writeFile(tmp.dir, "math.ts", "export function add(a: number, b: number) { return a + b; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    // __zts_require 호출 포함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    // named destructuring: { add }
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "add") != null);
+}
+
+test "preamble: dev mode — default import uses .default" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import foo from './lib';\nconsole.log(foo);");
+    try writeFile(tmp.dir, "lib.ts", "export default 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") != null);
+}
+
+test "preamble: dev mode — namespace import without .default" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as utils from './utils';\nconsole.log(utils);");
+    try writeFile(tmp.dir, "utils.ts", "export const x = 1;\nexport const y = 2;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
+    // namespace는 .default 없이 모듈 전체
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") == null);
+}
+
+test "preamble: no preamble for ESM-to-ESM import" {
+    // ESM→ESM은 rename으로 처리되므로 preamble이 없어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './b';\nconsole.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export const x = 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    // ESM→ESM이면 preamble 없음
+    try std.testing.expectEqual(@as(?[]const u8, null), md.cjs_import_preamble);
+}
+
+// ============================================================
+// Semantic tests
+// ============================================================
 
 test "semantic: non-shorthand {x: y} does not reference x" {
     // {x: y} — x는 property name (변수 참조 아님), y는 변수 참조
