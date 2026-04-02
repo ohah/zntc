@@ -895,6 +895,29 @@ test "Codegen CJS: export named function" {
     try std.testing.expectEqualStrings("function foo(){}exports.foo=foo;", r.output);
 }
 
+test "Codegen CJS + ES5: export default class" {
+    // export default class Foo { } → ES5 function + module.exports=Foo;
+    var r = try e2eFull(std.testing.allocator, "export default class Foo { constructor() {} }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) }, .{ .minify_whitespace = true, .module_format = .cjs }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "module.exports=Foo;") != null);
+    // module.exports=; (빈 값) 금지
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "module.exports=;"), null);
+}
+
+test "Codegen CJS + ES5: export default anonymous class" {
+    var r = try e2eFull(std.testing.allocator, "export default class { constructor() {} }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) }, .{ .minify_whitespace = true, .module_format = .cjs }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "module.exports=_Class;") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "module.exports=;"), null);
+}
+
+test "Codegen CJS + ES5: export default class with extends" {
+    var r = try e2eFull(std.testing.allocator, "export default class CustomEvent extends Event { constructor(type) { super(type); } }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) }, .{ .minify_whitespace = true, .module_format = .cjs }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "module.exports=CustomEvent;") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "module.exports=;"), null);
+}
+
 // ============================================================
 // E2E Tests: Formatted output
 // ============================================================

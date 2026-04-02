@@ -674,7 +674,7 @@ pub const Transformer = struct {
             .formal_parameter => self.visitFormalParameter(node),
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
-            .export_default_declaration => self.visitUnaryNode(node),
+            .export_default_declaration => self.visitExportDefaultDeclaration(node),
             .export_all_declaration => self.visitBinaryNode(node),
             .catch_clause => {
                 if (self.options.unsupported.optional_catch_binding) {
@@ -836,6 +836,39 @@ pub const Transformer = struct {
                 self.new_symbol_ids.items[new_i] = self.old_symbol_ids[old_i];
             }
         }
+    }
+
+    /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
+    /// lowerClassDeclaration이 pending_nodes에 function 등을 넣고 .none을 반환하므로,
+    /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.
+    fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const operand_idx = node.data.unary.operand;
+        const new_operand = try self.visitNode(operand_idx);
+
+        if (new_operand.isNone()) {
+            const operand_node = self.old_ast.getNode(operand_idx);
+            if (operand_node.tag == .class_declaration or operand_node.tag == .function_declaration) {
+                const name_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[operand_node.data.extra]);
+                // named class/function → 원본 이름 사용
+                // anonymous class → lowerClassDeclaration이 "_Class"로 합성 (addString)
+                const name_span = if (!name_idx.isNone())
+                    self.old_ast.getNode(name_idx).data.string_ref
+                else
+                    try self.new_ast.addString("_Class");
+                const name_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                return self.new_ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = name_ref, .flags = node.data.unary.flags } },
+                });
+            }
+        }
+
+        return self.new_ast.addNode(.{
+            .tag = node.tag,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
+        });
     }
 
     /// 단항 노드: operand를 재귀 방문 후 복사.
