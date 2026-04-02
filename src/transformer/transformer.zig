@@ -365,6 +365,8 @@ pub const Transformer = struct {
             .flow_type_cast_expression,
             => self.visitTsExpression(node),
 
+            .flow_match_expression => self.visitFlowMatch(node),
+
             // === 리스트 노드: 자식을 하나씩 방문하며 복사 ===
             .program,
             .block_statement,
@@ -1040,6 +1042,132 @@ pub const Transformer = struct {
     /// 예: `x as number` → `x` (operand만 반환)
     /// 예: `x!` → `x` (non-null assertion 제거)
     /// 예: `<number>x` → `x` (type assertion 제거)
+    /// Flow match expression → (function(_m){if(_m===P){B}else if...})(expr)
+    fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
+        const span = node.span;
+        const extras = self.old_ast.extra_data.items;
+        const e = node.data.extra;
+        const discriminant_idx: NodeIndex = @enumFromInt(extras[e]);
+        const arms_start = extras[e + 1];
+        const arms_len = extras[e + 2];
+
+        const new_discriminant = try self.visitNode(discriminant_idx);
+
+        // 임시 변수 _m
+        const match_var = try es_helpers.makeTempVarSpan(self);
+        const match_param = try es_helpers.makeBindingIdentifier(self, match_var);
+
+        // arms → if-else chain 구성 (뒤에서부터)
+        const arm_indices = extras[arms_start .. arms_start + arms_len];
+        var else_branch: NodeIndex = .none;
+
+        var i: usize = arm_indices.len;
+        while (i > 0) {
+            i -= 1;
+            const arm = self.old_ast.getNode(@enumFromInt(arm_indices[i]));
+            const pattern = arm.data.binary.left;
+            const body_idx = arm.data.binary.right;
+            const new_body_raw = try self.visitNode(body_idx);
+            // body를 { return body; } 또는 block 그대로 사용
+            const body_node = self.new_ast.getNode(new_body_raw);
+            const new_body = if (body_node.tag == .block_statement)
+                new_body_raw
+            else blk: {
+                // expression → { return expr; }
+                const return_stmt = try self.new_ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = new_body_raw, .flags = 0 } },
+                });
+                const stmts = try self.new_ast.addNodeList(&.{return_stmt});
+                break :blk try self.new_ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = stmts },
+                });
+            };
+
+            // wildcard `_` 감지
+            const pat_node = self.old_ast.getNode(pattern);
+            const is_wildcard = blk: {
+                if (pat_node.tag == .identifier_reference) {
+                    const text = self.old_ast.source[pat_node.span.start..pat_node.span.end];
+                    break :blk std.mem.eql(u8, text, "_");
+                }
+                break :blk false;
+            };
+
+            if (is_wildcard) {
+                else_branch = new_body;
+            } else {
+                const new_pattern = try self.visitNode(pattern);
+                const match_ref = try es_helpers.makeTempVarRef(self, match_var, match_var);
+                // _m === pattern
+                const test_expr = try self.new_ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = span,
+                    .data = .{ .binary = .{
+                        .left = match_ref,
+                        .right = new_pattern,
+                        .flags = @intFromEnum(token_mod.Kind.eq3),
+                    } },
+                });
+                else_branch = try self.new_ast.addNode(.{
+                    .tag = .if_statement,
+                    .span = span,
+                    .data = .{ .ternary = .{ .a = test_expr, .b = new_body, .c = else_branch } },
+                });
+            }
+        }
+
+        // function(_m) { if-chain }
+        const body_list = if (!else_branch.isNone())
+            try self.new_ast.addNodeList(&.{else_branch})
+        else
+            @import("../parser/ast.zig").NodeList{ .start = 0, .len = 0 };
+        const fn_body = try self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = span,
+            .data = .{ .list = body_list },
+        });
+        // function extra: [name, params_start, params_len, body, flags, return_type]
+        const fn_params_list = try self.new_ast.addNodeList(&.{match_param});
+        const fn_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(NodeIndex.none), // name (anonymous)
+            fn_params_list.start,
+            fn_params_list.len,
+            @intFromEnum(fn_body),
+            0, // flags
+            @intFromEnum(NodeIndex.none), // return type
+        });
+        const fn_expr = try self.new_ast.addNode(.{
+            .tag = .function_expression,
+            .span = span,
+            .data = .{ .extra = fn_extra },
+        });
+
+        // (function(_m){...})(discriminant)
+        // function expression을 parenthesized로 감싸서 IIFE 형태로 만듦
+        const paren_fn = try self.new_ast.addNode(.{
+            .tag = .parenthesized_expression,
+            .span = span,
+            .data = .{ .unary = .{ .operand = fn_expr, .flags = 0 } },
+        });
+        // call_expression extra: [callee, args_start, args_len, flags]
+        const args_list = try self.new_ast.addNodeList(&.{new_discriminant});
+        const call_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(paren_fn),
+            args_list.start,
+            args_list.len,
+            0, // flags
+        });
+        return self.new_ast.addNode(.{
+            .tag = .call_expression,
+            .span = span,
+            .data = .{ .extra = call_extra },
+        });
+    }
+
     fn visitTsExpression(self: *Transformer, node: Node) Error!NodeIndex {
         if (!self.options.strip_types) {
             return self.copyNodeDirect(node);

@@ -768,7 +768,8 @@ pub const Codegen = struct {
 
             .formal_parameter => try self.emitFormalParam(node),
 
-            // Flow match expression: 원본 텍스트 그대로 출력 (런타임 기능)
+            // Flow match expression — transformer에서 if-else IIFE로 변환됨
+            // 변환되지 않은 경우 (non-bundle 등) span 텍스트 그대로 출력
             .flow_match_expression => try self.writeNodeSpan(node),
 
             // JSX → React.createElement
