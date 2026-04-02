@@ -776,14 +776,14 @@ test "CodeSplitting: static import not rewritten" {
 test "appendRuntimeHelpers: no helpers → empty" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{}, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{}, false, false);
     try std.testing.expectEqual(@as(usize, 0), buf.items.len);
 }
 
 test "appendRuntimeHelpers: extends only" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true }, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true }, false, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __extends") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "__generator") == null);
 }
@@ -791,7 +791,7 @@ test "appendRuntimeHelpers: extends only" {
 test "appendRuntimeHelpers: generator only" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "__extends") == null);
 }
@@ -799,14 +799,14 @@ test "appendRuntimeHelpers: generator only" {
 test "appendRuntimeHelpers: rest only" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .rest = true }, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .rest = true }, false, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __rest") != null);
 }
 
 test "appendRuntimeHelpers: multiple helpers" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true, .generator = true, .rest = true }, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .extends = true, .generator = true, .rest = true }, false, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __extends") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __rest") != null);
@@ -815,7 +815,7 @@ test "appendRuntimeHelpers: multiple helpers" {
 test "appendRuntimeHelpers: minified" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, true);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, true, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator=function") != null);
     // minified에는 줄바꿈이 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\n") == null);
@@ -825,7 +825,7 @@ test "appendRuntimeHelpers: generator runtime is valid JS" {
     // __generator가 올바른 JS인지 기본 구조 검증
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false);
+    try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, false, false);
     // 핵심 구조 요소 존재 확인
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "label: 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "Symbol.iterator") != null);

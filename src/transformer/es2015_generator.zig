@@ -97,22 +97,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = gen_call, .flags = 0 } },
             });
 
-            // var 선언을 __generator 밖에 배치 (함수 스코프에서 한 번만 선언)
-            const new_body = if (sm_result.var_decl.isNone()) blk: {
-                const body_list = try self.new_ast.addNodeList(&.{ret_stmt});
-                break :blk try self.new_ast.addNode(.{
-                    .tag = .block_statement,
-                    .span = span,
-                    .data = .{ .list = body_list },
-                });
-            } else blk: {
-                const body_list = try self.new_ast.addNodeList(&.{ sm_result.var_decl, ret_stmt });
-                break :blk try self.new_ast.addNode(.{
-                    .tag = .block_statement,
-                    .span = span,
-                    .data = .{ .list = body_list },
-                });
-            };
+            // hoisted var 선언을 __generator 밖에 배치
+            const body_list = if (sm_result.var_decl.isNone())
+                try self.new_ast.addNodeList(&.{ret_stmt})
+            else
+                try self.new_ast.addNodeList(&.{ sm_result.var_decl, ret_stmt });
+            const new_body = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
 
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
@@ -132,17 +126,22 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
         }
 
-        const StateMachineResult = struct {
+        pub const StateMachineResult = struct {
             body: NodeIndex, // switch 문 (또는 switch를 포함하는 block)
             var_decl: NodeIndex, // 호이스팅된 var 선언 (없으면 .none)
         };
 
         /// generator body를 switch 문 기반 상태 머신으로 변환.
-        fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
+        /// es2017 결합 변환에서도 호출 (async body의 await를 yield처럼 처리).
+        pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
             const body = self.old_ast.getNode(body_idx);
-            if (body.tag != .block_statement and body.tag != .function_body) return .{ .body = .none, .var_decl = .none };
+
+            // expression body (arrow function): implicit return으로 처리
+            if (body.tag != .block_statement and body.tag != .function_body) {
+                return buildExpressionBodyStateMachine(self, body_idx, body, span);
+            }
 
             const stmts = self.old_ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
 
@@ -194,15 +193,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             switch (stmt.tag) {
                 .expression_statement => {
-                    // expression_statement 안의 yield 감지
+                    // expression_statement 안의 yield/await 감지
                     const expr_idx = stmt.data.unary.operand;
                     const expr = self.old_ast.getNode(expr_idx);
 
-                    if (expr.tag == .yield_expression) {
+                    if (expr.tag == .yield_expression or expr.tag == .await_expression) {
                         const value_idx = expr.data.unary.operand;
-                        const is_delegate = (expr.data.unary.flags & 1) != 0;
+                        const is_delegate = if (expr.tag == .yield_expression) (expr.data.unary.flags & 1) != 0 else false;
                         const new_value = if (!value_idx.isNone()) try self.visitNode(value_idx) else NodeIndex.none;
-                        // yield* → [5, iter], yield → [4, value]
+                        // yield* → [5, iter], yield/await → [4, value]
                         const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
                         try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
                         next_label.* += 1;
@@ -211,10 +210,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const sent_stmt = try buildSentExprStmt(self, stmt.span);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = sent_stmt } });
                     } else if (expr.tag == .assignment_expression) {
-                        // x = yield value 패턴 감지
+                        // x = yield value / x = await value 패턴 감지
                         const right_idx = expr.data.binary.right;
                         const right = self.old_ast.getNode(right_idx);
-                        if (right.tag == .yield_expression) {
+                        if (right.tag == .yield_expression or right.tag == .await_expression) {
                             const yield_value_idx = right.data.unary.operand;
                             const new_yield_value = if (!yield_value_idx.isNone()) try self.visitNode(yield_value_idx) else NodeIndex.none;
                             try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_yield_value } });
@@ -242,8 +241,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .return_statement => {
                     const value_idx = stmt.data.unary.operand;
-                    const new_value = if (!value_idx.isNone()) try self.visitNode(value_idx) else NodeIndex.none;
-                    try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
+                    if (!value_idx.isNone()) {
+                        const value_node = self.old_ast.getNode(value_idx);
+                        if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
+                            // return yield/await x → yield x + return _state.sent()
+                            const inner_value = value_node.data.unary.operand;
+                            const new_inner = if (!inner_value.isNone()) try self.visitNode(inner_value) else NodeIndex.none;
+                            const is_delegate = if (value_node.tag == .yield_expression) (value_node.data.unary.flags & 1) != 0 else false;
+                            const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
+                            try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_inner } });
+                            next_label.* += 1;
+                            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                            const sent = try buildSentCall(self, stmt.span);
+                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = sent } });
+                        } else {
+                            const new_value = try self.visitNode(value_idx);
+                            try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
+                        }
+                    } else {
+                        try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = NodeIndex.none } });
+                    }
                 },
                 .variable_declaration => {
                     // 모든 var는 호이스팅됨. init를 assignment로 변환.
@@ -933,8 +950,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 if (init_idx.isNone()) continue;
 
                 const init_node = self.old_ast.getNode(init_idx);
-                if (init_node.tag == .yield_expression) {
-                    // var x = yield value → yield value + x = _state.sent()
+                if (init_node.tag == .yield_expression or init_node.tag == .await_expression) {
+                    // var x = yield/await value → yield value + x = _state.sent()
                     const yield_val = init_node.data.unary.operand;
                     const new_val = if (!yield_val.isNone()) try self.visitNode(yield_val) else NodeIndex.none;
                     try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_val } });
@@ -970,7 +987,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn containsYield(self: *const Transformer, idx: NodeIndex) bool {
             if (idx.isNone()) return false;
             const node = self.old_ast.getNode(idx);
-            if (node.tag == .yield_expression) return true;
+            if (node.tag == .yield_expression or node.tag == .await_expression) return true;
             // labeled break/continue: generator label stack에 등록된 label 참조 시 처리 필요
             if ((node.tag == .break_statement or node.tag == .continue_statement) and
                 !node.data.unary.operand.isNone() and self.generator_label_stack.items.len > 0)
@@ -1137,6 +1154,35 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 else => false,
             };
+        }
+
+        /// expression body (arrow function 등)를 state machine으로 변환.
+        /// expression을 implicit return으로 처리.
+        fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
+            // expression body는 최대 3개 연산 (yield + nop + return)
+            var ops_buf: [3]Operation = undefined;
+            var ops_len: usize = 0;
+
+            if (body.tag == .await_expression or body.tag == .yield_expression) {
+                // return await/yield x → yield x + return _state.sent()
+                const inner_value = body.data.unary.operand;
+                const new_inner = if (!inner_value.isNone()) try self.visitNode(inner_value) else NodeIndex.none;
+                const is_delegate = if (body.tag == .yield_expression) (body.data.unary.flags & 1) != 0 else false;
+                const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
+                ops_buf[0] = .{ .code = opcode, .arg = .{ .node = new_inner } };
+                ops_buf[1] = .{ .code = .nop, .arg = .{ .none = {} } };
+                const sent = try buildSentCall(self, span);
+                ops_buf[2] = .{ .code = .return_op, .arg = .{ .node = sent } };
+                ops_len = 3;
+            } else {
+                // 일반 expression: return expr
+                const new_value = try self.visitNode(body_idx);
+                ops_buf[0] = .{ .code = .return_op, .arg = .{ .node = new_value } };
+                ops_len = 1;
+            }
+
+            const switch_node = try buildSwitchFromOps(self, ops_buf[0..ops_len], span);
+            return .{ .body = switch_node, .var_decl = .none };
         }
 
         /// 연산 리스트를 switch case로 변환.
@@ -1345,8 +1391,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return es_helpers.makeIdentifierRef(self, "_state");
         }
 
-        /// __generator(function(_state) { switch_body }) 호출 생성.
-        fn buildGeneratorHelperCall(self: *Transformer, switch_body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        /// __generator(function(_state) { ... }) 호출 생성.
+        /// es2017 결합 변환에서도 호출.
+        pub fn buildGeneratorHelperCall(self: *Transformer, switch_body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터

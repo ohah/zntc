@@ -1280,6 +1280,63 @@ test "ES2017: non-async function unchanged" {
     try std.testing.expectEqualStrings("export function foo(){return 1;}", r.output);
 }
 
+// --- ES5: async → state machine (async_await + generator 둘 다 unsupported) ---
+
+/// ES5 async state machine 변환의 공통 검증.
+/// function*/yield 없고, __async/__generator가 있어야 함.
+fn expectAsyncStateMachine(output: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, output, "__async") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "function*") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "yield") == null);
+}
+
+test "ES5: async function → __async + __generator state machine" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { return await bar(); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state") != null);
+}
+
+test "ES5: async function with multiple awaits" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { var x = await a(); await b(x); return x; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
+}
+
+test "ES5: async arrow block body → state machine" {
+    var r = try e2eTarget(std.testing.allocator, "var f = async () => { await x; };", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async arrow expression body → state machine" {
+    var r = try e2eTarget(std.testing.allocator, "var f = async () => await x;", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async function with if/await" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo(x) { if (x) { await a(); } await b(); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: __async runtime ES5 compatibility" {
+    const rt = @import("../bundler/runtime_helpers.zig");
+    // ES5 런타임 상수에 arrow function / rest params가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, rt.ASYNC_RUNTIME_ES5, "=>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.ASYNC_RUNTIME_ES5, "...") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.ASYNC_RUNTIME_ES5_MIN, "=>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.ASYNC_RUNTIME_ES5_MIN, "...") == null);
+    // ES5 타겟에서 es5_compat가 설정되는지 확인
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { await bar(); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
 // --- ES2018: object spread ---
 
 test "ES2018: spread only" {

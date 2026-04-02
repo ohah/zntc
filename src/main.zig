@@ -788,7 +788,7 @@ fn transpileFile(
     const rh = transformer.runtime_helpers;
     const output = if (@as(u16, @bitCast(rh)) != 0) blk: {
         var helper_buf: std.ArrayList(u8) = .empty;
-        emitter.appendRuntimeHelpers(&helper_buf, arena_alloc, rh, options.minify_whitespace) catch |err| {
+        emitter.appendRuntimeHelpers(&helper_buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch |err| {
             try stderr.print("zts: helper injection error: {}\n", .{err});
             break :blk raw_output;
         };

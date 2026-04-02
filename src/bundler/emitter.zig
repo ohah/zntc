@@ -273,7 +273,7 @@ pub fn emitWithTreeShaking(
     }
 
     // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
-    try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace);
+    try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace, options.unsupported.arrow);
 
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
