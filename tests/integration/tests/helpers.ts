@@ -27,8 +27,13 @@ export async function createFixture(
 
 async function runCmd(
   cmd: string[],
+  cwd?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" });
+  // workspace 환경이 child process를 오염시키지 않도록 BUN_INSTALL 관련 변수 제거
+  const env = { ...process.env };
+  delete env.BUN_INSTALL;
+  delete env.BUN_PLUGIN_RUNTIME;
+  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe", cwd, env });
 
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -79,7 +84,7 @@ export async function bundleAndRun(
       throw new Error(`ZTS bundle failed: ${bundle.stderr}`);
     }
 
-    const run = await runCmd(["bun", "run", outFile]);
+    const run = await runCmd(["bun", "run", outFile], dir);
 
     return {
       bundleOutput: bundle.stdout,
