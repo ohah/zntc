@@ -2020,13 +2020,15 @@ fn isTsxGenericArrowAfterAsync(self: *Parser) ParseError2!bool {
     return try checkTsxGenericArrowTypeParam(self);
 }
 
-/// `<` 다음 위치에서 `[const] Ident (,|=|extends)` 패턴을 확인.
+/// `<` 다음 위치에서 `[const] Ident (,|=|extends|:)` 패턴을 확인.
+/// Flow는 `:` 로 constraint를 표기하므로 (예: `<T: {...}>(x) => ...`) colon도 허용.
 fn checkTsxGenericArrowTypeParam(self: *Parser) ParseError2!bool {
     if (self.current() == .kw_const) try self.advance();
     if (self.current() != .identifier and !self.current().isKeyword()) return false;
     try self.advance();
     const kind = self.current();
-    return kind == .comma or kind == .eq or kind == .kw_extends;
+    return kind == .comma or kind == .eq or kind == .kw_extends or
+        (self.is_flow and kind == .colon);
 }
 
 /// TS 제네릭 arrow function 파싱 시도: <T>() => body, <const T>() => body
@@ -2038,8 +2040,24 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
     const saved = self.saveState();
     const err_count = self.errors.items.len;
 
-    // 제네릭 타입 파라미터 파싱 시도
-    _ = try self.parseTsTypeParameterDeclaration();
+    // 제네릭 타입 파라미터 파싱 시도 — 에러 발생 시 rollback
+    const saved_nodes_len = self.ast.nodes.items.len;
+    const saved_extra_len: u32 = @intCast(self.ast.extra_data.items.len);
+    _ = self.parseTsTypeParameterDeclaration() catch {
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
+        self.restoreState(saved);
+        self.errors.shrinkRetainingCapacity(err_count);
+        return null;
+    };
+    // expect()는 에러를 추가하되 계속 진행하므로, 에러 수 증가로 실패 감지
+    if (self.errors.items.len > err_count) {
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
+        self.restoreState(saved);
+        self.errors.shrinkRetainingCapacity(err_count);
+        return null;
+    }
 
     // ( 가 와야 arrow 파라미터
     if (self.current() != .l_paren) {
@@ -2071,6 +2089,10 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
     try self.advance(); // skip )
 
     // 선택적 리턴 타입: <T>(): R => body
+    // Flow: return type에서 `=>` 를 function type arrow로 해석하지 않도록 플래그 설정
+    const saved_flow_flag = self.flow_in_return_type;
+    self.flow_in_return_type = true;
+    defer self.flow_in_return_type = saved_flow_flag;
     _ = try self.tryParseReturnType();
 
     // => 가 와야 arrow function

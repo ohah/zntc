@@ -373,6 +373,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             const type_params = try parseTypeParameterDeclaration(self);
             try self.expect(.l_paren);
             const params = try parseFunctionTypeParamList(self);
+            try self.expect(.r_paren);
             try self.expect(.arrow);
             const return_type = try parseType(self);
             const extra = try self.ast.addExtras(&.{
@@ -597,12 +598,19 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
 
     // 함수 타입 vs 괄호 타입 판별:
     // - `(name:` 또는 `(...` → 함수 타입 시도
-    // - 그 외 → 괄호 타입 (내부에 단일 타입)
+    // - Flow에서 positional params도 허용: `(number, string) => boolean`
+    //   → `(Type, Type) => R` 형태는 named param이 아니라서 별도 감지 필요
+    //   → Flow 모드에서는 항상 함수 타입 시도 (backtracking으로 안전하게 처리)
     const is_likely_fn = blk: {
         if (self.current() == .dot3) break :blk true;
+        // Flow: positional params — `({msg: string}, number) => void`, `(Type | null, ...) => void`
+        // object/tuple/generic 등 다양한 타입이 첫 param으로 올 수 있으므로,
+        // backtracking으로 안전하게 function type 시도
+        if (self.current() == .l_curly or self.current() == .l_bracket) break :blk true;
         if (self.current() == .identifier) {
             const next = try self.peekNextKind();
-            break :blk (next == .colon or next == .question);
+            if (next == .colon or next == .question) break :blk true;
+            if (next == .comma or next == .pipe or next == .amp or next == .l_bracket) break :blk true;
         }
         break :blk false;
     };
