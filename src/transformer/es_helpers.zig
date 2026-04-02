@@ -10,6 +10,7 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
@@ -222,4 +223,150 @@ pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
         .span = span,
         .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
     });
+}
+
+// ============================================================
+// Private Method 공용 헬퍼
+// ============================================================
+
+pub const PrivateMethodNames = struct {
+    ws_name: []const u8,
+    fn_name: []const u8,
+};
+
+/// "#bar" → { ws_name="_bar", fn_name="_bar_fn" }
+/// allocator로 직접 할당하여 버퍼 크기 제한 없음.
+pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u8) !PrivateMethodNames {
+    const bare_name = orig_name[1..]; // # 제거
+    const ws_name = try allocator.alloc(u8, 1 + bare_name.len);
+    ws_name[0] = '_';
+    @memcpy(ws_name[1..], bare_name);
+    const fn_name = try allocator.alloc(u8, 1 + bare_name.len + 3);
+    fn_name[0] = '_';
+    @memcpy(fn_name[1 .. 1 + bare_name.len], bare_name);
+    @memcpy(fn_name[1 + bare_name.len ..], "_fn");
+    return .{ .ws_name = ws_name, .fn_name = fn_name };
+}
+
+/// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
+pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_name: []const u8, span: Span) !NodeIndex {
+    const ctor_ref = try makeIdentifierRef(self, constructor_name);
+    const empty_args = try self.new_ast.addNodeList(&.{});
+    const new_extra = try self.new_ast.addExtras(&.{
+        @intFromEnum(ctor_ref), empty_args.start, empty_args.len, 0,
+    });
+    const new_expr = try self.new_ast.addNode(.{
+        .tag = .new_expression,
+        .span = span,
+        .data = .{ .extra = new_extra },
+    });
+    return self.buildVarDecl(var_name, new_expr, span);
+}
+
+/// method_definition → standalone function declaration으로 추출.
+/// method_definition: extra = [key, params_start, params_len, body, flags, ...]
+pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
+    const method_node = self.old_ast.getNode(method_idx);
+    const extras = self.old_ast.extra_data.items;
+    const me = method_node.data.extra;
+    const params_start = extras[me + 1];
+    const params_len = extras[me + 2];
+    const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
+
+    const new_params = try self.visitExtraList(params_start, params_len);
+    const new_body = try self.visitNode(body_idx);
+
+    const name_span = try self.new_ast.addString(name);
+    const name_node = try makeBindingIdentifier(self, name_span);
+
+    const none = @intFromEnum(NodeIndex.none);
+    const func_extra = try self.new_ast.addExtras(&.{
+        @intFromEnum(name_node),
+        new_params.start,
+        new_params.len,
+        @intFromEnum(new_body),
+        0,
+        none,
+    });
+    return self.new_ast.addNode(.{
+        .tag = .function_declaration,
+        .span = span,
+        .data = .{ .extra = func_extra },
+    });
+}
+
+/// __classPrivateMethodInit(this, _set) expression_statement 생성.
+pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !NodeIndex {
+    self.runtime_helpers.class_private_method_init = true;
+    const callee = try makeIdentifierRef(self, "__classPrivateMethodInit");
+    const this_node = try self.new_ast.addNode(.{
+        .tag = .this_expression,
+        .span = span,
+        .data = .{ .none = 0 },
+    });
+    const ws_ref = try makeIdentifierRef(self, ws_name);
+    const call = try makeCallExpr(self, callee, &.{ this_node, ws_ref }, span);
+    return makeExprStmt(self, call, span);
+}
+
+// ============================================================
+// Async/Generator 공용 헬퍼
+// ============================================================
+
+/// expr을 body로 하는 function expression 생성: function() { return expr; }
+pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
+    const ret = try self.new_ast.addNode(.{
+        .tag = .return_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+    });
+    const body_list = try self.new_ast.addNodeList(&.{ret});
+    const body_block = try self.new_ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = body_list },
+    });
+    const empty_params = try self.new_ast.addNodeList(&.{});
+    const func_extra = try self.new_ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        empty_params.start,
+        empty_params.len,
+        @intFromEnum(body_block),
+        0,
+        @intFromEnum(NodeIndex.none),
+    });
+    return self.new_ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = func_extra },
+    });
+}
+
+/// body를 감싸는 generator function expression 생성: function*() { ...body... }
+pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIndex {
+    const empty_params = try self.new_ast.addNodeList(&.{});
+    const gen_extra = try self.new_ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        empty_params.start,
+        empty_params.len,
+        @intFromEnum(body),
+        ast_mod.FunctionFlags.is_generator,
+        @intFromEnum(NodeIndex.none),
+    });
+    return self.new_ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = gen_extra },
+    });
+}
+
+/// __async(gen).call(this) — this 바인딩 보존.
+pub fn buildAsyncHelperCall(self: anytype, gen_func: NodeIndex, span: Span) !NodeIndex {
+    self.runtime_helpers.async_helper = true;
+    const async_ref = try makeIdentifierRef(self, "__async");
+    const inner_call = try makeCallExpr(self, async_ref, &.{gen_func}, span);
+    const call_prop = try makeIdentifierRef(self, "call");
+    const member = try makeStaticMember(self, inner_call, call_prop, span);
+    const this_ref = try makeIdentifierRef(self, "this");
+    return makeCallExpr(self, member, &.{this_ref}, span);
 }

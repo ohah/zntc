@@ -1278,6 +1278,133 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42");
     });
+
+    test("private method (#method → WeakSet)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              #double(x: number) { return x * 2; }
+              run() { return this.#double(21); }
+            }
+            console.log(new Foo().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("private method (target=es5)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Calc {
+              #add(a: number, b: number) { return a + b; }
+              #mul(a: number, b: number) { return a * b; }
+              compute() { return this.#add(this.#mul(3, 4), 5); }
+            }
+            console.log(new Calc().compute());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("17");
+    });
+
+    test("private method with extends", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              value = 10;
+            }
+            class Child extends Base {
+              #helper() { return this.value + 5; }
+              run() { return this.#helper(); }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("15");
+    });
+
+    test("private method brand check throws on non-instance", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              #secret() { return 42; }
+              run() { return this.#secret(); }
+            }
+            const foo = new Foo();
+            const stolen = foo.run;
+            try { stolen.call({}); console.log("no error"); }
+            catch(e) { console.log(e instanceof TypeError ? "TypeError" : "other"); }
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("TypeError");
+    });
+
+    test("private method with constructor", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Greeter {
+              name: string;
+              constructor(name: string) { this.name = name; }
+              #format() { return "Hello, " + this.name; }
+              greet() { return this.#format(); }
+            }
+            console.log(new Greeter("world").greet());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Hello, world");
+    });
+
+    test("private method with extends (target=es5)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Animal {
+              name: string;
+              constructor(name: string) { this.name = name; }
+            }
+            class Dog extends Animal {
+              #bark() { return this.name + " says woof"; }
+              speak() { return this.#bark(); }
+            }
+            console.log(new Dog("Rex").speak());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Rex says woof");
+    });
   });
 
   // ===== useDefineForClassFields=false =====

@@ -80,6 +80,7 @@ pub const Feature = enum(u5) {
     logical_assignment,
     // ES2022
     class_static_block,
+    class_private_method,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -91,7 +92,7 @@ pub const Feature = enum(u5) {
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
-            .class_static_block => .es2022,
+            .class_static_block, .class_private_method => .es2022,
         };
     }
 };
@@ -126,8 +127,9 @@ pub const UnsupportedFeatures = packed struct(u32) {
     logical_assignment: bool = false,
     // ES2022
     class_static_block: bool = false,
+    class_private_method: bool = false,
 
-    _: u14 = 0,
+    _: u13 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -375,6 +377,17 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .class_static_block, .engine = .node, .major = 16, .minor = 11 },
     .{ .feature = .class_static_block, .engine = .deno, .major = 1, .minor = 14 },
     .{ .feature = .class_static_block, .engine = .ios, .major = 16, .minor = 4 },
+
+    // ── ES2022: class_private_method ──
+    // Private methods (#method): Chrome 84, Firefox 90, Safari 15
+    .{ .feature = .class_private_method, .engine = .chrome, .major = 84 },
+    .{ .feature = .class_private_method, .engine = .firefox, .major = 90 },
+    .{ .feature = .class_private_method, .engine = .safari, .major = 15 },
+    .{ .feature = .class_private_method, .engine = .edge, .major = 84 },
+    .{ .feature = .class_private_method, .engine = .node, .major = 14, .minor = 6 },
+    .{ .feature = .class_private_method, .engine = .deno, .major = 1 },
+    .{ .feature = .class_private_method, .engine = .ios, .major = 15 },
+    // hermes: private methods 미지원 → compat_table에 없음 → 항상 다운레벨링
 };
 
 // ─── 변환 함수 ───
@@ -460,6 +473,7 @@ test "fromESTarget — es5는 모든 feature true" {
     try std.testing.expect(f.optional_chaining);
     try std.testing.expect(f.logical_assignment);
     try std.testing.expect(f.class_static_block);
+    try std.testing.expect(f.class_private_method);
 }
 
 test "fromESTarget — es2020은 ES2020까지 지원, ES2021 이상 미지원" {
@@ -475,6 +489,7 @@ test "fromESTarget — es2020은 ES2020까지 지원, ES2021 이상 미지원" {
     // ES2021 이상 미지원 → true
     try std.testing.expect(f.logical_assignment);
     try std.testing.expect(f.class_static_block);
+    try std.testing.expect(f.class_private_method);
 }
 
 test "unsupportedFeatures — chrome80" {
@@ -490,6 +505,8 @@ test "unsupportedFeatures — chrome80" {
     try std.testing.expect(f.optional_chaining);
     // Chrome 80은 class static block(91) 미지원
     try std.testing.expect(f.class_static_block);
+    // Chrome 80 < 84 → private method 미지원
+    try std.testing.expect(f.class_private_method);
 }
 
 test "unsupportedFeatures — chrome80,safari14 교집합" {
@@ -506,6 +523,8 @@ test "unsupportedFeatures — chrome80,safari14 교집합" {
     // 둘 다 logical assignment 미지원 (Chrome 85, Safari 14)
     // Chrome 80 < 85 → 미지원
     try std.testing.expect(f.logical_assignment);
+    // Safari 14 < 15 → private method 미지원
+    try std.testing.expect(f.class_private_method);
 }
 
 test "unsupportedFeatures — hermes는 많은 feature 미지원" {
@@ -520,6 +539,8 @@ test "unsupportedFeatures — hermes는 많은 feature 미지원" {
     try std.testing.expect(!f.for_of);
     // hermes 0.12: optional_chaining(0.12) 지원
     try std.testing.expect(!f.optional_chaining);
+    // hermes: private methods 미지원 (compat table에 없음)
+    try std.testing.expect(f.class_private_method);
 }
 
 test "needsAnyES2015 — es2020은 false" {
@@ -578,9 +599,10 @@ test "fromESTarget — es2016은 exponentiation 지원" {
     try std.testing.expect(f.async_await); // ES2017부터
 }
 
-test "fromESTarget — es2022는 class_static_block 지원" {
+test "fromESTarget — es2022는 class_static_block, class_private_method 지원" {
     const f = fromESTarget(.es2022);
     try std.testing.expect(!f.class_static_block);
+    try std.testing.expect(!f.class_private_method);
     try std.testing.expect(!f.logical_assignment);
     try std.testing.expect(!f.optional_chaining);
     // es2022에서 모든 feature 지원 — 0이어야 함
@@ -673,6 +695,7 @@ test "unsupportedFeatures — hermes 0.7 지원/미지원 구분" {
     try std.testing.expect(f.template_literal);
     try std.testing.expect(f.async_await);
     try std.testing.expect(f.class_static_block);
+    try std.testing.expect(f.class_private_method);
     // hermes 0.7 < 0.12 → optional_chaining 미지원
     try std.testing.expect(f.optional_chaining);
 }
