@@ -31,6 +31,25 @@ pub const TOESM_RUNTIME =
 ;
 pub const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(let key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 
+/// __esm: ESM 모듈의 지연 초기화 팩토리 (esbuild 호환).
+/// ESM 모듈이 require()로 소비될 때 사용. 한 번만 실행되고 결과를 캐시.
+/// 참고: references/esbuild/internal/runtime/runtime.go:173
+pub const ESM_RUNTIME = "var __esm = (fn, res) => function __init() {\n\treturn fn && (res = (0, fn[Object.keys(fn)[0]])(fn = 0)), res;\n};\n";
+pub const ESM_RUNTIME_MIN = "var __esm=(fn,res)=>function __init(){return fn&&(res=(0,fn[Object.keys(fn)[0]])(fn=0)),res};";
+
+/// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
+/// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
+/// 참고: references/esbuild/internal/runtime/runtime.go:187
+pub const EXPORT_RUNTIME = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\tObject.defineProperty(target, name, { get: all[name], enumerable: true });\n};\n";
+pub const EXPORT_RUNTIME_MIN = "var __export=(target,all)=>{for(var name in all)Object.defineProperty(target,name,{get:all[name],enumerable:true})};";
+
+/// __toCommonJS: ESM namespace → CJS 호환 객체 변환 (esbuild 호환).
+/// { __esModule: true } + 원본 프로퍼티 복사. CJS가 ESM을 require()할 때 사용.
+/// 참고: references/esbuild/internal/runtime/runtime.go:247
+/// __copyProps, __defProp은 __toESM 런타임에 이미 정의됨.
+pub const TOCOMMONJS_RUNTIME = "var __toCommonJS = mod => __copyProps(__defProp({}, '__esModule', { value: true }), mod);\n";
+pub const TOCOMMONJS_RUNTIME_MIN = "var __toCommonJS=mod=>__copyProps(__defProp({},\"__esModule\",{value:true}),mod);";
+
 // ============================================================
 // Decorator
 // ============================================================
@@ -290,6 +309,21 @@ pub fn appendCjsRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, m
     } else {
         try buf.appendSlice(allocator, CJS_RUNTIME);
         try buf.appendSlice(allocator, TOESM_RUNTIME);
+    }
+}
+
+/// ESM wrap 런타임을 주입한다 (__esm + __export + __toCommonJS).
+/// WrapKind.esm 모듈이 하나라도 있을 때 호출.
+/// __toCommonJS는 __copyProps/__defProp에 의존하므로 __toESM 런타임 후에 주입해야 함.
+pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+    if (minify) {
+        try buf.appendSlice(allocator, ESM_RUNTIME_MIN);
+        try buf.appendSlice(allocator, EXPORT_RUNTIME_MIN);
+        try buf.appendSlice(allocator, TOCOMMONJS_RUNTIME_MIN);
+    } else {
+        try buf.appendSlice(allocator, ESM_RUNTIME);
+        try buf.appendSlice(allocator, EXPORT_RUNTIME);
+        try buf.appendSlice(allocator, TOCOMMONJS_RUNTIME);
     }
 }
 

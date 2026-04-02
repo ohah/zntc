@@ -794,9 +794,9 @@ pub const Linker = struct {
 
         const m = self.modules[module_index];
 
-        // CJS 래핑 모듈은 스코프 호이스팅 대상이 아님.
+        // CJS/ESM 래핑 모듈은 스코프 호이스팅 대상이 아님.
         // 단, 내부 require() 호출은 번들된 require_xxx()로 치환해야 함.
-        if (m.wrap_kind == .cjs) {
+        if (m.wrap_kind == .cjs or m.wrap_kind == .esm) {
             const node_count = new_ast.nodes.items.len;
             return .{
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),

@@ -73,8 +73,19 @@ pub const ExportsKind = enum {
 pub const WrapKind = enum {
     /// 래핑 없음 — ESM 모듈, 스코프 호이스팅 적용
     none,
-    /// CJS 래핑 — __commonJS({ ... }) 팩토리 함수로 감싸기
+    /// CJS 래핑 — var require_foo = __commonJS({ ... })
     cjs,
+    /// ESM 래핑 — var init_foo = __esm({ ... })
+    /// ESM 모듈이 require()로 소비될 때 사용. 지연 초기화 + live binding 보존.
+    /// top-level var/function은 래퍼 밖으로 호이스팅, 초기화 코드만 __esm 안에.
+    /// CJS 참조: (init_foo(), __toCommonJS(foo_exports))
+    /// ESM 참조: init_foo(); 직접 변수 참조
+    esm,
+
+    /// 래핑되는 모듈인지 (cjs 또는 esm). scope hoisting 대상이 아님.
+    pub fn isWrapped(self: WrapKind) bool {
+        return self != .none;
+    }
 };
 
 /// CJS → ESM interop 모드 (Rolldown Interop).
@@ -404,6 +415,16 @@ fn makeVarNameWithPrefix(allocator: std.mem.Allocator, path: []const u8, prefix:
 /// CJS 래핑용 변수명. "lib/foo-bar.cjs" → "require_foo_bar"
 pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return makeVarNameWithPrefix(allocator, path, "require_");
+}
+
+/// WrapESM 모듈의 init 함수 변수명 생성 (e.g. "init_foo_bar")
+pub fn makeInitVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return makeVarNameWithPrefix(allocator, path, "init_");
+}
+
+/// WrapESM 모듈의 exports namespace 변수명 생성 (e.g. "foo_bar_exports")
+pub fn makeExportsVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return makeVarNameWithPrefix(allocator, path, "exports_");
 }
 
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
