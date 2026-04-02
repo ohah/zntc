@@ -1519,6 +1519,85 @@ test "ES5: __async runtime ES5 compatibility" {
     try expectAsyncStateMachine(r.output);
 }
 
+// --- ES5: 추가 async/generator edge cases ---
+
+test "ES5: async with try/catch + await" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { try { await a(); } catch(e) { await b(e); } finally { await c(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async with do-while + await in condition" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { var i = 0; do { i++; } while (await check(i)); return i; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: class async arrow field" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  _update = async () => {
+        \\    const x = await getData();
+        \\    this.setState({data: x});
+        \\  };
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
+}
+
+test "ES5: class with async method + non-async method" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  sync() { return 1; }
+        \\  async asyncMethod() { return await bar(); }
+        \\  static staticSync() { return 2; }
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype.sync") != null);
+}
+
+test "ES5: async with while(true) + await + break" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { while (true) { var x = await next(); if (!x) break; } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async with switch + await" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\async function foo(type) {
+        \\  switch (type) {
+        \\    case 'a': await handleA(); break;
+        \\    case 'b': await handleB(); break;
+        \\    default: await handleDefault();
+        \\  }
+        \\}
+    , .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async with labeled break + await" {
+    var r = try e2eTarget(std.testing.allocator, "async function foo() { outer: for (var i = 0; i < 3; i++) { if (await check(i)) break outer; } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: nested async functions" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\async function outer() {
+        \\  async function inner() { return await bar(); }
+        \\  return await inner();
+        \\}
+    , .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
 // --- ES2018: object spread ---
 
 test "ES2018: spread only" {

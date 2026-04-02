@@ -173,12 +173,19 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
 
     const children = try parseJSXChildren(self);
 
-    // Closing tag: </TagName>
+    // Closing tag: </TagName> or </a.b.c>
     try self.scanner.nextInsideJSXElement(); // skip <
     try self.scanner.nextInsideJSXElement(); // skip /
-    // skip tag name (키워드도 허용)
+    // skip tag name — member expression (a.b.c) 포함
     if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
         try self.scanner.nextInsideJSXElement();
+        // member expression: .identifier 반복
+        while (self.current() == .dot) {
+            try self.scanner.nextInsideJSXElement(); // skip .
+            if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
+                try self.scanner.nextInsideJSXElement(); // skip member name
+            }
+        }
     }
     try advanceAfterJSXClose(self, as_child);
 

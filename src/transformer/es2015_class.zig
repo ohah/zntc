@@ -1090,7 +1090,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
                     if (!sm_result.body.isNone()) {
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
-                        const async_call = try ES2017.buildAsyncHelperCall(self, gen_call, span);
+                        const gen_wrapper = try ES2017.wrapInFunction(self, gen_call, span);
+                        const async_call = try ES2017.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(self, async_call, sm_result.var_decl, new_params, span);
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
