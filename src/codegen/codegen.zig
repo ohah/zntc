@@ -2428,6 +2428,13 @@ pub const Codegen = struct {
                     const def_name = self.options.linking_metadata.?.default_export_name;
                     const is_self_ref = blk: {
                         if (inner_node.tag == .identifier_reference) {
+                            const md = self.options.linking_metadata.?;
+                            // rename된 이름으로 비교 (ES5 lowering 시 원본 span과 def_name이 다를 수 있음)
+                            if (self.resolveSymbolId(inner, md)) |sid| {
+                                if (md.renames.get(sid)) |renamed| {
+                                    break :blk std.mem.eql(u8, renamed, def_name);
+                                }
+                            }
                             const ref_text = self.ast.source[inner_node.span.start..inner_node.span.end];
                             break :blk std.mem.eql(u8, ref_text, def_name);
                         }

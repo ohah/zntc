@@ -905,6 +905,10 @@ pub const Transformer = struct {
                 else
                     try self.new_ast.addString("_Class");
                 const name_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                // symbol_id 전파: rename된 이름이 export default 참조에도 반영되도록
+                if (!name_idx.isNone()) {
+                    self.propagateSymbolId(name_idx, name_ref);
+                }
                 return self.new_ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
