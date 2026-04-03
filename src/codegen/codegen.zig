@@ -89,8 +89,10 @@ pub const CodegenOptions = struct {
     linking_metadata: ?*const LinkingMetadata = null,
     /// __esm 래핑 모듈: CJS import 변환 시 const 대신 var 사용.
     /// ESM의 import는 hoisted이지만 CJS 변환 시 선언 위치에 출력되어 TDZ 발생.
-    /// var는 TDZ가 없으므로 선언 전 접근이 undefined (에러 아님).
     use_var_for_imports: bool = false,
+    /// __esm 래핑 모듈: CJS export 출력 억제 (exports.x, module.exports).
+    /// __esm 모듈의 export는 emitter의 __export()가 처리하므로 codegen에서 생성하면 안 됨.
+    skip_cjs_exports: bool = false,
     /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
@@ -2200,10 +2202,14 @@ pub const Codegen = struct {
     /// CJS: export { foo, default as Bar } from './bar' → exports.foo=require("./bar").foo;exports.Bar=require("./bar").default;
     fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
         if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
-            // export const x = 1 → const x=1; + exports.x=x;
+            // export const x = 1 → const x=1; (+ exports.x=x; unless __esm)
             try self.emitNode(decl);
-            // 선언에서 이름 추출하여 exports.name = name
-            try self.emitCJSExportBinding(decl);
+            if (!self.options.skip_cjs_exports)
+                try self.emitCJSExportBinding(decl);
+            return;
+        } else if (self.options.skip_cjs_exports) {
+            // __esm 모듈: export { } 구문은 __export()가 처리하므로 생략
+            return;
         } else {
             const has_source = !source.isNone() and @intFromEnum(source) < self.ast.nodes.items.len;
             const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
@@ -2278,6 +2284,32 @@ pub const Codegen = struct {
 
     fn emitExportDefault(self: *Codegen, node: Node) !void {
         if (self.options.module_format == .cjs) {
+            if (self.options.skip_cjs_exports) {
+                // __esm 모듈: export는 __export()가 처리.
+                // named decl (export default function foo) → 선언만 출력
+                // named ref (export default NativeModules) → 이미 선언됨, 무시
+                // anonymous expr (export default {...}) → var _default = expr;
+                const inner = node.data.unary.operand;
+                if (!inner.isNone()) {
+                    const inner_node = self.ast.getNode(inner);
+                    const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
+                        !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
+                    if (is_named_decl) {
+                        try self.emitNode(inner);
+                    } else if (inner_node.tag == .identifier_reference) {
+                        // export default SomeVar → 이미 선언된 변수, __export getter가 참조. 무시.
+                    } else {
+                        // anonymous expression → var _default = expr;
+                        const def_name = if (self.options.linking_metadata) |md| md.default_export_name else "_default";
+                        try self.write("var ");
+                        try self.write(def_name);
+                        try self.writeByte('=');
+                        try self.emitNode(inner);
+                        try self.writeByte(';');
+                    }
+                }
+                return;
+            }
             try self.write("module.exports=");
             try self.emitNode(node.data.unary.operand);
             try self.writeByte(';');
