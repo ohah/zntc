@@ -104,6 +104,9 @@ pub const BundleOptions = struct {
     /// 번들 시작 시 즉시 실행 폴리필 (--polyfill). 절대 경로 목록.
     /// 파일 내용을 IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 모듈 그래프에 미포함.
     polyfills: []const []const u8 = &.{},
+    /// 예약 전역 식별자 (--global-identifier). scope hoisting 시 이 이름을 모듈 변수로
+    /// 사용하지 않도록 리네이밍. RN의 polyfillGlobal()로 등록되는 이름 충돌 방지.
+    global_identifiers: []const []const u8 = &.{},
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존
     keep_names: bool = false,
     /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
@@ -472,7 +475,7 @@ pub const Bundler = struct {
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
-            var l = Linker.init(self.allocator, graph.modules.items, self.options.format);
+            var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();

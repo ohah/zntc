@@ -76,6 +76,8 @@ const CliOptions = struct {
     /// --polyfill=<path>: 번들 시작 시 즉시 실행되는 폴리필 스크립트.
     /// 파일 내용을 읽어 IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 모듈 그래프에 포함되지 않음.
     polyfill_list: std.ArrayList([]const u8) = .empty,
+    /// --global-identifier=<name>: 예약 전역 식별자. scope hoisting 시 리네이밍 대상.
+    global_identifier_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
     plugin_paths: std.ArrayList([]const u8) = .empty,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
@@ -130,6 +132,7 @@ const CliOptions = struct {
         self.run_before_main_list.deinit(alloc);
         for (self.polyfill_list.items) |p| alloc.free(p);
         self.polyfill_list.deinit(alloc);
+        self.global_identifier_list.deinit(alloc);
         self.plugin_paths.deinit(alloc);
         self.proxy_list.deinit(alloc);
         self.resolve_extensions_list.deinit(alloc);
@@ -472,6 +475,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             else
                 &opts.polyfill_list;
             try target_list.append(allocator, abs);
+        } else if (std.mem.startsWith(u8, arg, "--global-identifier=")) {
+            const name = arg["--global-identifier=".len..];
+            if (name.len > 0) {
+                try opts.global_identifier_list.append(allocator, name);
+            }
         } else if (std.mem.startsWith(u8, arg, "--legal-comments=")) {
             const val = arg["--legal-comments=".len..];
             opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
@@ -1045,6 +1053,7 @@ pub fn main() !void {
             .inject = opts.inject_list.items,
             .run_before_main = opts.run_before_main_list.items,
             .polyfills = opts.polyfill_list.items,
+            .global_identifiers = opts.global_identifier_list.items,
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
             .flow = opts.flow,
