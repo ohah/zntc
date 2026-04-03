@@ -96,6 +96,13 @@ pub const BundleOptions = struct {
     analyze: bool = false,
     /// 모든 모듈에 자동 import (--inject:./file.js). 절대 경로 목록.
     inject: []const []const u8 = &.{},
+    /// 엔트리 모듈 직전에 실행할 모듈 (--run-before-main). 절대 경로 목록.
+    /// Metro의 runBeforeMainModule과 동일 역할. inject와 같은 메커니즘으로
+    /// 엔트리 의존성에 추가되어 먼저 실행된다.
+    run_before_main: []const []const u8 = &.{},
+    /// 번들 시작 시 즉시 실행 폴리필 (--polyfill). 절대 경로 목록.
+    /// 파일 내용을 IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 모듈 그래프에 미포함.
+    polyfills: []const []const u8 = &.{},
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존
     keep_names: bool = false,
     /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
@@ -281,6 +288,7 @@ pub const Bundler = struct {
             .legal_comments = self.options.legal_comments,
             .keep_names = self.options.keep_names,
             .plugins = self.options.plugins,
+            .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
         };
     }
 
@@ -407,7 +415,13 @@ pub const Bundler = struct {
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.asset_names = self.options.asset_names;
-        graph.inject_files = self.options.inject;
+        // --inject와 --run-before-main을 합쳐서 엔트리 의존성으로 추가 (실행 순서: inject → run-before-main → entry)
+        const combined_inject = if (self.options.run_before_main.len > 0)
+            try std.mem.concat(self.allocator, []const u8, &.{ self.options.inject, self.options.run_before_main })
+        else
+            null;
+        defer if (combined_inject) |c| self.allocator.free(c);
+        graph.inject_files = combined_inject orelse self.options.inject;
         graph.plugins = self.options.plugins;
         graph.flow = self.options.flow;
         graph.jsx_in_js = self.options.jsx_in_js;
@@ -487,6 +501,23 @@ pub const Bundler = struct {
             t.reset();
         }
 
+        // 2.7. 폴리필 파일 내용 로딩 (--polyfill)
+        var polyfill_entries: std.ArrayList(EmitOptions.PolyfillEntry) = .empty;
+        defer {
+            for (polyfill_entries.items) |e| self.allocator.free(e.content);
+            polyfill_entries.deinit(self.allocator);
+        }
+        for (self.options.polyfills) |poly_path| {
+            const content = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
+                std.log.err("zts: cannot read polyfill file '{s}': {}", .{ poly_path, err });
+                continue;
+            };
+            try polyfill_entries.append(self.allocator, .{
+                .name = std.fs.path.basename(poly_path),
+                .content = content,
+            });
+        }
+
         // 3. 번들 출력 생성
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
@@ -541,11 +572,13 @@ pub const Bundler = struct {
             // output은 빈 문자열 — code splitting 시 outputs를 사용
             output = try self.allocator.dupe(u8, "");
         } else {
-            // 기존 단일 파일 경로 (변경 없음)
+            // 기존 단일 파일 경로
+            var emit_opts = self.makeEmitOptions();
+            emit_opts.polyfills = polyfill_entries.items;
             output = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                self.makeEmitOptions(),
+                emit_opts,
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );
