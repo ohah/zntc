@@ -236,9 +236,65 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
       console.log("Examples:", rawRequires.slice(0, 5));
     }
 
-    // scope hoisted esm_with_dynamic_fallback 내 require()는 아직 미해결이므로
-    // 현재 기준선보다 악화되지 않는 것만 검증 (기준선은 점진적으로 낮춤)
-    expect(rawRequires.length).toBeLessThanOrEqual(230);
+    expect(rawRequires.length).toBe(0);
+  }, 60_000);
+
+  test("__esm 래퍼 내 exports/module.exports 부재 검증", async () => {
+    // __esm 래퍼 안에서 exports.x=x 또는 module.exports=x가 있으면 런타임 에러 발생.
+    // __esm은 exports/module 파라미터를 제공하지 않으므로, CJS export 출력이 없어야 함.
+    const outFile = resolve(EXAMPLE_APP, "zts-require-check.js");
+    const output = await Bun.file(outFile).text();
+
+    // __esm 래퍼 안의 코드 추출하여 exports. / module.exports 검사
+    const esmBlocks = output.match(/= __esm\(\{[\s\S]*?\}\}\);/g) || [];
+    let violations: string[] = [];
+    for (const block of esmBlocks) {
+      // __export(exports_xxx, ...) 호출은 정상 — 이건 별도 namespace
+      // exports.x=x 또는 module.exports= 가 있으면 위반
+      const lines = block.split("\n");
+      for (const line of lines) {
+        if (line.match(/\bexports\.\w+\s*=/) && !line.includes("__export")) {
+          violations.push(line.trim().substring(0, 80));
+        }
+        if (line.includes("module.exports=") || line.includes("module.exports =")) {
+          violations.push(line.trim().substring(0, 80));
+        }
+      }
+    }
+    if (violations.length > 0) {
+      console.log("CJS exports in __esm wrappers:", violations.slice(0, 5));
+    }
+    expect(violations.length).toBe(0);
+  }, 60_000);
+
+  test("__esm 래퍼 내 __export getter 변수 정의 검증", async () => {
+    // __export의 getter가 참조하는 변수가 같은 __esm 래퍼 안에 정의되어 있는지 검증.
+    // 미정의 변수 참조 시 런타임 ReferenceError 발생.
+    const outFile = resolve(EXAMPLE_APP, "zts-require-check.js");
+    const output = await Bun.file(outFile).text();
+
+    // __esm 블록에서 __export의 getter 변수명 추출
+    const esmBlocks = output.match(/= __esm\(\{[\s\S]*?\n\}\}\);/g) || [];
+    let undefinedRefs: string[] = [];
+    for (const block of esmBlocks) {
+      // __export(xxx, { name: () => varName, ... }) 에서 varName 추출
+      const getterMatches = block.matchAll(/:\s*\(\)\s*=>\s*(\w+)/g);
+      for (const m of getterMatches) {
+        const varName = m[1];
+        // 블록 안에서 이 변수가 정의되어 있는지 확인
+        // var/let/const/function 선언 또는 파라미터
+        const defPattern = new RegExp(
+          `(?:var|let|const|function)\\s+${varName}\\b|\\b${varName}\\s*=`,
+        );
+        if (!defPattern.test(block)) {
+          undefinedRefs.push(varName);
+        }
+      }
+    }
+    if (undefinedRefs.length > 0) {
+      console.log("Undefined getter refs in __esm:", [...new Set(undefinedRefs)].slice(0, 10));
+    }
+    expect(undefinedRefs.length).toBe(0);
   }, 60_000);
 });
 
