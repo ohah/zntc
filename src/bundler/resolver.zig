@@ -232,12 +232,7 @@ pub const Resolver = struct {
         return null;
     }
 
-    /// source_file: import를 수행하는 파일의 절대 경로 (자기참조 방지). null이면 체크 안 함.
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
-        return self.resolveWithSourceFile(source_dir, specifier, null);
-    }
-
-    pub fn resolveWithSourceFile(self: *Resolver, source_dir: []const u8, specifier: []const u8, source_file: ?[]const u8) ResolveError!ResolveResult {
         // alias 치환 (resolve 맨 처음에 적용, esbuild 동작과 동일)
         const effective_specifier = if (self.alias.len > 0)
             (applyAlias(self.allocator, self.alias, specifier) catch return error.OutOfMemory) orelse specifier
@@ -261,15 +256,13 @@ pub const Resolver = struct {
             return error.OutOfMemory;
         defer self.allocator.free(joined);
 
-        // 1. 정확한 경로가 파일로 존재하는지 (자기참조 체크)
+        // 1. 정확한 경로가 파일로 존재하는지
         if (self.fileExists(joined)) {
-            if (source_file == null or !self.isSamePath(joined, source_file.?)) {
-                return (try self.makeResult(joined)).?;
-            }
+            return (try self.makeResult(joined)).?;
         }
 
         // 2. 확장자 추가 탐색 (.ts, .tsx, .js, .jsx, .json)
-        if (try self.tryExtensions(joined, source_file)) |result| {
+        if (try self.tryExtensions(joined)) |result| {
             return result;
         }
 
@@ -288,7 +281,7 @@ pub const Resolver = struct {
 
     /// 확장자를 하나씩 붙여서 존재하는 파일을 찾는다.
     /// custom_extensions가 설정되어 있으면 그것을 사용, 아니면 default_extensions.
-    fn tryExtensions(self: *Resolver, base: []const u8, source_file: ?[]const u8) ResolveError!?ResolveResult {
+    fn tryExtensions(self: *Resolver, base: []const u8) ResolveError!?ResolveResult {
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
         for (extensions) |ext| {
             const path = std.mem.concat(self.allocator, u8, &.{ base, ext }) catch
@@ -296,10 +289,6 @@ pub const Resolver = struct {
             defer self.allocator.free(path);
 
             if (self.fileExists(path)) {
-                // 자기참조 방지: source_file과 동일한 경로면 스킵
-                if (source_file) |sf| {
-                    if (self.isSamePath(path, sf)) continue;
-                }
                 return self.makeResult(path);
             }
         }
@@ -378,7 +367,7 @@ pub const Resolver = struct {
                         result.is_module_field = std.mem.eql(u8, field, "module");
                         return result;
                     }
-                    if (try self.tryExtensions(abs_path, null)) |result| return result;
+                    if (try self.tryExtensions(abs_path)) |result| return result;
                 }
             }
         } else {
@@ -398,7 +387,7 @@ pub const Resolver = struct {
                     return error.OutOfMemory;
                 defer self.allocator.free(abs_path);
                 if (self.fileExists(abs_path)) return self.makeResult(abs_path);
-                if (try self.tryExtensions(abs_path, null)) |result| return result;
+                if (try self.tryExtensions(abs_path)) |result| return result;
             }
         }
 
@@ -474,7 +463,7 @@ pub const Resolver = struct {
                     return self.makeResult(abs_path);
                 }
                 // exports가 가리키는 파일이 없으면 확장자 탐색
-                if (try self.tryExtensions(abs_path, null)) |result| return result;
+                if (try self.tryExtensions(abs_path)) |result| return result;
             }
             // exports가 있는데 매칭 안 되면 다른 필드로 폴백하지 않음 (Node.js 스펙)
             if (!std.mem.eql(u8, subpath, ".")) return null;
@@ -490,7 +479,7 @@ pub const Resolver = struct {
             defer self.allocator.free(sub_file);
 
             if (self.fileExists(sub_file)) return self.makeResult(sub_file);
-            if (try self.tryExtensions(sub_file, null)) |result| return result;
+            if (try self.tryExtensions(sub_file)) |result| return result;
             if (try self.tryTsExtensionMapping(sub_file)) |result| return result;
             if (try self.tryDirectoryIndex(sub_file)) |result| return result;
             return null;
@@ -529,7 +518,7 @@ pub const Resolver = struct {
                             return (try self.makeResult(abs_path)).?;
                         }
                         // 확장자 탐색
-                        if (try self.tryExtensions(abs_path, null)) |result| return result;
+                        if (try self.tryExtensions(abs_path)) |result| return result;
                         if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
                         if (try self.tryDirectoryIndex(abs_path)) |result| return result;
                     }
@@ -545,18 +534,6 @@ pub const Resolver = struct {
         return error.ModuleNotFound;
     }
 
-    /// 두 경로가 동일한 파일을 가리키는지 비교.
-    /// realpath를 사용하여 symlink도 올바르게 비교.
-    fn isSamePath(self: *Resolver, a: []const u8, b: []const u8) bool {
-        // 먼저 문자열 비교 (빠른 경로)
-        if (std.mem.eql(u8, a, b)) return true;
-        // realpath로 정규화 후 비교 (symlink 대응)
-        const real_a = std.fs.cwd().realpathAlloc(self.allocator, a) catch return false;
-        defer self.allocator.free(real_a);
-        const real_b = std.fs.cwd().realpathAlloc(self.allocator, b) catch return false;
-        defer self.allocator.free(real_b);
-        return std.mem.eql(u8, real_a, real_b);
-    }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
         // preserve_symlinks=true이면 symlink를 따라가지 않고 경로 그대로 사용.
