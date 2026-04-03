@@ -2358,7 +2358,28 @@ fn emitEsmWrappedModule(
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = module.path,
     });
-    const body_code = try body_cg.generateStatements(root, body_stmts.items);
+    var body_code = try body_cg.generateStatements(root, body_stmts.items);
+
+    // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
+    // Hermes는 "X = function X() {...}" 에서 named function expression의 이름 X가
+    // 외부 스코프의 X 변수를 덮어쓰는 비표준 동작을 보임.
+    // "= function NAME(" → "= function(" 으로 변환하여 이름 충돌 방지.
+    for (hoisted_var_names.items) |hv_name| {
+        const needle = try std.fmt.allocPrint(arena_alloc, "= function {s}(", .{hv_name});
+        const replacement = "= function(";
+        var pos: usize = 0;
+        while (std.mem.indexOf(u8, body_code[pos..], needle)) |rel| {
+            const abs_start = pos + rel;
+            // needle을 replacement로 교체 (길이가 다르므로 새 버퍼 필요)
+            const new_code = try std.fmt.allocPrint(arena_alloc, "{s}{s}{s}", .{
+                body_code[0..abs_start],
+                replacement,
+                body_code[abs_start + needle.len ..],
+            });
+            body_code = new_code;
+            pos = abs_start + replacement.len;
+        }
+    }
 
     // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
