@@ -1660,9 +1660,12 @@ pub fn emitModule(
         .minify_whitespace = options.minify_whitespace,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
-        // 래핑 모듈(CJS/ESM)은 CJS codegen: import→require, export→exports.x
-        // __esm 래핑 모듈: import→require로 변환하여 require_rewrites 적용 가능
+        // 래핑 모듈(CJS/ESM)은 CJS codegen: import→require 변환
         .module_format = if (module.wrap_kind.isWrapped()) .cjs else .esm,
+        // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
+        .skip_cjs_exports = module.wrap_kind == .esm,
+        // __esm 모듈: const → var (TDZ 방지)
+        .use_var_for_imports = module.wrap_kind == .esm,
         .linking_metadata = if (metadata) |*m| m else null,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
