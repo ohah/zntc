@@ -557,6 +557,14 @@ const TranspileOptions = struct {
     timing: bool = false,
 };
 
+/// transpile.zig 에러 콜백: 파서/시맨틱 에러 발생 시 코드 프레임 출력
+fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const lib.diagnostic.Diagnostic) void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    for (errors) |diag| {
+        printErrorCodeFrame(stderr, source, file_path, scanner, diag) catch {};
+    }
+}
+
 /// 단일 파일을 트랜스파일한다.
 /// file_path: 입력 파일 경로, output_path: 출력 파일 경로 (null이면 stdout)
 /// source가 null이면 file_path에서 읽고, non-null이면 해당 소스를 사용한다 (stdin 등).
@@ -624,12 +632,11 @@ fn transpileFile(
         }
     }
 
-    // 핵심 트랜스파일 — transpile.zig에 위임
-    var result = transpile_mod.transpile(allocator, source, file_path, options.core) catch |err| {
+    // 핵심 트랜스파일 — transpile.zig에 위임 (에러 시 코드 프레임 출력 콜백)
+    var result = transpile_mod.transpileWithCallback(allocator, source, file_path, options.core, &printErrors) catch |err| {
+        // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
-            error.ParseError, error.SemanticError => {
-                try stderr.print("zts: error in '{s}': {}\n", .{ file_path, err });
-            },
+            error.ParseError, error.SemanticError => {},
             else => {
                 try stderr.print("zts: {s}: {}\n", .{ file_path, err });
             },

@@ -62,6 +62,15 @@ pub const TranspileError = error{
     OutOfMemory,
 };
 
+/// 에러 발생 시 호출되는 콜백. scanner와 source가 유효한 동안 호출됨.
+/// main.zig에서 코드 프레임 출력용으로 사용.
+pub const ErrorCallback = *const fn (
+    source: []const u8,
+    file_path: []const u8,
+    scanner: *const Scanner,
+    errors: []const Diagnostic,
+) void;
+
 pub const TranspileResult = struct {
     /// 변환된 JS 코드. allocator 소유.
     code: []const u8,
@@ -85,6 +94,17 @@ pub fn transpile(
     source: []const u8,
     file_path: []const u8,
     options: TranspileOptions,
+) TranspileError!TranspileResult {
+    return transpileWithCallback(allocator, source, file_path, options, null);
+}
+
+/// 에러 콜백 포함 트랜스파일. 파서/시맨틱 에러 시 콜백을 호출한 뒤 에러를 반환.
+pub fn transpileWithCallback(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    file_path: []const u8,
+    options: TranspileOptions,
+    on_error: ?ErrorCallback,
 ) TranspileError!TranspileResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -112,7 +132,10 @@ pub fn transpile(
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
-    if (parser.errors.items.len > 0) return error.ParseError;
+    if (parser.errors.items.len > 0) {
+        if (on_error) |cb| cb(source, file_path, &scanner, parser.errors.items);
+        return error.ParseError;
+    }
 
     // 2. Semantic analysis
     var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
@@ -121,7 +144,10 @@ pub fn transpile(
     analyzer.is_ts = parser.is_ts;
     analyzer.is_flow = parser.is_flow;
     analyzer.analyze() catch return error.SemanticError;
-    if (analyzer.errors.items.len > 0) return error.SemanticError;
+    if (analyzer.errors.items.len > 0) {
+        if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
+        return error.SemanticError;
+    }
 
     // 3. Identifier mangling (--minify-identifiers)
     var mangle_result: ?Mangler.ManglerResult = null;
