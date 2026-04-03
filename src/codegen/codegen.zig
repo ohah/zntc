@@ -2162,11 +2162,16 @@ pub const Codegen = struct {
             }
         }
 
-        // __esm 호이스팅: default/namespace import는 키워드 생략 (var 선언이 래퍼 밖에 있음).
-        // named import ({a, b})는 destructuring이므로 키워드 필수.
-        const skip_keyword = self.options.esm_var_assign_only and named_count == 0;
+        // __esm 호이스팅: var 선언이 래퍼 밖에 있으므로 body에서는 할당만.
+        // named import ({a, b})는 destructuring assignment — var 생략 시 ({a,b}=expr) 괄호 필요.
+        const skip_keyword = self.options.esm_var_assign_only;
         if (!skip_keyword)
             try self.write(if (self.options.use_var_for_imports) "var " else "const ");
+
+        // named destructuring assignment: ({a,b}=expr); — 괄호 없으면 block으로 파싱됨
+        // default+named 동시 (import Foo, {Bar}) 도 named 경로로 들어가므로 괄호 필요
+        const needs_paren = skip_keyword and named_count > 0 and !has_namespace;
+        if (needs_paren) try self.writeByte('(');
 
         if (has_namespace) {
             // import * as bar from './bar' → [var] bar=require('./bar');
@@ -2208,6 +2213,7 @@ pub const Codegen = struct {
             try self.write(".default");
         }
 
+        if (needs_paren) try self.writeByte(')');
         try self.writeByte(';');
     }
 
