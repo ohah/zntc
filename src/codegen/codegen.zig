@@ -1793,9 +1793,8 @@ pub const Codegen = struct {
         const deco_start = self.ast.extra_data.items[e + 6];
         const deco_len = self.ast.extra_data.items[e + 7];
 
-        // __esm 호이스팅: class 선언을 할당문으로 변환
-        // class Foo extends Bar {} → Foo = class Foo extends Bar {};
-        // block-scoped class가 __esm 콜백 밖의 var 선언에 할당되어 __export getter가 접근 가능.
+        // class는 block-scoped → __esm 콜백 밖 __export getter가 접근 불가.
+        // variable_declaration과 동일하게 할당문으로 변환. (emitter가 var 선언을 밖에 배치)
         const convert_to_assign = self.options.esm_var_assign_only and
             node.tag == .class_declaration and
             !name.isNone() and
