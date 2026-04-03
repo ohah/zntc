@@ -1164,6 +1164,8 @@ pub const SemanticAnalyzer = struct {
             .ts_non_null_expression,
             .ts_type_assertion,
             .ts_instantiation_expression,
+            .flow_type_cast_expression,
+            .flow_as_expression,
             => {
                 try self.visitNode(node.data.unary.operand);
             },
