@@ -121,6 +121,8 @@ pub fn ES2020(comptime Transformer: type) type {
             if (simple) {
                 null_check_base = visited_base;
                 chain_base = try self.new_ast.addNode(self.new_ast.getNode(visited_base));
+                // symbol_id 전파: 복제된 노드에도 rename이 적용되도록
+                self.copyNewSymbolId(visited_base, chain_base);
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
