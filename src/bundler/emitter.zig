@@ -2140,8 +2140,42 @@ fn emitEsmWrappedModule(
                 try hoisted_stmts.append(allocator, raw_idx);
             },
             .import_declaration => {
-                // import 문은 래퍼 안에서 CJS 변환 (init 호출 순서 보장).
-                // var 키워드는 esm_var_assign_only가 아닌 use_var_for_imports로 처리.
+                // import 문: var 선언만 호이스팅, 할당(require 호출)은 래퍼 안 유지.
+                // 호이스팅된 함수가 import 변수를 참조할 수 있도록 top-level에 var 선언.
+                // 단, linker가 skip한 import(scope-hoisted 대상)는 codegen에서 출력 안 되므로 호이스팅 불필요.
+                const import_skipped = if (metadata) |md|
+                    md.skip_nodes.isSet(raw_idx)
+                else
+                    false;
+                if (!import_skipped) {
+                    const ie = stmt_node.data.extra;
+                    if (ie + 2 < esm_ast.extra_data.items.len) {
+                        const iextras = esm_ast.extra_data.items[ie .. ie + 3];
+                        const ispecs_start = iextras[0];
+                        const ispecs_len = iextras[1];
+                        if (ispecs_len > 0) {
+                            const ispecs = esm_ast.extra_data.items[ispecs_start .. ispecs_start + ispecs_len];
+                            for (ispecs) |spec_raw| {
+                                const spec_node = esm_ast.nodes.items[spec_raw];
+                                switch (spec_node.tag) {
+                                    .import_default_specifier, .import_namespace_specifier => {
+                                        const spec_name = esm_ast.getText(spec_node.data.string_ref);
+                                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, spec_raw, spec_name));
+                                    },
+                                    .import_specifier => {
+                                        const local_idx = spec_node.data.binary.right;
+                                        if (!local_idx.isNone()) {
+                                            const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
+                                            const spec_name = esm_ast.getText(local_node.data.string_ref);
+                                            try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(local_idx), spec_name));
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    }
+                }
                 try body_stmts.append(allocator, raw_idx);
             },
             .variable_declaration => {

@@ -2162,24 +2162,27 @@ pub const Codegen = struct {
             }
         }
 
-        // import 선언은 항상 키워드 유지 (래퍼 안에서 CJS 변환)
-        try self.write(if (self.options.use_var_for_imports) "var " else "const ");
+        // __esm 호이스팅: default/namespace import는 키워드 생략 (var 선언이 래퍼 밖에 있음).
+        // named import ({a, b})는 destructuring이므로 키워드 필수.
+        const skip_keyword = self.options.esm_var_assign_only and named_count == 0;
+        if (!skip_keyword)
+            try self.write(if (self.options.use_var_for_imports) "var " else "const ");
 
         if (has_namespace) {
-            // import * as bar from './bar' → const bar=require('./bar');
+            // import * as bar from './bar' → [var] bar=require('./bar');
             for (spec_indices) |raw_idx| {
                 const spec = self.ast.getNode(@enumFromInt(raw_idx));
                 if (spec.tag == .import_namespace_specifier) {
-                    try self.writeNodeSpan(spec);
+                    try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
                     break;
                 }
             }
         } else if (has_default and named_count == 0) {
-            // import bar from './bar' → const bar=require('./bar').default;
+            // import bar from './bar' → [var] bar=require('./bar').default;
             for (spec_indices) |raw_idx| {
                 const spec = self.ast.getNode(@enumFromInt(raw_idx));
                 if (spec.tag == .import_default_specifier) {
-                    try self.writeNodeSpan(spec);
+                    try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
                     break;
                 }
             }
@@ -2210,6 +2213,23 @@ pub const Codegen = struct {
 
     /// import specifier의 imported + rename separator + local 출력.
     /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
+    /// import_default_specifier / import_namespace_specifier의 이름을 renames 적용하여 출력.
+    /// 이 노드들은 identifier_reference가 아니라 별도 태그이므로 emitNode에서 renames를 거치지 않음.
+    fn emitSpecifierWithRename(self: *Codegen, idx: NodeIndex, spec: Node) !void {
+        if (self.options.linking_metadata) |meta| {
+            const ni = @intFromEnum(idx);
+            if (ni < meta.symbol_ids.len) {
+                if (meta.symbol_ids[ni]) |sid| {
+                    if (meta.renames.get(sid)) |renamed| {
+                        try self.write(renamed);
+                        return;
+                    }
+                }
+            }
+        }
+        try self.writeSpan(spec.data.string_ref);
+    }
+
     fn emitImportSpecifierRename(self: *Codegen, spec_node: Node, sep: []const u8) !void {
         const imported = spec_node.data.binary.left;
         const local = spec_node.data.binary.right;
