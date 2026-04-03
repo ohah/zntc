@@ -6,7 +6,7 @@
  * - --run-before-main: 엔트리 모듈 직전에 실행 (모듈 그래프 안, inject와 동일 메커니즘)
  */
 import { describe, expect, test, afterAll } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFixture, runZtsInDir } from "./helpers";
 
@@ -49,8 +49,10 @@ describe("--polyfill", () => {
     const outFile = join(fixture.dir, "out.js");
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
-      `-o`, outFile,
+      "--bundle",
+      "entry.js",
+      `-o`,
+      outFile,
       `--polyfill=${join(fixture.dir, "polyfill-a.js")}`,
     ]);
     expect(result.exitCode).toBe(0);
@@ -73,8 +75,10 @@ describe("--polyfill", () => {
     const outFile = join(fixture.dir, "out.js");
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
-      `-o`, outFile,
+      "--bundle",
+      "entry.js",
+      `-o`,
+      outFile,
       `--polyfill=${join(fixture.dir, "polyfill-a.js")}`,
       `--polyfill=${join(fixture.dir, "polyfill-b.js")}`,
     ]);
@@ -94,7 +98,8 @@ describe("--polyfill", () => {
     fixture = await createFixture(fixtures);
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
+      "--bundle",
+      "entry.js",
       `--polyfill=/nonexistent/polyfill.js`,
     ]);
     expect(result.stderr).toContain("cannot resolve");
@@ -107,8 +112,10 @@ describe("--run-before-main", () => {
     const outFile = join(fixture.dir, "out.js");
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
-      `-o`, outFile,
+      "--bundle",
+      "entry.js",
+      `-o`,
+      outFile,
       `--run-before-main=${join(fixture.dir, "init-core.js")}`,
     ]);
     expect(result.exitCode).toBe(0);
@@ -128,7 +135,8 @@ describe("--run-before-main", () => {
     fixture = await createFixture(fixtures);
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
+      "--bundle",
+      "entry.js",
       `--run-before-main=/nonexistent/init.js`,
     ]);
     expect(result.stderr).toContain("cannot resolve");
@@ -141,8 +149,10 @@ describe("--polyfill + --run-before-main 조합", () => {
     const outFile = join(fixture.dir, "out.js");
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
-      `-o`, outFile,
+      "--bundle",
+      "entry.js",
+      `-o`,
+      outFile,
       `--polyfill=${join(fixture.dir, "polyfill-a.js")}`,
       `--run-before-main=${join(fixture.dir, "init-core.js")}`,
     ]);
@@ -164,8 +174,10 @@ describe("--polyfill + --run-before-main 조합", () => {
     const outFile = join(fixture.dir, "out.js");
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", "entry.js",
-      `-o`, outFile,
+      "--bundle",
+      "entry.js",
+      `-o`,
+      outFile,
       "--platform=react-native",
       `--run-before-main=${join(fixture.dir, "init-core.js")}`,
     ]);
@@ -176,7 +188,7 @@ describe("--polyfill + --run-before-main 조합", () => {
     // 엔트리 모듈(entry.js)의 코드가 __esm 래핑 없이 직접 실행되어야 함
     // 마지막 __ENTRY_RAN__ 이전에 var init_entry = __esm 패턴이 없어야 함
     const lines = bundle.split("\n");
-    const entryLine = lines.findIndex(l => l.includes("__ENTRY_RAN__") && !l.includes("__esm"));
+    const entryLine = lines.findIndex((l) => l.includes("__ENTRY_RAN__") && !l.includes("__esm"));
 
     // 엔트리 코드가 직접 실행 (scope-hoisted)되는지 확인
     // __esm 안에 있으면 findIndex가 -1
