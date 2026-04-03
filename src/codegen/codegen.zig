@@ -2211,8 +2211,6 @@ pub const Codegen = struct {
         try self.writeByte(';');
     }
 
-    /// import specifier의 imported + rename separator + local 출력.
-    /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
     /// import_default_specifier / import_namespace_specifier의 이름을 renames 적용하여 출력.
     /// 이 노드들은 identifier_reference가 아니라 별도 태그이므로 emitNode에서 renames를 거치지 않음.
     fn emitSpecifierWithRename(self: *Codegen, idx: NodeIndex, spec: Node) !void {
@@ -2230,6 +2228,8 @@ pub const Codegen = struct {
         try self.writeSpan(spec.data.string_ref);
     }
 
+    /// import specifier의 imported + rename separator + local 출력.
+    /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
     fn emitImportSpecifierRename(self: *Codegen, spec_node: Node, sep: []const u8) !void {
         const imported = spec_node.data.binary.left;
         const local = spec_node.data.binary.right;
