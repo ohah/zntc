@@ -3,7 +3,6 @@
  * bun test packages/core/index.test.ts
  */
 import { describe, test, expect } from "bun:test";
-import type { Plugin } from "./index";
 
 describe("PluginHost: resolveId", () => {
   test("returns first non-null result", async () => {

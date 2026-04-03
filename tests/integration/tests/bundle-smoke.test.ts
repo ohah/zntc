@@ -726,25 +726,29 @@ describe("__esm 실행 순서 보장", () => {
     // consumer.js가 require()로 flags.js를 소비 → flags.js가 __esm 래핑
     // base.js와 flags.js 모두 createFlag가 scope에 있어서 이름 충돌
     // → flags.js의 import binding이 잘못 rename되면 정의/참조 불일치
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { getResult } from "./consumer.js";
         console.log(getResult());
       `,
-      "consumer.js": `
+        "consumer.js": `
         const flags = require("./flags.js");
         export function getResult() { return flags.testFlag(); }
       `,
-      "base.js": `
+        "base.js": `
         export function createFlag(name, defaultValue) {
           return () => defaultValue;
         }
       `,
-      "flags.js": `
+        "flags.js": `
         import { createFlag } from "./base.js";
         export const testFlag = createFlag("test", "ok");
       `,
-    }, "index.ts", ["--format=cjs"]);
+      },
+      "index.ts",
+      ["--format=cjs"],
+    );
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("ok");
@@ -753,23 +757,27 @@ describe("__esm 실행 순서 보장", () => {
   test("__esm import binding rename — 동일 함수명 두 모듈 충돌 (function hoisting)", async () => {
     // 두 모듈이 같은 이름의 함수를 export하고, 한쪽이 __esm 래핑되는 경우
     // function 선언은 __esm 밖으로 호이스팅되므로 rename이 정의에도 적용되어야 함
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { getFlag as getA } from "./a.js";
         const b = require("./b.js");
         console.log(getA(), b.getFlag());
       `,
-      "a.js": `
+        "a.js": `
         export function getFlag() { return "a"; }
       `,
-      "b.js": `
+        "b.js": `
         import { createHelper } from "./helper.js";
         export function getFlag() { return createHelper("b"); }
       `,
-      "helper.js": `
+        "helper.js": `
         export function createHelper(val) { return val; }
       `,
-    }, "index.ts", ["--format=cjs"]);
+      },
+      "index.ts",
+      ["--format=cjs"],
+    );
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("a b");
