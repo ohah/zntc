@@ -147,7 +147,7 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    std.mem.sort(*const Module, sorted.items, {}, Module.execIndexLessThan);
+    std.mem.sort(*const Module, sorted.items, {}, Module.bundleOrderLessThan);
 
     // 2. 각 모듈을 변환 + 코드젠
     var output: std.ArrayList(u8) = .empty;
@@ -373,7 +373,7 @@ pub fn emitDevBundle(
         }
     }
 
-    std.mem.sort(*const Module, sorted.items, {}, Module.execIndexLessThan);
+    std.mem.sort(*const Module, sorted.items, {}, Module.bundleOrderLessThan);
 
     // 2. 출력 빌드
     var output: std.ArrayList(u8) = .empty;
