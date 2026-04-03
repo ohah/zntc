@@ -782,4 +782,20 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("a b");
   });
+
+  test("new expression with type arguments — new X<T>() 이중 호출 방지", async () => {
+    // new WeakSet<{...}>() 같은 TS/Flow 제네릭이 new WeakSet()()로 잘못 변환되지 않아야 함
+    const result = await bundleAndRun({
+      "index.ts": `
+        const s = new Set<number>();
+        const m = new Map<string, number>();
+        s.add(1); s.add(2);
+        m.set("a", 10);
+        console.log(s.size, m.get("a"));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("2 10");
+  });
 });
