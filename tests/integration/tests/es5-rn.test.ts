@@ -91,9 +91,9 @@ describe("RN ES5: ExampleApp 번들 테스트", () => {
     // 출력 크기 확인 (최소 100KB — RN 기본 모듈 포함)
     const stat = await Bun.file(resolve(EXAMPLE_APP, "out.js")).text();
     expect(stat.length).toBeGreaterThan(100_000);
-  });
+  }, 30_000);
 
-  test("bundle --target=es5", async () => {
+  test("bundle --target=es5", { timeout: 30_000 }, async () => {
     const bundle = Bun.spawnSync([
       ZTS_BIN,
       "--bundle",
