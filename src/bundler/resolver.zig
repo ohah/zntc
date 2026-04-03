@@ -534,7 +534,6 @@ pub const Resolver = struct {
         return error.ModuleNotFound;
     }
 
-
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
         // preserve_symlinks=true이면 symlink를 따라가지 않고 경로 그대로 사용.
         // 기본(false)이면 bun(.bun/)과 pnpm(.pnpm/)의 symlink를 realpath로 해석하여
