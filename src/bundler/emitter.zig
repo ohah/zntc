@@ -106,6 +106,9 @@ pub const EmitOptions = struct {
     /// 번들 시작 시 즉시 실행 폴리필. 각 항목은 { .name, .content }.
     /// IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 파일 I/O는 bundler에서 완료.
     polyfills: []const PolyfillEntry = &.{},
+    /// 엔트리 모듈 직전에 실행할 모듈 경로 (--run-before-main).
+    /// 해당 모듈의 require_xxx() / init_xxx() 호출을 엔트리 코드 앞에 삽입.
+    run_before_main: []const []const u8 = &.{},
 
     pub const PolyfillEntry = struct {
         name: []const u8,
@@ -284,6 +287,30 @@ pub fn emitWithTreeShaking(
         collected_helpers = @bitCast(@as(u16, @bitCast(collected_helpers)) | @as(u16, @bitCast(results[i].helpers)));
 
         const code = results[i].code orelse continue;
+
+        // --run-before-main: 엔트리 모듈 직전에 해당 모듈의 require/init 호출 삽입.
+        // inject로 그래프에 포함은 되지만, import_records에 없어서 linker가 preamble을 생성하지 않음.
+        // 여기서 엔트리 직전에 강제 호출하여 side-effect 실행을 보장.
+        const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+        if (is_entry and options.run_before_main.len > 0) {
+            for (options.run_before_main) |rbm_path| {
+                // 그래프에서 해당 모듈을 찾아 require_xxx() 또는 init_xxx() 호출 생성
+                for (graph.modules.items) |*rbm| {
+                    if (std.mem.eql(u8, rbm.path, rbm_path)) {
+                        const call_name = if (rbm.wrap_kind == .cjs)
+                            types.makeRequireVarName(allocator, rbm.path) catch null
+                        else
+                            types.makeInitVarName(allocator, rbm.path) catch null;
+                        if (call_name) |name| {
+                            defer allocator.free(name);
+                            try module_output.appendSlice(allocator, name);
+                            try module_output.appendSlice(allocator, "();\n");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
 
         if (!options.minify_whitespace) {
             try module_output.appendSlice(allocator, "// --- ");
