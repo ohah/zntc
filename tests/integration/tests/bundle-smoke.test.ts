@@ -524,3 +524,96 @@ describe("번들 스모크 테스트", () => {
     expect(output).not.toContain("require('./setup.cjs')");
   });
 });
+
+describe("__esm 실행 순서 보장", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("호이스팅된 함수가 의존 모듈 초기화 후에 호출된다", async () => {
+    // invariant.js → TurboModuleRegistry.js 패턴 재현:
+    // registry.js가 util.js의 함수를 import하고,
+    // registry.js의 호이스팅된 함수 안에서 그 함수를 호출한다.
+    // consumer.js가 registry.js의 함수를 호출할 때,
+    // util.js의 init이 먼저 실행되어야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { getEnforcing } from "./registry";
+        console.log(getEnforcing("test"));
+      `,
+      "registry.ts": `
+        import { validate } from "./util";
+        export function getEnforcing(name: string): string {
+          validate(name);
+          return "ok:" + name;
+        }
+      `,
+      "util.ts": `
+        export function validate(name: string): void {
+          if (!name) throw new Error("name required");
+        }
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok:test");
+  });
+
+  test("3단계 의존 체인에서 init 순서가 보장된다", async () => {
+    // A → B → C 의존 체인: C의 변수가 B의 함수에서 사용되고,
+    // A가 B의 함수를 호출할 때 C가 먼저 초기화되어야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { run } from "./middle";
+        console.log(run());
+      `,
+      "middle.ts": `
+        import { getPrefix } from "./base";
+        export function run(): string {
+          return getPrefix() + ":done";
+        }
+      `,
+      "base.ts": `
+        const PREFIX = "init";
+        export function getPrefix(): string {
+          return PREFIX;
+        }
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("init:done");
+  });
+
+  test("CJS 의존 모듈의 init이 __esm body에서 실행된다", async () => {
+    // ESM 모듈이 CJS 모듈을 import하고, 호이스팅된 함수에서 사용
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { greet } from "./greeter";
+        console.log(greet("world"));
+      `,
+      "greeter.ts": `
+        import helper from "./helper.cjs";
+        export function greet(name: string): string {
+          return helper(name);
+        }
+      `,
+      "helper.cjs": `
+        module.exports = function(name) {
+          return "hello " + name;
+        };
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello world");
+  });
+});

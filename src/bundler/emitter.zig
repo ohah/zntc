@@ -2310,13 +2310,17 @@ fn emitEsmWrappedModule(
     });
     const body_code = try body_cg.generateStatements(root, body_stmts.items);
 
-    // 6. __esm 래핑
+    // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
+    //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
+    const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
+
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
         try wrapped.appendSlice(allocator, "=__esm({\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
+        if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         try wrapped.appendSlice(allocator, body_code);
         try wrapped.appendSlice(allocator, "}});");
     } else {
@@ -2325,7 +2329,14 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"() {\n");
-        try appendIndented(&wrapped, allocator, body_code);
+        if (preamble_code) |p| {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, p);
+        }
+        if (body_code.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, body_code);
+        }
         try wrapped.appendSlice(allocator, "\n\t}\n});\n");
     }
 
