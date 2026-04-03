@@ -798,4 +798,33 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("2 10");
   });
+
+  test("__esm 모듈 정의가 scope-hoisted 호출보다 먼저 위치해야 함", async () => {
+    // scope-hoisted 모듈이 __esm 모듈의 init_xxx()를 호출할 때,
+    // var init_xxx = __esm({...}) 할당이 호출 지점보다 앞에 있어야 함
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        import { result } from "./consumer.js";
+        console.log(result);
+      `,
+        "consumer.js": `
+        const lib = require("./lib.js");
+        export const result = lib.getValue();
+      `,
+        "lib.js": `
+        import { helper } from "./helper.js";
+        export function getValue() { return helper(); }
+      `,
+        "helper.js": `
+        export function helper() { return "ok"; }
+      `,
+      },
+      "index.ts",
+      ["--format=cjs"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok");
+  });
 });

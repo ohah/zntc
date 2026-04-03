@@ -130,8 +130,14 @@ pub const Module = struct {
         return if (self.def_format.isEsm()) .node else .babel;
     }
 
-    /// exec_index 기준 오름차순 comparator.
+    /// 번들 출력 순서 comparator.
+    /// 래핑된 모듈(__esm/__commonJS)을 scope-hoisted 모듈보다 먼저 배치.
+    /// var init_xxx = __esm(...) 선언이 init_xxx() 호출보다 앞에 와야 하므로,
+    /// 같은 그룹 내에서는 exec_index 오름차순.
     pub fn execIndexLessThan(_: void, a: *const Module, b: *const Module) bool {
+        const a_wrapped: u1 = if (a.wrap_kind == .none) 1 else 0;
+        const b_wrapped: u1 = if (b.wrap_kind == .none) 1 else 0;
+        if (a_wrapped != b_wrapped) return a_wrapped < b_wrapped;
         return a.exec_index < b.exec_index;
     }
 
