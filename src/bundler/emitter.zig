@@ -1756,49 +1756,49 @@ pub fn emitModule(
         var wrapped: std.ArrayList(u8) = .empty;
         defer wrapped.deinit(allocator);
 
-        // 1. exports namespace 객체 선언
+        // 1. exports namespace 객체 선언 (래퍼 밖 — 다른 모듈에서 참조)
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, exports_name);
         try wrapped.appendSlice(allocator, " = {};\n");
 
-        // 2. __export로 live getter 등록 (export bindings에서 추출)
+        // 2. __export를 래퍼 안에서 호출할 코드 준비
+        // getter의 클로저가 래퍼 함수 스코프를 캡처하여 변수에 접근 가능.
+        var export_code: std.ArrayList(u8) = .empty;
+        defer export_code.deinit(allocator);
         if (module.export_bindings.len > 0) {
-            try wrapped.appendSlice(allocator, "__export(");
-            try wrapped.appendSlice(allocator, exports_name);
-            try wrapped.appendSlice(allocator, ", {\n");
+            try export_code.appendSlice(allocator, "__export(");
+            try export_code.appendSlice(allocator, exports_name);
+            try export_code.appendSlice(allocator, ", {\n");
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
-                    try wrapped.appendSlice(allocator, "\t");
-                    // 예약어(default 등)나 비식별자는 따옴표로 감싸야 유효한 JS
+                    try export_code.appendSlice(allocator, "\t");
                     if (needsPropertyQuote(eb.exported_name)) {
-                        try wrapped.appendSlice(allocator, "\"");
-                        try wrapped.appendSlice(allocator, eb.exported_name);
-                        try wrapped.appendSlice(allocator, "\"");
+                        try export_code.appendSlice(allocator, "\"");
+                        try export_code.appendSlice(allocator, eb.exported_name);
+                        try export_code.appendSlice(allocator, "\"");
                     } else {
-                        try wrapped.appendSlice(allocator, eb.exported_name);
+                        try export_code.appendSlice(allocator, eb.exported_name);
                     }
-                    try wrapped.appendSlice(allocator, ": () => ");
-                    // local_name이 JS 예약어(default 등)이면 linker가 생성한 합성 변수명 사용
+                    try export_code.appendSlice(allocator, ": () => ");
                     const local = if (std.mem.eql(u8, eb.local_name, "default"))
                         (if (metadata) |md| md.default_export_name else "_default")
                     else
                         eb.local_name;
-                    try wrapped.appendSlice(allocator, local);
-                    try wrapped.appendSlice(allocator, ",\n");
+                    try export_code.appendSlice(allocator, local);
+                    try export_code.appendSlice(allocator, ",\n");
                 }
             }
-            try wrapped.appendSlice(allocator, "});\n");
+            try export_code.appendSlice(allocator, "});\n");
         }
 
-        // 3. init 함수 + __esm 래핑
-        // 모든 코드를 래퍼 안에 유지. exec_index 순서에 의해
-        // 의존 모듈이 먼저 출력되므로 init_xxx() 호출 시 정상 초기화.
+        // 3. init 함수 + __esm 래핑 (__export + code를 래퍼 안에 배치)
         if (options.minify_whitespace) {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, init_name);
             try wrapped.appendSlice(allocator, "=__esm({\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(){");
+            try wrapped.appendSlice(allocator, export_code.items);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "}});");
         } else {
@@ -1807,6 +1807,7 @@ pub fn emitModule(
             try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"() {\n");
+            try appendIndented(&wrapped, allocator, export_code.items);
             try appendIndented(&wrapped, allocator, code);
             try wrapped.appendSlice(allocator, "\n\t}\n});\n");
         }
