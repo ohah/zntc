@@ -547,48 +547,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     return opts;
 }
 
-/// 트랜스파일 옵션을 담는 구조체.
-/// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
 const DefineEntry = lib.transformer.DefineEntry;
 
+/// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
 const TranspileOptions = struct {
-    module_format: lib.codegen.codegen.ModuleFormat = .esm,
-    minify_whitespace: bool = false,
-    minify_identifiers: bool = false,
-    minify_syntax: bool = false,
-    drop_console: bool = false,
-    drop_debugger: bool = false,
-    sourcemap: bool = false,
-    ascii_only: bool = false,
-    quote_style: lib.codegen.QuoteStyle = .double,
-    define: []const DefineEntry = &.{},
-    platform: lib.codegen.codegen.Platform = .browser,
-    /// useDefineForClassFields=false: instance field → constructor this.x = value
-    use_define_for_class_fields: bool = true,
-    /// experimentalDecorators: legacy decorator → __decorateClass 호출
-    experimental_decorators: bool = false,
-    /// ES 타겟 레벨
-    unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
-    /// 파이프라인 단계별 소요시간 출력
+    /// 핵심 트랜스파일 옵션 (transpile.zig에 직접 전달)
+    core: lib.transpile.TranspileOptions = .{},
+    /// CLI 전용: 파이프라인 단계별 소요시간 출력 (--timing)
     timing: bool = false,
-    /// 소스맵 sourceRoot 필드
-    source_root: []const u8 = "",
-    /// 소스맵에 sourcesContent 포함 여부
-    sources_content: bool = true,
-    /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
-    charset_utf8: bool = false,
-    /// Flow 모드 강제 활성화 (--flow)
-    flow: bool = false,
-    /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋)
-    jsx_in_js: bool = false,
-    /// JSX 런타임 모드
-    jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
-    /// classic 모드 JSX factory
-    jsx_factory: []const u8 = "React.createElement",
-    /// classic 모드 Fragment factory
-    jsx_fragment: []const u8 = "React.Fragment",
-    /// automatic 모드 import source
-    jsx_import_source: []const u8 = "react",
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -659,31 +625,7 @@ fn transpileFile(
     }
 
     // 핵심 트랜스파일 — transpile.zig에 위임
-    var result = transpile_mod.transpile(allocator, source, file_path, .{
-        .flow = options.flow,
-        .jsx_in_js = options.jsx_in_js,
-        .define = options.define,
-        .unsupported = options.unsupported,
-        .use_define_for_class_fields = options.use_define_for_class_fields,
-        .experimental_decorators = options.experimental_decorators,
-        .drop_console = options.drop_console,
-        .drop_debugger = options.drop_debugger,
-        .module_format = options.module_format,
-        .minify_whitespace = options.minify_whitespace,
-        .minify_identifiers = options.minify_identifiers,
-        .minify_syntax = options.minify_syntax,
-        .ascii_only = options.ascii_only,
-        .charset_utf8 = options.charset_utf8,
-        .quote_style = options.quote_style,
-        .sourcemap = options.sourcemap,
-        .source_root = options.source_root,
-        .sources_content = options.sources_content,
-        .platform = options.platform,
-        .jsx_runtime = options.jsx_runtime,
-        .jsx_factory = options.jsx_factory,
-        .jsx_fragment = options.jsx_fragment,
-        .jsx_import_source = options.jsx_import_source,
-    }) catch |err| {
+    var result = transpile_mod.transpile(allocator, source, file_path, options.core) catch |err| {
         switch (err) {
             error.ParseError, error.SemanticError => {
                 try stderr.print("zts: error in '{s}': {}\n", .{ file_path, err });
@@ -1490,30 +1432,32 @@ pub fn main() !void {
 
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
-        .module_format = opts.module_format,
-        .minify_whitespace = opts.minify_whitespace,
-        .minify_identifiers = opts.minify_identifiers,
-        .minify_syntax = opts.minify_syntax,
-        .drop_console = opts.drop_console,
-        .drop_debugger = opts.drop_debugger,
-        .sourcemap = opts.sourcemap,
-        .ascii_only = opts.ascii_only,
-        .quote_style = opts.quote_style,
-        .define = opts.define_list.items,
-        .platform = opts.platform,
-        .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
-        .experimental_decorators = opts.experimental_decorators orelse false,
-        .unsupported = opts.unsupported,
+        .core = .{
+            .module_format = opts.module_format,
+            .minify_whitespace = opts.minify_whitespace,
+            .minify_identifiers = opts.minify_identifiers,
+            .minify_syntax = opts.minify_syntax,
+            .drop_console = opts.drop_console,
+            .drop_debugger = opts.drop_debugger,
+            .sourcemap = opts.sourcemap,
+            .ascii_only = opts.ascii_only,
+            .quote_style = opts.quote_style,
+            .define = opts.define_list.items,
+            .platform = opts.platform,
+            .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
+            .experimental_decorators = opts.experimental_decorators orelse false,
+            .unsupported = opts.unsupported,
+            .source_root = opts.source_root orelse "",
+            .sources_content = opts.sources_content,
+            .charset_utf8 = opts.charset_utf8,
+            .flow = opts.flow,
+            .jsx_in_js = opts.jsx_in_js,
+            .jsx_runtime = opts.jsx_runtime,
+            .jsx_factory = opts.jsx_factory,
+            .jsx_fragment = opts.jsx_fragment,
+            .jsx_import_source = opts.jsx_import_source,
+        },
         .timing = opts.timing,
-        .source_root = opts.source_root orelse "",
-        .sources_content = opts.sources_content,
-        .charset_utf8 = opts.charset_utf8,
-        .flow = opts.flow,
-        .jsx_in_js = opts.jsx_in_js,
-        .jsx_runtime = opts.jsx_runtime,
-        .jsx_factory = opts.jsx_factory,
-        .jsx_fragment = opts.jsx_fragment,
-        .jsx_import_source = opts.jsx_import_source,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
