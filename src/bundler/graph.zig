@@ -1153,6 +1153,20 @@ pub const ModuleGraph = struct {
                 }
             }
         }
+
+        // Pass 3: React Native — Metro 호환 lazy loading.
+        // Metro는 모든 모듈을 factory로 감싸 require() 시점에만 실행.
+        // scope-hoisted ESM 모듈의 top-level 코드(TurboModule.getEnforcing 등)가
+        // 번들 초기화 시 즉시 실행되면 아직 등록되지 않은 native 모듈에서 크래시.
+        // 엔트리를 제외한 모든 ESM 모듈을 __esm 래핑하여 lazy loading을 보장한다.
+        if (self.resolve_cache.platform == .react_native) {
+            for (self.modules.items, 0..) |*m, i| {
+                if (i == 0) continue; // 엔트리 모듈은 scope-hoisted 유지
+                if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
+                    m.wrap_kind = .esm;
+                }
+            }
+        }
     }
 
     /// node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주.
