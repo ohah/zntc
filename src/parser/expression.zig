@@ -1078,6 +1078,33 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
     return expr;
 }
 
+/// new X<T>() 에서 type argument <T>를 speculatively 파싱하여 skip한다.
+/// call expression 체인의 l_angle 분기와 동일한 패턴.
+/// 실패하면 상태를 복원하여 < 를 비교 연산자로 처리하도록 한다.
+fn trySkipNewExprTypeArgs(self: *Parser) void {
+    if (!self.isAtOpeningAngleBracket()) return;
+    const saved_scanner = self.saveState();
+    const saved_nodes_len = self.ast.nodes.items.len;
+    const saved_extra_len = self.ast.extra_data.items.len;
+    const saved_scratch = self.saveScratch();
+    const saved_errors_len = self.errors.items.len;
+
+    const type_args_ok = blk: {
+        _ = self.parseTypeArgumentsInExpression() catch {
+            break :blk false;
+        };
+        if (self.errors.items.len > saved_errors_len) break :blk false;
+        break :blk (self.current() == .l_paren);
+    };
+
+    const scanner_after = if (type_args_ok) self.saveState() else saved_scanner;
+    self.ast.nodes.items.len = saved_nodes_len;
+    self.ast.extra_data.items.len = saved_extra_len;
+    self.restoreScratch(saved_scratch);
+    self.errors.shrinkRetainingCapacity(saved_errors_len);
+    self.restoreState(scanner_after);
+}
+
 /// new 표현식의 callee를 파싱한다.
 /// new는 중첩 가능하므로 new를 만나면 재귀한다.
 /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
@@ -1103,6 +1130,7 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         try self.advance(); // skip 'new'
         const callee = try parseNewCallee(self);
+        trySkipNewExprTypeArgs(self);
         if (self.current() == .l_paren) {
             try self.advance();
             const arg_list = try parseArgumentList(self);
@@ -1293,6 +1321,9 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
 
             // callee: 재귀적으로 new 또는 primary + member chain
             const callee = try parseNewCallee(self);
+
+            // TS/Flow: new X<T>() — type argument를 speculatively 파싱하여 skip
+            trySkipNewExprTypeArgs(self);
 
             // 인자: (args) — 있으면 소비, 없으면 인자 없는 new (new Foo)
             if (self.current() == .l_paren) {
