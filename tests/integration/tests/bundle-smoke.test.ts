@@ -616,4 +616,107 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("hello world");
   });
+
+  test("__esm→__esm: named import의 destructuring assignment 괄호", async () => {
+    // ESM→ESM 양쪽 __esm 래핑 시 named import가 ({a}=expr) 형태여야 한다.
+    // 괄호 없으면 {a}가 block으로 파싱되어 구문 에러(Hermes 등) 발생.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { compute } from "./calc";
+        import { VALUE } from "./consts";
+        console.log(compute(), VALUE);
+      `,
+      "calc.ts": `
+        import { VALUE } from "./consts";
+        export function compute() { return "v:" + VALUE; }
+      `,
+      "consts.ts": `
+        export const VALUE = 42;
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("v:42 42");
+  });
+
+  test("default+named 동시 import에서 named 괄호 처리", async () => {
+    // import Foo, { Bar } from "./mod" → default+named 동시 패턴
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { result } from "./consumer";
+        console.log(result());
+      `,
+      "consumer.ts": `
+        import Provider, { helper } from "./provider";
+        export function result() { return helper() + "+" + Provider(); }
+      `,
+      "provider.ts": `
+        export default function Provider() { return "default"; }
+        export function helper() { return "named"; }
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("named+default");
+  });
+
+  test("__esm body에서 init 호출 중복 없음", async () => {
+    // __esm→__esm import 시 body에서 init이 중복되지 않아야 한다
+    const { dir, cleanup: c } = await createFixture({
+      "entry.cjs": `
+        const { run } = require("./wrapper");
+        const { VAL } = require("./dep");
+        console.log(run(), VAL);
+      `,
+      "wrapper.ts": `
+        import { VAL } from "./dep";
+        export function run() { return "got:" + VAL; }
+      `,
+      "dep.ts": `
+        export const VAL = "ok";
+      `,
+    });
+    cleanup = c;
+    const outFile = join(dir, "out.js");
+    await runZts(["--bundle", join(dir, "entry.cjs"), "-o", outFile]);
+
+    // wrapper의 __esm body에서 init_dep가 1회만 호출되는지 검증
+    const output = await Bun.file(outFile).text();
+    const wrapperEsm = output.match(/init_wrapper\s*=\s*__esm\(\{[\s\S]*?\}\s*\}\);/);
+    expect(wrapperEsm).not.toBeNull();
+    if (wrapperEsm) {
+      const initCalls = (wrapperEsm[0].match(/init_dep\(\)/g) || []).length;
+      expect(initCalls).toBe(1);
+    }
+  });
+
+  test("__esm body에서 CJS import의 var 선언 없음", async () => {
+    // __esm body 안에서 var 선언은 function scope에 갇히므로 할당만 있어야 한다
+    const { dir, cleanup: c } = await createFixture({
+      "entry.cjs": `
+        const { greet } = require("./mod");
+        console.log(greet());
+      `,
+      "mod.ts": `
+        import msg from "./msg.cjs";
+        export function greet() { return msg; }
+      `,
+      "msg.cjs": `
+        module.exports = "hello";
+      `,
+    });
+    cleanup = c;
+    const outFile = join(dir, "out.js");
+    await runZts(["--bundle", join(dir, "entry.cjs"), "-o", outFile]);
+
+    const output = await Bun.file(outFile).text();
+    const modEsm = output.match(/init_mod\s*=\s*__esm\(\{[\s\S]*?\}\s*\}\);/);
+    expect(modEsm).not.toBeNull();
+    if (modEsm) {
+      // body 안에 "var " + require 패턴이 없어야 한다
+      expect(modEsm[0]).not.toMatch(/var\s+\w+\s*=\s*.*require_/);
+    }
+  });
 });

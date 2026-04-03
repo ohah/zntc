@@ -901,15 +901,17 @@ pub const Linker = struct {
 
                 const canonical_mod = @intFromEnum(rec.resolved);
 
-                // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성.
-                // __esm 래핑 모듈에서는 skip — body의 import codegen(emitImportCJS)이
-                // require_rewrites로 할당문을 처리. preamble의 var 선언은 __esm function
-                // scope에 갇혀 밖의 호이스팅된 함수가 접근 불가하므로 body codegen에 위임.
+                // __esm 모듈에서 CJS/ESM 타겟 import: body의 require_rewrites가
+                // 할당문 + init 호출을 처리. preamble의 var 선언은 __esm function scope에
+                // 갇혀 밖의 호이스팅된 함수가 접근 불가하므로 body codegen에 위임.
+                if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
+                    self.modules[canonical_mod].wrap_kind.isWrapped())
+                {
+                    continue;
+                }
+
+                // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
-                    if (m.wrap_kind == .esm) {
-                        // __esm: body의 import codegen + require_rewrites가 처리
-                        continue;
-                    }
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
@@ -920,19 +922,13 @@ pub const Linker = struct {
                 // __esm 래핑 모듈에서 import: init_xxx() 호출을 preamble에 추가.
                 // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
                 // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
-                // __esm 모듈 자신이 __esm 타겟을 import하는 경우: body의 require_rewrites가
-                // (init_xxx(), __toCommonJS(exports_xxx)) 형태로 init을 이미 포함하므로 skip.
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .esm) {
-                    if (m.wrap_kind != .esm and !esm_init_set.contains(@intCast(canonical_mod))) {
+                    if (!esm_init_set.contains(@intCast(canonical_mod))) {
                         try esm_init_set.put(@intCast(canonical_mod), {});
                         const init_name = try types.makeInitVarName(self.allocator, self.modules[canonical_mod].path);
                         defer self.allocator.free(init_name);
                         try preamble.write(init_name);
                         try preamble.write("();\n");
-                    }
-                    if (m.wrap_kind == .esm) {
-                        // __esm: body의 require_rewrites가 init 호출 포함, continue
-                        continue;
                     }
                     // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
                 }
