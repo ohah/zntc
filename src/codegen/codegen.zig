@@ -2295,17 +2295,20 @@ pub const Codegen = struct {
                     const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
                         !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
                     if (is_named_decl) {
+                        // export default function foo() {} → 선언만 출력
                         try self.emitNode(inner);
-                    } else if (inner_node.tag == .identifier_reference) {
-                        // export default SomeVar → 이미 선언된 변수, __export getter가 참조. 무시.
                     } else {
-                        // anonymous expression → var _default = expr;
                         const def_name = if (self.options.linking_metadata) |md| md.default_export_name else "_default";
-                        try self.write("var ");
-                        try self.write(def_name);
-                        try self.writeByte('=');
-                        try self.emitNode(inner);
-                        try self.writeByte(';');
+                        // default_export_name이 _default(합성 변수)이면 var 선언 필요.
+                        // 실제 변수명(stringifySafe 등)이면 이미 선언되어 있으므로 생성 불필요.
+                        if (std.mem.startsWith(u8, def_name, "_default")) {
+                            try self.write("var ");
+                            try self.write(def_name);
+                            try self.writeByte('=');
+                            try self.emitNode(inner);
+                            try self.writeByte(';');
+                        }
+                        // 그 외: __export getter가 이미 선언된 변수를 직접 참조. 생략.
                     }
                 }
                 return;
