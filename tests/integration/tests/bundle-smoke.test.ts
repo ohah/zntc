@@ -919,4 +919,39 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("42,conflict");
   });
+
+  test("ES5 __esm import destructuring rename — 키는 원본 이름 사용", async () => {
+    // __esm 모듈에서 import destructuring 시 exports 객체의 키는 원본 이름,
+    // 로컬 변수는 renamed 이름이어야 함.
+    // ({Base:Base$1}=...) ← 올바름, ({Base$1}=...) ← 잘못됨 (프로퍼티 없음)
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        import { getChild } from "./consumer";
+        console.log(getChild());
+      `,
+        "consumer.ts": `
+        const m = require("./child");
+        export function getChild() { return m.Child.value(); }
+      `,
+        "child.ts": `
+        import { Base } from "./base";
+        export class Child extends Base {
+          static value() { return "child"; }
+        }
+      `,
+        "base.ts": `
+        export class Base {}
+      `,
+        "conflict.ts": `
+        export class Base { x = 1; }
+      `,
+      },
+      "index.ts",
+      ["--target=es5", "--format=cjs"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("child");
+  });
 });
