@@ -1087,7 +1087,7 @@ function B3() {
 class K extends B1() {
 	namae;
 }
-class C extends (new B2()().anon) {
+class C extends (new B2().anon) {
 	name;
 }
 let b3Number = B3();
@@ -3876,7 +3876,7 @@ exports[`TSC: classes genericSetterInClassType 1`] = `
 	}
 	set y(v) {
 	}
-}var c = new C()();c.y = c.y;class Box {
+}var c = new C();c.y = c.y;class Box {
 	#value;
 	get value() {
 		return this.#value;
@@ -3884,7 +3884,7 @@ exports[`TSC: classes genericSetterInClassType 1`] = `
 	set value(value) {
 		this.#value = value;
 	}
-}new Box()().value = 3;})(Generic || (Generic = {}));
+}new Box().value = 3;})(Generic || (Generic = {}));
 "
 `;
 
@@ -4137,7 +4137,7 @@ class D {
 	y;
 }
 var d = new D();
-var d2 = new D()();
+var d2 = new D();
 var r2 = D;
 "
 `;
@@ -6382,7 +6382,7 @@ exports[`TSC: classes privateNamesConstructorChain-2 1`] = `
 	#foo = 3;
 	static #bar = 5;
 	accessChildProps() {
-		new Child()().#foo;
+		new Child().#foo;
 		// OK (\`#foo\` was added when \`Parent\`'s constructor was called on \`child\`)
 Child.#bar;
 	}
@@ -6394,7 +6394,7 @@ class Child extends Parent {
 #bar = "bar";
 }
 // OK
-new Parent()().accessChildProps();
+new Parent().accessChildProps();
 "
 `;
 
@@ -8599,7 +8599,7 @@ class MyMap {
 	constructor(Map_) {
 		this.Map_ = Map_;
 	}
-	store = new this.Map_()();
+	store = new this.Map_();
 }
 "
 `;
@@ -9553,7 +9553,7 @@ C.a;
 C.a = 1;
 C[2];
 C[2] = 42;
-const c = new C()();
+const c = new C();
 c.foo(1);
 "
 `;
