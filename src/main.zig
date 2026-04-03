@@ -611,11 +611,10 @@ fn transpileFile(
     output_path: ?[]const u8,
     options: TranspileOptions,
 ) !void {
+    const transpile_mod = lib.transpile;
     const stderr = std.fs.File.stderr().deprecatedWriter();
     const stdout = std.fs.File.stdout().deprecatedWriter();
 
-    // 파일당 Arena allocator: 모든 내부 할당을 Arena에서 수행하고,
-    // 함수 끝에서 일괄 해제한다. backing allocator(GPA)는 debug leak detection용.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -624,12 +623,9 @@ fn transpileFile(
     var timer: ?std.time.Timer = if (options.timing) std.time.Timer.start() catch null else null;
     var t_read: u64 = 0;
     var t_scan: u64 = 0;
-    var t_parse: u64 = 0;
-    var t_semantic: u64 = 0;
-    var t_transform: u64 = 0;
-    var t_codegen: u64 = 0;
+    var t_transpile: u64 = 0;
 
-    // 소스 읽기 — Arena에서 할당하므로 별도 free 불필요
+    // 소스 읽기
     const source = source_override orelse blk: {
         break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
@@ -645,7 +641,6 @@ fn transpileFile(
     if (options.timing) {
         if (timer) |*t| t.reset();
         var scan_only = try Scanner.init(arena_alloc, source);
-        // Parser.applyExtension()과 동일한 확장자 목록으로 is_module 설정.
         const ext = std.fs.path.extension(file_path);
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs") or
             std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
@@ -653,7 +648,7 @@ fn transpileFile(
         {
             scan_only.is_module = true;
         }
-        try scan_only.next(); // 첫 토큰 스캔 (init은 토큰을 스캔하지 않음)
+        try scan_only.next();
         while (scan_only.token.kind != .eof) {
             try scan_only.next();
         }
@@ -663,232 +658,82 @@ fn transpileFile(
         }
     }
 
-    // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
-    var scanner = try Scanner.init(arena_alloc, source);
-    var parser = Parser.init(arena_alloc, &scanner);
-    parser.configureFromExtension(std.fs.path.extension(file_path));
-
-    // Flow 모드 설정: --flow CLI 또는 .js.flow 확장자 또는 @flow pragma
-    // is_ts와 is_flow는 상호 배타 — TS 파일에서 --flow는 무시
-    if (!parser.is_ts) {
-        if (options.flow) {
-            parser.is_flow = true;
-            scanner.has_flow_pragma = true; // flow comment (/*:: */, /*: */) 활성화
-            // .js 파일은 import/export 감지를 위해 Unambiguous 모드
-            if (!parser.is_module) {
-                parser.is_module = true;
-                scanner.is_module = true;
-                parser.is_unambiguous = true;
-            }
-        } else {
-            parser.configureFlowFromPath(file_path);
-        }
-    }
-    // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
-    if (options.jsx_in_js) {
-        parser.is_jsx = true;
-    }
-    _ = parser.parse() catch |err| {
-        try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
-        return;
-    };
-    if (timer) |*t| {
-        t_parse = t.read();
-        t.reset();
-    }
-
-    // 파서 에러 출력 (코드 프레임, D012)
-    if (parser.errors.items.len > 0) {
-        for (parser.errors.items) |diag| {
-            try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
-        }
-        return; // 파서 에러가 있으면 변환하지 않음
-    }
-
-    // Semantic analysis (D038): 파서 에러가 없을 때만 실행
-    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
-    analyzer.is_strict_mode = parser.is_strict_mode;
-    analyzer.is_module = parser.is_module;
-    analyzer.is_ts = parser.is_ts;
-    analyzer.is_flow = parser.is_flow;
-    try analyzer.analyze();
-    if (timer) |*t| {
-        t_semantic = t.read();
-        t.reset();
-    }
-    if (analyzer.errors.items.len > 0) {
-        for (analyzer.errors.items) |diag| {
-            try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
-        }
-        return;
-    }
-
-    // Identifier mangling (--minify 활성화 시)
-    const Mangler = lib.codegen.mangler;
-    const LinkingMetadata = lib.bundler.LinkingMetadata;
-
-    var mangle_result: ?Mangler.ManglerResult = null;
-    defer if (mangle_result) |*mr| mr.deinit();
-
-    if (options.minify_identifiers) {
-        if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
-            mangle_result = Mangler.mangle(arena_alloc, .{
-                .scopes = analyzer.scopes.items,
-                .symbols = analyzer.symbols.items,
-                .scope_maps = analyzer.scope_maps.items,
-                .ref_scope_pairs = analyzer.ref_scope_pairs.items,
-                .source = source,
-            }) catch null;
-        }
-    }
-
-    // 변환
-    var transformer = Transformer.init(arena_alloc, &parser.ast, .{
-        .drop_console = options.drop_console,
-        .drop_debugger = options.drop_debugger,
+    // 핵심 트랜스파일 — transpile.zig에 위임
+    var result = transpile_mod.transpile(allocator, source, file_path, .{
+        .flow = options.flow,
+        .jsx_in_js = options.jsx_in_js,
         .define = options.define,
+        .unsupported = options.unsupported,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
-        .unsupported = options.unsupported,
-    });
-    // unused import 제거를 위해 semantic 데이터를 transformer에 전달
-    transformer.old_symbol_ids = analyzer.symbol_ids.items;
-    transformer.symbols = analyzer.symbols.items;
-    const root = transformer.transform() catch |err| {
-        try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
-        return;
-    };
-
-    // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
-    if (options.minify_syntax) {
-        @import("zts_lib").transformer.minify.minify(&transformer.new_ast);
-    }
-
-    if (timer) |*t| {
-        t_transform = t.read();
-        t.reset();
-    }
-
-    // Mangling 메타데이터 구성 (codegen에 전달)
-    // renames는 mangle_result가 소유 — mangle_metadata.deinit()에서 해제하지 않음
-    var mangle_metadata: ?LinkingMetadata = null;
-    defer if (mangle_metadata) |*mm| {
-        mm.skip_nodes.deinit();
-        // mm.renames는 mangle_result가 소유하므로 여기서 해제하지 않음
-    };
-
-    if (mangle_result) |*mr| {
-        const node_count = transformer.new_ast.nodes.items.len;
-        mangle_metadata = .{
-            .skip_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, node_count),
-            .renames = mr.renames, // 소유권 이전하지 않음 — mangle_result가 소유
-            .final_exports = null,
-            .symbol_ids = if (transformer.new_symbol_ids.items.len > 0)
-                transformer.new_symbol_ids.items
-            else if (analyzer.symbol_ids.items.len > 0)
-                analyzer.symbol_ids.items
-            else
-                &.{},
-            .allocator = arena_alloc,
-        };
-    }
-
-    // 코드 생성
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+        .drop_console = options.drop_console,
+        .drop_debugger = options.drop_debugger,
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
-        .sourcemap = options.sourcemap,
-        .ascii_only = if (options.charset_utf8) false else options.ascii_only,
+        .minify_identifiers = options.minify_identifiers,
+        .minify_syntax = options.minify_syntax,
+        .ascii_only = options.ascii_only,
+        .charset_utf8 = options.charset_utf8,
         .quote_style = options.quote_style,
-        .linking_metadata = if (mangle_metadata) |*mm| mm else null,
-        .platform = options.platform,
+        .sourcemap = options.sourcemap,
         .source_root = options.source_root,
         .sources_content = options.sources_content,
+        .platform = options.platform,
         .jsx_runtime = options.jsx_runtime,
         .jsx_factory = options.jsx_factory,
         .jsx_fragment = options.jsx_fragment,
         .jsx_import_source = options.jsx_import_source,
-        .jsx_filename = file_path,
-    });
-    cg.comments = scanner.comments.items;
-    if (options.sourcemap) {
-        cg.addSourceFile(file_path) catch |err| {
-            try stderr.print("zts: sourcemap init error in '{s}': {}\n", .{ file_path, err });
-        };
-        cg.line_offsets = scanner.line_offsets.items;
-    }
-    const raw_output = cg.generate(root) catch |err| {
-        try stderr.print("zts: codegen error in '{s}': {}\n", .{ file_path, err });
+    }) catch |err| {
+        switch (err) {
+            error.ParseError, error.SemanticError => {
+                try stderr.print("zts: error in '{s}': {}\n", .{ file_path, err });
+            },
+            else => {
+                try stderr.print("zts: {s}: {}\n", .{ file_path, err });
+            },
+        }
         return;
     };
+    defer result.deinit(allocator);
+
     if (timer) |*t| {
-        t_codegen = t.read();
+        t_transpile = t.read();
         t.reset();
     }
 
-    // 런타임 헬퍼 주입: transformer가 사용한 헬퍼를 코드 앞에 prepend
-    const rh = transformer.runtime_helpers;
-    const output = if (@as(u16, @bitCast(rh)) != 0) blk: {
-        var helper_buf: std.ArrayList(u8) = .empty;
-        emitter.appendRuntimeHelpers(&helper_buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch |err| {
-            try stderr.print("zts: helper injection error: {}\n", .{err});
-            break :blk raw_output;
-        };
-        helper_buf.appendSlice(arena_alloc, raw_output) catch |err| {
-            try stderr.print("zts: helper concat error: {}\n", .{err});
-            break :blk raw_output;
-        };
-        break :blk helper_buf.items;
-    } else raw_output;
-
-    // 출력 — output은 Arena 메모리의 slice이므로 arena.deinit() 전에 완료해야 함
+    // 출력
     if (output_path) |out_path| {
-        // 출력 디렉토리가 없으면 생성
         if (std.fs.path.dirname(out_path)) |dir| {
             std.fs.cwd().makePath(dir) catch |err| {
                 try stderr.print("zts: cannot create directory '{s}': {}\n", .{ dir, err });
                 return;
             };
         }
-
-        std.fs.cwd().writeFile(.{
-            .sub_path = out_path,
-            .data = output,
-        }) catch |err| {
+        std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = result.code }) catch |err| {
             try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
             return;
         };
-
-        // 소스맵 파일 출력 (.js.map)
-        if (options.sourcemap) {
-            if (cg.generateSourceMap(out_path) catch null) |sm_json| {
-                const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
-                std.fs.cwd().writeFile(.{
-                    .sub_path = map_path,
-                    .data = sm_json,
-                }) catch |err| {
-                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
-                };
-            }
+        if (result.sourcemap) |sm_json| {
+            const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
+            std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+                try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+            };
         }
     } else {
-        try stdout.writeAll(output);
+        try stdout.writeAll(result.code);
     }
 
-    // --timing: 파이프라인 단계별 소요시간 출력
+    // --timing
     if (options.timing) {
-        const total = t_read + t_parse + t_semantic + t_transform + t_codegen;
+        const total = t_read + t_transpile;
         const f_scan = @as(f64, @floatFromInt(t_scan)) / 1_000_000.0;
-        const f_parse = @as(f64, @floatFromInt(t_parse)) / 1_000_000.0;
+        const f_transpile = @as(f64, @floatFromInt(t_transpile)) / 1_000_000.0;
         try stderr.print(
             \\
             \\  Timing for '{s}' ({d} bytes):
             \\    read:      {d:.3} ms
             \\    scan:      {d:.3} ms  (standalone)
-            \\    parse:     {d:.3} ms  (scan+AST: scan ~{d:.3}, AST ~{d:.3})
-            \\    semantic:  {d:.3} ms
-            \\    transform: {d:.3} ms
-            \\    codegen:   {d:.3} ms
+            \\    transpile: {d:.3} ms  (parse+semantic+transform+codegen)
             \\    ─────────────────
             \\    total:     {d:.3} ms  (excludes standalone scan)
             \\
@@ -897,12 +742,7 @@ fn transpileFile(
             source.len,
             @as(f64, @floatFromInt(t_read)) / 1_000_000.0,
             f_scan,
-            f_parse,
-            @min(f_scan, f_parse),
-            @max(f_parse - f_scan, 0.0),
-            @as(f64, @floatFromInt(t_semantic)) / 1_000_000.0,
-            @as(f64, @floatFromInt(t_transform)) / 1_000_000.0,
-            @as(f64, @floatFromInt(t_codegen)) / 1_000_000.0,
+            f_transpile,
             @as(f64, @floatFromInt(total)) / 1_000_000.0,
         });
     }

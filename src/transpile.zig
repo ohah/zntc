@@ -13,33 +13,44 @@ const Scanner = @import("lexer/mod.zig").Scanner;
 const Parser = @import("parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
 const Transformer = @import("transformer/transformer.zig").Transformer;
+const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
+const DefineEntry = @import("transformer/transformer.zig").DefineEntry;
 const Codegen = @import("codegen/codegen.zig").Codegen;
+const Mangler = @import("codegen/mod.zig").mangler;
+const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
+const Diagnostic = @import("diagnostic.zig").Diagnostic;
 
 pub const TranspileOptions = struct {
-    /// Flow 타입 스트리핑 활성화
+    // --- 파싱 ---
     flow: bool = false,
-    /// .js 파일에서도 JSX 파싱 활성화
     jsx_in_js: bool = false,
-    /// define 글로벌 치환
-    define: []const @import("transformer/transformer.zig").DefineEntry = &.{},
-    /// ES 타겟
-    unsupported: @import("transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures = .{},
-    /// useDefineForClassFields
+
+    // --- 변환 ---
+    define: []const DefineEntry = &.{},
+    unsupported: TransformOptions.compat.UnsupportedFeatures = .{},
     use_define_for_class_fields: bool = true,
-    /// experimentalDecorators
     experimental_decorators: bool = false,
-    /// minify whitespace
+    drop_console: bool = false,
+    drop_debugger: bool = false,
+
+    // --- 코드 생성 ---
+    module_format: @import("codegen/codegen.zig").ModuleFormat = .esm,
     minify_whitespace: bool = false,
-    /// minify syntax (constant folding, DCE)
+    minify_identifiers: bool = false,
     minify_syntax: bool = false,
-    /// JSX 런타임
+    ascii_only: bool = false,
+    charset_utf8: bool = false,
+    quote_style: @import("codegen/codegen.zig").QuoteStyle = .double,
+    sourcemap: bool = false,
+    source_root: []const u8 = "",
+    sources_content: bool = true,
+    platform: @import("codegen/codegen.zig").Platform = .browser,
+
+    // --- JSX ---
     jsx_runtime: @import("codegen/codegen.zig").JsxRuntime = .classic,
-    /// JSX factory
     jsx_factory: []const u8 = "React.createElement",
-    /// JSX fragment
     jsx_fragment: []const u8 = "React.Fragment",
-    /// JSX import source
     jsx_import_source: []const u8 = "react",
 };
 
@@ -54,27 +65,34 @@ pub const TranspileError = error{
 pub const TranspileResult = struct {
     /// 변환된 JS 코드. allocator 소유.
     code: []const u8,
-    /// 런타임 헬퍼 포함 여부 (코드 앞에 prepend됨)
-    has_helpers: bool,
+    /// 소스맵 JSON (sourcemap=true일 때). allocator 소유. null이면 미생성.
+    sourcemap: ?[]const u8 = null,
+    /// 파서/시맨틱 에러 목록 (에러 시). arena 소유 — result.deinit() 시 함께 해제.
+    errors: []const Diagnostic = &.{},
+    /// 런타임 헬퍼 포함 여부
+    has_helpers: bool = false,
+    /// 내부 arena — deinit()에서 해제
+    _arena: ?std.heap.ArenaAllocator = null,
 
-    pub fn deinit(self: TranspileResult, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *TranspileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
+        if (self.sourcemap) |sm| allocator.free(sm);
+        if (self._arena) |*a| a.deinit();
     }
 };
 
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
 ///
 /// file_path는 확장자 감지용으로만 사용 (실제 파일 읽기 안 함).
-/// 반환된 code는 allocator 소유 — caller가 deinit() 또는 free() 해야 함.
+/// 반환된 code/sourcemap은 allocator 소유 — caller가 deinit() 해야 함.
 pub fn transpile(
     allocator: std.mem.Allocator,
     source: []const u8,
     file_path: []const u8,
     options: TranspileOptions,
 ) TranspileError!TranspileResult {
-    // Arena: 파싱~코드젠까지 임시 데이터. 최종 output만 allocator로 복제.
     var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    errdefer arena.deinit();
     const arena_alloc = arena.allocator();
 
     // 1. 파싱
@@ -82,7 +100,6 @@ pub fn transpile(
     var parser = Parser.init(arena_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
 
-    // Flow 설정
     if (!parser.is_ts) {
         if (options.flow) {
             parser.is_flow = true;
@@ -100,7 +117,9 @@ pub fn transpile(
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
-    if (parser.errors.items.len > 0) return error.ParseError;
+    if (parser.errors.items.len > 0) {
+        return .{ .code = "", .errors = parser.errors.items, ._arena = arena };
+    }
 
     // 2. Semantic analysis
     var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
@@ -109,10 +128,30 @@ pub fn transpile(
     analyzer.is_ts = parser.is_ts;
     analyzer.is_flow = parser.is_flow;
     analyzer.analyze() catch return error.SemanticError;
-    if (analyzer.errors.items.len > 0) return error.SemanticError;
+    if (analyzer.errors.items.len > 0) {
+        return .{ .code = "", .errors = analyzer.errors.items, ._arena = arena };
+    }
 
-    // 3. 변환
+    // 3. Identifier mangling (--minify-identifiers)
+    var mangle_result: ?Mangler.ManglerResult = null;
+    defer if (mangle_result) |*mr| mr.deinit();
+
+    if (options.minify_identifiers) {
+        if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
+            mangle_result = Mangler.mangle(arena_alloc, .{
+                .scopes = analyzer.scopes.items,
+                .symbols = analyzer.symbols.items,
+                .scope_maps = analyzer.scope_maps.items,
+                .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                .source = source,
+            }) catch null;
+        }
+    }
+
+    // 4. 변환
     var transformer = Transformer.init(arena_alloc, &parser.ast, .{
+        .drop_console = options.drop_console,
+        .drop_debugger = options.drop_debugger,
         .define = options.define,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
@@ -126,9 +165,37 @@ pub fn transpile(
         @import("root.zig").transformer.minify.minify(&transformer.new_ast);
     }
 
-    // 4. 코드 생성
+    // 5. Mangling 메타데이터 구성
+    var mangle_metadata: ?LinkingMetadata = null;
+    defer if (mangle_metadata) |*mm| mm.skip_nodes.deinit();
+
+    if (mangle_result) |*mr| {
+        const node_count = transformer.new_ast.nodes.items.len;
+        mangle_metadata = .{
+            .skip_nodes = std.DynamicBitSet.initEmpty(arena_alloc, node_count) catch return error.OutOfMemory,
+            .renames = mr.renames,
+            .final_exports = null,
+            .symbol_ids = if (transformer.new_symbol_ids.items.len > 0)
+                transformer.new_symbol_ids.items
+            else if (analyzer.symbol_ids.items.len > 0)
+                analyzer.symbol_ids.items
+            else
+                &.{},
+            .allocator = arena_alloc,
+        };
+    }
+
+    // 6. 코드 생성
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+        .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
+        .sourcemap = options.sourcemap,
+        .ascii_only = if (options.charset_utf8) false else options.ascii_only,
+        .quote_style = options.quote_style,
+        .linking_metadata = if (mangle_metadata) |*mm| mm else null,
+        .platform = options.platform,
+        .source_root = options.source_root,
+        .sources_content = options.sources_content,
         .jsx_runtime = options.jsx_runtime,
         .jsx_factory = options.jsx_factory,
         .jsx_fragment = options.jsx_fragment,
@@ -136,9 +203,13 @@ pub fn transpile(
         .jsx_filename = file_path,
     });
     cg.comments = scanner.comments.items;
+    if (options.sourcemap) {
+        cg.addSourceFile(file_path) catch {};
+        cg.line_offsets = scanner.line_offsets.items;
+    }
     const raw_output = cg.generate(root) catch return error.CodegenError;
 
-    // 5. 런타임 헬퍼 prepend
+    // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
     const has_helpers = @as(u16, @bitCast(rh)) != 0;
     const output = if (has_helpers) blk: {
@@ -149,7 +220,21 @@ pub fn transpile(
         break :blk buf.items;
     } else raw_output;
 
-    // Arena 밖으로 복제 (arena.deinit 뒤에도 유효하게)
-    const result = allocator.dupe(u8, output) catch return error.OutOfMemory;
-    return .{ .code = result, .has_helpers = has_helpers };
+    // 8. 소스맵 생성
+    var sourcemap_json: ?[]const u8 = null;
+    if (options.sourcemap) {
+        if (cg.generateSourceMap(file_path) catch null) |sm| {
+            sourcemap_json = allocator.dupe(u8, sm) catch null;
+        }
+    }
+
+    // Arena 밖으로 복제
+    const result_code = allocator.dupe(u8, output) catch return error.OutOfMemory;
+    arena.deinit();
+    return .{
+        .code = result_code,
+        .sourcemap = sourcemap_json,
+        .has_helpers = has_helpers,
+        ._arena = null, // arena는 이미 deinit됨
+    };
 }
