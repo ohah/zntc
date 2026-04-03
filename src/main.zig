@@ -70,6 +70,12 @@ const CliOptions = struct {
     analyze: bool = false,
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
+    /// --run-before-main=<path>: 엔트리 모듈 직전에 실행할 모듈 (Metro runBeforeMainModule 호환).
+    /// --inject와 동일한 메커니즘으로 엔트리 의존성에 추가하여 먼저 실행.
+    run_before_main_list: std.ArrayList([]const u8) = .empty,
+    /// --polyfill=<path>: 번들 시작 시 즉시 실행되는 폴리필 스크립트.
+    /// 파일 내용을 읽어 IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 모듈 그래프에 포함되지 않음.
+    polyfill_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
     plugin_paths: std.ArrayList([]const u8) = .empty,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
@@ -120,6 +126,10 @@ const CliOptions = struct {
         self.loader_list.deinit(alloc);
         for (self.inject_list.items) |p| alloc.free(p);
         self.inject_list.deinit(alloc);
+        for (self.run_before_main_list.items) |p| alloc.free(p);
+        self.run_before_main_list.deinit(alloc);
+        for (self.polyfill_list.items) |p| alloc.free(p);
+        self.polyfill_list.deinit(alloc);
         self.plugin_paths.deinit(alloc);
         self.proxy_list.deinit(alloc);
         self.resolve_extensions_list.deinit(alloc);
@@ -443,14 +453,25 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: --plugin requires a file path\n", .{});
                 return null;
             }
-        } else if (std.mem.startsWith(u8, arg, "--inject:")) {
-            const inject_path = arg["--inject:".len..];
-            // 절대 경로로 변환
-            const abs = std.fs.cwd().realpathAlloc(allocator, inject_path) catch {
-                try stderr.print("zts: cannot resolve inject path: {s}\n", .{inject_path});
+        } else if (std.mem.startsWith(u8, arg, "--inject:") or
+            std.mem.startsWith(u8, arg, "--run-before-main=") or
+            std.mem.startsWith(u8, arg, "--polyfill="))
+        {
+            // 경로 기반 옵션 공통 처리: 값 추출 → 절대 경로 변환 → 대상 리스트에 추가
+            const sep_pos = std.mem.indexOfScalar(u8, arg, ':') orelse std.mem.indexOfScalar(u8, arg, '=').?;
+            const option_name = arg[0 .. sep_pos + 1];
+            const raw_path = arg[sep_pos + 1 ..];
+            const abs = std.fs.cwd().realpathAlloc(allocator, raw_path) catch {
+                try stderr.print("zts: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
                 return null;
             };
-            try opts.inject_list.append(allocator, abs);
+            const target_list = if (std.mem.startsWith(u8, arg, "--inject:"))
+                &opts.inject_list
+            else if (std.mem.startsWith(u8, arg, "--run-before-main="))
+                &opts.run_before_main_list
+            else
+                &opts.polyfill_list;
+            try target_list.append(allocator, abs);
         } else if (std.mem.startsWith(u8, arg, "--legal-comments=")) {
             const val = arg["--legal-comments=".len..];
             opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
@@ -1233,6 +1254,8 @@ pub fn main() !void {
             .analyze = opts.analyze,
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,
+            .run_before_main = opts.run_before_main_list.items,
+            .polyfills = opts.polyfill_list.items,
             .keep_names = opts.keep_names,
             .plugins = plugin_list.items,
             .flow = opts.flow,

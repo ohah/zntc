@@ -103,6 +103,14 @@ pub const EmitOptions = struct {
     jsx_import_source: []const u8 = "react",
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
+    /// 번들 시작 시 즉시 실행 폴리필. 각 항목은 { .name, .content }.
+    /// IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 파일 I/O는 bundler에서 완료.
+    polyfills: []const PolyfillEntry = &.{},
+
+    pub const PolyfillEntry = struct {
+        name: []const u8,
+        content: []const u8,
+    };
 
     pub const Format = types.Format;
 };
@@ -179,6 +187,21 @@ pub fn emitWithTreeShaking(
         },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},
+    }
+
+    // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
+    // Metro/롤리팝과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
+    for (options.polyfills) |poly| {
+        if (!options.minify_whitespace) {
+            try output.appendSlice(allocator, "// --- polyfill: ");
+            try output.appendSlice(allocator, poly.name);
+            try output.appendSlice(allocator, " ---\n");
+        }
+        try output.appendSlice(allocator, "(function(){");
+        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        try output.appendSlice(allocator, poly.content);
+        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        try output.appendSlice(allocator, "})();\n");
     }
 
     // 런타임 헬퍼 주입
