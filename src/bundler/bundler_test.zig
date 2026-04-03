@@ -8407,8 +8407,9 @@ test "ESM wrap: export default anonymous expr — var _default" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") == null);
 }
 
-test "ESM wrap: __export inside __esm wrapper (not outside)" {
-    // __export()는 __esm 래퍼 안에서 호출되어야 함 (getter 클로저 스코프)
+test "ESM wrap: var hoisting + __export outside __esm (esbuild/rolldown 방식)" {
+    // esbuild/rolldown 방식: var/function을 래퍼 밖으로 호이스팅.
+    // __export()는 래퍼 밖에서 lazy getter로 등록 (접근 시점에 변수 참조).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const lib = require('./mod.js');\nconsole.log(lib.greet());");
@@ -8425,11 +8426,13 @@ test "ESM wrap: __export inside __esm wrapper (not outside)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // __export가 __esm 래퍼 안에 있는지 확인:
-    // "init_mod = __esm({" 다음에 "__export(" 나와야 함
+    // __export가 __esm 래퍼 밖(앞)에 있어야 함 (var 호이스팅 방식)
     const esm_start = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
     const export_pos = std.mem.indexOf(u8, result.output, "__export(") orelse unreachable;
-    try std.testing.expect(export_pos > esm_start);
+    try std.testing.expect(export_pos < esm_start);
+    // function greet()가 래퍼 밖으로 호이스팅되었는지 확인
+    const fn_pos = std.mem.indexOf(u8, result.output, "function greet()") orelse unreachable;
+    try std.testing.expect(fn_pos < esm_start);
 }
 
 // ============================================================

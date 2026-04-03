@@ -113,6 +113,9 @@ pub const CodegenOptions = struct {
     jsx_import_source: []const u8 = "react",
     /// 현재 파일 경로 (jsxDEV의 fileName 출력용)
     jsx_filename: []const u8 = "",
+    /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
+    /// emitter가 var 선언을 래퍼 밖에 별도 배치.
+    esm_var_assign_only: bool = false,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -192,6 +195,23 @@ pub const Codegen = struct {
     pub fn deinit(self: *Codegen) void {
         self.buf.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
+    }
+
+    /// 특정 statement 노드 목록만 코드로 생성한다 (__esm var 호이스팅용).
+    /// root는 collectTopLevelDeclNames에만 사용. 실제 출력은 stmt_indices에서.
+    pub fn generateStatements(self: *Codegen, root: NodeIndex, stmt_indices: []const u32) ![]const u8 {
+        try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len / 2);
+        self.collectTopLevelDeclNames(root);
+        var emitted = false;
+        for (stmt_indices) |raw_idx| {
+            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (node_idx.isNone()) continue;
+            if (emitted) try self.writeNewline();
+            try self.emitNode(node_idx);
+            emitted = true;
+        }
+        if (emitted) try self.writeNewline();
+        return self.buf.items;
     }
 
     /// AST를 JS 문자열로 출력한다.
@@ -1953,6 +1973,30 @@ pub const Codegen = struct {
         const list_start = extras[1];
         const list_len = extras[2];
 
+        // __esm 호이스팅: 키워드 제거, init이 있는 declarator만 할당문으로 출력
+        if (self.options.esm_var_assign_only) {
+            const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+            var has_output = false;
+            for (declarators) |raw_decl_idx| {
+                const decl_node = self.ast.nodes.items[raw_decl_idx];
+                const de = decl_node.data.extra;
+                const dextras = self.ast.extra_data.items[de .. de + 3];
+                const name_idx: NodeIndex = @enumFromInt(dextras[0]);
+                const init_idx: NodeIndex = @enumFromInt(dextras[2]);
+                if (!init_idx.isNone()) {
+                    if (has_output) try self.writeNewline();
+                    try self.emitNode(name_idx);
+                    try self.writeSpace();
+                    try self.writeByte('=');
+                    try self.writeSpace();
+                    try self.emitNode(init_idx);
+                    try self.writeByte(';');
+                    has_output = true;
+                }
+            }
+            return;
+        }
+
         const keyword = switch (kind_flags) {
             0 => "var ",
             1 => "let ",
@@ -2087,7 +2131,9 @@ pub const Codegen = struct {
             return;
         }
 
-        try self.write(if (self.options.use_var_for_imports) "var " else "const ");
+        // __esm 호이스팅: 키워드 생략 (할당문만 출력)
+        if (!self.options.esm_var_assign_only)
+            try self.write(if (self.options.use_var_for_imports) "var " else "const ");
 
         // specifier 유형 분석
         const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
@@ -2302,7 +2348,7 @@ pub const Codegen = struct {
                         // default_export_name이 _default(합성 변수)이면 var 선언 필요.
                         // 실제 변수명(stringifySafe 등)이면 이미 선언되어 있으므로 생성 불필요.
                         if (std.mem.startsWith(u8, def_name, "_default")) {
-                            try self.write("var ");
+                            if (!self.options.esm_var_assign_only) try self.write("var ");
                             try self.write(def_name);
                             try self.writeByte('=');
                             try self.emitNode(inner);
