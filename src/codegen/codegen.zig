@@ -1973,28 +1973,43 @@ pub const Codegen = struct {
         const list_start = extras[1];
         const list_len = extras[2];
 
-        // __esm 호이스팅: 키워드 제거, init이 있는 declarator만 할당문으로 출력
-        if (self.options.esm_var_assign_only) {
+        // __esm 호이스팅: top-level 단순 변수 선언만 키워드 제거 (할당문으로 변환).
+        // destructuring 패턴이 있으면 normal 경로 (키워드 필요).
+        if (self.options.esm_var_assign_only and self.indent_level == 0 and !self.in_for_init) {
             const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
-            var has_output = false;
+            // destructuring 여부 확인: 하나라도 binding_identifier가 아니면 normal 경로
+            var has_destructuring = false;
             for (declarators) |raw_decl_idx| {
                 const decl_node = self.ast.nodes.items[raw_decl_idx];
-                const de = decl_node.data.extra;
-                const dextras = self.ast.extra_data.items[de .. de + 3];
-                const name_idx: NodeIndex = @enumFromInt(dextras[0]);
-                const init_idx: NodeIndex = @enumFromInt(dextras[2]);
-                if (!init_idx.isNone()) {
-                    if (has_output) try self.writeNewline();
-                    try self.emitNode(name_idx);
-                    try self.writeSpace();
-                    try self.writeByte('=');
-                    try self.writeSpace();
-                    try self.emitNode(init_idx);
-                    try self.writeByte(';');
-                    has_output = true;
+                const dextras2 = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
+                const n_idx: NodeIndex = @enumFromInt(dextras2[0]);
+                if (!n_idx.isNone() and self.ast.nodes.items[@intFromEnum(n_idx)].tag != .binding_identifier) {
+                    has_destructuring = true;
+                    break;
                 }
             }
-            return;
+            if (!has_destructuring) {
+                var has_output = false;
+                for (declarators) |raw_decl_idx| {
+                    const decl_node = self.ast.nodes.items[raw_decl_idx];
+                    const de = decl_node.data.extra;
+                    const dextras = self.ast.extra_data.items[de .. de + 3];
+                    const name_idx: NodeIndex = @enumFromInt(dextras[0]);
+                    const init_idx: NodeIndex = @enumFromInt(dextras[2]);
+                    if (!init_idx.isNone()) {
+                        if (has_output) try self.writeNewline();
+                        try self.emitNode(name_idx);
+                        try self.writeSpace();
+                        try self.writeByte('=');
+                        try self.writeSpace();
+                        try self.emitNode(init_idx);
+                        try self.writeByte(';');
+                        has_output = true;
+                    }
+                }
+                return;
+            }
+            // destructuring → fall through to normal path (var 키워드 유지)
         }
 
         const keyword = switch (kind_flags) {
@@ -2131,11 +2146,7 @@ pub const Codegen = struct {
             return;
         }
 
-        // __esm 호이스팅: 키워드 생략 (할당문만 출력)
-        if (!self.options.esm_var_assign_only)
-            try self.write(if (self.options.use_var_for_imports) "var " else "const ");
-
-        // specifier 유형 분석
+        // specifier 유형 분석 (키워드 생략 판단에 필요)
         const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
         var has_default = false;
         var has_namespace = false;
@@ -2150,6 +2161,9 @@ pub const Codegen = struct {
                 else => {},
             }
         }
+
+        // import 선언은 항상 키워드 유지 (래퍼 안에서 CJS 변환)
+        try self.write(if (self.options.use_var_for_imports) "var " else "const ");
 
         if (has_namespace) {
             // import * as bar from './bar' → const bar=require('./bar');

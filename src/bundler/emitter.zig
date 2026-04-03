@@ -1668,7 +1668,6 @@ pub fn emitModule(
             if (metadata) |*m| @as(?*const LinkingMetadata, m) else null,
             linker,
             options,
-            helpers_out,
         );
     }
 
@@ -2047,6 +2046,19 @@ fn collectLegalComments(
     }
 }
 
+/// 노드 인덱스에 대해 rename이 적용된 최종 이름을 반환한다.
+/// metadata의 symbol_ids → renames 조회. rename이 없으면 fallback 반환.
+fn resolveNodeName(md: ?*const LinkingMetadata, node_idx: u32, fallback: []const u8) []const u8 {
+    if (md) |m| {
+        if (node_idx < m.symbol_ids.len) {
+            if (m.symbol_ids[node_idx]) |sid| {
+                if (m.renames.get(sid)) |renamed| return renamed;
+            }
+        }
+    }
+    return fallback;
+}
+
 /// __esm 래핑 모듈의 코드를 생성한다 (esbuild/rolldown 방식 var/function 호이스팅).
 ///
 /// 출력 구조:
@@ -2066,9 +2078,7 @@ fn emitEsmWrappedModule(
     metadata: ?*const LinkingMetadata,
     linker: ?*const Linker,
     options: anytype,
-    helpers_out: ?*RuntimeHelpers,
 ) ![]const u8 {
-    _ = helpers_out;
     const basename = std.fs.path.basename(module.path);
 
     const init_name = try types.makeInitVarName(allocator, module.path);
@@ -2093,37 +2103,36 @@ fn emitEsmWrappedModule(
         if (ni.isNone()) continue;
         const stmt_node = esm_ast.nodes.items[raw_idx];
 
-        // export 래핑된 선언의 내부 태그를 확인
-        const effective_tag = switch (stmt_node.tag) {
+        // export_named_declaration의 inner decl 추출 (있으면)
+        const export_inner: ?NodeIndex = switch (stmt_node.tag) {
             .export_named_declaration => blk: {
-                const inner_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[stmt_node.data.extra]);
-                if (!inner_idx.isNone()) {
-                    break :blk esm_ast.nodes.items[@intFromEnum(inner_idx)].tag;
-                }
-                break :blk stmt_node.tag;
-            },
-            .export_default_declaration => blk: {
-                const inner_idx = stmt_node.data.unary.operand;
-                if (!inner_idx.isNone()) {
-                    break :blk esm_ast.nodes.items[@intFromEnum(inner_idx)].tag;
-                }
-                break :blk stmt_node.tag;
-            },
-            else => stmt_node.tag,
-        };
-
-        // variable_declaration의 extra 위치: export 래핑 시 inner decl의 extra
-        const var_decl_extra: ?u32 = switch (stmt_node.tag) {
-            .variable_declaration => stmt_node.data.extra,
-            .export_named_declaration => blk: {
-                const inner_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[stmt_node.data.extra]);
-                if (!inner_idx.isNone()) {
-                    const inner = esm_ast.nodes.items[@intFromEnum(inner_idx)];
-                    if (inner.tag == .variable_declaration) break :blk inner.data.extra;
+                const ei = stmt_node.data.extra;
+                if (ei < esm_ast.extra_data.items.len) {
+                    const idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[ei]);
+                    if (!idx.isNone()) break :blk idx;
                 }
                 break :blk null;
             },
+            .export_default_declaration => blk: {
+                const idx = stmt_node.data.unary.operand;
+                if (!idx.isNone()) break :blk idx;
+                break :blk null;
+            },
             else => null,
+        };
+
+        const effective_tag = if (export_inner) |idx|
+            esm_ast.nodes.items[@intFromEnum(idx)].tag
+        else
+            stmt_node.tag;
+
+        const var_decl_extra: ?u32 = switch (stmt_node.tag) {
+            .variable_declaration => stmt_node.data.extra,
+            else => if (export_inner) |idx| blk: {
+                const inner = esm_ast.nodes.items[@intFromEnum(idx)];
+                if (inner.tag == .variable_declaration) break :blk inner.data.extra;
+                break :blk null;
+            } else null,
         };
 
         switch (effective_tag) {
@@ -2131,51 +2140,8 @@ fn emitEsmWrappedModule(
                 try hoisted_stmts.append(allocator, raw_idx);
             },
             .import_declaration => {
-                // import 문: CJS 변환 시 var name = require(...) → 변수명 수집 + body
-                const ie = stmt_node.data.extra;
-                const iextras = esm_ast.extra_data.items[ie .. ie + 3];
-                const ispecs_start = iextras[0];
-                const ispecs_len = iextras[1];
-                if (ispecs_len > 0) {
-                    const ispecs = esm_ast.extra_data.items[ispecs_start .. ispecs_start + ispecs_len];
-                    for (ispecs) |spec_raw| {
-                        const spec_node = esm_ast.nodes.items[spec_raw];
-                        switch (spec_node.tag) {
-                            .import_default_specifier, .import_namespace_specifier => {
-                                const spec_name = esm_ast.getText(spec_node.data.string_ref);
-                                const resolved_name = if (metadata) |md| blk: {
-                                    const si = @intFromEnum(@as(NodeIndex, @enumFromInt(spec_raw)));
-                                    if (si < md.symbol_ids.len) {
-                                        if (md.symbol_ids[si]) |sid| {
-                                            if (md.renames.get(sid)) |renamed| break :blk renamed;
-                                        }
-                                    }
-                                    break :blk spec_name;
-                                } else spec_name;
-                                try hoisted_var_names.append(allocator, resolved_name);
-                            },
-                            .import_specifier => {
-                                // named import: local name은 binary.right
-                                const local_idx = spec_node.data.binary.right;
-                                if (!local_idx.isNone()) {
-                                    const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
-                                    const spec_name = esm_ast.getText(local_node.data.string_ref);
-                                    const resolved_name = if (metadata) |md| blk: {
-                                        const si = @intFromEnum(local_idx);
-                                        if (si < md.symbol_ids.len) {
-                                            if (md.symbol_ids[si]) |sid| {
-                                                if (md.renames.get(sid)) |renamed| break :blk renamed;
-                                            }
-                                        }
-                                        break :blk spec_name;
-                                    } else spec_name;
-                                    try hoisted_var_names.append(allocator, resolved_name);
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
+                // import 문은 래퍼 안에서 CJS 변환 (init 호출 순서 보장).
+                // var 키워드는 esm_var_assign_only가 아닌 use_var_for_imports로 처리.
                 try body_stmts.append(allocator, raw_idx);
             },
             .variable_declaration => {
@@ -2195,16 +2161,7 @@ fn emitEsmWrappedModule(
                     const name_node = esm_ast.nodes.items[@intFromEnum(name_raw)];
                     if (name_node.tag == .binding_identifier) {
                         const raw_name = esm_ast.getText(name_node.data.string_ref);
-                        const var_name = if (metadata) |md| blk: {
-                            const node_i = @intFromEnum(name_raw);
-                            if (node_i < md.symbol_ids.len) {
-                                if (md.symbol_ids[node_i]) |sid| {
-                                    if (md.renames.get(sid)) |renamed| break :blk renamed;
-                                }
-                            }
-                            break :blk raw_name;
-                        } else raw_name;
-                        try hoisted_var_names.append(allocator, var_name);
+                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
                     }
                 }
                 // body에 넣어서 할당문으로 변환
