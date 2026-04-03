@@ -2243,17 +2243,32 @@ pub const Codegen = struct {
 
     /// import specifier의 imported + rename separator + local 출력.
     /// ESM은 " as ", CJS는 ":" 를 separator로 사용한다.
+    /// imported 쪽은 항상 원본 이름을 사용 (exports 객체의 프로퍼티 키).
+    /// local 쪽은 rename 적용 (로컬 변수명).
     fn emitImportSpecifierRename(self: *Codegen, spec_node: Node, sep: []const u8) !void {
         const imported = spec_node.data.binary.left;
         const local = spec_node.data.binary.right;
-        try self.emitNode(imported);
-        if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
+        // imported: 항상 원본 이름 (exports 객체 키 = rename 전 이름)
+        try self.writeSpan(self.ast.getNode(imported).span);
+        // local이 rename 되었거나 원본 imported와 다른 경우 → separator + local 출력
+        const needs_rename = blk: {
+            if (local.isNone() or @intFromEnum(local) == @intFromEnum(imported)) break :blk false;
+            // 원본 텍스트가 다르면 항상 rename 필요 (import { foo as bar })
             const imp_text = self.ast.source[self.ast.getNode(imported).span.start..self.ast.getNode(imported).span.end];
             const loc_text = self.ast.source[self.ast.getNode(local).span.start..self.ast.getNode(local).span.end];
-            if (!std.mem.eql(u8, imp_text, loc_text)) {
-                try self.write(sep);
-                try self.emitNode(local);
+            if (!std.mem.eql(u8, imp_text, loc_text)) break :blk true;
+            // 원본 텍스트가 같아도 linker가 rename했으면 separator 필요
+            // (e.g., import { Foo } → {Foo: Foo$1})
+            if (self.options.linking_metadata) |meta| {
+                if (self.resolveSymbolId(local, meta)) |sid| {
+                    if (meta.renames.get(sid)) |_| break :blk true;
+                }
             }
+            break :blk false;
+        };
+        if (needs_rename) {
+            try self.write(sep);
+            try self.emitNode(local);
         }
     }
 
