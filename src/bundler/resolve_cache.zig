@@ -198,7 +198,18 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolveResult {
-        return self.resolveInner(false, source_dir, specifier, kind);
+        return self.resolveInner(false, source_dir, specifier, kind, null);
+    }
+
+    /// source_file 포함 resolve. 자기참조 방지용.
+    pub fn resolveWithSourceFile(
+        self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+        source_file: []const u8,
+    ) ResolveError!?ResolveResult {
+        return self.resolveInner(false, source_dir, specifier, kind, source_file);
     }
 
     /// 스레드 안전 resolve. 병렬 resolve에서 사용.
@@ -208,7 +219,18 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolveResult {
-        return self.resolveInner(true, source_dir, specifier, kind);
+        return self.resolveInner(true, source_dir, specifier, kind, null);
+    }
+
+    /// source_file 포함 스레드 안전 resolve. 자기참조 방지용.
+    pub fn resolveThreadSafeWithSourceFile(
+        self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+        source_file: []const u8,
+    ) ResolveError!?ResolveResult {
+        return self.resolveInner(true, source_dir, specifier, kind, source_file);
     }
 
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
@@ -218,6 +240,7 @@ pub const ResolveCache = struct {
         source_dir: []const u8,
         specifier: []const u8,
         kind: ImportKind,
+        source_file: ?[]const u8,
     ) ResolveError!?ResolveResult {
         if (self.isExternal(specifier)) return null;
 
@@ -256,7 +279,7 @@ pub const ResolveCache = struct {
         }
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
-        const result = resolve_ptr.resolve(source_dir, specifier) catch |err| switch (err) {
+        const result = resolve_ptr.resolveWithSourceFile(source_dir, specifier, source_file) catch |err| switch (err) {
             error.ModuleNotFound => {
                 if (thread_safe) self.cache_mutex.lock();
                 defer if (thread_safe) self.cache_mutex.unlock();

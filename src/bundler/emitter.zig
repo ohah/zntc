@@ -1782,8 +1782,16 @@ pub fn emitModule(
                     try export_code.appendSlice(allocator, ": () => ");
                     const local = if (std.mem.eql(u8, eb.local_name, "default"))
                         (if (metadata) |md| md.default_export_name else "_default")
-                    else
-                        eb.local_name;
+                    else blk: {
+                        // scope hoisting rename을 반영: linker의 canonical_names에서 조회
+                        if (linker) |l| {
+                            const mi: u32 = @intFromEnum(module.index);
+                            if (l.getCanonicalName(mi, eb.local_name)) |renamed| {
+                                break :blk renamed;
+                            }
+                        }
+                        break :blk eb.local_name;
+                    };
                     try export_code.appendSlice(allocator, local);
                     try export_code.appendSlice(allocator, ",\n");
                 }

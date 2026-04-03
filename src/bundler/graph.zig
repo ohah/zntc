@@ -622,10 +622,11 @@ pub const ModuleGraph = struct {
                 }
             }
 
-            const resolved = self.resolve_cache.resolveThreadSafe(
+            const resolved = self.resolve_cache.resolveThreadSafeWithSourceFile(
                 source_dir,
                 record.specifier,
                 record.kind,
+                module_path,
             ) catch |err| switch (err) {
                 error.ModuleNotFound => {
                     results[rec_i] = .{ .is_error = true };
@@ -1017,10 +1018,11 @@ pub const ModuleGraph = struct {
                 // null이면 기본 resolver로 fall through
             }
 
-            const resolved = self.resolve_cache.resolve(
+            const resolved = self.resolve_cache.resolveWithSourceFile(
                 source_dir,
                 record.specifier,
                 record.kind,
+                module_path,
             ) catch |err| switch (err) {
                 error.ModuleNotFound => {
                     try self.applyResolveResult(mod_idx, rec_i, record, null, true);
