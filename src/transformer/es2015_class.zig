@@ -176,7 +176,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // --- static fields → ClassName.field = value ---
             for (cm.static_fields.items) |field| {
-                const class_ref = try makeClassNameRef(self, name_span, name_idx, span);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.pending_nodes.append(self.allocator, static_assign);
             }
@@ -347,7 +347,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // 5. static fields
             for (cm.static_fields.items) |field| {
-                const class_ref = try makeClassNameRef(self, name_span, name_idx, span);
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.scratch.append(self.allocator, static_assign);
             }
@@ -358,7 +358,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // 7. return ClassName;
-            const return_ref = try makeClassNameRef(self, name_span, name_idx, span);
+            const return_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
@@ -680,18 +680,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return std.mem.eql(u8, ta, tb);
         }
 
-        /// span + symbol_id를 가진 클래스 이름 identifier_reference 생성.
-        /// class_name_old_idx: 원본 AST의 binding_identifier 노드 인덱스 (symbol_id 전파용).
-        fn makeClassNameRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            _ = span;
-            const ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
-            self.propagateSymbolId(class_name_old_idx, ref);
-            return ref;
-        }
-
         /// ClassName.prototype static_member_expression 생성.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try makeClassNameRef(self, class_name_span, class_name_old_idx, span);
+            const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
             const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
@@ -1064,8 +1055,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// child_old_idx, parent_old_idx: 원본 AST 노드 인덱스 (symbol_id 전파용).
         fn buildExtendsCall(self: *Transformer, child_span: Span, parent_span: Span, child_old_idx: NodeIndex, parent_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
-            const child_ref = try makeClassNameRef(self, child_span, child_old_idx, span);
-            const parent_ref = try makeClassNameRef(self, parent_span, parent_old_idx, span);
+            const child_ref = try self.makeIdentifierRefWithSymbol(child_span, child_old_idx);
+            const parent_ref = try self.makeIdentifierRefWithSymbol(parent_span, parent_old_idx);
             const call = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
 
             return self.new_ast.addNode(.{
@@ -1232,7 +1223,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// target.methodName = func_expr (expression_statement)
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, class_name_old_idx: NodeIndex, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const target = if (info.is_static)
-                try makeClassNameRef(self, class_name_span, class_name_old_idx, span)
+                try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx)
             else
                 try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
             const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
@@ -1310,7 +1301,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 // target
                 const target = if (info.is_static)
-                    try makeClassNameRef(self, class_name_span, class_name_old_idx, span)
+                    try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx)
                 else
                     try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
 

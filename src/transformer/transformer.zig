@@ -864,6 +864,14 @@ pub const Transformer = struct {
         return self.new_ast.getNode(name_idx).data.string_ref;
     }
 
+    /// new_symbol_ids를 target_idx까지 null로 확장.
+    fn ensureNewSymbolIds(self: *Transformer, target_idx: usize) void {
+        if (self.new_symbol_ids.items.len <= target_idx) {
+            const needed = target_idx + 1 - self.new_symbol_ids.items.len;
+            self.new_symbol_ids.appendNTimes(self.allocator, null, needed) catch return;
+        }
+    }
+
     /// 원본 → 새 노드의 symbol_id 전파.
     pub fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
         if (self.old_symbol_ids.len == 0) return; // 전파 비활성
@@ -872,10 +880,7 @@ pub const Transformer = struct {
         const old_i = @intFromEnum(old_idx);
         const new_i = @intFromEnum(new_idx);
 
-        // new_symbol_ids를 new_ast 노드 수만큼 확장
-        while (self.new_symbol_ids.items.len <= new_i) {
-            self.new_symbol_ids.append(self.allocator, null) catch return;
-        }
+        self.ensureNewSymbolIds(new_i);
 
         if (old_i < self.old_symbol_ids.len) {
             // ts_as_expression 등 wrapper 노드가 내부 노드와 같은 new_idx를 반환하면
@@ -896,16 +901,21 @@ pub const Transformer = struct {
         const src_i = @intFromEnum(src_new_idx);
         const dst_i = @intFromEnum(dst_new_idx);
 
-        // dst를 new_symbol_ids 크기만큼 확장
-        while (self.new_symbol_ids.items.len <= dst_i) {
-            self.new_symbol_ids.append(self.allocator, null) catch return;
-        }
+        self.ensureNewSymbolIds(dst_i);
 
         if (src_i < self.new_symbol_ids.items.len) {
             if (self.new_symbol_ids.items[src_i]) |sid| {
                 self.new_symbol_ids.items[dst_i] = sid;
             }
         }
+    }
+
+    /// span + old_idx로 identifier_reference 생성 + symbol_id 전파.
+    /// ES5 class lowering, decorator 등에서 renamed 이름이 반영되도록 사용.
+    pub fn makeIdentifierRefWithSymbol(self: *Transformer, name_span: Span, old_idx: NodeIndex) Error!NodeIndex {
+        const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+        self.propagateSymbolId(old_idx, ref);
+        return ref;
     }
 
     /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
@@ -925,11 +935,7 @@ pub const Transformer = struct {
                     self.old_ast.getNode(name_idx).data.string_ref
                 else
                     try self.new_ast.addString("_Class");
-                const name_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-                // symbol_id 전파: rename된 이름이 export default 참조에도 반영되도록
-                if (!name_idx.isNone()) {
-                    self.propagateSymbolId(name_idx, name_ref);
-                }
+                const name_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
                 return self.new_ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
@@ -2979,12 +2985,7 @@ pub const Transformer = struct {
         });
 
         // arg2: Foo.prototype (instance) or Foo (static)
-        const class_ref = try self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = class_name_span,
-            .data = .{ .string_ref = class_name_span },
-        });
-        self.propagateSymbolId(class_name_old_idx, class_ref);
+        const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
         const target = if (!md.is_static) blk: {
             const proto_span = try self.new_ast.addString("prototype");
             const proto_id = try self.new_ast.addNode(.{
@@ -3085,12 +3086,7 @@ pub const Transformer = struct {
         });
 
         // arg2: Foo
-        const class_ref = try self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = class_name_span,
-            .data = .{ .string_ref = class_name_span },
-        });
-        self.propagateSymbolId(class_name_old_idx, class_ref);
+        const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
 
         const args = try self.new_ast.addNodeList(&.{ deco_array, class_ref });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
@@ -3098,12 +3094,7 @@ pub const Transformer = struct {
         });
 
         // Foo = __decorateClass([dec], Foo)
-        const lhs = try self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = class_name_span,
-            .data = .{ .string_ref = class_name_span },
-        });
-        self.propagateSymbolId(class_name_old_idx, lhs);
+        const lhs = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
         const assign = try self.new_ast.addNode(.{
             .tag = .assignment_expression,
             .span = zero_span,
