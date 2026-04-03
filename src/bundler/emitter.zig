@@ -26,7 +26,9 @@ const Chunk = chunk_mod.Chunk;
 const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
-const Ast = @import("../parser/ast.zig").Ast;
+const ast_mod = @import("../parser/ast.zig");
+const Ast = ast_mod.Ast;
+const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
@@ -1655,6 +1657,21 @@ pub fn emitModule(
     // 번들 모드에서는 linker의 scope hoisting과 이름 충돌 해결이 먼저 필요하므로
     // 별도 통합이 필요 (후속 PR).
 
+    // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
+    if (module.wrap_kind == .esm) {
+        return try emitEsmWrappedModule(
+            allocator,
+            arena_alloc,
+            &transformer.new_ast,
+            root,
+            module,
+            if (metadata) |*m| @as(?*const LinkingMetadata, m) else null,
+            linker,
+            options,
+            helpers_out,
+        );
+    }
+
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify_whitespace = options.minify_whitespace,
@@ -1741,87 +1758,7 @@ pub fn emitModule(
         return try allocator.dupe(u8, wrapped.items);
     }
 
-    // ESM 래핑: __esm 팩토리 함수로 감싸기 (ESM 모듈이 require()로 소비될 때)
-    // 출력: var foo_exports = {};
-    //       __export(foo_exports, { name: () => name, ... });
-    //       var init_foo = __esm({ "foo.js"() { ...code... } });
-    if (module.wrap_kind == .esm) {
-        const basename = std.fs.path.basename(module.path);
-
-        const init_name = try types.makeInitVarName(allocator, module.path);
-        defer allocator.free(init_name);
-        const exports_name = try types.makeExportsVarName(allocator, module.path);
-        defer allocator.free(exports_name);
-
-        var wrapped: std.ArrayList(u8) = .empty;
-        defer wrapped.deinit(allocator);
-
-        // 1. exports namespace 객체 선언 (래퍼 밖 — 다른 모듈에서 참조)
-        try wrapped.appendSlice(allocator, "var ");
-        try wrapped.appendSlice(allocator, exports_name);
-        try wrapped.appendSlice(allocator, " = {};\n");
-
-        // 2. __export를 래퍼 안에서 호출할 코드 준비
-        // getter의 클로저가 래퍼 함수 스코프를 캡처하여 변수에 접근 가능.
-        var export_code: std.ArrayList(u8) = .empty;
-        defer export_code.deinit(allocator);
-        if (module.export_bindings.len > 0) {
-            try export_code.appendSlice(allocator, "__export(");
-            try export_code.appendSlice(allocator, exports_name);
-            try export_code.appendSlice(allocator, ", {\n");
-            for (module.export_bindings) |eb| {
-                if (eb.kind == .local or eb.kind == .re_export) {
-                    try export_code.appendSlice(allocator, "\t");
-                    if (needsPropertyQuote(eb.exported_name)) {
-                        try export_code.appendSlice(allocator, "\"");
-                        try export_code.appendSlice(allocator, eb.exported_name);
-                        try export_code.appendSlice(allocator, "\"");
-                    } else {
-                        try export_code.appendSlice(allocator, eb.exported_name);
-                    }
-                    try export_code.appendSlice(allocator, ": () => ");
-                    const local = if (std.mem.eql(u8, eb.local_name, "default"))
-                        (if (metadata) |md| md.default_export_name else "_default")
-                    else blk: {
-                        // scope hoisting rename을 반영: linker의 canonical_names에서 조회
-                        if (linker) |l| {
-                            const mi: u32 = @intFromEnum(module.index);
-                            if (l.getCanonicalName(mi, eb.local_name)) |renamed| {
-                                break :blk renamed;
-                            }
-                        }
-                        break :blk eb.local_name;
-                    };
-                    try export_code.appendSlice(allocator, local);
-                    try export_code.appendSlice(allocator, ",\n");
-                }
-            }
-            try export_code.appendSlice(allocator, "});\n");
-        }
-
-        // 3. init 함수 + __esm 래핑 (__export + code를 래퍼 안에 배치)
-        if (options.minify_whitespace) {
-            try wrapped.appendSlice(allocator, "var ");
-            try wrapped.appendSlice(allocator, init_name);
-            try wrapped.appendSlice(allocator, "=__esm({\"");
-            try wrapped.appendSlice(allocator, basename);
-            try wrapped.appendSlice(allocator, "\"(){");
-            try wrapped.appendSlice(allocator, export_code.items);
-            try wrapped.appendSlice(allocator, code);
-            try wrapped.appendSlice(allocator, "}});");
-        } else {
-            try wrapped.appendSlice(allocator, "var ");
-            try wrapped.appendSlice(allocator, init_name);
-            try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
-            try wrapped.appendSlice(allocator, basename);
-            try wrapped.appendSlice(allocator, "\"() {\n");
-            try appendIndented(&wrapped, allocator, export_code.items);
-            try appendIndented(&wrapped, allocator, code);
-            try wrapped.appendSlice(allocator, "\n\t}\n});\n");
-        }
-
-        return try allocator.dupe(u8, wrapped.items);
-    }
+    // __esm 래핑은 emitEsmWrappedModule()에서 처리 (early return)
 
     // CJS import preamble + final_exports를 하나의 concat으로 합침 (중간 할당 누수 방지)
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
@@ -2108,4 +2045,294 @@ fn collectLegalComments(
             try output.append(allocator, '\n');
         }
     }
+}
+
+/// __esm 래핑 모듈의 코드를 생성한다 (esbuild/rolldown 방식 var/function 호이스팅).
+///
+/// 출력 구조:
+///   var exports_xxx = {};
+///   var hoisted_var1, hoisted_var2;        ← var 선언 호이스팅
+///   function hoisted_fn() { ... }          ← function 선언 호이스팅
+///   __export(exports_xxx, { ... });        ← lazy getter (래퍼 밖)
+///   var init_xxx = __esm({ "file.js"() {
+///     hoisted_var1 = init_value;           ← 할당문만 래퍼 안
+///   } });
+fn emitEsmWrappedModule(
+    allocator: std.mem.Allocator,
+    arena_alloc: std.mem.Allocator,
+    esm_ast: *const Ast,
+    root: NodeIndex,
+    module: *const Module,
+    metadata: ?*const LinkingMetadata,
+    linker: ?*const Linker,
+    options: anytype,
+    helpers_out: ?*RuntimeHelpers,
+) ![]const u8 {
+    _ = helpers_out;
+    const basename = std.fs.path.basename(module.path);
+
+    const init_name = try types.makeInitVarName(allocator, module.path);
+    defer allocator.free(init_name);
+    const exports_name = try types.makeExportsVarName(allocator, module.path);
+    defer allocator.free(exports_name);
+
+    // AST top-level 문장을 분류
+    const root_node = esm_ast.getNode(root);
+    const stmt_list = root_node.data.list;
+    const all_stmts = esm_ast.extra_data.items[stmt_list.start .. stmt_list.start + stmt_list.len];
+
+    var hoisted_stmts: std.ArrayList(u32) = .empty;
+    defer hoisted_stmts.deinit(allocator);
+    var body_stmts: std.ArrayList(u32) = .empty;
+    defer body_stmts.deinit(allocator);
+    var hoisted_var_names: std.ArrayList([]const u8) = .empty;
+    defer hoisted_var_names.deinit(allocator);
+
+    for (all_stmts) |raw_idx| {
+        const ni: NodeIndex = @enumFromInt(raw_idx);
+        if (ni.isNone()) continue;
+        const stmt_node = esm_ast.nodes.items[raw_idx];
+
+        // export 래핑된 선언의 내부 태그를 확인
+        const effective_tag = switch (stmt_node.tag) {
+            .export_named_declaration => blk: {
+                const inner_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[stmt_node.data.extra]);
+                if (!inner_idx.isNone()) {
+                    break :blk esm_ast.nodes.items[@intFromEnum(inner_idx)].tag;
+                }
+                break :blk stmt_node.tag;
+            },
+            .export_default_declaration => blk: {
+                const inner_idx = stmt_node.data.unary.operand;
+                if (!inner_idx.isNone()) {
+                    break :blk esm_ast.nodes.items[@intFromEnum(inner_idx)].tag;
+                }
+                break :blk stmt_node.tag;
+            },
+            else => stmt_node.tag,
+        };
+
+        // variable_declaration의 extra 위치: export 래핑 시 inner decl의 extra
+        const var_decl_extra: ?u32 = switch (stmt_node.tag) {
+            .variable_declaration => stmt_node.data.extra,
+            .export_named_declaration => blk: {
+                const inner_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[stmt_node.data.extra]);
+                if (!inner_idx.isNone()) {
+                    const inner = esm_ast.nodes.items[@intFromEnum(inner_idx)];
+                    if (inner.tag == .variable_declaration) break :blk inner.data.extra;
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+
+        switch (effective_tag) {
+            .function_declaration => {
+                try hoisted_stmts.append(allocator, raw_idx);
+            },
+            .import_declaration => {
+                // import 문: CJS 변환 시 var name = require(...) → 변수명 수집 + body
+                const ie = stmt_node.data.extra;
+                const iextras = esm_ast.extra_data.items[ie .. ie + 3];
+                const ispecs_start = iextras[0];
+                const ispecs_len = iextras[1];
+                if (ispecs_len > 0) {
+                    const ispecs = esm_ast.extra_data.items[ispecs_start .. ispecs_start + ispecs_len];
+                    for (ispecs) |spec_raw| {
+                        const spec_node = esm_ast.nodes.items[spec_raw];
+                        switch (spec_node.tag) {
+                            .import_default_specifier, .import_namespace_specifier => {
+                                const spec_name = esm_ast.getText(spec_node.data.string_ref);
+                                const resolved_name = if (metadata) |md| blk: {
+                                    const si = @intFromEnum(@as(NodeIndex, @enumFromInt(spec_raw)));
+                                    if (si < md.symbol_ids.len) {
+                                        if (md.symbol_ids[si]) |sid| {
+                                            if (md.renames.get(sid)) |renamed| break :blk renamed;
+                                        }
+                                    }
+                                    break :blk spec_name;
+                                } else spec_name;
+                                try hoisted_var_names.append(allocator, resolved_name);
+                            },
+                            .import_specifier => {
+                                // named import: local name은 binary.right
+                                const local_idx = spec_node.data.binary.right;
+                                if (!local_idx.isNone()) {
+                                    const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
+                                    const spec_name = esm_ast.getText(local_node.data.string_ref);
+                                    const resolved_name = if (metadata) |md| blk: {
+                                        const si = @intFromEnum(local_idx);
+                                        if (si < md.symbol_ids.len) {
+                                            if (md.symbol_ids[si]) |sid| {
+                                                if (md.renames.get(sid)) |renamed| break :blk renamed;
+                                            }
+                                        }
+                                        break :blk spec_name;
+                                    } else spec_name;
+                                    try hoisted_var_names.append(allocator, resolved_name);
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                try body_stmts.append(allocator, raw_idx);
+            },
+            .variable_declaration => {
+                // 변수명 수집 (래퍼 밖 var 선언용)
+                const de = var_decl_extra orelse {
+                    try body_stmts.append(allocator, raw_idx);
+                    continue;
+                };
+                const dextras = esm_ast.extra_data.items[de .. de + 3];
+                const decl_list_start = dextras[1];
+                const decl_list_len = dextras[2];
+                const declarators = esm_ast.extra_data.items[decl_list_start .. decl_list_start + decl_list_len];
+                for (declarators) |decl_raw| {
+                    const decl = esm_ast.nodes.items[decl_raw];
+                    const de2 = decl.data.extra;
+                    const name_raw: NodeIndex = @enumFromInt(esm_ast.extra_data.items[de2]);
+                    const name_node = esm_ast.nodes.items[@intFromEnum(name_raw)];
+                    if (name_node.tag == .binding_identifier) {
+                        const raw_name = esm_ast.getText(name_node.data.string_ref);
+                        const var_name = if (metadata) |md| blk: {
+                            const node_i = @intFromEnum(name_raw);
+                            if (node_i < md.symbol_ids.len) {
+                                if (md.symbol_ids[node_i]) |sid| {
+                                    if (md.renames.get(sid)) |renamed| break :blk renamed;
+                                }
+                            }
+                            break :blk raw_name;
+                        } else raw_name;
+                        try hoisted_var_names.append(allocator, var_name);
+                    }
+                }
+                // body에 넣어서 할당문으로 변환
+                try body_stmts.append(allocator, raw_idx);
+            },
+            .export_default_declaration => {
+                // export default expr → codegen이 var _default = expr 생성
+                // _default 변수명을 호이스팅 대상에 추가
+                if (metadata) |md| {
+                    try hoisted_var_names.append(allocator, md.default_export_name);
+                } else {
+                    try hoisted_var_names.append(allocator, "_default");
+                }
+                try body_stmts.append(allocator, raw_idx);
+            },
+            else => {
+                try body_stmts.append(allocator, raw_idx);
+            },
+        }
+    }
+
+    // codegen 공통 옵션
+    const cg_linking = if (metadata) |m| @as(?*const LinkingMetadata, m) else null;
+
+    var wrapped: std.ArrayList(u8) = .empty;
+    defer wrapped.deinit(allocator);
+
+    // 1. exports namespace 객체
+    try wrapped.appendSlice(allocator, "var ");
+    try wrapped.appendSlice(allocator, exports_name);
+    try wrapped.appendSlice(allocator, " = {};\n");
+
+    // 2. 호이스팅된 var 선언
+    if (hoisted_var_names.items.len > 0) {
+        try wrapped.appendSlice(allocator, "var ");
+        for (hoisted_var_names.items, 0..) |name, i| {
+            if (i > 0) try wrapped.appendSlice(allocator, ", ");
+            try wrapped.appendSlice(allocator, name);
+        }
+        try wrapped.appendSlice(allocator, ";\n");
+    }
+
+    // 3. 호이스팅된 function 선언
+    if (hoisted_stmts.items.len > 0) {
+        var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+            .minify_whitespace = options.minify_whitespace,
+            .module_format = .cjs,
+            .skip_cjs_exports = true,
+            .use_var_for_imports = true,
+            .linking_metadata = cg_linking,
+            .replace_import_meta = options.format != .esm,
+            .platform = options.platform,
+        });
+        const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
+        try wrapped.appendSlice(allocator, hoisted_code);
+    }
+
+    // 4. __export (lazy getter — 호이스팅된 변수를 참조하므로 래퍼 밖에서 안전)
+    if (module.export_bindings.len > 0) {
+        try wrapped.appendSlice(allocator, "__export(");
+        try wrapped.appendSlice(allocator, exports_name);
+        try wrapped.appendSlice(allocator, ", {\n");
+        for (module.export_bindings) |eb| {
+            if (eb.kind == .local or eb.kind == .re_export) {
+                try wrapped.appendSlice(allocator, "\t");
+                if (needsPropertyQuote(eb.exported_name)) {
+                    try wrapped.appendSlice(allocator, "\"");
+                    try wrapped.appendSlice(allocator, eb.exported_name);
+                    try wrapped.appendSlice(allocator, "\"");
+                } else {
+                    try wrapped.appendSlice(allocator, eb.exported_name);
+                }
+                try wrapped.appendSlice(allocator, ": () => ");
+                const local_name = if (std.mem.eql(u8, eb.local_name, "default"))
+                    (if (metadata) |md| md.default_export_name else "_default")
+                else blk: {
+                    if (linker) |l| {
+                        const mi: u32 = @intFromEnum(module.index);
+                        if (l.getCanonicalName(mi, eb.local_name)) |renamed| {
+                            break :blk renamed;
+                        }
+                    }
+                    break :blk eb.local_name;
+                };
+                try wrapped.appendSlice(allocator, local_name);
+                try wrapped.appendSlice(allocator, ",\n");
+            }
+        }
+        try wrapped.appendSlice(allocator, "});\n");
+    }
+
+    // 5. body codegen (variable_declaration → 할당문만)
+    var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+        .minify_whitespace = options.minify_whitespace,
+        .module_format = .cjs,
+        .skip_cjs_exports = true,
+        .use_var_for_imports = true,
+        .esm_var_assign_only = true,
+        .linking_metadata = cg_linking,
+        .replace_import_meta = options.format != .esm,
+        .platform = options.platform,
+        .keep_names = options.keep_names,
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = module.path,
+    });
+    const body_code = try body_cg.generateStatements(root, body_stmts.items);
+
+    // 6. __esm 래핑
+    if (options.minify_whitespace) {
+        try wrapped.appendSlice(allocator, "var ");
+        try wrapped.appendSlice(allocator, init_name);
+        try wrapped.appendSlice(allocator, "=__esm({\"");
+        try wrapped.appendSlice(allocator, basename);
+        try wrapped.appendSlice(allocator, "\"(){");
+        try wrapped.appendSlice(allocator, body_code);
+        try wrapped.appendSlice(allocator, "}});");
+    } else {
+        try wrapped.appendSlice(allocator, "var ");
+        try wrapped.appendSlice(allocator, init_name);
+        try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
+        try wrapped.appendSlice(allocator, basename);
+        try wrapped.appendSlice(allocator, "\"() {\n");
+        try appendIndented(&wrapped, allocator, body_code);
+        try wrapped.appendSlice(allocator, "\n\t}\n});\n");
+    }
+
+    return try allocator.dupe(u8, wrapped.items);
 }
