@@ -170,6 +170,7 @@ pub const Transformer = struct {
     /// class body 방문 중 설정되어, super() → Parent.call(this),
     /// super.method() → Parent.prototype.method.call(this) 변환에 사용.
     current_super_class: ?Span = null,
+    current_super_class_old_idx: NodeIndex = .none,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
@@ -864,7 +865,7 @@ pub const Transformer = struct {
     }
 
     /// 원본 → 새 노드의 symbol_id 전파.
-    fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
+    pub fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
         if (self.old_symbol_ids.len == 0) return; // 전파 비활성
         if (new_idx.isNone()) return;
 
@@ -2105,6 +2106,7 @@ pub const Transformer = struct {
                 return try self.transformExperimentalDecorators(
                     node,
                     new_name,
+                    self.readNodeIdx(e, 0),
                     new_super,
                     new_body,
                     old_deco_start,
@@ -2800,6 +2802,7 @@ pub const Transformer = struct {
         self: *Transformer,
         node: Node,
         new_name: NodeIndex,
+        name_old_idx: NodeIndex,
         new_super: NodeIndex,
         new_body: NodeIndex,
         old_deco_start: u32,
@@ -2851,12 +2854,12 @@ pub const Transformer = struct {
 
             // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
             for (member_decos) |md| {
-                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, name_old_idx, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
             // class + constructor param decorator 호출: Foo = __decorateClass([...paramDecos, ...classDecos], Foo)
-            const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len, ctor_param_decos);
+            const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, name_old_idx, old_deco_start, old_deco_len, ctor_param_decos);
             try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
             // static field: Foo.x = value (decorator 호출 뒤에 배치)
@@ -2887,7 +2890,7 @@ pub const Transformer = struct {
             try self.pending_nodes.append(self.allocator, class_result);
 
             for (member_decos) |md| {
-                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, name_old_idx, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
@@ -2930,6 +2933,7 @@ pub const Transformer = struct {
         self: *Transformer,
         decorate_span: Span,
         class_name_span: Span,
+        class_name_old_idx: NodeIndex,
         md: MemberDecoratorInfo,
     ) Error!NodeIndex {
         const zero_span = Span{ .start = 0, .end = 0 };
@@ -2955,6 +2959,7 @@ pub const Transformer = struct {
             .span = class_name_span,
             .data = .{ .string_ref = class_name_span },
         });
+        self.propagateSymbolId(class_name_old_idx, class_ref);
         const target = if (!md.is_static) blk: {
             const proto_span = try self.new_ast.addString("prototype");
             const proto_id = try self.new_ast.addNode(.{
@@ -3016,6 +3021,7 @@ pub const Transformer = struct {
         self: *Transformer,
         decorate_span: Span,
         class_name_span: Span,
+        class_name_old_idx: NodeIndex,
         old_deco_start: u32,
         old_deco_len: u32,
         ctor_param_decos: []const NodeIndex,
@@ -3059,6 +3065,7 @@ pub const Transformer = struct {
             .span = class_name_span,
             .data = .{ .string_ref = class_name_span },
         });
+        self.propagateSymbolId(class_name_old_idx, class_ref);
 
         const args = try self.new_ast.addNodeList(&.{ deco_array, class_ref });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
@@ -3071,6 +3078,7 @@ pub const Transformer = struct {
             .span = class_name_span,
             .data = .{ .string_ref = class_name_span },
         });
+        self.propagateSymbolId(class_name_old_idx, lhs);
         const assign = try self.new_ast.addNode(.{
             .tag = .assignment_expression,
             .span = zero_span,

@@ -79,8 +79,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // super class context 설정 (constructor/method body 방문 시 사용)
             const saved_super = self.current_super_class;
+            const saved_super_old_idx = self.current_super_class_old_idx;
             self.current_super_class = super_span;
+            self.current_super_class_old_idx = super_idx;
             defer self.current_super_class = saved_super;
+            defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 클래스 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span);
@@ -155,25 +158,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // --- __extends(Child, Parent) 호출 ---
             if (has_super and super_span != null) {
-                const extends_call = try buildExtendsCall(self, name_span, super_span.?, span);
+                const extends_call = try buildExtendsCall(self, name_span, super_span.?, name_idx, super_idx, span);
                 try self.pending_nodes.append(self.allocator, extends_call);
                 self.runtime_helpers.extends = true;
             }
 
             // --- prototype assignment 생성 (pending_nodes에 추가) ---
             for (cm.methods.items) |info| {
-                const proto_assign = try buildPrototypeAssignment(self, info, name_span, span);
+                const proto_assign = try buildPrototypeAssignment(self, info, name_span, name_idx, span);
                 try self.pending_nodes.append(self.allocator, proto_assign);
             }
 
             // --- getter/setter → Object.defineProperty ---
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, name_span, span);
+                try emitAccessors(self, cm.accessors.items, name_span, name_idx, span);
             }
 
             // --- static fields → ClassName.field = value ---
             for (cm.static_fields.items) |field| {
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const class_ref = try makeClassNameRef(self, name_span, name_idx, span);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.pending_nodes.append(self.allocator, static_assign);
             }
@@ -185,7 +188,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // --- experimentalDecorators: __decorateClass 호출 생성 ---
             if (self.options.experimental_decorators) {
-                try emitDecoratorsForLoweredClass(self, node, body_idx, name_span);
+                try emitDecoratorsForLoweredClass(self, node, body_idx, name_span, name_idx);
             }
 
             return .none;
@@ -229,8 +232,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             const saved_super = self.current_super_class;
+            const saved_super_old_idx = self.current_super_class_old_idx;
             self.current_super_class = super_span;
+            self.current_super_class_old_idx = super_idx;
             defer self.current_super_class = saved_super;
+            defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span);
@@ -319,19 +325,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, func_node);
 
             if (has_super and super_span != null) {
-                const extends_call = try buildExtendsCall(self, name_span, super_span.?, span);
+                const extends_call = try buildExtendsCall(self, name_span, super_span.?, name_idx, super_idx, span);
                 try self.scratch.append(self.allocator, extends_call);
                 self.runtime_helpers.extends = true;
             }
 
             for (cm.methods.items) |info| {
-                const proto_assign = try buildPrototypeAssignment(self, info, name_span, span);
+                const proto_assign = try buildPrototypeAssignment(self, info, name_span, name_idx, span);
                 try self.scratch.append(self.allocator, proto_assign);
             }
 
             const pending_top = self.pending_nodes.items.len;
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, name_span, span);
+                try emitAccessors(self, cm.accessors.items, name_span, name_idx, span);
             }
             // pending_nodes에서 scratch로 이동
             for (self.pending_nodes.items[pending_top..]) |p| {
@@ -341,7 +347,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // 5. static fields
             for (cm.static_fields.items) |field| {
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+                const class_ref = try makeClassNameRef(self, name_span, name_idx, span);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.scratch.append(self.allocator, static_assign);
             }
@@ -352,7 +358,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // 7. return ClassName;
-            const return_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+            const return_ref = try makeClassNameRef(self, name_span, name_idx, span);
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
@@ -488,7 +494,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const method_prop_idx: NodeIndex = @enumFromInt(callee_extras[ce + 1]);
 
             // Parent.prototype.method
-            const proto_member = try buildPrototypeRef(self, super_class_span, span);
+            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
 
             const new_method_prop = try self.visitNode(method_prop_idx);
             const method_member = try es_helpers.makeStaticMember(self, proto_member, new_method_prop, span);
@@ -547,7 +553,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const span = node.span;
 
             // Parent.prototype
-            const proto_member = try buildPrototypeRef(self, super_class_span, span);
+            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
 
             // Parent.prototype.method
             const new_prop = try self.visitNode(prop_idx);
@@ -674,9 +680,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return std.mem.eql(u8, ta, tb);
         }
 
+        /// span + symbol_id를 가진 클래스 이름 identifier_reference 생성.
+        /// class_name_old_idx: 원본 AST의 binding_identifier 노드 인덱스 (symbol_id 전파용).
+        fn makeClassNameRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            _ = span;
+            const ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+            self.propagateSymbolId(class_name_old_idx, ref);
+            return ref;
+        }
+
         /// ClassName.prototype static_member_expression 생성.
-        fn buildPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+        fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const class_ref = try makeClassNameRef(self, class_name_span, class_name_old_idx, span);
             const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
@@ -1046,10 +1061,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// __extends(Child, Parent) expression_statement 생성.
-        fn buildExtendsCall(self: *Transformer, child_span: Span, parent_span: Span, span: Span) Transformer.Error!NodeIndex {
+        /// child_old_idx, parent_old_idx: 원본 AST 노드 인덱스 (symbol_id 전파용).
+        fn buildExtendsCall(self: *Transformer, child_span: Span, parent_span: Span, child_old_idx: NodeIndex, parent_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
-            const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, child_span);
-            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, parent_span);
+            const child_ref = try makeClassNameRef(self, child_span, child_old_idx, span);
+            const parent_ref = try makeClassNameRef(self, parent_span, parent_old_idx, span);
             const call = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
 
             return self.new_ast.addNode(.{
@@ -1111,7 +1127,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
-        fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+        fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const member = self.old_ast.getNode(info.member_idx);
             const method_extras = self.old_ast.extra_data.items;
             const me = member.data.extra;
@@ -1144,14 +1160,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                         const func_expr = try buildWrappedFunc(self, async_call, sm_result.var_decl, new_params, span);
-                        return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+                        return buildMethodAssignment(self, info, class_name_span, class_name_old_idx, key_idx, func_expr, span);
                     }
                 }
                 // async만 unsupported → __async(function*() { ... })
                 const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
-                return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+                return buildMethodAssignment(self, info, class_name_span, class_name_old_idx, key_idx, func_expr, span);
             }
 
             const new_body = try visitMethodBody(self, body_idx, span);
@@ -1177,7 +1193,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
-            return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
+            return buildMethodAssignment(self, info, class_name_span, class_name_old_idx, key_idx, func_expr, span);
         }
 
         /// return call_expr 를 body로 하는 function expression 생성.
@@ -1214,11 +1230,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// target.methodName = func_expr (expression_statement)
-        fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, class_name_old_idx: NodeIndex, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const target = if (info.is_static)
-                try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+                try makeClassNameRef(self, class_name_span, class_name_old_idx, span)
             else
-                try buildPrototypeRef(self, class_name_span, span);
+                try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
             const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
@@ -1233,7 +1249,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
-        fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span) Transformer.Error!void {
+        fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!void {
             const obj_str_span = try self.new_ast.addString("Object");
             const dp_str_span = try self.new_ast.addString("defineProperty");
 
@@ -1294,9 +1310,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 // target
                 const target = if (info.is_static)
-                    try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+                    try makeClassNameRef(self, class_name_span, class_name_old_idx, span)
                 else
-                    try buildPrototypeRef(self, class_name_span, span);
+                    try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
 
                 // key string literal
                 const old_key_node = self.old_ast.getNode(key_idx);
@@ -1332,6 +1348,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             node: Node,
             body_idx: NodeIndex,
             name_span: Span,
+            class_name_old_idx: NodeIndex,
         ) Transformer.Error!void {
             const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
@@ -1417,7 +1434,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
             for (member_decos.items) |md| {
-                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, class_name_old_idx, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
@@ -1426,6 +1443,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const class_deco_stmt = try self.buildDecorateClassCall(
                     decorate_span,
                     name_span,
+                    class_name_old_idx,
                     old_deco_start,
                     old_deco_len,
                     ctor_param_decos.items,
