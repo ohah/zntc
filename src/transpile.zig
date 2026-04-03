@@ -67,17 +67,12 @@ pub const TranspileResult = struct {
     code: []const u8,
     /// 소스맵 JSON (sourcemap=true일 때). allocator 소유. null이면 미생성.
     sourcemap: ?[]const u8 = null,
-    /// 파서/시맨틱 에러 목록 (에러 시). arena 소유 — result.deinit() 시 함께 해제.
-    errors: []const Diagnostic = &.{},
     /// 런타임 헬퍼 포함 여부
     has_helpers: bool = false,
-    /// 내부 arena — deinit()에서 해제
-    _arena: ?std.heap.ArenaAllocator = null,
 
     pub fn deinit(self: *TranspileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
         if (self.sourcemap) |sm| allocator.free(sm);
-        if (self._arena) |*a| a.deinit();
     }
 };
 
@@ -117,9 +112,7 @@ pub fn transpile(
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
-    if (parser.errors.items.len > 0) {
-        return .{ .code = "", .errors = parser.errors.items, ._arena = arena };
-    }
+    if (parser.errors.items.len > 0) return error.ParseError;
 
     // 2. Semantic analysis
     var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
@@ -128,9 +121,7 @@ pub fn transpile(
     analyzer.is_ts = parser.is_ts;
     analyzer.is_flow = parser.is_flow;
     analyzer.analyze() catch return error.SemanticError;
-    if (analyzer.errors.items.len > 0) {
-        return .{ .code = "", .errors = analyzer.errors.items, ._arena = arena };
-    }
+    if (analyzer.errors.items.len > 0) return error.SemanticError;
 
     // 3. Identifier mangling (--minify-identifiers)
     var mangle_result: ?Mangler.ManglerResult = null;
@@ -231,10 +222,5 @@ pub fn transpile(
     // Arena 밖으로 복제
     const result_code = allocator.dupe(u8, output) catch return error.OutOfMemory;
     arena.deinit();
-    return .{
-        .code = result_code,
-        .sourcemap = sourcemap_json,
-        .has_helpers = has_helpers,
-        ._arena = null, // arena는 이미 deinit됨
-    };
+    return .{ .code = result_code, .sourcemap = sourcemap_json, .has_helpers = has_helpers };
 }
