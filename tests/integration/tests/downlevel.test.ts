@@ -1,5 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun } from "./helpers";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { bundleAndRun, createFixture, runZts } from "./helpers";
 
 // 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
@@ -212,6 +214,56 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42");
+    });
+
+    test("class IIFE: 내부 함수 이름(_Foo)이 외부 변수(Foo)와 분리됨", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          class Foo { greet() { return "hello"; } }
+          console.log(new Foo().greet());
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const bundle = await runZts([
+        "--bundle",
+        join(dir, "index.ts"),
+        "-o",
+        outFile,
+        "--target=es5",
+      ]);
+      expect(bundle.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("function _Foo()");
+      expect(code).toContain("return _Foo");
+      expect(code).toContain("var Foo");
+      expect(code).toContain("__classCallCheck");
+    });
+
+    test("class IIFE: --global-identifier로 리네이밍 시 내부 이름 영향 없음", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          class Performance { mark() { return "ok"; } }
+          console.log(new Performance().mark());
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const bundle = await runZts([
+        "--bundle",
+        join(dir, "index.ts"),
+        "-o",
+        outFile,
+        "--target=es5",
+        "--global-identifier=Performance",
+      ]);
+      expect(bundle.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("Performance$1");
+      expect(code).toContain("function _Performance()");
+      expect(code).toContain("return _Performance");
     });
 
     test("class expression", async () => {
