@@ -171,8 +171,12 @@ pub const Linker = struct {
 
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
-    /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
     reserved_globals: std.StringHashMap(void),
+
+    /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
+    /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
+    /// 모듈 변수로 사용하지 않도록 리네이밍.
+    global_identifiers: []const []const u8 = &.{},
 
     /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
     nested_mangling_enabled: bool = false,
@@ -200,6 +204,10 @@ pub const Linker = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, modules: []const Module, format: types.Format) Linker {
+        return initWithGlobalIdentifiers(allocator, modules, format, &.{});
+    }
+
+    pub fn initWithGlobalIdentifiers(allocator: std.mem.Allocator, modules: []const Module, format: types.Format, global_identifiers: []const []const u8) Linker {
         return .{
             .allocator = allocator,
             .modules = modules,
@@ -210,6 +218,7 @@ pub const Linker = struct {
             .canonical_names = std.StringHashMap([]const u8).init(allocator),
             .canonical_names_used = std.StringHashMap(void).init(allocator),
             .reserved_globals = std.StringHashMap(void).init(allocator),
+            .global_identifiers = global_identifiers,
         };
     }
 
@@ -427,6 +436,10 @@ pub const Linker = struct {
             while (it.next()) |entry| {
                 try self.reserved_globals.put(entry.key_ptr.*, {});
             }
+        }
+        // 외부 전달된 전역 식별자도 예약 (--global-identifier, RN polyfillGlobal 등)
+        for (self.global_identifiers) |name| {
+            try self.reserved_globals.put(name, {});
         }
     }
 
