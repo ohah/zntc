@@ -2225,8 +2225,7 @@ fn emitEsmWrappedModule(
                 try hoisted_stmts.append(allocator, raw_idx);
             },
             .class_declaration => {
-                // class 선언은 block-scoped → __esm 콜백 밖에서 접근 불가.
-                // var 선언을 밖에 두고, body에서 할당문으로 변환하여 __export getter가 접근 가능하게 한다.
+                // class는 block-scoped → var 호이스팅 필요 (variable_declaration과 동일 패턴)
                 const class_node_src = if (export_inner) |idx|
                     esm_ast.nodes.items[@intFromEnum(idx)]
                 else
