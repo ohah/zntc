@@ -2365,7 +2365,10 @@ fn emitEsmWrappedModule(
     // 외부 스코프의 X 변수를 덮어쓰는 비표준 동작을 보임.
     // "= function NAME(" → "= function(" 으로 변환하여 이름 충돌 방지.
     for (hoisted_var_names.items) |hv_name| {
-        const needle = try std.fmt.allocPrint(arena_alloc, "= function {s}(", .{hv_name});
+        // 리네이밍된 이름(Performance$1)에서 base name(Performance)을 추출하여 검색.
+        // body_code는 리네이밍 전 원본 이름을 사용하므로 base name으로 매칭해야 함.
+        const base_name = if (std.mem.indexOfScalar(u8, hv_name, '$')) |dollar| hv_name[0..dollar] else hv_name;
+        const needle = try std.fmt.allocPrint(arena_alloc, "= function {s}(", .{base_name});
         const replacement = "= function(";
         var pos: usize = 0;
         while (std.mem.indexOf(u8, body_code[pos..], needle)) |rel| {
