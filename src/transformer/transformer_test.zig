@@ -593,9 +593,8 @@ test "experimentalDecorators + es5: inheritance + all decorators" {
         .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
-    // function Base() {} + function C(p) { Base.call(this); } + __extends(C, Base)
-    // + Foo.prototype.greet = ... + __decorateClass member + C = __decorateClass class = 6 statements
-    try std.testing.expectEqual(@as(u32, 6), r.statementCount());
+    // var Base = IIFE + var C = IIFE (extends+proto inside) + __decorateClass member + C = __decorateClass class = 4 statements
+    try std.testing.expectEqual(@as(u32, 4), r.statementCount());
 }
 
 // ============================================================
@@ -627,8 +626,8 @@ test "experimentalDecorators + es5: class decorator" {
         .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
-    // function Foo() {} + prototype assign + Foo = __decorateClass(...) = 3 statements
-    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+    // var Foo = IIFE (proto inside) + Foo = __decorateClass(...) = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
 
 test "experimentalDecorators + es5: method decorator" {
@@ -638,8 +637,8 @@ test "experimentalDecorators + es5: method decorator" {
         .{ .experimental_decorators = true, .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer r.deinit();
-    // function Foo() {} + prototype assign + __decorateClass member call = 3 statements
-    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+    // var Foo = IIFE (proto inside) + __decorateClass member call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
 
 test "experimentalDecorators + es5: ctor param decorator" {

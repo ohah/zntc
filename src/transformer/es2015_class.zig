@@ -112,36 +112,40 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             defer self.current_private_methods = saved_private_methods;
 
-            // --- private fields → WeakMap 선언 (function 앞에 배치) ---
-            // var _x = new WeakMap();
+            // --- IIFE 패턴으로 변환 (SWC 호환) ---
+            // class X { ... } → var X = (function() { function X() {...} ...; return X; })()
+            // IIFE 스코프 안에 function 선언을 격리하여 이름 충돌 방지.
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // private fields → WeakMap 선언 (IIFE 안에 배치)
             for (cm.private_fields.items) |pf| {
                 const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span);
-                try self.pending_nodes.append(self.allocator, wm_decl);
+                try self.scratch.append(self.allocator, wm_decl);
             }
 
-            // --- private methods → WeakSet 선언 + standalone function (function 앞에 배치) ---
+            // private methods → WeakSet + standalone function (IIFE 안에 배치)
             for (cm.private_methods.items) |pm| {
-                // var _method = new WeakSet();
                 const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span);
-                try self.pending_nodes.append(self.allocator, ws_decl);
-                // function _method_fn(...) { ... }
+                try self.scratch.append(self.allocator, ws_decl);
                 const func_decl = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span);
-                try self.pending_nodes.append(self.allocator, func_decl);
+                try self.scratch.append(self.allocator, func_decl);
             }
 
-            // --- private field 초기화 → _x.set(this, init) (constructor body에 삽입) ---
+            // private field 초기화 → constructor body에 삽입
             for (cm.private_fields.items) |pf| {
                 const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
-            // --- private method 초기화 → _method.add(this) (constructor body에 삽입) ---
+            // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
                 const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
-            // --- function declaration 생성 (pending_nodes에 추가) ---
+            // function declaration 생성
             var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, new_name, span)
             else if (has_super and super_span != null)
@@ -149,44 +153,95 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try buildEmptyFunction(self, new_name, span);
 
-            // instance fields + private init → constructor body 앞에 삽입
             if (cm.instance_fields.items.len > 0) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
 
-            try self.pending_nodes.append(self.allocator, func_node);
+            try self.scratch.append(self.allocator, func_node);
 
-            // --- __extends(Child, Parent) 호출 ---
+            // __extends(Child, Parent) 호출
             if (has_super and super_span != null) {
                 const extends_call = try buildExtendsCall(self, name_span, super_span.?, name_idx, super_idx, span);
-                try self.pending_nodes.append(self.allocator, extends_call);
+                try self.scratch.append(self.allocator, extends_call);
                 self.runtime_helpers.extends = true;
             }
 
-            // --- prototype assignment 생성 (pending_nodes에 추가) ---
+            // prototype assignment
             for (cm.methods.items) |info| {
                 const proto_assign = try buildPrototypeAssignment(self, info, name_span, name_idx, span);
-                try self.pending_nodes.append(self.allocator, proto_assign);
+                try self.scratch.append(self.allocator, proto_assign);
             }
 
-            // --- getter/setter → Object.defineProperty ---
+            // getter/setter
+            const pending_top = self.pending_nodes.items.len;
             if (cm.accessors.items.len > 0) {
                 try emitAccessors(self, cm.accessors.items, name_span, name_idx, span);
             }
+            for (self.pending_nodes.items[pending_top..]) |p| {
+                try self.scratch.append(self.allocator, p);
+            }
+            self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-            // --- static fields → ClassName.field = value ---
+            // static fields
             for (cm.static_fields.items) |field| {
                 const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
-                try self.pending_nodes.append(self.allocator, static_assign);
+                try self.scratch.append(self.allocator, static_assign);
             }
 
-            // --- static block body → class 뒤에 emit ---
+            // static block body
             for (cm.static_block_stmts.items) |sb_stmt| {
-                try self.pending_nodes.append(self.allocator, sb_stmt);
+                try self.scratch.append(self.allocator, sb_stmt);
             }
 
-            // --- experimentalDecorators: __decorateClass 호출 생성 ---
+            // return ClassName;
+            const return_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+            const return_stmt = try self.new_ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, return_stmt);
+
+            // IIFE body
+            const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            const iife_body = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+
+            // function() { ... }
+            const none = @intFromEnum(NodeIndex.none);
+            const empty_params = try self.new_ast.addNodeList(&.{});
+            const wrapper_extra = try self.new_ast.addExtras(&.{
+                none,
+                empty_params.start,
+                empty_params.len,
+                @intFromEnum(iife_body),
+                0,
+                none,
+            });
+            const wrapper_fn = try self.new_ast.addNode(.{
+                .tag = .function_expression,
+                .span = span,
+                .data = .{ .extra = wrapper_extra },
+            });
+
+            // (function() { ... })()
+            const paren = try self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = span,
+                .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } },
+            });
+            const iife_call = try es_helpers.makeCallExpr(self, paren, &.{}, span);
+
+            // var ClassName = IIFE;
+            const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
+            const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
+            try self.pending_nodes.append(self.allocator, var_decl);
+
+            // experimentalDecorators
             if (self.options.experimental_decorators) {
                 try emitDecoratorsForLoweredClass(self, node, body_idx, name_span, name_idx);
             }
