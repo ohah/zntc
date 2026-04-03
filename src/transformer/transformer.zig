@@ -101,7 +101,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     class_private_method_init: bool = false,
     /// __classPrivateMethodGet: private method access with brand check
     class_private_method_get: bool = false,
-    _padding: u6 = 0,
+    /// __classCallCheck: class를 new 없이 호출 방지 (ES2015 스펙)
+    class_call_check: bool = false,
+    _padding: u5 = 0,
 };
 
 /// AST-to-AST 변환기.

@@ -76,6 +76,16 @@ pub const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __ge
 // ES2015+ Downlevel
 // ============================================================
 
+/// __classCallCheck: class를 new 없이 호출하면 TypeError (ES2015 스펙 준수).
+pub const CLASS_CALL_CHECK_RUNTIME =
+    \\var __classCallCheck = (instance, Constructor) => {
+    \\  if (!(instance instanceof Constructor))
+    \\    throw new TypeError("Cannot call a class as a function");
+    \\};
+    \\
+;
+pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var __classCallCheck=(instance,Constructor)=>{if(!(instance instanceof Constructor))throw new TypeError(\"Cannot call a class as a function\")};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -298,6 +308,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.class_private_method_get) {
         try buf.appendSlice(allocator, if (minify) PRIVATE_METHOD_GET_RUNTIME_MIN else PRIVATE_METHOD_GET_RUNTIME);
+    }
+    if (helpers.class_call_check) {
+        try buf.appendSlice(allocator, if (minify) CLASS_CALL_CHECK_RUNTIME_MIN else CLASS_CALL_CHECK_RUNTIME);
     }
 }
 

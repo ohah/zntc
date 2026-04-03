@@ -1,5 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun } from "./helpers";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { bundleAndRun, createFixture, runZts } from "./helpers";
 
 // 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
@@ -212,6 +214,79 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42");
+    });
+
+    test("class IIFE: SWC 호환 패턴 (IIFE 스코프 격리 + classCallCheck)", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          class Foo { greet() { return "hello"; } }
+          console.log(new Foo().greet());
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const bundle = await runZts([
+        "--bundle",
+        join(dir, "index.ts"),
+        "-o",
+        outFile,
+        "--target=es5",
+      ]);
+      expect(bundle.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("(function()");
+      expect(code).toContain("return Foo");
+      expect(code).toContain("__classCallCheck");
+    });
+
+    test("class IIFE: extends 시 parent를 IIFE 매개변수로 전달", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          class Base { x = 1; }
+          class Child extends Base { y = 2; }
+          console.log(new Child().x, new Child().y);
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const bundle = await runZts([
+        "--bundle",
+        join(dir, "index.ts"),
+        "-o",
+        outFile,
+        "--target=es5",
+      ]);
+      expect(bundle.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("function(_super)");
+      expect(code).toContain("__extends(Child, _super)");
+    });
+
+    test("class IIFE: --global-identifier 리네이밍 시 IIFE 내부는 원본 이름 유지", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          class Performance { mark() { return "ok"; } }
+          console.log(new Performance().mark());
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const bundle = await runZts([
+        "--bundle",
+        join(dir, "index.ts"),
+        "-o",
+        outFile,
+        "--target=es5",
+        "--global-identifier=Performance",
+      ]);
+      expect(bundle.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("Performance$1");
+      expect(code).toContain("function Performance()");
+      expect(code).toContain("return Performance");
     });
 
     test("class expression", async () => {

@@ -112,134 +112,128 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             defer self.current_private_methods = saved_private_methods;
 
-            // --- IIFE 패턴으로 변환 (SWC 호환) ---
-            // class X { ... } → var X = (function() { function X() {...} ...; return X; })()
-            // IIFE 스코프 안에 function 선언을 격리하여 이름 충돌 방지.
+            // --- IIFE 패턴 (SWC 호환) ---
+            // class X extends P { ... }
+            // → var X = (function(_super) { __extends(X, _super); function X() {...} return X; })(P)
+            // IIFE 내부의 모든 참조는 symbol 연결 없는 fresh identifier (linker 리네이밍 영향 없음).
+            // parent class는 IIFE 매개변수로 전달하여 스코프 격리.
+
+            const orig_name_text = self.new_ast.getText(name_span);
+            // IIFE 내부용 fresh binding (symbol 없음 — linker가 리네이밍 불가)
+            const fresh_name_span = try self.new_ast.addString(orig_name_text);
+            const fresh_name = try es_helpers.makeBindingIdentifier(self, fresh_name_span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // private fields → WeakMap 선언 (IIFE 안에 배치)
             for (cm.private_fields.items) |pf| {
-                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span);
-                try self.scratch.append(self.allocator, wm_decl);
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
             }
-
-            // private methods → WeakSet + standalone function (IIFE 안에 배치)
             for (cm.private_methods.items) |pm| {
-                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span);
-                try self.scratch.append(self.allocator, ws_decl);
-                const func_decl = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span);
-                try self.scratch.append(self.allocator, func_decl);
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span));
             }
 
-            // private field 초기화 → constructor body에 삽입
             for (cm.private_fields.items) |pf| {
-                const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
-                try cm.instance_fields.append(self.allocator, init_stmt);
+                try cm.instance_fields.append(self.allocator, try buildPrivateFieldInit(self, pf.name, pf.init, span));
             }
-
-            // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
-                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
-                try cm.instance_fields.append(self.allocator, init_stmt);
+                try cm.instance_fields.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
             }
 
-            // function declaration 생성
+            // IIFE 내부 function (fresh identifier — linker 무관)
             var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, new_name, span)
+                try buildFunctionFromConstructor(self, ctor_idx, fresh_name, span)
             else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, new_name, super_span.?, span)
+                try buildDefaultSuperConstructor(self, fresh_name, super_span.?, span)
             else
-                try buildEmptyFunction(self, new_name, span);
+                try buildEmptyFunction(self, fresh_name, span);
 
+            // instance fields → classCallCheck 순서로 prepend
             if (cm.instance_fields.items.len > 0) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
+            }
+            // __classCallCheck(this, ClassName) — constructor body 맨 앞
+            {
+                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const this_expr = try self.new_ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const class_ref = try es_helpers.makeIdentifierRef(self, orig_name_text);
+                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
+                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
+                self.runtime_helpers.class_call_check = true;
             }
 
             try self.scratch.append(self.allocator, func_node);
 
-            // __extends(Child, Parent) 호출
+            // __extends(ClassName, _super) — parent는 IIFE 매개변수 _super
+            const super_param_text = "_super";
             if (has_super and super_span != null) {
-                const extends_call = try buildExtendsCall(self, name_span, super_span.?, name_idx, super_idx, span);
-                try self.scratch.append(self.allocator, extends_call);
+                const child_ref = try es_helpers.makeIdentifierRef(self, orig_name_text);
+                const parent_ref = try es_helpers.makeIdentifierRef(self, super_param_text);
+                const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+                const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
+                try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
                 self.runtime_helpers.extends = true;
             }
 
-            // prototype assignment
+            // prototype assignment — 문자열 기반 참조 (linker 무관)
             for (cm.methods.items) |info| {
-                const proto_assign = try buildPrototypeAssignment(self, info, name_span, name_idx, span);
-                try self.scratch.append(self.allocator, proto_assign);
+                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, fresh_name_span, fresh_name, span));
             }
 
-            // getter/setter
             const pending_top = self.pending_nodes.items.len;
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, name_span, name_idx, span);
+                try emitAccessors(self, cm.accessors.items, fresh_name_span, fresh_name, span);
             }
             for (self.pending_nodes.items[pending_top..]) |p| {
                 try self.scratch.append(self.allocator, p);
             }
             self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-            // static fields
-            for (cm.static_fields.items) |field| {
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-                const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
-                try self.scratch.append(self.allocator, static_assign);
-            }
-
-            // static block body
-            for (cm.static_block_stmts.items) |sb_stmt| {
-                try self.scratch.append(self.allocator, sb_stmt);
-            }
-
             // return ClassName;
-            const return_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-            const return_stmt = try self.new_ast.addNode(.{
+            try self.scratch.append(self.allocator, try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, return_stmt);
+                .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRef(self, orig_name_text), .flags = 0 } },
+            }));
 
             // IIFE body
             const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const iife_body = try self.new_ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
+            const iife_body = try self.new_ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
 
-            // function() { ... }
+            // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const empty_params = try self.new_ast.addNodeList(&.{});
+            const wrapper_params = if (has_super and super_span != null) blk: {
+                const param_binding = try es_helpers.makeBindingIdentifier(self, try self.new_ast.addString(super_param_text));
+                break :blk try self.new_ast.addNodeList(&.{param_binding});
+            } else try self.new_ast.addNodeList(&.{});
             const wrapper_extra = try self.new_ast.addExtras(&.{
-                none,
-                empty_params.start,
-                empty_params.len,
-                @intFromEnum(iife_body),
-                0,
-                none,
+                none, wrapper_params.start, wrapper_params.len,
+                @intFromEnum(iife_body), 0, none,
             });
-            const wrapper_fn = try self.new_ast.addNode(.{
-                .tag = .function_expression,
-                .span = span,
-                .data = .{ .extra = wrapper_extra },
-            });
+            const wrapper_fn = try self.new_ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
+            const paren = try self.new_ast.addNode(.{ .tag = .parenthesized_expression, .span = span, .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } } });
 
-            // (function() { ... })()
-            const paren = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } },
-            });
-            const iife_call = try es_helpers.makeCallExpr(self, paren, &.{}, span);
+            // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
+            const iife_call = if (has_super and super_span != null) blk: {
+                const parent_arg = try self.makeIdentifierRefWithSymbol(super_span.?, super_idx);
+                break :blk try es_helpers.makeCallExpr(self, paren, &.{parent_arg}, span);
+            } else try es_helpers.makeCallExpr(self, paren, &.{}, span);
 
             // var ClassName = IIFE;
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
             const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
             try self.pending_nodes.append(self.allocator, var_decl);
+
+            // static fields → IIFE 밖 (init에서 ClassName 자기참조 시 이미 할당된 상태)
+            for (cm.static_fields.items) |field| {
+                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+                const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
+                try self.pending_nodes.append(self.allocator, static_assign);
+            }
+            for (cm.static_block_stmts.items) |sb_stmt| {
+                try self.pending_nodes.append(self.allocator, sb_stmt);
+            }
 
             // experimentalDecorators
             if (self.options.experimental_decorators) {
@@ -332,23 +326,35 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 
-            // constructor → function declaration
-            var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, name_node, span)
-            else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, name_node, super_span.?, span)
-            else
-                try buildEmptyFunction(self, name_node, span);
-
-            if (cm.instance_fields.items.len > 0) {
-                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
-            }
-
-            // 메서드/static/extends/private가 없으면 단순 function expression으로 변환
+            // has_extra를 먼저 계산하여 func_node를 올바른 이름으로 한 번만 빌드
             const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
                 cm.private_methods.items.len > 0 or
                 cm.static_block_stmts.items.len > 0 or (has_super and super_span != null);
+
+            // IIFE 경로면 fresh identifier (symbol 없음), 단순 경로면 원본 name_node
+            const ce_name_text = self.new_ast.getText(name_span);
+            const func_name = if (has_extra) try es_helpers.makeBindingIdentifier(self, try self.new_ast.addString(ce_name_text)) else name_node;
+
+            var func_node = if (cm.constructor_idx) |ctor_idx|
+                try buildFunctionFromConstructor(self, ctor_idx, func_name, span)
+            else if (has_super and super_span != null)
+                try buildDefaultSuperConstructor(self, func_name, super_span.?, span)
+            else
+                try buildEmptyFunction(self, func_name, span);
+
+            if (cm.instance_fields.items.len > 0) {
+                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
+            }
+            // __classCallCheck(this, ClassName) — constructor body 맨 앞
+            {
+                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const this_expr = try self.new_ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const class_ref = try es_helpers.makeIdentifierRef(self, ce_name_text);
+                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
+                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
+                self.runtime_helpers.class_call_check = true;
+            }
 
             if (!has_extra) {
                 const func = self.new_ast.getNode(func_node);
@@ -359,100 +365,97 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 });
             }
 
-            // IIFE: (function() { var _x = new WeakMap(); function Foo() {} ...; return Foo; })()
+            // SWC 호환 IIFE (lowerClassDeclaration과 동일 패턴)
+            const expr_name_text = self.new_ast.getText(name_span);
+            const expr_fresh_span = try self.new_ast.addString(expr_name_text);
+            const expr_fresh_name = try es_helpers.makeBindingIdentifier(self, expr_fresh_span);
+            const expr_super_param = "_super";
+
+            // func_node를 fresh name으로 재생성 (symbol 연결 없음)
+            func_node = if (cm.constructor_idx) |ctor_idx|
+                try buildFunctionFromConstructor(self, ctor_idx, expr_fresh_name, span)
+            else if (has_super and super_span != null)
+                try buildDefaultSuperConstructor(self, expr_fresh_name, super_span.?, span)
+            else
+                try buildEmptyFunction(self, expr_fresh_name, span);
+
+            if (cm.instance_fields.items.len > 0) {
+                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
+            }
+            // classCallCheck
+            {
+                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const this_expr = try self.new_ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const class_ref = try es_helpers.makeIdentifierRef(self, expr_name_text);
+                const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
+                func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
+                self.runtime_helpers.class_call_check = true;
+            }
+
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // WeakMap 선언 (IIFE 안에 배치)
             for (cm.private_fields.items) |pf| {
-                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span);
-                try self.scratch.append(self.allocator, wm_decl);
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
             }
-
-            // WeakSet + standalone function 선언 (IIFE 안에 배치)
             for (cm.private_methods.items) |pm| {
-                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span);
-                try self.scratch.append(self.allocator, ws_decl);
-                const func_decl = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span);
-                try self.scratch.append(self.allocator, func_decl);
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span));
             }
 
             try self.scratch.append(self.allocator, func_node);
 
+            // __extends(ClassName, _super) — parent는 IIFE 매개변수
             if (has_super and super_span != null) {
-                const extends_call = try buildExtendsCall(self, name_span, super_span.?, name_idx, super_idx, span);
-                try self.scratch.append(self.allocator, extends_call);
+                const child_ref = try es_helpers.makeIdentifierRef(self, expr_name_text);
+                const parent_ref = try es_helpers.makeIdentifierRef(self, expr_super_param);
+                const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+                try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;
             }
 
             for (cm.methods.items) |info| {
-                const proto_assign = try buildPrototypeAssignment(self, info, name_span, name_idx, span);
-                try self.scratch.append(self.allocator, proto_assign);
+                try self.scratch.append(self.allocator, try buildPrototypeAssignment(self, info, expr_fresh_span, expr_fresh_name, span));
             }
 
             const pending_top = self.pending_nodes.items.len;
+            defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
             if (cm.accessors.items.len > 0) {
-                try emitAccessors(self, cm.accessors.items, name_span, name_idx, span);
+                try emitAccessors(self, cm.accessors.items, expr_fresh_span, expr_fresh_name, span);
             }
-            // pending_nodes에서 scratch로 이동
-            for (self.pending_nodes.items[pending_top..]) |p| {
-                try self.scratch.append(self.allocator, p);
-            }
-            self.pending_nodes.shrinkRetainingCapacity(pending_top);
+            try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
 
-            // 5. static fields
             for (cm.static_fields.items) |field| {
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-                const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
-                try self.scratch.append(self.allocator, static_assign);
+                try self.scratch.append(self.allocator, try buildFieldAssign(self, try es_helpers.makeIdentifierRef(self, expr_name_text), field.key, field.init, span));
             }
-
-            // 6. static block body
             for (cm.static_block_stmts.items) |sb_stmt| {
                 try self.scratch.append(self.allocator, sb_stmt);
             }
 
-            // 7. return ClassName;
-            const return_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-            const return_stmt = try self.new_ast.addNode(.{
+            // return ClassName;
+            try self.scratch.append(self.allocator, try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, return_stmt);
+                .data = .{ .unary = .{ .operand = try es_helpers.makeIdentifierRef(self, expr_name_text), .flags = 0 } },
+            }));
 
             // IIFE body
             const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const iife_body = try self.new_ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
+            const iife_body = try self.new_ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
 
-            // wrapper function expression: function() { ... }
+            // function(_super) { ... } 또는 function() { ... }
             const none = @intFromEnum(NodeIndex.none);
-            const empty_params = try self.new_ast.addNodeList(&.{});
-            const wrapper_extra = try self.new_ast.addExtras(&.{
-                none, // anonymous
-                empty_params.start,
-                empty_params.len,
-                @intFromEnum(iife_body),
-                0, // flags
-                none, // return_type
-            });
-            const wrapper_fn = try self.new_ast.addNode(.{
-                .tag = .function_expression,
-                .span = span,
-                .data = .{ .extra = wrapper_extra },
-            });
+            const wrapper_params = if (has_super and super_span != null) blk: {
+                break :blk try self.new_ast.addNodeList(&.{try es_helpers.makeBindingIdentifier(self, try self.new_ast.addString(expr_super_param))});
+            } else try self.new_ast.addNodeList(&.{});
+            const wrapper_extra = try self.new_ast.addExtras(&.{ none, wrapper_params.start, wrapper_params.len, @intFromEnum(iife_body), 0, none });
+            const wrapper_fn = try self.new_ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
+            const paren = try self.new_ast.addNode(.{ .tag = .parenthesized_expression, .span = span, .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } } });
 
-            // (function() { ... })() — call expression
-            const paren = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } },
-            });
-            return es_helpers.makeCallExpr(self, paren, &.{}, span);
+            // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
+            return if (has_super and super_span != null) blk: {
+                break :blk try es_helpers.makeCallExpr(self, paren, &.{try self.makeIdentifierRefWithSymbol(super_span.?, super_idx)}, span);
+            } else es_helpers.makeCallExpr(self, paren, &.{}, span);
         }
 
         // ================================================================
