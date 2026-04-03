@@ -887,6 +887,27 @@ pub const Transformer = struct {
         }
     }
 
+    /// new_ast 내에서 노드 간 symbol_id 복사 (new → new).
+    /// 노드 복제 시 symbol_id가 누락되지 않도록 사용.
+    pub fn copyNewSymbolId(self: *Transformer, src_new_idx: NodeIndex, dst_new_idx: NodeIndex) void {
+        if (self.old_symbol_ids.len == 0) return;
+        if (src_new_idx.isNone() or dst_new_idx.isNone()) return;
+
+        const src_i = @intFromEnum(src_new_idx);
+        const dst_i = @intFromEnum(dst_new_idx);
+
+        // dst를 new_symbol_ids 크기만큼 확장
+        while (self.new_symbol_ids.items.len <= dst_i) {
+            self.new_symbol_ids.append(self.allocator, null) catch return;
+        }
+
+        if (src_i < self.new_symbol_ids.items.len) {
+            if (self.new_symbol_ids.items[src_i]) |sid| {
+                self.new_symbol_ids.items[dst_i] = sid;
+            }
+        }
+    }
+
     /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
     /// lowerClassDeclaration이 pending_nodes에 function 등을 넣고 .none을 반환하므로,
     /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.
