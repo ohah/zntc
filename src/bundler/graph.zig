@@ -1114,8 +1114,12 @@ pub const ModuleGraph = struct {
 
                 if (rec.kind == .require) {
                     // require()로 소비 → 래핑 필요 (esbuild WrapKind 결정 로직)
-                    // 원본 ExportsKind가 ESM → WrapESM, 그 외 → WrapCJS
-                    if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                    // JSON 모듈은 항상 __commonJS 래핑 (esbuild 동작: module.exports = {...})
+                    // __esm + __toCommonJS는 { __esModule, default } 래퍼를 만들어 CJS 소비자가 깨짐
+                    if (target.module_type == .json) {
+                        target.exports_kind = .commonjs;
+                        target.wrap_kind = .cjs;
+                    } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
                         target.wrap_kind = .esm;
                     } else {
                         target.exports_kind = .commonjs;
