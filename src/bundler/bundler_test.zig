@@ -8298,6 +8298,140 @@ test "ESM wrap: CJS wrapper imports scope-hoisted ESM — no raw require" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./util.js')") == null);
 }
 
+test "ESM wrap: namespace import of __esm module — exports_xxx.prop access" {
+    // import * as ns from './esm-mod' → ns가 exports_xxx로 rename되어
+    // ns.prop → exports_xxx.prop 형태로 접근. 직접 변수 치환 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as utils from './utils.js';
+        \\console.log(utils.greet());
+    );
+    try writeFile(tmp.dir, "utils.js",
+        \\export function greet() { return 'hello'; }
+        \\export const value = 42;
+    );
+    // utils.js를 require로 소비하여 __esm 래핑
+    try writeFile(tmp.dir, "requirer.ts", "const u = require('./utils.js');");
+    try writeFile(tmp.dir, "main.ts",
+        \\import './entry.ts';
+        \\import './requirer.ts';
+    );
+
+    const main_entry = try absPath(&tmp, "main.ts");
+    defer std.testing.allocator.free(main_entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{main_entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // namespace import가 exports_xxx로 rename되어야 함 (직접 'greet' 치환 금지)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils") != null);
+    // raw 'greet()' 호출이 남아있으면 안 됨 (exports_utils.greet() 형태여야)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils.greet") != null);
+}
+
+test "ESM wrap: skip_cjs_exports — no exports.x in __esm wrapper" {
+    // __esm 래핑 모듈은 exports.x = x를 생성하면 안 됨 (__export가 대신 처리)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./esm.js');\nconsole.log(lib.value);");
+    try writeFile(tmp.dir, "esm.js",
+        \\export const value = 42;
+        \\export function greet() { return 'hello'; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __esm 래퍼 안에 exports.value=value 또는 exports.greet=greet 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.greet") == null);
+    // __export()가 존재해야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") != null);
+}
+
+test "ESM wrap: export default named ref — no duplicate var" {
+    // export default SomeVar → __esm에서 var SomeVar=SomeVar 중복 생성 안 됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./mod.js');\nconsole.log(lib.default);");
+    try writeFile(tmp.dir, "mod.js",
+        \\const Platform = { OS: 'ios' };
+        \\export default Platform;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // module.exports=Platform 없어야 함 (__export가 처리)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") == null);
+    // __export에서 default getter가 Platform을 참조
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Platform") != null);
+}
+
+test "ESM wrap: export default anonymous expr — var _default" {
+    // export default {...} → var _default = {...};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./mod.js');\nconsole.log(lib.default);");
+    try writeFile(tmp.dir, "mod.js",
+        \\export default { value: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // var _default = { value: 42 }; 형태
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") == null);
+}
+
+test "ESM wrap: __export inside __esm wrapper (not outside)" {
+    // __export()는 __esm 래퍼 안에서 호출되어야 함 (getter 클로저 스코프)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./mod.js');\nconsole.log(lib.greet());");
+    try writeFile(tmp.dir, "mod.js",
+        \\export function greet() { return 'hello'; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __export가 __esm 래퍼 안에 있는지 확인:
+    // "init_mod = __esm({" 다음에 "__export(" 나와야 함
+    const esm_start = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
+    const export_pos = std.mem.indexOf(u8, result.output, "__export(") orelse unreachable;
+    try std.testing.expect(export_pos > esm_start);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
