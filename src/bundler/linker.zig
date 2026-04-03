@@ -274,20 +274,24 @@ pub const Linker = struct {
                 // - CJS preamble: var X = require_xxx().X
                 // - __esm 호이스팅: var X; (래퍼 밖으로 호이스팅)
                 const generates_top_level_var = blk: {
-                    // __esm 모듈은 var 호이스팅으로 모든 import 변수가 top-level
-                    if (m.wrap_kind == .esm) break :blk true;
                     for (m.import_bindings) |ib| {
                         if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
                         if (ib.import_record_index >= m.import_records.len) break :blk false;
                         const rec = m.import_records[ib.import_record_index];
-                        // unresolved import → require() preamble
                         if (rec.resolved.isNone()) break :blk true;
-                        // CJS 모듈 import → require_xxx() preamble
-                        const cmod = @intFromEnum(rec.resolved);
-                        if (cmod < self.modules.len and self.modules[cmod].wrap_kind == .cjs) break :blk true;
-                        break :blk false;
+                        const target_idx = @intFromEnum(rec.resolved);
+                        if (target_idx >= self.modules.len) break :blk m.wrap_kind == .esm;
+                        const target_wrap = self.modules[target_idx].wrap_kind;
+                        if (m.wrap_kind == .esm) {
+                            // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
+                            break :blk target_wrap != .none;
+                        } else {
+                            // non-esm: CJS 타겟만 require() preamble에서 var 생성
+                            break :blk target_wrap == .cjs;
+                        }
                     }
-                    break :blk false;
+                    // import_bindings에 매칭 없음: __esm은 기본 호이스팅, 그 외는 미생성
+                    break :blk m.wrap_kind == .esm;
                 };
                 if (!generates_top_level_var) continue;
             }
