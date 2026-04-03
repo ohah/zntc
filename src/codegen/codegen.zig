@@ -1793,6 +1793,19 @@ pub const Codegen = struct {
         const deco_start = self.ast.extra_data.items[e + 6];
         const deco_len = self.ast.extra_data.items[e + 7];
 
+        // __esm 호이스팅: class 선언을 할당문으로 변환
+        // class Foo extends Bar {} → Foo = class Foo extends Bar {};
+        // block-scoped class가 __esm 콜백 밖의 var 선언에 할당되어 __export getter가 접근 가능.
+        const convert_to_assign = self.options.esm_var_assign_only and
+            node.tag == .class_declaration and
+            !name.isNone() and
+            self.indent_level == 0;
+
+        if (convert_to_assign) {
+            try self.emitNode(name);
+            try self.write(" = ");
+        }
+
         // decorator 출력: @log @validate class Foo {} (esbuild 호환: 공백 구분)
         if (deco_len > 0) {
             const deco_indices = self.ast.extra_data.items[deco_start .. deco_start + deco_len];
@@ -1812,6 +1825,10 @@ pub const Codegen = struct {
             try self.emitNode(super_class);
         }
         try self.emitNode(body);
+
+        if (convert_to_assign) {
+            try self.writeByte(';');
+        }
 
         // keepNames: class_declaration에서 이름이 rename된 경우 entry 수집
         if (self.options.keep_names and node.tag == .class_declaration and !name.isNone()) {

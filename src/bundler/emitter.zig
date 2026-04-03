@@ -2224,6 +2224,24 @@ fn emitEsmWrappedModule(
             .function_declaration => {
                 try hoisted_stmts.append(allocator, raw_idx);
             },
+            .class_declaration => {
+                // class 선언은 block-scoped → __esm 콜백 밖에서 접근 불가.
+                // var 선언을 밖에 두고, body에서 할당문으로 변환하여 __export getter가 접근 가능하게 한다.
+                const class_node_src = if (export_inner) |idx|
+                    esm_ast.nodes.items[@intFromEnum(idx)]
+                else
+                    stmt_node;
+
+                const class_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[class_node_src.data.extra]);
+                if (!class_name_idx.isNone()) {
+                    const name_node = esm_ast.nodes.items[@intFromEnum(class_name_idx)];
+                    if (name_node.tag == .binding_identifier) {
+                        const raw_name = esm_ast.getText(name_node.data.string_ref);
+                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
+                    }
+                }
+                try body_stmts.append(allocator, raw_idx);
+            },
             .import_declaration => {
                 // var 선언만 호이스팅 (할당은 래퍼 안). linker skip된 import는 제외.
                 const import_skipped = if (metadata) |md| md.skip_nodes.isSet(raw_idx) else false;
