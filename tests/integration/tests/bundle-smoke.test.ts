@@ -827,4 +827,96 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("ok");
   });
+
+  // ============================================================
+  // ES5 + rename: symbol_id 전파 회귀 테스트
+  // ============================================================
+
+  test("ES5 class rename — __extends와 prototype에 renamed 이름 사용", async () => {
+    // 두 모듈에서 같은 이름의 class를 선언하여 rename 유발.
+    // ES5 lowering 후 __extends(Foo$1, Base), Foo$1.prototype.method = ...
+    // 가 올바른 renamed 이름을 참조해야 함.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        import { Derived } from "./a";
+        import { other } from "./b";
+        const d = new Derived();
+        console.log(d.value() + "," + other);
+      `,
+        "a.ts": `
+        class Base { value() { return "base"; } }
+        export class Derived extends Base {
+          value() { return "derived"; }
+        }
+      `,
+        "b.ts": `
+        class Derived { x = 1; }
+        export const other = new Derived().x;
+      `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("derived,1");
+  });
+
+  test("ES5 export default class rename — 불필요한 var 재선언 금지", async () => {
+    // export default class + ES5 lowering + rename 시
+    // var Foo$1 = Foo; 같은 잘못된 재선언이 생기면 함수가 덮어씌워짐.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        import MyClass from "./a";
+        import { other } from "./b";
+        const m = new MyClass();
+        console.log(m.name() + "," + other);
+      `,
+        "a.ts": `
+        export default class MyClass {
+          name() { return "a"; }
+        }
+      `,
+        "b.ts": `
+        class MyClass { x = 1; }
+        export const other = new MyClass().x;
+      `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("a,1");
+  });
+
+  test("ES5 optional chaining rename — X?.prop 양쪽 참조 모두 rename", async () => {
+    // X?.now → X == null ? void 0 : X.now 에서
+    // 두 X 참조 모두 renamed 이름을 사용해야 함.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        import Perf from "./perf";
+        import { other } from "./conflict";
+        const val = Perf?.now ?? (() => 0);
+        console.log(val() + "," + other);
+      `,
+        "perf.ts": `
+        const Perf = { now: () => 42 };
+        export default Perf;
+      `,
+        "conflict.ts": `
+        const Perf = "conflict";
+        export const other = Perf;
+      `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("42,conflict");
+  });
 });
