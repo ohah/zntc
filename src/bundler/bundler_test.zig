@@ -8435,6 +8435,86 @@ test "ESM wrap: var hoisting + __export outside __esm (esbuild/rolldown 방식)"
     try std.testing.expect(fn_pos < esm_start);
 }
 
+test "ESM wrap: Flow type cast + namespace import → ns_member_rewrite 적용" {
+    // Flow 타입 캐스트 (expr: Type) 안의 namespace member access가
+    // ns_member_rewrites로 올바르게 치환되는지 검증.
+    // semantic analyzer가 flow_type_cast_expression 내부를 방문해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\export function getEnforcing(name) { return name + '_enforced'; }
+    );
+    try writeFile(tmp.dir, "native.js",
+        \\// @flow
+        \\import * as Registry from './registry.js';
+        \\export default (Registry.getEnforcing('Test'): string);
+    );
+    try writeFile(tmp.dir, "cjs.js",
+        \\const r = require('./registry.js');
+        \\module.exports = r;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import val from './native.js';
+        \\require('./cjs.js');
+        \\console.log(val);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .flow = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // "Registry.getEnforcing"가 남아있으면 안 됨 (ns_member_rewrite 미적용)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry.getEnforcing") == null);
+    // exports_registry.getEnforcing 또는 직접 getEnforcing으로 치환되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getEnforcing") != null);
+}
+
+test "ESM wrap: var hoisting + default export 접근 가능" {
+    // __esm 래퍼의 var 호이스팅으로 default export가 외부에서 직접 접근 가능한지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "mod.js",
+        \\export const count = 42;
+        \\export const name = 'hello';
+    );
+    try writeFile(tmp.dir, "wrapper.js",
+        \\import * as Mod from './mod.js';
+        \\export default Mod.count;
+    );
+    try writeFile(tmp.dir, "cjs.js",
+        \\const m = require('./mod.js');
+        \\module.exports = m;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import val from './wrapper.js';
+        \\require('./cjs.js');
+        \\console.log(val);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // var 호이스팅: _default가 __esm 래퍼 밖에 선언
+    // __esm({ 이전에 "var" 선언이 있어야 함
+    const esm_pos = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
+    const var_decl = std.mem.indexOf(u8, result.output, "var ");
+    try std.testing.expect(var_decl != null and var_decl.? < esm_pos);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
