@@ -2066,15 +2066,15 @@ test "ES2015: let/const no transform on esnext" {
 test "ES2015: class with constructor and methods" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{constructor(x){this.x=x;}method(){return this.x;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Foo(x)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_Foo.prototype.method=function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
 }
 
 test "ES2015: class with static method" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{static create(){return 1;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Foo()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_Foo.create=function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.create=function()") != null);
 }
 
 test "ES2015: empty class" {
@@ -2082,21 +2082,21 @@ test "ES2015: empty class" {
     defer r.deinit();
     // class → IIFE: var Empty = (function() { function Empty() {} return Empty; })()
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var Empty") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Empty()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _Empty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Empty()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return Empty") != null);
 }
 
 test "ES2015: class with instance field" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{x=1;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
 }
 
 test "ES2015: class with static field" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{static y=2;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.y=2") != null);
 }
 
@@ -2210,22 +2210,14 @@ test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "P.call(this,x)") != null);
-<<<<<<< HEAD
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(_C,P)") != null);
-=======
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
->>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: class extends default constructor" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "P.apply(this,arguments)") != null);
-<<<<<<< HEAD
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(_C,P)") != null);
-=======
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
->>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: super.method() call" {
@@ -2249,7 +2241,7 @@ test "ES2015: class getter/setter paired" {
 test "ES2015: class static getter" {
     var r = try e2eTarget(std.testing.allocator, "class F{static get n(){return 1;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(_F") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F") != null);
 }
 
 // --- class expression ---
@@ -2264,13 +2256,8 @@ test "ES2015: class expression with method" {
     var r = try e2eTarget(std.testing.allocator, "const F=class{m(){return 1;}};", .es5);
     defer r.deinit();
     // IIFE 패턴
-<<<<<<< HEAD
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return __Class") != null);
-=======
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return _Class") != null);
->>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: class expression with extends" {
@@ -2455,7 +2442,7 @@ test "ES2015: for-of with destructuring" {
 test "ES2015: class with computed method" {
     var r = try e2eTarget(std.testing.allocator, "var k='m';class F{[k](){return 1;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _F()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function F()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype") != null);
 }
 
@@ -3769,11 +3756,11 @@ test "private method: es5 → WeakSet + function + prototype" {
     , .es5);
     defer r.deinit();
     // class → function
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
     // WeakSet
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
     // prototype method
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_Foo.prototype.method=function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
     // brand check
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_bar)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_bar,_bar_fn).call(this)") != null);
