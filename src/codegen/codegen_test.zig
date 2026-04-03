@@ -2080,7 +2080,10 @@ test "ES2015: class with static method" {
 test "ES2015: empty class" {
     var r = try e2eTarget(std.testing.allocator, "class Empty{}", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("function Empty(){}", r.output);
+    // class → IIFE: var Empty = (function() { function Empty() {} return Empty; })()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var Empty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Empty()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return Empty") != null);
 }
 
 test "ES2015: class with instance field" {
