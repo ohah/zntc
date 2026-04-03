@@ -2210,14 +2210,22 @@ test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "P.call(this,x)") != null);
+<<<<<<< HEAD
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(_C,P)") != null);
+=======
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
+>>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: class extends default constructor" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "P.apply(this,arguments)") != null);
+<<<<<<< HEAD
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(_C,P)") != null);
+=======
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
+>>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: super.method() call" {
@@ -2256,15 +2264,20 @@ test "ES2015: class expression with method" {
     var r = try e2eTarget(std.testing.allocator, "const F=class{m(){return 1;}};", .es5);
     defer r.deinit();
     // IIFE 패턴
+<<<<<<< HEAD
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return __Class") != null);
+=======
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _Class") != null);
+>>>>>>> 3436dd0 (fix(transformer): IIFE 내부 함수에 별도 이름 + static fields IIFE 밖 배치)
 }
 
 test "ES2015: class expression with extends" {
     var r = try e2eTarget(std.testing.allocator, "const F=class extends P{m(){}};", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
 }
 
 // --- class private field ---
