@@ -270,8 +270,12 @@ pub const Linker = struct {
             // 충돌 대상에 포함해야 한다.
             const sym_idx = scope_entry.value_ptr.*;
             if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                // CJS preamble 변수가 생성되는 경우에만 충돌 대상에 포함
-                const generates_preamble = blk: {
+                // import binding이 top-level 변수를 생성하는 경우에만 충돌 대상에 포함:
+                // - CJS preamble: var X = require_xxx().X
+                // - __esm 호이스팅: var X; (래퍼 밖으로 호이스팅)
+                const generates_top_level_var = blk: {
+                    // __esm 모듈은 var 호이스팅으로 모든 import 변수가 top-level
+                    if (m.wrap_kind == .esm) break :blk true;
                     for (m.import_bindings) |ib| {
                         if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
                         if (ib.import_record_index >= m.import_records.len) break :blk false;
@@ -285,7 +289,7 @@ pub const Linker = struct {
                     }
                     break :blk false;
                 };
-                if (!generates_preamble) continue;
+                if (!generates_top_level_var) continue;
             }
 
             const entry = try name_to_owners.getOrPut(sym_name);
