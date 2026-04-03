@@ -15,6 +15,7 @@ pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
 pub const server = @import("server/mod.zig");
+pub const transpile = @import("transpile.zig");
 
 test {
     _ = lexer;

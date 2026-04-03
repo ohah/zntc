@@ -25,6 +25,7 @@ const chunk_mod = @import("chunk.zig");
 const Linker = @import("linker.zig").Linker;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const module_store = @import("module_store.zig");
+const transpile_mod = @import("../transpile.zig");
 
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
@@ -508,10 +509,21 @@ pub const Bundler = struct {
             polyfill_entries.deinit(self.allocator);
         }
         for (self.options.polyfills) |poly_path| {
-            const content = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
+            const raw = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
                 std.log.err("zts: cannot read polyfill file '{s}': {}", .{ poly_path, err });
                 continue;
             };
+            // Flow 모드일 때 트랜스파일하여 타입 구문 제거 (RN 폴리필은 Flow로 작성됨)
+            const content = if (self.options.flow) blk: {
+                const result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
+                    .flow = true,
+                    .jsx_in_js = self.options.jsx_in_js,
+                }) catch {
+                    break :blk raw; // 트랜스파일 실패 시 원본 사용
+                };
+                self.allocator.free(raw);
+                break :blk result.code;
+            } else raw;
             try polyfill_entries.append(self.allocator, .{
                 .name = std.fs.path.basename(poly_path),
                 .content = content,
