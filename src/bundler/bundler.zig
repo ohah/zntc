@@ -290,6 +290,7 @@ pub const Bundler = struct {
             .keep_names = self.options.keep_names,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
+            .run_before_main = self.options.run_before_main,
         };
     }
 
