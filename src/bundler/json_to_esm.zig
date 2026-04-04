@@ -32,8 +32,21 @@ pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
         .data = .{ .unary = .{ .operand = value_node, .flags = 0 } },
     });
 
+    // 최상위 JSON 객체의 키를 named export로 추가 (esbuild/Node.js 호환).
+    // `import { name } from './app.json'` 패턴을 지원한다.
+    // 각 키에 대해 `var <key> = <value>;`와 `export { key1, key2, ... }` 생성.
+    var extra_stmts: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer extra_stmts.deinit(allocator);
+    try buildNamedExportsFromObject(&ast, value_node, &extra_stmts);
+
     // program (최상위 노드, 항상 마지막)
-    const list = try ast.addNodeList(&.{export_default});
+    var stmts: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stmts.deinit(allocator);
+    try stmts.append(allocator, export_default);
+    for (extra_stmts.items) |stmt| {
+        try stmts.append(allocator, stmt);
+    }
+    const list = try ast.addNodeList(stmts.items);
     _ = try ast.addNode(.{
         .tag = .program,
         .span = .{ .start = 0, .end = @intCast(source.len) },
@@ -41,6 +54,95 @@ pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
     });
 
     return ast;
+}
+
+/// 최상위 JSON 값이 object_expression이면, 각 키에 대해
+/// `export var <key> = <value>;` 를 생성한다 (esbuild/Node.js JSON named export 호환).
+/// export_named_declaration + variable_declaration 조합이라 linker가 skip하지 않고
+/// codegen이 `var <key> = <value>;` (export 키워드 생략)로 정상 출력한다.
+fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std.ArrayListUnmanaged(NodeIndex)) !void {
+    const node = ast.getNode(value_node);
+    if (node.tag != .object_expression) return;
+    if (node.data.list.len == 0) return;
+
+    var i: u32 = 0;
+    while (i < node.data.list.len) : (i += 1) {
+        const prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.list.start + i]);
+        const prop = ast.getNode(prop_idx);
+        if (prop.tag != .object_property) continue;
+
+        const key_node = ast.getNode(prop.data.binary.left);
+        if (key_node.tag != .string_literal) continue;
+
+        const key_span = key_node.span;
+        if (key_span.end - key_span.start < 3) continue;
+        const key_text = ast.source[key_span.start + 1 .. key_span.end - 1];
+        if (!isValidIdentifier(key_text)) continue;
+
+        const inner_span = Span{ .start = key_span.start + 1, .end = key_span.end - 1 };
+
+        // 값 노드 복사 (object property와 공유하면 transformer에서 인덱스 불일치)
+        const orig_value = ast.getNode(prop.data.binary.right);
+        const value_copy = try ast.addNode(.{
+            .tag = orig_value.tag,
+            .span = orig_value.span,
+            .data = orig_value.data,
+        });
+
+        // variable_declarator: name = <value>
+        const binding_ident = try ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = inner_span,
+            .data = .{ .string_ref = inner_span },
+        });
+        const declarator_extra = try ast.addExtras(&.{
+            @intFromEnum(binding_ident),
+            @intFromEnum(NodeIndex.none),
+            @intFromEnum(value_copy),
+        });
+        const declarator = try ast.addNode(.{
+            .tag = .variable_declarator,
+            .span = .{ .start = inner_span.start, .end = orig_value.span.end },
+            .data = .{ .extra = declarator_extra },
+        });
+
+        // variable_declaration: var <declarator>
+        const decl_list = try ast.addNodeList(&.{declarator});
+        const var_extra = try ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
+        const var_decl = try ast.addNode(.{
+            .tag = .variable_declaration,
+            .span = .{ .start = inner_span.start, .end = orig_value.span.end },
+            .data = .{ .extra = var_extra },
+        });
+
+        // export_named_declaration: export var <key> = <value>
+        // extras[0] = declaration (var_decl), [1..2] = specifiers (없음), [3] = source (없음)
+        const none_node: u32 = @intFromEnum(NodeIndex.none);
+        const export_extra = try ast.addExtras(&.{
+            @intFromEnum(var_decl),
+            0,         0, // specifiers empty
+            none_node,
+        });
+        const export_node = try ast.addNode(.{
+            .tag = .export_named_declaration,
+            .span = .{ .start = inner_span.start, .end = orig_value.span.end },
+            .data = .{ .extra = export_extra },
+        });
+        try out_stmts.append(ast.allocator, export_node);
+    }
+}
+
+/// JS 식별자로 사용 가능한 문자열인지 확인 (간소화 버전).
+fn isValidIdentifier(s: []const u8) bool {
+    if (s.len == 0) return false;
+    // 첫 글자: 알파벳 또는 _ 또는 $
+    const first = s[0];
+    if (!((first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z') or first == '_' or first == '$')) return false;
+    // 나머지: 알파벳, 숫자, _, $
+    for (s[1..]) |c| {
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c == '$')) return false;
+    }
+    return true;
 }
 
 /// JSON 변환 에러.
@@ -267,7 +369,8 @@ test "convert simple object" {
     // 마지막 노드가 program
     const program = ast.nodes.items[ast.nodes.items.len - 1];
     try std.testing.expectEqual(Node.Tag.program, program.tag);
-    try std.testing.expectEqual(@as(u32, 1), program.data.list.len);
+    // export default + export var name + export var version = 3 statements
+    try std.testing.expectEqual(@as(u32, 3), program.data.list.len);
 
     // program의 첫 번째 statement가 export_default_declaration
     const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
@@ -278,6 +381,10 @@ test "convert simple object" {
     const obj = ast.getNode(stmt.data.unary.operand);
     try std.testing.expectEqual(Node.Tag.object_expression, obj.tag);
     try std.testing.expectEqual(@as(u32, 2), obj.data.list.len); // 2 properties
+
+    // 2번째, 3번째 statement가 export_named_declaration (export var)
+    const stmt2_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start + 1]);
+    try std.testing.expectEqual(Node.Tag.export_named_declaration, ast.getNode(stmt2_idx).tag);
 }
 
 test "convert array" {
