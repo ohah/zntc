@@ -1519,6 +1519,17 @@ test "ES5: destructuring default parameter in function" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
 }
 
+test "ES5: destructuring property key not renamed by linker" {
+    // { polyfillGlobal: polyfillGlobal$4 } → var polyfillGlobal$4 = _ref.polyfillGlobal
+    // 프로퍼티 키(polyfillGlobal)는 리네이밍되면 안 됨 (_ref.polyfillGlobal$4 가 되면 버그)
+    var r = try e2eTarget(std.testing.allocator, "const obj = {a: 1}; const {a: renamed} = obj; renamed;", .es5);
+    defer r.deinit();
+    // 프로퍼티 접근은 원본 이름: _a.a
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a") != null);
+    // 변수명은 renamed
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "renamed") != null);
+}
+
 test "ES5: generator with destructuring var hoisting" {
     var r = try e2eTarget(std.testing.allocator, "function* gen() { var {x, y} = yield getObj(); return x; }", .es5);
     defer r.deinit();
