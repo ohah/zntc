@@ -955,3 +955,85 @@ describe("__esm 실행 순서 보장", () => {
     expect(result.runOutput).toBe("child");
   });
 });
+
+describe("_default 합성 변수 충돌 방지", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("여러 export default 모듈이 각각 고유한 _default 변수를 갖는다", async () => {
+    // 여러 모듈이 export default를 사용할 때,
+    // 각 모듈의 합성 변수가 _default, _default$1, _default$2로 분리되어야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import a from "./a";
+        import b from "./b";
+        import c from "./c";
+        console.log(a + "," + b + "," + c);
+      `,
+      "a.ts": `export default "alpha";`,
+      "b.ts": `export default "beta";`,
+      "c.ts": `export default "gamma";`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("alpha,beta,gamma");
+  });
+
+  test("default export 표현식과 named default가 혼합되어도 충돌하지 않는다", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import a from "./a";
+        import greet from "./b";
+        console.log(a + "," + greet());
+      `,
+      "a.ts": `export default "anon";`,
+      "b.ts": `export default function greet() { return "named"; }`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("anon,named");
+  });
+
+  test("CJS→ESM 혼합 시 __esm 래퍼의 _default가 충돌하지 않는다", async () => {
+    // CJS 중간 모듈이 ESM 모듈을 require하면 __esm 래퍼가 생성되고,
+    // 각 default export가 고유한 변수를 가져야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { getA, getB } from "./consumer";
+        console.log(getA() + "," + getB());
+      `,
+      "consumer.ts": `
+        const a = require("./a");
+        const b = require("./b");
+        export function getA() { return a.default; }
+        export function getB() { return b.default; }
+      `,
+      "a.ts": `export default "alpha";`,
+      "b.ts": `export default "beta";`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("alpha,beta");
+  });
+
+  test("5개 이상의 default export 모듈이 모두 고유 값을 유지한다", async () => {
+    const imports = Array.from({ length: 5 }, (_, i) => `import m${i} from "./m${i}";`).join("\n");
+    const log = Array.from({ length: 5 }, (_, i) => `m${i}`).join("+','+");
+    const files: Record<string, string> = {
+      "index.ts": `${imports}\nconsole.log(${log});`,
+    };
+    for (let i = 0; i < 5; i++) {
+      files[`m${i}.ts`] = `export default "v${i}";`;
+    }
+    const result = await bundleAndRun(files);
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("v0,v1,v2,v3,v4");
+  });
+});
