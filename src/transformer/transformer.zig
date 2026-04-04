@@ -3425,7 +3425,7 @@ pub const Transformer = struct {
             .ts_type_query,
             .ts_literal_type,
             .ts_type_predicate,
-            // TS 선언 (통째로 삭제)
+            // TS/Flow 선언 (통째로 삭제) — isTypeOnlyDeclaration() 대상 포함
             .ts_type_alias_declaration,
             .ts_interface_declaration,
             .ts_interface_body,

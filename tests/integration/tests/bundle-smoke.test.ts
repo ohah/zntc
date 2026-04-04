@@ -1172,4 +1172,16 @@ describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
     cleanup = result.cleanup;
     expect(result.runOutput).toBe("33");
   });
+
+  test("TS: export type + export const 혼합 → value export 유지", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `import { value } from "./lib"; console.log(value);`,
+        "lib.ts": `export type Foo = string;\nexport const value = 123;`,
+      },
+      "entry.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("123");
+  });
 });
