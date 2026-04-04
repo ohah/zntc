@@ -2381,17 +2381,24 @@ pub const Codegen = struct {
                 const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
                 for (declarators) |raw_idx| {
                     const declarator = self.ast.getNode(@enumFromInt(raw_idx));
-                    // declarator의 첫 번째 extra가 name NodeIndex
                     const de = declarator.data.extra;
                     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
                     if (!name_idx.isNone()) {
                         const name_node = self.ast.getNode(name_idx);
-                        // binding_identifier의 이름은 string_ref (span)
                         const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                        // linker가 rename한 경우 변수 참조는 rename된 이름을 사용해야 함
+                        // (예: JSON named export에서 $id → $id$1로 충돌 회피 시)
+                        const ref_name = if (self.options.linking_metadata) |meta|
+                            if (self.resolveSymbolId(name_idx, meta)) |sid|
+                                (meta.renames.get(sid) orelse name)
+                            else
+                                name
+                        else
+                            name;
                         try self.write("exports.");
                         try self.write(name);
                         try self.writeByte('=');
-                        try self.write(name);
+                        try self.write(ref_name);
                         try self.writeByte(';');
                     }
                 }
@@ -2402,10 +2409,17 @@ pub const Codegen = struct {
                 if (!name_idx.isNone()) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                    const ref_name = if (self.options.linking_metadata) |meta|
+                        if (self.resolveSymbolId(name_idx, meta)) |sid|
+                            (meta.renames.get(sid) orelse name)
+                        else
+                            name
+                    else
+                        name;
                     try self.write("exports.");
                     try self.write(name);
                     try self.writeByte('=');
-                    try self.write(name);
+                    try self.write(ref_name);
                     try self.writeByte(';');
                 }
             },
