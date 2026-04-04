@@ -1098,6 +1098,31 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.stdout).toContain("= _default");
   });
 
+  test("import Default, { named } from 동시 사용 시 default와 named 모두 정상 바인딩", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import Cls, { helper } from "./lib"; console.log(new Cls().name + ":" + helper());`,
+      "lib.ts": `export default class Foo { get name() { return "foo"; } }\nexport function helper() { return "ok"; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("foo:ok");
+  });
+
+  test("CJS require + default/named 혼합 import: __esm body에서 default가 누락되지 않는다", async () => {
+    // __esm 래핑 모듈이 다른 __esm 모듈에서 default + named import 시
+    // destructuring에 "default" 프로퍼티가 포함되어야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `const m = require("./entry"); console.log(m.result);`,
+      "entry.ts": `import Base, { util } from "./base";\nexport const result = new Base().val + ":" + util();`,
+      "base.ts": `export default class Base { get val() { return "base"; } }\nexport function util() { return "u"; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("base:u");
+  });
+
   test("export * from 이 __esm 래퍼에서 소스 모듈의 named export를 전파한다", async () => {
     const result = await bundleAndRun({
       "index.ts": `import { greet, add } from "./proxy"; console.log(greet("world") + ":" + add(1, 2));`,
