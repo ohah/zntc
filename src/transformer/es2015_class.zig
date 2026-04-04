@@ -278,10 +278,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // super class
             const has_super = !super_idx.isNone();
             var super_span: ?Span = null;
+            var expr_super_node: NodeIndex = .none;
             if (has_super) {
                 const super_node = self.old_ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     super_span = super_node.data.string_ref;
+                } else {
+                    expr_super_node = try self.visitNode(super_idx);
+                    super_span = try self.new_ast.addString("_super");
                 }
             }
 
@@ -459,7 +463,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             return if (has_super and super_span != null) blk: {
-                break :blk try es_helpers.makeCallExpr(self, paren, &.{try self.makeIdentifierRefWithSymbol(super_span.?, super_idx)}, span);
+                const parent_arg = if (!expr_super_node.isNone())
+                    expr_super_node
+                else
+                    try self.makeIdentifierRefWithSymbol(super_span.?, super_idx);
+                break :blk try es_helpers.makeCallExpr(self, paren, &.{parent_arg}, span);
             } else es_helpers.makeCallExpr(self, paren, &.{}, span);
         }
 
