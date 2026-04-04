@@ -1020,10 +1020,9 @@ pub fn main() !void {
             // 사용자 --loader 오버라이드가 loader_list 앞에 이미 있으므로
             // resolveLoader()에서 사용자 설정이 우선한다.
             const rn_asset_exts = [_][]const u8{
-                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
-                ".tiff", ".tif", ".psd",
-                ".ttf", ".otf", ".woff", ".woff2",
-                ".mp4", ".mov", ".mp3", ".wav", ".aac",
+                ".png",  ".jpg", ".jpeg", ".gif", ".webp", ".bmp",  ".svg",
+                ".tiff", ".tif", ".psd",  ".ttf", ".otf",  ".woff", ".woff2",
+                ".mp4",  ".mov", ".mp3",  ".wav", ".aac",
             };
             for (rn_asset_exts) |ext| {
                 const user_set = for (opts.loader_list.items) |existing| {
