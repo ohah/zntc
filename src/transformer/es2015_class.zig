@@ -739,8 +739,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// ClassName.prototype static_member_expression 생성.
+        /// class_name_old_idx는 OLD AST 노드 — symbol 기반 리네이밍 대상.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+            const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+            return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
+        }
+
+        /// IIFE 내부용 ClassName.prototype — symbol 전파 없이 span 텍스트만 사용.
+        /// fresh identifier(new AST)를 받으므로 old_symbol_ids 조회 불가.
+        fn buildFreshPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
             const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
@@ -1279,11 +1288,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// target.methodName = func_expr (expression_statement)
+        /// class_name_old_idx는 IIFE fresh identifier (new AST) — symbol 전파 불가.
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, class_name_old_idx: NodeIndex, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            _ = class_name_old_idx;
             const target = if (info.is_static)
-                try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx)
+                try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
             else
-                try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
+                try buildFreshPrototypeRef(self, class_name_span, span);
             const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
@@ -1298,7 +1309,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
+        /// class_name_old_idx는 IIFE fresh identifier (new AST) — 현재 미사용.
         fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!void {
+            _ = class_name_old_idx;
             const obj_str_span = try self.new_ast.addString("Object");
             const dp_str_span = try self.new_ast.addString("defineProperty");
 
@@ -1357,11 +1370,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .list = obj_list },
                 });
 
-                // target
+                // target (IIFE fresh identifier — symbol 전파 없음)
                 const target = if (info.is_static)
-                    try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx)
+                    try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
                 else
-                    try buildPrototypeRef(self, class_name_span, class_name_old_idx, span);
+                    try buildFreshPrototypeRef(self, class_name_span, span);
 
                 // key string literal
                 const old_key_node = self.old_ast.getNode(key_idx);
