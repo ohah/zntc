@@ -1174,6 +1174,27 @@ export class C extends Mid {
     expect(result.runOutput).toBe("c>mid>base");
   });
 
+  test("ES5 class getter/setter가 configurable: true로 정의되어 이후 재정의 가능", async () => {
+    // abort-controller 패턴: class getter 정의 후 Object.defineProperties로 enumerable 추가.
+    // configurable: true가 없으면 TypeError: property is not configurable 발생.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { Sig } from "./signal";
+Object.defineProperties(Sig.prototype, { aborted: { enumerable: true } });
+console.log(new Sig().aborted);`,
+        "signal.ts": `export class Sig {
+  get aborted(): boolean { return false; }
+}`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("false");
+  });
+
   test("export * from 이 __esm 래퍼에서 소스 모듈의 named export를 전파한다", async () => {
     const result = await bundleAndRun({
       "index.ts": `import { greet, add } from "./proxy"; console.log(greet("world") + ":" + add(1, 2));`,
