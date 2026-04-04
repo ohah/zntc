@@ -3799,6 +3799,64 @@ test "Flow: class with typed methods does not crash transformer" {
 }
 
 // ============================================================
+// Flow: component declaration → props destructuring
+// ============================================================
+
+test "Flow: component params → object destructuring" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component View(ref, ...props: any) {
+        \\  return null;
+        \\}
+    );
+    defer r.deinit();
+    // component View(ref, ...props) → function View({ ref:ref, ...props })
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function View(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "ref:ref") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+    // 별도 함수 파라미터가 아닌 단일 destructuring 파라미터여야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function View(ref,") == null);
+}
+
+test "Flow: component param with type annotation stripped" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component Foo(name: string, count: number) {
+        \\  return null;
+        \\}
+    );
+    defer r.deinit();
+    // 타입 어노테이션이 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "number") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "name:name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "count:count") != null);
+}
+
+test "Flow: component param with default value" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component Foo(x: number = 42) {
+        \\  return x;
+        \\}
+    );
+    defer r.deinit();
+    // default가 보존되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "42") != null);
+    // 타입 어노테이션은 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "number") == null);
+}
+
+test "Flow: component param with complex type annotation" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component Bar(cb: (x: string) => void = defaultCb) {
+        \\  return null;
+        \\}
+    );
+    defer r.deinit();
+    // 함수 타입 어노테이션 제거, default 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "defaultCb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=> void") == null);
+}
+
+// ============================================================
 // Private Method (#method → WeakSet + standalone function)
 // ============================================================
 
