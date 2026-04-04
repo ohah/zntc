@@ -92,8 +92,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 클래스 바디 멤버 분류
-            // has_super를 전달하여 field initializer visit 시 this → _this 치환
-            var cm = try classifyMembers(self, body_idx, span, has_super and super_span != null);
+            var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
             // private field 매핑 설정 (method body 방문 시 this.#x → _x.get(this) 변환에 사용)
@@ -305,7 +304,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 바디 멤버 분류
-            var cm = try classifyMembers(self, body_idx, span, has_super and super_span != null);
+            var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
             // private field 매핑 설정
@@ -838,7 +837,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         };
 
-        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span, has_super: bool) Transformer.Error!ClassifiedMembers {
+        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
             const extras = self.old_ast.extra_data.items;
             const body_node = self.old_ast.getNode(body_idx);
             const members = extras[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
@@ -935,7 +934,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         });
                         // super class가 있으면 field value의 this → _this 치환
                         const saved_field_alias = self.super_call_this_alias;
-                        if (has_super) self.super_call_this_alias = true;
+                        if (self.current_super_class != null) self.super_call_this_alias = true;
                         defer self.super_call_this_alias = saved_field_alias;
                         const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
                         try cm.instance_fields.append(self.allocator, field_stmt);
