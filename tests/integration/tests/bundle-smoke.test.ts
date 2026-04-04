@@ -1059,9 +1059,13 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.exitCode).toBe(0);
 
     // var 선언 행에서 같은 이름이 두 번 나오지 않아야 한다
-    const varLines = bundle.stdout.split("\n").filter(l => l.startsWith("var "));
+    const varLines = bundle.stdout.split("\n").filter((l) => l.startsWith("var "));
     for (const line of varLines) {
-      const names = line.replace(/^var /, "").replace(/;$/, "").split(",").map(n => n.trim());
+      const names = line
+        .replace(/^var /, "")
+        .replace(/;$/, "")
+        .split(",")
+        .map((n) => n.trim());
       const unique = new Set(names);
       expect(unique.size).toBe(names.length);
     }
