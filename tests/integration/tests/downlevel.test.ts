@@ -1817,5 +1817,47 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("yes");
     });
+
+    test("prototype getter/setter에서 this는 _this로 치환하지 않는다", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base { _val = 0; }
+            class Child extends Base {
+              _data = 42;
+              get data() { return this._data; }
+              set data(v) { this._data = v; }
+            }
+            const c = new Child();
+            c.data = 99;
+            console.log(c.data);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("99");
+    });
+
+    test("super 없는 class의 field에서 this는 _this로 치환하지 않는다", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              x = 10;
+              doubled = this.x * 2;
+            }
+            console.log(new Foo().doubled);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("20");
+    });
   });
 });
