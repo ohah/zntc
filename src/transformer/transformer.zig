@@ -2339,8 +2339,8 @@ pub const Transformer = struct {
                 // super class가 있으면 field value의 this → _this 치환
                 const saved_super_alias = self.super_call_this_alias;
                 if (ctx.has_super) self.super_call_this_alias = true;
+                defer self.super_call_this_alias = saved_super_alias;
                 const new_init = try self.visitNode(init_idx);
-                self.super_call_this_alias = saved_super_alias;
                 const key_node = self.old_ast.getNode(key_idx);
                 const is_computed = (key_node.tag == .computed_property_key);
                 try field_assignments.append(self.allocator, .{
@@ -3219,9 +3219,11 @@ pub const Transformer = struct {
         const saved_arrow_depth = self.arrow_this_depth;
         const saved_needs_this = self.needs_this_var;
         const saved_needs_args = self.needs_arguments_var;
+        const saved_super_alias = self.super_call_this_alias;
         self.arrow_this_depth = 0;
         self.needs_this_var = false;
         self.needs_arguments_var = false;
+        self.super_call_this_alias = false;
 
         var new_body = try self.visitNode(self.readNodeIdx(e, 3));
 
@@ -3263,6 +3265,7 @@ pub const Transformer = struct {
         self.arrow_this_depth = saved_arrow_depth;
         self.needs_this_var = saved_needs_this;
         self.needs_arguments_var = saved_needs_args;
+        self.super_call_this_alias = saved_super_alias;
 
         // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
         // method_definition에서는 제거한다.
