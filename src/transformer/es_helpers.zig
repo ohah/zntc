@@ -124,14 +124,17 @@ pub fn makeMemberFromKey(self: anytype, obj: NodeIndex, prop: NodeIndex, key_tag
 /// old_ast의 key_idx로부터 obj.key 또는 obj[key] member expression 생성.
 /// computed_property_key → 내부 표현식을 unwrap하여 bracket notation.
 /// string_literal, numeric_literal → bracket notation.
-/// 그 외 (identifier) → dot notation.
+/// 그 외 (identifier) → dot notation (symbol 전파 없음 — 프로퍼티 이름은 리네이밍 대상이 아님).
 pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, span: Span) !NodeIndex {
     const key_node = self.old_ast.getNode(key_idx);
     if (key_node.tag == .computed_property_key) {
         const inner = try self.visitNode(key_node.data.unary.operand);
         return makeComputedMember(self, obj, inner, span);
     } else {
-        const new_key = try self.visitNode(key_idx);
+        // 프로퍼티 키는 문자열 이름이므로 visitNode(symbol 전파) 대신 span만 복사.
+        // destructuring { polyfillGlobal: renamed } → _ref.polyfillGlobal 에서
+        // linker가 polyfillGlobal → polyfillGlobal$4 로 잘못 리네이밍하는 것을 방지.
+        const new_key = try makeIdentifierRefFromSpan(self, key_node.data.string_ref);
         return makeMemberFromKey(self, obj, new_key, key_node.tag, span);
     }
 }
