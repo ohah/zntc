@@ -103,7 +103,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     class_private_method_get: bool = false,
     /// __classCallCheck: class를 new 없이 호출 방지 (ES2015 스펙)
     class_call_check: bool = false,
-    _padding: u5 = 0,
+    /// __callSuper: Reflect.construct 기반 super() 호출 (네이티브 클래스 extends 지원)
+    call_super: bool = false,
+    _padding: u4 = 0,
 };
 
 /// AST-to-AST 변환기.
@@ -199,6 +201,11 @@ pub const Transformer = struct {
 
     /// 현재 함수 스코프에서 arrow body가 arguments를 사용하여 var _arguments = arguments 삽입이 필요한지.
     needs_arguments_var: bool = false,
+
+    /// ES2015 class constructor에서 super() 호출 후 this → _this 별칭이 필요한지.
+    /// __callSuper가 Reflect.construct를 사용하면 새 객체를 반환하므로,
+    /// super() 이후의 this 참조를 _this로 교체해야 한다.
+    super_call_this_alias: bool = false,
 
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
@@ -754,12 +761,11 @@ pub const Transformer = struct {
                 // ES2015 arrow this 캡처: arrow body 안의 this → _this
                 if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                     self.needs_this_var = true;
-                    const this_span = try self.new_ast.addString("_this");
-                    return self.new_ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = this_span,
-                        .data = .{ .string_ref = this_span },
-                    });
+                    return es_helpers.makeIdentifierRef(self, "_this");
+                }
+                // ES2015 class super() 후 this → _this
+                if (self.super_call_this_alias) {
+                    return es_helpers.makeIdentifierRef(self, "_this");
                 }
                 return self.copyNodeDirect(node);
             },
@@ -1535,9 +1541,11 @@ pub const Transformer = struct {
         const saved_arrow_depth = self.arrow_this_depth;
         const saved_needs_this = self.needs_this_var;
         const saved_needs_args = self.needs_arguments_var;
+        const saved_super_alias = self.super_call_this_alias;
         self.arrow_this_depth = 0;
         self.needs_this_var = false;
         self.needs_arguments_var = false;
+        self.super_call_this_alias = false;
 
         // 임시 변수 카운터 저장 (함수 스코프 내 사용된 임시 변수 호이스팅용)
         const saved_temp_counter = self.temp_var_counter;
@@ -1629,6 +1637,7 @@ pub const Transformer = struct {
         self.arrow_this_depth = saved_arrow_depth;
         self.needs_this_var = saved_needs_this;
         self.needs_arguments_var = saved_needs_args;
+        self.super_call_this_alias = saved_super_alias;
 
         // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
         // 함수 이름을 old_ast에서 추출 (new_name은 아직 extra에 추가 전이므로)

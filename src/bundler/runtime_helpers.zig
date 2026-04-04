@@ -86,6 +86,23 @@ pub const CLASS_CALL_CHECK_RUNTIME =
 ;
 pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var __classCallCheck=(instance,Constructor)=>{if(!(instance instanceof Constructor))throw new TypeError(\"Cannot call a class as a function\")};";
 
+/// __callSuper: super() 호출을 Reflect.construct로 래핑 (SWC _call_super 호환).
+/// 네이티브 ES6 클래스(Error, Map 등)를 extends할 때 .call()이 불가하므로
+/// Reflect.construct를 사용하여 올바른 내부 슬롯을 가진 인스턴스를 생성.
+/// 트랜스파일된 클래스에는 fallback으로 .apply()를 사용.
+pub const CALL_SUPER_RUNTIME =
+    \\var __callSuper = function(_this, Parent, args) {
+    \\  if (typeof Reflect !== "undefined" && typeof Reflect.construct === "function") {
+    \\    return Reflect.construct(Parent, args || [], _this.constructor);
+    \\  }
+    \\  var result = Parent.apply(_this, args);
+    \\  if (result && (typeof result === "object" || typeof result === "function")) return result;
+    \\  return _this;
+    \\};
+    \\
+;
+pub const CALL_SUPER_RUNTIME_MIN = "var __callSuper=function(_this,Parent,args){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],_this.constructor);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -311,6 +328,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.class_call_check) {
         try buf.appendSlice(allocator, if (minify) CLASS_CALL_CHECK_RUNTIME_MIN else CLASS_CALL_CHECK_RUNTIME);
+    }
+    if (helpers.call_super) {
+        try buf.appendSlice(allocator, if (minify) CALL_SUPER_RUNTIME_MIN else CALL_SUPER_RUNTIME);
     }
 }
 

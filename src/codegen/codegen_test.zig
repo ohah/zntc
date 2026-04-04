@@ -2220,16 +2220,18 @@ test "ES2015: generator try/catch/finally with yield" {
 test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
-    // super(x) → _super.call(this,x) — IIFE 매개변수를 사용하여 스코프 격리
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this,x)") != null);
+    // super(x) → var _this=__callSuper(this,_super,[x]) + _this.x=x + return _this
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super,[x])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.x=x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _this") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
 test "ES2015: class extends default constructor" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
     defer r.deinit();
-    // 기본 생성자 → _super.apply(this,arguments) — IIFE 매개변수 사용
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.apply(this,arguments)") != null);
+    // 기본 생성자 → return __callSuper(this,_super,arguments) — implicit forwarding
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super,arguments)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
@@ -2283,8 +2285,8 @@ test "ES2015: class extends member expression (e.g. React.Component)" {
     // _super 매개변수 + __extends 호출
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_super)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(Foo,_super)") != null);
-    // super() → _super.call(this) 변환
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this)") != null);
+    // super() → __callSuper(this,_super,arguments) 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super,[])") != null);
     // 원본 super 키워드가 남아있으면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
 }
@@ -2316,7 +2318,7 @@ test "ES2015: class expression extends member expression" {
     var r = try e2eTarget(std.testing.allocator, "const F=class extends a.B{constructor(){super();}};", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, ")(a.B)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super,[])") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
 }
 

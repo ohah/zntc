@@ -1174,6 +1174,87 @@ export class C extends Mid {
     expect(result.runOutput).toBe("c>mid>base");
   });
 
+  test("ES5 __callSuper: extends Error에서 Reflect.construct로 올바른 인스턴스 생성", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class AppError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "AppError";
+  }
+}
+const e = new AppError("test");
+console.log(e instanceof Error && e.message === "test" && e.name === "AppError");`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("true");
+  });
+
+  test("ES5 __callSuper: super() 인자 없을 때 빈 배열 전달", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { args: any[]; constructor(...a: any[]) { this.args = a; } }
+class Child extends Base { constructor() { super(); } }
+console.log(new Child().args.length);`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("0");
+  });
+
+  test("ES5 __callSuper: super() 후 this → _this 별칭이 중첩 함수에 누출되지 않음", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { x = 0; }
+class Child extends Base {
+  fn: () => string;
+  constructor() {
+    super();
+    this.fn = function() { return typeof this; };
+  }
+}
+const c = new Child();
+console.log(c.fn.call(undefined));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("undefined");
+  });
+
+  test("ES5 __callSuper: conditional branch 안의 super()도 정상 동작", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { v: number; constructor(v: number) { this.v = v; } }
+class Child extends Base {
+  constructor(x: boolean) {
+    if (x) { super(1); } else { super(2); }
+    this.v *= 10;
+  }
+}
+console.log(new Child(true).v + ":" + new Child(false).v);`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("10:20");
+  });
+
   test("ES5 class getter/setter가 configurable: true로 정의되어 이후 재정의 가능", async () => {
     // abort-controller 패턴: class getter 정의 후 Object.defineProperties로 enumerable 추가.
     // configurable: true가 없으면 TypeError: property is not configurable 발생.
