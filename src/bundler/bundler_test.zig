@@ -6354,10 +6354,77 @@ test "JSON import: ESM format uses scope-hoisted var (linker integration)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // JSON ESM: object 내용 포함, __commonJS 래핑 없음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"key\"") != null);
+    // JSON ESM: named export 변수로 출력, __commonJS 래핑 없음
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"value\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+}
+
+test "JSON import: named exports from top-level object keys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { name, version } from './app.json';\nconsole.log(name, version);");
+    try writeFile(tmp.dir, "app.json",
+        \\{"name":"ExampleApp","version":1}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // named export 변수가 출력에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ExampleApp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(name") != null);
+}
+
+test "JSON import: named exports + default export coexist" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import config, { name } from './config.json';
+        \\console.log(name, config);
+    );
+    try writeFile(tmp.dir, "config.json",
+        \\{"name":"test","debug":true}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"test\"") != null);
+}
+
+test "JSON import: non-object JSON has no named exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import arr from './data.json';\nconsole.log(arr);");
+    try writeFile(tmp.dir, "data.json", "[1, 2, 3]");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
 }
 
 test "IIFE globalName: export → return 변환 (linker integration)" {

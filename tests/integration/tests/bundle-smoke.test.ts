@@ -1301,3 +1301,41 @@ describe("에셋 로더 + RN 프리셋", () => {
     expect(result.stdout).toContain("undefined");
   });
 });
+
+describe("JSON named exports", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("import { name } from './app.json' 동작", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { name, displayName } from './app.json';\nconsole.log(name + ":" + displayName);`,
+      "app.json": `{"name":"ExampleApp","displayName":"Example"}`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("ExampleApp:Example");
+  });
+
+  test("default + named export 공존", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import config, { name } from './app.json';\nconsole.log(name + ":" + typeof config);`,
+      "app.json": `{"name":"Test","version":1}`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("Test:object");
+  });
+
+  test("배열 JSON은 named export 없음", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import data from './data.json';\nconsole.log(data.length);`,
+      "data.json": `[1, 2, 3]`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("3");
+  });
+});
