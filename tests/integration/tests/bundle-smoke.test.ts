@@ -1070,4 +1070,31 @@ describe("_default 합성 변수 충돌 방지", () => {
       expect(unique.size).toBe(names.length);
     }
   });
+
+  test("export { default as X } from re-export가 __esm 래퍼에서 할당된다 (#705)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `const b = require("./barrel"); console.log(b.Foo);`,
+      "barrel.ts": `export { default as Foo } from "./foo";`,
+      "foo.ts": `export default "fooValue";`,
+    });
+    cleanup = fixture.cleanup;
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts")]);
+    expect(bundle.exitCode).toBe(0);
+    // __esm body에 할당문이 있어야 한다
+    expect(bundle.stdout).toContain("= _default");
+  });
+
+  test("export { default } from re-export가 __esm 래퍼에서 할당된다 (#705)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `const b = require("./barrel"); console.log(b.default);`,
+      "barrel.ts": `export { default } from "./foo";`,
+      "foo.ts": `export default "fooValue";`,
+    });
+    cleanup = fixture.cleanup;
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts")]);
+    expect(bundle.exitCode).toBe(0);
+    expect(bundle.stdout).toContain("= _default");
+  });
 });

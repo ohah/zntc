@@ -2458,6 +2458,63 @@ fn emitEsmWrappedModule(
         }
     }
 
+    // 5.2. re-export default 할당문 생성.
+    // export { default } from / export { default as X } from re-export는
+    // import_bindings를 생성하지 않으므로 body codegen에서 할당문이 누락됨.
+    // 소스 모듈의 wrap_kind에 따라 적절한 할당문을 직접 생성.
+    var reexport_buf: std.ArrayList(u8) = .empty;
+    defer reexport_buf.deinit(allocator);
+    for (module.export_bindings) |eb| {
+        if (eb.kind != .re_export) continue;
+        if (!std.mem.eql(u8, eb.local_name, "default")) continue;
+        const rec_idx = eb.import_record_index orelse continue;
+        if (rec_idx >= module.import_records.len) continue;
+        const source_mod_idx = module.import_records[rec_idx].resolved;
+        if (source_mod_idx.isNone()) continue;
+
+        const def_name = if (metadata) |md| md.default_export_name else "_default";
+        const source_mod_i = @intFromEnum(source_mod_idx);
+
+        if (linker) |l| {
+            if (source_mod_i < l.modules.len) {
+                const source_mod = &l.modules[source_mod_i];
+                switch (source_mod.wrap_kind) {
+                    .none => {
+                        // scope-hoisted: 소스 모듈의 canonical _default를 직접 참조
+                        const src_name = l.getCanonicalName(@intCast(source_mod_i), "_default") orelse "_default";
+                        try reexport_buf.appendSlice(allocator, def_name);
+                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
+                        try reexport_buf.appendSlice(allocator, src_name);
+                        try reexport_buf.appendSlice(allocator, ";\n");
+                    },
+                    .esm => {
+                        // ESM-wrapped: init 호출 + __toCommonJS로 default 접근
+                        const iv = try types.makeInitVarName(allocator, source_mod.path);
+                        defer allocator.free(iv);
+                        const ev = try types.makeExportsVarName(allocator, source_mod.path);
+                        defer allocator.free(ev);
+                        try reexport_buf.appendSlice(allocator, def_name);
+                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=(" else " = (");
+                        try reexport_buf.appendSlice(allocator, iv);
+                        try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
+                        try reexport_buf.appendSlice(allocator, ev);
+                        try reexport_buf.appendSlice(allocator, ")).default;\n");
+                    },
+                    .cjs => {
+                        // CJS: require 호출
+                        const rv = try types.makeRequireVarName(allocator, source_mod.path);
+                        defer allocator.free(rv);
+                        try reexport_buf.appendSlice(allocator, def_name);
+                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
+                        try reexport_buf.appendSlice(allocator, rv);
+                        try reexport_buf.appendSlice(allocator, "().default;\n");
+                    },
+                }
+            }
+        }
+        break; // default re-export는 모듈당 하나만 존재
+    }
+
     // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
@@ -2470,6 +2527,7 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "\"(){");
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         try wrapped.appendSlice(allocator, body_code);
+        if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         try wrapped.appendSlice(allocator, "}});");
     } else {
         try wrapped.appendSlice(allocator, "var ");
@@ -2484,6 +2542,10 @@ fn emitEsmWrappedModule(
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, body_code);
+        }
+        if (reexport_buf.items.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, reexport_buf.items);
         }
         try wrapped.appendSlice(allocator, "\n\t}\n});\n");
     }
