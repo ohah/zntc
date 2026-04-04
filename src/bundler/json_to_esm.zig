@@ -12,6 +12,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const unicode = @import("../lexer/unicode.zig");
 
 /// JSON 텍스트를 ESM AST로 변환한다.
 /// 결과 AST는 `export default <json_value>;` 한 문(statement)으로 구성.
@@ -21,7 +22,6 @@ const Span = @import("../lexer/token.zig").Span;
 pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
     var ast = Ast.init(allocator, source);
 
-    // JSON 값 파싱 → AST 노드
     var pos: u32 = 0;
     const value_node = try convertValue(&ast, source, &pos);
 
@@ -32,9 +32,7 @@ pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
         .data = .{ .unary = .{ .operand = value_node, .flags = 0 } },
     });
 
-    // 최상위 JSON 객체의 키를 named export로 추가 (esbuild/Node.js 호환).
-    // `import { name } from './app.json'` 패턴을 지원한다.
-    // 각 키에 대해 `var <key> = <value>;`와 `export { key1, key2, ... }` 생성.
+    // 최상위 JSON 객체의 키를 named export로 추가 (esbuild/Node.js 호환)
     var extra_stmts: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer extra_stmts.deinit(allocator);
     try buildNamedExportsFromObject(&ast, value_node, &extra_stmts);
@@ -43,9 +41,7 @@ pub fn convert(allocator: std.mem.Allocator, source: []const u8) !Ast {
     var stmts: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer stmts.deinit(allocator);
     try stmts.append(allocator, export_default);
-    for (extra_stmts.items) |stmt| {
-        try stmts.append(allocator, stmt);
-    }
+    try stmts.appendSlice(allocator, extra_stmts.items);
     const list = try ast.addNodeList(stmts.items);
     _ = try ast.addNode(.{
         .tag = .program,
@@ -75,7 +71,6 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
         if (key_node.tag != .string_literal) continue;
 
         const key_span = key_node.span;
-        if (key_span.end - key_span.start < 3) continue;
         const key_text = ast.source[key_span.start + 1 .. key_span.end - 1];
         if (!isValidIdentifier(key_text)) continue;
 
@@ -89,7 +84,6 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
             .data = orig_value.data,
         });
 
-        // variable_declarator: name = <value>
         const binding_ident = try ast.addNode(.{
             .tag = .binding_identifier,
             .span = inner_span,
@@ -106,7 +100,6 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
             .data = .{ .extra = declarator_extra },
         });
 
-        // variable_declaration: var <declarator>
         const decl_list = try ast.addNodeList(&.{declarator});
         const var_extra = try ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
         const var_decl = try ast.addNode(.{
@@ -115,8 +108,7 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
             .data = .{ .extra = var_extra },
         });
 
-        // export_named_declaration: export var <key> = <value>
-        // extras[0] = declaration (var_decl), [1..2] = specifiers (없음), [3] = source (없음)
+        // extras: [declaration, specifiers_start, specifiers_len, source]
         const none_node: u32 = @intFromEnum(NodeIndex.none);
         const export_extra = try ast.addExtras(&.{
             @intFromEnum(var_decl),
@@ -132,17 +124,34 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
     }
 }
 
-/// JS 식별자로 사용 가능한 문자열인지 확인 (간소화 버전).
+/// JSON 키가 JS named export 식별자로 사용 가능한지 확인.
+/// ASCII 범위만 지원 (JSON 이스케이프 키는 보수적으로 제외).
 fn isValidIdentifier(s: []const u8) bool {
     if (s.len == 0) return false;
-    // 첫 글자: 알파벳 또는 _ 또는 $
-    const first = s[0];
-    if (!((first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z') or first == '_' or first == '$')) return false;
-    // 나머지: 알파벳, 숫자, _, $
+    if (!unicode.isIdentifierStart(s[0])) return false;
     for (s[1..]) |c| {
-        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c == '$')) return false;
+        if (!unicode.isIdentifierContinue(c)) return false;
     }
-    return true;
+    // JS 예약어는 named export 변수명으로 사용 불가
+    return !isJsReservedWord(s);
+}
+
+fn isJsReservedWord(s: []const u8) bool {
+    const reserved = [_][]const u8{
+        "break",     "case",       "catch",    "class",     "const",
+        "continue",  "debugger",   "default",  "delete",    "do",
+        "else",      "enum",       "export",   "extends",   "false",
+        "finally",   "for",        "function", "if",        "import",
+        "in",        "instanceof", "new",      "null",      "return",
+        "super",     "switch",     "this",     "throw",     "true",
+        "try",       "typeof",     "var",      "void",      "while",
+        "with",      "yield",      "let",      "static",    "implements",
+        "interface", "package",    "private",  "protected", "public",
+    };
+    for (reserved) |kw| {
+        if (std.mem.eql(u8, s, kw)) return true;
+    }
+    return false;
 }
 
 /// JSON 변환 에러.
