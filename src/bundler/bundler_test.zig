@@ -12254,6 +12254,109 @@ test "Bundle: Flow file with parse errors does not crash" {
     try std.testing.expect(result.output.len > 0 or result.hasErrors());
 }
 
+test "Bundle: Flow export type alias + module.exports → CJS wrapping (#713)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\const x = require('./lib');
+        \\console.log(x);
+    );
+    // Flow: import typeof + export type alias + module.exports 혼합
+    // ReactNativePrivateInterface.js 패턴 — type-only export가 ESM 신호로 잘못 판별되면
+    // __esm 래핑되어 module 변수 미정의 런타임 에러 발생
+    try writeFile(tmp.dir, "lib.js",
+        \\// @flow strict-local
+        \\import typeof Foo from './dep';
+        \\export type Bar = string;
+        \\export type {Foo};
+        \\module.exports = { value: 42 };
+    );
+    try writeFile(tmp.dir, "dep.js",
+        \\module.exports = {};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .flow = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS 모듈이므로 __commonJS로 래핑되어야 함 (__esm이 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
+test "Bundle: TS export type alias + module.exports → CJS wrapping (#713)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const x = require('./lib');
+        \\console.log(x);
+    );
+    // TS: export type alias + export interface + module.exports 혼합
+    try writeFile(tmp.dir, "lib.ts",
+        \\export type Foo = string;
+        \\export interface Bar { x: number; }
+        \\module.exports = { value: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS 모듈이므로 __commonJS로 래핑되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
+test "Bundle: Flow export opaque type + module.exports → CJS wrapping (#713)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.js",
+        \\const x = require('./lib');
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.js",
+        \\// @flow
+        \\export opaque type ID = string;
+        \\module.exports = { value: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .flow = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
 test "Bundle: module with syntax errors does not crash transformer" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

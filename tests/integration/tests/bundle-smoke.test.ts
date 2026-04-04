@@ -1098,3 +1098,78 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.stdout).toContain("= _default");
   });
 });
+
+describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("TS: export type alias + module.exports → __commonJS 래핑", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `const lib = require("./lib"); console.log(lib.value);`,
+        "lib.ts": `export type Foo = string;\nmodule.exports = { value: 42 };`,
+      },
+      "entry.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("42");
+  });
+
+  test("TS: export interface + module.exports → __commonJS 래핑", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `const lib = require("./lib"); console.log(lib.value);`,
+        "lib.ts": `export interface Bar { x: number; }\nmodule.exports = { value: 99 };`,
+      },
+      "entry.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("99");
+  });
+
+  test("Flow: export type alias + module.exports → __commonJS 래핑", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.js": `const lib = require("./lib"); console.log(lib.value);`,
+        "lib.js": `// @flow\nexport type Foo = string;\nmodule.exports = { value: 7 };`,
+      },
+      "entry.js",
+      ["--flow"],
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("7");
+  });
+
+  test("Flow: import typeof + export type + module.exports → __commonJS 래핑 (RN 패턴)", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.js": `const lib = require("./iface"); console.log(lib.value);`,
+        "iface.js": `// @flow strict-local\nimport typeof Dep from "./dep";\nexport type X = string;\nexport type {Dep};\nmodule.exports = { value: 55 };`,
+        "dep.js": `module.exports = {};`,
+      },
+      "entry.js",
+      ["--flow"],
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("55");
+  });
+
+  test("Flow: export opaque type + module.exports → __commonJS 래핑", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.js": `const lib = require("./lib"); console.log(lib.value);`,
+        "lib.js": `// @flow\nexport opaque type ID = string;\nmodule.exports = { value: 33 };`,
+      },
+      "entry.js",
+      ["--flow"],
+    );
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("33");
+  });
+});
