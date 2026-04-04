@@ -373,6 +373,21 @@ pub const Node = struct {
         // ==============================================================
         // 합계: 개수는 컴파일 타임에 Tag 필드 수로 자동 검증
         // ==============================================================
+
+        /// type-only 선언 태그 판별.
+        /// export 문에서 이 태그의 decl은 런타임 코드를 생성하지 않으므로
+        /// export_named_declaration으로 래핑하지 않아야 함.
+        pub fn isTypeOnlyDeclaration(tag: Tag) bool {
+            return switch (tag) {
+                .ts_type_alias_declaration,
+                .ts_interface_declaration,
+                .flow_type_alias_declaration,
+                .flow_opaque_type,
+                .flow_interface_declaration,
+                => true,
+                else => false,
+            };
+        }
     };
 
     /// 노드별 인라인 데이터 (12바이트).

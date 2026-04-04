@@ -575,22 +575,10 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // export var/let/const/function/class
     const decl = try self.parseStatement();
     // type-only 선언이면 export_named_declaration을 생성하지 않음.
-    // TS: type alias, interface / Flow: type alias, opaque type, interface
-    // 이들이 export_named_declaration으로 남으면 import_scanner가
-    // has_esm_syntax=true로 잘못 판별하여 CJS 모듈이 __esm으로 래핑됨.
+    // 남으면 import_scanner가 has_esm_syntax=true로 잘못 판별하여
+    // CJS 모듈이 __esm으로 래핑됨.
     if (decl.isNone()) return NodeIndex.none;
-    {
-        const decl_tag = self.ast.getNode(decl).tag;
-        switch (decl_tag) {
-            .ts_type_alias_declaration,
-            .ts_interface_declaration,
-            .flow_type_alias_declaration,
-            .flow_opaque_type,
-            .flow_interface_declaration,
-            => return NodeIndex.none,
-            else => {},
-        }
-    }
+    if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return NodeIndex.none;
     // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
     const extra_start = try self.ast.addExtras(&.{
         @intFromEnum(decl),
