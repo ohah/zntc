@@ -1085,16 +1085,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (body_node.tag != .block_statement) return body;
 
             const stmts_list = body_node.data.list;
-            const stmts = self.new_ast.extra_data.items[stmts_list.start .. stmts_list.start + stmts_list.len];
+            // extra_data.items slice를 먼저 캡처하면, buildVarDecl 등이 extra_data를
+            // grow시켜 재할당하면 dangling pointer가 됨.
+            // 따라서 인덱스만 저장하고, 사용할 때 다시 접근한다.
+            const stmts_start = stmts_list.start;
+            const stmts_len = stmts_list.len;
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // var _this; (초기화 없는 선언)
+            // var _this; (초기화 없는 선언) — extra_data grow 가능
             try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
 
-            // 기존 body statements
-            for (stmts) |raw_idx| {
+            // 기존 body statements — extra_data grow 후 다시 접근
+            for (self.new_ast.extra_data.items[stmts_start .. stmts_start + stmts_len]) |raw_idx| {
                 try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
             }
 
