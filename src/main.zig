@@ -1020,9 +1020,21 @@ pub fn main() !void {
             // 사용자 --loader 오버라이드가 loader_list 앞에 이미 있으므로
             // resolveLoader()에서 사용자 설정이 우선한다.
             const rn_asset_exts = [_][]const u8{
-                ".png",  ".jpg", ".jpeg", ".gif", ".webp", ".bmp",  ".svg",
-                ".tiff", ".tif", ".psd",  ".ttf", ".otf",  ".woff", ".woff2",
-                ".mp4",  ".mov", ".mp3",  ".wav", ".aac",
+                // 이미지 (Metro defaults.js assetExts 전체)
+                ".bmp",   ".gif",  ".jpg",  ".jpeg", ".png",  ".psd",
+                ".svg",   ".webp", ".tiff", ".tif",  ".xml",
+                // 비디오
+                 ".m4v",
+                ".mov",   ".mp4",  ".mpeg", ".mpg",  ".webm",
+                // 오디오
+                ".aac",
+                ".aiff",  ".caf",  ".m4a",  ".mp3",  ".wav",
+                // 문서
+                 ".html",
+                ".pdf",   ".yaml", ".yml",
+                // 폰트
+                 ".otf",  ".ttf",  ".woff",
+                ".woff2",
             };
             for (rn_asset_exts) |ext| {
                 const user_set = for (opts.loader_list.items) |existing| {
