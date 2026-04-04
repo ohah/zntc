@@ -2307,6 +2307,14 @@ test "ES2015: class expression with extends" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
 }
 
+test "ES2015: class expression extends member expression" {
+    var r = try e2eTarget(std.testing.allocator, "const F=class extends a.B{constructor(){super();}};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")(a.B)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
+}
+
 // --- class private field ---
 
 test "ES2015: class private field WeakMap" {
