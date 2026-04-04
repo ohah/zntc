@@ -51,8 +51,11 @@ jobs:
       - name: Install RN example app dependencies
         run: cd tests/integration/tests/fixtures/rn-example-app && bun install
 
-      - name: Run Hermes validation
-        run: cd tests/integration && bun run test:hermes
+      - name: Install hermes-engine-cli (runtime)
+        run: npm install -g hermes-engine-cli
+
+      - name: Run Hermes validation (hermesc + runtime)
+        run: cd tests/integration && bun test tests/hermes-runtime.test.ts
 
   e2e:
     name: E2E Tests
