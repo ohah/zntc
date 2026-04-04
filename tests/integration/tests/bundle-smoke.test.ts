@@ -1036,4 +1036,14 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("v0,v1,v2,v3,v4");
   });
+
+  test("CJS 엔트리 모듈이 IIFE 번들에서 자동 호출된다 (#707)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `const a = require("./a"); console.log(a.default);`,
+      "a.ts": `export default "hello";`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello");
+  });
 });

@@ -344,6 +344,22 @@ pub fn emitWithTreeShaking(
         }
     }
 
+    // CJS 엔트리 자동 호출: __commonJS로 래핑된 엔트리 모듈은 require_xxx()를 호출해야 실행됨.
+    // esbuild와 동일하게 번들 끝(IIFE epilogue 직전)에 require_xxx() 삽입.
+    if (entry_idx) |ei| {
+        const entry_module = for (sorted.items) |m| {
+            if (@intFromEnum(m.index) == ei) break m;
+        } else null;
+        if (entry_module) |em| {
+            if (em.wrap_kind == .cjs) {
+                const call_name = try types.makeRequireVarName(allocator, em.path);
+                defer allocator.free(call_name);
+                try output.appendSlice(allocator, call_name);
+                try output.appendSlice(allocator, "();\n");
+            }
+        }
+    }
+
     // 포맷별 epilogue
     switch (options.format) {
         .iife => try output.appendSlice(allocator, "})();\n"),
