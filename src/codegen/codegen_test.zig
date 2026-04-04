@@ -1104,31 +1104,31 @@ test "ES2020: ?? no transform on es2020" {
 test "ES2020: ?. member" {
     var r = try e2eTarget(std.testing.allocator, "a?.b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("a==null?void 0:a.b;", r.output);
+    try std.testing.expectEqualStrings("(a==null?void 0:a.b);", r.output);
 }
 
 test "ES2020: ?. computed" {
     var r = try e2eTarget(std.testing.allocator, "a?.[0];", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("a==null?void 0:a[0];", r.output);
+    try std.testing.expectEqualStrings("(a==null?void 0:a[0]);", r.output);
 }
 
 test "ES2020: ?. call" {
     var r = try e2eTarget(std.testing.allocator, "a?.();", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("a==null?void 0:a();", r.output);
+    try std.testing.expectEqualStrings("(a==null?void 0:a());", r.output);
 }
 
 test "ES2020: ?. side effect (temp var)" {
     var r = try e2eTarget(std.testing.allocator, "foo()?.bar;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;(_a=foo())==null?void 0:_a.bar;", r.output);
+    try std.testing.expectEqualStrings("var _a;((_a=foo())==null?void 0:_a.bar);", r.output);
 }
 
 test "ES2020: ?. chain continuation" {
     var r = try e2eTarget(std.testing.allocator, "a?.b.c;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("a==null?void 0:a.b.c;", r.output);
+    try std.testing.expectEqualStrings("(a==null?void 0:a.b.c);", r.output);
 }
 
 test "ES2020: ?. no transform on esnext" {

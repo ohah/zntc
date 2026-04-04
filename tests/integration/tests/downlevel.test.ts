@@ -1860,4 +1860,40 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("20");
     });
   });
+
+  describe("ES2020 optional chaining 괄호", () => {
+    test("a?.b !== c?.d 연산자 우선순위", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a = { b: 1 };
+            const c = { d: 2 };
+            console.log(a?.b !== c?.d);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
+    });
+
+    test("null?.prop이 포함된 비교", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a: any = null;
+            const b = { x: 1 };
+            console.log(a?.x === b?.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("false");
+    });
+  });
 });

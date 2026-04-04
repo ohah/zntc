@@ -147,10 +147,17 @@ pub fn ES2020(comptime Transformer: type) type {
             const rebuilt_chain = try rebuildChainNode(self, node, chain_base);
             const eq_null = try helpers.makeEqNull(self, null_check_base, node.span);
             const void_zero = try helpers.makeVoidZero(self, node.span);
-            return self.new_ast.addNode(.{
+            const cond = try self.new_ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = node.span,
                 .data = .{ .ternary = .{ .a = eq_null, .b = void_zero, .c = rebuilt_chain } },
+            });
+            // 괄호로 감싸서 binary expression 안에서 우선순위 보장
+            // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)
+            return self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
             });
         }
 
