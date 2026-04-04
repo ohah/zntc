@@ -296,7 +296,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// object_pattern 또는 array_pattern을 개별 declarator로 분해.
         /// ref_span은 임시 변수의 span (_ref).
-        fn emitPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+        pub fn emitPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
             if (pattern.tag == .object_pattern) {
                 try emitObjectPatternDeclarators(self, pattern, ref_span, span);
             } else if (pattern.tag == .array_pattern) {

@@ -35,14 +35,18 @@ pub fn ES2015Params(comptime Transformer: type) type {
             for (old_params) |raw_idx| {
                 const param = self.old_ast.getNode(@enumFromInt(raw_idx));
                 if (param.tag == .spread_element or param.tag == .rest_element) return true;
+                // destructuring 파라미터도 ES5 변환 필요
+                if (param.tag == .object_pattern or param.tag == .array_pattern) return true;
                 if (param.tag == .formal_parameter) {
-                    // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const extras = self.old_ast.extra_data.items;
                     const pe = param.data.extra;
                     const default_val: NodeIndex = @enumFromInt(extras[pe + 2]);
                     if (!default_val.isNone()) return true;
+                    // formal_parameter 안의 destructuring 패턴도 체크
+                    const pattern_idx: NodeIndex = @enumFromInt(extras[pe]);
+                    const pattern_node = self.old_ast.getNode(pattern_idx);
+                    if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) return true;
                 }
-                // assignment_pattern도 default를 의미
                 if (param.tag == .assignment_pattern) return true;
             }
             return false;
@@ -122,6 +126,22 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     continue;
                 }
 
+                // destructuring 파라미터 (default 없음): temp 변수 경유
+                // function View({ ref, ...props }) → function View(_param) { var {ref, ...props} = _param; }
+                const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const pattern_idx_raw = if (param_node.tag == .formal_parameter)
+                    self.old_ast.extra_data.items[param_node.data.extra]
+                else
+                    raw_idx;
+                const pattern_node = self.old_ast.getNode(@enumFromInt(pattern_idx_raw));
+
+                if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
+                    const result = try buildDestructuringParam(self, @enumFromInt(pattern_idx_raw), &body_stmts, span);
+                    try self.scratch.append(self.allocator, result);
+                    param_index += 1;
+                    continue;
+                }
+
                 // 일반 파라미터: 그대로 방문
                 const new_param = try self.visitNode(@enumFromInt(raw_idx));
                 if (!new_param.isNone()) {
@@ -170,6 +190,33 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 span,
             );
             try body_stmts.append(self.allocator, destruct_decl);
+
+            return temp_binding;
+        }
+
+        /// destructuring parameter (default 없음) → temp 변수 경유.
+        /// ({ ref, ...props }) → (_param); body에 var ref = _param.ref, props = __rest(_param, ["ref"]);
+        fn buildDestructuringParam(
+            self: *Transformer,
+            pattern_idx: NodeIndex,
+            body_stmts: *std.ArrayList(NodeIndex),
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            const pattern = self.old_ast.getNode(pattern_idx);
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            try es2015_destruct.emitPatternDeclarators(self, pattern, temp_span, span);
+
+            const declarators = self.scratch.items[scratch_top..];
+            if (declarators.len > 0) {
+                const decl = try es_helpers.makeVarDeclaration(self, declarators, 0, span);
+                try body_stmts.append(self.allocator, decl);
+            }
 
             return temp_binding;
         }

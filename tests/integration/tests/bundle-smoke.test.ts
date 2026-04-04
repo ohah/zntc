@@ -1255,6 +1255,36 @@ console.log(new Child(true).v + ":" + new Child(false).v);`,
     expect(result.runOutput).toBe("10:20");
   });
 
+  test("ES5 destructuring 파라미터: function({ ref, ...props }) 올바른 변환", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `function test({ ref, ...props }: any) { return ref + ":" + props.x; }
+console.log(test({ ref: "hello", x: 42 }));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello:42");
+  });
+
+  test("ES5 destructuring 파라미터 + 기본값: function({ a = 1 }) 변환", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `function test({ a = 10, b }: any) { return a + b; }
+console.log(test({ b: 5 }));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("15");
+  });
+
   test("ES5 class getter/setter가 configurable: true로 정의되어 이후 재정의 가능", async () => {
     // abort-controller 패턴: class getter 정의 후 Object.defineProperties로 enumerable 추가.
     // configurable: true가 없으면 TypeError: property is not configurable 발생.

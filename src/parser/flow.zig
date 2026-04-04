@@ -985,25 +985,71 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         _ = try parseTypeParameterDeclaration(self);
     }
 
-    // 파라미터 파싱: component의 파라미터를 일반 함수 파라미터로 변환
-    // component 파라미터: ref?, propName: Type, ...rest: Type
-    // → 함수 파라미터: ref, propName, ...rest (타입 제거)
+    // component 파라미터를 단일 객체 destructuring 파라미터로 변환.
+    // component View(ref?, ...props: ViewProps) { ... }
+    // → function View({ ref, ...props }) { ... }
+    // React가 component를 View(props) 하나의 인자로 호출하므로,
+    // component 파라미터는 props 객체의 프로퍼티를 나타낸다.
     try self.expect(.l_paren);
-    self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
+    const param_start_span = self.currentSpan();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
-        const param = try self.parseBindingIdentifier();
-        try self.scratch.append(self.allocator, param);
-        try self.checkRestParameterLast(param);
+
+        // rest: ...props: Type → binding_rest_element
+        if (self.current() == .dot3) {
+            try self.advance();
+            const rest_name = try self.parseSimpleIdentifier();
+            if (self.current() == .colon) {
+                try self.advance();
+                _ = try parseType(self);
+            }
+            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                .tag = .binding_rest_element,
+                .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = rest_name, .flags = 0 } },
+            }));
+        } else {
+            // propName: Type = default → binding_property
+            const prop_name = try self.parseSimpleIdentifier();
+            _ = try self.eat(.question);
+            if (self.current() == .colon) {
+                try self.advance();
+                _ = try parseType(self);
+            }
+
+            const right_node = if (try self.eat(.eq)) blk: {
+                const default_val = try self.parseAssignmentExpression();
+                break :blk try self.ast.addNode(.{
+                    .tag = .assignment_pattern,
+                    .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = prop_name, .right = default_val, .flags = 0 } },
+                });
+            } else prop_name;
+
+            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                .tag = .binding_property,
+                .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = prop_name, .right = right_node, .flags = 0 } },
+            }));
+        }
+
         if (!try self.eat(.comma)) break;
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
-    const param_items = self.scratch.items[scratch_top..];
-    const params = try self.ast.addNodeList(param_items);
+    const prop_items = self.scratch.items[scratch_top..];
+    const prop_list = try self.ast.addNodeList(prop_items);
     self.restoreScratch(scratch_top);
-    self.in_formal_parameters = false;
     try self.expect(.r_paren);
+
+    // object_pattern 노드 생성: { ref, ...props }
+    const obj_pattern = try self.ast.addNode(.{
+        .tag = .object_pattern,
+        .span = .{ .start = param_start_span.start, .end = self.currentSpan().start },
+        .data = .{ .list = prop_list },
+    });
+    // 단일 파라미터로 래핑
+    const params = try self.ast.addNodeList(&.{obj_pattern});
 
     try trySkipRendersClause(self);
 
