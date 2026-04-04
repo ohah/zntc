@@ -2244,6 +2244,19 @@ test "ES2015: class static getter" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F") != null);
 }
 
+test "ES2015: IIFE getter uses inner function name, not outer renamed variable" {
+    // class Foo extends Bar { get x() {} } → IIFE 내부에서
+    // Object.defineProperty(Foo.prototype, ...) 여야 함 (Foo$1.prototype 아님).
+    // IIFE 반환 전에는 외부 변수가 undefined이므로 외부 이름을 쓰면 TypeError 발생.
+    var r = try e2eTarget(std.testing.allocator, "class Foo extends Bar{get x(){return 1;}}", .es5);
+    defer r.deinit();
+    // IIFE 내부에서 내부 함수명(Foo)으로 prototype 접근
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo.prototype") != null);
+    // IIFE 패턴 확인
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(Foo,_super)") != null);
+}
+
 // --- class expression ---
 
 test "ES2015: class expression simple" {
@@ -3077,6 +3090,24 @@ test "Flow: covariant type parameter stripped" {
     var r = try e2eFlow(std.testing.allocator, "type ReadOnly<+T> = T;\nlet x = 1;");
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;", r.output);
+}
+
+test "Flow: covariant class property stripped (static + instance)" {
+    // Flow의 +prop: Type 은 타입 전용 선언 — 런타임 코드에 남으면 안 됨.
+    // static +INDEX: 1; → 완전히 제거 (static INDEX; 로 변환하면 안 됨)
+    var r = try e2eFlow(std.testing.allocator, "class Foo{static +INDEX:1;+name:string;#real;constructor(){this.#real=1;}}");
+    defer r.deinit();
+    // covariant 프로퍼티는 제거, private field와 constructor는 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "INDEX") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#real") != null);
+}
+
+test "Flow: contravariant class property stripped" {
+    var r = try e2eFlow(std.testing.allocator, "class Foo{-writable:boolean;bar(){return 1;}}");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "writable") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "bar") != null);
 }
 
 test "Flow: export opaque type stripped" {
