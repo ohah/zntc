@@ -555,6 +555,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // static 키워드 소비 후, 프로퍼티 키 파싱 전에 variance marker를 건너뛴다.
     if (self.is_flow and (self.current() == .plus or self.current() == .minus)) {
         try self.advance(); // skip variance marker
+        flags |= 0x80; // Flow covariant/contravariant → type-only property
     }
 
     // static 뒤의 TS modifier도 소비 (static readonly x 등)

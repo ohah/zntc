@@ -3225,8 +3225,8 @@ pub const Transformer = struct {
     fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const flags = self.readU32(e, 2);
-        // abstract 프로퍼티 또는 declare 필드는 타입 전용이므로 완전히 스트리핑
-        if (self.options.strip_types and (flags & 0x60) != 0) return NodeIndex.none;
+        // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용이므로 완전히 스트리핑
+        if (self.options.strip_types and (flags & 0xE0) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
