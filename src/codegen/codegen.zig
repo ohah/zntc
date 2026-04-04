@@ -2219,7 +2219,6 @@ pub const Codegen = struct {
             // import Foo, { bar } from './bar' → const {"default":Foo,bar}=require('./bar');
             try self.writeByte('{');
             var first = true;
-            // default + named 동시 사용: "default" 프로퍼티를 destructuring에 포함
             if (has_default) {
                 for (spec_indices) |raw_idx| {
                     const spec = self.ast.getNode(@enumFromInt(raw_idx));
