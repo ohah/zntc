@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun, runZts, createFixture, ZTS_BIN } from "./helpers";
-import { existsSync } from "node:fs";
+import { bundleAndRun, runZts, runZtsInDir, createFixture, ZTS_BIN } from "./helpers";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 describe("ZTS CLI", () => {
@@ -1183,5 +1183,74 @@ describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
     );
     cleanup = result.cleanup;
     expect(result.runOutput).toBe("123");
+  });
+});
+
+describe("에셋 로더 + RN 프리셋", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("loader 미설정 시 .png 빌드 에러", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
+    });
+    cleanup = fixture.cleanup;
+    // 바이너리 파일은 createFixture(문자열 전용)로 못 만들므로 직접 작성
+    writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle", join(fixture.dir, "entry.ts"),
+    ]);
+    expect(result.stderr).toContain("No loader is configured");
+  });
+
+  test("--loader:.png=file 시 .png 번들 성공", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle", join(fixture.dir, "entry.ts"), "--loader:.png=file",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("require_icon");
+  });
+
+  test("--platform=react-native 시 .png 자동 처리", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle", join(fixture.dir, "entry.ts"), "--platform=react-native",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("require_icon");
+  });
+
+  test("--platform=react-native 사용자 로더 우선", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    // 사용자가 --loader:.png=dataurl 지정 → file 대신 dataurl 사용
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle", join(fixture.dir, "entry.ts"),
+      "--platform=react-native", "--loader:.png=dataurl",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("data:image/png;base64,");
   });
 });

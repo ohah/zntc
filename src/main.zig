@@ -1015,6 +1015,24 @@ pub fn main() !void {
             }
             opts.flow = true;
             opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
+
+            // RN 에셋 기본 로더: Metro assetExts 호환.
+            // 사용자 --loader 오버라이드가 loader_list 앞에 이미 있으므로
+            // resolveLoader()에서 사용자 설정이 우선한다.
+            const rn_asset_exts = [_][]const u8{
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+                ".tiff", ".tif", ".psd",
+                ".ttf", ".otf", ".woff", ".woff2",
+                ".mp4", ".mov", ".mp3", ".wav", ".aac",
+            };
+            for (rn_asset_exts) |ext| {
+                const user_set = for (opts.loader_list.items) |existing| {
+                    if (std.mem.eql(u8, existing.ext, ext)) break true;
+                } else false;
+                if (!user_set) {
+                    try opts.loader_list.append(allocator, .{ .ext = ext, .loader = .file });
+                }
+            }
         }
 
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용

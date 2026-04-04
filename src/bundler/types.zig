@@ -359,6 +359,8 @@ pub const BundlerDiagnostic = struct {
         resolve_error,
         /// JSON 파싱 실패
         json_parse_error,
+        /// 확장자에 대한 로더 미설정 (esbuild 호환: "No loader is configured for ...")
+        no_loader,
     };
 
     pub const Severity = enum {

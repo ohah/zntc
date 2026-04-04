@@ -11600,6 +11600,54 @@ test "Asset loader: [ext] pattern" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "static/woff2/font-") != null);
 }
 
+test "No loader: .png without --loader errors" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const icon = require('./icon.png');\nconsole.log(icon);");
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // loader 미설정 → 빌드 에러 발생
+    try std.testing.expect(result.hasErrors());
+    const has_no_loader = for (result.getDiagnostics()) |d| {
+        if (std.mem.indexOf(u8, d.message, "No loader is configured") != null) break true;
+    } else false;
+    try std.testing.expect(has_no_loader);
+}
+
+test "No loader: .png with --loader:.png=file succeeds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const icon = require('./icon.png');\nconsole.log(icon);");
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // loader 지정 → 성공
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_icon") != null);
+}
+
 // ============================================================
 // Batch D: metafile, analyze, legal-comments, inject, keepNames
 // ============================================================
