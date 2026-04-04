@@ -1374,11 +1374,27 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                 }
 
-                // descriptor object: { get: fn, set: fn } 또는 { get: fn }
+                // configurable: true — ES6 class getter/setter는 스펙상 configurable.
+                // ES5 Object.defineProperty의 기본값은 false이므로 명시 필요.
+                // 이를 누락하면 이후 Object.defineProperties로 재정의 시 TypeError 발생.
+                const config_key = try es_helpers.makeIdentifierRef(self, "configurable");
+                const true_span = try self.new_ast.addString("true");
+                const config_val = try self.new_ast.addNode(.{
+                    .tag = .boolean_literal,
+                    .span = true_span,
+                    .data = .{ .none = 0 },
+                });
+                const config_prop = try self.new_ast.addNode(.{
+                    .tag = .object_property,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = config_key, .right = config_val, .flags = 0 } },
+                });
+
+                // descriptor object: { configurable: true, get: fn, set: fn } 또는 { configurable: true, get: fn }
                 const obj_list = if (paired_prop) |pp|
-                    try self.new_ast.addNodeList(&.{ prop1, pp })
+                    try self.new_ast.addNodeList(&.{ config_prop, prop1, pp })
                 else
-                    try self.new_ast.addNodeList(&.{prop1});
+                    try self.new_ast.addNodeList(&.{ config_prop, prop1 });
                 const desc_obj = try self.new_ast.addNode(.{
                     .tag = .object_expression,
                     .span = span,

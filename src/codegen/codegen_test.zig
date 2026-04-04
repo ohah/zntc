@@ -2247,6 +2247,8 @@ test "ES2015: class getter/setter paired" {
     defer r.deinit();
     // 하나의 Object.defineProperty로 합쳐져야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty") != null);
+    // configurable: true — ES6 class getter/setter는 스펙상 configurable
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "configurable:true") != null);
     // "get:" 와 "set:" 가 같은 호출 안에 있어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "get:function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "set:function(x)") != null);
