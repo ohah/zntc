@@ -43,6 +43,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             if (simple) {
                 const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+                self.copyNewSymbolId(new_left, left_copy);
                 const neq_null = try self.new_ast.addNode(.{
                     .tag = .binary_expression,
                     .span = node.span,
