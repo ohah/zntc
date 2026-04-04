@@ -2268,6 +2268,22 @@ test "ES2015: IIFE getter uses inner function name, not outer renamed variable" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(Foo,_super)") != null);
 }
 
+test "ES2015: class extends member expression (e.g. React.Component)" {
+    // class Foo extends a.B {} → IIFE에 a.B가 인자로 전달되어야 함.
+    // 표현식 super class가 무시되면 super()가 미변환 + __extends 누락.
+    var r = try e2eTarget(std.testing.allocator, "class Foo extends a.B{constructor(){super();this.x=1;}}", .es5);
+    defer r.deinit();
+    // IIFE 인자에 a.B 표현식 전달
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ")(a.B)") != null);
+    // _super 매개변수 + __extends 호출
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_super)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(Foo,_super)") != null);
+    // super() → _super.call(this) 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this)") != null);
+    // 원본 super 키워드가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
+}
+
 // --- class expression ---
 
 test "ES2015: class expression simple" {

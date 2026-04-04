@@ -65,15 +65,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // super class 처리
             const has_super = !super_idx.isNone();
             var super_span: ?Span = null;
+            var super_expr_node: NodeIndex = .none; // 표현식 super class 저장용
             if (has_super) {
                 const super_node = self.old_ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자: 이름을 직접 사용
                     super_span = super_node.data.string_ref;
                 } else {
-                    // 표현식: visit하고 임시 변수에 저장 (TODO: IIFE 패턴)
-                    // 현재는 단순 식별자만 지원
-                    super_span = null;
+                    // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
+                    // visit하여 new AST 노드로 변환, IIFE 매개변수 _super로 전달.
+                    super_expr_node = try self.visitNode(super_idx);
+                    super_span = try self.new_ast.addString("_super");
                 }
             }
 
@@ -216,7 +218,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             const iife_call = if (has_super and super_span != null) blk: {
-                const parent_arg = try self.makeIdentifierRefWithSymbol(super_span.?, super_idx);
+                const parent_arg = if (!super_expr_node.isNone())
+                    super_expr_node // 표현식: 이미 visit된 AST 노드 (e.g. React.Component)
+                else
+                    try self.makeIdentifierRefWithSymbol(super_span.?, super_idx); // 식별자
                 break :blk try es_helpers.makeCallExpr(self, paren, &.{parent_arg}, span);
             } else try es_helpers.makeCallExpr(self, paren, &.{}, span);
 
