@@ -25,11 +25,11 @@ pub const TOESM_RUNTIME =
     \\var __getProtoOf = Object.getPrototypeOf;
     \\var __defProp = Object.defineProperty;
     \\var __hasOwn = Object.prototype.hasOwnProperty;
-    \\var __copyProps = (to, from) => { for (let key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
+    \\var __copyProps = (to, from) => { for (var key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) { const k = key; __defProp(to, k, { get: () => from[k], enumerable: true }); } return to; };
     \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
     \\
 ;
-pub const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(let key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+pub const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(var key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key)){const k=key;__defProp(to,k,{get:()=>from[k],enumerable:true})}return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 
 /// __esm: ESM 모듈의 지연 초기화 팩토리 (esbuild 호환).
 /// ESM 모듈이 require()로 소비될 때 사용. 한 번만 실행되고 결과를 캐시.
