@@ -2220,21 +2220,24 @@ test "ES2015: generator try/catch/finally with yield" {
 test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.call(this,x)") != null);
+    // super(x) → _super.call(this,x) — IIFE 매개변수를 사용하여 스코프 격리
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.call(this,x)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
 test "ES2015: class extends default constructor" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.apply(this,arguments)") != null);
+    // 기본 생성자 → _super.apply(this,arguments) — IIFE 매개변수 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.apply(this,arguments)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
 test "ES2015: super.method() call" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){return super.m();}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.prototype.m.call(this)") != null);
+    // super.m() → _super.prototype.m.call(this) — IIFE 매개변수 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m.call(this)") != null);
 }
 
 // --- class getter/setter ---

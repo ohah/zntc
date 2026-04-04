@@ -69,8 +69,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super) {
                 const super_node = self.old_ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
-                    // 단순 식별자: 이름을 직접 사용
-                    super_span = super_node.data.string_ref;
+                    // 단순 식별자: IIFE 매개변수 _super로 전달.
+                    // 원래 이름을 직접 사용하면 번들러에서 동일 이름의 다른 변수를 참조할 수 있으므로
+                    // (예: EventEmitter가 eventemitter3과 react-native 양쪽에 존재),
+                    // 항상 _super 매개변수를 통해 스코프를 격리한다.
+                    super_expr_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    super_span = try self.new_ast.addString("_super");
                 } else {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
                     // visit하여 new AST 노드로 변환, IIFE 매개변수 _super로 전달.
@@ -282,7 +286,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super) {
                 const super_node = self.old_ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
-                    super_span = super_node.data.string_ref;
+                    // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
+                    expr_super_node = try self.makeIdentifierRefWithSymbol(super_node.data.string_ref, super_idx);
+                    super_span = try self.new_ast.addString("_super");
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
                     super_span = try self.new_ast.addString("_super");
