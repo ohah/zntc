@@ -36,6 +36,7 @@ pub fn ES2016(comptime Transformer: type) type {
 
             // Math.pow(a, b) — left를 복사해서 callee의 인자로 사용
             const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+            self.copyNewSymbolId(new_left, left_copy);
             const pow_call = try buildMathPowCall(self, node.span, left_copy, new_right);
 
             // a = Math.pow(a, b)

@@ -1405,7 +1405,14 @@ pub const Codegen = struct {
                 try self.emitNode(key);
             }
         } else {
-            try self.emitNode(key);
+            // ES2015 shorthand 확장으로 key가 identifier_reference가 되면
+            // scope hoisting rename이 적용되므로 원본 span으로 출력하여 방지.
+            const key_node = self.ast.getNode(key);
+            if (key_node.tag == .identifier_reference) {
+                try self.writeSpan(key_node.data.string_ref);
+            } else {
+                try self.emitNode(key);
+            }
             if (self.options.minify_whitespace) {
                 try self.writeByte(':');
             } else {

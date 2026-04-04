@@ -28,6 +28,7 @@ pub fn ES2021(comptime Transformer: type) type {
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
             const left_copy1 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+            self.copyNewSymbolId(new_left, left_copy1);
 
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
@@ -46,6 +47,7 @@ pub fn ES2021(comptime Transformer: type) type {
 
             if (self.options.unsupported.nullish_coalescing) {
                 const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+                self.copyNewSymbolId(new_left, left_copy2);
                 const null_span = try self.new_ast.addString("null");
                 const null_node = try self.new_ast.addNode(.{
                     .tag = .null_literal,
@@ -84,6 +86,7 @@ pub fn ES2021(comptime Transformer: type) type {
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
             const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+            self.copyNewSymbolId(new_left, left_copy);
 
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
