@@ -2216,8 +2216,21 @@ pub const Codegen = struct {
             }
         } else if (named_count > 0) {
             // import { foo, bar as baz } from './bar' → const {foo,bar:baz}=require('./bar');
+            // import Foo, { bar } from './bar' → const {"default":Foo,bar}=require('./bar');
             try self.writeByte('{');
             var first = true;
+            // default + named 동시 사용: "default" 프로퍼티를 destructuring에 포함
+            if (has_default) {
+                for (spec_indices) |raw_idx| {
+                    const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (spec.tag == .import_default_specifier) {
+                        try self.write("\"default\":");
+                        try self.emitSpecifierWithRename(@enumFromInt(raw_idx), spec);
+                        first = false;
+                        break;
+                    }
+                }
+            }
             for (spec_indices) |raw_idx| {
                 const spec = self.ast.getNode(@enumFromInt(raw_idx));
                 if (spec.tag == .import_specifier) {
