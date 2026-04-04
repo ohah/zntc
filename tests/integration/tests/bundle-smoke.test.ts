@@ -1204,9 +1204,7 @@ describe("에셋 로더 + RN 프리셋", () => {
     // 바이너리 파일은 createFixture(문자열 전용)로 못 만들므로 직접 작성
     writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle", join(fixture.dir, "entry.ts"),
-    ]);
+    const result = await runZtsInDir(fixture.dir, ["--bundle", join(fixture.dir, "entry.ts")]);
     expect(result.stderr).toContain("No loader is configured");
   });
 
@@ -1218,7 +1216,9 @@ describe("에셋 로더 + RN 프리셋", () => {
     writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", join(fixture.dir, "entry.ts"), "--loader:.png=file",
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.png=file",
     ]);
     expect(result.stderr).not.toContain("No loader");
     expect(result.stdout).toContain("require_icon");
@@ -1232,7 +1232,9 @@ describe("에셋 로더 + RN 프리셋", () => {
     writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", join(fixture.dir, "entry.ts"), "--platform=react-native",
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--platform=react-native",
     ]);
     expect(result.stderr).not.toContain("No loader");
     expect(result.stdout).toContain("require_icon");
@@ -1247,8 +1249,10 @@ describe("에셋 로더 + RN 프리셋", () => {
 
     // 사용자가 --loader:.png=dataurl 지정 → file 대신 dataurl 사용
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle", join(fixture.dir, "entry.ts"),
-      "--platform=react-native", "--loader:.png=dataurl",
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--platform=react-native",
+      "--loader:.png=dataurl",
     ]);
     expect(result.stderr).not.toContain("No loader");
     expect(result.stdout).toContain("data:image/png;base64,");
