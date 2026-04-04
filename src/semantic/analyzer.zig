@@ -987,6 +987,10 @@ pub const SemanticAnalyzer = struct {
                     self.resolveIdentifier(name, @intFromEnum(idx));
                 }
             },
+            // JSX member expression: <Foo.Bar> → left(Foo)를 재귀 방문하여 symbol 등록
+            .jsx_member_expression => {
+                try self.visitNode(node.data.binary.left);
+            },
 
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
