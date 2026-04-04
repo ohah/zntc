@@ -31,9 +31,10 @@ function findHermes(): string | null {
   return null;
 }
 
-function findHermesc(): string {
+function findHermesc(): string | null {
   const hermescDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
-  return resolve(EXAMPLE_APP, `node_modules/hermes-compiler/hermesc/${hermescDir}/hermesc`);
+  const p = resolve(EXAMPLE_APP, `node_modules/hermes-compiler/hermesc/${hermescDir}/hermesc`);
+  return existsSync(p) ? p : null;
 }
 
 function runHermes(
@@ -41,7 +42,7 @@ function runHermes(
   code: string,
 ): { stdout: string; stderr: string; exitCode: number } {
   const tmpFile = `/tmp/hermes-test-${Date.now()}.js`;
-  Bun.spawnSync(["bash", "-c", `cat > ${tmpFile} << 'HERMES_EOF'\n${code}\nHERMES_EOF`]);
+  require("fs").writeFileSync(tmpFile, code);
   const result = Bun.spawnSync([hermes, tmpFile]);
   return {
     stdout: result.stdout?.toString() ?? "",
@@ -129,6 +130,7 @@ describe("Hermes 런타임: ZTS 번들 실행 검증", () => {
 
   test("RN 번들 Hermes 구문 검증 (hermesc)", async () => {
     const hermesc = findHermesc();
+    if (!hermesc) return; // hermesc not found
     const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
     const zts = Bun.spawnSync([
       ZTS_BIN,
