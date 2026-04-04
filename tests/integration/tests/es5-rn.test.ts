@@ -93,6 +93,36 @@ describe("RN ES5: ExampleApp 번들 테스트", () => {
     expect(stat.length).toBeGreaterThan(100_000);
   }, 30_000);
 
+  test("bundle (no target): Node 실행 검증", { timeout: 30_000 }, async () => {
+    const outFile = resolve(EXAMPLE_APP, "out.js");
+    const run = Bun.spawnSync([
+      "node",
+      "--eval",
+      `
+      globalThis.__DEV__ = true;
+      globalThis.__fbBatchedBridgeConfig = { remoteModuleConfig: [] };
+      globalThis.MessageQueue = class {};
+      globalThis.nativePerformanceNow = Date.now;
+      globalThis.__turboModuleProxy = () => new Proxy({}, {
+        get: (_, prop) => prop === 'getConstants' ? () => ({
+          isTesting: false, reactNativeVersion: {major:0,minor:78,patch:0},
+          osVersion: 18, systemName: 'iOS', interfaceIdiom: 'phone',
+        }) : (...args) => {}
+      });
+      try { require(${JSON.stringify(outFile)}); } catch(e) {
+        if (e instanceof ReferenceError || e instanceof SyntaxError) {
+          console.error("FATAL:", e.message);
+          process.exit(1);
+        }
+      }
+    `,
+    ]);
+    if (run.exitCode !== 0) {
+      console.log("Bundle runtime error:", run.stderr?.toString());
+    }
+    expect(run.exitCode).toBe(0);
+  });
+
   test("bundle --target=es5", { timeout: 30_000 }, async () => {
     const bundle = Bun.spawnSync([
       ZTS_BIN,
@@ -117,6 +147,45 @@ describe("RN ES5: ExampleApp 번들 테스트", () => {
     // ES5 출력 크기 (100KB+)
     expect(output.length).toBeGreaterThan(100_000);
   });
+
+  test(
+    "bundle --target=es5: Node 실행 검증 (ReferenceError 검출)",
+    { timeout: 30_000 },
+    async () => {
+      // ES5 번들을 Node.js에서 실행하여 변수명 불일치 등 런타임 에러 검출.
+      // ReferenceError는 번들러의 변수 리네이밍/호이스팅 버그이므로 실패 처리.
+      // SyntaxError(super 미변환 등)는 기존 ES5 변환 제한사항으로 허용.
+      // TypeError는 네이티브 모듈 부재로 인한 것이므로 허용.
+      const outFile = resolve(EXAMPLE_APP, "out-es5.js");
+      const run = Bun.spawnSync([
+        "node",
+        "--eval",
+        `
+      globalThis.__DEV__ = true;
+      globalThis.__fbBatchedBridgeConfig = { remoteModuleConfig: [] };
+      globalThis.MessageQueue = class {};
+      globalThis.nativePerformanceNow = Date.now;
+      globalThis.__turboModuleProxy = () => new Proxy({}, {
+        get: (_, prop) => prop === 'getConstants' ? () => ({
+          isTesting: false, reactNativeVersion: {major:0,minor:78,patch:0},
+          osVersion: 18, systemName: 'iOS', interfaceIdiom: 'phone',
+        }) : (...args) => {}
+      });
+      try { require(${JSON.stringify(outFile)}); } catch(e) {
+        if (e instanceof ReferenceError) {
+          console.error("FATAL:", e.message);
+          process.exit(1);
+        }
+      }
+    `,
+      ]);
+      const stderr = run.stderr?.toString() ?? "";
+      if (run.exitCode !== 0) {
+        console.log("ES5 bundle runtime error:", stderr);
+      }
+      expect(run.exitCode).toBe(0);
+    },
+  );
 });
 
 describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
