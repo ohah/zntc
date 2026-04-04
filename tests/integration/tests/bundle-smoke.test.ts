@@ -1097,6 +1097,83 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.exitCode).toBe(0);
     expect(bundle.stdout).toContain("= _default");
   });
+
+  test("export * from 이 __esm 래퍼에서 소스 모듈의 named export를 전파한다", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { greet, add } from "./proxy"; console.log(greet("world") + ":" + add(1, 2));`,
+      "proxy.ts": `export * from "./impl";`,
+      "impl.ts": `export function greet(name: string) { return "hello " + name; }\nexport function add(a: number, b: number) { return a + b; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello world:3");
+  });
+
+  test("export * from 체인이 정상 동작한다 (A → B → C)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { value } from "./a"; console.log(value);`,
+      "a.ts": `export * from "./b";`,
+      "b.ts": `export * from "./c";`,
+      "c.ts": `export const value = 42;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("42");
+  });
+
+  test("export * from 이 직접 export보다 우선순위가 낮다", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { value } from "./proxy"; console.log(value);`,
+      "proxy.ts": `export const value = "direct";\nexport * from "./impl";`,
+      "impl.ts": `export const value = "star";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("direct");
+  });
+
+  test("export * from 이 default를 제외한다 (ESM 스펙)", async () => {
+    // export * from은 "default"를 전파하지 않는다 (ECMAScript 15.2.3.5).
+    // named export만 전파되고 default는 undefined.
+    const result = await bundleAndRun({
+      "index.ts": `import { named } from "./proxy"; console.log(named);`,
+      "proxy.ts": `export * from "./impl";`,
+      "impl.ts": `export default "should_not_propagate";\nexport const named = 1;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1");
+  });
+
+  test("export * as ns from 이 namespace 객체로 re-export된다", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { ns } from "./proxy"; console.log(ns.x + ":" + ns.y);`,
+      "proxy.ts": `export * as ns from "./impl";`,
+      "impl.ts": `export const x = "hello";\nexport const y = "world";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello:world");
+  });
+
+  test("CJS가 export * from barrel을 require()로 소비한다", async () => {
+    // CJS entry가 ESM barrel을 require()하는 패턴.
+    // __toCommonJS를 통해 proxy의 star re-export에 접근.
+    const result = await bundleAndRun({
+      "index.ts": `const p = require("./proxy"); console.log(p.foo + ":" + p.bar);`,
+      "proxy.ts": `export * from "./impl";`,
+      "impl.ts": `export const foo = "a";\nexport const bar = "b";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("a:b");
+  });
 });
 
 describe("export type/interface + module.exports → CJS 판별 (#713)", () => {

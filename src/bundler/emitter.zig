@@ -231,10 +231,19 @@ pub fn emitWithTreeShaking(
     var collected_helpers: RuntimeHelpers = .{};
 
     // 엔트리 모듈 인덱스 (final exports용)
-    const entry_idx: ?u32 = if (sorted.items.len > 0)
-        @intFromEnum(sorted.items[sorted.items.len - 1].index)
-    else
-        null;
+    // exec_index가 가장 높은 모듈 = DFS post-order의 루트 = 엔트리.
+    // bundleOrderLessThan이 wrapped/non-wrapped를 그룹으로 나누므로
+    // sorted 마지막이 반드시 엔트리가 아닐 수 있다.
+    const entry_idx: ?u32 = blk: {
+        var best: ?*const Module = null;
+        for (sorted.items) |m| {
+            if (m.exec_index == std.math.maxInt(u32)) continue;
+            if (best == null or m.exec_index > best.?.exec_index) {
+                best = m;
+            }
+        }
+        break :blk if (best) |b| @intFromEnum(b.index) else null;
+    };
 
     // Phase 1: used_names 사전 계산 (순차 — 모듈 간 의존)
     const used_names_list = try computeAllUsedNames(allocator, sorted.items, graph, shaker);
@@ -346,14 +355,16 @@ pub fn emitWithTreeShaking(
 
     // CJS 엔트리 자동 호출: __commonJS로 래핑된 엔트리 모듈은 require_xxx()를 호출해야 실행됨.
     // esbuild와 동일하게 번들 끝(IIFE epilogue 직전)에 require_xxx() 삽입.
-    // entry_idx는 sorted.items의 마지막 요소에서 유래하므로 직접 접근.
-    if (sorted.items.len > 0) {
-        const em = sorted.items[sorted.items.len - 1];
-        if (em.wrap_kind == .cjs) {
-            const call_name = try types.makeRequireVarName(allocator, em.path);
-            defer allocator.free(call_name);
-            try output.appendSlice(allocator, call_name);
-            try output.appendSlice(allocator, "();\n");
+    // entry_idx로 실제 엔트리 모듈을 찾는다 (exec_index 기반).
+    if (entry_idx) |ei| {
+        for (sorted.items) |em| {
+            if (@intFromEnum(em.index) == ei and em.wrap_kind == .cjs) {
+                const call_name = try types.makeRequireVarName(allocator, em.path);
+                defer allocator.free(call_name);
+                try output.appendSlice(allocator, call_name);
+                try output.appendSlice(allocator, "();\n");
+                break;
+            }
         }
     }
 
@@ -1853,16 +1864,26 @@ pub fn emitModule(
     const raw_final_exports = if (metadata) |md| md.final_exports else null;
 
     // IIFE + globalName: "export { x }" → "return { x }" 변환.
-    // linker는 format-agnostic하게 "export {}" 를 생성하므로, emitter에서 IIFE 시 치환.
+    // IIFE (globalName 없음): export 구문은 IIFE 안에서 syntax error → 제거.
+    // CJS: export 구문은 CJS 래핑과 무관 → 제거.
+    // linker는 format-agnostic하게 "export {}" 를 생성하므로, emitter에서 포맷별 치환/제거.
     var iife_return_buf: ?[]const u8 = null;
     defer if (iife_return_buf) |buf| allocator.free(buf);
 
     const final_exports = if (raw_final_exports) |fe| blk: {
-        if (options.format == .iife and options.global_name != null) {
-            if (std.mem.startsWith(u8, fe, "export {")) {
-                iife_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
-                break :blk iife_return_buf.?;
+        if (options.format == .iife) {
+            if (options.global_name != null) {
+                if (std.mem.startsWith(u8, fe, "export {")) {
+                    iife_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
+                    break :blk iife_return_buf.?;
+                }
             }
+            // IIFE (globalName 없음): export는 syntax error이므로 제거
+            break :blk @as(?[]const u8, null);
+        }
+        if (options.format == .cjs) {
+            // CJS: export 구문은 불필요 (CJS 래핑이 exports 처리)
+            break :blk @as(?[]const u8, null);
         }
         break :blk fe;
     } else null;
@@ -2381,37 +2402,121 @@ fn emitEsmWrappedModule(
     }
 
     // 4. __export (lazy getter — 호이스팅된 변수를 참조하므로 래퍼 밖에서 안전)
-    if (module.export_bindings.len > 0) {
-        try wrapped.appendSlice(allocator, "__export(");
-        try wrapped.appendSlice(allocator, exports_name);
-        try wrapped.appendSlice(allocator, ", {\n");
+    //
+    // export * from 처리:
+    //   re_export_all 바인딩(exported_name == "*")을 소스 모듈의 wrap_kind에 따라 확장:
+    //   - wrap_kind == .none (scope-hoisted): getter가 canonical 로컬 변수를 직접 참조
+    //   - wrap_kind == .esm: getter가 exports_source.name을 참조
+    //   - wrap_kind == .cjs: getter가 require_source().name을 참조
+    //   ESM 스펙에 따라 "default"는 제외.
+    {
+        // star re-export 중복 방지용
+        var direct_exports = std.StringHashMap(void).init(allocator);
+        defer direct_exports.deinit();
         for (module.export_bindings) |eb| {
             if (eb.kind == .local or eb.kind == .re_export) {
-                try wrapped.appendSlice(allocator, "\t");
-                if (needsPropertyQuote(eb.exported_name)) {
-                    try wrapped.appendSlice(allocator, "\"");
-                    try wrapped.appendSlice(allocator, eb.exported_name);
-                    try wrapped.appendSlice(allocator, "\"");
-                } else {
-                    try wrapped.appendSlice(allocator, eb.exported_name);
-                }
-                try wrapped.appendSlice(allocator, ": () => ");
-                const local_name = if (std.mem.eql(u8, eb.local_name, "default"))
-                    (if (metadata) |md| md.default_export_name else "_default")
-                else blk: {
-                    if (linker) |l| {
-                        const mi: u32 = @intFromEnum(module.index);
-                        if (l.getCanonicalName(mi, eb.local_name)) |renamed| {
-                            break :blk renamed;
-                        }
-                    }
-                    break :blk eb.local_name;
-                };
-                try wrapped.appendSlice(allocator, local_name);
-                try wrapped.appendSlice(allocator, ",\n");
+                try direct_exports.put(eb.exported_name, {});
             }
         }
-        try wrapped.appendSlice(allocator, "});\n");
+
+        // star re-export 엔트리 수집
+        // getter_value: 소스 wrap_kind에 따라 다름
+        //   .none  → "foo"           (canonical 로컬 변수)
+        //   .esm   → "exports_x.foo" (exports 객체 프로퍼티)
+        //   .cjs   → "require_x().foo"
+        const StarEntry = struct { name: []const u8, getter_value: []const u8 };
+        var star_entries: std.ArrayList(StarEntry) = .empty;
+        defer star_entries.deinit(allocator);
+        var star_owned: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (star_owned.items) |s| allocator.free(s);
+            star_owned.deinit(allocator);
+        }
+
+        if (linker) |l| {
+            // seen/visited는 루프 밖에서 할당하여 재사용 (export * from이 여러 개일 때 할당 절약)
+            var seen = std.StringHashMap(void).init(allocator);
+            defer seen.deinit();
+            var visited = std.AutoHashMap(u32, void).init(allocator);
+            defer visited.deinit();
+
+            for (module.export_bindings) |eb| {
+                if (eb.kind != .re_export_all) continue;
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= module.import_records.len) continue;
+                const source_mod_idx = module.import_records[rec_idx].resolved;
+                if (source_mod_idx.isNone()) continue;
+                const src_i = @intFromEnum(source_mod_idx);
+                if (src_i >= l.modules.len) continue;
+                const src_mod = &l.modules[src_i];
+
+                if (std.mem.eql(u8, eb.exported_name, "*")) {
+                    seen.clearRetainingCapacity();
+                    visited.clearRetainingCapacity();
+                    try collectStarExportNames(l, src_i, &seen, &visited);
+
+                    var it = seen.iterator();
+                    while (it.next()) |entry| {
+                        const name = entry.key_ptr.*;
+                        if (std.mem.eql(u8, name, "default")) continue;
+                        if (direct_exports.contains(name)) continue;
+
+                        const getter_val = try makeStarGetterValue(allocator, l, src_mod, src_i, name);
+                        try star_owned.append(allocator, getter_val);
+                        try star_entries.append(allocator, .{
+                            .name = name,
+                            .getter_value = getter_val,
+                        });
+                        try direct_exports.put(name, {});
+                    }
+                } else {
+                    // export * as ns from './dep' → namespace re-export
+                    // getter는 소스 모듈의 exports 객체 자체를 참조
+                    const getter_val = switch (src_mod.wrap_kind) {
+                        .esm, .none => try types.makeExportsVarName(allocator, src_mod.path),
+                        .cjs => blk: {
+                            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+                            defer allocator.free(rv);
+                            break :blk try std.fmt.allocPrint(allocator, "{s}()", .{rv});
+                        },
+                    };
+                    try star_owned.append(allocator, getter_val);
+                    if (!direct_exports.contains(eb.exported_name)) {
+                        try star_entries.append(allocator, .{
+                            .name = eb.exported_name,
+                            .getter_value = getter_val,
+                        });
+                        try direct_exports.put(eb.exported_name, {});
+                    }
+                }
+            }
+        }
+
+        if (direct_exports.count() > 0 or star_entries.items.len > 0) {
+            try wrapped.appendSlice(allocator, "__export(");
+            try wrapped.appendSlice(allocator, exports_name);
+            try wrapped.appendSlice(allocator, ", {\n");
+
+            for (module.export_bindings) |eb| {
+                if (eb.kind == .local or eb.kind == .re_export) {
+                    try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
+                        if (std.mem.eql(u8, eb.local_name, "default"))
+                            break :blk if (metadata) |md| md.default_export_name else "_default";
+                        if (linker) |l| {
+                            const mi: u32 = @intFromEnum(module.index);
+                            if (l.getCanonicalName(mi, eb.local_name)) |renamed|
+                                break :blk renamed;
+                        }
+                        break :blk eb.local_name;
+                    });
+                }
+            }
+            for (star_entries.items) |entry| {
+                try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value);
+            }
+
+            try wrapped.appendSlice(allocator, "});\n");
+        }
     }
 
     // 5. body codegen (variable_declaration → 할당문만)
@@ -2511,6 +2616,40 @@ fn emitEsmWrappedModule(
         break; // default re-export는 모듈당 하나만 존재
     }
 
+    // 5.3. export * from 소스 모듈 init/require 호출 생성.
+    // export * from은 import_bindings를 만들지 않으므로 linker preamble에 포함되지 않는다.
+    // __esm body에서 소스 모듈을 초기화해야 lazy getter가 올바른 값을 반환한다.
+    var star_init_buf: std.ArrayList(u8) = .empty;
+    defer star_init_buf.deinit(allocator);
+    if (linker) |l| {
+        for (module.export_bindings) |eb| {
+            if (eb.kind != .re_export_all) continue;
+            const rec_idx = eb.import_record_index orelse continue;
+            if (rec_idx >= module.import_records.len) continue;
+            const source_mod_idx = module.import_records[rec_idx].resolved;
+            if (source_mod_idx.isNone()) continue;
+            const src_i = @intFromEnum(source_mod_idx);
+            if (src_i >= l.modules.len) continue;
+
+            const src_mod = &l.modules[src_i];
+            switch (src_mod.wrap_kind) {
+                .esm => {
+                    const iv = try types.makeInitVarName(allocator, src_mod.path);
+                    defer allocator.free(iv);
+                    try star_init_buf.appendSlice(allocator, iv);
+                    try star_init_buf.appendSlice(allocator, "();\n");
+                },
+                .cjs => {
+                    const rv = try types.makeRequireVarName(allocator, src_mod.path);
+                    defer allocator.free(rv);
+                    try star_init_buf.appendSlice(allocator, rv);
+                    try star_init_buf.appendSlice(allocator, "();\n");
+                },
+                .none => {},
+            }
+        }
+    }
+
     // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
@@ -2522,6 +2661,7 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
+        if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         try wrapped.appendSlice(allocator, "}});");
@@ -2535,6 +2675,10 @@ fn emitEsmWrappedModule(
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, p);
         }
+        if (star_init_buf.items.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, star_init_buf.items);
+        }
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, body_code);
@@ -2547,4 +2691,119 @@ fn emitEsmWrappedModule(
     }
 
     return try allocator.dupe(u8, wrapped.items);
+}
+
+/// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
+/// property 이름에 따옴표가 필요하면 자동으로 감싼다.
+fn appendExportGetter(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    try buf.appendSlice(allocator, "\t");
+    if (needsPropertyQuote(name)) {
+        try buf.appendSlice(allocator, "\"");
+        try buf.appendSlice(allocator, name);
+        try buf.appendSlice(allocator, "\"");
+    } else {
+        try buf.appendSlice(allocator, name);
+    }
+    try buf.appendSlice(allocator, ": () => ");
+    try buf.appendSlice(allocator, value);
+    try buf.appendSlice(allocator, ",\n");
+}
+
+/// export * from 체인을 따라가며 모든 export 이름을 수집한다.
+/// ESM 스펙: export *는 "default"를 제외한 모든 named export를 전파한다.
+/// diamond export * 패턴(A→B,C / B,C→D)에서 무한 재귀를 방지하기 위해 visited로 모듈 추적.
+fn collectStarExportNames(
+    l: *const Linker,
+    mod_idx: u32,
+    seen: *std.StringHashMap(void),
+    visited: *std.AutoHashMap(u32, void),
+) !void {
+    if (mod_idx >= l.modules.len) return;
+    if (visited.contains(mod_idx)) return;
+    try visited.put(mod_idx, {});
+    const m = &l.modules[mod_idx];
+
+    // 직접 선언된 export 수집 (local + re_export + named re_export_all)
+    for (m.export_bindings) |eb| {
+        if (eb.kind == .re_export_all and std.mem.eql(u8, eb.exported_name, "*")) continue;
+        if (!seen.contains(eb.exported_name)) {
+            try seen.put(eb.exported_name, {});
+        }
+    }
+
+    // export * from 재귀 — 소스 모듈의 export도 수집
+    for (m.export_bindings) |eb| {
+        if (eb.kind != .re_export_all) continue;
+        if (!std.mem.eql(u8, eb.exported_name, "*")) continue;
+        const rec_idx = eb.import_record_index orelse continue;
+        if (rec_idx >= m.import_records.len) continue;
+        const source_mod_idx = m.import_records[rec_idx].resolved;
+        if (source_mod_idx.isNone()) continue;
+        try collectStarExportNames(l, @intFromEnum(source_mod_idx), seen, visited);
+    }
+}
+
+/// star re-export의 getter 값을 소스 모듈 wrap_kind에 따라 생성한다.
+/// - .none (scope-hoisted): canonical 로컬 변수 이름 (linker rename 반영)
+/// - .esm: "exports_source.name" (exports 객체 프로퍼티 접근)
+/// - .cjs: "require_source().name" (require 호출 후 프로퍼티 접근)
+fn makeStarGetterValue(
+    allocator: std.mem.Allocator,
+    l: *const Linker,
+    src_mod: *const Module,
+    src_i: u32,
+    name: []const u8,
+) ![]const u8 {
+    switch (src_mod.wrap_kind) {
+        .none => {
+            // scope-hoisted: export의 local_name을 찾아 canonical name으로 변환
+            for (src_mod.export_bindings) |src_eb| {
+                if (std.mem.eql(u8, src_eb.exported_name, name)) {
+                    const local = l.getCanonicalName(src_i, src_eb.local_name) orelse src_eb.local_name;
+                    return try allocator.dupe(u8, local);
+                }
+            }
+            // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
+            // resolveExportChain으로 canonical 이름을 찾는다.
+            if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
+                const canonical_mod_i = @intFromEnum(resolved.module_index);
+                const canonical_mod = &l.modules[canonical_mod_i];
+                // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
+                if (canonical_mod.wrap_kind == .esm) {
+                    const ev = try types.makeExportsVarName(allocator, canonical_mod.path);
+                    defer allocator.free(ev);
+                    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
+                }
+                if (canonical_mod.wrap_kind == .cjs) {
+                    const rv = try types.makeRequireVarName(allocator, canonical_mod.path);
+                    defer allocator.free(rv);
+                    return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
+                }
+                // .none: canonical 로컬 변수
+                for (canonical_mod.export_bindings) |ceb| {
+                    if (std.mem.eql(u8, ceb.exported_name, resolved.export_name)) {
+                        const local = l.getCanonicalName(canonical_mod_i, ceb.local_name) orelse ceb.local_name;
+                        return try allocator.dupe(u8, local);
+                    }
+                }
+            }
+            // fallback: 이름 그대로 사용
+            return try allocator.dupe(u8, name);
+        },
+        .esm => {
+            const ev = try types.makeExportsVarName(allocator, src_mod.path);
+            defer allocator.free(ev);
+            return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
+        },
+        .cjs => {
+            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+            defer allocator.free(rv);
+            return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
+        },
+    }
 }
