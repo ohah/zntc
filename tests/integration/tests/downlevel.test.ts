@@ -1749,4 +1749,73 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("Alice true col:id,col:name,meth:greet");
     });
   });
+
+  describe("ES5 this→_this 치환", () => {
+    test("object shorthand method 안 arrow function의 this 캡처", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj = {
+              items: [1, 2, 3],
+              sum() {
+                let total = 0;
+                this.items.forEach((x) => { total += x; });
+                return total;
+              }
+            };
+            console.log(obj.sum());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    test("class field initializer에서 this→_this (super class)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              value = 10;
+              getVal() { return this.value; }
+            }
+            class Child extends Base {
+              doubled = this.getVal() * 2;
+            }
+            console.log(new Child().doubled);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("20");
+    });
+
+    test("class field initializer에서 object literal + ternary + this", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              flag = true;
+              getFlag() { return this.flag; }
+            }
+            class Child extends Base {
+              config = { active: this.getFlag() ? "yes" : "no" };
+            }
+            console.log(new Child().config.active);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("yes");
+    });
+  });
 });

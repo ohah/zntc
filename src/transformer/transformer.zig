@@ -2038,6 +2038,7 @@ pub const Transformer = struct {
             .static_block_iifes = if (self.options.unsupported.class_static_block) &static_block_iifes else null,
             .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
             .ctor_param_decos = &ctor_param_decos,
+            .has_super = has_super,
         };
 
         // ES2022 static block this 치환을 위한 클래스 이름 추출
@@ -2255,6 +2256,8 @@ pub const Transformer = struct {
         static_field_assignments: ?*std.ArrayList(FieldAssignment) = null,
         /// constructor parameter decorator → class-level __decorateClass에 포함
         ctor_param_decos: *std.ArrayList(NodeIndex),
+        /// super class가 있으면 field initializer visit 시 this → _this 치환
+        has_super: bool = false,
     };
 
     fn classifyClassMember(
@@ -2333,7 +2336,11 @@ pub const Transformer = struct {
             const init_idx = self.readNodeIdx(me, 1);
             if (!init_idx.isNone()) {
                 const new_key = try self.visitNode(key_idx);
+                // super class가 있으면 field value의 this → _this 치환
+                const saved_super_alias = self.super_call_this_alias;
+                if (ctx.has_super) self.super_call_this_alias = true;
                 const new_init = try self.visitNode(init_idx);
+                self.super_call_this_alias = saved_super_alias;
                 const key_node = self.old_ast.getNode(key_idx);
                 const is_computed = (key_node.tag == .computed_property_key);
                 try field_assignments.append(self.allocator, .{
@@ -3208,12 +3215,54 @@ pub const Transformer = struct {
         const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
         const pp = try self.visitParamsCollectProperties(old_params);
 
+        // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
+        const saved_arrow_depth = self.arrow_this_depth;
+        const saved_needs_this = self.needs_this_var;
+        const saved_needs_args = self.needs_arguments_var;
+        self.arrow_this_depth = 0;
+        self.needs_this_var = false;
+        self.needs_arguments_var = false;
+
         var new_body = try self.visitNode(self.readNodeIdx(e, 3));
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
         }
+
+        // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
+        if (self.options.unsupported.arrow and !new_body.isNone() and
+            (self.needs_this_var or self.needs_arguments_var))
+        {
+            var capture_stmts: [2]NodeIndex = undefined;
+            var capture_count: usize = 0;
+
+            if (self.needs_this_var) {
+                const this_init = try self.new_ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = node.span,
+                    .data = .{ .none = 0 },
+                });
+                capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, node.span);
+                capture_count += 1;
+            }
+            if (self.needs_arguments_var) {
+                const args_span = try self.new_ast.addString("arguments");
+                const args_init = try self.new_ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = args_span,
+                    .data = .{ .string_ref = args_span },
+                });
+                capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
+                capture_count += 1;
+            }
+
+            new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
+        }
+
+        self.arrow_this_depth = saved_arrow_depth;
+        self.needs_this_var = saved_needs_this;
+        self.needs_arguments_var = saved_needs_args;
 
         // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
         // method_definition에서는 제거한다.

@@ -91,6 +91,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
+            // super class가 있으면 field initializer의 this → _this 치환 활성화
+            // classifyMembers → buildFieldAssign → visitNode(init) 경로에서 자동 적용
+            const saved_super_alias = self.super_call_this_alias;
+            if (has_super and super_span != null) self.super_call_this_alias = true;
+            defer self.super_call_this_alias = saved_super_alias;
+
             // 클래스 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
@@ -302,6 +308,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_super_class_old_idx = super_idx;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
+
+            // super class가 있으면 field initializer의 this → _this 치환 활성화
+            const saved_super_alias2 = self.super_call_this_alias;
+            if (has_super and super_span != null) self.super_call_this_alias = true;
+            defer self.super_call_this_alias = saved_super_alias2;
 
             // 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span);
@@ -1233,15 +1244,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (expr_idx.isNone()) return stmt_idx;
             const expr = self.new_ast.getNode(expr_idx);
 
-            // assignment: this.x = v → _this.x = v
+            // assignment: this.x = v → _this.x = v (값에 this가 있으면 _this로 교체)
             if (expr.tag == .assignment_expression) {
                 const left = expr.data.binary.left;
+                const right = expr.data.binary.right;
                 const new_left = try replaceThisInExpr(self, left);
-                if (@intFromEnum(new_left) == @intFromEnum(left)) return stmt_idx;
+                const new_right = try replaceThisInExpr(self, right);
+                if (@intFromEnum(new_left) == @intFromEnum(left) and @intFromEnum(new_right) == @intFromEnum(right)) return stmt_idx;
                 const new_assign = try self.new_ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = expr.span,
-                    .data = .{ .binary = .{ .left = new_left, .right = expr.data.binary.right, .flags = expr.data.binary.flags } },
+                    .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = expr.data.binary.flags } },
                 });
                 return self.new_ast.addNode(.{
                     .tag = .expression_statement,
@@ -1275,13 +1288,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // static_member_expression: extra = [object, property, flags]
             if (node.tag == .static_member_expression) {
-                const extras = self.new_ast.extra_data.items;
                 const e = node.data.extra;
-                const obj_idx: NodeIndex = @enumFromInt(extras[e]);
+                const obj_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[e]);
                 const new_obj = try replaceThisInExpr(self, obj_idx);
                 if (@intFromEnum(new_obj) == @intFromEnum(obj_idx)) return idx;
+                const prop = self.new_ast.extra_data.items[e + 1];
+                const flags = self.new_ast.extra_data.items[e + 2];
                 const new_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(new_obj), extras[e + 1], extras[e + 2],
+                    @intFromEnum(new_obj), prop, flags,
                 });
                 return self.new_ast.addNode(.{
                     .tag = .static_member_expression,
@@ -1293,18 +1307,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // call_expression: extra = [callee, args_start, args_len, flags]
             // __classPrivateMethodInit(this, _bark) → __classPrivateMethodInit(_this, _bark)
             if (node.tag == .call_expression) {
-                const extras = self.new_ast.extra_data.items;
                 const e = node.data.extra;
-                const callee: NodeIndex = @enumFromInt(extras[e]);
-                const args_start = extras[e + 1];
-                const args_len = extras[e + 2];
-                const flags = extras[e + 3];
+                const callee: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[e]);
+                const args_start = self.new_ast.extra_data.items[e + 1];
+                const args_len = self.new_ast.extra_data.items[e + 2];
+                const flags = self.new_ast.extra_data.items[e + 3];
 
-                // 인자 중 this_expression을 _this로 교체
+                // callee와 인자 중 this_expression을 _this로 교체
+                const new_callee = try replaceThisInExpr(self, callee);
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                var changed = false;
-                for (extras[args_start .. args_start + args_len]) |raw_arg| {
+                var changed = @intFromEnum(new_callee) != @intFromEnum(callee);
+                for (0..args_len) |i| {
+                    const raw_arg = self.new_ast.extra_data.items[args_start + i];
                     const arg_idx: NodeIndex = @enumFromInt(raw_arg);
                     const new_arg = try replaceThisInExpr(self, arg_idx);
                     if (@intFromEnum(new_arg) != @intFromEnum(arg_idx)) changed = true;
@@ -1313,7 +1328,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (!changed) return idx;
                 const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
                 const new_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(callee), new_args.start, new_args.len, flags,
+                    @intFromEnum(new_callee), new_args.start, new_args.len, flags,
                 });
                 return self.new_ast.addNode(.{
                     .tag = .call_expression,
