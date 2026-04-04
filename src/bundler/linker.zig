@@ -256,6 +256,20 @@ pub const Linker = struct {
     /// name_to_owners HashMap의 타입 별칭.
     pub const NameToOwnersMap = std.StringHashMap(std.ArrayList(NameOwner));
 
+    /// name_to_owners에 (name, owner) 항목을 추가한다.
+    fn addNameOwner(
+        self: *const Linker,
+        name_to_owners: *NameToOwnersMap,
+        name: []const u8,
+        owner: NameOwner,
+    ) !void {
+        const entry = try name_to_owners.getOrPut(name);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .empty;
+        }
+        try entry.value_ptr.append(self.allocator, owner);
+    }
+
     /// 단일 모듈의 top-level 심볼 이름을 name_to_owners에 수집한다.
     /// 모듈 스코프의 모든 심볼 + export default 합성 _default 이름을 등록.
     /// import binding은 다른 모듈의 심볼을 참조하므로 건너뛴다.
@@ -305,52 +319,26 @@ pub const Linker = struct {
                 if (!generates_top_level_var) continue;
             }
 
-            const entry = try name_to_owners.getOrPut(sym_name);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = .empty;
-            }
-            try entry.value_ptr.append(self.allocator, .{
+            try self.addNameOwner(name_to_owners, sym_name, .{
                 .module_index = module_index,
                 .exec_index = m.exec_index,
             });
         }
 
-        // codegen이 "_default" 합성 변수를 생성하는 모든 경우를 수집.
-        // 다음 패턴에서 _default 변수가 생성된다:
-        //   1. export default <expr>          (local, local_name == "default")
-        //   2. export { default } from '...'  (re_export, exported_name == "default")
-        //   3. export { default as X } from   (re_export, local_name == "default")
-        // 각각을 name_to_owners에 등록하여 충돌 시 _default$N으로 리네이밍.
+        // codegen이 "_default" 합성 변수를 생성하는 모든 경우를 수집하여
+        // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
+        // local_name == "default"이면 codegen이 합성 _default 변수를 만든다.
+        const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index };
         for (m.export_bindings) |eb| {
-            // _default 변수가 생성되는 조건: local_name == "default"
-            // (local kind의 경우 exported_name도 "default"이므로 local_name 체크로 충분)
-            const uses_default_var = std.mem.eql(u8, eb.local_name, "default");
-            if (!uses_default_var) {
-                // local export에서 named default (export default function foo)
-                if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-                    if (module_scope.get(eb.local_name) != null) continue;
-                    const entry = try name_to_owners.getOrPut(eb.local_name);
-                    if (!entry.found_existing) {
-                        entry.value_ptr.* = .empty;
-                    }
-                    try entry.value_ptr.append(self.allocator, .{
-                        .module_index = module_index,
-                        .exec_index = m.exec_index,
-                    });
+            if (std.mem.eql(u8, eb.local_name, "default")) {
+                if (eb.kind == .local or eb.kind == .re_export) {
+                    try self.addNameOwner(name_to_owners, "_default", owner);
                 }
-                continue;
-            }
-
-            // local_name == "default" → codegen이 _default 변수를 생성
-            if (eb.kind == .local or eb.kind == .re_export) {
-                const entry = try name_to_owners.getOrPut("_default");
-                if (!entry.found_existing) {
-                    entry.value_ptr.* = .empty;
+            } else if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+                // export default function foo → foo 이름으로 등록
+                if (module_scope.get(eb.local_name) == null) {
+                    try self.addNameOwner(name_to_owners, eb.local_name, owner);
                 }
-                try entry.value_ptr.append(self.allocator, .{
-                    .module_index = module_index,
-                    .exec_index = m.exec_index,
-                });
             }
         }
     }
@@ -1177,23 +1165,17 @@ pub const Linker = struct {
         // CJS import preamble 저장
         const cjs_import_preamble = try preamble.toOwned();
 
-        // export default의 합성 변수명 계산 (이름 충돌 시 _default$1 등)
-        // codegen이 _default 변수를 생성하는 모든 경우 처리:
-        //   - export default <expr> (local, local_name == "default")
-        //   - export { default } from (re_export, exported_name == "default")
-        //   - export { default as X } from (re_export, local_name == "default")
+        // collectModuleNames에서 등록한 _default 충돌의 canonical name을 조회.
         var default_export_name: []const u8 = "_default";
         for (m.export_bindings) |eb| {
-            if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-                if (std.mem.eql(u8, eb.local_name, "default")) {
-                    default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
-                } else {
-                    default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
-                }
+            if (std.mem.eql(u8, eb.local_name, "default") and
+                (eb.kind == .local or eb.kind == .re_export))
+            {
+                default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
                 break;
             }
-            if (eb.kind == .re_export and std.mem.eql(u8, eb.local_name, "default")) {
-                default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+            if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+                default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
                 break;
             }
         }
