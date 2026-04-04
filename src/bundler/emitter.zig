@@ -2347,10 +2347,19 @@ fn emitEsmWrappedModule(
     try wrapped.appendSlice(allocator, exports_name);
     try wrapped.appendSlice(allocator, " = {};\n");
 
-    // 2. 호이스팅된 var 선언
+    // 2. 호이스팅된 var 선언 (중복 제거: import binding과 export default가 같은 심볼을 가리킬 수 있음)
     if (hoisted_var_names.items.len > 0) {
         try wrapped.appendSlice(allocator, "var ");
-        for (hoisted_var_names.items, 0..) |name, i| {
+        var dedup_count: usize = 0;
+        for (hoisted_var_names.items) |name| {
+            const is_dup = for (hoisted_var_names.items[0..dedup_count]) |prev| {
+                if (std.mem.eql(u8, prev, name)) break true;
+            } else false;
+            if (is_dup) continue;
+            hoisted_var_names.items[dedup_count] = name;
+            dedup_count += 1;
+        }
+        for (hoisted_var_names.items[0..dedup_count], 0..) |name, i| {
             if (i > 0) try wrapped.appendSlice(allocator, ", ");
             try wrapped.appendSlice(allocator, name);
         }
