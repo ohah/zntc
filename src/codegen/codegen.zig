@@ -2712,12 +2712,33 @@ pub const Codegen = struct {
     /// tag name 출력: 소문자면 문자열("div"), 그 외 식별자(MyComp)
     fn emitJSXTagName(self: *Codegen, tag_name_idx: NodeIndex) !void {
         const tag_node = self.ast.getNode(tag_name_idx);
+
+        // jsx_member_expression: <Foo.Bar> → Foo.Bar (왼쪽은 rename 반영)
+        if (tag_node.tag == .jsx_member_expression) {
+            try self.emitJSXTagName(tag_node.data.binary.left);
+            try self.writeByte('.');
+            const right_node = self.ast.getNode(tag_node.data.binary.right);
+            try self.writeSpan(right_node.data.string_ref);
+            return;
+        }
+
         const tag_text = self.ast.source[tag_node.span.start..tag_node.span.end];
         if (tag_text.len > 0 and tag_text[0] >= 'a' and tag_text[0] <= 'z') {
+            // 소문자 → HTML 태그 → 문자열
             try self.writeByte('"');
             try self.write(tag_text);
             try self.writeByte('"');
         } else {
+            // 대문자 → 컴포넌트 → 번들러 rename 반영
+            if (self.options.linking_metadata) |meta| {
+                const sym_id = self.resolveSymbolId(tag_name_idx, meta);
+                if (sym_id) |sid| {
+                    if (meta.renames.get(sid)) |new_name| {
+                        try self.write(new_name);
+                        return;
+                    }
+                }
+            }
             try self.write(tag_text);
         }
     }

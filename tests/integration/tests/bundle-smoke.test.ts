@@ -1690,3 +1690,96 @@ describe("JSON named exports", () => {
     expect(result.runOutput).toBe("3");
   });
 });
+
+describe("JSX classic 모드 번들러 rename", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("JSX 컴포넌트 이름이 번들러 rename을 반영한다", async () => {
+    // 두 모듈에서 동일한 이름(Text)을 사용하여 번들러가 rename하게 유도
+    const fixture = await createFixture({
+      "index.tsx": `
+        import { Text } from "./ui";
+        import { Text as Label } from "./label";
+        export function App() {
+          return <Text value="hello" />;
+        }
+        export function Sub() {
+          return <Label value="world" />;
+        }
+      `,
+      "ui.tsx": `
+        export function Text({ value }: { value: string }) {
+          return value;
+        }
+      `,
+      "label.tsx": `
+        export function Text({ value }: { value: string }) {
+          return "[" + value + "]";
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts([
+      "--bundle", join(fixture.dir, "index.tsx"),
+      "-o", outFile,
+      "--jsx=classic",
+    ]);
+    expect(bundle.exitCode).toBe(0);
+
+    const { readFileSync } = await import("node:fs");
+    const output = readFileSync(outFile, "utf-8");
+
+    // createElement 호출에서 두 Text 함수가 다른 이름으로 참조되어야 함
+    // $는 \w에 포함되므로 [\w$]+로 매치 (Text$1 등)
+    const calls = [...output.matchAll(/React\.createElement\(([\w$]+)/g)].map(m => m[1]);
+    expect(calls.length).toBe(2);
+    // 두 컴포넌트 이름이 달라야 함 (하나는 Text, 다른 하나는 Text$1)
+    expect(calls[0]).not.toBe(calls[1]);
+
+    // 각 createElement의 컴포넌트가 실제 함수 선언과 일치하는지 확인
+    for (const name of calls) {
+      expect(output).toContain(`function ${name}(`);
+    }
+  });
+
+  test("JSX member expression (<Foo.Bar>) rename", async () => {
+    const fixture = await createFixture({
+      "index.tsx": `
+        import * as UI from "./ui";
+        export function App() {
+          return <UI.Button label="click" />;
+        }
+      `,
+      "ui.tsx": `
+        export function Button({ label }: { label: string }) {
+          return label;
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts([
+      "--bundle", join(fixture.dir, "index.tsx"),
+      "-o", outFile,
+      "--jsx=classic",
+    ]);
+    expect(bundle.exitCode).toBe(0);
+
+    const { readFileSync } = await import("node:fs");
+    const output = readFileSync(outFile, "utf-8");
+
+    // member expression이 올바르게 출력되어야 함 (namespace.Button 형태)
+    const memberMatch = output.match(/React\.createElement\((\w+)\.Button/);
+    expect(memberMatch).not.toBeNull();
+  });
+});
