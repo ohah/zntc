@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { bundleAndRun, runZts, runZtsInDir, createFixture, ZTS_BIN } from "./helpers";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 describe("ZTS CLI", () => {
@@ -1737,7 +1737,6 @@ describe("JSX classic 모드 번들러 rename", () => {
     ]);
     expect(bundle.exitCode).toBe(0);
 
-    const { readFileSync } = await import("node:fs");
     const output = readFileSync(outFile, "utf-8");
 
     // createElement 호출에서 두 Text 함수가 다른 이름으로 참조되어야 함
@@ -1779,7 +1778,6 @@ describe("JSX classic 모드 번들러 rename", () => {
     ]);
     expect(bundle.exitCode).toBe(0);
 
-    const { readFileSync } = await import("node:fs");
     const output = readFileSync(outFile, "utf-8");
 
     // member expression이 올바르게 출력되어야 함 (namespace.Button 형태)
