@@ -9886,6 +9886,44 @@ test "CodeSplitting: content hash deterministic — same code same hash" {
 // Dev Mode Tests
 // ============================================================
 
+test "Bundler: dev mode includes polyfills and banner" {
+    // dev mode에서 --polyfill, --banner:js가 번들에 포함되는지 확인.
+    // error-guard.js 등 폴리필이 누락되면 global.ErrorUtils가 undefined.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('hello');");
+    try writeFile(tmp.dir, "my-polyfill.js", "global.MyPolyfill = { init: function() {} };");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+    const polyfill = try absPath(&tmp, "my-polyfill.js");
+    defer std.testing.allocator.free(polyfill);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .polyfills = &.{polyfill},
+        .banner_js = "var __TEST_BANNER__=1;",
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // polyfill이 번들에 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MyPolyfill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(function(){") != null);
+    // banner가 번들에 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__TEST_BANNER__") != null);
+    // polyfill/banner가 HMR 런타임보다 앞에 위치
+    const polyfill_pos = std.mem.indexOf(u8, result.output, "MyPolyfill").?;
+    const hmr_pos = std.mem.indexOf(u8, result.output, "__zts_modules").?;
+    try std.testing.expect(polyfill_pos < hmr_pos);
+    const banner_pos = std.mem.indexOf(u8, result.output, "__TEST_BANNER__").?;
+    try std.testing.expect(banner_pos < polyfill_pos);
+}
+
 test "Bundler: dev mode single file" {
     // dev mode에서 단일 파일이 __zts_register로 래핑되는지 확인
     var tmp = std.testing.tmpDir(.{});
