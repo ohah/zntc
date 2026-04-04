@@ -149,14 +149,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // IIFE 내부 function (fresh identifier — linker 무관)
             var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, fresh_name, span)
+                try buildFunctionFromConstructor(self, ctor_idx, fresh_name, cm.instance_fields.items, span)
             else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, fresh_name, super_span.?, span)
+                try buildDefaultSuperConstructor(self, fresh_name, super_span.?, cm.instance_fields.items, span)
             else
                 try buildEmptyFunction(self, fresh_name, span);
 
-            // instance fields → classCallCheck 순서로 prepend
-            if (cm.instance_fields.items.len > 0) {
+            // instance fields: super가 있으면 __callSuper 이후에 _this로 초기화해야 하므로
+            // postProcessSuperCallBody가 처리. super가 없으면 constructor body 앞에 prepend.
+            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
             // __classCallCheck(this, ClassName) — constructor body 맨 앞
@@ -352,13 +353,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const func_name = if (has_extra) try es_helpers.makeBindingIdentifier(self, try self.new_ast.addString(ce_name_text)) else name_node;
 
             var func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, func_name, span)
+                try buildFunctionFromConstructor(self, ctor_idx, func_name, cm.instance_fields.items, span)
             else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, func_name, super_span.?, span)
+                try buildDefaultSuperConstructor(self, func_name, super_span.?, cm.instance_fields.items, span)
             else
                 try buildEmptyFunction(self, func_name, span);
 
-            if (cm.instance_fields.items.len > 0) {
+            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
             // __classCallCheck(this, ClassName) — constructor body 맨 앞
@@ -388,13 +389,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // func_node를 fresh name으로 재생성 (symbol 연결 없음)
             func_node = if (cm.constructor_idx) |ctor_idx|
-                try buildFunctionFromConstructor(self, ctor_idx, expr_fresh_name, span)
+                try buildFunctionFromConstructor(self, ctor_idx, expr_fresh_name, cm.instance_fields.items, span)
             else if (has_super and super_span != null)
-                try buildDefaultSuperConstructor(self, expr_fresh_name, super_span.?, span)
+                try buildDefaultSuperConstructor(self, expr_fresh_name, super_span.?, cm.instance_fields.items, span)
             else
                 try buildEmptyFunction(self, expr_fresh_name, span);
 
-            if (cm.instance_fields.items.len > 0) {
+            if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
             // classCallCheck
@@ -1034,7 +1035,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// constructor method_definition에서 function_declaration 생성.
         /// method_definition: extra = [key, params_start, params_len, body, flags, ...]
-        fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const ctor = self.old_ast.getNode(ctor_idx);
             const ctor_extras = self.old_ast.extra_data.items;
             const me = ctor.data.extra;
@@ -1055,7 +1056,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 1. super() expression_statement → var _this = __callSuper(...)
             // 2. body 끝에 return _this 추가
             if (self.super_call_this_alias) {
-                new_body = try postProcessSuperCallBody(self, new_body, span);
+                new_body = try postProcessSuperCallBody(self, new_body, instance_fields, span);
             }
 
             const none = @intFromEnum(NodeIndex.none);
@@ -1079,7 +1080,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// 2. body 끝에 return _this; 추가
         /// lowerSuperCall이 _this = __callSuper(...) 대입식을 생성하므로,
         /// super()가 if/else 등 어디에 있든 정상 동작한다.
-        fn postProcessSuperCallBody(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn postProcessSuperCallBody(self: *Transformer, body: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const body_node = self.new_ast.getNode(body);
             if (body_node.tag != .block_statement) return body;
 
@@ -1095,6 +1096,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 기존 body statements
             for (stmts) |raw_idx| {
                 try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            }
+
+            // instance fields: _this에 할당 (super() 이후에 실행되어야 함)
+            for (instance_fields) |field_stmt| {
+                try self.scratch.append(self.allocator, try replaceThisWithThisAlias(self, field_stmt, span));
             }
 
             // return _this;
@@ -1141,9 +1147,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// extends가 있고 constructor가 없을 때 기본 constructor 생성:
-        /// function Child() { return __callSuper(this, _super, arguments); }
-        fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, span: Span) Transformer.Error!NodeIndex {
-            // __callSuper(this, _super, arguments)
+        /// instance_fields가 없으면: function Child() { return __callSuper(this, _super, arguments); }
+        /// instance_fields가 있으면: function Child() { var _this = __callSuper(this, _super, arguments); <fields on _this>; return _this; }
+        fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const call_super_ref = try es_helpers.makeIdentifierRef(self, "__callSuper");
             const this_node = try self.new_ast.addNode(.{
                 .tag = .this_expression,
@@ -1156,13 +1162,39 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             self.runtime_helpers.call_super = true;
 
-            const ret_stmt = try self.new_ast.addNode(.{
-                .tag = .return_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = call_super, .flags = 0 } },
-            });
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            const body_list = try self.new_ast.addNodeList(&.{ret_stmt});
+            if (instance_fields.len > 0) {
+                // var _this = __callSuper(this, _super, arguments);
+                try self.scratch.append(self.allocator, try self.buildVarDecl("_this", call_super, span));
+
+                // instance fields: this → _this 치환된 버전 사용
+                // instance_fields는 이미 this.x = ... 형태로 생성되었으므로
+                // this_expression을 _this로 교체해야 한다.
+                // 현재는 transformer가 this_expression을 직접 생성하므로
+                // _this 식별자로 새로 생성한다.
+                for (instance_fields) |field_stmt| {
+                    try self.scratch.append(self.allocator, try replaceThisWithThisAlias(self, field_stmt, span));
+                }
+
+                // return _this;
+                const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+                try self.scratch.append(self.allocator, try self.new_ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = this_ref, .flags = 0 } },
+                }));
+            } else {
+                // return __callSuper(this, _super, arguments);
+                try self.scratch.append(self.allocator, try self.new_ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = call_super, .flags = 0 } },
+                }));
+            }
+
+            const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
             const body = try self.new_ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
@@ -1184,6 +1216,109 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
+        }
+
+        /// statement 안의 this_expression을 _this identifier로 교체한 복사본 생성.
+        /// instance field init에서 사용: this.x = v → _this.x = v
+        fn replaceThisWithThisAlias(self: *Transformer, stmt_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            _ = span;
+            const stmt = self.new_ast.getNode(stmt_idx);
+            if (stmt.tag != .expression_statement) return stmt_idx;
+
+            const expr_idx = stmt.data.unary.operand;
+            if (expr_idx.isNone()) return stmt_idx;
+            const expr = self.new_ast.getNode(expr_idx);
+
+            // assignment: this.x = v → _this.x = v
+            if (expr.tag == .assignment_expression) {
+                const left = expr.data.binary.left;
+                const new_left = try replaceThisInExpr(self, left);
+                if (@intFromEnum(new_left) == @intFromEnum(left)) return stmt_idx;
+                const new_assign = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = expr.span,
+                    .data = .{ .binary = .{ .left = new_left, .right = expr.data.binary.right, .flags = expr.data.binary.flags } },
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .expression_statement,
+                    .span = stmt.span,
+                    .data = .{ .unary = .{ .operand = new_assign, .flags = 0 } },
+                });
+            }
+
+            // call: __classPrivateMethodInit(this, ...) → __classPrivateMethodInit(_this, ...)
+            if (expr.tag == .call_expression) {
+                const new_call = try replaceThisInExpr(self, expr_idx);
+                if (@intFromEnum(new_call) == @intFromEnum(expr_idx)) return stmt_idx;
+                return self.new_ast.addNode(.{
+                    .tag = .expression_statement,
+                    .span = stmt.span,
+                    .data = .{ .unary = .{ .operand = new_call, .flags = 0 } },
+                });
+            }
+
+            return stmt_idx;
+        }
+
+        /// 식 안의 this_expression을 _this로 교체. call_expression(fn, [this, ...]) 패턴도 처리.
+        fn replaceThisInExpr(self: *Transformer, idx: NodeIndex) Transformer.Error!NodeIndex {
+            if (idx.isNone()) return idx;
+            const node = self.new_ast.getNode(idx);
+
+            if (node.tag == .this_expression) {
+                return es_helpers.makeIdentifierRef(self, "_this");
+            }
+
+            // static_member_expression: extra = [object, property, flags]
+            if (node.tag == .static_member_expression) {
+                const extras = self.new_ast.extra_data.items;
+                const e = node.data.extra;
+                const obj_idx: NodeIndex = @enumFromInt(extras[e]);
+                const new_obj = try replaceThisInExpr(self, obj_idx);
+                if (@intFromEnum(new_obj) == @intFromEnum(obj_idx)) return idx;
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_obj), extras[e + 1], extras[e + 2],
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .static_member_expression,
+                    .span = node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            }
+
+            // call_expression: extra = [callee, args_start, args_len, flags]
+            // __classPrivateMethodInit(this, _bark) → __classPrivateMethodInit(_this, _bark)
+            if (node.tag == .call_expression) {
+                const extras = self.new_ast.extra_data.items;
+                const e = node.data.extra;
+                const callee: NodeIndex = @enumFromInt(extras[e]);
+                const args_start = extras[e + 1];
+                const args_len = extras[e + 2];
+                const flags = extras[e + 3];
+
+                // 인자 중 this_expression을 _this로 교체
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                var changed = false;
+                for (extras[args_start .. args_start + args_len]) |raw_arg| {
+                    const arg_idx: NodeIndex = @enumFromInt(raw_arg);
+                    const new_arg = try replaceThisInExpr(self, arg_idx);
+                    if (@intFromEnum(new_arg) != @intFromEnum(arg_idx)) changed = true;
+                    try self.scratch.append(self.allocator, new_arg);
+                }
+                if (!changed) return idx;
+                const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(callee), new_args.start, new_args.len, flags,
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .call_expression,
+                    .span = node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            }
+
+            return idx;
         }
 
         /// __extends(Child, Parent) expression_statement 생성.
