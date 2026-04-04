@@ -429,6 +429,32 @@ pub fn emitDevBundle(
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
+    // 소스맵 줄 번호 추적 (banner + polyfill + HMR 런타임 포함)
+    var bundle_line: u32 = 0;
+
+    // banner 주입 (--banner:js)
+    if (options.banner_js) |banner| {
+        try output.appendSlice(allocator, banner);
+        try output.append(allocator, '\n');
+        bundle_line += 1;
+    }
+
+    // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
+    for (options.polyfills) |poly| {
+        if (!options.minify_whitespace) {
+            try output.appendSlice(allocator, "// --- polyfill: ");
+            try output.appendSlice(allocator, poly.name);
+            try output.appendSlice(allocator, " ---\n");
+            bundle_line += 1;
+        }
+        try output.appendSlice(allocator, "(function(){");
+        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        try output.appendSlice(allocator, poly.content);
+        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        try output.appendSlice(allocator, "})();\n");
+        bundle_line += @intCast(std.mem.count(u8, poly.content, "\n") + 3);
+    }
+
     // HMR 런타임 주입
     if (options.minify_whitespace) {
         try output.appendSlice(allocator, rt.HMR_RUNTIME_MIN);
@@ -455,8 +481,8 @@ pub fn emitDevBundle(
     } else null;
     defer if (bundle_sm) |*sm| sm.deinit();
 
-    // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
-    var bundle_line: u32 = if (!options.minify_whitespace) rt.HMR_RUNTIME_LINES else 1;
+    // HMR 런타임 줄 수 반영
+    bundle_line += if (!options.minify_whitespace) rt.HMR_RUNTIME_LINES else 1;
 
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {

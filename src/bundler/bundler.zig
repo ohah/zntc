@@ -549,6 +549,7 @@ pub const Bundler = struct {
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.root_dir = self.options.root_dir;
             dev_emit_opts.react_refresh = self.options.react_refresh;
+            dev_emit_opts.polyfills = polyfill_entries.items;
             const dev_result = try emitter.emitDevBundle(
                 self.allocator,
                 &graph,
