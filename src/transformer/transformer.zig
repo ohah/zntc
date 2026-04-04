@@ -2303,8 +2303,8 @@ pub const Transformer = struct {
         const is_abstract = (flags & 0x20) != 0;
         const is_declare = (flags & 0x40) != 0;
 
-        // abstract/declare는 항상 스트리핑
-        if (self.options.strip_types and (flags & 0x60) != 0) {
+        // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용 → 스트리핑
+        if (self.options.strip_types and (flags & 0xE0) != 0) {
             return;
         }
 
