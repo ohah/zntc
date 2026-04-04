@@ -315,23 +315,43 @@ pub const Linker = struct {
             });
         }
 
-        // export default의 합성 _default 이름도 수집.
-        // codegen에서 `export default X` → `var _default = X;`를 생성하는데,
-        // 이 이름이 semantic scope에 없으므로 별도로 수집한다.
+        // codegen이 "_default" 합성 변수를 생성하는 모든 경우를 수집.
+        // 다음 패턴에서 _default 변수가 생성된다:
+        //   1. export default <expr>          (local, local_name == "default")
+        //   2. export { default } from '...'  (re_export, exported_name == "default")
+        //   3. export { default as X } from   (re_export, local_name == "default")
+        // 각각을 name_to_owners에 등록하여 충돌 시 _default$N으로 리네이밍.
         for (m.export_bindings) |eb| {
-            if (eb.kind != .local) continue;
-            if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
-            if (std.mem.eql(u8, eb.local_name, "default")) continue;
-            // scope에 이미 있으면 중복 추가 방지
-            if (module_scope.get(eb.local_name) != null) continue;
-            const entry = try name_to_owners.getOrPut(eb.local_name);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = .empty;
+            // _default 변수가 생성되는 조건: local_name == "default"
+            // (local kind의 경우 exported_name도 "default"이므로 local_name 체크로 충분)
+            const uses_default_var = std.mem.eql(u8, eb.local_name, "default");
+            if (!uses_default_var) {
+                // local export에서 named default (export default function foo)
+                if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+                    if (module_scope.get(eb.local_name) != null) continue;
+                    const entry = try name_to_owners.getOrPut(eb.local_name);
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = .empty;
+                    }
+                    try entry.value_ptr.append(self.allocator, .{
+                        .module_index = module_index,
+                        .exec_index = m.exec_index,
+                    });
+                }
+                continue;
             }
-            try entry.value_ptr.append(self.allocator, .{
-                .module_index = module_index,
-                .exec_index = m.exec_index,
-            });
+
+            // local_name == "default" → codegen이 _default 변수를 생성
+            if (eb.kind == .local or eb.kind == .re_export) {
+                const entry = try name_to_owners.getOrPut("_default");
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = .empty;
+                }
+                try entry.value_ptr.append(self.allocator, .{
+                    .module_index = module_index,
+                    .exec_index = m.exec_index,
+                });
+            }
         }
     }
 
@@ -1158,12 +1178,22 @@ pub const Linker = struct {
         const cjs_import_preamble = try preamble.toOwned();
 
         // export default의 합성 변수명 계산 (이름 충돌 시 _default$1 등)
+        // codegen이 _default 변수를 생성하는 모든 경우 처리:
+        //   - export default <expr> (local, local_name == "default")
+        //   - export { default } from (re_export, exported_name == "default")
+        //   - export { default as X } from (re_export, local_name == "default")
         var default_export_name: []const u8 = "_default";
         for (m.export_bindings) |eb| {
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-                if (!std.mem.eql(u8, eb.local_name, "default")) {
+                if (std.mem.eql(u8, eb.local_name, "default")) {
+                    default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+                } else {
                     default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
                 }
+                break;
+            }
+            if (eb.kind == .re_export and std.mem.eql(u8, eb.local_name, "default")) {
+                default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
                 break;
             }
         }

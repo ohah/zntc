@@ -2272,19 +2272,31 @@ fn emitEsmWrappedModule(
                 // body에 넣어서 할당문으로 변환
                 try body_stmts.append(allocator, raw_idx);
             },
-            .export_default_declaration => {
-                // export default expr → codegen이 var _default = expr 생성
-                // _default 변수명을 호이스팅 대상에 추가
-                if (metadata) |md| {
-                    try hoisted_var_names.append(allocator, md.default_export_name);
-                } else {
-                    try hoisted_var_names.append(allocator, "_default");
+            else => {
+                // export default expr: effective_tag는 내부 표현식 태그이므로
+                // 여기에 도달한다. stmt_node 자체가 export_default_declaration이면
+                // _default 변수를 호이스팅 대상에 추가.
+                if (stmt_node.tag == .export_default_declaration) {
+                    if (metadata) |md| {
+                        try hoisted_var_names.append(allocator, md.default_export_name);
+                    } else {
+                        try hoisted_var_names.append(allocator, "_default");
+                    }
                 }
                 try body_stmts.append(allocator, raw_idx);
             },
-            else => {
-                try body_stmts.append(allocator, raw_idx);
-            },
+        }
+    }
+
+    // re-export에서 local_name == "default"이면 _default 변수 호이스팅 필요.
+    // export_default_declaration은 위 루프의 else 분기에서 처리하지만,
+    // re-export (export { default } from / export { default as X } from)는
+    // AST 노드가 다르므로 별도 처리.
+    for (module.export_bindings) |eb| {
+        if (eb.kind == .re_export and std.mem.eql(u8, eb.local_name, "default")) {
+            const def_name = if (metadata) |md| md.default_export_name else "_default";
+            try hoisted_var_names.append(allocator, def_name);
+            break;
         }
     }
 
