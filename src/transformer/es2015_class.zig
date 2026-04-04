@@ -310,9 +310,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // super class가 있으면 field initializer의 this → _this 치환 활성화
-            const saved_super_alias2 = self.super_call_this_alias;
+            const saved_super_alias = self.super_call_this_alias;
             if (has_super and super_span != null) self.super_call_this_alias = true;
-            defer self.super_call_this_alias = saved_super_alias2;
+            defer self.super_call_this_alias = saved_super_alias;
 
             // 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span);
@@ -948,6 +948,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                 } else if (member.tag == .static_block) {
                     // static block body의 문들을 class 뒤에 emit
+                    // static block의 this는 클래스 자체이므로 _this 치환 비활성화
+                    const saved_sb_alias = self.super_call_this_alias;
+                    self.super_call_this_alias = false;
+                    defer self.super_call_this_alias = saved_sb_alias;
                     const sb_body_idx = member.data.unary.operand;
                     if (!sb_body_idx.isNone()) {
                         const sb_body = self.old_ast.getNode(sb_body_idx);
