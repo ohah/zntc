@@ -1257,4 +1257,47 @@ describe("에셋 로더 + RN 프리셋", () => {
     expect(result.stderr).not.toContain("No loader");
     expect(result.stdout).toContain("data:image/png;base64,");
   });
+
+  test("--platform=react-native 비이미지 에셋 (.mp3) 자동 처리", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const audio = require('./sound.mp3');\nconsole.log(audio);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "sound.mp3"), "fake-mp3-data");
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--platform=react-native",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("require_sound");
+  });
+
+  test("ESM import 에셋도 no-loader 에러", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import icon from './icon.png';\nconsole.log(icon);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZtsInDir(fixture.dir, ["--bundle", join(fixture.dir, "entry.ts")]);
+    expect(result.stderr).toContain("No loader is configured");
+  });
+
+  test("loader=empty → undefined export", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const x = require('./data.bin');\nconsole.log(typeof x);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "data.bin"), "binary-data");
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.bin=empty",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("undefined");
+  });
 });

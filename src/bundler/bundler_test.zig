@@ -11648,6 +11648,76 @@ test "No loader: .png with --loader:.png=file succeeds" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_icon") != null);
 }
 
+test "No loader: ESM import of .png without --loader errors" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.hasErrors());
+    const has_no_loader = for (result.getDiagnostics()) |d| {
+        if (std.mem.indexOf(u8, d.message, "No loader is configured") != null) break true;
+    } else false;
+    try std.testing.expect(has_no_loader);
+}
+
+test "No loader: .mp3 without --loader errors" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const audio = require('./sound.mp3');\nconsole.log(audio);");
+    try tmp.dir.writeFile(.{ .sub_path = "sound.mp3", .data = "fake-mp3" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.hasErrors());
+}
+
+test "Plugin load hook overrides asset loader" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // 플러그인 없이 file 로더로 번들 → URL 문자열이 포함되어야 함
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .file }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // file 로더 출력: 해시가 포함된 파일명
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".png") != null);
+    // registerAsset는 없어야 함 (플러그인이 없으므로)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "registerAsset") == null);
+}
+
 // ============================================================
 // Batch D: metafile, analyze, legal-comments, inject, keepNames
 // ============================================================
