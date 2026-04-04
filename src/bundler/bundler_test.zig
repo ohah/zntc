@@ -8515,6 +8515,39 @@ test "ESM wrap: var hoisting + default export 접근 가능" {
     try std.testing.expect(var_decl != null and var_decl.? < esm_pos);
 }
 
+test "ESM wrap: class declaration hoisted as var (block-scope → assignment)" {
+    // class 선언은 block-scoped → __esm 콜백 밖의 __export getter가 접근 불가.
+    // var 선언을 밖에 두고 body에서 할당문으로 변환해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "mod.js",
+        \\export class Greeter {
+        \\  greet() { return 'hello'; }
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./mod.js');
+        \\console.log(m.Greeter);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // class가 var로 호이스팅되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var ") != null);
+    // __esm body 안에서 할당문으로 변환: "Greeter = class Greeter"
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "= class Greeter") != null);
+    // 선언문 형태가 아닌지 확인 (class Greeter { 가 __esm 안에서 단독으로 나오면 안 됨)
+    // __export getter가 접근 가능해야 하므로 할당문이어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") != null);
+}
+
 // ============================================================
 // Top-Level Await (TLA) Tests
 // ============================================================
