@@ -733,6 +733,10 @@ pub const ModuleGraph = struct {
         }
 
         if (module.module_type != .javascript) {
+            // loader=.none + 알 수 없는 확장자: 빌드 에러 (esbuild 호환)
+            if (module.loader == .none and module.module_type != .css) {
+                self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "No loader is configured for this file type", null);
+            }
             module.state = .ready;
             return;
         }
