@@ -90,6 +90,10 @@ pub const Module = struct {
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
+    /// 엔트리 포인트 여부. graph.build()에서 설정.
+    /// esbuild의 entryPointKind과 동일 — 정렬 순서나 exec_index와 무관하게
+    /// 엔트리를 100% 정확히 식별한다.
+    is_entry_point: bool = false,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,

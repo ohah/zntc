@@ -1176,6 +1176,72 @@ describe("_default 합성 변수 충돌 방지", () => {
   });
 });
 
+describe("entry 모듈 감지", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("CJS entry가 scope-hoisted 의존성보다 뒤에 정렬되어도 정상 실행된다", async () => {
+    // CJS entry(require 사용) + scope-hoisted ESM 모듈 조합.
+    // bundleOrderLessThan이 wrapped를 먼저 배치하므로 scope-hoisted가 마지막이 됨.
+    // exec_index 최대값 기반 entry 감지가 실패하면 require_index()가 호출 안 됨.
+    const result = await bundleAndRun({
+      "index.ts": `const lib = require("./lib"); console.log(lib.value);`,
+      "lib.ts": `export const value = "from-lib";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("from-lib");
+  });
+
+  test("CJS entry + 다수의 scope-hoisted 모듈 체인에서 entry가 정확히 감지된다", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `const a = require("./a"); console.log(a.val);`,
+      "a.ts": `export { val } from "./b";`,
+      "b.ts": `export { val } from "./c";`,
+      "c.ts": `export const val = "deep";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("deep");
+  });
+
+  test("ESM entry의 export가 IIFE에서 syntax error를 일으키지 않는다", async () => {
+    // ESM entry의 scope-hoisted 의존성 모듈이 entry로 오판되면
+    // IIFE 안에 export { } 구문이 남아 syntax error 발생.
+    const result = await bundleAndRun({
+      "index.ts": `import { x } from "./dep"; console.log(x);`,
+      "dep.ts": `export const x = "ok";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok");
+  });
+
+  test("ESM entry + ESM 래핑 모듈 + scope-hoisted 모듈 혼합에서 정상 동작", async () => {
+    // 세 종류의 wrap_kind가 혼합된 경우:
+    // index.ts (entry, scope-hoisted) → proxy.ts (ESM wrapped) → impl.ts (scope-hoisted)
+    // CJS로 require하는 패턴이 없어도, barrel re-export 시 ESM wrapping이 발생.
+    const result = await bundleAndRun({
+      "index.ts": `import { foo } from "./proxy"; console.log(foo);`,
+      "proxy.ts": `export * from "./impl";`,
+      "impl.ts": `export const foo = "mixed";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("mixed");
+  });
+});
+
 describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
   let cleanup: (() => Promise<void>) | undefined;
 

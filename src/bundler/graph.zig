@@ -310,6 +310,10 @@ pub const ModuleGraph = struct {
 
         for (entry_points) |entry_path| {
             if (self.path_to_module.get(entry_path)) |idx| {
+                const ei = @intFromEnum(idx);
+                if (ei < self.modules.items.len) {
+                    self.modules.items[ei].is_entry_point = true;
+                }
                 try self.dfs(idx, &visited, &in_stack);
             }
         }

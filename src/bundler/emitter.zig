@@ -230,19 +230,13 @@ pub fn emitWithTreeShaking(
     // 런타임 헬퍼 수집: 모듈별 transform에서 실제 사용된 헬퍼만 추적
     var collected_helpers: RuntimeHelpers = .{};
 
-    // 엔트리 모듈 인덱스 (final exports용)
-    // exec_index가 가장 높은 모듈 = DFS post-order의 루트 = 엔트리.
-    // bundleOrderLessThan이 wrapped/non-wrapped를 그룹으로 나누므로
-    // sorted 마지막이 반드시 엔트리가 아닐 수 있다.
+    // 엔트리 모듈 인덱스 (final exports / CJS auto-invoke용).
+    // Module.is_entry_point 플래그로 정확히 식별 — 정렬 순서나 exec_index와 무관.
     const entry_idx: ?u32 = blk: {
-        var best: ?*const Module = null;
         for (sorted.items) |m| {
-            if (m.exec_index == std.math.maxInt(u32)) continue;
-            if (best == null or m.exec_index > best.?.exec_index) {
-                best = m;
-            }
+            if (m.is_entry_point) break :blk @intFromEnum(m.index);
         }
-        break :blk if (best) |b| @intFromEnum(b.index) else null;
+        break :blk null;
     };
 
     // Phase 1: used_names 사전 계산 (순차 — 모듈 간 의존)
