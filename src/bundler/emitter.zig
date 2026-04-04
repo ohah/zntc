@@ -346,17 +346,14 @@ pub fn emitWithTreeShaking(
 
     // CJS 엔트리 자동 호출: __commonJS로 래핑된 엔트리 모듈은 require_xxx()를 호출해야 실행됨.
     // esbuild와 동일하게 번들 끝(IIFE epilogue 직전)에 require_xxx() 삽입.
-    if (entry_idx) |ei| {
-        const entry_module = for (sorted.items) |m| {
-            if (@intFromEnum(m.index) == ei) break m;
-        } else null;
-        if (entry_module) |em| {
-            if (em.wrap_kind == .cjs) {
-                const call_name = try types.makeRequireVarName(allocator, em.path);
-                defer allocator.free(call_name);
-                try output.appendSlice(allocator, call_name);
-                try output.appendSlice(allocator, "();\n");
-            }
+    // entry_idx는 sorted.items의 마지막 요소에서 유래하므로 직접 접근.
+    if (sorted.items.len > 0) {
+        const em = sorted.items[sorted.items.len - 1];
+        if (em.wrap_kind == .cjs) {
+            const call_name = try types.makeRequireVarName(allocator, em.path);
+            defer allocator.free(call_name);
+            try output.appendSlice(allocator, call_name);
+            try output.appendSlice(allocator, "();\n");
         }
     }
 
@@ -2349,7 +2346,6 @@ fn emitEsmWrappedModule(
 
     // 2. 호이스팅된 var 선언 (중복 제거: import binding과 export default가 같은 심볼을 가리킬 수 있음)
     if (hoisted_var_names.items.len > 0) {
-        try wrapped.appendSlice(allocator, "var ");
         var dedup_count: usize = 0;
         for (hoisted_var_names.items) |name| {
             const is_dup = for (hoisted_var_names.items[0..dedup_count]) |prev| {
@@ -2359,7 +2355,10 @@ fn emitEsmWrappedModule(
             hoisted_var_names.items[dedup_count] = name;
             dedup_count += 1;
         }
-        for (hoisted_var_names.items[0..dedup_count], 0..) |name, i| {
+        hoisted_var_names.shrinkRetainingCapacity(dedup_count);
+
+        try wrapped.appendSlice(allocator, "var ");
+        for (hoisted_var_names.items, 0..) |name, i| {
             if (i > 0) try wrapped.appendSlice(allocator, ", ");
             try wrapped.appendSlice(allocator, name);
         }
@@ -2478,38 +2477,35 @@ fn emitEsmWrappedModule(
         if (linker) |l| {
             if (source_mod_i < l.modules.len) {
                 const source_mod = &l.modules[source_mod_i];
+                const eq = if (options.minify_whitespace) "=" else " = ";
+
+                try reexport_buf.appendSlice(allocator, def_name);
+                try reexport_buf.appendSlice(allocator, eq);
+
                 switch (source_mod.wrap_kind) {
                     .none => {
-                        // scope-hoisted: 소스 모듈의 canonical _default를 직접 참조
                         const src_name = l.getCanonicalName(@intCast(source_mod_i), "_default") orelse "_default";
-                        try reexport_buf.appendSlice(allocator, def_name);
-                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
                         try reexport_buf.appendSlice(allocator, src_name);
-                        try reexport_buf.appendSlice(allocator, ";\n");
                     },
                     .esm => {
-                        // ESM-wrapped: init 호출 + __toCommonJS로 default 접근
                         const iv = try types.makeInitVarName(allocator, source_mod.path);
                         defer allocator.free(iv);
                         const ev = try types.makeExportsVarName(allocator, source_mod.path);
                         defer allocator.free(ev);
-                        try reexport_buf.appendSlice(allocator, def_name);
-                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=(" else " = (");
+                        try reexport_buf.appendSlice(allocator, "(");
                         try reexport_buf.appendSlice(allocator, iv);
                         try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
                         try reexport_buf.appendSlice(allocator, ev);
-                        try reexport_buf.appendSlice(allocator, ")).default;\n");
+                        try reexport_buf.appendSlice(allocator, ")).default");
                     },
                     .cjs => {
-                        // CJS: require 호출
                         const rv = try types.makeRequireVarName(allocator, source_mod.path);
                         defer allocator.free(rv);
-                        try reexport_buf.appendSlice(allocator, def_name);
-                        try reexport_buf.appendSlice(allocator, if (options.minify_whitespace) "=" else " = ");
                         try reexport_buf.appendSlice(allocator, rv);
-                        try reexport_buf.appendSlice(allocator, "().default;\n");
+                        try reexport_buf.appendSlice(allocator, "().default");
                     },
                 }
+                try reexport_buf.appendSlice(allocator, ";\n");
             }
         }
         break; // default re-export는 모듈당 하나만 존재
