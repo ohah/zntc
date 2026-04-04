@@ -1729,8 +1729,10 @@ describe("JSX classic 모드 번들러 rename", () => {
 
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
-      "--bundle", join(fixture.dir, "index.tsx"),
-      "-o", outFile,
+      "--bundle",
+      join(fixture.dir, "index.tsx"),
+      "-o",
+      outFile,
       "--jsx=classic",
     ]);
     expect(bundle.exitCode).toBe(0);
@@ -1740,7 +1742,7 @@ describe("JSX classic 모드 번들러 rename", () => {
 
     // createElement 호출에서 두 Text 함수가 다른 이름으로 참조되어야 함
     // $는 \w에 포함되므로 [\w$]+로 매치 (Text$1 등)
-    const calls = [...output.matchAll(/React\.createElement\(([\w$]+)/g)].map(m => m[1]);
+    const calls = [...output.matchAll(/React\.createElement\(([\w$]+)/g)].map((m) => m[1]);
     expect(calls.length).toBe(2);
     // 두 컴포넌트 이름이 달라야 함 (하나는 Text, 다른 하나는 Text$1)
     expect(calls[0]).not.toBe(calls[1]);
@@ -1769,8 +1771,10 @@ describe("JSX classic 모드 번들러 rename", () => {
 
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
-      "--bundle", join(fixture.dir, "index.tsx"),
-      "-o", outFile,
+      "--bundle",
+      join(fixture.dir, "index.tsx"),
+      "-o",
+      outFile,
       "--jsx=classic",
     ]);
     expect(bundle.exitCode).toBe(0);
