@@ -669,6 +669,7 @@ pub const ModuleGraph = struct {
             if (load_result) |plugin_source| {
                 // 플러그인이 내용을 반환 → JS 모듈로 전환하여 아래 파싱 경로를 탐
                 module.module_type = .javascript;
+                module.loader = .javascript;
                 module.parse_arena = tmp_arena;
                 module.source = plugin_source;
                 // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
@@ -727,7 +728,8 @@ pub const ModuleGraph = struct {
         }
 
         // Asset 로더: 파일을 읽어서 fake JS 모듈로 변환 (rolldown 방식)
-        if (module.loader.isAsset()) {
+        // 플러그인이 이미 소스를 반환한 경우 건너뜀 (플러그인 우선)
+        if (module.loader.isAsset() and module.source.len == 0) {
             self.parseAssetModule(module);
             return;
         }
