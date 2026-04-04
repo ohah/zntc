@@ -169,6 +169,10 @@ pub const Codegen = struct {
     jsx_used_jsxs: bool = false,
     jsx_used_jsxDEV: bool = false,
     jsx_used_fragment: bool = false,
+    /// classic JSX: 번들러 리네이밍이 반영된 factory/fragment 문자열.
+    /// 초기화 시 한 번만 계산 (모듈당 O(N) → O(1) per JSX element).
+    resolved_jsx_factory: ?[]const u8 = null,
+    resolved_jsx_fragment: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -189,6 +193,8 @@ pub const Codegen = struct {
             .sm_builder = sm,
             .gen_line = 0,
             .gen_col = 0,
+            .resolved_jsx_factory = resolveJSXRename(ast, options.linking_metadata, options.jsx_factory, allocator),
+            .resolved_jsx_fragment = resolveJSXRename(ast, options.linking_metadata, options.jsx_fragment, allocator),
         };
     }
 
@@ -2576,7 +2582,7 @@ pub const Codegen = struct {
         switch (self.options.jsx_runtime) {
             .classic => {
                 try self.write("/* @__PURE__ */ ");
-                try self.write(self.options.jsx_factory);
+                try self.emitJSXFactoryWithRename(self.options.jsx_factory);
                 try self.writeByte('(');
                 try self.emitJSXTagName(tag_name_idx);
                 try self.emitJSXAttrsClassic(attrs_start, attrs_len);
@@ -2637,9 +2643,9 @@ pub const Codegen = struct {
         switch (self.options.jsx_runtime) {
             .classic => {
                 try self.write("/* @__PURE__ */ ");
-                try self.write(self.options.jsx_factory);
+                try self.emitJSXFactoryWithRename(self.options.jsx_factory);
                 try self.writeByte('(');
-                try self.write(self.options.jsx_fragment);
+                try self.emitJSXFactoryWithRename(self.options.jsx_fragment);
                 if (self.options.minify_whitespace) try self.write(",null") else try self.write(", null");
                 try self.emitJSXChildrenClassic(list.start, list.len);
                 try self.writeByte(')');
@@ -2673,6 +2679,34 @@ pub const Codegen = struct {
                 try self.writeByte(')');
             },
         }
+    }
+
+    fn emitJSXFactoryWithRename(self: *Codegen, factory: []const u8) !void {
+        if (factory.ptr == self.options.jsx_factory.ptr) {
+            try self.write(self.resolved_jsx_factory orelse factory);
+        } else {
+            try self.write(self.resolved_jsx_fragment orelse factory);
+        }
+    }
+
+    /// 초기화 시 한 번만 호출: jsx_factory/fragment의 prefix를 리네이밍된 이름으로 교체.
+    fn resolveJSXRename(ast: *const Ast, meta_opt: ?*const LinkingMetadata, factory: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+        const meta = meta_opt orelse return null;
+        const dot_pos = std.mem.indexOf(u8, factory, ".") orelse return null;
+        const prefix = factory[0..dot_pos];
+        const suffix = factory[dot_pos..];
+
+        for (meta.symbol_ids, 0..) |maybe_sid, node_i| {
+            const sid = maybe_sid orelse continue;
+            const new_name = meta.renames.get(sid) orelse continue;
+            const node_idx: NodeIndex = @enumFromInt(node_i);
+            const node = ast.getNode(node_idx);
+            if (node.tag != .identifier_reference and node.tag != .binding_identifier) continue;
+            if (std.mem.eql(u8, ast.getText(node.data.string_ref), prefix)) {
+                return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_name, suffix }) catch null;
+            }
+        }
+        return null;
     }
 
     /// tag name 출력: 소문자면 문자열("div"), 그 외 식별자(MyComp)
