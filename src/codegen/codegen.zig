@@ -2244,9 +2244,10 @@ pub const Codegen = struct {
         try self.writeByte('=');
 
         // __esm body에서 default/namespace import: __toESM(require_xxx()) 래핑 필요.
-        // CJS module.exports = fn 에서 .default가 없으므로 __toESM이 래핑해준다.
-        // named import ({a,b}=require_xxx())는 CJS exports에 직접 접근하므로 불필요.
-        const wrap_toesm = self.options.esm_var_assign_only and (has_default or has_namespace) and named_count == 0;
+        // CJS module.exports = fn 패턴에서 .default 프로퍼티가 없으므로 __toESM이
+        // 모듈 전체를 default로 설정해준다. default+named 혼합 시에도 적용 —
+        // __toESM이 __esModule 체크 후 프로퍼티를 복사하므로 named 접근도 정상 동작.
+        const wrap_toesm = self.options.esm_var_assign_only and (has_default or has_namespace);
         if (wrap_toesm) try self.write("__toESM(");
         _ = try self.emitRequireRewriteOrCall(source);
         if (wrap_toesm) try self.writeByte(')');
