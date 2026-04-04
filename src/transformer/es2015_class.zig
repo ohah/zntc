@@ -491,7 +491,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.old_ast.getNode(callee).tag == .super_expression;
         }
 
-        /// super(args) → Parent.call(this, args)
+        /// super(args) → __callSuper(this, _super, [args])
+        /// Reflect.construct를 사용하여 네이티브 클래스 extends도 지원.
+        /// super() 호출 후 this → _this 별칭을 활성화하여
+        /// __callSuper가 반환하는 새 객체를 올바르게 참조.
         /// call_expression: extra = [callee, args_start, args_len, flags]
         pub fn lowerSuperCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
@@ -501,24 +504,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const args_len = extras[e + 2];
             const span = node.span;
 
-            // Parent.call
-            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
-            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
-            const callee = try es_helpers.makeStaticMember(self, parent_ref, call_prop, span);
+            const callee = try es_helpers.makeIdentifierRef(self, "__callSuper");
 
-            // args: [this, ...original_args]
+            // super() 이전이므로 원래 this 사용 — 아직 alias 활성화 전
             const this_node = try self.new_ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
             });
 
+            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            try self.scratch.append(self.allocator, this_node);
-
-            // 원래 인자들을 visit하여 추가
             const old_args = self.old_ast.extra_data.items[args_start .. args_start + args_len];
             for (old_args) |raw_idx| {
                 const new_arg = try self.visitNode(@enumFromInt(raw_idx));
@@ -527,15 +525,29 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
-            const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const new_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(callee), new_args.start, new_args.len, 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
+            const elems = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            const args_array = try self.new_ast.addNode(.{
+                .tag = .array_expression,
                 .span = span,
-                .data = .{ .extra = new_extra },
+                .data = .{ .list = elems },
             });
+
+            const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, parent_ref, args_array }, span);
+
+            // _this = __callSuper(this, _super, [args])
+            // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
+            // var _this 선언과 return _this는 postProcessSuperCallBody에서 추가.
+            const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+            const assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
+            });
+
+            self.super_call_this_alias = true;
+            self.runtime_helpers.call_super = true;
+
+            return assign;
         }
 
         /// call_expression의 callee가 super.method (static_member_expression + super) 인지 확인.
@@ -1031,8 +1043,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const params_len = ctor_extras[me + 2];
             const body_idx: NodeIndex = @enumFromInt(ctor_extras[me + 3]);
 
+            // super_call_this_alias save/restore (lowerSuperCall이 설정)
+            const saved_super_alias = self.super_call_this_alias;
+            self.super_call_this_alias = false;
+            defer self.super_call_this_alias = saved_super_alias;
+
             const new_params = try self.visitExtraList(params_start, params_len);
-            const new_body = try visitMethodBody(self, body_idx, span);
+            var new_body = try visitMethodBody(self, body_idx, span);
+
+            // super() 호출이 있었으면 body 후처리:
+            // 1. super() expression_statement → var _this = __callSuper(...)
+            // 2. body 끝에 return _this 추가
+            if (self.super_call_this_alias) {
+                new_body = try postProcessSuperCallBody(self, new_body, span);
+            }
 
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.new_ast.addExtras(&.{
@@ -1047,6 +1071,45 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .tag = .function_declaration,
                 .span = span,
                 .data = .{ .extra = func_extra },
+            });
+        }
+
+        /// super() 호출이 있는 constructor body를 후처리:
+        /// 1. body 앞에 var _this; 선언 추가
+        /// 2. body 끝에 return _this; 추가
+        /// lowerSuperCall이 _this = __callSuper(...) 대입식을 생성하므로,
+        /// super()가 if/else 등 어디에 있든 정상 동작한다.
+        fn postProcessSuperCallBody(self: *Transformer, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const body_node = self.new_ast.getNode(body);
+            if (body_node.tag != .block_statement) return body;
+
+            const stmts_list = body_node.data.list;
+            const stmts = self.new_ast.extra_data.items[stmts_list.start .. stmts_list.start + stmts_list.len];
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // var _this; (초기화 없는 선언)
+            try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
+
+            // 기존 body statements
+            for (stmts) |raw_idx| {
+                try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            }
+
+            // return _this;
+            const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+            try self.scratch.append(self.allocator, try self.new_ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = this_ref, .flags = 0 } },
+            }));
+
+            const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = new_list },
             });
         }
 
@@ -1078,39 +1141,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// extends가 있고 constructor가 없을 때 기본 constructor 생성:
-        /// function Child() { return Parent.apply(this, arguments) || this; }
+        /// function Child() { return __callSuper(this, _super, arguments); }
         fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, span: Span) Transformer.Error!NodeIndex {
-            // Parent.apply(this, arguments)
-            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
-            const apply_prop = try es_helpers.makeIdentifierRef(self, "apply");
-            const callee = try es_helpers.makeStaticMember(self, parent_ref, apply_prop, span);
-
-            // args: [this, arguments]
+            // __callSuper(this, _super, arguments)
+            const call_super_ref = try es_helpers.makeIdentifierRef(self, "__callSuper");
             const this_node = try self.new_ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
             });
+            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
             const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
-            const apply_call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, args_ref }, span);
+            const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ this_node, parent_ref, args_ref }, span);
 
-            // Parent.apply(this, arguments) || this
-            const this2 = try self.new_ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
-            const or_expr = try self.new_ast.addNode(.{
-                .tag = .logical_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = apply_call, .right = this2, .flags = @intFromEnum(token_mod.Kind.pipe2) } },
-            });
+            self.runtime_helpers.call_super = true;
 
-            // return Parent.apply(this, arguments) || this;
             const ret_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
-                .data = .{ .unary = .{ .operand = or_expr, .flags = 0 } },
+                .data = .{ .unary = .{ .operand = call_super, .flags = 0 } },
             });
 
             const body_list = try self.new_ast.addNodeList(&.{ret_stmt});
