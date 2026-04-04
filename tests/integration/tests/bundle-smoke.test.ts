@@ -1123,6 +1123,57 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(result.runOutput).toBe("base:u");
   });
 
+  test("ES5 class super(): 동일 이름 클래스가 여러 모듈에 존재할 때 _super로 스코프 격리", async () => {
+    // 번들에서 동일 이름의 클래스(EventEmitter)가 두 모듈에 존재할 때
+    // super() 호출이 IIFE 매개변수 _super를 사용하여 올바른 부모 클래스를 참조해야 한다.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { Child } from "./child"; const c = new Child(); console.log(c.value());`,
+        "child.ts": `import { Base } from "./base-a";
+export class Child extends Base {
+  value() { return "child:" + super.value(); }
+}`,
+        "base-a.ts": `export class Base {
+  value() { return "a"; }
+}`,
+        "base-b.ts": `export class Base {
+  value() { return "b"; }
+}`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("child:a");
+  });
+
+  test("ES5 class super(): 상속 체인에서 __classCallCheck가 정상 동작", async () => {
+    // class A → class B extends A → class C extends B
+    // 각 super() 호출이 _super를 통해 올바르게 연결되어야 한다.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { C } from "./c"; const obj = new C(); console.log(obj.name());`,
+        "a.ts": `export class Base { name() { return "base"; } }`,
+        "b.ts": `import { Base } from "./a";
+export class Mid extends Base {
+  name() { return "mid>" + super.name(); }
+}`,
+        "c.ts": `import { Mid } from "./b";
+export class C extends Mid {
+  name() { return "c>" + super.name(); }
+}`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("c>mid>base");
+  });
+
   test("export * from 이 __esm 래퍼에서 소스 모듈의 named export를 전파한다", async () => {
     const result = await bundleAndRun({
       "index.ts": `import { greet, add } from "./proxy"; console.log(greet("world") + ":" + add(1, 2));`,
