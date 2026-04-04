@@ -1046,4 +1046,24 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("hello");
   });
+
+  test("import + export default 패턴에서 hoisted var가 중복 선언되지 않는다 (#706)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `const p = require("./proxy"); console.log(p.default);`,
+      "proxy.ts": `import b from "./b"; export default b;`,
+      "b.ts": `export default "proxied";`,
+    });
+    cleanup = fixture.cleanup;
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts")]);
+    expect(bundle.exitCode).toBe(0);
+
+    // var 선언 행에서 같은 이름이 두 번 나오지 않아야 한다
+    const varLines = bundle.stdout.split("\n").filter(l => l.startsWith("var "));
+    for (const line of varLines) {
+      const names = line.replace(/^var /, "").replace(/;$/, "").split(",").map(n => n.trim());
+      const unique = new Set(names);
+      expect(unique.size).toBe(names.length);
+    }
+  });
 });
