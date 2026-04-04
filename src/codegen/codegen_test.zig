@@ -2536,7 +2536,9 @@ test "ES2015: class constructor with super and field" {
     var r = try e2eTarget(std.testing.allocator, "class B{x=0;}class D extends B{y=1;constructor(){super();this.z=2;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y=1") != null);
+    // super()가 있으므로 instance field는 _this에 할당
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.y=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.z=2") != null);
 }
 
 // --- generator edge cases ---
