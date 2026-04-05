@@ -390,6 +390,8 @@ pub const Bundler = struct {
         worker_graph.plugins = self.options.plugins;
         worker_graph.flow = self.options.flow;
         worker_graph.jsx_in_js = self.options.jsx_in_js;
+        worker_graph.jsx_runtime = self.options.jsx_runtime;
+        worker_graph.jsx_import_source = self.options.jsx_import_source;
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
@@ -452,6 +454,8 @@ pub const Bundler = struct {
         graph.plugins = self.options.plugins;
         graph.flow = self.options.flow;
         graph.jsx_in_js = self.options.jsx_in_js;
+        graph.jsx_runtime = self.options.jsx_runtime;
+        graph.jsx_import_source = self.options.jsx_import_source;
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출

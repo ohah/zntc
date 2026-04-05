@@ -77,6 +77,10 @@ pub const ModuleGraph = struct {
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
     jsx_in_js: bool = false,
+    /// JSX 런타임 모드. automatic/automatic-dev이면 jsx-runtime import를 자동 주입.
+    jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+    /// JSX import source (--jsx-import-source). 기본: "react".
+    jsx_import_source: []const u8 = "react",
     /// Worker 엔트리: new Worker(new URL(...)) 패턴에서 수집된 worker 파일 경로.
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
@@ -886,12 +890,38 @@ pub const ModuleGraph = struct {
         };
         module.import_records = scan_result.records;
 
+        // JSX automatic: AST에 JSX 노드가 있으면 jsx-runtime import를 synthetic하게 추가.
+        // esbuild 방식: 파싱 후 import_records/import_bindings에 주입 → 이후 모든 단계가 일반 import와 동일하게 처리.
+        var jsx_injected = false;
+        if (self.jsx_runtime != .classic) {
+            if (astHasJsx(&parser.ast)) {
+                module.import_records = injectJsxRuntimeImport(
+                    self.jsx_runtime,
+                    self.jsx_import_source,
+                    arena_alloc,
+                    scan_result.records,
+                ) catch scan_result.records;
+                jsx_injected = (module.import_records.len > scan_result.records.len);
+            }
+        }
+
         module.exports_kind = determineExportsKind(scan_result, module.path);
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
-        module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, scan_result.records) catch &.{};
+        module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, module.import_records) catch &.{};
         binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, scan_result.records, module.import_bindings) catch &.{};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, module.import_records, module.import_bindings) catch &.{};
+
+        // JSX synthetic import bindings 추가 (binding_scanner는 AST 노드만 인식하므로 수동 추가)
+        if (jsx_injected) {
+            const jsx_record_idx: u32 = @intCast(scan_result.records.len); // 마지막에 추가된 record
+            module.import_bindings = createJsxImportBindings(
+                self.jsx_runtime,
+                arena_alloc,
+                module.import_bindings,
+                jsx_record_idx,
+            ) catch module.import_bindings;
+        }
 
         module.state = .parsed;
     }
@@ -1514,6 +1544,90 @@ fn computeAssetDir(module_path: []const u8, entry_dir: []const u8) []const u8 {
     if (start < module_dir.len and module_dir[start] == std.fs.path.sep) start += 1;
     if (start >= module_dir.len) return "";
     return module_dir[start..];
+}
+
+const Ast = @import("../parser/ast.zig").Ast;
+const AstTag = @import("../parser/ast.zig").Tag;
+const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
+const ImportBinding = binding_scanner_mod.ImportBinding;
+
+/// AST에 JSX element 또는 fragment 노드가 있는지 검사한다.
+fn astHasJsx(ast: *const Ast) bool {
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .jsx_element, .jsx_fragment => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// JSX automatic import를 synthetic하게 추가한다.
+/// 기존 import_records에 jsx-runtime import record를 추가하고,
+/// 해당 import binding도 함께 반환한다.
+/// esbuild 방식: 파싱 후 synthetic import → 이후 모든 단계가 일반 import와 동일하게 처리.
+fn injectJsxRuntimeImport(
+    jsx_runtime: JsxRuntime,
+    jsx_import_source: []const u8,
+    arena_alloc: std.mem.Allocator,
+    existing_records: []ImportRecord,
+) ![]ImportRecord {
+    const is_dev = jsx_runtime == .automatic_dev;
+    const source = jsx_import_source;
+
+    // "react/jsx-runtime" 또는 "react/jsx-dev-runtime"
+    const specifier = if (is_dev)
+        try std.fmt.allocPrint(arena_alloc, "{s}/jsx-dev-runtime", .{source})
+    else
+        try std.fmt.allocPrint(arena_alloc, "{s}/jsx-runtime", .{source});
+
+    const new_record = ImportRecord{
+        .specifier = specifier,
+        .kind = .static_import,
+        .span = Span.EMPTY,
+    };
+
+    // 기존 records + 새 record를 합친 새 슬라이스 생성
+    const new_records = try arena_alloc.alloc(ImportRecord, existing_records.len + 1);
+    @memcpy(new_records[0..existing_records.len], existing_records);
+    new_records[existing_records.len] = new_record;
+    return new_records;
+}
+
+/// JSX automatic import에 대한 synthetic import bindings를 생성한다.
+fn createJsxImportBindings(
+    jsx_runtime: JsxRuntime,
+    arena_alloc: std.mem.Allocator,
+    existing_bindings: []ImportBinding,
+    jsx_record_index: u32,
+) ![]ImportBinding {
+    const is_dev = jsx_runtime == .automatic_dev;
+
+    // dev: jsxDEV, Fragment | prod: jsx, jsxs, Fragment
+    const jsx_bindings: []const struct { local: []const u8, imported: []const u8 } = if (is_dev)
+        &.{
+            .{ .local = "_jsxDEV", .imported = "jsxDEV" },
+            .{ .local = "_Fragment", .imported = "Fragment" },
+        }
+    else
+        &.{
+            .{ .local = "_jsx", .imported = "jsx" },
+            .{ .local = "_jsxs", .imported = "jsxs" },
+            .{ .local = "_Fragment", .imported = "Fragment" },
+        };
+
+    const new_bindings = try arena_alloc.alloc(ImportBinding, existing_bindings.len + jsx_bindings.len);
+    @memcpy(new_bindings[0..existing_bindings.len], existing_bindings);
+    for (jsx_bindings, 0..) |jb, i| {
+        new_bindings[existing_bindings.len + i] = .{
+            .kind = .named,
+            .local_name = jb.local,
+            .imported_name = jb.imported,
+            .local_span = Span.EMPTY,
+            .import_record_index = jsx_record_index,
+        };
+    }
+    return new_bindings;
 }
 
 /// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.
