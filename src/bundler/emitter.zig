@@ -77,6 +77,8 @@ pub const EmitOptions = struct {
     global_name: ?[]const u8 = null,
     /// 출력 파일 확장자 오버라이드 (.mjs, .cjs 등)
     out_extension_js: ?[]const u8 = null,
+    /// 출력 파일명 (소스맵 참조용, 예: "out.js")
+    output_filename: []const u8 = "bundle.js",
     /// 소스맵 sourceRoot 필드
     source_root: ?[]const u8 = null,
     /// 소스맵에 sourcesContent 포함 여부
@@ -438,13 +440,15 @@ pub fn emitWithTreeShaking(
                 mapping.generated_line += prologue_lines;
             }
         }
-        const json = try sm.generateJSON("bundle.js");
+        const json = try sm.generateJSON(options.output_filename);
         sourcemap_json = try allocator.dupe(u8, json);
     }
 
     // 소스맵 참조 추가
     if (sourcemap_json != null) {
-        try output.appendSlice(allocator, "//# sourceMappingURL=bundle.js.map\n");
+        try output.appendSlice(allocator, "//# sourceMappingURL=");
+        try output.appendSlice(allocator, options.output_filename);
+        try output.appendSlice(allocator, ".map\n");
     }
 
     return .{
@@ -634,13 +638,15 @@ pub fn emitDevBundle(
     // 소스맵 JSON 생성
     var sourcemap_json: ?[]const u8 = null;
     if (bundle_sm) |*sm| {
-        const json = try sm.generateJSON("bundle.js");
+        const json = try sm.generateJSON(options.output_filename);
         sourcemap_json = try allocator.dupe(u8, json);
     }
 
     // 소스맵 참조 추가
     if (sourcemap_json != null) {
-        try output.appendSlice(allocator, "//# sourceMappingURL=/bundle.js.map\n");
+        try output.appendSlice(allocator, "//# sourceMappingURL=/");
+        try output.appendSlice(allocator, options.output_filename);
+        try output.appendSlice(allocator, ".map\n");
     }
 
     return .{

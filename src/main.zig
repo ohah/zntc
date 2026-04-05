@@ -1090,6 +1090,7 @@ pub fn main() !void {
             .resolve_extensions = opts.resolve_extensions_list.items,
             .main_fields = opts.main_fields_list.items,
             .sourcemap = opts.sourcemap,
+            .output_filename = if (opts.output_file) |of| std.fs.path.basename(of) else "bundle.js",
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
