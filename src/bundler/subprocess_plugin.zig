@@ -285,7 +285,9 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
+        var json_arena = std.heap.ArenaAllocator.init(allocator);
+        defer json_arena.deinit();
+        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
@@ -321,7 +323,9 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
+        var json_arena = std.heap.ArenaAllocator.init(allocator);
+        defer json_arena.deinit();
+        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
@@ -367,7 +371,9 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
+        var json_arena = std.heap.ArenaAllocator.init(allocator);
+        defer json_arena.deinit();
+        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
@@ -403,7 +409,9 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, allocator, response, .{
+        var json_arena = std.heap.ArenaAllocator.init(allocator);
+        defer json_arena.deinit();
+        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
 
