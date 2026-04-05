@@ -38,7 +38,6 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }
         pub fn lowerAsyncFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_start = self.readU32(e, 1);
             const params_len = self.readU32(e, 2);
@@ -103,7 +102,6 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async () => { ... } → () => __async(function*() { ... })
         pub fn lowerAsyncArrow(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, 2);
@@ -152,7 +150,6 @@ pub fn ES2017(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_start = self.readU32(e, 1);
             const params_len = self.readU32(e, 2);
@@ -227,7 +224,6 @@ pub fn ES2017(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, 2);

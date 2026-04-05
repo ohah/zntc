@@ -40,7 +40,6 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const e = node.data.extra;
             if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, 2);

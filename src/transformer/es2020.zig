@@ -176,7 +176,6 @@ pub fn ES2020(comptime Transformer: type) type {
             switch (old_node.tag) {
                 .static_member_expression, .computed_member_expression, .private_field_expression => {
                     const e = old_node.data.extra;
-                    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                     const old_obj: NodeIndex = self.readNodeIdx(e, 0);
                     const old_prop: NodeIndex = self.readNodeIdx(e, 1);
                     const flags = self.readU32(e, 2);
@@ -189,7 +188,6 @@ pub fn ES2020(comptime Transformer: type) type {
                 },
                 .call_expression => {
                     const e = old_node.data.extra;
-                    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                     const old_callee: NodeIndex = self.readNodeIdx(e, 0);
                     const args_start = self.readU32(e, 1);
                     const args_len = self.readU32(e, 2);

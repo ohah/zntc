@@ -76,7 +76,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_start = self.readU32(e, 1);
             const params_len = self.readU32(e, 2);
@@ -438,7 +437,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// for문의 연산 수집.
         fn collectForOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const e = stmt.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const init_idx: NodeIndex = self.readNodeIdx(e, 0);
             const test_idx: NodeIndex = self.readNodeIdx(e, 1);
             const update_idx: NodeIndex = self.readNodeIdx(e, 2);
@@ -810,7 +808,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// case_labels는 sentinel+fixup으로 body 처리 후 결정.
         fn collectSwitchOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const e = stmt.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const disc_idx: NodeIndex = self.readNodeIdx(e, 0);
             const cases_start_val = self.readU32(e, 1);
             const cases_len_val = self.readU32(e, 2);
@@ -1568,7 +1565,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // unary/update expression: extra = [operand, operator_and_flags]
             if (node.tag == .unary_expression or node.tag == .update_expression) {
                 const e = node.data.extra;
-                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                 const operand_idx: NodeIndex = self.readNodeIdx(e, 0);
                 const op_flags = self.readU32(e, 1);
                 const new_operand = try visitExprWithYieldExtraction(self, operand_idx, ops, next_label);
@@ -1599,7 +1595,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 node.tag == .tagged_template_expression)
             {
                 const e = node.data.extra;
-                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                 const child0_idx: NodeIndex = self.readNodeIdx(e, 0);
                 const child1_idx: NodeIndex = self.readNodeIdx(e, 1);
                 const flags = self.readU32(e, 2);
@@ -1620,7 +1615,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // call/new expression: callee + args 재귀
             if (node.tag == .call_expression or node.tag == .new_expression) {
                 const e = node.data.extra;
-                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                 const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
                 const args_start = self.readU32(e, 1);
                 const args_len = self.readU32(e, 2);

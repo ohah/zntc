@@ -15,7 +15,7 @@ fn expectMinify(input: []const u8, expected: []const u8) !void {
     var parser = Parser.init(a, &scanner);
     _ = try parser.parse();
 
-    var transformer = Transformer.init(a, &parser.ast, .{});
+    var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
     minify_mod.minify(&transformer.ast);

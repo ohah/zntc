@@ -27,7 +27,7 @@ fn runPipeline(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
     try analyzer.analyze();
     if (analyzer.errors.items.len > 0) return error.SemanticError;
 
-    var transformer = Transformer.init(allocator, &parser.ast, .{});
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
     const root = try transformer.transform();
 
     var cg = Codegen.initWithOptions(allocator, &transformer.ast, .{ .minify_whitespace = true });

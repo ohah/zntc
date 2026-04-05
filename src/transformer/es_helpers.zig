@@ -370,7 +370,6 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
     const me = method_node.data.extra;
-    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
     const params_start = self.ast.extra_data.items[me + 1];
     const params_len = self.ast.extra_data.items[me + 2];
     const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 3]);

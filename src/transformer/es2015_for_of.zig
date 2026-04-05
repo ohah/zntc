@@ -126,7 +126,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             if (left_node.tag == .variable_declaration) {
                 // for (const/let/var x of ...) → var x = _b[_a]
                 const le = left_node.data.extra;
-                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                 const list_start = self.readU32(le, 1);
                 const list_len = self.readU32(le, 2);
                 if (list_len == 0) return NodeIndex.none;

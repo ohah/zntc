@@ -127,7 +127,7 @@ pub const RuntimeHelpers = packed struct(u16) {
 ///
 /// 사용법:
 /// ```zig
-/// var t = Transformer.init(allocator, &source_ast, .{});
+/// var t = try Transformer.init(allocator, &source_ast, .{});
 /// const new_root = try t.transform();
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
@@ -277,7 +277,7 @@ pub const Transformer = struct {
         signature: []const u8,
     };
 
-    pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Transformer {
+    pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
         // experimentalDecorators → useDefineForClassFields=false 강제
         // TypeScript/esbuild 동일: decorator가 class field의 setter를 인터셉트하려면
         // assign semantics (this.x = v)가 필요. define semantics는 setter를 무시.
@@ -285,18 +285,7 @@ pub const Transformer = struct {
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
         // 파서 AST를 트랜스포머 allocator로 복제 (원본 보존)
-        const cloned_ast = Ast.cloneForTransformer(source_ast, allocator) catch {
-            // OOM 시 빈 AST로 폴백 (transform()에서 에러 반환됨)
-            var empty = Ast.init(allocator, source_ast.source);
-            empty.transformer_node_start = 0;
-            return .{
-                .ast = empty,
-                .options = opts,
-                .allocator = allocator,
-                .scratch = .empty,
-                .pending_nodes = .empty,
-            };
-        };
+        const cloned_ast = try Ast.cloneForTransformer(source_ast, allocator);
 
         var self: Transformer = .{
             .ast = cloned_ast,
@@ -325,8 +314,7 @@ pub const Transformer = struct {
     /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
     /// 파서 노드 영역(0..transformer_node_start-1)에 symbol_id를 채운다.
     pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
-        try self.symbol_ids.ensureTotalCapacity(self.allocator, analyzer_symbol_ids.len);
-        self.symbol_ids.appendSliceAssumeCapacity(analyzer_symbol_ids);
+        try self.symbol_ids.appendSlice(self.allocator, analyzer_symbol_ids);
     }
 
     // ================================================================
@@ -1573,11 +1561,6 @@ pub const Transformer = struct {
     // ================================================================
     // 헬퍼
     // ================================================================
-
-    /// extra_data에서 연속된 필드를 슬라이스로 읽기.
-    fn readExtras(self: *const Transformer, start: u32, len: u32) []const u32 {
-        return self.ast.extra_data.items[start .. start + len];
-    }
 
     /// extra 인덱스로 NodeIndex 읽기.
     pub fn readNodeIdx(self: *const Transformer, extra_start: u32, offset: u32) NodeIndex {

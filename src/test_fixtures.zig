@@ -44,10 +44,10 @@ fn runFixture(backing_allocator: std.mem.Allocator, source: []const u8, cg_optio
     var parser = Parser.init(allocator, &scanner);
     _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser.ast, .{});
+    var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
+    var cg = Codegen.initWithOptions(allocator, &t.ast, cg_options);
     const output = try cg.generate(root);
 
     return .{ .output = output, .arena = arena };
