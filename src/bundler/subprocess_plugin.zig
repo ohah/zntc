@@ -285,18 +285,17 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        var json_arena = std.heap.ArenaAllocator.init(allocator);
-        defer json_arena.deinit();
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
+        const parsed = std.json.parseFromSlice(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
+        defer parsed.deinit();
 
-        if (parsed.@"error") |err_msg| {
+        if (parsed.value.@"error") |err_msg| {
             self.reportError("resolveId", specifier, err_msg);
             return error.PluginFailed;
         }
 
-        if (parsed.result) |result| {
+        if (parsed.value.result) |result| {
             if (result.path) |path| {
                 return .{
                     .path = allocator.dupe(u8, path) catch return error.OutOfMemory,
@@ -323,18 +322,17 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        var json_arena = std.heap.ArenaAllocator.init(allocator);
-        defer json_arena.deinit();
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
+        const parsed = std.json.parseFromSlice(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
+        defer parsed.deinit();
 
-        if (parsed.@"error") |err_msg| {
+        if (parsed.value.@"error") |err_msg| {
             self.reportError("load", path, err_msg);
             return error.PluginFailed;
         }
 
-        if (parsed.result) |result| {
+        if (parsed.value.result) |result| {
             if (result.contents) |contents| {
                 // loader에 따라 JS 모듈로 래핑 (esbuild 호환)
                 const loader_str = result.loader orelse "js";
@@ -371,18 +369,17 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        var json_arena = std.heap.ArenaAllocator.init(allocator);
-        defer json_arena.deinit();
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
+        const parsed = std.json.parseFromSlice(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
+        defer parsed.deinit();
 
-        if (parsed.@"error") |err_msg| {
+        if (parsed.value.@"error") |err_msg| {
             self.reportError("transform", id, err_msg);
             return error.PluginFailed;
         }
 
-        if (parsed.result) |result| {
+        if (parsed.value.result) |result| {
             if (result.contents) |contents| {
                 return allocator.dupe(u8, contents) catch return error.OutOfMemory;
             }
@@ -409,18 +406,17 @@ pub const SubprocessPlugin = struct {
             return error.PluginFailed;
         };
         defer allocator.free(response);
-        var json_arena = std.heap.ArenaAllocator.init(allocator);
-        defer json_arena.deinit();
-        const parsed = std.json.parseFromSliceLeaky(HookResponse, json_arena.allocator(), response, .{
+        const parsed = std.json.parseFromSlice(HookResponse, allocator, response, .{
             .ignore_unknown_fields = true,
         }) catch return error.PluginFailed;
+        defer parsed.deinit();
 
-        if (parsed.@"error") |err_msg| {
+        if (parsed.value.@"error") |err_msg| {
             self.reportError("renderChunk", chunk_name, err_msg);
             return error.PluginFailed;
         }
 
-        if (parsed.result) |result| {
+        if (parsed.value.result) |result| {
             if (result.contents) |contents| {
                 return allocator.dupe(u8, contents) catch return error.OutOfMemory;
             }
