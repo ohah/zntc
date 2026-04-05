@@ -591,26 +591,11 @@ pub const Bundler = struct {
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
             output = try self.allocator.dupe(u8, "");
-        } else if (self.options.sourcemap) {
-            // 소스맵 요청 시: emitDevBundle 사용 (소스맵 생성 지원)
-            // TODO: emitWithTreeShaking에 소스맵 생성 통합
-            var emit_opts = self.makeEmitOptions();
-            emit_opts.polyfills = polyfill_entries.items;
-            emit_opts.sourcemap = true;
-            const dev_result = try emitter.emitDevBundle(
-                self.allocator,
-                &graph,
-                emit_opts,
-                if (linker) |*l| l else null,
-            );
-            output = dev_result.output;
-            dev_sourcemap = dev_result.sourcemap;
-            // module_codes는 non-dev에서 불필요 → 즉시 해제
-            emitter.DevBundleResult.deinitCodes(dev_result.module_codes, self.allocator);
         } else {
-            // 기존 단일 파일 경로 (tree shaking 포함, 소스맵 없음)
+            // 단일 파일 경로 (tree shaking + 소스맵 지원)
             var emit_opts = self.makeEmitOptions();
             emit_opts.polyfills = polyfill_entries.items;
+            if (self.options.sourcemap) emit_opts.sourcemap = true;
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
@@ -619,6 +604,7 @@ pub const Bundler = struct {
                 if (shaker) |*s| s else null,
             );
             output = emit_result.output;
+            dev_sourcemap = emit_result.sourcemap;
         }
         errdefer self.allocator.free(output);
 

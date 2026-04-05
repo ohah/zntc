@@ -265,6 +265,7 @@ pub fn emitWithTreeShaking(
     defer {
         for (results) |r| {
             if (r.code) |c| allocator.free(c);
+            if (r.mappings) |m| allocator.free(m);
         }
         allocator.free(results);
     }
@@ -289,13 +290,28 @@ pub fn emitWithTreeShaking(
         for (sorted.items, 0..) |m, i| {
             const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings) catch null;
         }
     }
 
-    // Phase 3: 순차 합류 — exec_index 순서대로 concat + helpers 합산
+    // Phase 3: 순차 합류 — exec_index 순서대로 concat + helpers 합산 + 소스맵 수집
     var module_output: std.ArrayList(u8) = .empty;
     defer module_output.deinit(allocator);
+
+    // 소스맵 빌더 (소스맵 활성화 시)
+    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap) blk: {
+        var sm = SourceMap.SourceMapBuilder.init(allocator);
+        sm.source_root = options.source_root orelse "";
+        sm.sources_content = options.sources_content;
+        break :blk sm;
+    } else null;
+    defer if (bundle_sm) |*sm| sm.deinit();
+
+    // output에 이미 추가된 prologue/banner/polyfill/runtime helper 줄 수 추적
+    // (module_output과 별도로 output에 먼저 들어감 — 아래에서 합류 시 사용)
+    // 이 시점에서는 아직 runtime helper가 추가되지 않았으므로 0으로 시작하고
+    // merge 시 output.items의 줄 수를 기준 오프셋으로 사용
+    var module_line: u32 = 0;
 
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
@@ -304,12 +320,9 @@ pub fn emitWithTreeShaking(
         const code = results[i].code orelse continue;
 
         // --run-before-main: 엔트리 모듈 직전에 해당 모듈의 require/init 호출 삽입.
-        // inject로 그래프에 포함은 되지만, import_records에 없어서 linker가 preamble을 생성하지 않음.
-        // 여기서 엔트리 직전에 강제 호출하여 side-effect 실행을 보장.
         const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
         if (is_entry and options.run_before_main.len > 0) {
             for (options.run_before_main) |rbm_path| {
-                // 그래프에서 해당 모듈을 찾아 require_xxx() 또는 init_xxx() 호출 생성
                 for (graph.modules.items) |*rbm| {
                     if (std.mem.eql(u8, rbm.path, rbm_path)) {
                         const call_name = if (rbm.wrap_kind == .cjs)
@@ -320,6 +333,7 @@ pub fn emitWithTreeShaking(
                             defer allocator.free(name);
                             try module_output.appendSlice(allocator, name);
                             try module_output.appendSlice(allocator, "();\n");
+                            module_line += 1;
                         }
                         break;
                     }
@@ -331,11 +345,31 @@ pub fn emitWithTreeShaking(
             try module_output.appendSlice(allocator, "// --- ");
             try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
             try module_output.appendSlice(allocator, " ---\n");
+            module_line += 1;
+        }
+
+        // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가
+        if (bundle_sm) |*sm| {
+            if (results[i].mappings) |maps| {
+                const module_id = makeModuleId(m.path, options.root_dir);
+                const source_idx = try sm.addSource(module_id);
+                for (maps) |mapping| {
+                    try sm.addMapping(.{
+                        .generated_line = module_line + mapping.generated_line,
+                        .generated_column = mapping.generated_column,
+                        .source_index = source_idx,
+                        .original_line = mapping.original_line,
+                        .original_column = mapping.original_column,
+                    });
+                }
+            }
         }
 
         try module_output.appendSlice(allocator, code);
+        module_line += @intCast(std.mem.count(u8, code, "\n"));
         if (!options.minify_whitespace) {
             try module_output.append(allocator, '\n');
+            module_line += 1;
         }
     }
 
@@ -392,9 +426,30 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
+    // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
+    const prologue_lines: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
+
+    // 소스맵 JSON 생성
+    var sourcemap_json: ?[]const u8 = null;
+    if (bundle_sm) |*sm| {
+        // prologue 줄 수를 모든 매핑에 추가
+        if (prologue_lines > 0) {
+            for (sm.mappings.items) |*mapping| {
+                mapping.generated_line += prologue_lines;
+            }
+        }
+        const json = try sm.generateJSON("bundle.js");
+        sourcemap_json = try allocator.dupe(u8, json);
+    }
+
+    // 소스맵 참조 추가
+    if (sourcemap_json != null) {
+        try output.appendSlice(allocator, "//# sourceMappingURL=bundle.js.map\n");
+    }
+
     return .{
         .output = try output.toOwnedSlice(allocator),
-        .sourcemap = null, // TODO: emitModule에서 매핑 반환 후 소스맵 생성 지원
+        .sourcemap = sourcemap_json,
     };
 }
 
@@ -964,7 +1019,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -1541,6 +1596,7 @@ fn computeAllUsedNames(
 const ModuleEmitResult = struct {
     code: ?[]const u8 = null,
     helpers: RuntimeHelpers = .{},
+    mappings: ?[]const SourceMap.Mapping = null,
 };
 
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
@@ -1582,7 +1638,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *ModuleEmitResult,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -1597,6 +1653,7 @@ pub fn emitModule(
     used_export_names: ?[]const []const u8,
     shaker: ?*const TreeShaker,
     helpers_out: ?*RuntimeHelpers,
+    mappings_out: ?*?[]const SourceMap.Mapping,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -1799,6 +1856,7 @@ pub fn emitModule(
         // --charset=utf8 → ascii_only=false (명시적 보장)
         .ascii_only = false,
         // 소스맵 옵션 전달
+        .sourcemap = options.sourcemap,
         .source_root = options.source_root orelse "",
         .sources_content = options.sources_content,
         // keepNames: codegen이 rename된 함수/클래스를 수집
@@ -1810,7 +1868,21 @@ pub fn emitModule(
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = module.path,
     });
+    // 소스맵용: line_offsets와 소스 파일 등록
+    if (options.sourcemap) {
+        cg.line_offsets = module.line_offsets;
+        try cg.addSourceFile(makeModuleId(module.path, options.root_dir));
+    }
     var code = try cg.generate(root);
+
+    // 소스맵 매핑 복사 (arena 해제 전에)
+    if (mappings_out) |mout| {
+        if (cg.sm_builder) |*sm| {
+            if (sm.mappings.items.len > 0) {
+                mout.* = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+            }
+        }
+    }
 
     // Plugin: transform 훅 — codegen 직후, CJS 래핑 전
     // 플러그인 결과를 arena로 복사하여 emit_arena와 같은 생명주기 보장
