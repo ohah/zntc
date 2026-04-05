@@ -173,8 +173,8 @@ pub fn transpileWithCallback(
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
         .unsupported = options.unsupported,
-        // JSX lowering: 트랜스파일 모드에서 항상 활성화
-        .jsx_transform = true,
+        // JSX lowering: JSX가 있는 모듈에서만 활성화
+        .jsx_transform = parser.ast.has_jsx,
         .jsx_runtime = options.jsx_runtime,
         .jsx_factory = options.jsx_factory,
         .jsx_fragment = options.jsx_fragment,
