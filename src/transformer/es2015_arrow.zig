@@ -23,11 +23,13 @@
 //! - SWC: crates/swc_ecma_compat_es2015/src/arrow.rs (~253줄)
 //! - ZTS ES2017: es2017.zig lowerAsyncArrow
 
+const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
+const es2015_params = @import("es2015_params.zig");
 
 pub fn ES2015Arrow(comptime Transformer: type) type {
     return struct {
@@ -43,6 +45,12 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
             const flags = extras[e + 2];
 
+            // ES2015 default/rest/destructuring lowering:
+            // 화살표 함수 파라미터에서 extra list 형태(start/len)를 추출 가능한 경우에만 적용.
+            // 단일 파라미터(x => ...) 등은 destructuring/rest가 아니므로 해당 없음.
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
             // params 슬롯의 형태:
             //   1. none → () => ... (빈 파라미터)
             //   2. formal_parameters(list) → <T>(x, y) => ... (TS 제네릭 arrow)
@@ -55,6 +63,22 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 const params_node = self.old_ast.getNode(params_idx);
                 switch (params_node.tag) {
                     .formal_parameters => {
+                        // ES2015 params lowering 적용 가능 (extra list 형태)
+                        if (self.options.unsupported.default_params and
+                            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                            self,
+                            params_node.data.list.start,
+                            params_node.data.list.len,
+                        )) {
+                            const lr = try es2015_params.ES2015Params(Transformer).lowerParams(
+                                self,
+                                params_node.data.list.start,
+                                params_node.data.list.len,
+                                node.span,
+                            );
+                            es2015_body_stmts = lr.body_stmts;
+                            break :blk lr.new_params;
+                        }
                         break :blk try self.visitExtraList(
                             params_node.data.list.start,
                             params_node.data.list.len,
@@ -68,13 +92,29 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         }
                         const inner = self.old_ast.getNode(inner_idx);
                         if (inner.tag == .sequence_expression) {
+                            // ES2015 params lowering 적용 가능 (extra list 형태)
+                            if (self.options.unsupported.default_params and
+                                es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                                self,
+                                inner.data.list.start,
+                                inner.data.list.len,
+                            )) {
+                                const lr = try es2015_params.ES2015Params(Transformer).lowerParams(
+                                    self,
+                                    inner.data.list.start,
+                                    inner.data.list.len,
+                                    node.span,
+                                );
+                                es2015_body_stmts = lr.body_stmts;
+                                break :blk lr.new_params;
+                            }
                             // (a, b, c) → sequence_expression의 list에서 추출
                             break :blk try self.visitExtraList(
                                 inner.data.list.start,
                                 inner.data.list.len,
                             );
                         } else {
-                            // (x) → 단일 파라미터
+                            // (x) → 단일 파라미터 (destructuring/rest 아님)
                             const new_param = try self.visitNode(inner_idx);
                             break :blk try self.new_ast.addNodeList(
                                 if (!new_param.isNone()) &.{new_param} else &.{},
@@ -82,7 +122,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         }
                     },
                     else => {
-                        // x => ... — 단일 binding_identifier
+                        // x => ... — 단일 binding_identifier (destructuring/rest 아님)
                         const new_param = try self.visitNode(params_idx);
                         break :blk try self.new_ast.addNodeList(
                             if (!new_param.isNone()) &.{new_param} else &.{},
@@ -94,11 +134,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
             // visitNode에서 this → _this, arguments → _arguments로 치환된다.
             self.arrow_this_depth += 1;
-            const new_body = try self.visitNode(body_idx);
+            var new_body = try self.visitNode(body_idx);
             self.arrow_this_depth -= 1;
 
             // expression body → { return expr; }
-            const func_body = blk: {
+            var func_body = blk: {
                 if (new_body.isNone()) break :blk new_body;
                 const body_node = self.new_ast.getNode(new_body);
                 if (body_node.tag != .block_statement and body_node.tag != .function_body) {
@@ -116,6 +156,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 }
                 break :blk new_body;
             };
+
+            // ES2015 default/rest body 문 삽입 (destructuring 초기화 코드)
+            if (es2015_body_stmts) |stmts| {
+                if (stmts.items.len > 0 and !func_body.isNone()) {
+                    func_body = try self.prependStatementsToBody(func_body, stmts.items);
+                }
+            }
 
             // function_expression: extra = [name, params_start, params_len, body, flags, return_type]
             const func_flags: u32 = if (flags & ast_mod.ArrowFlags.is_async != 0)

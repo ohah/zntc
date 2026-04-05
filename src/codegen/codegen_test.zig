@@ -1975,6 +1975,39 @@ test "ES2015: arrow no transform on esnext" {
     try std.testing.expectEqualStrings("var f=()=>42;", r.output);
 }
 
+test "ES2015: arrow destructuring params lowered" {
+    var r = try e2eTarget(std.testing.allocator, "var f=({a,...rest})=>rest;", .es5);
+    defer r.deinit();
+    // destructuring + rest → 임시 변수 + __rest
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
+}
+
+test "ES2015: arrow destructuring with rename lowered" {
+    var r = try e2eTarget(std.testing.allocator, "var f=({ref:forwardedRef,style,...rest})=>rest;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "forwardedRef") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
+}
+
+test "ES2015: arrow default param lowered" {
+    var r = try e2eTarget(std.testing.allocator, "var f=(x=1)=>x;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(") != null);
+    // default param → body에 초기화 문 삽입
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null or
+        std.mem.indexOf(u8, r.output, "=1") != null);
+}
+
+test "ES2015: arrow simple params — no unnecessary lowering" {
+    var r = try e2eTarget(std.testing.allocator, "var f=(a,b)=>a+b;", .es5);
+    defer r.deinit();
+    // 단순 파라미터는 그대로 유지 (destructuring lowering 불필요)
+    try std.testing.expectEqualStrings("var f=function(a,b){return a + b;};", r.output);
+}
+
 // --- ES2015: for-of ---
 
 test "ES2015: for-of with const" {
