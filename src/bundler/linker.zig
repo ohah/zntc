@@ -51,6 +51,9 @@ pub const LinkingMetadata = struct {
     /// require specifier 문자열 → require_xxx() 함수명.
     /// codegen이 require('path') 호출을 만나면 이 맵으로 치환.
     require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// __esm live binding에서 __export getter 값을 override.
+    /// local_name → canonical_name. emitter가 __export getter 생성 시 사용.
+    export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .{},
     /// symbol_id → ConstValue. 크로스-모듈 상수 인라인용.
     /// import symbol이 canonical export의 const_value를 가지면 codegen이 리터럴로 대체.
     const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{},
@@ -852,6 +855,9 @@ pub const Linker = struct {
 
         // nested mangling에서 소유권을 이전받은 문자열 추적 (deinit에서 해제)
         var owned_nested_renames: std.ArrayListUnmanaged([]const u8) = .empty;
+
+        // __esm live binding: __export getter에서 사용할 이름 override
+        var export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .{};
         errdefer {
             for (owned_nested_renames.items) |v| self.allocator.free(v);
             owned_nested_renames.deinit(self.allocator);
@@ -873,6 +879,11 @@ pub const Linker = struct {
         var esm_init_set = std.AutoHashMap(u32, void).init(self.allocator);
         defer esm_init_set.deinit();
         defer preamble.deinit();
+
+        // __esm → __esm live binding으로 rename된 심볼 추적.
+        // 자체 rename 루프에서 이 심볼들을 덮어쓰지 않도록 보호.
+        var live_binding_syms = std.AutoHashMap(u32, void).init(self.allocator);
+        defer live_binding_syms.deinit();
 
         // namespace member rewrite 엔트리 수집 (esbuild 방식)
         var ns_rewrite_list: std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry) = .empty;
@@ -926,11 +937,11 @@ pub const Linker = struct {
 
                 const canonical_mod = @intFromEnum(rec.resolved);
 
-                // __esm 모듈에서 CJS/ESM 타겟 import: body의 require_rewrites가
-                // 할당문 + init 호출을 처리. preamble의 var 선언은 __esm function scope에
-                // 갇혀 밖의 호이스팅된 함수가 접근 불가하므로 body codegen에 위임.
+                // __esm 모듈에서 CJS 타겟 import: body의 require_rewrites가
+                // 할당문 + init 호출을 처리하므로 preamble 생성 skip.
+                // __esm → __esm은 live binding (preamble init + canonical rename) 사용.
                 if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
-                    self.modules[canonical_mod].wrap_kind.isWrapped())
+                    self.modules[canonical_mod].wrap_kind == .cjs)
                 {
                     continue;
                 }
@@ -968,6 +979,10 @@ pub const Linker = struct {
                         if (module_scope.get(ib.local_name)) |sym_idx| {
                             try renames.put(@intCast(sym_idx), exports_var);
                             try owned_nested_renames.append(self.allocator, exports_var);
+                            if (m.wrap_kind == .esm) {
+                                try live_binding_syms.put(@intCast(sym_idx), {});
+                                try export_getter_overrides.put(self.allocator, ib.local_name, exports_var);
+                            }
                         } else {
                             self.allocator.free(exports_var);
                         }
@@ -1074,6 +1089,14 @@ pub const Linker = struct {
                 if (!isReservedName(target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
+                        // __esm → __esm live binding: 자체 rename에서 덮어쓰기 방지 +
+                        // __export getter override 등록
+                        if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
+                            self.modules[canonical_mod].wrap_kind == .esm)
+                        {
+                            try live_binding_syms.put(@intCast(sym_idx), {});
+                            try export_getter_overrides.put(self.allocator, ib.local_name, target_name);
+                        }
                     }
                 }
             }
@@ -1084,12 +1107,22 @@ pub const Linker = struct {
             if (m.wrap_kind.isWrapped()) {
                 var hoisted_specifiers = std.StringHashMap(void).init(self.allocator);
                 defer hoisted_specifiers.deinit();
-                for (m.import_records) |rec| {
+                for (m.import_records, 0..) |rec, rec_i| {
                     if (rec.resolved.isNone()) continue;
                     const tidx = @intFromEnum(rec.resolved);
                     if (tidx >= self.modules.len) continue;
                     if (self.modules[tidx].wrap_kind == .none) {
                         try hoisted_specifiers.put(rec.specifier, {});
+                    } else if (self.modules[tidx].wrap_kind == .esm) {
+                        // __esm → __esm live binding: named import만 skip.
+                        // namespace import는 body codegen이 exports_xxx 할당을 생성해야 함.
+                        const has_namespace = for (m.import_bindings) |ib| {
+                            if (ib.import_record_index == rec_i and ib.kind == .namespace)
+                                break true;
+                        } else false;
+                        if (!has_namespace) {
+                            try hoisted_specifiers.put(rec.specifier, {});
+                        }
                     }
                 }
                 // AST에서 해당 specifier의 import_declaration 노드를 skip
@@ -1112,12 +1145,15 @@ pub const Linker = struct {
             }
 
             // 자체 top-level 심볼 리네임 (이름 충돌 + mangling)
+            // __esm → __esm live binding으로 설정된 심볼은 skip (source 모듈의 canonical name 유지)
             var sit = module_scope.iterator();
             while (sit.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (self.getCanonicalName(module_index, sym_name)) |renamed| {
                     const sym_idx = scope_entry.value_ptr.*;
-                    try renames.put(@intCast(sym_idx), renamed);
+                    if (!live_binding_syms.contains(@intCast(sym_idx))) {
+                        try renames.put(@intCast(sym_idx), renamed);
+                    }
                 }
             }
 
@@ -1209,6 +1245,7 @@ pub const Linker = struct {
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
             .const_values = const_values,
+            .export_getter_overrides = export_getter_overrides,
             .owned_rename_values = owned_nested_renames,
             .allocator = self.allocator,
         };
