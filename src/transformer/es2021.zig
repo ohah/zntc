@@ -19,6 +19,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const es_helpers = @import("es_helpers.zig");
 
 pub fn ES2021(comptime Transformer: type) type {
     return struct {
@@ -39,11 +40,7 @@ pub fn ES2021(comptime Transformer: type) type {
                     .flags = @intFromEnum(token_mod.Kind.eq),
                 } },
             });
-            const paren_assign = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-            });
+            const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
 
             if (self.options.unsupported.nullish_coalescing) {
                 const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
@@ -97,11 +94,7 @@ pub fn ES2021(comptime Transformer: type) type {
                     .flags = @intFromEnum(token_mod.Kind.eq),
                 } },
             });
-            const paren_assign = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-            });
+            const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
             return self.new_ast.addNode(.{
                 .tag = .logical_expression,
                 .span = node.span,

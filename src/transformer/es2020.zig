@@ -70,11 +70,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         .flags = @intFromEnum(token_mod.Kind.eq),
                     } },
                 });
-                const paren_assign = try self.new_ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = node.span,
-                    .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
-                });
+                const paren_assign = try helpers.makeParenExpr(self, assign_node, node.span);
                 const neq_null = try self.new_ast.addNode(.{
                     .tag = .binary_expression,
                     .span = node.span,
@@ -136,11 +132,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         .flags = @intFromEnum(token_mod.Kind.eq),
                     } },
                 });
-                null_check_base = try self.new_ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = node.span,
-                    .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
-                });
+                null_check_base = try helpers.makeParenExpr(self, assign_node, node.span);
                 chain_base = try helpers.makeTempVarRef(self, temp_span, node.span);
             }
 
@@ -154,11 +146,7 @@ pub fn ES2020(comptime Transformer: type) type {
             });
             // 괄호로 감싸서 binary expression 안에서 우선순위 보장
             // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)
-            return self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
-            });
+            return helpers.makeParenExpr(self, cond, node.span);
         }
 
         fn hasOptionalFlag(self: *const Transformer, node: Node) bool {

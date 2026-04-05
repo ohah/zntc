@@ -172,11 +172,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = seq_list },
             });
-            return self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = seq, .flags = 0 } },
-            });
+            return es_helpers.makeParenExpr(self, seq, span);
         }
     };
 }

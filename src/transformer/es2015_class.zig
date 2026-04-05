@@ -219,7 +219,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 @intFromEnum(iife_body), 0,                    none,
             });
             const wrapper_fn = try self.new_ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
-            const paren = try self.new_ast.addNode(.{ .tag = .parenthesized_expression, .span = span, .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } } });
+            const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             const iife_call = if (has_super and super_span != null) blk: {
@@ -466,7 +466,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             } else try self.new_ast.addNodeList(&.{});
             const wrapper_extra = try self.new_ast.addExtras(&.{ none, wrapper_params.start, wrapper_params.len, @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.new_ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
-            const paren = try self.new_ast.addNode(.{ .tag = .parenthesized_expression, .span = span, .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } } });
+            const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
 
             // (function(_super) { ... })(ParentClass) 또는 (function() { ... })()
             return if (has_super and super_span != null) blk: {

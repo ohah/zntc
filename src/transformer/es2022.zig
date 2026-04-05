@@ -479,11 +479,7 @@ pub fn ES2022(comptime Transformer: type) type {
             });
 
             // 괄호로 감싸기: (arrow)
-            const paren_arrow = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = arrow, .flags = 0 } },
-            });
+            const paren_arrow = try es_helpers.makeParenExpr(self, arrow, span);
 
             // call_expression: extra = [callee, args_start, args_len, flags]
             const empty_args = try self.new_ast.addNodeList(&.{});

@@ -68,6 +68,15 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     });
 }
 
+/// 식을 괄호로 감싼 parenthesized_expression 생성.
+pub fn makeParenExpr(self: anytype, inner: NodeIndex, span: Span) !NodeIndex {
+    return self.new_ast.addNode(.{
+        .tag = .parenthesized_expression,
+        .span = span,
+        .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+    });
+}
+
 /// 이름 문자열로 identifier_reference 노드 생성.
 /// addString + addNode를 한 번에 수행.
 pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
