@@ -81,6 +81,8 @@ pub const BundleOptions = struct {
     sources_content: bool = true,
     /// 소스맵 생성 (--sourcemap)
     sourcemap: bool = false,
+    /// 출력 파일명 (소스맵 참조용)
+    output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
     /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[name]")
@@ -287,6 +289,7 @@ pub const Bundler = struct {
             .out_extension_js = self.options.out_extension_js,
             .source_root = self.options.source_root,
             .sources_content = self.options.sources_content,
+            .output_filename = self.options.output_filename,
             .charset_utf8 = self.options.charset_utf8,
             .entry_names = self.options.entry_names,
             .chunk_names = self.options.chunk_names,
