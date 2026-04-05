@@ -4018,3 +4018,121 @@ test "JSX automatic: text with quotes escaped" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\\\"hello\\\"") != null);
 }
+
+// ============================================================
+// 수정 1: HTML entity 디코딩 테스트
+// ============================================================
+
+test "JSX: HTML entity &amp; decodes to &" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>a &amp; b</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"a & b\"") != null);
+}
+
+test "JSX: HTML entity &lt; &gt; decode" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>&lt;tag&gt;</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"<tag>\"") != null);
+}
+
+test "JSX: HTML entity &quot; decodes and escapes" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>&quot;hi&quot;</div>;");
+    defer r.deinit();
+    // &quot; → " → 출력 시 \" 이스케이프
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\\"hi\\\"") != null);
+}
+
+test "JSX: HTML entity &apos; decodes to apostrophe" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>it&apos;s</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"it's\"") != null);
+}
+
+test "JSX: numeric decimal entity &#123; decodes to {" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>&#123;</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"{\"") != null);
+}
+
+test "JSX: numeric hex entity &#x3E; decodes to >" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>&#x3E;</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\">\"") != null);
+}
+
+test "JSX: unknown entity preserved as-is" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>&unknown;</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "&unknown;") != null);
+}
+
+test "JSX: &nbsp; decodes to non-breaking space" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>a&nbsp;b</div>;");
+    defer r.deinit();
+    // \xC2\xA0 is UTF-8 for U+00A0
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a\xC2\xA0b") != null);
+}
+
+// ============================================================
+// 수정 2: 라인별 정규화 테스트 (esbuild 호환)
+// ============================================================
+
+test "JSX: multiline text normalizes to single spaces between lines" {
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <div>
+        \\  Hello
+        \\  World
+        \\</div>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"Hello World\"") != null);
+}
+
+test "JSX: single line preserves internal spaces" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>hello   world</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"hello   world\"") != null);
+}
+
+// ============================================================
+// 수정 4: UTF-16 column 계산 테스트
+// ============================================================
+
+test "JSX dev: column is 1-based UTF-16" {
+    // ASCII 소스: column은 byte offset과 동일 (UTF-16이어도 ASCII 범위는 차이 없음)
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div />;");
+    defer r.deinit();
+    // columnNumber 값이 양수로 출력되는지 확인 (파서의 span 위치에 따라 값이 다를 수 있음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "columnNumber: ") != null);
+    // lineNumber도 1-based
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "lineNumber: 1") != null);
+}
+
+// ============================================================
+// 수정 5: key after spread → createElement 폴백 테스트
+// ============================================================
+
+test "JSX automatic: key after spread falls back to createElement" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App {...props} key=\"k\" />;");
+    defer r.deinit();
+    // createElement 폴백이 사용되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement(") != null);
+    // createElement import가 생성되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "createElement as _createElement") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "from \"react\"") != null);
+}
+
+test "JSX automatic: key before spread uses normal jsx" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App key=\"k\" {...props} />;");
+    defer r.deinit();
+    // key가 spread 앞이면 정상 jsx 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement(") == null);
+}
+
+test "JSX automatic: no key no fallback" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <App {...props} name=\"test\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement(") == null);
+}

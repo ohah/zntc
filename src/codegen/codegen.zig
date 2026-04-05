@@ -169,6 +169,7 @@ pub const Codegen = struct {
     jsx_used_jsxs: bool = false,
     jsx_used_jsxDEV: bool = false,
     jsx_used_fragment: bool = false,
+    jsx_used_createElement: bool = false,
     /// classic JSX: 번들러 리네이밍이 반영된 factory/fragment 문자열.
     /// 초기화 시 한 번만 계산 (모듈당 O(N) → O(1) per JSX element).
     resolved_jsx_factory: ?[]const u8 = null,
@@ -260,40 +261,50 @@ pub const Codegen = struct {
 
     /// automatic JSX import문을 생성. 사용된 헬퍼가 없으면 null.
     fn buildJsxImport(self: *Codegen) ?[]const u8 {
-        if (!self.jsx_used_jsx and !self.jsx_used_jsxs and !self.jsx_used_jsxDEV and !self.jsx_used_fragment) return null;
+        if (!self.jsx_used_jsx and !self.jsx_used_jsxs and !self.jsx_used_jsxDEV and !self.jsx_used_fragment and !self.jsx_used_createElement) return null;
 
         var import_buf: std.ArrayList(u8) = .empty;
         const is_dev = self.options.jsx_runtime == .automatic_dev;
         const source = self.options.jsx_import_source;
 
-        import_buf.appendSlice(self.allocator, "import { ") catch return null;
-        var first = true;
-        if (is_dev) {
-            if (self.jsx_used_jsxDEV) {
-                import_buf.appendSlice(self.allocator, "jsxDEV as _jsxDEV") catch return null;
-                first = false;
+        // jsx-runtime (또는 jsx-dev-runtime) import
+        if (self.jsx_used_jsx or self.jsx_used_jsxs or self.jsx_used_jsxDEV or self.jsx_used_fragment) {
+            import_buf.appendSlice(self.allocator, "import { ") catch return null;
+            var first = true;
+            if (is_dev) {
+                if (self.jsx_used_jsxDEV) {
+                    import_buf.appendSlice(self.allocator, "jsxDEV as _jsxDEV") catch return null;
+                    first = false;
+                }
+            } else {
+                if (self.jsx_used_jsx) {
+                    import_buf.appendSlice(self.allocator, "jsx as _jsx") catch return null;
+                    first = false;
+                }
+                if (self.jsx_used_jsxs) {
+                    if (!first) import_buf.appendSlice(self.allocator, ", ") catch return null;
+                    import_buf.appendSlice(self.allocator, "jsxs as _jsxs") catch return null;
+                    first = false;
+                }
             }
-        } else {
-            if (self.jsx_used_jsx) {
-                import_buf.appendSlice(self.allocator, "jsx as _jsx") catch return null;
-                first = false;
-            }
-            if (self.jsx_used_jsxs) {
+            if (self.jsx_used_fragment) {
                 if (!first) import_buf.appendSlice(self.allocator, ", ") catch return null;
-                import_buf.appendSlice(self.allocator, "jsxs as _jsxs") catch return null;
-                first = false;
+                import_buf.appendSlice(self.allocator, "Fragment as _Fragment") catch return null;
+            }
+            import_buf.appendSlice(self.allocator, " } from \"") catch return null;
+            import_buf.appendSlice(self.allocator, source) catch return null;
+            if (is_dev) {
+                import_buf.appendSlice(self.allocator, "/jsx-dev-runtime\";\n") catch return null;
+            } else {
+                import_buf.appendSlice(self.allocator, "/jsx-runtime\";\n") catch return null;
             }
         }
-        if (self.jsx_used_fragment) {
-            if (!first) import_buf.appendSlice(self.allocator, ", ") catch return null;
-            import_buf.appendSlice(self.allocator, "Fragment as _Fragment") catch return null;
-        }
-        import_buf.appendSlice(self.allocator, " } from \"") catch return null;
-        import_buf.appendSlice(self.allocator, source) catch return null;
-        if (is_dev) {
-            import_buf.appendSlice(self.allocator, "/jsx-dev-runtime\";\n") catch return null;
-        } else {
-            import_buf.appendSlice(self.allocator, "/jsx-runtime\";\n") catch return null;
+
+        // createElement import (key-after-spread 폴백용)
+        if (self.jsx_used_createElement) {
+            import_buf.appendSlice(self.allocator, "import { createElement as _createElement } from \"") catch return null;
+            import_buf.appendSlice(self.allocator, source) catch return null;
+            import_buf.appendSlice(self.allocator, "\";\n") catch return null;
         }
 
         return import_buf.items;
@@ -2590,9 +2601,24 @@ pub const Codegen = struct {
                 try self.writeByte(')');
             },
             .automatic, .automatic_dev => {
+                // key가 spread 뒤에 오면 automatic 모드 대신 classic(createElement) 폴백
+                const key_result = self.findJSXKeyAttr(attrs_start, attrs_len);
+                if (key_result.key_after_spread) {
+                    // createElement 폴백: React.createElement(tag, {...props, key: value}, children)
+                    try self.write("/* @__PURE__ */ ");
+                    self.jsx_used_createElement = true;
+                    try self.write("_createElement(");
+                    try self.emitJSXTagName(tag_name_idx);
+                    try self.emitJSXAttrsClassic(attrs_start, attrs_len);
+                    try self.emitJSXChildrenClassic(children_start, children_len);
+                    try self.writeByte(')');
+                    return;
+                }
+
                 const effective_children = self.countEffectiveChildren(children_start, children_len);
                 const is_static = effective_children > 1;
                 const is_dev = self.options.jsx_runtime == .automatic_dev;
+                const key_idx = key_result.key_idx;
 
                 try self.write("/* @__PURE__ */ ");
                 if (is_dev) {
@@ -2608,8 +2634,6 @@ pub const Codegen = struct {
                 try self.emitJSXTagName(tag_name_idx);
                 try self.write(", ");
 
-                // key를 attrs에서 분리
-                const key_idx = self.findJSXKeyAttr(attrs_start, attrs_len);
                 try self.emitJSXPropsAutomatic(attrs_start, attrs_len, children_start, children_len, key_idx, effective_children);
 
                 // key argument
@@ -2625,6 +2649,8 @@ pub const Codegen = struct {
                     if (is_static) try self.write(", true") else try self.write(", false");
                     // source info: { fileName, lineNumber, columnNumber }
                     try self.emitJSXDevSource(node.span);
+                    // __self: esbuild는 최상위 스코프에서 undefined, 함수/클래스 안에서 this를 전달.
+                    // ZTS는 함수 단위 코드젠이므로 항상 this가 유효. 최상위 JSX는 RN에서 거의 없어 현재 동작 유지.
                     try self.write(", this");
                 } else if (key_idx != null) {
                     try self.write(", ");
@@ -2674,6 +2700,7 @@ pub const Codegen = struct {
                     try self.write(", undefined, ");
                     if (is_static) try self.write("true") else try self.write("false");
                     try self.emitJSXDevSource(node.span);
+                    // __self: 최상위 스코프 최적화는 수정 3 코멘트 참조 (emitJSXElement)
                     try self.write(", this");
                 }
                 try self.writeByte(')');
@@ -2922,38 +2949,196 @@ pub const Codegen = struct {
 
     /// JSX text 공백 트리밍 (esbuild 호환).
     /// 줄바꿈 있으면 전체 trim, 없으면 원본 유지. 공백만이면 빈 문자열.
-    /// JSX 텍스트: 줄바꿈+주변 공백을 단일 스페이스로 정규화, 특수문자 이스케이프
+    /// JSX 텍스트: 줄바꿈+주변 공백을 단일 스페이스로 정규화, HTML entity 디코딩, 특수문자 이스케이프.
+    /// esbuild의 fixWhitespaceAndDecodeJSXEntities 알고리즘:
+    /// 1. 라인별로 처리 (개행으로 분할)
+    /// 2. 각 라인의 첫 비공백~마지막 비공백까지만 취함 (라인별 trim)
+    /// 3. 라인 간에는 공백 1개만 삽입
+    /// 4. 첫 라인이 공백만이면 생략, 마지막 라인이 공백만이면 생략
     fn writeJSXTextEscaped(self: *Codegen, text: []const u8) !void {
-        var in_whitespace = false;
-        for (text) |c| {
+        // 라인별로 처리
+        var line_start: usize = 0;
+        var first_non_empty_line = true;
+        var line_idx: usize = 0;
+
+        while (line_start <= text.len) {
+            // 현재 라인의 끝 찾기
+            var line_end = line_start;
+            while (line_end < text.len and text[line_end] != '\n' and text[line_end] != '\r') {
+                line_end += 1;
+            }
+
+            const line = text[line_start..line_end];
+            const is_first_line = (line_idx == 0);
+
+            // 다음 라인 시작 위치 계산
+            var next_start = line_end;
+            if (next_start < text.len) {
+                if (text[next_start] == '\r' and next_start + 1 < text.len and text[next_start + 1] == '\n') {
+                    next_start += 2; // \r\n
+                } else {
+                    next_start += 1; // \n or \r
+                }
+            }
+
+            // 마지막 라인인지 확인
+            const is_last_line = (next_start >= text.len);
+
+            // 라인별 trim
+            const trimmed = std.mem.trim(u8, line, " \t");
+
+            if (trimmed.len > 0) {
+                // 라인 간 공백 삽입 (첫 비어있지 않은 라인이 아닌 경우)
+                if (!first_non_empty_line) {
+                    try self.writeByte(' ');
+                }
+                first_non_empty_line = false;
+
+                // 첫 라인이면 leading whitespace 보존, 마지막 라인이면 trailing whitespace 보존
+                const output_text = if (is_first_line and is_last_line)
+                    line // 단일 라인이면 원본 그대로
+                else if (is_first_line)
+                    std.mem.trimRight(u8, line, " \t") // 첫 라인: trailing만 trim
+                else if (is_last_line)
+                    std.mem.trimLeft(u8, line, " \t") // 마지막 라인: leading만 trim
+                else
+                    trimmed; // 중간 라인: 양쪽 trim
+
+                try self.writeJSXLineContent(output_text);
+            }
+
+            if (next_start <= line_start and line_end >= text.len) break;
+            line_start = next_start;
+            line_idx += 1;
+            if (line_start > text.len) break;
+        }
+    }
+
+    /// JSX 텍스트 라인 하나의 내용을 출력 (entity 디코딩 + 이스케이프)
+    fn writeJSXLineContent(self: *Codegen, line: []const u8) !void {
+        var i: usize = 0;
+        while (i < line.len) {
+            const c = line[i];
+            if (c == '&') {
+                // HTML entity 디코딩 시도
+                if (self.tryDecodeHTMLEntity(line, i)) |result| {
+                    try self.writeCodepointEscaped(result.codepoint);
+                    i = result.end;
+                    continue;
+                }
+            }
             switch (c) {
-                '\n', '\r', '\t' => {
-                    if (!in_whitespace) {
-                        try self.writeByte(' ');
-                        in_whitespace = true;
-                    }
-                },
-                ' ' => {
-                    if (!in_whitespace) {
-                        try self.writeByte(' ');
-                    }
-                    // 줄바꿈 주변 공백은 이미 스페이스 출력했으면 무시
-                    // 연속 스페이스는 유지 (JSX 스펙: 같은 줄의 공백은 보존)
-                },
                 '"' => {
-                    in_whitespace = false;
                     try self.write("\\\"");
+                    i += 1;
                 },
                 '\\' => {
-                    in_whitespace = false;
                     try self.write("\\\\");
+                    i += 1;
                 },
                 else => {
-                    in_whitespace = false;
                     try self.writeByte(c);
+                    i += 1;
                 },
             }
         }
+    }
+
+    const EntityResult = struct { codepoint: u21, end: usize };
+
+    /// `&...;` 패턴을 파싱하여 codepoint와 끝 위치를 반환. 매칭 실패 시 null.
+    fn tryDecodeHTMLEntity(_: *Codegen, text: []const u8, start: usize) ?EntityResult {
+        // start는 '&' 위치
+        const after_amp = start + 1;
+        if (after_amp >= text.len) return null;
+
+        // ';' 찾기 (최대 10자 이내)
+        const max_end = @min(after_amp + 10, text.len);
+        var semi_pos: ?usize = null;
+        for (after_amp..max_end) |j| {
+            if (text[j] == ';') {
+                semi_pos = j;
+                break;
+            }
+        }
+        const semi = semi_pos orelse return null;
+        const entity_body = text[after_amp..semi];
+
+        if (entity_body.len >= 2 and entity_body[0] == '#') {
+            // numeric entity
+            if (entity_body[1] == 'x' or entity_body[1] == 'X') {
+                // hex: &#xHH;
+                const hex_str = entity_body[2..];
+                if (hex_str.len == 0) return null;
+                const cp = std.fmt.parseInt(u21, hex_str, 16) catch return null;
+                return .{ .codepoint = cp, .end = semi + 1 };
+            } else {
+                // decimal: &#NNN;
+                const dec_str = entity_body[1..];
+                if (dec_str.len == 0) return null;
+                const cp = std.fmt.parseInt(u21, dec_str, 10) catch return null;
+                return .{ .codepoint = cp, .end = semi + 1 };
+            }
+        }
+
+        // named entities
+        const cp = namedEntityToCodepoint(entity_body) orelse return null;
+        return .{ .codepoint = cp, .end = semi + 1 };
+    }
+
+    /// 잘 알려진 named HTML entity를 codepoint로 변환
+    fn namedEntityToCodepoint(name: []const u8) ?u21 {
+        const Map = struct {
+            n: []const u8,
+            cp: u21,
+        };
+        const entities = [_]Map{
+            .{ .n = "amp", .cp = '&' },
+            .{ .n = "lt", .cp = '<' },
+            .{ .n = "gt", .cp = '>' },
+            .{ .n = "quot", .cp = '"' },
+            .{ .n = "apos", .cp = '\'' },
+            .{ .n = "nbsp", .cp = 0xA0 },
+            .{ .n = "copy", .cp = 0xA9 },
+            .{ .n = "reg", .cp = 0xAE },
+            .{ .n = "trade", .cp = 0x2122 },
+            .{ .n = "mdash", .cp = 0x2014 },
+            .{ .n = "ndash", .cp = 0x2013 },
+            .{ .n = "laquo", .cp = 0xAB },
+            .{ .n = "raquo", .cp = 0xBB },
+            .{ .n = "bull", .cp = 0x2022 },
+            .{ .n = "hellip", .cp = 0x2026 },
+            .{ .n = "ensp", .cp = 0x2002 },
+            .{ .n = "emsp", .cp = 0x2003 },
+            .{ .n = "thinsp", .cp = 0x2009 },
+            .{ .n = "zwnj", .cp = 0x200C },
+            .{ .n = "zwj", .cp = 0x200D },
+        };
+        for (entities) |e| {
+            if (std.mem.eql(u8, name, e.n)) return e.cp;
+        }
+        return null;
+    }
+
+    /// codepoint를 UTF-8로 인코딩하여 출력. `"`, `\`는 이스케이프.
+    fn writeCodepointEscaped(self: *Codegen, cp: u21) !void {
+        if (cp == '"') {
+            try self.write("\\\"");
+            return;
+        }
+        if (cp == '\\') {
+            try self.write("\\\\");
+            return;
+        }
+        // ASCII 범위
+        if (cp < 0x80) {
+            try self.writeByte(@intCast(cp));
+            return;
+        }
+        // UTF-8 인코딩
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return;
+        try self.write(buf[0..len]);
     }
 
     fn trimJSXText(self: *Codegen, child: Node) []const u8 {
@@ -2981,19 +3166,30 @@ pub const Codegen = struct {
         return count;
     }
 
-    /// attrs에서 key={...} 속성의 인덱스를 찾는다 (automatic 모드에서 분리용)
-    fn findJSXKeyAttr(self: *Codegen, attrs_start: u32, attrs_len: u32) ?u32 {
-        if (attrs_len == 0) return null;
+    const KeySearchResult = struct {
+        key_idx: ?u32,
+        key_after_spread: bool,
+    };
+
+    /// attrs에서 key={...} 속성의 인덱스를 찾는다 (automatic 모드에서 분리용).
+    /// key_after_spread: key가 spread attribute 뒤에 위치하면 true (createElement 폴백 필요).
+    fn findJSXKeyAttr(self: *Codegen, attrs_start: u32, attrs_len: u32) KeySearchResult {
+        if (attrs_len == 0) return .{ .key_idx = null, .key_after_spread = false };
+        var seen_spread = false;
         const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
         for (attr_indices, 0..) |raw_idx, i| {
             const attr = self.ast.getNode(@enumFromInt(raw_idx));
-            if (attr.tag == .jsx_attribute) {
+            if (attr.tag == .jsx_spread_attribute) {
+                seen_spread = true;
+            } else if (attr.tag == .jsx_attribute) {
                 const key_node = self.ast.getNode(attr.data.binary.left);
                 const name = self.ast.source[key_node.span.start..key_node.span.end];
-                if (std.mem.eql(u8, name, "key")) return @intCast(i);
+                if (std.mem.eql(u8, name, "key")) {
+                    return .{ .key_idx = @intCast(i), .key_after_spread = seen_spread };
+                }
             }
         }
-        return null;
+        return .{ .key_idx = null, .key_after_spread = false };
     }
 
     /// jsxDEV source info 출력: , { fileName: "...", lineNumber: N, columnNumber: N }
@@ -3040,7 +3236,31 @@ pub const Codegen = struct {
         }
         const line = lo; // 1-based
         const line_start = if (line > 1) self.line_offsets[line - 1] else 0;
-        return .{ .line = line, .col = offset - line_start + 1 };
+
+        // UTF-16 code unit 기준 column 계산 (JSX devtools 호환)
+        const source = self.ast.source;
+        var col: u32 = 0;
+        var i: u32 = line_start;
+        while (i < offset and i < source.len) {
+            const byte = source[i];
+            if (byte < 0x80) {
+                col += 1;
+                i += 1;
+            } else if (byte < 0xC0) {
+                // continuation byte (잘못된 시작이면 스킵)
+                i += 1;
+            } else if (byte < 0xE0) {
+                col += 1; // 2-byte UTF-8 → 1 UTF-16 unit
+                i += 2;
+            } else if (byte < 0xF0) {
+                col += 1; // 3-byte UTF-8 → 1 UTF-16 unit
+                i += 3;
+            } else {
+                col += 2; // 4-byte UTF-8 → 2 UTF-16 units (surrogate pair)
+                i += 4;
+            }
+        }
+        return .{ .line = line, .col = col + 1 }; // 1-based
     }
 
     /// JSX attribute: name={value} or name="value"
