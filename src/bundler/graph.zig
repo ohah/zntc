@@ -127,6 +127,7 @@ pub const ModuleGraph = struct {
             self.allocator.free(we.resolved_path);
         }
         self.worker_entries.deinit(self.allocator);
+        if (self.jsx_specifier_cache) |s| self.allocator.free(s);
     }
 
     /// 확장자에 대한 로더를 결정한다.

@@ -12788,3 +12788,141 @@ test "ESM live binding: RN platform forces __esm wrapping with live binding" {
     const helper_body = result.output[helper_init .. helper_init + helper_end];
     try std.testing.expect(std.mem.indexOf(u8, helper_body, "__toCommonJS") == null);
 }
+
+// ============================================================
+// JSX Automatic Import Injection
+// ============================================================
+
+test "JSX automatic: jsx-runtime import injected in bundle mode" {
+    // --jsx=automatic 사용 시 react/jsx-runtime에서 _jsx, _jsxs, _Fragment import가 주입되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div><span>Hello</span></div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // _jsx가 react/jsx-runtime에서 import되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react/jsx-runtime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx") != null);
+    // React.createElement가 아닌 _jsx 호출이어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "React.createElement") == null);
+}
+
+test "JSX automatic-dev: jsx-dev-runtime import injected in bundle mode" {
+    // --jsx-dev 사용 시 react/jsx-dev-runtime에서 _jsxDEV import가 주입되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // _jsxDEV가 react/jsx-dev-runtime에서 import되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react/jsx-dev-runtime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV") != null);
+}
+
+test "JSX automatic: no injection when no JSX in module" {
+    // JSX가 없는 모듈에서는 jsx-runtime import가 주입되지 않아야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const x = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // jsx-runtime 관련 코드가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "jsx-runtime") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx") == null);
+}
+
+test "JSX automatic: classic mode does not inject jsx-runtime" {
+    // --jsx=classic 사용 시 jsx-runtime import가 주입되지 않아야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .classic,
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // classic 모드에서는 React.createElement 사용
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "jsx-runtime") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createElement") != null);
+}
+
+test "JSX automatic: custom import source" {
+    // --jsx-import-source=preact 사용 시 preact/jsx-runtime에서 import되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .jsx_import_source = "preact",
+        .external = &.{"preact/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preact/jsx-runtime에서 import되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "preact/jsx-runtime") != null);
+    // "react/jsx-runtime"이 아닌 "preact/jsx-runtime"이어야 함
+    // (preact에 react가 부분 문자열로 포함되므로, require("react/jsx-runtime") 정확히 검사)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react/jsx-runtime\")") == null);
+}
