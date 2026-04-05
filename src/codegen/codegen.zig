@@ -1744,10 +1744,21 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[3]);
         const flags = extras[4];
 
+        // __esm 호이스팅: function declaration → 할당문 변환 (class_declaration과 동일)
+        const convert_to_assign = self.options.esm_var_assign_only and
+            node.tag == .function_declaration and
+            !name.isNone() and
+            self.indent_level == 0;
+
+        if (convert_to_assign) {
+            try self.emitNode(name);
+            try self.write(" = ");
+        }
+
         if (flags & 0x01 != 0) try self.write("async ");
         try self.write("function");
         if (flags & 0x02 != 0) try self.writeByte('*');
-        if (!name.isNone()) {
+        if (!name.isNone() and !convert_to_assign) {
             try self.writeByte(' ');
             try self.emitNode(name);
         }
@@ -1755,6 +1766,10 @@ pub const Codegen = struct {
         try self.emitNodeList(params_start, params_len, ",");
         try self.writeByte(')');
         try self.emitNode(body);
+
+        if (convert_to_assign) {
+            try self.writeByte(';');
+        }
 
         // keepNames: function_declaration에서 이름이 rename된 경우 entry 수집
         if (self.options.keep_names and node.tag == .function_declaration and !name.isNone()) {

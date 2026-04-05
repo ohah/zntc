@@ -2291,15 +2291,15 @@ fn collectImportBindingNames(
     }
 }
 
-/// __esm 래핑 모듈의 코드를 생성한다 (esbuild/rolldown 방식 var/function 호이스팅).
+/// __esm 래핑 모듈의 코드를 생성한다 (rolldown 방식: 이름만 호이스팅, 본문은 init 안).
 ///
 /// 출력 구조:
 ///   var exports_xxx = {};
-///   var hoisted_var1, hoisted_var2;        ← var 선언 호이스팅
-///   function hoisted_fn() { ... }          ← function 선언 호이스팅
+///   var hoisted_var1, hoisted_fn;          ← var/function/class 이름 호이스팅
 ///   __export(exports_xxx, { ... });        ← lazy getter (래퍼 밖)
 ///   var init_xxx = __esm({ "file.js"() {
 ///     hoisted_var1 = init_value;           ← 할당문만 래퍼 안
+///     hoisted_fn = function() { ... };     ← function도 init 안에서 할당 (TDZ 방지)
 ///   } });
 fn emitEsmWrappedModule(
     allocator: std.mem.Allocator,
@@ -2323,8 +2323,6 @@ fn emitEsmWrappedModule(
     const stmt_list = root_node.data.list;
     const all_stmts = esm_ast.extra_data.items[stmt_list.start .. stmt_list.start + stmt_list.len];
 
-    var hoisted_stmts: std.ArrayList(u32) = .empty;
-    defer hoisted_stmts.deinit(allocator);
     var body_stmts: std.ArrayList(u32) = .empty;
     defer body_stmts.deinit(allocator);
     var hoisted_var_names: std.ArrayList([]const u8) = .empty;
@@ -2368,22 +2366,20 @@ fn emitEsmWrappedModule(
         };
 
         switch (effective_tag) {
-            .function_declaration => {
-                try hoisted_stmts.append(allocator, raw_idx);
-            },
-            .class_declaration => {
-                // class는 block-scoped → var 호이스팅 필요 (variable_declaration과 동일 패턴)
-                const class_node_src = if (export_inner) |idx|
+            .function_declaration, .class_declaration => {
+                // function/class 모두 __esm init 안에 할당문으로 배치 (TDZ 방지).
+                // 이름만 var로 래퍼 밖에 호이스팅.
+                const decl_node_src = if (export_inner) |idx|
                     esm_ast.nodes.items[@intFromEnum(idx)]
                 else
                     stmt_node;
 
-                const class_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[class_node_src.data.extra]);
-                if (!class_name_idx.isNone()) {
-                    const name_node = esm_ast.nodes.items[@intFromEnum(class_name_idx)];
+                const decl_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[decl_node_src.data.extra]);
+                if (!decl_name_idx.isNone()) {
+                    const name_node = esm_ast.nodes.items[@intFromEnum(decl_name_idx)];
                     if (name_node.tag == .binding_identifier) {
                         const raw_name = esm_ast.getText(name_node.data.string_ref);
-                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
+                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(decl_name_idx), raw_name));
                     }
                 }
                 try body_stmts.append(allocator, raw_idx);
@@ -2473,22 +2469,7 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, ";\n");
     }
 
-    // 3. 호이스팅된 function 선언
-    if (hoisted_stmts.items.len > 0) {
-        var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
-            .minify_whitespace = options.minify_whitespace,
-            .module_format = .cjs,
-            .skip_cjs_exports = true,
-            .use_var_for_imports = true,
-            .linking_metadata = cg_linking,
-            .replace_import_meta = options.format != .esm,
-            .platform = options.platform,
-        });
-        const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
-        try wrapped.appendSlice(allocator, hoisted_code);
-    }
-
-    // 4. __export (lazy getter — 호이스팅된 변수를 참조하므로 래퍼 밖에서 안전)
+    // 3. __export (lazy getter — 호이스팅된 변수를 참조하므로 래퍼 밖에서 안전)
     //
     // export * from 처리:
     //   re_export_all 바인딩(exported_name == "*")을 소스 모듈의 wrap_kind에 따라 확장:
@@ -2606,7 +2587,7 @@ fn emitEsmWrappedModule(
         }
     }
 
-    // 5. body codegen (variable_declaration → 할당문만)
+    // 4. body codegen (variable_declaration/function/class → 할당문만)
     var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
         .minify_whitespace = options.minify_whitespace,
         .module_format = .cjs,
@@ -2625,7 +2606,7 @@ fn emitEsmWrappedModule(
     });
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
-    // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
+    // 4.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
     // Hermes는 "X = function X() {...}" 에서 named function expression의 이름 X가
     // 외부 스코프의 X 변수를 덮어쓰는 비표준 동작을 보임.
     // "= function NAME(" → "= function(" 으로 변환하여 이름 충돌 방지.
@@ -2649,7 +2630,7 @@ fn emitEsmWrappedModule(
         }
     }
 
-    // 5.2. re-export default 할당문 생성.
+    // 4.2. re-export default 할당문 생성.
     // export { default } from / export { default as X } from re-export는
     // import_bindings를 생성하지 않으므로 body codegen에서 할당문이 누락됨.
     // 소스 모듈의 wrap_kind에 따라 적절한 할당문을 직접 생성.
@@ -2703,7 +2684,7 @@ fn emitEsmWrappedModule(
         break; // default re-export는 모듈당 하나만 존재
     }
 
-    // 5.3. export * from 소스 모듈 init/require 호출 생성.
+    // 4.3. export * from 소스 모듈 init/require 호출 생성.
     // export * from은 import_bindings를 만들지 않으므로 linker preamble에 포함되지 않는다.
     // __esm body에서 소스 모듈을 초기화해야 lazy getter가 올바른 값을 반환한다.
     var star_init_buf: std.ArrayList(u8) = .empty;
@@ -2737,7 +2718,7 @@ fn emitEsmWrappedModule(
         }
     }
 
-    // 6. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
+    // 5. __esm 래핑 — preamble(의존 모듈 init 호출)을 body 맨 앞에 삽입하여
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
