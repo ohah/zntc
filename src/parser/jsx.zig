@@ -115,6 +115,7 @@ inline fn advanceAfterJSXClose(self: *Parser, as_child: bool) !void {
 }
 
 fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
+    self.ast.has_jsx = true;
     const start = self.currentSpan().start;
     try self.scanner.nextInsideJSXElement(); // '<' 이후 JSX 모드
 

@@ -474,6 +474,9 @@ pub const Ast = struct {
     /// getText(span)으로 투명하게 접근.
     string_table: std.ArrayList(u8),
 
+    /// 파싱 중 JSX element/fragment가 발견되었는지 (automatic JSX import 주입용)
+    has_jsx: bool = false,
+
     /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
     allocator: std.mem.Allocator,
 
