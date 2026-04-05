@@ -2446,6 +2446,16 @@ fn emitEsmWrappedModule(
         }
     }
 
+    // synthetic JSX import binding: top-level에 var 선언이 필요.
+    // preamble은 __esm init 블록 안에 삽입되므로, var _jsxDEV = ... 형태면
+    // 호이스팅된 함수에서 접근 불가. var _jsxDEV;를 top-level에 선언하고
+    // init 안에서 _jsxDEV = ... (할당만)으로 처리해야 함.
+    for (module.import_bindings) |ib| {
+        if (ib.local_span.start >= 0xFFFF_0000) {
+            try hoisted_var_names.append(allocator, ib.local_name);
+        }
+    }
+
     // codegen 공통 옵션
     const cg_linking = if (metadata) |m| @as(?*const LinkingMetadata, m) else null;
 
@@ -2488,6 +2498,11 @@ fn emitEsmWrappedModule(
             .linking_metadata = cg_linking,
             .replace_import_meta = options.format != .esm,
             .platform = options.platform,
+            .jsx_runtime = options.jsx_runtime,
+            .jsx_factory = options.jsx_factory,
+            .jsx_fragment = options.jsx_fragment,
+            .jsx_import_source = options.jsx_import_source,
+            .jsx_filename = module.path,
         });
         const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
         try wrapped.appendSlice(allocator, hoisted_code);
