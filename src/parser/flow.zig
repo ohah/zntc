@@ -971,10 +971,21 @@ fn parseFlowComponentOrHookType(self: *Parser) ParseError2!NodeIndex {
 
 /// Flow Component Syntax: `component View(ref?, ...props: Props) { ... }`
 /// Hook Syntax: `hook useFoo(x: number) { ... }`
-/// 타입 스트리핑 시 함수 선언으로 변환한다.
-/// 파라미터의 타입 어노테이션, renders 절, 제네릭은 모두 제거된다.
+///
+/// 변환 규칙 (hermes-parser 호환):
+/// - ref 파라미터가 있으면:
+///   `const View = React.forwardRef(View_withRef);`
+///   `function View_withRef({...props}, ref) { ... }`
+///   → ref는 두 번째 인자, 나머지는 props object destructuring
+/// - ref 없으면:
+///   `function View({name, ...props}) { ... }`
+/// - rest만 있으면 (...props):
+///   `function View(props) { ... }` (destructuring 아닌 단일 param)
+/// - hook은 ref 처리 없이 일반 함수 (component와 동일한 파라미터 파싱)
 pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    const keyword_text = self.ast.source[self.currentSpan().start..self.currentSpan().end];
+    const is_hook = std.mem.eql(u8, keyword_text, "hook");
     try self.advance(); // skip 'component' / 'hook'
 
     // 함수 이름
@@ -985,14 +996,18 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         _ = try parseTypeParameterDeclaration(self);
     }
 
-    // component 파라미터를 단일 객체 destructuring 파라미터로 변환.
-    // component View(ref?, ...props: ViewProps) { ... }
-    // → function View({ ref, ...props }) { ... }
-    // React가 component를 View(props) 하나의 인자로 호출하므로,
-    // component 파라미터는 props 객체의 프로퍼티를 나타낸다.
+    // component 파라미터를 파싱.
+    // ref 파라미터가 있으면 분리하고, 나머지는 props object destructuring으로 변환.
     try self.expect(.l_paren);
     const scratch_top = self.saveScratch();
     const param_start_span = self.currentSpan();
+
+    var has_ref = false;
+    var ref_node: NodeIndex = .none;
+    var has_rest = false;
+    var rest_node: NodeIndex = .none;
+    var prop_count: u32 = 0;
+
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
 
@@ -1004,14 +1019,16 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
                 try self.advance();
                 _ = try parseType(self);
             }
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+            has_rest = true;
+            rest_node = try self.ast.addNode(.{
                 .tag = .binding_rest_element,
                 .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = rest_name, .flags = 0 } },
-            }));
+            });
         } else {
             // propName: Type = default → binding_property
             const prop_name = try self.parseSimpleIdentifier();
+            const prop_text = self.ast.source[self.ast.getNode(prop_name).span.start..self.ast.getNode(prop_name).span.end];
             _ = try self.eat(.question);
             if (self.current() == .colon) {
                 try self.advance();
@@ -1027,29 +1044,60 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
                 });
             } else prop_name;
 
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                .tag = .binding_property,
-                .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = prop_name, .right = right_node, .flags = 0 } },
-            }));
+            // ref 파라미터는 분리 (hook에서는 ref도 일반 prop으로 취급)
+            if (!is_hook and std.mem.eql(u8, prop_text, "ref")) {
+                has_ref = true;
+                ref_node = right_node; // ref 또는 assignment_pattern(ref = default)
+            } else {
+                try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                    .tag = .binding_property,
+                    .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = prop_name, .right = right_node, .flags = 0 } },
+                }));
+                prop_count += 1;
+            }
         }
 
         if (!try self.eat(.comma)) break;
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
-    const prop_items = self.scratch.items[scratch_top..];
-    const prop_list = try self.ast.addNodeList(prop_items);
+    // 파라미터 구성:
+    // - rest만 있고 다른 prop 없으면 → 단일 파라미터 (function Name(props))
+    // - prop이 있으면 → object_pattern ({ name, ...rest })
+    // - ref가 있으면 → 두 번째 파라미터로 추가
+    var params: ast_mod.NodeList = undefined;
+
+    if (prop_count == 0 and has_rest and !has_ref) {
+        // rest만 있으면 destructuring 없이 단일 param: function Baz(props)
+        const rest_inner = self.ast.getNode(rest_node).data.unary.operand;
+        params = try self.ast.addNodeList(&.{rest_inner});
+    } else if (prop_count == 0 and !has_rest and !has_ref) {
+        // 파라미터 없음
+        params = try self.ast.addNodeList(&.{});
+    } else {
+        // object_pattern 생성 (ref 제외한 props)
+        if (has_rest) {
+            try self.scratch.append(self.allocator, rest_node);
+        }
+        const all_prop_items = self.scratch.items[scratch_top..];
+        const prop_list = try self.ast.addNodeList(all_prop_items);
+
+        const obj_pattern = try self.ast.addNode(.{
+            .tag = .object_pattern,
+            .span = .{ .start = param_start_span.start, .end = self.currentSpan().start },
+            .data = .{ .list = prop_list },
+        });
+
+        if (has_ref) {
+            // 두 번째 파라미터로 ref 추가: function Name_withRef({...props}, ref)
+            params = try self.ast.addNodeList(&.{ obj_pattern, ref_node });
+        } else {
+            params = try self.ast.addNodeList(&.{obj_pattern});
+        }
+    }
+
     self.restoreScratch(scratch_top);
     try self.expect(.r_paren);
-
-    // object_pattern 노드 생성: { ref, ...props }
-    const obj_pattern = try self.ast.addNode(.{
-        .tag = .object_pattern,
-        .span = .{ .start = param_start_span.start, .end = self.currentSpan().start },
-        .data = .{ .list = prop_list },
-    });
-    // 단일 파라미터로 래핑
-    const params = try self.ast.addNodeList(&.{obj_pattern});
 
     try trySkipRendersClause(self);
 
@@ -1061,13 +1109,32 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
     const body = try self.parseBlockStatement();
     self.restoreFunctionContext(saved_ctx);
 
-    // 함수 선언 노드로 생성 (extra: [name, params_start, params_len, body, flags, return_type])
+    if (has_ref) {
+        // ref가 있으면 React.forwardRef로 래핑.
+        // 파서에서는 inner function (이름 없이)을 생성하고,
+        // transformer가 _withRef suffix 이름 생성 + forwardRef 래핑을 처리한다.
+        //
+        // flow_component_wrapper: extra = [name, params_start, params_len, body]
+        const wrapper_extra = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(params.start);
+        _ = try self.ast.addExtra(params.len);
+        _ = try self.ast.addExtra(@intFromEnum(body));
+
+        return try self.ast.addNode(.{
+            .tag = .flow_component_wrapper,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = wrapper_extra },
+        });
+    }
+
+    // ref가 없으면 일반 함수 선언
+    const none = @intFromEnum(NodeIndex.none);
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
     _ = try self.ast.addExtra(params.start);
     _ = try self.ast.addExtra(params.len);
     _ = try self.ast.addExtra(@intFromEnum(body));
-    _ = try self.ast.addExtra(0); // flags: 0 (not async, not generator)
-    _ = try self.ast.addExtra(@intFromEnum(NodeIndex.none)); // return_type: stripped
+    _ = try self.ast.addExtra(0);
+    _ = try self.ast.addExtra(none);
 
     return try self.ast.addNode(.{
         .tag = .function_declaration,
