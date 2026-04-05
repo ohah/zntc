@@ -289,7 +289,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 const bool_text = if (is_static) "true" else "false";
                 const bool_span = try self.new_ast.addString(bool_text);
                 const bool_node = try self.new_ast.addNode(.{
-                    .tag = if (is_static) .boolean_literal else .boolean_literal,
+                    .tag = .boolean_literal,
                     .span = bool_span,
                     .data = .{ .none = 0 },
                 });
@@ -359,7 +359,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 const bool_text = if (is_static) "true" else "false";
                 const bool_span = try self.new_ast.addString(bool_text);
                 const bool_node = try self.new_ast.addNode(.{
-                    .tag = if (is_static) .boolean_literal else .boolean_literal,
+                    .tag = .boolean_literal,
                     .span = bool_span,
                     .data = .{ .none = 0 },
                 });
@@ -452,8 +452,18 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     // Foo.Bar → static_member_expression (재귀적으로 처리)
                     return lowerJSXMemberExpr(self, tag_node);
                 },
+                .jsx_namespaced_name => {
+                    // <xml:lang> → string_literal "xml:lang"
+                    const text = self.old_ast.source[tag_node.span.start..tag_node.span.end];
+                    const quoted = try quoteString(self, text);
+                    const str_span = try self.new_ast.addString(quoted);
+                    return self.new_ast.addNode(.{
+                        .tag = .string_literal,
+                        .span = str_span,
+                        .data = .{ .string_ref = str_span },
+                    });
+                },
                 else => {
-                    // 기타 노드는 그대로 복사
                     return self.visitNode(tag_name_idx);
                 },
             }
@@ -768,10 +778,6 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     const text = self.old_ast.source[child.span.start..child.span.end];
                     const trimmed = std.mem.trim(u8, text, " \t\n\r");
                     if (trimmed.len == 0) continue;
-                    // 줄바꿈이 있으면 추가 검사
-                    if (std.mem.indexOfAny(u8, text, "\n\r") != null) {
-                        if (trimmed.len == 0) continue;
-                    }
                 } else if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) {
                     continue;
                 }
@@ -1004,21 +1010,56 @@ pub fn JsxLowering(comptime Transformer: type) type {
             return buf[0..out_len];
         }
 
-        /// 텍스트를 "..."로 감싸고 내부의 " 와 \ 를 이스케이프.
+        /// 텍스트를 "..."로 감싸고 특수 문자를 이스케이프.
         /// codegen의 writeStringLiteral이 따옴표가 포함된 문자열을 기대하므로 필수.
         fn quoteString(self: *Transformer, text: []const u8) Transformer.Error![]const u8 {
-            // 최악의 경우: 모든 문자가 이스케이프 + 앞뒤 따옴표
-            var buf = try self.allocator.alloc(u8, text.len * 2 + 2);
+            // 최악의 경우: 모든 문자가 \xHH (4배) + 앞뒤 따옴표
+            var buf = try self.allocator.alloc(u8, text.len * 4 + 2);
             var out: usize = 0;
             buf[out] = '"';
             out += 1;
             for (text) |c| {
-                if (c == '"' or c == '\\') {
-                    buf[out] = '\\';
-                    out += 1;
+                switch (c) {
+                    '"' => {
+                        buf[out] = '\\';
+                        buf[out + 1] = '"';
+                        out += 2;
+                    },
+                    '\\' => {
+                        buf[out] = '\\';
+                        buf[out + 1] = '\\';
+                        out += 2;
+                    },
+                    '\n' => {
+                        buf[out] = '\\';
+                        buf[out + 1] = 'n';
+                        out += 2;
+                    },
+                    '\r' => {
+                        buf[out] = '\\';
+                        buf[out + 1] = 'r';
+                        out += 2;
+                    },
+                    '\t' => {
+                        buf[out] = '\\';
+                        buf[out + 1] = 't';
+                        out += 2;
+                    },
+                    else => {
+                        if (c < 0x20) {
+                            // 제어 문자 → \xHH
+                            const hex = "0123456789abcdef";
+                            buf[out] = '\\';
+                            buf[out + 1] = 'x';
+                            buf[out + 2] = hex[(c >> 4) & 0xF];
+                            buf[out + 3] = hex[c & 0xF];
+                            out += 4;
+                        } else {
+                            buf[out] = c;
+                            out += 1;
+                        }
+                    },
                 }
-                buf[out] = c;
-                out += 1;
             }
             buf[out] = '"';
             out += 1;
@@ -1134,7 +1175,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 }
 
 // ================================================================
-// HTML Entity Map (codegen.zig의 jsx_entity_map과 동일)
+// JSX HTML Entity Map
 // ================================================================
 const jsx_entity_map = std.StaticStringMap(u21).initComptime(.{
     // 필수 5개
