@@ -959,7 +959,9 @@ pub const Linker = struct {
                 // __esm 모듈에서 CJS 타겟 또는 self-import: body의 require_rewrites가
                 // 할당문 + init 호출을 처리하므로 preamble 생성 skip.
                 // __esm → __esm은 live binding (preamble init + canonical rename) 사용.
-                if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
+                // 단, synthetic binding(JSX runtime 등)은 AST body에 require()가 없으므로 skip하지 않음.
+                const is_synthetic = ib.local_span.start >= 0xFFFF_0000;
+                if (!is_synthetic and m.wrap_kind == .esm and canonical_mod < self.modules.len and
                     (self.modules[canonical_mod].wrap_kind == .cjs or canonical_mod == module_index))
                 {
                     continue;
