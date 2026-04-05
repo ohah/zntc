@@ -2905,7 +2905,7 @@ pub const Codegen = struct {
                 const trimmed = self.trimJSXText(child);
                 if (trimmed.len == 0) continue;
                 try self.writeByte('"');
-                try self.write(trimmed);
+                try self.writeJSXTextEscaped(trimmed);
                 try self.writeByte('"');
                 return;
             }

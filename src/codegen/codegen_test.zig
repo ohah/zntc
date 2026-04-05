@@ -3962,3 +3962,59 @@ test "private method: es2022 target preserves original" {
     // WeakSet 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "WeakSet") == null);
 }
+
+// ============================================================
+// JSX text normalization
+// ============================================================
+
+test "JSX automatic: single child multiline text normalized to spaces" {
+    // JSX 스펙: 여러 줄 텍스트의 개행은 공백으로 치환
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <Text>This call stack is not symbolicated.
+        \\              Some features are unavailable.</Text>;
+    );
+    defer r.deinit();
+    // 개행이 공백으로 정규화됨 (리터럴 개행이 남아있으면 SyntaxError)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "symbolicated. Some") != null);
+    // 리터럴 \n이 문자열 안에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "symbolicated.\n") == null);
+}
+
+test "JSX automatic-dev: single child multiline text normalized" {
+    // --jsx-dev 모드에서도 동일하게 정규화
+    var r = try e2eJSXDev(std.testing.allocator,
+        \\const x = <Text>Hello
+        \\  World</Text>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"Hello World\"") != null);
+}
+
+test "JSX classic: single child multiline text normalized" {
+    // classic 모드에서도 동일하게 정규화
+    var r = try e2eJSX(std.testing.allocator,
+        \\const x = <Text>Line one
+        \\  Line two</Text>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"Line one Line two\"") != null);
+}
+
+test "JSX automatic: multiple children multiline text normalized" {
+    // 여러 children 중 텍스트에 개행이 있는 경우도 정규화
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <div>Hello
+        \\  World<span>!</span></div>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"Hello World\"") != null);
+}
+
+test "JSX automatic: text with quotes escaped" {
+    // 따옴표가 이스케이프되어야 함
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <div>He said "hello"</div>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\\"hello\\\"") != null);
+}
