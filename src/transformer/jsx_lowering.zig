@@ -437,13 +437,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
                             .data = .{ .string_ref = str_span },
                         });
                     } else {
-                        // 대문자 → identifier_reference
+                        // 대문자 → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                         const id_span = try self.new_ast.addString(text);
-                        return self.new_ast.addNode(.{
+                        const new_idx = try self.new_ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = tag_node.span,
                             .data = .{ .string_ref = id_span },
                         });
+                        self.propagateSymbolId(tag_name_idx, new_idx);
+                        return new_idx;
                     }
                 },
                 .jsx_member_expression => {
@@ -467,24 +469,26 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const new_left = if (left_node.tag == .jsx_member_expression)
                 try lowerJSXMemberExpr(self, left_node)
             else blk: {
-                // jsx_identifier → identifier_reference
+                // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
                 const text = self.old_ast.source[left_node.span.start..left_node.span.end];
                 const id_span = try self.new_ast.addString(text);
-                break :blk try self.new_ast.addNode(.{
+                const new_idx = try self.new_ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = left_node.span,
                     .data = .{ .string_ref = id_span },
                 });
+                self.propagateSymbolId(left_idx, new_idx);
+                break :blk new_idx;
             };
 
             // right: always jsx_identifier → identifier_reference
+            // data.string_ref는 원본 소스 span을 사용해야 함.
+            // codegen의 emitStaticMember가 source[span.start..end]로 프로퍼티 이름을 읽기 때문.
             const right_node = self.old_ast.getNode(right_idx);
-            const right_text = self.old_ast.source[right_node.span.start..right_node.span.end];
-            const right_span = try self.new_ast.addString(right_text);
             const new_right = try self.new_ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = right_node.span,
-                .data = .{ .string_ref = right_span },
+                .data = .{ .string_ref = right_node.span },
             });
 
             return helpers.makeStaticMember(self, new_left, new_right, node.span);
@@ -1126,7 +1130,6 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             return current;
         }
-
     };
 }
 
