@@ -8394,10 +8394,10 @@ test "ESM wrap: namespace import of __esm module — canonical name direct rewri
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // namespace import가 canonical name으로 직접 치환되어야 함
-    // utils.greet() → greet() (호이스팅된 function 참조)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "greet()") != null);
-    // exports_xxx로 rename되지 않아야 함 (변수 덮어쓰기 버그 방지)
+    // namespace 멤버 접근이 canonical name으로 직접 치환: console.log(greet())
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(greet())") != null);
+    // 원본 namespace 접근 형태가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "utils.greet") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils.greet") == null);
 }
 

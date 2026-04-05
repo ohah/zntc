@@ -86,7 +86,8 @@ const CliOptions = struct {
     /// .js 파일에서도 JSX 파싱 활성화. --platform=react-native 프리셋에서 자동 설정.
     jsx_in_js: bool = false,
     /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
-    jsx_runtime: lib.codegen.codegen.JsxRuntime = .classic,
+    /// null이면 사용자 미지정 — 플랫폼 프리셋 또는 tsconfig에서 결정.
+    jsx_runtime: ?lib.codegen.codegen.JsxRuntime = null,
     /// JSX factory (--jsx-factory=h)
     jsx_factory: []const u8 = "React.createElement",
     /// JSX fragment factory (--jsx-fragment=Fragment)
@@ -942,6 +943,58 @@ pub fn main() !void {
         return;
     }
 
+    // tsconfig.json 로드 — 번들/트랜스파일 양쪽에서 사용.
+    // 우선순위: --project 경로 > 입력 파일의 부모 디렉토리 > CWD
+    const tsconfig_dir_early: []const u8 = if (opts.project_path) |pp|
+        pp
+    else if (opts.input_file) |inp|
+        if (!std.mem.eql(u8, inp, "-")) (std.fs.path.dirname(inp) orelse ".") else "."
+    else
+        ".";
+    var tsconfig = TsConfig.load(allocator, tsconfig_dir_early) catch TsConfig{};
+    defer tsconfig.deinit();
+
+    // tsconfig 값 적용 — CLI 옵션이 우선, 미지정 옵션만 tsconfig에서 가져옴
+    if (opts.module_format == .esm) {
+        if (tsconfig.module) |mod| {
+            if (std.ascii.eqlIgnoreCase(mod, "commonjs")) {
+                opts.module_format = .cjs;
+            }
+        }
+    }
+    if (!opts.sourcemap and tsconfig.source_map) {
+        opts.sourcemap = true;
+    }
+    if (opts.output_dir == null) {
+        if (tsconfig.out_dir) |od| {
+            opts.output_dir = od;
+        }
+    }
+    if (opts.experimental_decorators == null and tsconfig.experimental_decorators) {
+        opts.experimental_decorators = true;
+    }
+    // JSX: CLI/플랫폼 프리셋이 미지정이면 tsconfig에서 가져옴
+    if (opts.jsx_runtime == null) {
+        if (tsconfig.jsx) |jsx_mode| {
+            if (std.mem.eql(u8, jsx_mode, "react-jsx") or std.mem.eql(u8, jsx_mode, "react-jsxdev")) {
+                opts.jsx_runtime = if (std.mem.eql(u8, jsx_mode, "react-jsxdev")) .automatic_dev else .automatic;
+            }
+        }
+    }
+    // JSX 최종 fallback: CLI/플랫폼/tsconfig 어디서도 지정하지 않으면 classic
+    if (opts.jsx_runtime == null) {
+        opts.jsx_runtime = .classic;
+    }
+    if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) {
+        opts.jsx_factory = tsconfig.jsx_factory;
+    }
+    if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) {
+        opts.jsx_fragment = tsconfig.jsx_fragment_factory;
+    }
+    if (std.mem.eql(u8, opts.jsx_import_source, "react")) {
+        opts.jsx_import_source = tsconfig.jsx_import_source;
+    }
+
     // --bundle
     if (opts.is_bundle) {
         const entry_file = opts.input_file orelse {
@@ -1016,7 +1069,7 @@ pub fn main() !void {
             opts.flow = true;
             opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
-            if (opts.jsx_runtime == .classic) {
+            if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
             }
 
@@ -1091,7 +1144,7 @@ pub fn main() !void {
             .plugins = plugin_list.items,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
-            .jsx_runtime = opts.jsx_runtime,
+            .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,
             .jsx_import_source = opts.jsx_import_source,
@@ -1432,67 +1485,11 @@ pub fn main() !void {
         return;
     };
 
-    // tsconfig.json 로드.
-    // 우선순위: --project 경로 > 입력이 디렉토리면 그 디렉토리 > 입력 파일의 부모 디렉토리
-    const tsconfig_dir: []const u8 = if (opts.project_path) |pp|
-        pp
-    else if (!std.mem.eql(u8, input_path_str, "-"))
-        // 파일이면 dirname, 디렉토리면 그대로
-        std.fs.path.dirname(input_path_str) orelse "."
-    else
-        ".";
-
-    var tsconfig = TsConfig.load(allocator, tsconfig_dir) catch TsConfig{};
-    defer tsconfig.deinit();
-
-    // tsconfig 값을 기본값으로 사용하되, CLI 옵션이 우선한다.
-    // CLI에서 명시적으로 설정하지 않은 옵션만 tsconfig에서 가져온다.
-    // module_format: tsconfig의 module이 "commonjs"이면 cjs 사용
-    if (opts.module_format == .esm) { // CLI에서 --format=cjs를 안 했으면
-        if (tsconfig.module) |mod| {
-            if (std.ascii.eqlIgnoreCase(mod, "commonjs")) {
-                opts.module_format = .cjs;
-            }
-        }
-    }
-    // sourcemap: tsconfig에서 true이면 적용 (CLI --sourcemap이 이미 true면 그대로)
-    if (!opts.sourcemap and tsconfig.source_map) {
-        opts.sourcemap = true;
-    }
-    // output_dir: tsconfig의 outDir를 기본값으로 사용
-    if (opts.output_dir == null) {
-        if (tsconfig.out_dir) |od| {
-            opts.output_dir = od;
-        }
-    }
-    // experimentalDecorators: CLI 미지정이면 tsconfig에서 가져옴
-    if (opts.experimental_decorators == null and tsconfig.experimental_decorators) {
-        opts.experimental_decorators = true;
-    }
     // useDefineForClassFields: CLI 미지정이면 tsconfig에서 가져옴 (tsconfig 파싱 필요 — 아래 참고)
     // 주의: tsconfig에 useDefineForClassFields가 없고 experimentalDecorators=true이면
     // TypeScript 4.x 호환을 위해 useDefineForClassFields=false가 기본값.
     // (TS 5.0+에서는 experimentalDecorators 여부와 무관하게 true가 기본)
     // 여기서는 사용자가 명시하지 않은 경우 TS 5.0+ 기본값(true)을 따른다.
-
-    // JSX: CLI가 미지정(classic)이면 tsconfig에서 가져옴
-    if (opts.jsx_runtime == .classic) {
-        if (tsconfig.jsx) |jsx_mode| {
-            if (std.mem.eql(u8, jsx_mode, "react-jsx") or std.mem.eql(u8, jsx_mode, "react-jsxdev")) {
-                opts.jsx_runtime = if (std.mem.eql(u8, jsx_mode, "react-jsxdev")) .automatic_dev else .automatic;
-            }
-        }
-    }
-    // jsxFactory/jsxFragmentFactory: CLI 기본값이면 tsconfig에서 가져옴
-    if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) {
-        opts.jsx_factory = tsconfig.jsx_factory;
-    }
-    if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) {
-        opts.jsx_fragment = tsconfig.jsx_fragment_factory;
-    }
-    if (std.mem.eql(u8, opts.jsx_import_source, "react")) {
-        opts.jsx_import_source = tsconfig.jsx_import_source;
-    }
 
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
@@ -1516,7 +1513,7 @@ pub fn main() !void {
             .charset_utf8 = opts.charset_utf8,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
-            .jsx_runtime = opts.jsx_runtime,
+            .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,
             .jsx_import_source = opts.jsx_import_source,
