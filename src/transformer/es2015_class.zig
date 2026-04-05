@@ -39,6 +39,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_params_mod = @import("es2015_params.zig");
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
@@ -737,6 +738,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// accessor method_definition에서 function expression 생성.
+        /// ES2015 params lowering 포함 (setter destructuring/default 등).
         fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const member = self.old_ast.getNode(member_idx);
             const method_extras = self.old_ast.extra_data.items;
@@ -745,8 +747,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const params_len = method_extras[me + 2];
             const body_idx: NodeIndex = @enumFromInt(method_extras[me + 3]);
 
-            const new_params = try self.visitExtraList(params_start, params_len);
-            const new_body = try visitMethodBody(self, body_idx, span);
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
+                es2015_body_stmts = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
+
+            var new_body = try visitMethodBody(self, body_idx, span);
+
+            if (es2015_body_stmts) |stmts| {
+                if (stmts.items.len > 0 and !new_body.isNone()) {
+                    new_body = try self.prependStatementsToBody(new_body, stmts.items);
+                }
+            }
 
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.new_ast.addExtras(&.{
@@ -1410,8 +1428,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const body_idx: NodeIndex = @enumFromInt(method_extras[me + 3]);
             const flags = method_extras[me + 4];
 
-            // function expression 생성
-            const new_params = try self.visitExtraList(params_start, params_len);
+            // function expression 생성 — ES2015 params lowering 포함
+            // class lowering이 method_definition → function_expression으로 직접 변환하므로,
+            // visitFunction/visitMethodDefinition의 ES2015 params lowering을 거치지 않음.
+            // 여기서 직접 적용해야 함.
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(
+                    self,
+                    params_start,
+                    params_len,
+                    span,
+                );
+                es2015_body_stmts = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
 
             const is_async = flags & 0x08 != 0;
             const is_generator = flags & 0x10 != 0;
@@ -1424,8 +1459,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const GenMod = @import("es2015_generator.zig").ES2015Generator(@TypeOf(self.*));
 
                 if (self.options.unsupported.generator) {
-                    // async + generator 둘 다 unsupported → __async(__generator(state machine))
-                    // buildStateMachine이 old_ast에서 body를 읽고 내부에서 visitNode 수행
                     const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
                     if (!sm_result.body.isNone()) {
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
@@ -1435,14 +1468,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
                 }
-                // async만 unsupported → __async(function*() { ... })
                 const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }
 
-            const new_body = try visitMethodBody(self, body_idx, span);
+            var new_body = try visitMethodBody(self, body_idx, span);
+
+            // ES2015 default/rest body 문 삽입
+            if (es2015_body_stmts) |stmts| {
+                if (stmts.items.len > 0 and !new_body.isNone()) {
+                    new_body = try self.prependStatementsToBody(new_body, stmts.items);
+                }
+            }
             const func_flags: u32 = blk: {
                 var f: u32 = 0;
                 if (is_async) f |= 0x01;

@@ -3250,11 +3250,30 @@ pub const Transformer = struct {
         if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
-        // 파라미터 방문 — parameter property 감지
+        // 파라미터 방문 — ES2015 default/rest/destructuring lowering + parameter property 감지
         const params_start = self.readU32(e, 1);
         const params_len = self.readU32(e, 2);
         const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-        const pp = try self.visitParamsCollectProperties(old_params);
+
+        var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+        defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+        const pp = if (self.options.unsupported.default_params and
+            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+        blk: {
+            const lower_result = try es2015_params.ES2015Params(Transformer).lowerParams(
+                self,
+                params_start,
+                params_len,
+                node.span,
+            );
+            es2015_body_stmts = lower_result.body_stmts;
+            break :blk ParamPropertyResult{
+                .new_params = lower_result.new_params,
+                .prop_names = undefined,
+                .prop_count = 0,
+            };
+        } else try self.visitParamsCollectProperties(old_params);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
         const saved_arrow_depth = self.arrow_this_depth;
@@ -3271,6 +3290,13 @@ pub const Transformer = struct {
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+        }
+
+        // ES2015 default/rest body 문 삽입
+        if (es2015_body_stmts) |stmts| {
+            if (stmts.items.len > 0 and !new_body.isNone()) {
+                new_body = try self.prependStatementsToBody(new_body, stmts.items);
+            }
         }
 
         // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입

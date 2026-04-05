@@ -2008,6 +2008,28 @@ test "ES2015: arrow simple params — no unnecessary lowering" {
     try std.testing.expectEqualStrings("var f=function(a,b){return a + b;};", r.output);
 }
 
+test "ES2015: class method destructuring params lowered" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { method({x,...rest}:any) { return rest; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
+}
+
+test "ES2015: class setter destructuring params lowered" {
+    var r = try e2eTarget(std.testing.allocator, "class Bar { set val({x,...rest}:any) {} }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
+}
+
+test "ES2015: class method default param lowered" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { method(x=1) { return x; } }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
 // --- ES2015: for-of ---
 
 test "ES2015: for-of with const" {
