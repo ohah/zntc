@@ -30,8 +30,9 @@ test "emitter: single module" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // TS 타입 스트리핑: "const x: number = 1;" → "const x = 1;"
     try std.testing.expect(std.mem.indexOf(u8, output, "const x = 1;") != null);
@@ -47,8 +48,9 @@ test "emitter: two modules exec order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // b.ts가 a.ts보다 먼저 출력 (exec_index 순서)
     const b_pos = std.mem.indexOf(u8, output, "const b = 2;") orelse return error.TestUnexpectedResult;
@@ -65,8 +67,9 @@ test "emitter: minified output" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .minify_whitespace = true }, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .minify_whitespace = true }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // minify: 모듈 경계 주석 없음
     try std.testing.expect(std.mem.indexOf(u8, output, "// ---") == null);
@@ -82,8 +85,9 @@ test "emitter: IIFE format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .iife }, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .format = .iife }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     try std.testing.expect(std.mem.startsWith(u8, output, "(function() {\n"));
     try std.testing.expect(std.mem.endsWith(u8, output, "})();\n"));
@@ -98,8 +102,9 @@ test "emitter: CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     try std.testing.expect(std.mem.startsWith(u8, output, "\"use strict\";\n"));
 }
@@ -110,8 +115,9 @@ test "emitter: empty graph" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    const output = try emit(std.testing.allocator, &graph, .{}, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     try std.testing.expectEqual(@as(usize, 0), output.len);
 }
@@ -127,8 +133,9 @@ test "emitter: chain A → B → C order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // C → B → A 순서
     const c_pos = std.mem.indexOf(u8, output, "const c = \"c\";") orelse return error.TestUnexpectedResult;
@@ -151,8 +158,9 @@ test "emitter: TS enum and interface stripping" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // interface 제거됨
     try std.testing.expect(std.mem.indexOf(u8, output, "interface") == null);
@@ -846,11 +854,12 @@ test "banner/footer — basic ESM" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .banner_js = "/* banner */",
         .footer_js = "/* footer */",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // banner가 맨 앞에 위치
     try std.testing.expect(std.mem.startsWith(u8, output, "/* banner */\n"));
@@ -867,12 +876,13 @@ test "banner/footer — IIFE format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .iife,
         .banner_js = "// license header",
         .footer_js = "// end",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // banner → IIFE prologue → code → IIFE epilogue → footer
     try std.testing.expect(std.mem.startsWith(u8, output, "// license header\n(function() {\n"));
@@ -888,11 +898,12 @@ test "banner/footer — CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .cjs,
         .banner_js = "/* CJS banner */",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // banner가 "use strict" 앞에 위치
     try std.testing.expect(std.mem.startsWith(u8, output, "/* CJS banner */\n\"use strict\";\n"));
@@ -911,11 +922,12 @@ test "globalName — IIFE wrapping" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .iife,
         .global_name = "MyLib",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // prologue: "var MyLib = (function() {\n"
     try std.testing.expect(std.mem.startsWith(u8, output, "var MyLib = (function() {\n"));
@@ -932,11 +944,12 @@ test "globalName — dotted name warning" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .iife,
         .global_name = "MyApp.Utils",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // 경고 주석이 포함되어야 함
     try std.testing.expect(std.mem.indexOf(u8, output, "[ZTS WARNING] Dotted globalName") != null);
@@ -953,11 +966,12 @@ test "globalName — ignored for non-IIFE" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .esm,
         .global_name = "MyLib",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // ESM에서는 globalName이 무시됨
     try std.testing.expect(std.mem.indexOf(u8, output, "var MyLib") == null);
@@ -972,13 +986,14 @@ test "globalName — with banner/footer" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
         .format = .iife,
         .global_name = "MyLib",
         .banner_js = "/* license */",
         .footer_js = "/* end */",
     }, null);
-    defer std.testing.allocator.free(output);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // banner → globalName prologue → code → epilogue → footer
     try std.testing.expect(std.mem.startsWith(u8, output, "/* license */\nvar MyLib = (function() {\n"));
@@ -1002,8 +1017,9 @@ test "JSON module — ESM format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .esm }, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .format = .esm }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // JSON ESM: object 내용이 번들에 포함됨
     try std.testing.expect(std.mem.indexOf(u8, output, "\"key\"") != null);
@@ -1027,8 +1043,9 @@ test "JSON module — CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
-    defer std.testing.allocator.free(output);
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
 
     // JSON 내용이 출력에 포함됨
     try std.testing.expect(std.mem.indexOf(u8, output, "\"key\"") != null);
