@@ -131,7 +131,10 @@ pub const BundleOptions = struct {
     resolve_extensions: []const []const u8 = &.{},
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 (module → main).
     main_fields: []const []const u8 = &.{},
-    /// 증분 빌드용 모듈 파싱 캐시. null이면 매번 전체 파싱.
+    /// Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환).
+    /// --platform=react-native에서 자동 활성화.
+    configurable_exports: bool = false,
+    /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
 
@@ -311,6 +314,7 @@ pub const Bundler = struct {
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
             .run_before_main = self.options.run_before_main,
+            .configurable_exports = self.options.configurable_exports,
         };
     }
 

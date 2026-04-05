@@ -25,11 +25,23 @@ pub const TOESM_RUNTIME =
     \\var __getProtoOf = Object.getPrototypeOf;
     \\var __defProp = Object.defineProperty;
     \\var __hasOwn = Object.prototype.hasOwnProperty;
+    \\var __copyProps = (to, from) => { Object.keys(from).forEach(key => { if (!__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); }); return to; };
+    \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
+    \\
+;
+pub const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{Object.keys(from).forEach(key=>{if(!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true})});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+
+/// __toESM configurable 버전: RN/Hermes 호환을 위해 configurable: true 추가.
+/// --platform=react-native에서 자동 활성화.
+pub const TOESM_RUNTIME_CONFIGURABLE =
+    \\var __getProtoOf = Object.getPrototypeOf;
+    \\var __defProp = Object.defineProperty;
+    \\var __hasOwn = Object.prototype.hasOwnProperty;
     \\var __copyProps = (to, from) => { Object.keys(from).forEach(key => { if (!__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true, configurable: true }); }); return to; };
     \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true, configurable: true }) : target, mod));
     \\
 ;
-pub const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{Object.keys(from).forEach(key=>{if(!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true,configurable:true})});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true,configurable:true}):target,mod));";
+pub const TOESM_RUNTIME_CONFIGURABLE_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{Object.keys(from).forEach(key=>{if(!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true,configurable:true})});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true,configurable:true}):target,mod));";
 
 /// __esm: ESM 모듈의 지연 초기화 팩토리 (esbuild 호환).
 /// ESM 모듈이 require()로 소비될 때 사용. 한 번만 실행되고 결과를 캐시.
@@ -40,15 +52,23 @@ pub const ESM_RUNTIME_MIN = "var __esm=(fn,res)=>function __init(){return fn&&(r
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
 /// 참고: references/esbuild/internal/runtime/runtime.go:187
-pub const EXPORT_RUNTIME = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\tObject.defineProperty(target, name, { get: all[name], enumerable: true, configurable: true });\n};\n";
-pub const EXPORT_RUNTIME_MIN = "var __export=(target,all)=>{for(var name in all)Object.defineProperty(target,name,{get:all[name],enumerable:true,configurable:true})};";
+pub const EXPORT_RUNTIME = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\tObject.defineProperty(target, name, { get: all[name], enumerable: true });\n};\n";
+pub const EXPORT_RUNTIME_MIN = "var __export=(target,all)=>{for(var name in all)Object.defineProperty(target,name,{get:all[name],enumerable:true})};";
+
+/// __export configurable 버전: RN/Hermes 호환.
+pub const EXPORT_RUNTIME_CONFIGURABLE = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\tObject.defineProperty(target, name, { get: all[name], enumerable: true, configurable: true });\n};\n";
+pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var __export=(target,all)=>{for(var name in all)Object.defineProperty(target,name,{get:all[name],enumerable:true,configurable:true})};";
 
 /// __toCommonJS: ESM namespace → CJS 호환 객체 변환 (esbuild 호환).
 /// { __esModule: true } + 원본 프로퍼티 복사. CJS가 ESM을 require()할 때 사용.
 /// 참고: references/esbuild/internal/runtime/runtime.go:247
 /// __copyProps, __defProp은 __toESM 런타임에 이미 정의됨.
-pub const TOCOMMONJS_RUNTIME = "var __toCommonJS = mod => __copyProps(__defProp({}, '__esModule', { value: true, configurable: true }), mod);\n";
-pub const TOCOMMONJS_RUNTIME_MIN = "var __toCommonJS=mod=>__copyProps(__defProp({},\"__esModule\",{value:true,configurable:true}),mod);";
+pub const TOCOMMONJS_RUNTIME = "var __toCommonJS = mod => __copyProps(__defProp({}, '__esModule', { value: true }), mod);\n";
+pub const TOCOMMONJS_RUNTIME_MIN = "var __toCommonJS=mod=>__copyProps(__defProp({},\"__esModule\",{value:true}),mod);";
+
+/// __toCommonJS configurable 버전: RN/Hermes 호환.
+pub const TOCOMMONJS_RUNTIME_CONFIGURABLE = "var __toCommonJS = mod => __copyProps(__defProp({}, '__esModule', { value: true, configurable: true }), mod);\n";
+pub const TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN = "var __toCommonJS=mod=>__copyProps(__defProp({},\"__esModule\",{value:true,configurable:true}),mod);";
 
 // ============================================================
 // Decorator
@@ -335,28 +355,28 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
 }
 
 /// CJS interop 런타임을 ���입한다 (__commonJS + __toESM).
-pub fn appendCjsRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+pub fn appendCjsRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
     if (minify) {
         try buf.appendSlice(allocator, CJS_RUNTIME_MIN);
-        try buf.appendSlice(allocator, TOESM_RUNTIME_MIN);
+        try buf.appendSlice(allocator, if (configurable) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_MIN);
     } else {
         try buf.appendSlice(allocator, CJS_RUNTIME);
-        try buf.appendSlice(allocator, TOESM_RUNTIME);
+        try buf.appendSlice(allocator, if (configurable) TOESM_RUNTIME_CONFIGURABLE else TOESM_RUNTIME);
     }
 }
 
 /// ESM wrap 런타임을 주입한다 (__esm + __export + __toCommonJS).
 /// WrapKind.esm 모듈이 하나라도 있을 때 호출.
 /// __toCommonJS는 __copyProps/__defProp에 의존하므로 __toESM 런타임 후에 주입해야 함.
-pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
     if (minify) {
         try buf.appendSlice(allocator, ESM_RUNTIME_MIN);
-        try buf.appendSlice(allocator, EXPORT_RUNTIME_MIN);
-        try buf.appendSlice(allocator, TOCOMMONJS_RUNTIME_MIN);
+        try buf.appendSlice(allocator, if (configurable) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_MIN);
+        try buf.appendSlice(allocator, if (configurable) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_MIN);
     } else {
         try buf.appendSlice(allocator, ESM_RUNTIME);
-        try buf.appendSlice(allocator, EXPORT_RUNTIME);
-        try buf.appendSlice(allocator, TOCOMMONJS_RUNTIME);
+        try buf.appendSlice(allocator, if (configurable) EXPORT_RUNTIME_CONFIGURABLE else EXPORT_RUNTIME);
+        try buf.appendSlice(allocator, if (configurable) TOCOMMONJS_RUNTIME_CONFIGURABLE else TOCOMMONJS_RUNTIME);
     }
 }
 

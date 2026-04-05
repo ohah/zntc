@@ -111,6 +111,8 @@ pub const EmitOptions = struct {
     /// 엔트리 모듈 직전에 실행할 모듈 경로 (--run-before-main).
     /// 해당 모듈의 require_xxx() / init_xxx() 호출을 엔트리 코드 앞에 삽입.
     run_before_main: []const []const u8 = &.{},
+    /// Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환).
+    configurable_exports: bool = false,
 
     pub const PolyfillEntry = struct {
         name: []const u8,
@@ -2157,10 +2159,10 @@ fn emitBundleRuntimeHelpers(
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // __toESM, __copyProps, __defProp은 CJS/ESM 양쪽에서 공유
-        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
@@ -2191,10 +2193,10 @@ fn emitChunkRuntimeHelpers(
         }
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
-        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {
-        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
