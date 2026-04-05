@@ -79,6 +79,8 @@ pub const BundleOptions = struct {
     source_root: ?[]const u8 = null,
     /// 소스맵에 sourcesContent 포함 여부 (--sources-content=false로 제외)
     sources_content: bool = true,
+    /// 소스맵 생성 (--sourcemap)
+    sourcemap: bool = false,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
     charset_utf8: bool = false,
     /// 엔트리 청크 파일명 패턴 (--entry-names, 기본: "[name]")
@@ -387,13 +389,14 @@ pub const Bundler = struct {
         // emit (IIFE 포맷)
         var emit_opts = self.makeEmitOptions();
         emit_opts.format = .iife;
-        const worker_output = try emitter.emitWithTreeShaking(
+        const worker_result = try emitter.emitWithTreeShaking(
             arena_alloc,
             &worker_graph,
             emit_opts,
             &worker_linker,
             null,
         );
+        const worker_output = worker_result.output;
 
         // content hash로 파일명 생성
         const hash = std.hash.Crc32.hash(worker_output);
@@ -588,17 +591,34 @@ pub const Bundler = struct {
 
             // output은 빈 문자열 — code splitting 시 outputs를 사용
             output = try self.allocator.dupe(u8, "");
-        } else {
-            // 기존 단일 파일 경로
+        } else if (self.options.sourcemap) {
+            // 소스맵 요청 시: emitDevBundle 사용 (소스맵 생성 지원)
+            // TODO: emitWithTreeShaking에 소스맵 생성 통합
             var emit_opts = self.makeEmitOptions();
             emit_opts.polyfills = polyfill_entries.items;
-            output = try emitter.emitWithTreeShaking(
+            emit_opts.sourcemap = true;
+            const dev_result = try emitter.emitDevBundle(
+                self.allocator,
+                &graph,
+                emit_opts,
+                if (linker) |*l| l else null,
+            );
+            output = dev_result.output;
+            dev_sourcemap = dev_result.sourcemap;
+            // module_codes는 non-dev에서 불필요 → 즉시 해제
+            emitter.DevBundleResult.deinitCodes(dev_result.module_codes, self.allocator);
+        } else {
+            // 기존 단일 파일 경로 (tree shaking 포함, 소스맵 없음)
+            var emit_opts = self.makeEmitOptions();
+            emit_opts.polyfills = polyfill_entries.items;
+            const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
                 emit_opts,
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );
+            output = emit_result.output;
         }
         errdefer self.allocator.free(output);
 

@@ -1089,6 +1089,7 @@ pub fn main() !void {
             .jsx_in_js = opts.jsx_in_js,
             .resolve_extensions = opts.resolve_extensions_list.items,
             .main_fields = opts.main_fields_list.items,
+            .sourcemap = opts.sourcemap,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -1189,6 +1190,15 @@ pub fn main() !void {
                 try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
             }
             try writeAssetOutputs(allocator, result.asset_outputs, std.fs.path.dirname(out_path) orelse ".");
+
+            // 소스맵 파일 출력
+            if (result.sourcemap) |sm_json| {
+                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
+                defer allocator.free(map_path);
+                std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                };
+            }
         } else {
             // --watch-json: stdout은 NDJSON 전용이므로 raw 번들 출력 억제
             if (!opts.watch_json) {

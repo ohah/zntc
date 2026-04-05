@@ -123,14 +123,26 @@ pub const OutputFile = struct {
     contents: []const u8,
 };
 
+/// 번들 출력 결과. output + 소스맵.
+pub const EmitResult = struct {
+    /// 번들 코드. allocator 소유.
+    output: []const u8,
+    /// 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
+    sourcemap: ?[]const u8 = null,
+
+    pub fn deinit(self: *const EmitResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.output);
+        if (self.sourcemap) |sm| allocator.free(sm);
+    }
+};
+
 /// 모듈 그래프를 단일 번들로 출력한다.
-/// 반환된 contents는 allocator 소유 (caller가 free).
 pub fn emit(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     options: EmitOptions,
     linker: ?*const Linker,
-) ![]const u8 {
+) !EmitResult {
     return emitWithTreeShaking(allocator, graph, options, linker, null);
 }
 
@@ -141,7 +153,7 @@ pub fn emitWithTreeShaking(
     options: EmitOptions,
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
-) ![]const u8 {
+) !EmitResult {
     // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
@@ -249,7 +261,7 @@ pub fn emitWithTreeShaking(
     }
 
     // Phase 2: emitModule 병렬 실행 (2개 이상이면 스레드 풀, 아니면 순차)
-    var results = try allocator.alloc(EmitResult, sorted.items.len);
+    var results = try allocator.alloc(ModuleEmitResult, sorted.items.len);
     defer {
         for (results) |r| {
             if (r.code) |c| allocator.free(c);
@@ -380,7 +392,10 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
-    return output.toOwnedSlice(allocator);
+    return .{
+        .output = try output.toOwnedSlice(allocator),
+        .sourcemap = null, // TODO: emitModule에서 매핑 반환 후 소스맵 생성 지원
+    };
 }
 
 /// Dev mode 번들 출력.
@@ -1523,7 +1538,7 @@ fn computeAllUsedNames(
 }
 
 /// 스레드 풀에서 실행되는 emitModule 래퍼.
-const EmitResult = struct {
+const ModuleEmitResult = struct {
     code: ?[]const u8 = null,
     helpers: RuntimeHelpers = .{},
 };
@@ -1565,7 +1580,7 @@ fn emitModuleThread(
     is_entry: bool,
     used_names: ?[]const []const u8,
     shaker: ?*const TreeShaker,
-    result: *EmitResult,
+    result: *ModuleEmitResult,
 ) void {
     result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers) catch null;
 }
