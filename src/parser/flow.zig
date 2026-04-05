@@ -14,6 +14,7 @@ const std = @import("std");
 const ast_mod = @import("ast.zig");
 const Tag = ast_mod.Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const Span = @import("../lexer/token.zig").Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
@@ -1110,19 +1111,114 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
     self.restoreFunctionContext(saved_ctx);
 
     if (has_ref) {
-        // ref가 있으면 React.forwardRef로 래핑.
-        // 파서에서는 inner function (이름 없이)을 생성하고,
-        // transformer가 _withRef suffix 이름 생성 + forwardRef 래핑을 처리한다.
-        //
-        // flow_component_wrapper: extra = [name, params_start, params_len, body]
-        const wrapper_extra = try self.ast.addExtra(@intFromEnum(name));
+        // ref가 있으면 파서에서 2개 statement를 직접 생성:
+        //   1) function Name_withRef({...props}, ref) { body }
+        //   2) const Name = React.forwardRef(Name_withRef)
+        // flow_component_wrapper: extra = [func_decl, const_decl]
+        // transformer는 func_decl을 pending_nodes, const_decl을 반환��� 하면 됨.
+
+        const span: Span = .{ .start = start, .end = self.currentSpan().start };
+
+        // Name_withRef 합성 이름 생성 (string_table 통합으로 codegen에서 접근 가능)
+        const name_node = self.ast.getNode(name);
+        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+        const st_start: u32 = @intCast(self.ast.string_table.items.len);
+        try self.ast.string_table.appendSlice(self.ast.allocator, name_text);
+        try self.ast.string_table.appendSlice(self.ast.allocator, "_withRef");
+        const st_end: u32 = @intCast(self.ast.string_table.items.len);
+        const with_ref_full: Span = .{
+            .start = st_start | ast_mod.Ast.STRING_TABLE_BIT,
+            .end = st_end | ast_mod.Ast.STRING_TABLE_BIT,
+        };
+
+        const with_ref_name = try self.ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = with_ref_full,
+            .data = .{ .string_ref = with_ref_full },
+        });
+
+        // 1) function Name_withRef({...props}, ref) { body }
+        const none = @intFromEnum(NodeIndex.none);
+        const func_extra = try self.ast.addExtra(@intFromEnum(with_ref_name));
         _ = try self.ast.addExtra(params.start);
         _ = try self.ast.addExtra(params.len);
         _ = try self.ast.addExtra(@intFromEnum(body));
+        _ = try self.ast.addExtra(0); // flags
+        _ = try self.ast.addExtra(none); // return_type
+        const func_decl = try self.ast.addNode(.{
+            .tag = .function_declaration,
+            .span = span,
+            .data = .{ .extra = func_extra },
+        });
 
+        // 2) const Name = React.forwardRef(Name_withRef)
+        const react_span = try self.ast.addString("React");
+        const react_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = react_span,
+            .data = .{ .string_ref = react_span },
+        });
+        const fwd_span = try self.ast.addString("forwardRef");
+        const fwd_id = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = fwd_span,
+            .data = .{ .string_ref = fwd_span },
+        });
+        // static_member_expression: extra = [object, property, flags]
+        const member_extra = try self.ast.addExtras(&.{
+            @intFromEnum(react_ref), @intFromEnum(fwd_id), 0,
+        });
+        const callee = try self.ast.addNode(.{
+            .tag = .static_member_expression,
+            .span = span,
+            .data = .{ .extra = member_extra },
+        });
+        const arg_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = with_ref_full,
+            .data = .{ .string_ref = with_ref_full },
+        });
+        const args_list = try self.ast.addNodeList(&.{arg_ref});
+        const call_extra = try self.ast.addExtras(&.{
+            @intFromEnum(callee), args_list.start, args_list.len, 0,
+        });
+        const call_node = try self.ast.addNode(.{
+            .tag = .call_expression,
+            .span = span,
+            .data = .{ .extra = call_extra },
+        });
+
+        const binding_span = try self.ast.addString(name_text);
+        const binding = try self.ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = binding_span,
+            .data = .{ .string_ref = binding_span },
+        });
+        // variable_declarator: extra = [name, type_ann, init]
+        const decl_extra = try self.ast.addExtras(&.{
+            @intFromEnum(binding), none, @intFromEnum(call_node),
+        });
+        const declarator = try self.ast.addNode(.{
+            .tag = .variable_declarator,
+            .span = span,
+            .data = .{ .extra = decl_extra },
+        });
+        // variable_declaration: extra = [kind_flags, list_start, list_len]
+        const decl_list = try self.ast.addNodeList(&.{declarator});
+        const var_extra = try self.ast.addExtras(&.{ 2, decl_list.start, decl_list.len }); // 2 = const
+        const const_decl = try self.ast.addNode(.{
+            .tag = .variable_declaration,
+            .span = span,
+            .data = .{ .extra = var_extra },
+        });
+
+        // wrapper: extra = [func_decl, const_decl]
+        const wrapper_extra = try self.ast.addExtras(&.{
+            @intFromEnum(func_decl), @intFromEnum(const_decl),
+        });
         return try self.ast.addNode(.{
             .tag = .flow_component_wrapper,
-            .span = .{ .start = start, .end = self.currentSpan().start },
+            .span = span,
             .data = .{ .extra = wrapper_extra },
         });
     }
