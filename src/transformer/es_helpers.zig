@@ -375,8 +375,28 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const params_len = extras[me + 2];
     const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
 
-    const new_params = try self.visitExtraList(params_start, params_len);
-    const new_body = try self.visitNode(body_idx);
+    const Self = @TypeOf(self.*);
+    const es2015_params_mod = @import("es2015_params.zig");
+
+    // ES2015 params lowering (private method에 destructuring/rest/default가 있을 수 있음)
+    var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+    defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+    const new_params = if (self.options.unsupported.default_params and
+        es2015_params_mod.ES2015Params(Self).hasDefaultOrRest(self, params_start, params_len))
+    blk: {
+        const lr = try es2015_params_mod.ES2015Params(Self).lowerParams(self, params_start, params_len, span);
+        es2015_body_stmts = lr.body_stmts;
+        break :blk lr.new_params;
+    } else try self.visitExtraList(params_start, params_len);
+
+    var new_body = try self.visitNode(body_idx);
+
+    if (es2015_body_stmts) |stmts| {
+        if (stmts.items.len > 0 and !new_body.isNone()) {
+            new_body = try self.prependStatementsToBody(new_body, stmts.items);
+        }
+    }
 
     const name_span = try self.new_ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
