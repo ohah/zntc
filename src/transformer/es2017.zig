@@ -27,7 +27,7 @@ pub fn ES2017(comptime Transformer: type) type {
         pub fn lowerAwaitExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_operand = try self.visitNode(node.data.unary.operand);
             // yield_expression: data.unary = { operand, flags } (flags bit 0 = yield*)
-            const yield_node = try self.new_ast.addNode(.{
+            const yield_node = try self.ast.addNode(.{
                 .tag = .yield_expression,
                 .span = node.span,
                 .data = .{ .unary = .{ .operand = new_operand, .flags = 0 } },
@@ -37,13 +37,13 @@ pub fn ES2017(comptime Transformer: type) type {
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }
         pub fn lowerAsyncFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
-            const name_idx: NodeIndex = @enumFromInt(extras[e]);
-            const params_start = extras[e + 1];
-            const params_len = extras[e + 2];
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
-            const flags = extras[e + 4];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const params_start = self.readU32(e, 1);
+            const params_len = self.readU32(e, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
+            const flags = self.readU32(e, 4);
 
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitNode(body_idx);
@@ -63,7 +63,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
-            const return_stmt = try self.new_ast.addNode(.{
+            const return_stmt = try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = node.span,
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
@@ -75,17 +75,17 @@ pub fn ES2017(comptime Transformer: type) type {
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
                 for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
                 try self.scratch.append(self.allocator, return_stmt);
-                break :blk try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            } else try self.new_ast.addNodeList(&.{return_stmt});
+                break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            } else try self.ast.addNodeList(&.{return_stmt});
 
-            const wrapper_body = try self.new_ast.addNode(.{
+            const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = node.span,
                 .data = .{ .list = body_list },
             });
 
             const new_flags = flags & ~ast_mod.FunctionFlags.is_async;
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 new_params.start,
                 new_params.len,
@@ -93,7 +93,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 new_flags,
                 @intFromEnum(NodeIndex.none),
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,
                 .data = .{ .extra = new_extra },
@@ -102,25 +102,25 @@ pub fn ES2017(comptime Transformer: type) type {
 
         /// async () => { ... } → () => __async(function*() { ... })
         pub fn lowerAsyncArrow(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
-            const params_idx: NodeIndex = @enumFromInt(extras[e]);
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
-            const flags = extras[e + 2];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const params_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const flags = self.readU32(e, 2);
 
             const new_params = try self.visitNode(params_idx);
             const new_body = try self.visitNode(body_idx);
 
             // expression body → { return expr; }
-            const body_node = self.new_ast.getNode(new_body);
+            const body_node = self.ast.getNode(new_body);
             const gen_body = if (body_node.tag != .block_statement) blk: {
-                const ret = try self.new_ast.addNode(.{
+                const ret = try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = node.span,
                     .data = .{ .unary = .{ .operand = new_body, .flags = 0 } },
                 });
-                const list = try self.new_ast.addNodeList(&.{ret});
-                break :blk try self.new_ast.addNode(.{
+                const list = try self.ast.addNodeList(&.{ret});
+                break :blk try self.ast.addNode(.{
                     .tag = .block_statement,
                     .span = node.span,
                     .data = .{ .list = list },
@@ -131,12 +131,12 @@ pub fn ES2017(comptime Transformer: type) type {
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_params),
                 @intFromEnum(async_call),
                 new_flags,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = node.span,
                 .data = .{ .extra = new_extra },
@@ -149,15 +149,15 @@ pub fn ES2017(comptime Transformer: type) type {
         /// await_expression은 es2015_generator의 collectOperations에서 yield처럼 처리됨.
         pub fn lowerAsyncToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
             const span = node.span;
 
-            const name_idx: NodeIndex = @enumFromInt(extras[e]);
-            const params_start = extras[e + 1];
-            const params_len = extras[e + 2];
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
-            const flags = extras[e + 4];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const params_start = self.readU32(e, 1);
+            const params_len = self.readU32(e, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
+            const flags = self.readU32(e, 4);
 
             const new_name = try self.visitNode(name_idx);
 
@@ -182,7 +182,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
-            const return_stmt = try self.new_ast.addNode(.{
+            const return_stmt = try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
@@ -195,9 +195,9 @@ pub fn ES2017(comptime Transformer: type) type {
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
                 if (es2015_body_stmts2) |stmts| for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
                 try self.scratch.append(self.allocator, return_stmt);
-                break :blk try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+                break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             };
-            const wrapper_body = try self.new_ast.addNode(.{
+            const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
@@ -205,7 +205,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 new_params.start,
                 new_params.len,
@@ -213,7 +213,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 new_flags,
                 @intFromEnum(NodeIndex.none),
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,
                 .data = .{ .extra = new_extra },
@@ -224,13 +224,13 @@ pub fn ES2017(comptime Transformer: type) type {
         /// async_await + generator 둘 다 unsupported일 때 호출.
         pub fn lowerAsyncArrowToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
             const span = node.span;
 
-            const params_idx: NodeIndex = @enumFromInt(extras[e]);
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
-            const flags = extras[e + 2];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const params_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const flags = self.readU32(e, 2);
 
             const new_params = try self.visitNode(params_idx);
 
@@ -243,25 +243,25 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // hoisted vars가 있으면 block body, 없으면 expression body
             const final_body = if (sm_result.var_decl.isNone()) async_call else blk: {
-                const return_stmt = try self.new_ast.addNode(.{
+                const return_stmt = try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = span,
                     .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
                 });
-                const body_list = try self.new_ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
-                break :blk try self.new_ast.addNode(.{
+                const body_list = try self.ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
+                break :blk try self.ast.addNode(.{
                     .tag = .block_statement,
                     .span = span,
                     .data = .{ .list = body_list },
                 });
             };
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_params),
                 @intFromEnum(final_body),
                 new_flags,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = span,
                 .data = .{ .extra = new_extra },

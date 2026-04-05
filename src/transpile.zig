@@ -181,13 +181,13 @@ pub fn transpileWithCallback(
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = file_path,
     });
-    transformer.old_symbol_ids = analyzer.symbol_ids.items;
+    transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
     transformer.symbols = analyzer.symbols.items;
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
 
     if (options.minify_syntax) {
-        @import("root.zig").transformer.minify.minify(&transformer.new_ast);
+        @import("root.zig").transformer.minify.minify(&transformer.ast);
     }
 
     // 5. Mangling 메타데이터 구성
@@ -195,13 +195,13 @@ pub fn transpileWithCallback(
     defer if (mangle_metadata) |*mm| mm.skip_nodes.deinit();
 
     if (mangle_result) |*mr| {
-        const node_count = transformer.new_ast.nodes.items.len;
+        const node_count = transformer.ast.nodes.items.len;
         mangle_metadata = .{
             .skip_nodes = std.DynamicBitSet.initEmpty(arena_alloc, node_count) catch return error.OutOfMemory,
             .renames = mr.renames,
             .final_exports = null,
-            .symbol_ids = if (transformer.new_symbol_ids.items.len > 0)
-                transformer.new_symbol_ids.items
+            .symbol_ids = if (transformer.symbol_ids.items.len > 0)
+                transformer.symbol_ids.items
             else if (analyzer.symbol_ids.items.len > 0)
                 analyzer.symbol_ids.items
             else
@@ -211,7 +211,7 @@ pub fn transpileWithCallback(
     }
 
     // 6. 코드 생성
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
         .sourcemap = options.sourcemap,

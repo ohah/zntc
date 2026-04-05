@@ -33,7 +33,7 @@ pub const LinkingMetadata = struct {
     /// 엔트리 포인트의 최종 export 문 (e.g. "export { x, y$1 as y };\n")
     final_exports: ?[]const u8,
     /// 노드 인덱스 → 심볼 인덱스 매핑. 빌림 — deinit에서 해제하지 않음.
-    /// module.parse_arena 또는 transformer.new_symbol_ids(emit_arena)가 소유.
+    /// module.parse_arena 또는 transformer.symbol_ids(emit_arena)가 소유.
     symbol_ids: []const ?u32,
     /// CJS 모듈을 import하는 경우: require_xxx() 호출 preamble (e.g. "var lib = require_lib();\n")
     cjs_import_preamble: ?[]const u8 = null,

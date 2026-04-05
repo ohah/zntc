@@ -31,9 +31,9 @@ pub fn ES2018(comptime Transformer: type) type {
         /// object_expression의 프로퍼티 중 spread_element이 있는지 확인.
         /// 원본 AST를 읽어서 판단한다 (변환 전 스캔).
         pub fn hasSpreadProperty(self: *Transformer, node: Node) bool {
-            const indices = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                const child = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@enumFromInt(raw_idx));
                 if (child.tag == .spread_element) return true;
             }
             return false;
@@ -41,21 +41,25 @@ pub fn ES2018(comptime Transformer: type) type {
 
         /// `{ a: 1, ...obj, b: 2 }` → `Object.assign({ a: 1 }, obj, { b: 2 })`
         ///
-        /// old_ast의 object_expression을 방문하면서 각 프로퍼티를 visitNode로 변환하고,
+        /// ast의 object_expression을 방문하면서 각 프로퍼티를 visitNode로 변환하고,
         /// 결과를 es_helpers.lowerObjectSpreadProps에 넘겨 Object.assign 호출을 생성한다.
         pub fn lowerObjectSpread(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const old_indices = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            const list_start = node.data.list.start;
+            const list_len = node.data.list.len;
 
-            // old_ast 프로퍼티를 방문하여 new_ast 노드로 변환
+            // ast 프로퍼티를 방문하여 ast 노드로 변환
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            for (old_indices) |raw_idx| {
-                const child = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // while 인덱스 루프: visitNode가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
+            var j: u32 = 0;
+            while (j < list_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[list_start + j];
+                const child = self.ast.getNode(@enumFromInt(raw_idx));
                 if (child.tag == .spread_element) {
-                    // spread: 피연산자를 방문하고 new_ast에 spread_element로 다시 감싸기
+                    // spread: 피연산자를 방문하고 ast에 spread_element로 다시 감싸기
                     const operand = try self.visitNode(child.data.unary.operand);
-                    const new_spread = try self.new_ast.addNode(.{
+                    const new_spread = try self.ast.addNode(.{
                         .tag = .spread_element,
                         .span = child.span,
                         .data = .{ .unary = .{ .operand = operand, .flags = 0 } },

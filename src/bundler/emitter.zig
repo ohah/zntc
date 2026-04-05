@@ -731,7 +731,7 @@ pub fn emitDevModule(
         .jsx_filename = module.path,
     });
     if (module.semantic) |sem| {
-        transformer.old_symbol_ids = sem.symbol_ids;
+        transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
     }
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
@@ -742,11 +742,11 @@ pub fn emitDevModule(
 
     if (linker) |l| {
         var md = try l.buildDevMetadataForAst(
-            &transformer.new_ast,
+            &transformer.ast,
             @intFromEnum(module.index),
         );
-        if (transformer.new_symbol_ids.items.len > 0) {
-            md.symbol_ids = transformer.new_symbol_ids.items;
+        if (transformer.symbol_ids.items.len > 0) {
+            md.symbol_ids = transformer.symbol_ids.items;
         }
         metadata = md;
     }
@@ -754,7 +754,7 @@ pub fn emitDevModule(
     // propagateCrossModulePurity 생략: dev mode에서는 tree-shaking이 꺼져 있으므로
     // @__NO_SIDE_EFFECTS__ cross-module 전파가 불필요하다.
 
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
         .module_format = .esm,
         .sourcemap = options.sourcemap,
@@ -1712,9 +1712,9 @@ pub fn emitModule(
         .jsx_filename = module.path,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
-    // transformer가 new_ast 기준으로 재매핑
+    // transformer가 ast 기준으로 재매핑
     if (module.semantic) |sem| {
-        transformer.old_symbol_ids = sem.symbol_ids;
+        transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
     }
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
@@ -1722,7 +1722,7 @@ pub fn emitModule(
 
     // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
     if (options.minify_syntax) {
-        @import("../transformer/minify.zig").minify(&transformer.new_ast);
+        @import("../transformer/minify.zig").minify(&transformer.ast);
     }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
@@ -1731,24 +1731,24 @@ pub fn emitModule(
         h.* = @bitCast(@as(u16, @bitCast(h.*)) | @as(u16, @bitCast(transformer.runtime_helpers)));
     }
 
-    // Linker 메타데이터 생성 (있으면) — new_ast 기준으로 구축
+    // Linker 메타데이터 생성 (있으면) — ast 기준으로 구축
     var metadata: ?LinkingMetadata = null;
     defer if (metadata) |*m| m.deinit();
 
     if (linker) |l| {
-        // transformer가 생성한 new_symbol_ids (있으면 우선 사용)
-        const override_syms: ?[]const ?u32 = if (transformer.new_symbol_ids.items.len > 0)
-            transformer.new_symbol_ids.items
+        // transformer가 생성한 symbol_ids (있으면 우선 사용)
+        const override_syms: ?[]const ?u32 = if (transformer.symbol_ids.items.len > 0)
+            transformer.symbol_ids.items
         else
             null;
         // new_ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 new_ast와 일치)
         var md = try l.buildMetadataForAst(
-            &transformer.new_ast,
+            &transformer.ast,
             @intFromEnum(module.index),
             is_entry,
             override_syms,
         );
-        // transformer가 전파한 new_symbol_ids를 메타데이터에 설정
+        // transformer가 전파한 symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {
             md.symbol_ids = syms;
         }
@@ -1760,15 +1760,15 @@ pub fn emitModule(
                     const sem = module.semantic orelse {
                         statement_shaker.markUnusedStatements(
                             arena_alloc,
-                            &transformer.new_ast,
+                            &transformer.ast,
                             root,
                             names,
                             &md.skip_nodes,
                         ) catch {};
                         break :stmt_shake;
                     };
-                    const sym_ids: []const ?u32 = if (transformer.new_symbol_ids.items.len > 0)
-                        transformer.new_symbol_ids.items
+                    const sym_ids: []const ?u32 = if (transformer.symbol_ids.items.len > 0)
+                        transformer.symbol_ids.items
                     else
                         sem.symbol_ids;
 
@@ -1777,18 +1777,18 @@ pub fn emitModule(
                     if (shaker) |s| {
                         if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
                             // 변환 후 AST의 program statement list에서 span 매칭
-                            const new_root = transformer.new_ast.nodes.items[transformer.new_ast.nodes.items.len - 1];
+                            const new_root = transformer.ast.nodes.items[transformer.ast.nodes.items.len - 1];
                             if (new_root.tag == .program and new_root.data.list.len > 0) {
                                 const new_list = new_root.data.list;
-                                if (new_list.start + new_list.len <= transformer.new_ast.extra_data.items.len) {
-                                    const new_stmt_indices = transformer.new_ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
+                                if (new_list.start + new_list.len <= transformer.ast.extra_data.items.len) {
+                                    const new_stmt_indices = transformer.ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
                                     for (ts_infos.stmts, 0..) |ts_stmt, si| {
                                         if (s.isStmtReachable(mod_idx, @intCast(si))) continue;
                                         // 변환 후 top-level statement만 스캔 (O(stmts) not O(nodes))
                                         for (new_stmt_indices) |raw_ni| {
                                             const ni = @as(usize, raw_ni);
-                                            if (ni >= transformer.new_ast.nodes.items.len) continue;
-                                            const new_node = transformer.new_ast.nodes.items[ni];
+                                            if (ni >= transformer.ast.nodes.items.len) continue;
+                                            const new_node = transformer.ast.nodes.items[ni];
                                             if (new_node.span.start == ts_stmt.span.start and
                                                 new_node.span.end == ts_stmt.span.end and
                                                 ni < md.skip_nodes.capacity())
@@ -1803,7 +1803,7 @@ pub fn emitModule(
                         }
                     } else {
                         // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                        if (stmt_info_mod.build(arena_alloc, &transformer.new_ast, sem.symbols, sym_ids)) |maybe_infos| {
+                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols, sym_ids)) |maybe_infos| {
                             if (maybe_infos) |infos| {
                                 var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                 defer used_sym_buf.deinit(arena_alloc);
@@ -1845,7 +1845,7 @@ pub fn emitModule(
     // 현재 모듈의 해당 호출에 is_pure 플래그를 자동 설정한다.
     if (linker) |l| {
         const sym_ids = if (metadata) |md| md.symbol_ids else &.{};
-        propagateCrossModulePurity(l, module, &transformer.new_ast, sym_ids, arena_alloc);
+        propagateCrossModulePurity(l, module, &transformer.ast, sym_ids, arena_alloc);
     }
 
     // Identifier mangling은 단일 파일 트랜스파일(main.zig)에서만 적용.
@@ -1857,7 +1857,7 @@ pub fn emitModule(
         return try emitEsmWrappedModule(
             allocator,
             arena_alloc,
-            &transformer.new_ast,
+            &transformer.ast,
             root,
             module,
             if (metadata) |*m| @as(?*const LinkingMetadata, m) else null,
@@ -1867,7 +1867,7 @@ pub fn emitModule(
     }
 
     // Codegen: AST → JS 문자열
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).

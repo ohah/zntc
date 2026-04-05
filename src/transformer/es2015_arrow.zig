@@ -37,13 +37,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         /// arrow body 안의 this → _this, arguments → _arguments 치환을 위해
         /// arrow_this_depth를 증가시킨 상태로 body를 방문한다.
         pub fn lowerArrowFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
-            if (e + 2 >= extras.len) return NodeIndex.none;
+            if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
 
-            const params_idx: NodeIndex = @enumFromInt(extras[e]);
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
-            const flags = extras[e + 2];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const params_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const flags = self.readU32(e, 2);
 
             // ES2015 default/rest/destructuring lowering:
             // 화살표 함수 파라미터에서 extra list 형태(start/len)를 추출 가능한 경우에만 적용.
@@ -58,9 +58,9 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             //   4. parenthesized_expression → (x) => ... (cover grammar)
             //      내부: identifier_reference (단일) 또는 sequence_expression (복수)
             const param_list: NodeList = if (params_idx.isNone())
-                try self.new_ast.addNodeList(&.{})
+                try self.ast.addNodeList(&.{})
             else blk: {
-                const params_node = self.old_ast.getNode(params_idx);
+                const params_node = self.ast.getNode(params_idx);
                 switch (params_node.tag) {
                     .formal_parameters => {
                         // ES2015 params lowering 적용 가능 (extra list 형태)
@@ -89,9 +89,9 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         // cover grammar: (x) 또는 (a, b, ...rest)
                         const inner_idx = params_node.data.unary.operand;
                         if (inner_idx.isNone()) {
-                            break :blk try self.new_ast.addNodeList(&.{});
+                            break :blk try self.ast.addNodeList(&.{});
                         }
-                        const inner = self.old_ast.getNode(inner_idx);
+                        const inner = self.ast.getNode(inner_idx);
                         if (inner.tag == .sequence_expression) {
                             // ES2015 params lowering 적용 가능 (extra list 형태)
                             if (self.options.unsupported.default_params and
@@ -118,7 +118,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         } else {
                             // (x) → 단일 파라미터 (destructuring/rest 아님)
                             const new_param = try self.visitNode(inner_idx);
-                            break :blk try self.new_ast.addNodeList(
+                            break :blk try self.ast.addNodeList(
                                 if (!new_param.isNone()) &.{new_param} else &.{},
                             );
                         }
@@ -126,7 +126,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                     else => {
                         // x => ... — 단일 binding_identifier (destructuring/rest 아님)
                         const new_param = try self.visitNode(params_idx);
-                        break :blk try self.new_ast.addNodeList(
+                        break :blk try self.ast.addNodeList(
                             if (!new_param.isNone()) &.{new_param} else &.{},
                         );
                     },
@@ -142,15 +142,15 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             // expression body → { return expr; }
             var func_body = blk: {
                 if (new_body.isNone()) break :blk new_body;
-                const body_node = self.new_ast.getNode(new_body);
+                const body_node = self.ast.getNode(new_body);
                 if (body_node.tag != .block_statement and body_node.tag != .function_body) {
-                    const ret = try self.new_ast.addNode(.{
+                    const ret = try self.ast.addNode(.{
                         .tag = .return_statement,
                         .span = node.span,
                         .data = .{ .unary = .{ .operand = new_body, .flags = 0 } },
                     });
-                    const list = try self.new_ast.addNodeList(&.{ret});
-                    break :blk try self.new_ast.addNode(.{
+                    const list = try self.ast.addNodeList(&.{ret});
+                    break :blk try self.ast.addNode(.{
                         .tag = .block_statement,
                         .span = node.span,
                         .data = .{ .list = list },
@@ -173,7 +173,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 0;
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 none, // name (anonymous)
                 param_list.start,
                 param_list.len,
@@ -182,7 +182,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 none, // return_type
             });
 
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = node.span,
                 .data = .{ .extra = new_extra },

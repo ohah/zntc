@@ -56,7 +56,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const length_prop = try es_helpers.makeIdentifierRef(self, "length");
             const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
             const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
-            const test_expr = try self.new_ast.addNode(.{
+            const test_expr = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{
@@ -68,11 +68,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // --- update: _a++ ---
             const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const update_extra = try self.new_ast.addExtras(&.{
+            const update_extra = try self.ast.addExtras(&.{
                 @intFromEnum(idx_ref_update),
                 @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
             });
-            const update_expr = try self.new_ast.addNode(.{
+            const update_expr = try self.ast.addNode(.{
                 .tag = .update_expression,
                 .span = span,
                 .data = .{ .extra = update_extra },
@@ -84,10 +84,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // _b[_a]
             const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
             const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const elem_access_extra = try self.new_ast.addExtras(&.{
+            const elem_access_extra = try self.ast.addExtras(&.{
                 @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
             });
-            const elem_access = try self.new_ast.addNode(.{
+            const elem_access = try self.ast.addNode(.{
                 .tag = .computed_member_expression,
                 .span = span,
                 .data = .{ .extra = elem_access_extra },
@@ -103,13 +103,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 new_body;
 
             // --- for_statement: extra = [init, test, update, body] ---
-            const for_extra = try self.new_ast.addExtras(&.{
+            const for_extra = try self.ast.addExtras(&.{
                 @intFromEnum(init),
                 @intFromEnum(test_expr),
                 @intFromEnum(update_expr),
                 @intFromEnum(final_body),
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .for_statement,
                 .span = span,
                 .data = .{ .extra = for_extra },
@@ -121,22 +121,23 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// left가 expression이면 assignment로 변환.
         fn buildLoopVarAssign(self: *Transformer, left: NodeIndex, elem: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (left.isNone()) return NodeIndex.none;
-            const left_node = self.old_ast.getNode(left);
+            const left_node = self.ast.getNode(left);
 
             if (left_node.tag == .variable_declaration) {
                 // for (const/let/var x of ...) → var x = _b[_a]
-                const extras = self.old_ast.extra_data.items;
                 const le = left_node.data.extra;
-                const list_start = extras[le + 1];
-                const list_len = extras[le + 2];
+                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+                const list_start = self.readU32(le, 1);
+                const list_len = self.readU32(le, 2);
                 if (list_len == 0) return NodeIndex.none;
 
                 // 첫 번째 declarator의 binding name 추출
-                const first_decl_idx: NodeIndex = @enumFromInt(extras[list_start]);
-                const first_decl = self.old_ast.getNode(first_decl_idx);
+                const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+                const first_decl = self.ast.getNode(first_decl_idx);
                 if (first_decl.tag != .variable_declarator) return NodeIndex.none;
 
-                const binding_name = try self.visitNode(@enumFromInt(extras[first_decl.data.extra]));
+                const binding_idx: NodeIndex = self.readNodeIdx(first_decl.data.extra, 0);
+                const binding_name = try self.visitNode(binding_idx);
 
                 // var x = elem
                 const declarator = try es_helpers.makeDeclarator(self, binding_name, elem, span);
@@ -144,12 +145,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             } else {
                 // for (x of ...) → x = _b[_a]
                 const new_left = try self.visitNode(left);
-                const assign = try self.new_ast.addNode(.{
+                const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
                     .data = .{ .binary = .{ .left = new_left, .right = elem, .flags = 0 } },
                 });
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .expression_statement,
                     .span = span,
                     .data = .{ .unary = .{ .operand = assign, .flags = 0 } },

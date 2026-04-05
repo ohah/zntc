@@ -10346,7 +10346,7 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
             xform_ns += std.time.nanoTimestamp() - t0;
 
             t0 = std.time.nanoTimestamp();
-            var cg = Codegen.init(a, &transformer.new_ast);
+            var cg = Codegen.init(a, &transformer.ast);
             _ = try cg.generate(root);
             cg_ns += std.time.nanoTimestamp() - t0;
         }

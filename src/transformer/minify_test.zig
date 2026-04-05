@@ -18,9 +18,9 @@ fn expectMinify(input: []const u8, expected: []const u8) !void {
     var transformer = Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.new_ast);
+    minify_mod.minify(&transformer.ast);
 
-    var cg = Codegen.init(a, &transformer.new_ast);
+    var cg = Codegen.init(a, &transformer.ast);
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);

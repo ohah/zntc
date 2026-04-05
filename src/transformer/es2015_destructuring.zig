@@ -31,18 +31,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
         /// variable_declaration에 destructuring pattern이 있는지 확인.
         pub fn hasDestructuring(self: *const Transformer, node: Node) bool {
-            const extras = self.old_ast.extra_data.items;
+            const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e + 2 >= extras.len) return false;
             const list_start = extras[e + 1];
             const list_len = extras[e + 2];
             const decls = extras[list_start .. list_start + list_len];
             for (decls) |raw_idx| {
-                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const decl = self.ast.getNode(@enumFromInt(raw_idx));
                 if (decl.tag != .variable_declarator) continue;
                 const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
                 if (name.isNone()) continue;
-                const name_node = self.old_ast.getNode(name);
+                const name_node = self.ast.getNode(name);
                 if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) return true;
             }
             return false;
@@ -51,18 +51,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// variable_declaration 안에 object rest (...rest)가 있는지 체크.
         /// ES2018 object rest는 target < es2018에서 __rest로 변환 필요.
         pub fn hasObjectRest(self: *const Transformer, node: Node) bool {
-            const extras = self.old_ast.extra_data.items;
+            const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e + 2 >= extras.len) return false;
             const list_start = extras[e + 1];
             const list_len = extras[e + 2];
             const decls = extras[list_start .. list_start + list_len];
             for (decls) |raw_idx| {
-                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const decl = self.ast.getNode(@enumFromInt(raw_idx));
                 if (decl.tag != .variable_declarator) continue;
                 const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
                 if (name.isNone()) continue;
-                const name_node = self.old_ast.getNode(name);
+                const name_node = self.ast.getNode(name);
                 if (name_node.tag == .object_pattern) {
                     if (objectPatternHasRest(self, name_node)) return true;
                 }
@@ -73,12 +73,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn objectPatternHasRest(self: *const Transformer, pattern: Node) bool {
             const list = pattern.data.list;
             if (list.len == 0) return false;
-            if (list.start + list.len > self.old_ast.extra_data.items.len) return false;
-            const indices = self.old_ast.extra_data.items[list.start .. list.start + list.len];
+            if (list.start + list.len > self.ast.extra_data.items.len) return false;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
             for (indices) |raw_idx| {
                 const prop_idx: NodeIndex = @enumFromInt(raw_idx);
                 if (prop_idx.isNone()) continue;
-                const prop = self.old_ast.getNode(prop_idx);
+                const prop = self.ast.getNode(prop_idx);
                 if (prop.tag == .rest_element) return true;
             }
             return false;
@@ -87,26 +87,29 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// destructuring이 있는 variable_declaration을 분해한다.
         /// 각 destructuring declarator를 여러 개의 단순 declarator로 풀어서 반환.
         pub fn lowerDestructuringDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
             const span = node.span;
 
-            const list_start = extras[e + 1];
-            const list_len = extras[e + 2];
-            const old_decls = extras[list_start .. list_start + list_len];
+            // extras를 visitNode 전에 읽기 (재할당 방지)
+            const list_start = self.readU32(e, 1);
+            const list_len = self.readU32(e, 2);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            for (old_decls) |raw_idx| {
-                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < list_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[list_start + i_loop];
+                const decl = self.ast.getNode(@enumFromInt(raw_idx));
                 if (decl.tag != .variable_declarator) continue;
 
-                const name_idx: NodeIndex = @enumFromInt(extras[decl.data.extra]);
-                const init_idx: NodeIndex = @enumFromInt(extras[decl.data.extra + 2]);
+                // extras를 visitNode 전에 매번 직접 읽기 (재할당 방지)
+                const name_idx: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
+                const init_idx: NodeIndex = self.readNodeIdx(decl.data.extra, 2);
 
                 if (name_idx.isNone()) continue;
-                const name_node = self.old_ast.getNode(name_idx);
+                const name_node = self.ast.getNode(name_idx);
 
                 if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) {
                     // destructuring → 분해
@@ -131,9 +134,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             // 새 variable_declaration
-            const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const var_extra = try self.new_ast.addExtras(&.{ 0, new_list.start, new_list.len }); // 0 = var
-            return self.new_ast.addNode(.{
+            const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const var_extra = try self.ast.addExtras(&.{ 0, new_list.start, new_list.len }); // 0 = var
+            return self.ast.addNode(.{
                 .tag = .variable_declaration,
                 .span = span,
                 .data = .{ .extra = var_extra },
@@ -147,7 +150,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const left_idx = node.data.binary.left;
             const right_idx = node.data.binary.right;
 
-            const left_node = self.old_ast.getNode(left_idx);
+            const left_node = self.ast.getNode(left_idx);
             const new_right = try self.visitNode(right_idx);
             const temp_span = try es_helpers.makeTempVarSpan(self);
 
@@ -156,7 +159,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // _ref = obj
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-            const init_assign = try self.new_ast.addNode(.{
+            const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = temp_ref, .right = new_right, .flags = 0 } },
@@ -174,8 +177,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
 
             // sequence expression
-            const seq_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            return self.new_ast.addNode(.{
+            const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.ast.addNode(.{
                 .tag = .sequence_expression,
                 .span = span,
                 .data = .{ .list = seq_list },
@@ -184,9 +187,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// object_assignment_target의 각 property를 assignment로 변환.
         fn emitObjectAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
-            const members = self.old_ast.extra_data.items[target.data.list.start .. target.data.list.start + target.data.list.len];
-            for (members) |raw_idx| {
-                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+            const oa_start = target.data.list.start;
+            const oa_len = target.data.list.len;
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < oa_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[oa_start + i_loop];
+                const prop = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (prop.tag == .assignment_target_rest) continue; // rest 미지원
 
@@ -194,12 +201,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 if (key_idx.isNone()) continue;
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                const key_node = self.old_ast.getNode(key_idx);
+                const key_node = self.ast.getNode(key_idx);
                 const new_key = try self.visitNode(key_idx);
                 const access = try es_helpers.makeMemberFromKey(self, ref, new_key, key_node.tag, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
-                    const target_node = try self.new_ast.addNode(.{
+                    const target_node = try self.ast.addNode(.{
                         .tag = .identifier_reference,
                         .span = key_node.span,
                         .data = .{ .string_ref = key_node.data.string_ref },
@@ -213,7 +220,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         break :blk try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
                     } else access;
 
-                    const assign = try self.new_ast.addNode(.{
+                    const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
                         .span = span,
                         .data = .{ .binary = .{ .left = target_node, .right = rhs, .flags = 0 } },
@@ -222,13 +229,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else {
                     // long-form {a: b} 또는 {a: b = 1}
                     const right_idx = prop.data.binary.right;
-                    const right_node = self.old_ast.getNode(right_idx);
+                    const right_node = self.ast.getNode(right_idx);
 
                     if (right_node.tag == .assignment_target_with_default) {
                         const target_node = try self.visitNode(right_node.data.binary.left);
                         const default_val = try self.visitNode(right_node.data.binary.right);
                         const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
-                        const assign = try self.new_ast.addNode(.{
+                        const assign = try self.ast.addNode(.{
                             .tag = .assignment_expression,
                             .span = span,
                             .data = .{ .binary = .{ .left = target_node, .right = rhs, .flags = 0 } },
@@ -236,7 +243,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, assign);
                     } else {
                         const target_node = try self.visitNode(right_idx);
-                        const assign = try self.new_ast.addNode(.{
+                        const assign = try self.ast.addNode(.{
                             .tag = .assignment_expression,
                             .span = span,
                             .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
@@ -249,9 +256,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// array_assignment_target의 각 element를 assignment로 변환.
         fn emitArrayAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
-            const members = self.old_ast.extra_data.items[target.data.list.start .. target.data.list.start + target.data.list.len];
-            for (members, 0..) |raw_idx, idx| {
-                const elem = self.old_ast.getNode(@enumFromInt(raw_idx));
+            const aa_start = target.data.list.start;
+            const aa_len = target.data.list.len;
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var idx: u32 = 0;
+            while (idx < aa_len) : (idx += 1) {
+                const raw_idx = self.ast.extra_data.items[aa_start + idx];
+                const elem = self.ast.getNode(@enumFromInt(raw_idx));
                 if (elem.tag == .elision) continue;
                 if (elem.tag == .assignment_target_rest) continue;
 
@@ -263,19 +274,19 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const target_node = try self.visitNode(elem.data.binary.left);
                     const default_val = try self.visitNode(elem.data.binary.right);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
-                    const eq_check = try self.new_ast.addNode(.{
+                    const eq_check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
                         .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                     });
                     // _ref[idx] 다시 생성 (access는 eq_check에서 소비)
                     const access2 = try makeArrayAccess(self, ref_span, idx, span);
-                    const conditional = try self.new_ast.addNode(.{
+                    const conditional = try self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
                     });
-                    const assign = try self.new_ast.addNode(.{
+                    const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
                         .span = span,
                         .data = .{ .binary = .{ .left = target_node, .right = conditional, .flags = 0 } },
@@ -284,7 +295,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 } else {
                     // target = _ref[idx]
                     const target_node = try self.visitNode(@enumFromInt(raw_idx));
-                    const assign = try self.new_ast.addNode(.{
+                    const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
                         .span = span,
                         .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
@@ -308,46 +319,54 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// { a, b: c, d = 1 } → var a = _ref.a, c = _ref.b, d = _ref.d === void 0 ? 1 : _ref.d
         /// { a, ...rest } → var a = _ref.a, rest = __rest(_ref, ["a"])
         fn emitObjectPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
-            const members = self.old_ast.extra_data.items[pattern.data.list.start .. pattern.data.list.start + pattern.data.list.len];
+            const opd_start = pattern.data.list.start;
+            const opd_len = pattern.data.list.len;
 
             // 1단계: rest가 아닌 property key 이름을 수집 (__rest의 exclude 배열용)
+            // 이 루프는 읽기만 하므로 슬라이스 안전
             var exclude_keys: [64][]const u8 = undefined;
             var exclude_count: usize = 0;
             var rest_binding_idx: ?NodeIndex = null;
 
-            for (members) |raw_idx| {
-                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
-                if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
-                    // rest element의 operand가 바인딩 이름
-                    rest_binding_idx = prop.data.unary.operand;
-                    continue;
-                }
-                if (prop.tag != .binding_property) continue;
-                // key 이름 수집
-                const key_idx_inner = prop.data.binary.left;
-                if (!key_idx_inner.isNone()) {
-                    const key_node_inner = self.old_ast.getNode(key_idx_inner);
-                    if (exclude_count < exclude_keys.len) {
-                        if (key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) {
-                            exclude_keys[exclude_count] = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
-                            exclude_count += 1;
-                        } else if (key_node_inner.tag == .string_literal) {
-                            // 'aria-busy' 같은 string literal key — 따옴표를 제외한 내용
-                            const raw = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
-                            if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
-                                exclude_keys[exclude_count] = raw[1 .. raw.len - 1];
-                            } else {
-                                exclude_keys[exclude_count] = raw;
+            {
+                const members = self.ast.extra_data.items[opd_start .. opd_start + opd_len];
+                for (members) |raw_idx| {
+                    const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
+                        // rest element의 operand가 바인딩 이름
+                        rest_binding_idx = prop.data.unary.operand;
+                        continue;
+                    }
+                    if (prop.tag != .binding_property) continue;
+                    // key 이름 수집
+                    const key_idx_inner = prop.data.binary.left;
+                    if (!key_idx_inner.isNone()) {
+                        const key_node_inner = self.ast.getNode(key_idx_inner);
+                        if (exclude_count < exclude_keys.len) {
+                            if (key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) {
+                                exclude_keys[exclude_count] = self.ast.source[key_node_inner.span.start..key_node_inner.span.end];
+                                exclude_count += 1;
+                            } else if (key_node_inner.tag == .string_literal) {
+                                // 'aria-busy' 같은 string literal key — 따옴표를 제외한 내용
+                                const raw = self.ast.source[key_node_inner.span.start..key_node_inner.span.end];
+                                if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
+                                    exclude_keys[exclude_count] = raw[1 .. raw.len - 1];
+                                } else {
+                                    exclude_keys[exclude_count] = raw;
+                                }
+                                exclude_count += 1;
                             }
-                            exclude_count += 1;
                         }
                     }
                 }
             }
 
             // 2단계: 각 property를 declarator로 변환
-            for (members) |raw_idx| {
-                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < opd_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
+                const prop = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
                     // rest: var rest = __rest(_ref, ["a", "b"])
@@ -365,7 +384,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const value_idx = prop.data.binary.right;
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                const key_node = self.old_ast.getNode(key_idx);
+                const key_node = self.ast.getNode(key_idx);
 
                 const member_access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
 
@@ -373,7 +392,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { a } → var a = _ref.a
                     // symbol_id 전파: linker가 리네이밍한 경우 binding에도 반영되어야 함.
-                    const binding = try self.new_ast.addNode(.{
+                    const binding = try self.ast.addNode(.{
                         .tag = .binding_identifier,
                         .span = key_node.span,
                         .data = .{ .string_ref = key_node.data.string_ref },
@@ -382,7 +401,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
                     try self.scratch.append(self.allocator, decl);
                 } else {
-                    const value_node = self.old_ast.getNode(value_idx);
+                    const value_node = self.ast.getNode(value_idx);
                     if (value_node.tag == .assignment_pattern) {
                         // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
                         const binding = try self.visitNode(value_node.data.binary.left);
@@ -410,10 +429,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// array_pattern의 각 요소를 declarator로 변환.
         /// [x, y] → var x = _ref[0], y = _ref[1]
         fn emitArrayPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
-            const members = self.old_ast.extra_data.items[pattern.data.list.start .. pattern.data.list.start + pattern.data.list.len];
+            const apd_start = pattern.data.list.start;
+            const apd_len = pattern.data.list.len;
 
-            for (members, 0..) |raw_idx, idx| {
-                const elem = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var idx: u32 = 0;
+            while (idx < apd_len) : (idx += 1) {
+                const raw_idx = self.ast.extra_data.items[apd_start + idx];
+                const elem = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (elem.tag == .elision) continue; // 빈 슬롯 스킵
 
@@ -435,12 +458,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const default_val = try self.visitNode(elem.data.binary.right);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
                     const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
-                    const eq_check = try self.new_ast.addNode(.{
+                    const eq_check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
                         .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                     });
-                    const conditional = try self.new_ast.addNode(.{
+                    const conditional = try self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
@@ -466,7 +489,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// _ref.key === void 0 ? default : _ref.key (또는 _ref["key"])
         fn buildDefaulted(self: *Transformer, access: NodeIndex, default_val: NodeIndex, ref_span: Span, key_idx: NodeIndex, key_tag: Node.Tag, span: Span) Transformer.Error!NodeIndex {
             const void_zero = try es_helpers.makeVoidZero(self, span);
-            const eq_check = try self.new_ast.addNode(.{
+            const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
@@ -475,7 +498,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
             const new_key = try self.visitNode(key_idx);
             const access2 = try es_helpers.makeMemberFromKey(self, ref2, new_key, key_tag, span);
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
                 .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
@@ -527,8 +550,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 buf[0] = '"';
                 @memcpy(buf[1 .. 1 + key.len], key);
                 buf[1 + key.len] = '"';
-                const str_span = try self.new_ast.addString(buf[0 .. key.len + 2]);
-                const str_node = try self.new_ast.addNode(.{
+                const str_span = try self.ast.addString(buf[0 .. key.len + 2]);
+                const str_node = try self.ast.addNode(.{
                     .tag = .string_literal,
                     .span = str_span,
                     .data = .{ .string_ref = str_span },
@@ -536,8 +559,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, str_node);
             }
 
-            const arr_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const arr_node = try self.new_ast.addNode(.{
+            const arr_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const arr_node = try self.ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
                 .data = .{ .list = arr_list },

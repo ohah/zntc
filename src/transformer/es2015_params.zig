@@ -31,20 +31,20 @@ pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
         /// 파라미터 목록에서 default/rest 파라미터가 있는지 검사한다.
         pub fn hasDefaultOrRest(self: *const Transformer, params_start: u32, params_len: u32) bool {
-            const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
+            const old_params = self.ast.extra_data.items[params_start .. params_start + params_len];
             for (old_params) |raw_idx| {
-                const param = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const param = self.ast.getNode(@enumFromInt(raw_idx));
                 if (param.tag == .spread_element or param.tag == .rest_element) return true;
                 // destructuring 파라미터도 ES5 변환 필요
                 if (param.tag == .object_pattern or param.tag == .array_pattern) return true;
                 if (param.tag == .formal_parameter) {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const pe = param.data.extra;
                     const default_val: NodeIndex = @enumFromInt(extras[pe + 2]);
                     if (!default_val.isNone()) return true;
                     // formal_parameter 안의 destructuring 패턴도 체크
                     const pattern_idx: NodeIndex = @enumFromInt(extras[pe]);
-                    const pattern_node = self.old_ast.getNode(pattern_idx);
+                    const pattern_node = self.ast.getNode(pattern_idx);
                     if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) return true;
                 }
                 if (param.tag == .assignment_pattern) return true;
@@ -63,8 +63,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
             params_len: u32,
             span: Span,
         ) Transformer.Error!LowerResult {
-            const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-
             const param_scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(param_scratch_top);
 
@@ -72,8 +70,11 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             var param_index: usize = 0; // arguments index tracking
 
-            for (old_params) |raw_idx| {
-                const param = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < params_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[params_start + i_loop];
+                const param = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (param.tag == .spread_element or param.tag == .rest_element) {
                     // rest parameter: ...args → var args = [].slice.call(arguments, N)
@@ -87,12 +88,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (param.tag == .formal_parameter) {
                     // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const pe = param.data.extra;
-                    const extras = self.old_ast.extra_data.items;
-                    const pattern_idx: NodeIndex = @enumFromInt(extras[pe]);
-                    const default_idx: NodeIndex = @enumFromInt(extras[pe + 2]);
+                    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+                    const pattern_idx: NodeIndex = self.readNodeIdx(pe, 0);
+                    const default_idx: NodeIndex = self.readNodeIdx(pe, 2);
 
                     if (!default_idx.isNone()) {
-                        const pat_node = self.old_ast.getNode(pattern_idx);
+                        const pat_node = self.ast.getNode(pattern_idx);
                         if (pat_node.tag == .object_pattern or pat_node.tag == .array_pattern) {
                             // destructuring + default → temp 변수 경유
                             const result = try buildDestructuringDefault(self, pattern_idx, default_idx, &body_stmts, span);
@@ -111,7 +112,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
                 if (param.tag == .assignment_pattern) {
                     // assignment_pattern: binary { left=pattern, right=default }
-                    const pattern_node = self.old_ast.getNode(param.data.binary.left);
+                    const pattern_node = self.ast.getNode(param.data.binary.left);
                     if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
                         const result = try buildDestructuringDefault(self, param.data.binary.left, param.data.binary.right, &body_stmts, span);
                         try self.scratch.append(self.allocator, result);
@@ -128,12 +129,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
                 // destructuring 파라미터 (default 없음): temp 변수 경유
                 // function View({ ref, ...props }) → function View(_param) { var {ref, ...props} = _param; }
-                const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const param_node = self.ast.getNode(@enumFromInt(raw_idx));
                 const pattern_idx_raw = if (param_node.tag == .formal_parameter)
-                    self.old_ast.extra_data.items[param_node.data.extra]
+                    self.ast.extra_data.items[param_node.data.extra]
                 else
                     raw_idx;
-                const pattern_node = self.old_ast.getNode(@enumFromInt(pattern_idx_raw));
+                const pattern_node = self.ast.getNode(@enumFromInt(pattern_idx_raw));
 
                 if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
                     const result = try buildDestructuringParam(self, @enumFromInt(pattern_idx_raw), &body_stmts, span);
@@ -150,7 +151,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 param_index += 1;
             }
 
-            const new_params = try self.new_ast.addNodeList(self.scratch.items[param_scratch_top..]);
+            const new_params = try self.ast.addNodeList(self.scratch.items[param_scratch_top..]);
 
             return .{
                 .new_params = new_params,
@@ -208,7 +209,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            const pattern = self.old_ast.getNode(pattern_idx);
+            const pattern = self.ast.getNode(pattern_idx);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
             try es2015_destruct.emitPatternDeclarators(self, pattern, temp_span, span);
 
@@ -229,7 +230,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             // x === void 0
             const pattern_ref = try copyIdentifier(self, pattern);
-            const eq_check = try self.new_ast.addNode(.{
+            const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{
@@ -241,7 +242,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             // x === void 0 ? default_value : x
             const pattern_ref2 = try copyIdentifier(self, pattern);
-            const conditional = try self.new_ast.addNode(.{
+            const conditional = try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
                 .data = .{ .ternary = .{
@@ -253,14 +254,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             // x = (conditional)
             const pattern_ref3 = try copyIdentifier(self, pattern);
-            const assign = try self.new_ast.addNode(.{
+            const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = pattern_ref3, .right = conditional, .flags = 0 } },
             });
 
             // expression_statement
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -270,8 +271,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
         /// var rest = [].slice.call(arguments, N)
         fn buildRestSlice(self: *Transformer, binding: NodeIndex, start_index: usize, span: Span) Transformer.Error!NodeIndex {
             // [] (empty array)
-            const empty_arr_list = try self.new_ast.addNodeList(&.{});
-            const empty_arr = try self.new_ast.addNode(.{
+            const empty_arr_list = try self.ast.addNodeList(&.{});
+            const empty_arr = try self.ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
                 .data = .{ .list = empty_arr_list },
@@ -301,8 +302,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
         /// identifier 노드를 복제한다 (같은 이름의 새 노드).
         fn copyIdentifier(self: *Transformer, node_idx: NodeIndex) Transformer.Error!NodeIndex {
-            const node = self.new_ast.getNode(node_idx);
-            return self.new_ast.addNode(.{
+            const node = self.ast.getNode(node_idx);
+            return self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = node.span,
                 .data = .{ .string_ref = node.data.string_ref },
