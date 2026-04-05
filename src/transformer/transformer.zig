@@ -508,7 +508,8 @@ pub const Transformer = struct {
             .decorator,
             // JSX
             .jsx_spread_attribute,
-            .jsx_expression_container => {
+            .jsx_expression_container,
+            => {
                 if (self.options.jsx_transform) {
                     return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXExpressionContainer(self, node);
                 }

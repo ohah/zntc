@@ -3578,10 +3578,11 @@ test "JSX automatic: self-closing no children" {
 }
 
 test "JSX automatic: custom import source" {
-    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{
+        .jsx_transform = true,
         .jsx_runtime = .automatic,
         .jsx_import_source = "preact",
-    }, ".tsx");
+    }, .{}, ".tsx");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"preact/jsx-runtime\"") != null);
 }
@@ -3611,11 +3612,11 @@ test "JSX dev: isStaticChildren false for single child" {
 }
 
 test "JSX classic: custom factory" {
-    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
-        .minify_whitespace = true,
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{
+        .jsx_transform = true,
         .jsx_factory = "h",
         .jsx_fragment = "Fragment",
-    }, ".tsx");
+    }, .{ .minify_whitespace = true }, ".tsx");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "h(\"div\"") != null);
     // React.createElement가 아닌 h 사용
@@ -3623,11 +3624,11 @@ test "JSX classic: custom factory" {
 }
 
 test "JSX classic: custom fragment factory" {
-    var r = try e2eFull(std.testing.allocator, "const x = <>hello</>;", .{}, .{
-        .minify_whitespace = true,
+    var r = try e2eFull(std.testing.allocator, "const x = <>hello</>;", .{
+        .jsx_transform = true,
         .jsx_factory = "h",
         .jsx_fragment = "Fragment",
-    }, ".tsx");
+    }, .{ .minify_whitespace = true }, ".tsx");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "h(Fragment,") != null);
 }
@@ -3689,10 +3690,11 @@ test "JSX automatic: classic mode does NOT inject import" {
 
 test "JSX automatic: no JSX usage means no import" {
     // JSX가 없는 파일에서는 import 미주입
-    var r = try e2eFull(std.testing.allocator, "const x = 42;", .{}, .{
+    var r = try e2eFull(std.testing.allocator, "const x = 42;", .{
+        .jsx_transform = true,
         .jsx_runtime = .automatic,
         .jsx_import_source = "react",
-    }, ".tsx");
+    }, .{}, ".tsx");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "import {") == null);
 }
@@ -3723,11 +3725,12 @@ test "JSX dev: empty element has correct source info" {
 }
 
 test "JSX dev: custom import source" {
-    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{}, .{
+    var r = try e2eFull(std.testing.allocator, "const x = <div />;", .{
+        .jsx_transform = true,
         .jsx_runtime = .automatic_dev,
         .jsx_import_source = "preact",
         .jsx_filename = "app.tsx",
-    }, ".tsx");
+    }, .{}, ".tsx");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"preact/jsx-dev-runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "fileName: \"app.tsx\"") != null);

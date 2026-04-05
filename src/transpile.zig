@@ -221,11 +221,7 @@ pub fn transpileWithCallback(
         .platform = options.platform,
         .source_root = options.source_root,
         .sources_content = options.sources_content,
-        .jsx_runtime = options.jsx_runtime,
-        .jsx_factory = options.jsx_factory,
-        .jsx_fragment = options.jsx_fragment,
-        .jsx_import_source = options.jsx_import_source,
-        .jsx_filename = file_path,
+        // JSX: Transformer가 이미 call_expression으로 lowering 완료. codegen에 JSX 옵션 불필요.
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {

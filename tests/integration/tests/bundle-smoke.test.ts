@@ -1780,8 +1780,10 @@ describe("JSX classic 모드 번들러 rename", () => {
 
     const output = readFileSync(outFile, "utf-8");
 
-    // member expression이 올바르게 출력되어야 함 (namespace.Button 형태)
-    const memberMatch = output.match(/React\.createElement\((\w+)\.Button/);
-    expect(memberMatch).not.toBeNull();
+    // Transformer가 JSX를 lowering 후 codegen의 ns_member_rewrites가
+    // namespace.Button → Button으로 인라인하므로, Button이 직접 참조되어야 함.
+    // (namespace import가 scope-hoisted 번들에서 인라인되는 것이 정상 동작)
+    const inlinedMatch = output.match(/React\.createElement\(Button[\s,]/);
+    expect(inlinedMatch).not.toBeNull();
   });
 });

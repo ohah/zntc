@@ -715,16 +715,25 @@ pub fn emitDevModule(
     defer emit_arena.deinit();
     const arena_alloc = emit_arena.allocator();
 
+    // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환
+    const jsx_active_dev = ast.has_jsx;
     var transformer = Transformer.init(arena_alloc, ast, .{
         .react_refresh = options.react_refresh,
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .unsupported = options.unsupported,
+        .jsx_transform = jsx_active_dev,
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = module.path,
     });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
     }
+    transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
 
     // Dev mode 메타데이터: rename 없음, __zts_require preamble, __zts_exports epilogue
@@ -1685,18 +1694,30 @@ pub fn emitModule(
     defer emit_arena.deinit();
     const arena_alloc = emit_arena.allocator();
 
-    // Transformer: TS 타입 스트리핑, define 치환, decorator 변환 등
+    // Transformer: TS 타입 스트리핑, define 치환, decorator 변환, JSX lowering 등
+    // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환.
+    // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
+    // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
+    const jsx_active = ast.has_jsx;
     var transformer = Transformer.init(arena_alloc, ast, .{
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .unsupported = options.unsupported,
+        .jsx_transform = jsx_active,
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = module.path,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 new_ast 기준으로 재매핑
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
     }
+    // jsxDEV source info 계산용 line offsets
+    transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
 
     // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
@@ -1869,12 +1890,8 @@ pub fn emitModule(
         .sources_content = options.sources_content,
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
-        // JSX 런타임 설정
-        .jsx_runtime = options.jsx_runtime,
-        .jsx_factory = options.jsx_factory,
-        .jsx_fragment = options.jsx_fragment,
-        .jsx_import_source = options.jsx_import_source,
-        .jsx_filename = module.path,
+        // JSX: Transformer가 이미 call_expression으로 lowering 완료.
+        // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -2498,11 +2515,6 @@ fn emitEsmWrappedModule(
             .linking_metadata = cg_linking,
             .replace_import_meta = options.format != .esm,
             .platform = options.platform,
-            .jsx_runtime = options.jsx_runtime,
-            .jsx_factory = options.jsx_factory,
-            .jsx_fragment = options.jsx_fragment,
-            .jsx_import_source = options.jsx_import_source,
-            .jsx_filename = module.path,
         });
         const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
         try wrapped.appendSlice(allocator, hoisted_code);
@@ -2642,11 +2654,6 @@ fn emitEsmWrappedModule(
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
         .keep_names = options.keep_names,
-        .jsx_runtime = options.jsx_runtime,
-        .jsx_factory = options.jsx_factory,
-        .jsx_fragment = options.jsx_fragment,
-        .jsx_import_source = options.jsx_import_source,
-        .jsx_filename = module.path,
     });
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
