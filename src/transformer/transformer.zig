@@ -506,6 +506,7 @@ pub const Transformer = struct {
             .yield_expression,
             .rest_element,
             .decorator,
+            => self.visitUnaryNode(node),
             // JSX
             .jsx_spread_attribute,
             .jsx_expression_container,
