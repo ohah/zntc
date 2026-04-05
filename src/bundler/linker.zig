@@ -934,11 +934,11 @@ pub const Linker = struct {
 
                 const canonical_mod = @intFromEnum(rec.resolved);
 
-                // __esm 모듈에서 CJS 타겟 import: body의 require_rewrites가
+                // __esm 모듈에서 CJS 타겟 또는 self-import: body의 require_rewrites가
                 // 할당문 + init 호출을 처리하므로 preamble 생성 skip.
                 // __esm → __esm은 live binding (preamble init + canonical rename) 사용.
                 if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
-                    self.modules[canonical_mod].wrap_kind == .cjs)
+                    (self.modules[canonical_mod].wrap_kind == .cjs or canonical_mod == module_index))
                 {
                     continue;
                 }
@@ -1108,9 +1108,10 @@ pub const Linker = struct {
                     if (tidx >= self.modules.len) continue;
                     if (self.modules[tidx].wrap_kind == .none) {
                         try hoisted_specifiers.put(rec.specifier, {});
-                    } else if (self.modules[tidx].wrap_kind == .esm) {
+                    } else if (self.modules[tidx].wrap_kind == .esm and tidx != module_index) {
                         // __esm → __esm live binding: named import만 skip.
                         // namespace import는 body codegen이 exports_xxx 할당을 생성해야 함.
+                        // self-import는 제외 (순환 자기 참조 시 body codegen이 처리).
                         const has_namespace = for (m.import_bindings) |ib| {
                             if (ib.import_record_index == rec_i and ib.kind == .namespace)
                                 break true;
