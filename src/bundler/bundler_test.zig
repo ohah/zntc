@@ -12926,3 +12926,194 @@ test "JSX automatic: custom import source" {
     // (preact에 react가 부분 문자열로 포함되므로, require("react/jsx-runtime") 정확히 검사)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react/jsx-runtime\")") == null);
 }
+
+test "JSX automatic: ESM-wrapped module with CJS jsx-runtime — synthetic binding not skipped" {
+    // ESM-wrapped 모듈(require()로 소비되는 ESM)에서 CJS jsx-runtime import 시
+    // synthetic JSX binding이 linker의 ESM+CJS skip에 걸리지 않고 preamble에 emit되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // app.tsx: ESM syntax (export) + JSX → require로 소비되면 ESM-wrapped
+    try writeFile(tmp.dir, "app.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+    // entry.ts: require로 app.tsx를 소비 → app.tsx가 ESM-wrapped
+    try writeFile(tmp.dir, "entry.ts",
+        \\const app = require('./app.tsx');
+        \\console.log(app.App());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM-wrapped 모듈임을 확인
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") != null);
+    // _jsxDEV 바인딩이 생성되어야 함 (ESM+CJS skip에 걸리지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react/jsx-dev-runtime") != null);
+}
+
+test "JSX automatic: multiple modules sharing same jsx-runtime" {
+    // 여러 모듈이 같은 jsx-runtime을 import할 때, 각 모듈에 바인딩이 독립적으로 생성되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "comp_a.tsx",
+        \\export function CompA() { return <span>A</span>; }
+    );
+    try writeFile(tmp.dir, "comp_b.tsx",
+        \\export function CompB() { return <span>B</span>; }
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { CompA } from './comp_a.tsx';
+        \\import { CompB } from './comp_b.tsx';
+        \\export function App() { return <div><CompA /><CompB /></div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // jsx-runtime이 번들에 참조됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react/jsx-runtime") != null);
+    // 모든 컴포넌트가 _jsx로 변환됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(\"span\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(CompA") != null or
+        std.mem.indexOf(u8, result.output, "_jsx(CompB") != null);
+    // React.createElement가 아닌 _jsx 사용
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createElement") == null);
+}
+
+test "JSX automatic: fragment syntax uses _Fragment" {
+    // <> </> fragment 구문이 _Fragment로 변환되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <><span>A</span><span>B</span></>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // _Fragment가 사용되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_Fragment") != null);
+    // _jsxs (static children — 여러 자식)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxs(") != null);
+}
+
+test "JSX automatic-dev: source location info included" {
+    // --jsx-dev 모드에서 fileName, lineNumber, columnNumber가 포함되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // dev 모드: 소스 위치 정보 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "fileName") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "lineNumber") != null);
+}
+
+test "JSX automatic: mixed JSX and non-JSX modules" {
+    // JSX가 있는 모듈에만 jsx-runtime import가 주입되고, 없는 모듈에는 주입되지 않아야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts",
+        \\export function add(a: number, b: number) { return a + b; }
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { add } from './util.ts';
+        \\export function App() { return <div>{add(1, 2)}</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // entry.tsx에서 _jsx 사용
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(\"div\"") != null);
+    // util.ts의 add 함수가 정상 번들됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "add(") != null);
+}
+
+test "JSX automatic: re-export of JSX component" {
+    // JSX 컴포넌트를 re-export하는 배럴 파일이 정상 동작해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "button.tsx",
+        \\export function Button() { return <button>Click</button>; }
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\export { Button } from './button.tsx';
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { Button } from './index.ts';
+        \\export function App() { return <div><Button /></div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 모듈 모두 _jsx 사용 (button.tsx + entry.tsx)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(\"button\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(Button") != null);
+}
