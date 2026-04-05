@@ -779,20 +779,20 @@ pub const Linker = struct {
 
     /// AST에서 import/export 노드를 식별하여 스킵 비트셋을 생성한다.
     /// buildMetadataForAst와 buildDevMetadataForAst에서 공유.
-    fn buildSkipNodes(allocator: std.mem.Allocator, new_ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
-        const node_count = new_ast.nodes.items.len;
+    fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
+        const node_count = ast.nodes.items.len;
         var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, node_count);
         errdefer skip_nodes.deinit();
 
-        for (new_ast.nodes.items, 0..) |node, node_idx| {
+        for (ast.nodes.items, 0..) |node, node_idx| {
             switch (node.tag) {
                 // 래핑 모듈: import는 emitImportCJS가 처리 → skip하지 않음.
                 // scope hoisted 타겟 import만 import_bindings 루프에서 개별 skip.
                 .import_declaration => if (skip_imports) skip_nodes.set(node_idx),
                 .export_named_declaration => {
                     const e = node.data.extra;
-                    if (e + 3 < new_ast.extra_data.items.len) {
-                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
+                    if (e + 3 < ast.extra_data.items.len) {
+                        const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
                         if (decl_idx.isNone()) {
                             skip_nodes.set(node_idx); // export { } 또는 re-export
                         }
@@ -808,11 +808,11 @@ pub const Linker = struct {
         return skip_nodes;
     }
 
-    /// transformer 이후의 new_ast를 기반으로 LinkingMetadata를 생성한다.
-    /// skip_nodes와 renames가 new_ast의 노드 인덱스와 일치.
+    /// transformer 이후의 ast를 기반으로 LinkingMetadata를 생성한다.
+    /// skip_nodes와 renames가 ast의 노드 인덱스와 일치.
     pub fn buildMetadataForAst(
         self: *const Linker,
-        new_ast: *const Ast,
+        ast: *const Ast,
         module_index: u32,
         is_entry: bool,
         override_symbol_ids: ?[]const ?u32,
@@ -833,7 +833,7 @@ pub const Linker = struct {
         // semantic 있으면 import_bindings 처리 경로로 진행하여
         // scope hoisted ESM 타겟에 대한 rename/preamble도 생성.
         if (m.wrap_kind.isWrapped() and m.semantic == null) {
-            const node_count = new_ast.nodes.items.len;
+            const node_count = ast.nodes.items.len;
             return .{
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
@@ -848,7 +848,7 @@ pub const Linker = struct {
         // 래핑 모듈: import를 skip하지 않음 (emitImportCJS가 처리).
         // scope hoisted 타겟 import만 import_bindings 루프에서 개별 skip.
         const skip_imports = !m.wrap_kind.isWrapped();
-        var skip_nodes = try buildSkipNodes(self.allocator, new_ast, skip_imports);
+        var skip_nodes = try buildSkipNodes(self.allocator, ast, skip_imports);
         errdefer skip_nodes.deinit();
 
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
@@ -1004,7 +1004,7 @@ pub const Linker = struct {
 
                     // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
                     // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
-                    const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id)) or
+                    const need_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, @intCast(ns_sym_id)) or
                         exported_locals.contains(ib.local_name);
                     try self.registerNamespaceRewrites(
                         &ns_rewrite_list,
@@ -1143,15 +1143,15 @@ pub const Linker = struct {
                 }
                 // AST에서 해당 specifier의 import_declaration 노드를 skip
                 if (hoisted_specifiers.count() > 0) {
-                    for (new_ast.nodes.items, 0..) |inode, inode_idx| {
+                    for (ast.nodes.items, 0..) |inode, inode_idx| {
                         if (inode.tag != .import_declaration) continue;
                         const ie = inode.data.extra;
-                        if (ie + 3 > new_ast.extra_data.items.len) continue;
-                        const source_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[ie + 2]);
+                        if (ie + 3 > ast.extra_data.items.len) continue;
+                        const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
                         if (source_idx.isNone()) continue;
-                        const src_node = new_ast.getNode(source_idx);
+                        const src_node = ast.getNode(source_idx);
                         if (src_node.tag != .string_literal) continue;
-                        const raw = new_ast.source[src_node.data.string_ref.start..src_node.data.string_ref.end];
+                        const raw = ast.source[src_node.data.string_ref.start..src_node.data.string_ref.end];
                         const spec = Ast.stripStringQuotes(raw);
                         if (hoisted_specifiers.contains(spec)) {
                             skip_nodes.set(inode_idx);
@@ -1421,7 +1421,7 @@ pub const Linker = struct {
     ///   - final_exports: 모든 모듈에 `__zts_exports.x = x;` 형태 (entry만이 아닌 전체)
     pub fn buildDevMetadataForAst(
         self: *const Linker,
-        new_ast: *const Ast,
+        ast: *const Ast,
         module_index: u32,
     ) !LinkingMetadata {
         if (module_index >= self.modules.len) {
@@ -1438,7 +1438,7 @@ pub const Linker = struct {
 
         // CJS 래핑 모듈은 dev mode에서도 기존대로 유지
         if (m.wrap_kind == .cjs) {
-            const node_count = new_ast.nodes.items.len;
+            const node_count = ast.nodes.items.len;
             return .{
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
@@ -1449,7 +1449,7 @@ pub const Linker = struct {
             };
         }
 
-        var skip_nodes = try buildSkipNodes(self.allocator, new_ast, true);
+        var skip_nodes = try buildSkipNodes(self.allocator, ast, true);
         errdefer skip_nodes.deinit();
 
         // 2. __zts_require preamble 생성
@@ -1908,19 +1908,19 @@ pub const Linker = struct {
 
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
-    fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
-        const node_count = new_ast.nodes.items.len;
+    fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
+        const node_count = ast.nodes.items.len;
         if (node_count == 0) return false;
 
         // 1. member access의 object 위치를 비트셋으로 수집 — O(N) 스캔, O(1) 조회
         var safe = std.DynamicBitSet.initEmpty(allocator, node_count) catch return true;
         defer safe.deinit();
 
-        for (new_ast.nodes.items) |node| {
+        for (ast.nodes.items) |node| {
             if (node.tag == .static_member_expression or node.tag == .private_field_expression) {
                 const e = node.data.extra;
-                if (new_ast.hasExtra(e, 2)) {
-                    const obj_idx = new_ast.readExtra(e, 0);
+                if (ast.hasExtra(e, 2)) {
+                    const obj_idx = ast.readExtra(e, 0);
                     if (obj_idx < node_count) safe.set(obj_idx);
                 }
             }
@@ -1932,7 +1932,7 @@ pub const Linker = struct {
                 if (sid == ns_sym_id) {
                     // import specifier/binding 선언 위치는 skip
                     if (node_i < node_count) {
-                        const tag = new_ast.nodes.items[node_i].tag;
+                        const tag = ast.nodes.items[node_i].tag;
                         if (tag == .import_namespace_specifier or tag == .import_default_specifier or
                             tag == .import_specifier or tag == .binding_identifier) continue;
                     }

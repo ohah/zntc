@@ -1741,7 +1741,7 @@ pub fn emitModule(
             transformer.symbol_ids.items
         else
             null;
-        // new_ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 new_ast와 일치)
+        // ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 ast와 일치)
         var md = try l.buildMetadataForAst(
             &transformer.ast,
             @intFromEnum(module.index),
@@ -2074,7 +2074,7 @@ fn emitCjsWrapper(allocator: std.mem.Allocator, path: []const u8, source: []cons
 fn propagateCrossModulePurity(
     linker: *const Linker,
     module: *const Module,
-    new_ast: *Ast,
+    ast: *Ast,
     symbol_ids: []const ?u32,
     allocator: std.mem.Allocator,
 ) void {
@@ -2130,28 +2130,28 @@ fn propagateCrossModulePurity(
 
     if (!has_any_pure) return;
 
-    // 2단계: new_ast의 call/new expression 중 callee가 pure import이면 is_pure 설정
+    // 2단계: ast의 call/new expression 중 callee가 pure import이면 is_pure 설정
     const CallFlags = @import("../parser/ast.zig").CallFlags;
 
-    for (new_ast.nodes.items) |node| {
+    for (ast.nodes.items) |node| {
         if (node.tag != .call_expression and node.tag != .new_expression) continue;
 
         const e = node.data.extra;
-        if (!new_ast.hasExtra(e, 3)) continue;
+        if (!ast.hasExtra(e, 3)) continue;
 
-        const callee_idx = new_ast.readExtraNode(e, 0);
+        const callee_idx = ast.readExtraNode(e, 0);
         if (callee_idx.isNone()) continue;
         const callee_ni = @intFromEnum(callee_idx);
 
-        if (callee_ni >= new_ast.nodes.items.len) continue;
-        if (new_ast.nodes.items[callee_ni].tag != .identifier_reference) continue;
+        if (callee_ni >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[callee_ni].tag != .identifier_reference) continue;
 
         if (callee_ni >= symbol_ids.len) continue;
         const sym_idx = symbol_ids[callee_ni] orelse continue;
         if (sym_idx >= sym_count) continue;
 
         if (pure_flags[sym_idx]) {
-            new_ast.extra_data.items[e + 3] |= CallFlags.is_pure;
+            ast.extra_data.items[e + 3] |= CallFlags.is_pure;
         }
     }
 }

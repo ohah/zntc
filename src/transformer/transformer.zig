@@ -4,7 +4,7 @@
 //!
 //! 작동 원리:
 //!   1. 파서 AST를 cloneForTransformer()로 복제
-//!   2. 파서 노드(0..transformer_node_start-1)를 읽기 전용으로 탐색
+//!   2. 파서 노드(0..parser_node_count-1)를 읽기 전용으로 탐색
 //!   3. 변환된 노드를 같은 AST 끝에 append
 //!   4. string_table이 하나이므로 파서에서 만든 합성 이름도 codegen에서 읽을 수 있음
 //!
@@ -132,9 +132,12 @@ pub const RuntimeHelpers = packed struct(u16) {
 /// // t.ast 에 변환된 AST가 들어있다
 /// ```
 pub const Transformer = struct {
-    /// 통합 AST. 파서 노드(0..transformer_node_start-1)는 읽기 전용,
-    /// 트랜스포머가 추가한 노드(transformer_node_start..)는 append-only.
+    /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
+    /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
     ast: Ast,
+
+    /// 파서 노드 수. transform() 시작 시 루트 인덱스(parser_node_count - 1) 계산에 사용.
+    parser_node_count: u32,
 
     /// 설정
     options: TransformOptions,
@@ -289,6 +292,7 @@ pub const Transformer = struct {
 
         var self: Transformer = .{
             .ast = cloned_ast,
+            .parser_node_count = @intCast(source_ast.nodes.items.len),
             .options = opts,
             .allocator = allocator,
             .scratch = .empty,
@@ -312,7 +316,7 @@ pub const Transformer = struct {
     }
 
     /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
-    /// 파서 노드 영역(0..transformer_node_start-1)에 symbol_id를 채운다.
+    /// 파서 노드 영역(0..parser_node_count-1)에 symbol_id를 채운다.
     pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
         try self.symbol_ids.appendSlice(self.allocator, analyzer_symbol_ids);
     }
@@ -334,8 +338,8 @@ pub const Transformer = struct {
             }
         }
 
-        // 파서의 마지막 노드가 루트 (program). transformer_node_start - 1.
-        const root_idx: NodeIndex = @enumFromInt(self.ast.transformer_node_start - 1);
+        // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
+        const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
         const saved_temp_counter = self.temp_var_counter;
         var root = try self.visitNode(root_idx);
 
