@@ -1992,6 +1992,23 @@ test "ES2015: arrow destructuring with rename lowered" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
 }
 
+test "ES2015: __rest includes string literal keys in exclude list" {
+    var r = try e2eTarget(std.testing.allocator, "var f=({'aria-busy':ariaBusy,style,...rest})=>rest;", .es5);
+    defer r.deinit();
+    // 'aria-busy'가 __rest 제외 목록에 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-busy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"style\"") != null);
+}
+
+test "ES2015: __rest with multiple string literal keys" {
+    var r = try e2eTarget(std.testing.allocator, "var f=({ref:fwd,'aria-busy':ab,'aria-label':al,style,...rest})=>rest;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"ref\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-busy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-label\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"style\"") != null);
+}
+
 test "ES2015: arrow default param lowered" {
     var r = try e2eTarget(std.testing.allocator, "var f=(x=1)=>x;", .es5);
     defer r.deinit();

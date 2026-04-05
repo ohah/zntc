@@ -327,11 +327,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx_inner = prop.data.binary.left;
                 if (!key_idx_inner.isNone()) {
                     const key_node_inner = self.old_ast.getNode(key_idx_inner);
-                    if ((key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) and
-                        exclude_count < exclude_keys.len)
-                    {
-                        exclude_keys[exclude_count] = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
-                        exclude_count += 1;
+                    if (exclude_count < exclude_keys.len) {
+                        if (key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) {
+                            exclude_keys[exclude_count] = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
+                            exclude_count += 1;
+                        } else if (key_node_inner.tag == .string_literal) {
+                            // 'aria-busy' 같은 string literal key — 따옴표를 제외한 내용
+                            const raw = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
+                            if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
+                                exclude_keys[exclude_count] = raw[1 .. raw.len - 1];
+                            } else {
+                                exclude_keys[exclude_count] = raw;
+                            }
+                            exclude_count += 1;
+                        }
                     }
                 }
             }
