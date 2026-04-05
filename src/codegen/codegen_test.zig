@@ -4136,3 +4136,159 @@ test "JSX automatic: no key no fallback" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement(") == null);
 }
+
+// ============================================================
+// JSX Transform 리팩터링 방어 테스트
+// codegen의 JSX 변환이 별도 패스로 이동해도 동일한 출력을 보장.
+// ============================================================
+
+test "JSX refactor guard: automatic — element with props and children" {
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <div id="app" className="main"><span>hello</span></div>;
+    );
+    defer r.deinit();
+    // single child (span) → _jsx
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id: \"app\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "className: \"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"span\"") != null);
+}
+
+test "JSX refactor guard: automatic — self-closing with no props" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <br />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"br\", {})") != null);
+}
+
+test "JSX refactor guard: automatic — component with key" {
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <Item key="k1" value={42} />;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(Item") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value: 42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", \"k1\")") != null);
+}
+
+test "JSX refactor guard: automatic — fragment with multiple children" {
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <><div>A</div><div>B</div></>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxs(_Fragment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: [") != null);
+}
+
+test "JSX refactor guard: automatic — single text child" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <p>hello world</p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"p\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: \"hello world\"") != null);
+}
+
+test "JSX refactor guard: automatic — expression child" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div>{count}</div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: count") != null);
+}
+
+test "JSX refactor guard: automatic — spread props" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div {...props} extra={1} />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "extra: 1") != null);
+}
+
+test "JSX refactor guard: dev — source info and isStatic" {
+    var r = try e2eJSXDev(std.testing.allocator,
+        \\const x = <div><span>A</span><span>B</span></div>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxDEV(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", true, {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "fileName") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "lineNumber") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", this)") != null);
+}
+
+test "JSX refactor guard: dev — single child isStatic false" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div><span /></div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsxDEV(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ", false, {") != null);
+}
+
+test "JSX refactor guard: key after spread — createElement fallback" {
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <Comp {...props} key="k">child</Comp>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_createElement(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "key: \"k\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(") == null);
+}
+
+test "JSX refactor guard: classic — React.createElement" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div id=\"a\"><span>text</span></div>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement(\"div\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id:\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.createElement(\"span\"") != null);
+}
+
+test "JSX refactor guard: classic — fragment" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <><div /><span /></>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.Fragment") != null);
+}
+
+test "JSX refactor guard: HTML entity in automatic mode" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <p>&amp; &lt; &euro;</p>;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: \"& < ") != null);
+}
+
+test "JSX refactor guard: multiline text normalization in automatic" {
+    var r = try e2eJSXAutomatic(std.testing.allocator,
+        \\const x = <p>line one
+        \\  line two</p>;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "children: \"line one line two\"") != null);
+}
+
+test "JSX refactor guard: import statement — automatic" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <div />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import { jsx as _jsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "react/jsx-runtime") != null);
+}
+
+test "JSX refactor guard: import statement — dev" {
+    var r = try e2eJSXDev(std.testing.allocator, "const x = <div />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import { jsxDEV as _jsxDEV") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "react/jsx-dev-runtime") != null);
+}
+
+test "JSX refactor guard: import statement — createElement fallback" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <A {...p} key=\"k\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import { createElement as _createElement") != null);
+}
+
+test "JSX refactor guard: member expression tag" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <Foo.Bar baz={1} />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(Foo.Bar") != null);
+}
+
+test "JSX refactor guard: boolean and null props" {
+    var r = try e2eJSXAutomatic(std.testing.allocator, "const x = <input disabled />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"input\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "disabled: true") != null);
+}
