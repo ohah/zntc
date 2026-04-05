@@ -107,7 +107,10 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 }
 
 fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eFull(allocator, source, .{}, .{ .minify_whitespace = true }, ".tsx");
+    return e2eFull(allocator, source, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+    }, .{ .minify_whitespace = true }, ".tsx");
 }
 
 /// 풀 옵션 e2e. ext로 확장자 지정 (".ts" 기본, ".tsx"면 JSX 모드).
@@ -124,10 +127,23 @@ fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: 
     _ = try parser.parse();
 
     var t = Transformer.init(allocator, &parser.ast, t_options);
+    t.line_offsets = scanner.line_offsets.items;
     const root = try t.transform();
 
     var cg = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
-    const output = try cg.generate(root);
+    const raw_output = try cg.generate(root);
+
+    // JSX import prepend (transformer가 JSX lowering 수행한 경우)
+    const output = if (t.jsx_import_info.hasImports()) blk: {
+        const is_dev = t.options.jsx_runtime == .automatic_dev;
+        if (t.jsx_import_info.buildImportString(allocator, t.options.jsx_import_source, is_dev)) |import_str| {
+            var combined: std.ArrayList(u8) = .empty;
+            try combined.ensureTotalCapacity(allocator, import_str.len + raw_output.len);
+            combined.appendSliceAssumeCapacity(import_str);
+            combined.appendSliceAssumeCapacity(raw_output);
+            break :blk combined.items;
+        } else break :blk raw_output;
+    } else raw_output;
 
     return .{ .output = output, .arena = arena };
 }
@@ -576,19 +592,19 @@ test "Codegen: export all as namespace" {
 test "Codegen: JSX self-closing" {
     var r = try e2eJSX(std.testing.allocator, "const x = <div />;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(\"div\",null);", r.output);
+    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null);", r.output);
 }
 
 test "Codegen: JSX element with children" {
     var r = try e2eJSX(std.testing.allocator, "const x = <div>hello</div>;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(\"div\",null,\"hello\");", r.output);
+    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null,\"hello\");", r.output);
 }
 
 test "Codegen: JSX fragment" {
     var r = try e2eJSX(std.testing.allocator, "const x = <>hello</>;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(React.Fragment,null,\"hello\");", r.output);
+    try std.testing.expectEqualStrings("const x=React.createElement(React.Fragment,null,\"hello\");", r.output);
 }
 
 // --- JSX: closing tag 뒤 텍스트 (children 모드 복원) ---
@@ -597,7 +613,7 @@ test "JSX: text after closing child element" {
     var r = try e2eJSX(std.testing.allocator, "const x = <p><code>x</code> text</p>;");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "const x=/* @__PURE__ */ React.createElement(\"p\",null,/* @__PURE__ */ React.createElement(\"code\",null,\"x\"),\" text\");",
+        "const x=React.createElement(\"p\",null,React.createElement(\"code\",null,\"x\"),\" text\");",
         r.output,
     );
 }
@@ -3505,18 +3521,20 @@ test "engine target: safari11.1 → object spread 지원" {
 // ============================================================
 
 fn e2eJSXAutomatic(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eFull(allocator, source, .{}, .{
+    return e2eFull(allocator, source, .{
+        .jsx_transform = true,
         .jsx_runtime = .automatic,
         .jsx_import_source = "react",
-    }, ".tsx");
+    }, .{}, ".tsx");
 }
 
 fn e2eJSXDev(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eFull(allocator, source, .{}, .{
+    return e2eFull(allocator, source, .{
+        .jsx_transform = true,
         .jsx_runtime = .automatic_dev,
         .jsx_import_source = "react",
         .jsx_filename = "test.tsx",
-    }, ".tsx");
+    }, .{}, ".tsx");
 }
 
 test "JSX automatic: simple element" {
