@@ -2956,12 +2956,12 @@ pub const Codegen = struct {
     /// 3. 라인 간에는 공백 1개만 삽입
     /// 4. 첫 라인이 공백만이면 생략, 마지막 라인이 공백만이면 생략
     fn writeJSXTextEscaped(self: *Codegen, text: []const u8) !void {
-        // 라인별로 처리
+        if (text.len == 0) return;
         var line_start: usize = 0;
-        var first_non_empty_line = true;
+        var has_output = false;
         var line_idx: usize = 0;
 
-        while (line_start <= text.len) {
+        while (line_start < text.len) {
             // 현재 라인의 끝 찾기
             var line_end = line_start;
             while (line_end < text.len and text[line_end] != '\n' and text[line_end] != '\r') {
@@ -2971,46 +2971,36 @@ pub const Codegen = struct {
             const line = text[line_start..line_end];
             const is_first_line = (line_idx == 0);
 
-            // 다음 라인 시작 위치 계산
+            // 다음 라인 시작 위치 계산 (\r\n → 1개 개행으로 처리)
             var next_start = line_end;
             if (next_start < text.len) {
-                if (text[next_start] == '\r' and next_start + 1 < text.len and text[next_start + 1] == '\n') {
-                    next_start += 2; // \r\n
-                } else {
-                    next_start += 1; // \n or \r
+                next_start += 1;
+                if (text[line_end] == '\r' and next_start < text.len and text[next_start] == '\n') {
+                    next_start += 1;
                 }
             }
-
-            // 마지막 라인인지 확인
             const is_last_line = (next_start >= text.len);
 
-            // 라인별 trim
+            // 라인별 trim 후 비어있지 않으면 출력
             const trimmed = std.mem.trim(u8, line, " \t");
-
             if (trimmed.len > 0) {
-                // 라인 간 공백 삽입 (첫 비어있지 않은 라인이 아닌 경우)
-                if (!first_non_empty_line) {
-                    try self.writeByte(' ');
-                }
-                first_non_empty_line = false;
+                if (has_output) try self.writeByte(' '); // 라인 간 공백
+                has_output = true;
 
-                // 첫 라인이면 leading whitespace 보존, 마지막 라인이면 trailing whitespace 보존
                 const output_text = if (is_first_line and is_last_line)
-                    line // 단일 라인이면 원본 그대로
+                    line
                 else if (is_first_line)
-                    std.mem.trimRight(u8, line, " \t") // 첫 라인: trailing만 trim
+                    std.mem.trimRight(u8, line, " \t")
                 else if (is_last_line)
-                    std.mem.trimLeft(u8, line, " \t") // 마지막 라인: leading만 trim
+                    std.mem.trimLeft(u8, line, " \t")
                 else
-                    trimmed; // 중간 라인: 양쪽 trim
+                    trimmed;
 
                 try self.writeJSXLineContent(output_text);
             }
 
-            if (next_start <= line_start and line_end >= text.len) break;
             line_start = next_start;
             line_idx += 1;
-            if (line_start > text.len) break;
         }
     }
 
@@ -3051,9 +3041,12 @@ pub const Codegen = struct {
         // start는 '&' 위치
         const after_amp = start + 1;
         if (after_amp >= text.len) return null;
+        // fast-path: & 뒤에 공백/개행이면 entity가 아님
+        const next = text[after_amp];
+        if (next == ' ' or next == '\t' or next == '\n' or next == '\r') return null;
 
-        // ';' 찾기 (최대 10자 이내)
-        const max_end = @min(after_amp + 10, text.len);
+        // ';' 찾기 (최대 12자 이내 — lsaquo/rsaquo 등 긴 entity 대응)
+        const max_end = @min(after_amp + 12, text.len);
         var semi_pos: ?usize = null;
         for (after_amp..max_end) |j| {
             if (text[j] == ';') {
@@ -3086,49 +3079,158 @@ pub const Codegen = struct {
         return .{ .codepoint = cp, .end = semi + 1 };
     }
 
-    /// 잘 알려진 named HTML entity를 codepoint로 변환
+    /// HTML named entity → codepoint. comptime O(1) 해시 조회.
     fn namedEntityToCodepoint(name: []const u8) ?u21 {
-        const Map = struct {
-            n: []const u8,
-            cp: u21,
-        };
-        const entities = [_]Map{
-            .{ .n = "amp", .cp = '&' },
-            .{ .n = "lt", .cp = '<' },
-            .{ .n = "gt", .cp = '>' },
-            .{ .n = "quot", .cp = '"' },
-            .{ .n = "apos", .cp = '\'' },
-            .{ .n = "nbsp", .cp = 0xA0 },
-            .{ .n = "copy", .cp = 0xA9 },
-            .{ .n = "reg", .cp = 0xAE },
-            .{ .n = "trade", .cp = 0x2122 },
-            .{ .n = "mdash", .cp = 0x2014 },
-            .{ .n = "ndash", .cp = 0x2013 },
-            .{ .n = "laquo", .cp = 0xAB },
-            .{ .n = "raquo", .cp = 0xBB },
-            .{ .n = "bull", .cp = 0x2022 },
-            .{ .n = "hellip", .cp = 0x2026 },
-            .{ .n = "ensp", .cp = 0x2002 },
-            .{ .n = "emsp", .cp = 0x2003 },
-            .{ .n = "thinsp", .cp = 0x2009 },
-            .{ .n = "zwnj", .cp = 0x200C },
-            .{ .n = "zwj", .cp = 0x200D },
-        };
-        for (entities) |e| {
-            if (std.mem.eql(u8, name, e.n)) return e.cp;
-        }
-        return null;
+        return jsx_entity_map.get(name);
     }
 
-    /// codepoint를 UTF-8로 인코딩하여 출력. `"`, `\`는 이스케이프.
+    const jsx_entity_map = std.StaticStringMap(u21).initComptime(.{
+        // 필수 5개
+        .{ "amp", '&' },
+        .{ "lt", '<' },
+        .{ "gt", '>' },
+        .{ "quot", '"' },
+        .{ "apos", '\'' },
+        // 공백/포맷
+        .{ "nbsp", 0xA0 },
+        .{ "ensp", 0x2002 },
+        .{ "emsp", 0x2003 },
+        .{ "thinsp", 0x2009 },
+        .{ "zwnj", 0x200C },
+        .{ "zwj", 0x200D },
+        // 구두점/기호
+        .{ "mdash", 0x2014 },
+        .{ "ndash", 0x2013 },
+        .{ "laquo", 0xAB },
+        .{ "raquo", 0xBB },
+        .{ "bull", 0x2022 },
+        .{ "hellip", 0x2026 },
+        .{ "prime", 0x2032 },
+        .{ "Prime", 0x2033 },
+        .{ "lsquo", 0x2018 },
+        .{ "rsquo", 0x2019 },
+        .{ "ldquo", 0x201C },
+        .{ "rdquo", 0x201D },
+        .{ "sbquo", 0x201A },
+        .{ "bdquo", 0x201E },
+        .{ "lsaquo", 0x2039 },
+        .{ "rsaquo", 0x203A },
+        // 수학/기술
+        .{ "minus", 0x2212 },
+        .{ "times", 0xD7 },
+        .{ "divide", 0xF7 },
+        .{ "plusmn", 0xB1 },
+        .{ "le", 0x2264 },
+        .{ "ge", 0x2265 },
+        .{ "ne", 0x2260 },
+        .{ "asymp", 0x2248 },
+        .{ "infin", 0x221E },
+        .{ "sum", 0x2211 },
+        .{ "prod", 0x220F },
+        .{ "radic", 0x221A },
+        .{ "permil", 0x2030 },
+        .{ "deg", 0xB0 },
+        .{ "micro", 0xB5 },
+        .{ "frac14", 0xBC },
+        .{ "frac12", 0xBD },
+        .{ "frac34", 0xBE },
+        // 화폐/법률
+        .{ "euro", 0x20AC },
+        .{ "pound", 0xA3 },
+        .{ "yen", 0xA5 },
+        .{ "cent", 0xA2 },
+        .{ "curren", 0xA4 },
+        .{ "copy", 0xA9 },
+        .{ "reg", 0xAE },
+        .{ "trade", 0x2122 },
+        .{ "sect", 0xA7 },
+        .{ "para", 0xB6 },
+        // 화살표
+        .{ "larr", 0x2190 },
+        .{ "uarr", 0x2191 },
+        .{ "rarr", 0x2192 },
+        .{ "darr", 0x2193 },
+        .{ "harr", 0x2194 },
+        .{ "lArr", 0x21D0 },
+        .{ "rArr", 0x21D2 },
+        // 기타 기호
+        .{ "hearts", 0x2665 },
+        .{ "diams", 0x2666 },
+        .{ "clubs", 0x2663 },
+        .{ "spades", 0x2660 },
+        .{ "check", 0x2713 },
+        .{ "cross", 0x2717 },
+        .{ "star", 0x22C6 },
+        // 라틴 확장
+        .{ "iexcl", 0xA1 },
+        .{ "iquest", 0xBF },
+        .{ "Agrave", 0xC0 },
+        .{ "Aacute", 0xC1 },
+        .{ "Acirc", 0xC2 },
+        .{ "Atilde", 0xC3 },
+        .{ "Auml", 0xC4 },
+        .{ "Aring", 0xC5 },
+        .{ "AElig", 0xC6 },
+        .{ "Ccedil", 0xC7 },
+        .{ "Egrave", 0xC8 },
+        .{ "Eacute", 0xC9 },
+        .{ "Euml", 0xCB },
+        .{ "Igrave", 0xCC },
+        .{ "Iacute", 0xCD },
+        .{ "Iuml", 0xCF },
+        .{ "Ntilde", 0xD1 },
+        .{ "Ograve", 0xD2 },
+        .{ "Oacute", 0xD3 },
+        .{ "Ouml", 0xD6 },
+        .{ "Oslash", 0xD8 },
+        .{ "Ugrave", 0xD9 },
+        .{ "Uacute", 0xDA },
+        .{ "Uuml", 0xDC },
+        .{ "szlig", 0xDF },
+        .{ "agrave", 0xE0 },
+        .{ "aacute", 0xE1 },
+        .{ "acirc", 0xE2 },
+        .{ "atilde", 0xE3 },
+        .{ "auml", 0xE4 },
+        .{ "aring", 0xE5 },
+        .{ "aelig", 0xE6 },
+        .{ "ccedil", 0xE7 },
+        .{ "egrave", 0xE8 },
+        .{ "eacute", 0xE9 },
+        .{ "euml", 0xEB },
+        .{ "igrave", 0xEC },
+        .{ "iacute", 0xED },
+        .{ "iuml", 0xEF },
+        .{ "ntilde", 0xF1 },
+        .{ "ograve", 0xF2 },
+        .{ "oacute", 0xF3 },
+        .{ "ouml", 0xF6 },
+        .{ "oslash", 0xF8 },
+        .{ "ugrave", 0xF9 },
+        .{ "uacute", 0xFA },
+        .{ "uuml", 0xFC },
+    });
+
+    /// codepoint를 UTF-8로 인코딩하여 출력. 제어 문자와 특수 문자는 이스케이프.
     fn writeCodepointEscaped(self: *Codegen, cp: u21) !void {
-        if (cp == '"') {
-            try self.write("\\\"");
-            return;
+        switch (cp) {
+            '"' => return self.write("\\\""),
+            '\\' => return self.write("\\\\"),
+            '\n' => return self.write("\\n"),
+            '\r' => return self.write("\\r"),
+            '\t' => return self.write("\\t"),
+            0 => return self.write("\\0"),
+            else => {},
         }
-        if (cp == '\\') {
-            try self.write("\\\\");
-            return;
+        // 기타 제어 문자 (0x01-0x1F, 0x7F) → \xHH 이스케이프
+        if (cp < 0x20 or cp == 0x7F) {
+            var buf: [4]u8 = undefined;
+            buf[0] = '\\';
+            buf[1] = 'x';
+            const hex = "0123456789abcdef";
+            buf[2] = hex[@intCast((cp >> 4) & 0xF)];
+            buf[3] = hex[@intCast(cp & 0xF)];
+            return self.write(buf[0..4]);
         }
         // ASCII 범위
         if (cp < 0x80) {
@@ -3247,17 +3349,16 @@ pub const Codegen = struct {
                 col += 1;
                 i += 1;
             } else if (byte < 0xC0) {
-                // continuation byte (잘못된 시작이면 스킵)
-                i += 1;
+                i += 1; // continuation byte skip
             } else if (byte < 0xE0) {
-                col += 1; // 2-byte UTF-8 → 1 UTF-16 unit
-                i += 2;
+                col += 1;
+                i += @min(2, @as(u32, @intCast(source.len)) - i); // 경계 보호
             } else if (byte < 0xF0) {
-                col += 1; // 3-byte UTF-8 → 1 UTF-16 unit
-                i += 3;
+                col += 1;
+                i += @min(3, @as(u32, @intCast(source.len)) - i);
             } else {
-                col += 2; // 4-byte UTF-8 → 2 UTF-16 units (surrogate pair)
-                i += 4;
+                col += 2; // surrogate pair
+                i += @min(4, @as(u32, @intCast(source.len)) - i);
             }
         }
         return .{ .line = line, .col = col + 1 }; // 1-based
