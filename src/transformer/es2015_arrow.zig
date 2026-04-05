@@ -66,10 +66,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                         // ES2015 params lowering 적용 가능 (extra list 형태)
                         if (self.options.unsupported.default_params and
                             es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
-                            self,
-                            params_node.data.list.start,
-                            params_node.data.list.len,
-                        )) {
+                                self,
+                                params_node.data.list.start,
+                                params_node.data.list.len,
+                            ))
+                        {
                             const lr = try es2015_params.ES2015Params(Transformer).lowerParams(
                                 self,
                                 params_node.data.list.start,
@@ -95,10 +96,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                             // ES2015 params lowering 적용 가능 (extra list 형태)
                             if (self.options.unsupported.default_params and
                                 es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
-                                self,
-                                inner.data.list.start,
-                                inner.data.list.len,
-                            )) {
+                                    self,
+                                    inner.data.list.start,
+                                    inner.data.list.len,
+                                ))
+                            {
                                 const lr = try es2015_params.ES2015Params(Transformer).lowerParams(
                                     self,
                                     inner.data.list.start,
