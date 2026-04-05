@@ -85,6 +85,9 @@ const CliOptions = struct {
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화. --platform=react-native 프리셋에서 자동 설정.
     jsx_in_js: bool = false,
+    /// Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환).
+    /// --platform=react-native에서 자동 활성화.
+    configurable_exports: bool = false,
     /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
     /// null이면 사용자 미지정 — 플랫폼 프리셋 또는 tsconfig에서 결정.
     jsx_runtime: ?lib.codegen.codegen.JsxRuntime = null,
@@ -1068,6 +1071,7 @@ pub fn main() !void {
             }
             opts.flow = true;
             opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
+            opts.configurable_exports = true; // RN/Hermes: defineProperty에 configurable: true 필요
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
@@ -1144,6 +1148,7 @@ pub fn main() !void {
             .plugins = plugin_list.items,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
+            .configurable_exports = opts.configurable_exports,
             .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,
