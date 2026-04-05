@@ -13117,3 +13117,103 @@ test "JSX automatic: re-export of JSX component" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(\"button\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx(Button") != null);
 }
+
+test "JSX automatic: ESM-wrapped hoisted function can access _jsxDEV (scope test)" {
+    // ESM-wrapped 모듈에서 function이 __esm 밖으로 호이스팅될 때,
+    // _jsxDEV가 top-level var로 선언되어야 호이스팅된 함수에서 접근 가능.
+    // 이전 버그: _jsxDEV가 __esm init 블록 안 지역변수로 선언되어 ReferenceError.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "comp.tsx",
+        \\export function Comp() { return <div>Hello</div>; }
+    );
+    // require()로 소비하여 comp.tsx를 ESM-wrapped로 만듦
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = require('./comp.tsx');
+        \\console.log(c.Comp());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __esm으로 래핑됨을 확인
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") != null);
+    // _jsxDEV가 top-level에 var로 선언 (호이스팅된 함수에서 접근 가능)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var _jsxDEV") != null);
+    // 호이스팅된 function이 _jsxDEV를 사용 (React.createElement가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV(\"div\"") != null);
+    // __esm init 안에서는 var 없이 할당만
+    // "var _jsxDEV = " 가 아닌 할당문이 init 블록에 존재해야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV = require") != null);
+}
+
+test "JSX automatic: ESM-wrapped with multiple JSX functions (_jsx, _jsxs, _Fragment)" {
+    // ESM-wrapped 모듈에서 _jsx, _jsxs, _Fragment 모두 top-level 선언되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "comp.tsx",
+        \\export function Comp() {
+        \\  return <><div>A</div><span>B</span></>;
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = require('./comp.tsx');
+        \\console.log(c.Comp());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 모든 JSX 함수가 top-level에 선언됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_Fragment") != null);
+    // Fragment + 여러 children → _jsxs 사용
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxs(_Fragment") != null);
+}
+
+test "JSX automatic: non-ESM-wrapped module still uses var declaration" {
+    // ESM-wrapped가 아닌 일반 모듈에서는 preamble에 var _jsx = ... 형태 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>Hello</div>; }
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic,
+        .external = &.{"react/jsx-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __esm이 아님 (일반 scope-hoisted)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") == null);
+    // var _jsx = require(...) 형태 (var 포함)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var _jsx") != null);
+}
