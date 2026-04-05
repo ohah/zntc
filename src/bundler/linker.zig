@@ -2114,10 +2114,10 @@ pub const Linker = struct {
         try buf.appendSlice(self.allocator, "}");
         const result = try self.allocator.dupe(u8, buf.items);
 
-        // 결과를 캐시에 저장 (캐시가 소유, 호출자에게는 별도 복사본 반환)
+        // 캐시에 result를 직접 저장하고, caller에게는 별도 dupe 반환
         if (ns_inline_cache) |cache| {
-            const cache_copy = try self.allocator.dupe(u8, result);
-            try cache.put(target_mod_idx, cache_copy);
+            try cache.put(target_mod_idx, result);
+            return try self.allocator.dupe(u8, result);
         }
 
         return result;
