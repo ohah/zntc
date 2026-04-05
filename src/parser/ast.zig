@@ -361,7 +361,9 @@ pub const Node = struct {
         /// match (expr) { ... } — Flow match expression
         flow_match_expression,
         /// Flow component with ref → React.forwardRef wrapper
-        /// extra = [name, params_start, params_len, body]
+        /// extra = [func_decl, const_decl]
+        /// func_decl: function Name_withRef({...props}, ref) { body }
+        /// const_decl: const Name = React.forwardRef(Name_withRef)
         flow_component_wrapper,
 
         // ==============================================================
