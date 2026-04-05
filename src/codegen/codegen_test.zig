@@ -4313,3 +4313,96 @@ test "JSX refactor guard: boolean and null props" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"input\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "disabled: true") != null);
 }
+
+// ============================================================
+// JSX + ES target: spread attribute lowering (Object.assign)
+// ============================================================
+
+fn e2eJSXAutomaticTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
+    return e2eFull(allocator, source, .{
+        .jsx_transform = true,
+        .jsx_runtime = .automatic,
+        .jsx_import_source = "react",
+        .unsupported = TransformOptions.compat.fromESTarget(target),
+    }, .{ .minify_whitespace = true }, ".tsx");
+}
+
+fn e2eJSXClassicTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
+    return e2eFull(allocator, source, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .unsupported = TransformOptions.compat.fromESTarget(target),
+    }, .{ .minify_whitespace = true }, ".tsx");
+}
+
+test "JSX automatic + ES5: spread props → Object.assign" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div {...props} id="a" />;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
+}
+
+test "JSX automatic + ES5: spread with children → Object.assign" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <span style={s} {...rest}>hello</span>;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
+}
+
+test "JSX automatic + ES5: multiple spreads → Object.assign" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div {...a} {...b} id="c" />;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
+}
+
+test "JSX automatic + ES5: no spread → no Object.assign" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div id="a" className="b" />;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_jsx(\"div\"") != null);
+}
+
+test "JSX automatic + esnext: spread preserved (no lowering)" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div {...props} id="a" />;
+    , .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
+}
+
+test "JSX classic + ES5: spread props → Object.assign" {
+    var r = try e2eJSXClassicTarget(std.testing.allocator,
+        \\const x = <div {...props} id="a" />;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") == null);
+}
+
+test "JSX automatic + ES5: spread only → Object.assign with empty target" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div {...props} />;
+    , .es5);
+    defer r.deinit();
+    // spread만 있으면 Object.assign({}, props) 형태
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({}") != null);
+}
+
+test "JSX automatic + ES5: props before spread → Object.assign({id:\"a\"}, props)" {
+    var r = try e2eJSXAutomaticTarget(std.testing.allocator,
+        \\const x = <div id="a" {...props} />;
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
+}

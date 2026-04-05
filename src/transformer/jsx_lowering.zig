@@ -1134,7 +1134,21 @@ pub fn JsxLowering(comptime Transformer: type) type {
         }
 
         /// object_expression 노드 생성 (properties 리스트로)
+        /// --target < es2018 이면 spread가 포함된 경우 Object.assign()으로 변환
         fn makeObjectExpr(self: *Transformer, properties: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // ES2018 object spread 다운레벨링: JSX lowering이 만든 object에 spread가 있으면
+            // Object.assign({a: 1}, obj, {b: 2}) 형태로 변환해야 한다.
+            // (JSX lowering이 new_ast에 직접 노드를 생성하므로, transformer의 visitNode를
+            //  다시 거치지 않아 es2018.lowerObjectSpread가 적용되지 않기 때문)
+            if (self.options.unsupported.object_spread) {
+                for (properties) |prop_idx| {
+                    const prop = self.new_ast.getNode(prop_idx);
+                    if (prop.tag == .spread_element) {
+                        return helpers.lowerObjectSpreadProps(self, properties, span);
+                    }
+                }
+            }
+
             const list = try self.new_ast.addNodeList(properties);
             return self.new_ast.addNode(.{
                 .tag = .object_expression,
