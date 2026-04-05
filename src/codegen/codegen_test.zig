@@ -73,7 +73,7 @@ fn e2eSourceMap(backing_allocator: std.mem.Allocator, source: []const u8) !Sourc
     parser.configureFromExtension(".ts");
     _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser.ast, .{});
+    var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
     var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .sourcemap = true });
@@ -126,7 +126,7 @@ fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: 
     parser.configureFromExtension(ext);
     _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser.ast, t_options);
+    var t = try Transformer.init(allocator, &parser.ast, t_options);
     t.line_offsets = scanner.line_offsets.items;
     const root = try t.transform();
 
@@ -3119,7 +3119,7 @@ fn e2eFlowImpl(backing_allocator: std.mem.Allocator, source: []const u8, is_modu
     }
     _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser.ast, .{});
+    var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
     var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .minify_whitespace = true });

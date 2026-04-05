@@ -166,7 +166,7 @@ pub fn transpileWithCallback(
     }
 
     // 4. 변환
-    var transformer = Transformer.init(arena_alloc, &parser.ast, .{
+    var transformer = try Transformer.init(arena_alloc, &parser.ast, .{
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
         .define = options.define,

@@ -51,7 +51,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const super_idx: NodeIndex = self.readNodeIdx(e, 1);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
@@ -264,7 +263,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const super_idx: NodeIndex = self.readNodeIdx(e, 1);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
@@ -501,7 +499,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub fn lowerSuperCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const args_start = self.readU32(e, 1);
             const args_len = self.readU32(e, 2);
             const span = node.span;
@@ -575,7 +572,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub fn lowerSuperMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
             const args_start = self.readU32(e, 1);
             const args_len = self.readU32(e, 2);
@@ -644,7 +640,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub fn lowerSuperMember(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitMemberExpression(node);
             const e = node.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const prop_idx: NodeIndex = self.readNodeIdx(e, 1);
             const span = node.span;
 
@@ -684,7 +679,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub fn lowerPrivateFieldUpdate(self: *Transformer, operand: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
             const oe = operand.data.extra;
             if (oe + 1 >= self.ast.extra_data.items.len) return null;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const obj_idx: NodeIndex = self.readNodeIdx(oe, 0);
             const var_name = findPrivateFieldVarName(self, self.readNodeIdx(oe, 1)) orelse return null;
 
@@ -747,7 +741,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const params_start = self.readU32(me, 1);
             const params_len = self.readU32(me, 2);
             const body_idx: NodeIndex = self.readNodeIdx(me, 3);
@@ -1071,7 +1064,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const ctor = self.ast.getNode(ctor_idx);
             const me = ctor.data.extra;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const params_start = self.readU32(me, 1);
             const params_len = self.readU32(me, 2);
             const body_idx: NodeIndex = self.readNodeIdx(me, 3);
@@ -1746,7 +1738,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
 
                     // method decorator + param decorator
-                    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                     const deco_start = self.readU32(me, 5);
                     const deco_len = self.readU32(me, 6);
                     const params_start = self.readU32(me, 1);

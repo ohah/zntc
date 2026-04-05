@@ -382,7 +382,6 @@ pub fn ES2022(comptime Transformer: type) type {
             // current_private_methods에서 매핑 찾기
             const mapping = findPrivateMethodMapping(self, orig_name) orelse return null;
 
-            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
             const args_start = self.readU32(ce, 1);
             const args_len = self.readU32(ce, 2);
 

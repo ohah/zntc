@@ -88,7 +88,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (param.tag == .formal_parameter) {
                     // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const pe = param.data.extra;
-                    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
                     const pattern_idx: NodeIndex = self.readNodeIdx(pe, 0);
                     const default_idx: NodeIndex = self.readNodeIdx(pe, 2);
 

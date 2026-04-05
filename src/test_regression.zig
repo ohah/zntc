@@ -40,10 +40,10 @@ fn e2e(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
     var parser = Parser.init(allocator, &scanner);
     _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser.ast, .{});
+    var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.new_ast, .{ .minify = true });
+    var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .minify = true });
     const output = try cg.generate(root);
 
     return .{ .output = output, .arena = arena };

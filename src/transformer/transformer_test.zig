@@ -24,7 +24,7 @@ test "Transformer: empty program" {
         .data = .{ .list = empty_list },
     });
 
-    var t = Transformer.init(std_lib.testing.allocator, &old_ast, .{});
+    var t = try Transformer.init(std_lib.testing.allocator, &old_ast, .{});
     defer t.deinit();
 
     const root = try t.transform();
@@ -55,7 +55,7 @@ test "Transformer: strip type alias declaration" {
         .data = .{ .list = list },
     });
 
-    var t = Transformer.init(std_lib.testing.allocator, &old_ast, .{});
+    var t = try Transformer.init(std_lib.testing.allocator, &old_ast, .{});
     defer t.deinit();
 
     const root = try t.transform();
@@ -95,7 +95,7 @@ test "Transformer: preserve JS expression statement" {
         .data = .{ .list = list },
     });
 
-    var t = Transformer.init(std_lib.testing.allocator, &old_ast, .{});
+    var t = try Transformer.init(std_lib.testing.allocator, &old_ast, .{});
     defer t.deinit();
 
     const root = try t.transform();
@@ -150,7 +150,7 @@ test "Transformer: strip ts_as_expression" {
         .data = .{ .list = list },
     });
 
-    var t = Transformer.init(std_lib.testing.allocator, &old_ast, .{});
+    var t = try Transformer.init(std_lib.testing.allocator, &old_ast, .{});
     defer t.deinit();
 
     const root = try t.transform();
@@ -205,7 +205,7 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResu
 
     _ = try parser_ptr.parse();
 
-    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
+    var t = try Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
     t.scratch.deinit(allocator);
 
@@ -277,7 +277,7 @@ fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8
 
     _ = try parser_ptr.parse();
 
-    var t = Transformer.init(allocator, &parser_ptr.ast, options);
+    var t = try Transformer.init(allocator, &parser_ptr.ast, options);
     const root = try t.transform();
     t.scratch.deinit(allocator);
     t.pending_nodes.deinit(allocator);

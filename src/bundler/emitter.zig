@@ -717,7 +717,7 @@ pub fn emitDevModule(
 
     // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환
     const jsx_active_dev = ast.has_jsx;
-    var transformer = Transformer.init(arena_alloc, ast, .{
+    var transformer = try Transformer.init(arena_alloc, ast, .{
         .react_refresh = options.react_refresh,
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
@@ -1699,7 +1699,7 @@ pub fn emitModule(
     // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
     // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
     const jsx_active = ast.has_jsx;
-    var transformer = Transformer.init(arena_alloc, ast, .{
+    var transformer = try Transformer.init(arena_alloc, ast, .{
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,

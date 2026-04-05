@@ -10341,7 +10341,7 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
             sem_ns += std.time.nanoTimestamp() - t0;
 
             t0 = std.time.nanoTimestamp();
-            var transformer = Transformer.init(a, &parser.ast, .{});
+            var transformer = try Transformer.init(a, &parser.ast, .{});
             const root = try transformer.transform();
             xform_ns += std.time.nanoTimestamp() - t0;
 
