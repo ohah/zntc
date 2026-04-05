@@ -967,24 +967,9 @@ pub const Linker = struct {
                 }
 
                 // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
-                // __esm 타겟: 직접 치환 불가 (변수가 래퍼 안에만 존재).
-                // → ns를 exports_xxx로 rename하여 exports_xxx.prop 형태로 접근.
+                // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
+                // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.
                 if (ib.kind == .namespace) {
-                    if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .esm) {
-                        const exports_var = try types.makeExportsVarName(self.allocator, self.modules[canonical_mod].path);
-                        // ns 변수를 exports_xxx로 rename → ns.prop → exports_xxx.prop
-                        if (module_scope.get(ib.local_name)) |sym_idx| {
-                            try renames.put(@intCast(sym_idx), exports_var);
-                            try owned_nested_renames.append(self.allocator, exports_var);
-                            if (m.wrap_kind == .esm) {
-                                try export_getter_overrides.put(self.allocator, ib.local_name, exports_var);
-                            }
-                        } else {
-                            self.allocator.free(exports_var);
-                        }
-                        continue;
-                    }
-
                     const ns_sym_id = module_scope.get(ib.local_name) orelse continue;
                     const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 

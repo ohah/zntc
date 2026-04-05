@@ -8365,9 +8365,9 @@ test "ESM wrap: CJS wrapper imports scope-hoisted ESM — no raw require" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require('./util.js')") == null);
 }
 
-test "ESM wrap: namespace import of __esm module — exports_xxx.prop access" {
-    // import * as ns from './esm-mod' → ns가 exports_xxx로 rename되어
-    // ns.prop → exports_xxx.prop 형태로 접근. 직접 변수 치환 방지.
+test "ESM wrap: namespace import of __esm module — canonical name direct rewrite" {
+    // import * as ns from './esm-mod' → ns.prop → canonical name 직접 치환.
+    // exports_xxx rename은 변수 덮어쓰기 버그를 유발하므로 사용하지 않음.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -8394,10 +8394,11 @@ test "ESM wrap: namespace import of __esm module — exports_xxx.prop access" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // namespace import가 exports_xxx로 rename되어야 함 (직접 'greet' 치환 금지)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils") != null);
-    // raw 'greet()' 호출이 남아있으면 안 됨 (exports_utils.greet() 형태여야)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils.greet") != null);
+    // namespace import가 canonical name으로 직접 치환되어야 함
+    // utils.greet() → greet() (호이스팅된 function 참조)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "greet()") != null);
+    // exports_xxx로 rename되지 않아야 함 (변수 덮어쓰기 버그 방지)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_utils.greet") == null);
 }
 
 test "ESM wrap: skip_cjs_exports — no exports.x in __esm wrapper" {
