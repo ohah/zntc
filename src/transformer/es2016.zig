@@ -35,12 +35,12 @@ pub fn ES2016(comptime Transformer: type) type {
             const new_right = try self.visitNode(node.data.binary.right);
 
             // Math.pow(a, b) — left를 복사해서 callee의 인자로 사용
-            const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
-            self.copyNewSymbolId(new_left, left_copy);
+            const left_copy = try self.ast.addNode(self.ast.getNode(new_left));
+            self.copySymbolId(new_left, left_copy);
             const pow_call = try buildMathPowCall(self, node.span, left_copy, new_right);
 
             // a = Math.pow(a, b)
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = node.span,
                 .data = .{ .binary = .{
@@ -54,40 +54,40 @@ pub fn ES2016(comptime Transformer: type) type {
         /// Math.pow(left, right) 호출 노드를 생성.
         fn buildMathPowCall(self: *Transformer, span: Span, left: NodeIndex, right: NodeIndex) Transformer.Error!NodeIndex {
             // "Math" 식별자
-            const math_span = try self.new_ast.addString("Math");
-            const math_node = try self.new_ast.addNode(.{
+            const math_span = try self.ast.addString("Math");
+            const math_node = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = math_span,
                 .data = .{ .string_ref = math_span },
             });
 
             // "pow" 식별자
-            const pow_span = try self.new_ast.addString("pow");
-            const pow_node = try self.new_ast.addNode(.{
+            const pow_span = try self.ast.addString("pow");
+            const pow_node = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = pow_span,
                 .data = .{ .string_ref = pow_span },
             });
 
             // Math.pow (static member expression) — extra = [object, property, flags]
-            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(math_node), @intFromEnum(pow_node), 0 });
-            const callee = try self.new_ast.addNode(.{
+            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(math_node), @intFromEnum(pow_node), 0 });
+            const callee = try self.ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = span,
                 .data = .{ .extra = member_extra },
             });
 
             // 인자 리스트: (left, right)
-            const args = try self.new_ast.addNodeList(&.{ left, right });
+            const args = try self.ast.addNodeList(&.{ left, right });
 
             // call_expression: extra = [callee, args_start, args_len, flags]
-            const call_extra = try self.new_ast.addExtras(&.{
+            const call_extra = try self.ast.addExtras(&.{
                 @intFromEnum(callee),
                 args.start,
                 args.len,
                 0,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .call_expression,
                 .span = span,
                 .data = .{ .extra = call_extra },

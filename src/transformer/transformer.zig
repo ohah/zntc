@@ -1,17 +1,17 @@
 //! ZTS Transformer — 핵심 변환 엔진
 //!
-//! 원본 AST를 읽고 새 AST를 빌드한다.
+//! 단일 AST를 append-only로 변환한다.
 //!
 //! 작동 원리:
-//!   1. 원본 AST(old_ast)의 루트 노드부터 시작
-//!   2. 각 노드의 tag를 switch로 분기
-//!   3. TS 전용 노드는 스킵(.none 반환) 또는 변환
-//!   4. JS 노드는 자식을 재귀 방문 후 새 AST(new_ast)에 복사
+//!   1. 파서 AST를 cloneForTransformer()로 복제
+//!   2. 파서 노드(0..transformer_node_start-1)를 읽기 전용으로 탐색
+//!   3. 변환된 노드를 같은 AST 끝에 append
+//!   4. string_table이 하나이므로 파서에서 만든 합성 이름도 codegen에서 읽을 수 있음
 //!
 //! 메모리:
-//!   - new_ast는 별도 allocator로 생성 (D041)
-//!   - 변환 완료 후 old_ast는 해제 가능
-//!   - new_ast의 source는 old_ast와 같은 소스를 참조 (zero-copy)
+//!   - ast는 트랜스포머 allocator로 복제됨 (원본 module.ast 보존)
+//!   - 변환 완료 후 원본 AST는 해제 가능
+//!   - source는 원본과 같은 슬라이스를 참조 (zero-copy)
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -123,20 +123,18 @@ pub const RuntimeHelpers = packed struct(u16) {
     _padding: u4 = 0,
 };
 
-/// AST-to-AST 변환기.
+/// 단일 AST append-only 변환기.
 ///
 /// 사용법:
 /// ```zig
-/// var t = Transformer.init(allocator, &old_ast, .{});
+/// var t = Transformer.init(allocator, &source_ast, .{});
 /// const new_root = try t.transform();
-/// // t.new_ast 에 변환된 AST가 들어있다
+/// // t.ast 에 변환된 AST가 들어있다
 /// ```
 pub const Transformer = struct {
-    /// 원본 AST (읽기 전용)
-    old_ast: *const Ast,
-
-    /// 변환 결과를 저장할 새 AST
-    new_ast: Ast,
+    /// 통합 AST. 파서 노드(0..transformer_node_start-1)는 읽기 전용,
+    /// 트랜스포머가 추가한 노드(transformer_node_start..)는 append-only.
+    ast: Ast,
 
     /// 설정
     options: TransformOptions,
@@ -152,10 +150,10 @@ pub const Transformer = struct {
     /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
     pending_nodes: std.ArrayList(NodeIndex),
 
-    /// 원본 AST의 symbol_ids (semantic analyzer가 생성). null이면 전파 안 함.
-    old_symbol_ids: []const ?u32 = &.{},
-    /// 새 AST 기준 symbol_ids. new_ast에 노드 추가 시 자동 전파.
-    new_symbol_ids: std.ArrayList(?u32) = .empty,
+    /// 통합 symbol_ids. 파서 노드 영역은 semantic analyzer가 채우고,
+    /// 트랜스포머 노드 영역은 propagateSymbolId/copySymbolId가 채운다.
+    /// 빈 슬라이스이면 symbol 전파 비활성.
+    symbol_ids: std.ArrayList(?u32) = .empty,
 
     /// semantic analyzer의 심볼 테이블 (unused import 판별용).
     /// 비어 있으면 unused import 제거 비활성.
@@ -279,16 +277,29 @@ pub const Transformer = struct {
         signature: []const u8,
     };
 
-    pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
+    pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Transformer {
         // experimentalDecorators → useDefineForClassFields=false 강제
         // TypeScript/esbuild 동일: decorator가 class field의 setter를 인터셉트하려면
         // assign semantics (this.x = v)가 필요. define semantics는 setter를 무시.
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
+        // 파서 AST를 트랜스포머 allocator로 복제 (원본 보존)
+        const cloned_ast = Ast.cloneForTransformer(source_ast, allocator) catch {
+            // OOM 시 빈 AST로 폴백 (transform()에서 에러 반환됨)
+            var empty = Ast.init(allocator, source_ast.source);
+            empty.transformer_node_start = 0;
+            return .{
+                .ast = empty,
+                .options = opts,
+                .allocator = allocator,
+                .scratch = .empty,
+                .pending_nodes = .empty,
+            };
+        };
+
         var self: Transformer = .{
-            .old_ast = old_ast,
-            .new_ast = Ast.init(allocator, old_ast.source),
+            .ast = cloned_ast,
             .options = opts,
             .allocator = allocator,
             .scratch = .empty,
@@ -299,15 +310,23 @@ pub const Transformer = struct {
     }
 
     pub fn deinit(self: *Transformer) void {
-        self.new_ast.deinit();
+        self.ast.deinit();
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
+        self.symbol_ids.deinit(self.allocator);
         if (self.define_spans.len > 0) self.allocator.free(self.define_spans);
         self.refresh_registrations.deinit(self.allocator);
         for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
         self.refresh_signatures.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
+    }
+
+    /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
+    /// 파서 노드 영역(0..transformer_node_start-1)에 symbol_id를 채운다.
+    pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Error!void {
+        try self.symbol_ids.ensureTotalCapacity(self.allocator, analyzer_symbol_ids.len);
+        self.symbol_ids.appendSliceAssumeCapacity(analyzer_symbol_ids);
     }
 
     // ================================================================
@@ -317,24 +336,24 @@ pub const Transformer = struct {
     /// 변환을 실행한다. 원본 AST의 마지막 노드(program)부터 시작.
     ///
     /// 반환값: 새 AST에서의 루트 NodeIndex.
-    /// 변환된 AST는 self.new_ast에 저장된다.
+    /// 변환된 AST는 self.ast에 저장된다.
     pub fn transform(self: *Transformer) Error!NodeIndex {
         // define value를 미리 string_table에 저장하여 tryDefineReplace에서 중복 addString 방지
         if (self.options.define.len > 0) {
             self.define_spans = self.allocator.alloc(Span, self.options.define.len) catch return Error.OutOfMemory;
             for (self.options.define, 0..) |entry, i| {
-                self.define_spans[i] = self.new_ast.addString(entry.value) catch return Error.OutOfMemory;
+                self.define_spans[i] = self.ast.addString(entry.value) catch return Error.OutOfMemory;
             }
         }
 
-        // 파서는 parse() 끝에 program 노드를 추가하므로 마지막 노드가 루트
-        const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
+        // 파서의 마지막 노드가 루트 (program). transformer_node_start - 1.
+        const root_idx: NodeIndex = @enumFromInt(self.ast.transformer_node_start - 1);
         const saved_temp_counter = self.temp_var_counter;
         var root = try self.visitNode(root_idx);
 
         // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
         if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
-            root = try self.hoistTempVars(root, saved_temp_counter, self.old_ast.getNode(root_idx).span);
+            root = try self.hoistTempVars(root, saved_temp_counter, self.ast.getNode(root_idx).span);
         }
 
         // React Fast Refresh: 컴포넌트 등록 + Hook 시그니처 코드를 프로그램 끝에 추가
@@ -369,7 +388,7 @@ pub const Transformer = struct {
     }
 
     fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
-        const node = self.old_ast.getNode(idx);
+        const node = self.ast.getNode(idx);
 
         // --------------------------------------------------------
         // 1단계: TS 타입 전용 노드는 통째로 삭제
@@ -487,7 +506,7 @@ pub const Transformer = struct {
                 // (expr as T) → expr: TS expression이면 괄호 불필요
                 const inner = node.data.unary.operand;
                 if (!inner.isNone()) {
-                    const inner_tag = self.old_ast.getNode(inner).tag;
+                    const inner_tag = self.ast.getNode(inner).tag;
                     if (inner_tag == .ts_as_expression or
                         inner_tag == .ts_satisfies_expression or
                         inner_tag == .ts_non_null_expression or
@@ -571,7 +590,7 @@ pub const Transformer = struct {
                 if (self.options.unsupported.class and self.current_private_fields.len > 0) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
-                        const left_node = self.old_ast.getNode(left_idx);
+                        const left_node = self.ast.getNode(left_idx);
                         if (left_node.tag == .private_field_expression) {
                             if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldSet(self, node)) |result| {
                                 return result;
@@ -583,7 +602,7 @@ pub const Transformer = struct {
                 if (self.options.unsupported.destructuring) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
-                        const left_node = self.old_ast.getNode(left_idx);
+                        const left_node = self.ast.getNode(left_idx);
                         if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
                             return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
                         }
@@ -674,7 +693,7 @@ pub const Transformer = struct {
             .function_expression,
             => {
                 if (self.options.unsupported.async_await) {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
                         // async + generator 둘 다 unsupported → 직접 state machine 생성
@@ -686,7 +705,7 @@ pub const Transformer = struct {
                 }
                 // ES2015: generator function → 상태 머신
                 if (self.options.unsupported.generator) {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_generator) != 0) {
                         return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
@@ -698,7 +717,7 @@ pub const Transformer = struct {
             => self.visitFunction(node),
             .arrow_function_expression => {
                 if (self.options.unsupported.async_await) {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
                         // async + generator 둘 다 unsupported → 직접 state machine 생성
@@ -793,7 +812,7 @@ pub const Transformer = struct {
                 // ES2022 static block 다운레벨링 중이고, 일반 함수 안이 아니면 치환
                 if (self.static_block_class_name) |class_span| {
                     if (self.this_depth == 0) {
-                        return self.new_ast.addNode(.{
+                        return self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = class_span,
                             .data = .{ .string_ref = class_span },
@@ -822,11 +841,11 @@ pub const Transformer = struct {
             .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
                 if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
-                    const text = self.old_ast.getText(node.data.string_ref);
+                    const text = self.ast.getText(node.data.string_ref);
                     if (std.mem.eql(u8, text, "arguments")) {
                         self.needs_arguments_var = true;
-                        const args_span = try self.new_ast.addString("_arguments");
-                        return self.new_ast.addNode(.{
+                        const args_span = try self.ast.addString("_arguments");
+                        return self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = args_span,
                             .data = .{ .string_ref = args_span },
@@ -910,58 +929,59 @@ pub const Transformer = struct {
 
     /// 노드를 그대로 새 AST에 복사한다 (자식 없는 리프 노드용).
     fn copyNodeDirect(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.new_ast.addNode(node);
+        return self.ast.addNode(node);
     }
 
     /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.
     /// ES2022 static block의 this → 클래스 이름 치환에 사용.
     fn getClassNameSpan(self: *Transformer, name_idx: NodeIndex) ?Span {
         if (name_idx.isNone()) return null;
-        return self.new_ast.getNode(name_idx).data.string_ref;
+        return self.ast.getNode(name_idx).data.string_ref;
     }
 
-    /// new_symbol_ids를 target_idx까지 null로 확장.
-    fn ensureNewSymbolIds(self: *Transformer, target_idx: usize) void {
-        if (self.new_symbol_ids.items.len <= target_idx) {
-            const needed = target_idx + 1 - self.new_symbol_ids.items.len;
-            self.new_symbol_ids.appendNTimes(self.allocator, null, needed) catch return;
+    /// symbol_ids를 target_idx까지 null로 확장.
+    fn ensureSymbolIds(self: *Transformer, target_idx: usize) void {
+        if (self.symbol_ids.items.len <= target_idx) {
+            const needed = target_idx + 1 - self.symbol_ids.items.len;
+            self.symbol_ids.appendNTimes(self.allocator, null, needed) catch return;
         }
     }
 
-    /// 원본 → 새 노드의 symbol_id 전파.
+    /// 파서 노드 → 트랜스포머 노드로 symbol_id 전파.
+    /// 통합 AST에서는 old_idx와 new_idx가 같은 배열의 인덱스.
     pub fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
-        if (self.old_symbol_ids.len == 0) return; // 전파 비활성
+        if (self.symbol_ids.items.len == 0) return; // 전파 비활성
         if (new_idx.isNone()) return;
 
         const old_i = @intFromEnum(old_idx);
         const new_i = @intFromEnum(new_idx);
 
-        self.ensureNewSymbolIds(new_i);
+        self.ensureSymbolIds(new_i);
 
-        if (old_i < self.old_symbol_ids.len) {
+        if (old_i < self.symbol_ids.items.len) {
             // ts_as_expression 등 wrapper 노드가 내부 노드와 같은 new_idx를 반환하면
             // wrapper의 null symbol_id가 내부 노드의 유효한 symbol_id를 덮어쓸 수 있음.
             // 이미 유효한 symbol_id가 설정되어 있으면 null로 덮어쓰지 않음.
-            if (self.old_symbol_ids[old_i] != null or self.new_symbol_ids.items[new_i] == null) {
-                self.new_symbol_ids.items[new_i] = self.old_symbol_ids[old_i];
+            if (self.symbol_ids.items[old_i] != null or self.symbol_ids.items[new_i] == null) {
+                self.symbol_ids.items[new_i] = self.symbol_ids.items[old_i];
             }
         }
     }
 
-    /// new_ast 내에서 노드 간 symbol_id 복사 (new → new).
+    /// AST 내에서 노드 간 symbol_id 복사.
     /// 노드 복제 시 symbol_id가 누락되지 않도록 사용.
-    pub fn copyNewSymbolId(self: *Transformer, src_new_idx: NodeIndex, dst_new_idx: NodeIndex) void {
-        if (self.old_symbol_ids.len == 0) return;
-        if (src_new_idx.isNone() or dst_new_idx.isNone()) return;
+    pub fn copySymbolId(self: *Transformer, src_idx: NodeIndex, dst_idx: NodeIndex) void {
+        if (self.symbol_ids.items.len == 0) return;
+        if (src_idx.isNone() or dst_idx.isNone()) return;
 
-        const src_i = @intFromEnum(src_new_idx);
-        const dst_i = @intFromEnum(dst_new_idx);
+        const src_i = @intFromEnum(src_idx);
+        const dst_i = @intFromEnum(dst_idx);
 
-        self.ensureNewSymbolIds(dst_i);
+        self.ensureSymbolIds(dst_i);
 
-        if (src_i < self.new_symbol_ids.items.len) {
-            if (self.new_symbol_ids.items[src_i]) |sid| {
-                self.new_symbol_ids.items[dst_i] = sid;
+        if (src_i < self.symbol_ids.items.len) {
+            if (self.symbol_ids.items[src_i]) |sid| {
+                self.symbol_ids.items[dst_i] = sid;
             }
         }
     }
@@ -982,17 +1002,17 @@ pub const Transformer = struct {
         const new_operand = try self.visitNode(operand_idx);
 
         if (new_operand.isNone()) {
-            const operand_node = self.old_ast.getNode(operand_idx);
+            const operand_node = self.ast.getNode(operand_idx);
             if (operand_node.tag == .class_declaration or operand_node.tag == .function_declaration) {
-                const name_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[operand_node.data.extra]);
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[operand_node.data.extra]);
                 // named class/function → 원본 이름 사용
                 // anonymous class → lowerClassDeclaration이 "_Class"로 합성 (addString)
                 const name_span = if (!name_idx.isNone())
-                    self.old_ast.getNode(name_idx).data.string_ref
+                    self.ast.getNode(name_idx).data.string_ref
                 else
-                    try self.new_ast.addString("_Class");
+                    try self.ast.addString("_Class");
                 const name_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .unary = .{ .operand = name_ref, .flags = node.data.unary.flags } },
@@ -1000,7 +1020,7 @@ pub const Transformer = struct {
             }
         }
 
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
@@ -1010,7 +1030,7 @@ pub const Transformer = struct {
     /// 단항 노드: operand를 재귀 방문 후 복사.
     fn visitUnaryNode(self: *Transformer, node: Node) Error!NodeIndex {
         const new_operand = try self.visitNode(node.data.unary.operand);
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
@@ -1021,7 +1041,7 @@ pub const Transformer = struct {
     fn visitBinaryNode(self: *Transformer, node: Node) Error!NodeIndex {
         const new_left = try self.visitNode(node.data.binary.left);
         const new_right = try self.visitNode(node.data.binary.right);
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .binary = .{
@@ -1045,48 +1065,52 @@ pub const Transformer = struct {
     /// unary/update expression: extra = [operand, operator_and_flags]
     fn visitUnaryExtra(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 1 >= extras.len) return NodeIndex.none;
+        if (e + 1 >= self.ast.extra_data.items.len) return NodeIndex.none;
+
+        const operand_idx = self.readNodeIdx(e, 0);
+        const op_flags = self.readU32(e, 1);
 
         // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
         if (node.tag == .update_expression and self.options.unsupported.class) {
-            const operand_idx: NodeIndex = @enumFromInt(extras[e]);
-            const operand = self.old_ast.getNode(operand_idx);
+            const operand = self.ast.getNode(operand_idx);
             if (operand.tag == .private_field_expression) {
-                const op_flags = extras[e + 1];
                 if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {
                     return try result;
                 }
             }
         }
 
-        const new_operand = try self.visitNode(@enumFromInt(extras[e]));
-        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_operand), extras[e + 1] });
-        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+        const new_operand = try self.visitNode(operand_idx);
+        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_operand), op_flags });
+        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
     }
 
     /// tagged_template_expression: extra = [tag, template, flags]
     fn visitTaggedTemplate(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 2 >= extras.len) return NodeIndex.none;
-        const new_tag = try self.visitNode(@enumFromInt(extras[e]));
-        const new_tmpl = try self.visitNode(@enumFromInt(extras[e + 1]));
-        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_tmpl), extras[e + 2] });
-        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+        if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
+        const tag_idx = self.readNodeIdx(e, 0);
+        const tmpl_idx = self.readNodeIdx(e, 1);
+        const flags = self.readU32(e, 2);
+        const new_tag = try self.visitNode(tag_idx);
+        const new_tmpl = try self.visitNode(tmpl_idx);
+        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_tmpl), flags });
+        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
     }
 
     /// member expression: extra = [object, property, flags]
     pub fn visitMemberExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 2 >= extras.len) return NodeIndex.none;
-        const new_left = try self.visitNode(@enumFromInt(extras[e]));
+        if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
+        const left_idx = self.readNodeIdx(e, 0);
+        const right_idx = self.readNodeIdx(e, 1);
+        const flags = self.readU32(e, 2);
+        const new_left = try self.visitNode(left_idx);
         // computed_member: right는 임의 expression. static_member/private_field: right는 식별자 리프.
         // visitNode가 리프를 copyNodeDirect로 처리하므로 동일하게 visitNode 호출.
-        const new_right = try self.visitNode(@enumFromInt(extras[e + 1]));
-        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), extras[e + 2] });
-        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+        const new_right = try self.visitNode(right_idx);
+        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), flags });
+        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
     }
 
     /// 삼항 노드: a, b, c를 재귀 방문 후 복사.
@@ -1094,7 +1118,7 @@ pub const Transformer = struct {
         const new_a = try self.visitNode(node.data.ternary.a);
         const new_b = try self.visitNode(node.data.ternary.b);
         const new_c = try self.visitNode(node.data.ternary.c);
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
@@ -1104,7 +1128,7 @@ pub const Transformer = struct {
     /// 리스트 노드: 각 자식을 방문, .none이 아닌 것만 새 리스트로 수집.
     fn visitListNode(self: *Transformer, node: Node) Error!NodeIndex {
         const new_list = try self.visitExtraList(node.data.list.start, node.data.list.len);
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .list = new_list },
@@ -1120,7 +1144,10 @@ pub const Transformer = struct {
     /// 예: enum 변환 시 visitNode가 IIFE를 반환하면서 `var Color;`을
     ///     pending_nodes에 push → 리스트에 `var Color;` + IIFE 순서로 삽입.
     pub fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
-        const old_indices = self.old_ast.extra_data.items[start .. start + len];
+        // 주의: extra_data.items 슬라이스를 캐시하면 안 됨.
+        // visitNode 내부에서 ast.extra_data에 append하면 배열이 재할당되어
+        // 캐시된 슬라이스가 dangling pointer가 될 수 있다.
+        // 따라서 매 반복마다 start+i로 직접 인덱싱한다.
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1130,7 +1157,10 @@ pub const Transformer = struct {
         const pending_top = self.pending_nodes.items.len;
         defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-        for (old_indices) |raw_idx| {
+        var i: u32 = 0;
+        while (i < len) : (i += 1) {
+            // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
+            const raw_idx = self.ast.extra_data.items[start + i];
             const new_child = try self.visitNode(@enumFromInt(raw_idx));
 
             // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
@@ -1144,7 +1174,7 @@ pub const Transformer = struct {
             }
         }
 
-        return self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNodeList(self.scratch.items[scratch_top..]);
     }
 
     // ================================================================
@@ -1160,42 +1190,45 @@ pub const Transformer = struct {
     /// Flow match expression → (function(_m){if(_m===P){B}else if...})(expr)
     fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
         const span = node.span;
-        const extras = self.old_ast.extra_data.items;
         const e = node.data.extra;
-        const discriminant_idx: NodeIndex = @enumFromInt(extras[e]);
-        const arms_start = extras[e + 1];
-        const arms_len = extras[e + 2];
+        const discriminant_idx = self.readNodeIdx(e, 0);
+        const arms_start = self.readU32(e, 1);
+        const arms_len = self.readU32(e, 2);
+
+        // arm 인덱스를 미리 로컬에 복사 (visitNode가 extra_data를 재할당할 수 있으므로)
+        const arm_indices = try self.allocator.alloc(u32, arms_len);
+        defer self.allocator.free(arm_indices);
+        for (0..arms_len) |i| {
+            arm_indices[i] = self.ast.extra_data.items[arms_start + i];
+        }
 
         const new_discriminant = try self.visitNode(discriminant_idx);
 
         // 임시 변수 _m
         const match_var = try es_helpers.makeTempVarSpan(self);
         const match_param = try es_helpers.makeBindingIdentifier(self, match_var);
-
-        // arms → if-else chain 구성 (뒤에서부터)
-        const arm_indices = extras[arms_start .. arms_start + arms_len];
         var else_branch: NodeIndex = .none;
 
         var i: usize = arm_indices.len;
         while (i > 0) {
             i -= 1;
-            const arm = self.old_ast.getNode(@enumFromInt(arm_indices[i]));
+            const arm = self.ast.getNode(@enumFromInt(arm_indices[i]));
             const pattern = arm.data.binary.left;
             const body_idx = arm.data.binary.right;
             const new_body_raw = try self.visitNode(body_idx);
             // body를 { return body; } 또는 block 그대로 사용
-            const body_node = self.new_ast.getNode(new_body_raw);
+            const body_node = self.ast.getNode(new_body_raw);
             const new_body = if (body_node.tag == .block_statement)
                 new_body_raw
             else blk: {
                 // expression → { return expr; }
-                const return_stmt = try self.new_ast.addNode(.{
+                const return_stmt = try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = span,
                     .data = .{ .unary = .{ .operand = new_body_raw, .flags = 0 } },
                 });
-                const stmts = try self.new_ast.addNodeList(&.{return_stmt});
-                break :blk try self.new_ast.addNode(.{
+                const stmts = try self.ast.addNodeList(&.{return_stmt});
+                break :blk try self.ast.addNode(.{
                     .tag = .block_statement,
                     .span = span,
                     .data = .{ .list = stmts },
@@ -1203,10 +1236,10 @@ pub const Transformer = struct {
             };
 
             // wildcard `_` 감지
-            const pat_node = self.old_ast.getNode(pattern);
+            const pat_node = self.ast.getNode(pattern);
             const is_wildcard = blk: {
                 if (pat_node.tag == .identifier_reference) {
-                    const text = self.old_ast.source[pat_node.span.start..pat_node.span.end];
+                    const text = self.ast.source[pat_node.span.start..pat_node.span.end];
                     break :blk std.mem.eql(u8, text, "_");
                 }
                 break :blk false;
@@ -1218,7 +1251,7 @@ pub const Transformer = struct {
                 const new_pattern = try self.visitNode(pattern);
                 const match_ref = try es_helpers.makeTempVarRef(self, match_var, match_var);
                 // _m === pattern
-                const test_expr = try self.new_ast.addNode(.{
+                const test_expr = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = span,
                     .data = .{ .binary = .{
@@ -1227,7 +1260,7 @@ pub const Transformer = struct {
                         .flags = @intFromEnum(token_mod.Kind.eq3),
                     } },
                 });
-                else_branch = try self.new_ast.addNode(.{
+                else_branch = try self.ast.addNode(.{
                     .tag = .if_statement,
                     .span = span,
                     .data = .{ .ternary = .{ .a = test_expr, .b = new_body, .c = else_branch } },
@@ -1237,17 +1270,17 @@ pub const Transformer = struct {
 
         // function(_m) { if-chain }
         const body_list = if (!else_branch.isNone())
-            try self.new_ast.addNodeList(&.{else_branch})
+            try self.ast.addNodeList(&.{else_branch})
         else
             @import("../parser/ast.zig").NodeList{ .start = 0, .len = 0 };
-        const fn_body = try self.new_ast.addNode(.{
+        const fn_body = try self.ast.addNode(.{
             .tag = .block_statement,
             .span = span,
             .data = .{ .list = body_list },
         });
         // function extra: [name, params_start, params_len, body, flags, return_type]
-        const fn_params_list = try self.new_ast.addNodeList(&.{match_param});
-        const fn_extra = try self.new_ast.addExtras(&.{
+        const fn_params_list = try self.ast.addNodeList(&.{match_param});
+        const fn_extra = try self.ast.addExtras(&.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
             fn_params_list.start,
             fn_params_list.len,
@@ -1255,7 +1288,7 @@ pub const Transformer = struct {
             0, // flags
             @intFromEnum(NodeIndex.none), // return type
         });
-        const fn_expr = try self.new_ast.addNode(.{
+        const fn_expr = try self.ast.addNode(.{
             .tag = .function_expression,
             .span = span,
             .data = .{ .extra = fn_extra },
@@ -1265,14 +1298,14 @@ pub const Transformer = struct {
         // function expression을 parenthesized로 감싸서 IIFE 형태로 만듦
         const paren_fn = try es_helpers.makeParenExpr(self, fn_expr, span);
         // call_expression extra: [callee, args_start, args_len, flags]
-        const args_list = try self.new_ast.addNodeList(&.{new_discriminant});
-        const call_extra = try self.new_ast.addExtras(&.{
+        const args_list = try self.ast.addNodeList(&.{new_discriminant});
+        const call_extra = try self.ast.addExtras(&.{
             @intFromEnum(paren_fn),
             args_list.start,
             args_list.len,
             0, // flags
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .call_expression,
             .span = span,
             .data = .{ .extra = call_extra },
@@ -1285,7 +1318,7 @@ pub const Transformer = struct {
     ///
     /// extra = [name, params_start, params_len, body]
     fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex {
-        const extras = self.old_ast.extra_data.items;
+        const extras = self.ast.extra_data.items;
         const e = node.data.extra;
         const name_idx: NodeIndex = @enumFromInt(extras[e]);
         const params_start = extras[e + 1];
@@ -1294,8 +1327,8 @@ pub const Transformer = struct {
         const span = node.span;
 
         // 원본 이름에서 _withRef suffix 생성
-        const name_node = self.old_ast.getNode(name_idx);
-        const name_text = self.old_ast.source[name_node.span.start..name_node.span.end];
+        const name_node = self.ast.getNode(name_idx);
+        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
 
         const suffix = "_withRef";
         const with_ref_buf = try self.allocator.alloc(u8, name_text.len + suffix.len);
@@ -1303,7 +1336,7 @@ pub const Transformer = struct {
         @memcpy(with_ref_buf[name_text.len..], suffix);
 
         // 1) function Name_withRef({...props}, ref) { ... } 생성
-        const with_ref_span = try self.new_ast.addString(with_ref_buf);
+        const with_ref_span = try self.ast.addString(with_ref_buf);
         const with_ref_name = try es_helpers.makeBindingIdentifier(self, with_ref_span);
 
         // ES2015 params lowering
@@ -1327,7 +1360,7 @@ pub const Transformer = struct {
         }
 
         const none = @intFromEnum(NodeIndex.none);
-        const func_extra = try self.new_ast.addExtras(&.{
+        const func_extra = try self.ast.addExtras(&.{
             @intFromEnum(with_ref_name),
             new_params.start,
             new_params.len,
@@ -1335,7 +1368,7 @@ pub const Transformer = struct {
             0, // flags
             none, // return_type
         });
-        const inner_func = try self.new_ast.addNode(.{
+        const inner_func = try self.ast.addNode(.{
             .tag = .function_declaration,
             .span = span,
             .data = .{ .extra = func_extra },
@@ -1352,7 +1385,7 @@ pub const Transformer = struct {
         const arg = try es_helpers.makeIdentifierRef(self, with_ref_buf);
         const call = try es_helpers.makeCallExpr(self, callee, &.{arg}, span);
 
-        const binding_span = try self.new_ast.addString(name_text);
+        const binding_span = try self.ast.addString(name_text);
         const binding = try es_helpers.makeBindingIdentifier(self, binding_span);
         const declarator = try es_helpers.makeDeclarator(self, binding, call, span);
 
@@ -1369,9 +1402,9 @@ pub const Transformer = struct {
         // 괄호를 벗겨서 내부 expression만 반환한다.
         // 단, comma sequence는 괄호가 필요하므로 유지한다.
         if (node.tag == .ts_type_assertion and !operand.isNone()) {
-            const op_node = self.old_ast.getNode(operand);
+            const op_node = self.ast.getNode(operand);
             if (op_node.tag == .parenthesized_expression and !op_node.data.unary.operand.isNone()) {
-                const inner = self.old_ast.getNode(op_node.data.unary.operand);
+                const inner = self.ast.getNode(op_node.data.unary.operand);
                 if (inner.tag != .sequence_expression) {
                     return self.visitNode(op_node.data.unary.operand);
                 }
@@ -1395,28 +1428,28 @@ pub const Transformer = struct {
         // expression_statement → unary.operand가 call_expression이어야 함
         const expr_idx = node.data.unary.operand;
         if (expr_idx.isNone()) return false;
-        const expr = self.old_ast.getNode(expr_idx);
+        const expr = self.ast.getNode(expr_idx);
         if (expr.tag != .call_expression) return false;
 
         // call_expression: extra = [callee, args_start, args_len, flags]
         const ce = expr.data.extra;
-        if (ce >= self.old_ast.extra_data.items.len) return false;
-        const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[ce]);
+        if (ce >= self.ast.extra_data.items.len) return false;
+        const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
         if (callee_idx.isNone()) return false;
-        const callee = self.old_ast.getNode(callee_idx);
+        const callee = self.ast.getNode(callee_idx);
 
         // callee가 static_member_expression (console.log)이어야 함
         if (callee.tag != .static_member_expression) return false;
 
         // left가 identifier "console" — extra = [object, property, flags]
         const me = callee.data.extra;
-        if (me >= self.old_ast.extra_data.items.len) return false;
-        const obj_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[me]);
+        if (me >= self.ast.extra_data.items.len) return false;
+        const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
         if (obj_idx.isNone()) return false;
-        const obj = self.old_ast.getNode(obj_idx);
+        const obj = self.ast.getNode(obj_idx);
         if (obj.tag != .identifier_reference) return false;
 
-        const obj_text = self.old_ast.source[obj.data.string_ref.start..obj.data.string_ref.end];
+        const obj_text = self.ast.source[obj.data.string_ref.start..obj.data.string_ref.end];
         return std.mem.eql(u8, obj_text, "console");
     }
 
@@ -1436,7 +1469,7 @@ pub const Transformer = struct {
                 // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
                 // "production" → string_literal, false/true/숫자 → identifier_reference.
                 const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = if (is_string) .string_literal else .identifier_reference,
                     .span = value_span,
                     .data = .{ .string_ref = value_span },
@@ -1449,8 +1482,8 @@ pub const Transformer = struct {
     /// 노드의 소스 텍스트를 반환. identifier_reference와 static_member_expression만 지원.
     fn getNodeText(self: *const Transformer, node: Node) ?[]const u8 {
         return switch (node.tag) {
-            .identifier_reference => self.old_ast.source[node.data.string_ref.start..node.data.string_ref.end],
-            .static_member_expression => self.old_ast.source[node.span.start..node.span.end],
+            .identifier_reference => self.ast.source[node.data.string_ref.start..node.data.string_ref.end],
+            .static_member_expression => self.ast.source[node.span.start..node.span.end],
             else => null,
         };
     }
@@ -1495,24 +1528,24 @@ pub const Transformer = struct {
         const new_name = try self.visitNode(name_idx);
         const new_value = try self.visitNode(value_idx);
         // variable_declarator: extra = [name, type_ann(none), init]
-        const decl_extra = try self.new_ast.addExtras(&.{
+        const decl_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_name),
             @intFromEnum(NodeIndex.none), // type_ann (stripped)
             @intFromEnum(new_value),
         });
-        const declarator = try self.new_ast.addNode(.{
+        const declarator = try self.ast.addNode(.{
             .tag = .variable_declarator,
             .span = node.span,
             .data = .{ .extra = decl_extra },
         });
         const scratch_top = self.scratch.items.len;
         try self.scratch.append(self.allocator, declarator);
-        const list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.scratch.shrinkRetainingCapacity(scratch_top);
         // variable_declaration: extra = [kind_flags, list.start, list.len]
         // kind_flags=2: const
-        const var_extra = try self.new_ast.addExtras(&.{ 2, list.start, list.len });
-        return try self.new_ast.addNode(.{
+        const var_extra = try self.ast.addExtras(&.{ 2, list.start, list.len });
+        return try self.ast.addNode(.{
             .tag = .variable_declaration,
             .span = node.span,
             .data = .{ .extra = var_extra },
@@ -1526,11 +1559,11 @@ pub const Transformer = struct {
         const new_body = try self.visitNode(node.data.binary.right);
         // 타입만 있어 전부 스트리핑됐거나, 빈 블록인 namespace → strip
         if (new_body.isNone()) return .none;
-        const body_node = self.new_ast.getNode(new_body);
+        const body_node = self.ast.getNode(new_body);
         if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
             return .none;
         }
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .ts_module_declaration,
             .span = node.span,
             .data = .{ .binary = .{ .left = new_name, .right = new_body, .flags = 0 } },
@@ -1543,23 +1576,23 @@ pub const Transformer = struct {
 
     /// extra_data에서 연속된 필드를 슬라이스로 읽기.
     fn readExtras(self: *const Transformer, start: u32, len: u32) []const u32 {
-        return self.old_ast.extra_data.items[start .. start + len];
+        return self.ast.extra_data.items[start .. start + len];
     }
 
     /// extra 인덱스로 NodeIndex 읽기.
     pub fn readNodeIdx(self: *const Transformer, extra_start: u32, offset: u32) NodeIndex {
-        return @enumFromInt(self.old_ast.extra_data.items[extra_start + offset]);
+        return @enumFromInt(self.ast.extra_data.items[extra_start + offset]);
     }
 
     /// extra 인덱스로 u32 읽기.
     pub fn readU32(self: *const Transformer, extra_start: u32, offset: u32) u32 {
-        return self.old_ast.extra_data.items[extra_start + offset];
+        return self.ast.extra_data.items[extra_start + offset];
     }
 
     /// 노드를 extra_data로 만들어 새 AST에 추가.
     pub fn addExtraNode(self: *Transformer, tag: Tag, span: Span, extras: []const u32) Error!NodeIndex {
-        const new_extra = try self.new_ast.addExtras(extras);
-        return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
+        const new_extra = try self.ast.addExtras(extras);
+        return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
     }
 
     // ================================================================
@@ -1679,8 +1712,6 @@ pub const Transformer = struct {
         // 파라미터 방문 + parameter property 수집
         const params_start = self.readU32(e, 1);
         const params_len = self.readU32(e, 2);
-        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -1703,7 +1734,7 @@ pub const Transformer = struct {
                 .prop_names = undefined,
                 .prop_count = 0,
             };
-        } else try self.visitParamsCollectProperties(old_params);
+        } else try self.visitParamsCollectProperties(params_start, params_len);
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 3);
@@ -1730,7 +1761,7 @@ pub const Transformer = struct {
             var capture_count: usize = 0;
 
             if (self.needs_this_var) {
-                const this_init = try self.new_ast.addNode(.{
+                const this_init = try self.ast.addNode(.{
                     .tag = .this_expression,
                     .span = node.span,
                     .data = .{ .none = 0 },
@@ -1739,8 +1770,8 @@ pub const Transformer = struct {
                 capture_count += 1;
             }
             if (self.needs_arguments_var) {
-                const args_span = try self.new_ast.addString("arguments");
-                const args_init = try self.new_ast.addNode(.{
+                const args_span = try self.ast.addString("arguments");
+                const args_init = try self.ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = args_span,
                     .data = .{ .string_ref = args_span },
@@ -1764,12 +1795,12 @@ pub const Transformer = struct {
         self.super_call_this_alias = saved_super_alias;
 
         // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
-        // 함수 이름을 old_ast에서 추출 (new_name은 아직 extra에 추가 전이므로)
+        // 함수 이름을 ast에서 추출 (new_name은 아직 extra에 추가 전이므로)
         const old_name_idx = self.readNodeIdx(e, 0);
         const func_name_for_sig: ?[]const u8 = if (!old_name_idx.isNone()) blk: {
-            const old_name_node = self.old_ast.getNode(old_name_idx);
+            const old_name_node = self.ast.getNode(old_name_idx);
             if (old_name_node.tag == .binding_identifier or old_name_node.tag == .identifier_reference) {
-                break :blk self.old_ast.getText(old_name_node.data.string_ref);
+                break :blk self.ast.getText(old_name_node.data.string_ref);
             }
             break :blk null;
         } else null;
@@ -1795,7 +1826,7 @@ pub const Transformer = struct {
         prop_count: usize,
     };
 
-    fn visitParamsCollectProperties(self: *Transformer, old_params: []const u32) Error!ParamPropertyResult {
+    fn visitParamsCollectProperties(self: *Transformer, vp_start: u32, vp_len: u32) Error!ParamPropertyResult {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -1805,14 +1836,17 @@ pub const Transformer = struct {
             .prop_count = 0,
         };
 
-        for (old_params) |raw_idx| {
+        // visitNode가 AST를 변형하므로 인덱스 루프 사용
+        var i_loop: u32 = 0;
+        while (i_loop < vp_len) : (i_loop += 1) {
+            const raw_idx = self.ast.extra_data.items[vp_start + i_loop];
             const param_idx: NodeIndex = @enumFromInt(raw_idx);
             if (param_idx.isNone()) continue;
-            const param_node = self.old_ast.getNode(param_idx);
+            const param_node = self.ast.getNode(param_idx);
             // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             // flags != 0 → parameter property (public/private/protected/readonly/override)
-            if (param_node.tag == .formal_parameter and self.old_ast.extra_data.items[param_node.data.extra + 3] != 0) {
-                const inner = try self.visitNode(@enumFromInt(self.old_ast.extra_data.items[param_node.data.extra]));
+            if (param_node.tag == .formal_parameter and self.ast.extra_data.items[param_node.data.extra + 3] != 0) {
+                const inner = try self.visitNode(@enumFromInt(self.ast.extra_data.items[param_node.data.extra]));
                 try self.scratch.append(self.allocator, inner);
                 if (result.prop_count < result.prop_names.len) {
                     result.prop_names[result.prop_count] = inner;
@@ -1826,13 +1860,13 @@ pub const Transformer = struct {
             }
         }
 
-        result.new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        result.new_params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         return result;
     }
 
     /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다.
     fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
-        const body = self.new_ast.getNode(body_idx);
+        const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement) return body_idx;
 
         const old_list = body.data.list;
@@ -1841,28 +1875,28 @@ pub const Transformer = struct {
 
         // this.x = x 문들을 먼저 추가
         for (prop_names) |name_idx| {
-            const name_node = self.new_ast.getNode(name_idx);
+            const name_node = self.ast.getNode(name_idx);
             // this 노드
-            const this_node = try self.new_ast.addNode(.{
+            const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = name_node.span,
                 .data = .{ .none = 0 },
             });
             // this.x (static member) — extra = [object, property, flags]
-            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
-            const member = try self.new_ast.addNode(.{
+            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
+            const member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = name_node.span,
                 .data = .{ .extra = member_extra },
             });
             // this.x = x (assignment)
-            const assign = try self.new_ast.addNode(.{
+            const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = name_node.span,
                 .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
             });
             // expression_statement
-            const stmt = try self.new_ast.addNode(.{
+            const stmt = try self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = name_node.span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -1871,13 +1905,13 @@ pub const Transformer = struct {
         }
 
         // 기존 바디 문들을 추가
-        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
             try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
         }
 
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.new_ast.addNode(.{
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{
             .tag = .block_statement,
             .span = body.span,
             .data = .{ .list = new_list },
@@ -1886,7 +1920,7 @@ pub const Transformer = struct {
 
     /// block_statement / program / function_body 앞에 문들을 삽입한다.
     pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
-        const body = self.new_ast.getNode(body_idx);
+        const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) return body_idx;
 
         const old_list = body.data.list;
@@ -1897,13 +1931,13 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, stmt);
         }
 
-        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
             try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
         }
 
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.new_ast.addNode(.{
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{
             .tag = body.tag,
             .span = body.span,
             .data = .{ .list = new_list },
@@ -1912,8 +1946,8 @@ pub const Transformer = struct {
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
     pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
-        const name_span = try self.new_ast.addString(name);
-        const binding = try self.new_ast.addNode(.{
+        const name_span = try self.ast.addString(name);
+        const binding = try self.ast.addNode(.{
             .tag = .binding_identifier,
             .span = name_span,
             .data = .{ .string_ref = name_span },
@@ -1924,7 +1958,7 @@ pub const Transformer = struct {
             @intFromEnum(binding), none, @intFromEnum(init_value),
         });
 
-        const decl_list = try self.new_ast.addNodeList(&.{declarator});
+        const decl_list = try self.ast.addNodeList(&.{declarator});
         return self.addExtraNode(.variable_declaration, span, &.{
             0, // var
             decl_list.start,
@@ -1945,8 +1979,8 @@ pub const Transformer = struct {
         while (i < self.temp_var_counter) : (i += 1) {
             var buf: [16]u8 = undefined;
             const name = es_helpers.tempVarName(i, &buf);
-            const name_span = try self.new_ast.addString(name);
-            const binding = try self.new_ast.addNode(.{
+            const name_span = try self.ast.addString(name);
+            const binding = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = name_span,
                 .data = .{ .string_ref = name_span },
@@ -1958,7 +1992,7 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, declarator);
         }
 
-        const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
             0, // var
             decl_list.start,
@@ -1972,12 +2006,14 @@ pub const Transformer = struct {
     /// flags: 0x01 = async
     fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 2 >= extras.len) return NodeIndex.none;
-        const new_params = try self.visitNode(@enumFromInt(extras[e]));
-        const new_body = try self.visitNode(@enumFromInt(extras[e + 1]));
-        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), extras[e + 2] });
-        return self.new_ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
+        if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
+        const params_idx = self.readNodeIdx(e, 0);
+        const body_idx = self.readNodeIdx(e, 1);
+        const flags = self.readU32(e, 2);
+        const new_params = try self.visitNode(params_idx);
+        const new_body = try self.visitNode(body_idx);
+        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
+        return self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
     }
 
     /// class_declaration / class_expression
@@ -2034,7 +2070,7 @@ pub const Transformer = struct {
 
             // ES2022 다운레벨링: static block → IIFE (target < es2022)
             // had_private_methods가 true이면 lowerPrivateMethods가 이미 body를
-            // new_ast로 변환했으므로, lowerStaticBlocks(old_ast 기반)를 건너뛴다.
+            // 이미 변환했으므로, lowerStaticBlocks(파서 노드 기반)를 건너뛴다.
             // lowerPrivateMethods 내의 visitNode가 static block도 이미 처리.
             if (self.options.unsupported.class_static_block and !had_private_methods) {
                 var new_body: NodeIndex = .none;
@@ -2118,8 +2154,9 @@ pub const Transformer = struct {
 
         // 원본 class_body를 직접 순회
         const body_idx = self.readNodeIdx(e, 2);
-        const body_node = self.old_ast.getNode(body_idx);
-        const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+        const body_node = self.ast.getNode(body_idx);
+        const body_members_start = body_node.data.list.start;
+        const body_members_len = body_node.data.list.len;
 
         // 멤버 분류: class_members(새 body), field_assignments(constructor 이동 대상),
         // member_decorators(experimental decorator 대상)를 동시에 수집한다.
@@ -2170,8 +2207,13 @@ pub const Transformer = struct {
             ctx.class_name_span = self.getClassNameSpan(new_name);
         }
 
-        for (body_members) |raw_idx| {
-            try self.classifyClassMember(raw_idx, &ctx);
+        // classifyClassMember가 AST를 변형하므로 인덱스 루프 사용
+        {
+            var i_bm: u32 = 0;
+            while (i_bm < body_members_len) : (i_bm += 1) {
+                const raw_idx = self.ast.extra_data.items[body_members_start + i_bm];
+                try self.classifyClassMember(raw_idx, &ctx);
+            }
         }
 
         // computed key 호이스트: class 전에 var _a; _a = foo; 삽입 (esbuild 호환)
@@ -2180,7 +2222,7 @@ pub const Transformer = struct {
             var computed_idx: u8 = 0;
             for (field_assignments.items) |*field| {
                 if (field.is_computed) {
-                    const key_node = self.new_ast.getNode(field.key);
+                    const key_node = self.ast.getNode(field.key);
                     const actual_key = if (key_node.tag == .computed_property_key)
                         key_node.data.unary.operand
                     else
@@ -2190,26 +2232,26 @@ pub const Transformer = struct {
                     var name_buf: [4]u8 = undefined;
                     name_buf[0] = '_';
                     name_buf[1] = 'a' + computed_idx;
-                    const temp_span = try self.new_ast.addString(name_buf[0..2]);
+                    const temp_span = try self.ast.addString(name_buf[0..2]);
                     computed_idx += 1;
-                    const temp_binding = try self.new_ast.addNode(.{
+                    const temp_binding = try self.ast.addNode(.{
                         .tag = .binding_identifier,
                         .span = temp_span,
                         .data = .{ .string_ref = temp_span },
                     });
-                    const declarator_extra = try self.new_ast.addExtras(&.{
+                    const declarator_extra = try self.ast.addExtras(&.{
                         @intFromEnum(temp_binding),
                         @intFromEnum(NodeIndex.none),
                         @intFromEnum(NodeIndex.none),
                     });
-                    const declarator = try self.new_ast.addNode(.{
+                    const declarator = try self.ast.addNode(.{
                         .tag = .variable_declarator,
                         .span = field.span,
                         .data = .{ .extra = declarator_extra },
                     });
-                    const decl_list = try self.new_ast.addNodeList(&.{declarator});
-                    const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
-                    const var_decl = try self.new_ast.addNode(.{
+                    const decl_list = try self.ast.addNodeList(&.{declarator});
+                    const var_decl_extra = try self.ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
+                    const var_decl = try self.ast.addNode(.{
                         .tag = .variable_declaration,
                         .span = field.span,
                         .data = .{ .extra = var_decl_extra },
@@ -2217,17 +2259,17 @@ pub const Transformer = struct {
                     try self.pending_nodes.append(self.allocator, var_decl);
 
                     // _a = foo; 대입
-                    const temp_ref = try self.new_ast.addNode(.{
+                    const temp_ref = try self.ast.addNode(.{
                         .tag = .identifier_reference,
                         .span = temp_span,
                         .data = .{ .string_ref = temp_span },
                     });
-                    const assign = try self.new_ast.addNode(.{
+                    const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
                         .span = field.span,
                         .data = .{ .binary = .{ .left = temp_ref, .right = actual_key, .flags = 0 } },
                     });
-                    const assign_stmt = try self.new_ast.addNode(.{
+                    const assign_stmt = try self.ast.addNode(.{
                         .tag = .expression_statement,
                         .span = field.span,
                         .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -2235,7 +2277,7 @@ pub const Transformer = struct {
                     try self.pending_nodes.append(self.allocator, assign_stmt);
 
                     // field의 key를 임시 변수로 교체
-                    const new_computed = try self.new_ast.addNode(.{
+                    const new_computed = try self.ast.addNode(.{
                         .tag = .computed_property_key,
                         .span = field.span,
                         .data = .{ .unary = .{ .operand = temp_ref, .flags = 0 } },
@@ -2257,8 +2299,8 @@ pub const Transformer = struct {
         }
 
         // class body 노드 생성
-        const body_list = try self.new_ast.addNodeList(class_members.items);
-        const new_body = try self.new_ast.addNode(.{
+        const body_list = try self.ast.addNodeList(class_members.items);
+        const new_body = try self.ast.addNode(.{
             .tag = .class_body,
             .span = body_node.span,
             .data = .{ .list = body_list },
@@ -2326,20 +2368,20 @@ pub const Transformer = struct {
     /// ClassName.key = value; 할당문을 생성한다.
     fn buildStaticFieldAssignment(self: *Transformer, class_name: NodeIndex, field: FieldAssignment) Error!NodeIndex {
         // ClassName
-        const name_node = self.new_ast.getNode(class_name);
-        const cls_ref = try self.new_ast.addNode(.{
+        const name_node = self.ast.getNode(class_name);
+        const cls_ref = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = name_node.span,
             .data = .{ .string_ref = name_node.span },
         });
         const member = if (field.is_computed) blk: {
             // computed: ClassName[key]
-            const me_extra = try self.new_ast.addExtras(&.{
+            const me_extra = try self.ast.addExtras(&.{
                 @intFromEnum(cls_ref),
                 @intFromEnum(field.key),
                 0,
             });
-            break :blk try self.new_ast.addNode(.{
+            break :blk try self.ast.addNode(.{
                 .tag = .computed_member_expression,
                 .span = field.span,
                 .data = .{ .extra = me_extra },
@@ -2348,12 +2390,12 @@ pub const Transformer = struct {
             break :blk try es_helpers.makeStaticMember(self, cls_ref, field.key, field.span);
         };
         // ClassName.key = value
-        const assign = try self.new_ast.addNode(.{
+        const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = field.span,
             .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = field.span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -2391,7 +2433,7 @@ pub const Transformer = struct {
     ) Error!void {
         const member_idx: NodeIndex = @enumFromInt(raw_idx);
         if (member_idx.isNone()) return;
-        const member = self.old_ast.getNode(member_idx);
+        const member = self.ast.getNode(member_idx);
 
         // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
         if (member.tag == .property_definition) {
@@ -2465,7 +2507,7 @@ pub const Transformer = struct {
                 if (ctx.has_super) self.super_call_this_alias = true;
                 defer self.super_call_this_alias = saved_super_alias;
                 const new_init = try self.visitNode(init_idx);
-                const key_node = self.old_ast.getNode(key_idx);
+                const key_node = self.ast.getNode(key_idx);
                 const is_computed = (key_node.tag == .computed_property_key);
                 try field_assignments.append(self.allocator, .{
                     .key = new_key,
@@ -2486,7 +2528,7 @@ pub const Transformer = struct {
             if (ctx.static_field_assignments) |sfa| {
                 const new_key = try self.visitNode(key_idx);
                 const new_init = try self.visitNode(init_idx);
-                const key_node = self.old_ast.getNode(key_idx);
+                const key_node = self.ast.getNode(key_idx);
                 try sfa.append(self.allocator, .{
                     .key = new_key,
                     .value = new_init,
@@ -2523,9 +2565,9 @@ pub const Transformer = struct {
         // constructor 감지
         const is_ctor = if (!is_static) blk: {
             const key_idx = self.readNodeIdx(me, 0);
-            const key_node = self.old_ast.getNode(key_idx);
+            const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .identifier_reference) {
-                const name = self.old_ast.source[key_node.span.start..key_node.span.end];
+                const name = self.ast.source[key_node.span.start..key_node.span.end];
                 break :blk std.mem.eql(u8, name, "constructor");
             }
             break :blk false;
@@ -2625,7 +2667,7 @@ pub const Transformer = struct {
     pub fn visitDecoratorExpression(self: *Transformer, raw_idx: u32) Error!NodeIndex {
         const deco_idx: NodeIndex = @enumFromInt(raw_idx);
         if (deco_idx.isNone()) return .none;
-        const deco_node = self.old_ast.getNode(deco_idx);
+        const deco_node = self.ast.getNode(deco_idx);
         return if (deco_node.tag == .decorator)
             self.visitNode(deco_node.data.unary.operand)
         else
@@ -2656,8 +2698,9 @@ pub const Transformer = struct {
 
         // 2) member decorator (method/property 자체에 붙은 decorator)
         if (deco_len > 0) {
-            const old_deco_indices = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
-            for (old_deco_indices) |raw_idx| {
+            var deco_i: u32 = 0;
+            while (deco_i < deco_len) : (deco_i += 1) {
+                const raw_idx = self.ast.extra_data.items[deco_start + deco_i];
                 try self.scratch.append(self.allocator, try self.visitDecoratorExpression(raw_idx));
             }
         }
@@ -2697,21 +2740,23 @@ pub const Transformer = struct {
         params_len: u32,
     ) Error!void {
         const zero_span = Span{ .start = 0, .end = 0 };
-        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-        for (old_params, 0..) |raw_idx, param_index| {
+        var param_i: u32 = 0;
+        while (param_i < params_len) : (param_i += 1) {
+            const raw_idx = self.ast.extra_data.items[params_start + param_i];
             const p_idx: NodeIndex = @enumFromInt(raw_idx);
             if (p_idx.isNone()) continue;
-            const param = self.old_ast.getNode(p_idx);
+            const param = self.ast.getNode(p_idx);
             if (param.tag != .formal_parameter) continue;
             const pe = param.data.extra;
-            const pdeco_start = self.old_ast.extra_data.items[pe + 4];
-            const pdeco_len = self.old_ast.extra_data.items[pe + 5];
+            const pdeco_start = self.ast.extra_data.items[pe + 4];
+            const pdeco_len = self.ast.extra_data.items[pe + 5];
             if (pdeco_len == 0) continue;
 
-            const pdeco_indices = self.old_ast.extra_data.items[pdeco_start .. pdeco_start + pdeco_len];
-            for (pdeco_indices) |deco_raw_idx| {
+            var pdeco_i: u32 = 0;
+            while (pdeco_i < pdeco_len) : (pdeco_i += 1) {
+                const deco_raw_idx = self.ast.extra_data.items[pdeco_start + pdeco_i];
                 const dec_expr = try self.visitDecoratorExpression(deco_raw_idx);
-                const param_deco = try self.buildDecorateParamCall(param_index, dec_expr, zero_span);
+                const param_deco = try self.buildDecorateParamCall(param_i, dec_expr, zero_span);
                 try list.append(self.allocator, param_deco);
             }
         }
@@ -2724,8 +2769,8 @@ pub const Transformer = struct {
         span: Span,
     ) Error!NodeIndex {
         // callee: __decorateParam
-        const callee_span = try self.new_ast.addString("__decorateParam");
-        const callee = try self.new_ast.addNode(.{
+        const callee_span = try self.ast.addString("__decorateParam");
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = callee_span,
             .data = .{ .string_ref = callee_span },
@@ -2734,15 +2779,15 @@ pub const Transformer = struct {
         // arg1: index (numeric literal)
         var index_buf: [10]u8 = undefined;
         const index_text = std.fmt.bufPrint(&index_buf, "{d}", .{param_index}) catch "0";
-        const index_span = try self.new_ast.addString(index_text);
-        const index_node = try self.new_ast.addNode(.{
+        const index_span = try self.ast.addString(index_text);
+        const index_node = try self.ast.addNode(.{
             .tag = .numeric_literal,
             .span = index_span,
             .data = .{ .number_bytes = @bitCast(@as(f64, @floatFromInt(param_index))) },
         });
 
         // arg2: decorator expression
-        const args = try self.new_ast.addNodeList(&.{ index_node, dec_expr });
+        const args = try self.ast.addNodeList(&.{ index_node, dec_expr });
         return self.addExtraNode(.call_expression, span, &.{
             @intFromEnum(callee), args.start, args.len, 0,
         });
@@ -2757,51 +2802,69 @@ pub const Transformer = struct {
         has_super: bool,
     ) Error!NodeIndex {
         // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
-        const ctor_node = self.new_ast.getNode(ctor_idx);
+        const ctor_node = self.ast.getNode(ctor_idx);
         const ce = ctor_node.data.extra;
-        const ctor_extras = self.new_ast.extra_data.items[ce .. ce + 7];
-        const body_idx: NodeIndex = @enumFromInt(ctor_extras[3]);
+        // extra_data에서 값만 미리 복사 (이후 AST 변형으로 슬라이스가 무효화될 수 있음)
+        const ctor_e0 = self.ast.extra_data.items[ce];
+        const ctor_e1 = self.ast.extra_data.items[ce + 1];
+        const ctor_e2 = self.ast.extra_data.items[ce + 2];
+        const ctor_e3 = self.ast.extra_data.items[ce + 3];
+        const ctor_e4 = self.ast.extra_data.items[ce + 4];
+        const ctor_e5 = self.ast.extra_data.items[ce + 5];
+        const ctor_e6 = self.ast.extra_data.items[ce + 6];
+        const body_idx: NodeIndex = @enumFromInt(ctor_e3);
 
         if (body_idx.isNone()) return ctor_idx;
 
-        const body = self.new_ast.getNode(body_idx);
+        const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement) return ctor_idx;
 
         const old_list = body.data.list;
-        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        const old_stmts_start = old_list.start;
+        const old_stmts_len = old_list.len;
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         // super() 호출을 찾아서 그 뒤에 삽입
-        var insert_pos: usize = 0;
+        // isSuperCallStatement는 읽기만 하므로 슬라이스 안전
+        var insert_pos: u32 = 0;
         if (has_super) {
+            const old_stmts = self.ast.extra_data.items[old_stmts_start .. old_stmts_start + old_stmts_len];
             for (old_stmts, 0..) |raw_idx, idx| {
                 if (self.isSuperCallStatement(@enumFromInt(raw_idx))) {
-                    insert_pos = idx + 1;
+                    insert_pos = @intCast(idx + 1);
                     break;
                 }
             }
         }
 
-        // insert_pos 전의 문장들
-        for (old_stmts[0..insert_pos]) |raw_idx| {
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        // insert_pos 전의 문장들 (읽기만, AST 변형 없음)
+        {
+            var i_pre: u32 = 0;
+            while (i_pre < insert_pos) : (i_pre += 1) {
+                const raw_idx = self.ast.extra_data.items[old_stmts_start + i_pre];
+                try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            }
         }
 
-        // field assignments 삽입
+        // field assignments 삽입 (buildThisAssignment가 AST를 변형)
         for (fields) |field| {
             const assign_stmt = try self.buildThisAssignment(field);
             try self.scratch.append(self.allocator, assign_stmt);
         }
 
-        // insert_pos 후의 문장들
-        for (old_stmts[insert_pos..]) |raw_idx| {
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        // insert_pos 후의 문장들 (buildThisAssignment 이후이므로 인덱스로 접근)
+        {
+            var i_post: u32 = insert_pos;
+            while (i_post < old_stmts_len) : (i_post += 1) {
+                const raw_idx = self.ast.extra_data.items[old_stmts_start + i_post];
+                try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            }
         }
 
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_body = try self.new_ast.addNode(.{
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const new_body = try self.ast.addNode(.{
             .tag = .block_statement,
             .span = body.span,
             .data = .{ .list = new_list },
@@ -2809,27 +2872,27 @@ pub const Transformer = struct {
 
         // constructor method_definition을 새 body로 재생성
         return self.addExtraNode(.method_definition, ctor_node.span, &.{
-            ctor_extras[0],         ctor_extras[1], ctor_extras[2],
-            @intFromEnum(new_body), ctor_extras[4], ctor_extras[5],
-            ctor_extras[6],
+            ctor_e0,                ctor_e1, ctor_e2,
+            @intFromEnum(new_body), ctor_e4, ctor_e5,
+            ctor_e6,
         });
     }
 
     /// super() 호출 expression_statement인지 판별
     fn isSuperCallStatement(self: *const Transformer, idx: NodeIndex) bool {
         if (idx.isNone()) return false;
-        const stmt = self.new_ast.getNode(idx);
+        const stmt = self.ast.getNode(idx);
         if (stmt.tag != .expression_statement) return false;
         const expr_idx = stmt.data.unary.operand;
         if (expr_idx.isNone()) return false;
-        const expr = self.new_ast.getNode(expr_idx);
+        const expr = self.ast.getNode(expr_idx);
         if (expr.tag != .call_expression) return false;
         // call_expression: extra = [callee, args_start, args_len, flags]
         const ce = expr.data.extra;
-        if (ce >= self.new_ast.extra_data.items.len) return false;
-        const callee_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[ce]);
+        if (ce >= self.ast.extra_data.items.len) return false;
+        const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
         if (callee_idx.isNone()) return false;
-        const callee = self.new_ast.getNode(callee_idx);
+        const callee = self.ast.getNode(callee_idx);
         return callee.tag == .super_expression;
     }
 
@@ -2850,40 +2913,40 @@ pub const Transformer = struct {
         // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
         if (has_super) {
             // ...args 파라미터
-            const args_span = try self.new_ast.addString("args");
-            const args_id = try self.new_ast.addNode(.{
+            const args_span = try self.ast.addString("args");
+            const args_id = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = args_span,
                 .data = .{ .string_ref = args_span },
             });
-            const rest = try self.new_ast.addNode(.{
+            const rest = try self.ast.addNode(.{
                 .tag = .rest_element,
                 .span = zero_span,
                 .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
             });
-            params_list = try self.new_ast.addNodeList(&.{rest});
+            params_list = try self.ast.addNodeList(&.{rest});
 
             // super(...args) 호출
-            const super_expr = try self.new_ast.addNode(.{
+            const super_expr = try self.ast.addNode(.{
                 .tag = .super_expression,
                 .span = zero_span,
                 .data = .{ .none = 0 },
             });
-            const args_ref = try self.new_ast.addNode(.{
+            const args_ref = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = args_span,
                 .data = .{ .string_ref = args_span },
             });
-            const spread_args = try self.new_ast.addNode(.{
+            const spread_args = try self.ast.addNode(.{
                 .tag = .spread_element,
                 .span = zero_span,
                 .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
             });
-            const call_args = try self.new_ast.addNodeList(&.{spread_args});
+            const call_args = try self.ast.addNodeList(&.{spread_args});
             const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
                 @intFromEnum(super_expr), call_args.start, call_args.len, 0,
             });
-            const super_stmt = try self.new_ast.addNode(.{
+            const super_stmt = try self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = zero_span,
                 .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
@@ -2897,23 +2960,23 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, stmt);
         }
 
-        const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const body = try self.new_ast.addNode(.{
+        const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const body = try self.ast.addNode(.{
             .tag = .block_statement,
             .span = zero_span,
             .data = .{ .list = body_list },
         });
 
         // constructor key
-        const ctor_span = try self.new_ast.addString("constructor");
-        const ctor_key = try self.new_ast.addNode(.{
+        const ctor_span = try self.ast.addString("constructor");
+        const ctor_key = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = ctor_span,
             .data = .{ .string_ref = ctor_span },
         });
 
         // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
-        const empty_decos = try self.new_ast.addNodeList(&.{});
+        const empty_decos = try self.ast.addNodeList(&.{});
         return self.addExtraNode(.method_definition, zero_span, &.{
             @intFromEnum(ctor_key), params_list.start, params_list.len,
             @intFromEnum(body), 0, // flags=0 (non-static, normal method)
@@ -2923,7 +2986,7 @@ pub const Transformer = struct {
 
     /// this.key = value; expression statement 생성
     fn buildThisAssignment(self: *Transformer, field: FieldAssignment) Error!NodeIndex {
-        const this_node = try self.new_ast.addNode(.{
+        const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = field.span,
             .data = .{ .none = 0 },
@@ -2932,32 +2995,32 @@ pub const Transformer = struct {
         // computed key 또는 string/numeric literal key: this[key] = value
         // 일반 identifier key: this.key = value
         // string literal ("foo")이나 numeric literal (0)은 dot notation 불가 → bracket notation
-        const key_node = self.new_ast.getNode(field.key);
+        const key_node = self.ast.getNode(field.key);
         const needs_bracket = field.is_computed or key_node.tag == .string_literal or key_node.tag == .numeric_literal;
         const member = if (needs_bracket) blk: {
             // computed_property_key의 내부 expression을 꺼냄
             const actual_key = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else field.key;
-            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(actual_key), 0 });
-            break :blk try self.new_ast.addNode(.{
+            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(actual_key), 0 });
+            break :blk try self.ast.addNode(.{
                 .tag = .computed_member_expression,
                 .span = field.span,
                 .data = .{ .extra = member_extra },
             });
         } else blk: {
-            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(field.key), 0 });
-            break :blk try self.new_ast.addNode(.{
+            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(field.key), 0 });
+            break :blk try self.ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = field.span,
                 .data = .{ .extra = member_extra },
             });
         };
 
-        const assign = try self.new_ast.addNode(.{
+        const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = field.span,
             .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = field.span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -2986,16 +3049,16 @@ pub const Transformer = struct {
         ctor_param_decos: []const NodeIndex,
     ) Error!NodeIndex {
         const none = @intFromEnum(NodeIndex.none);
-        const decorate_span = try self.new_ast.addString("__decorateClass");
+        const decorate_span = try self.ast.addString("__decorateClass");
 
         // class 이름 텍스트를 가져옴 (let Foo = class Foo {} 에 필요)
         const class_name_text = if (!new_name.isNone()) blk: {
-            const name_node = self.new_ast.getNode(new_name);
-            break :blk self.new_ast.getText(name_node.data.string_ref);
+            const name_node = self.ast.getNode(new_name);
+            break :blk self.ast.getText(name_node.data.string_ref);
         } else null;
 
         // class node 생성 (decorator 없이)
-        const empty_list = try self.new_ast.addNodeList(&.{});
+        const empty_list = try self.ast.addNodeList(&.{});
         const class_node = try self.addExtraNode(.class_expression, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
@@ -3005,8 +3068,8 @@ pub const Transformer = struct {
         // class decorator 또는 constructor param decorator가 있으면 → let Foo = class Foo {}; 로 변환
         if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
             // let Foo = class Foo {};
-            const name_span = self.new_ast.getNode(new_name).data.string_ref;
-            const var_name = try self.new_ast.addNode(.{
+            const name_span = self.ast.getNode(new_name).data.string_ref;
+            const var_name = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = name_span,
                 .data = .{ .string_ref = name_span },
@@ -3017,7 +3080,7 @@ pub const Transformer = struct {
                 @intFromEnum(NodeIndex.none), // type_ann
                 @intFromEnum(class_node), // init_val
             });
-            const decl_list = try self.new_ast.addNodeList(&.{declarator});
+            const decl_list = try self.ast.addNodeList(&.{declarator});
             const var_decl = try self.addExtraNode(.variable_declaration, node.span, &.{
                 1, decl_list.start, decl_list.len, // 1 = let
             });
@@ -3052,7 +3115,7 @@ pub const Transformer = struct {
         // pending_nodes는 child 앞에 삽입되므로, class 노드도 pending에 넣고
         // decorator 호출을 그 뒤에 추가한 후 .none을 반환한다.
         if (member_decos.len > 0 and class_name_text != null) {
-            const name_span = self.new_ast.getNode(new_name).data.string_ref;
+            const name_span = self.ast.getNode(new_name).data.string_ref;
 
             // class 노드를 pending에 추가
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
@@ -3112,15 +3175,15 @@ pub const Transformer = struct {
         const zero_span = Span{ .start = 0, .end = 0 };
 
         // callee: __decorateClass
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = decorate_span,
             .data = .{ .string_ref = decorate_span },
         });
 
         // arg1: [dec1, dec2, ...]
-        const deco_array_list = try self.new_ast.addNodeList(md.decorators);
-        const deco_array = try self.new_ast.addNode(.{
+        const deco_array_list = try self.ast.addNodeList(md.decorators);
+        const deco_array = try self.ast.addNode(.{
             .tag = .array_expression,
             .span = zero_span,
             .data = .{ .list = deco_array_list },
@@ -3129,14 +3192,14 @@ pub const Transformer = struct {
         // arg2: Foo.prototype (instance) or Foo (static)
         const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
         const target = if (!md.is_static) blk: {
-            const proto_span = try self.new_ast.addString("prototype");
-            const proto_id = try self.new_ast.addNode(.{
+            const proto_span = try self.ast.addString("prototype");
+            const proto_id = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = proto_span,
                 .data = .{ .string_ref = proto_span },
             });
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
-            break :blk try self.new_ast.addNode(.{
+            const me = try self.ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
+            break :blk try self.ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = zero_span,
                 .data = .{ .extra = me },
@@ -3144,20 +3207,20 @@ pub const Transformer = struct {
         } else class_ref;
 
         // arg3: "methodName" 또는 computed key expression
-        const key_node = self.new_ast.getNode(md.key);
+        const key_node = self.ast.getNode(md.key);
         const key_string = if (key_node.tag == .computed_property_key)
             // computed key: [expr] → 그대로 expression 전달
             key_node.data.unary.operand
         else blk: {
             // 일반 key: identifier/string → 따옴표로 감싼 문자열 리터럴
-            const key_text = self.new_ast.getText(key_node.data.string_ref);
+            const key_text = self.ast.getText(key_node.data.string_ref);
             var quoted_buf: [256]u8 = undefined;
             quoted_buf[0] = '"';
             const copy_len = @min(key_text.len, quoted_buf.len - 2);
             @memcpy(quoted_buf[1 .. 1 + copy_len], key_text[0..copy_len]);
             quoted_buf[1 + copy_len] = '"';
-            const quoted_span = try self.new_ast.addString(quoted_buf[0 .. 2 + copy_len]);
-            break :blk try self.new_ast.addNode(.{
+            const quoted_span = try self.ast.addString(quoted_buf[0 .. 2 + copy_len]);
+            break :blk try self.ast.addNode(.{
                 .tag = .string_literal,
                 .span = quoted_span,
                 .data = .{ .string_ref = quoted_span },
@@ -3166,18 +3229,18 @@ pub const Transformer = struct {
 
         // arg4: kind (1=method, 2=property) — string_table에 숫자 텍스트 저장
         const kind_text = if (md.kind == 1) "1" else "2";
-        const kind_span = try self.new_ast.addString(kind_text);
-        const kind_node = try self.new_ast.addNode(.{
+        const kind_span = try self.ast.addString(kind_text);
+        const kind_node = try self.ast.addNode(.{
             .tag = .numeric_literal,
             .span = kind_span,
             .data = .{ .number_bytes = @bitCast(@as(f64, @floatFromInt(md.kind))) },
         });
 
-        const args = try self.new_ast.addNodeList(&.{ deco_array, target, key_string, kind_node });
+        const args = try self.ast.addNodeList(&.{ deco_array, target, key_string, kind_node });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee), args.start, args.len, 0,
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
@@ -3197,7 +3260,7 @@ pub const Transformer = struct {
         const zero_span = Span{ .start = 0, .end = 0 };
 
         // callee: __decorateClass
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = decorate_span,
             .data = .{ .string_ref = decorate_span },
@@ -3214,14 +3277,15 @@ pub const Transformer = struct {
 
         // class decorators
         if (old_deco_len > 0) {
-            const old_deco_indices = self.old_ast.extra_data.items[old_deco_start .. old_deco_start + old_deco_len];
-            for (old_deco_indices) |raw_idx| {
+            var deco_i: u32 = 0;
+            while (deco_i < old_deco_len) : (deco_i += 1) {
+                const raw_idx = self.ast.extra_data.items[old_deco_start + deco_i];
                 try self.scratch.append(self.allocator, try self.visitDecoratorExpression(raw_idx));
             }
         }
 
-        const deco_array_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const deco_array = try self.new_ast.addNode(.{
+        const deco_array_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const deco_array = try self.ast.addNode(.{
             .tag = .array_expression,
             .span = zero_span,
             .data = .{ .list = deco_array_list },
@@ -3230,19 +3294,19 @@ pub const Transformer = struct {
         // arg2: Foo
         const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
 
-        const args = try self.new_ast.addNodeList(&.{ deco_array, class_ref });
+        const args = try self.ast.addNodeList(&.{ deco_array, class_ref });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee), args.start, args.len, 0,
         });
 
         // Foo = __decorateClass([dec], Foo)
         const lhs = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
-        const assign = try self.new_ast.addNode(.{
+        const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = zero_span,
             .data = .{ .binary = .{ .left = lhs, .right = call, .flags = 0 } },
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -3282,18 +3346,17 @@ pub const Transformer = struct {
     /// call_expression: extra = [callee, args_start, args_len, flags]
     pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 3 >= extras.len) return NodeIndex.none;
-        const callee: NodeIndex = @enumFromInt(extras[e]);
-        const args_start = extras[e + 1];
-        const args_len = extras[e + 2];
-        const flags = extras[e + 3];
-        const new_callee = try self.visitNode(callee);
+        if (e + 3 >= self.ast.extra_data.items.len) return NodeIndex.none;
+        const callee_idx = self.readNodeIdx(e, 0);
+        const args_start = self.readU32(e, 1);
+        const args_len = self.readU32(e, 2);
+        const flags = self.readU32(e, 3);
+        const new_callee = try self.visitNode(callee_idx);
         const new_args = try self.visitExtraList(args_start, args_len);
-        const new_extra = try self.new_ast.addExtras(&.{
+        const new_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_callee), new_args.start, new_args.len, flags,
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .call_expression,
             .span = node.span,
             .data = .{ .extra = new_extra },
@@ -3303,18 +3366,17 @@ pub const Transformer = struct {
     /// new_expression: extra = [callee, args_start, args_len, flags]
     fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const extras = self.old_ast.extra_data.items;
-        if (e + 3 >= extras.len) return NodeIndex.none;
-        const callee: NodeIndex = @enumFromInt(extras[e]);
-        const args_start = extras[e + 1];
-        const args_len = extras[e + 2];
-        const flags = extras[e + 3];
-        const new_callee = try self.visitNode(callee);
+        if (e + 3 >= self.ast.extra_data.items.len) return NodeIndex.none;
+        const callee_idx = self.readNodeIdx(e, 0);
+        const args_start = self.readU32(e, 1);
+        const args_len = self.readU32(e, 2);
+        const flags = self.readU32(e, 3);
+        const new_callee = try self.visitNode(callee_idx);
         const new_args = try self.visitExtraList(args_start, args_len);
-        const new_extra = try self.new_ast.addExtras(&.{
+        const new_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_callee), new_args.start, new_args.len, flags,
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .new_expression,
             .span = node.span,
             .data = .{ .extra = new_extra },
@@ -3336,8 +3398,6 @@ pub const Transformer = struct {
         // 파라미터 방문 — ES2015 default/rest/destructuring lowering + parameter property 감지
         const params_start = self.readU32(e, 1);
         const params_len = self.readU32(e, 2);
-        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-
         var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
         defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
 
@@ -3356,7 +3416,7 @@ pub const Transformer = struct {
                 .prop_names = undefined,
                 .prop_count = 0,
             };
-        } else try self.visitParamsCollectProperties(old_params);
+        } else try self.visitParamsCollectProperties(params_start, params_len);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
         const saved_arrow_depth = self.arrow_this_depth;
@@ -3390,7 +3450,7 @@ pub const Transformer = struct {
             var capture_count: usize = 0;
 
             if (self.needs_this_var) {
-                const this_init = try self.new_ast.addNode(.{
+                const this_init = try self.ast.addNode(.{
                     .tag = .this_expression,
                     .span = node.span,
                     .data = .{ .none = 0 },
@@ -3399,8 +3459,8 @@ pub const Transformer = struct {
                 capture_count += 1;
             }
             if (self.needs_arguments_var) {
-                const args_span = try self.new_ast.addString("arguments");
-                const args_init = try self.new_ast.addNode(.{
+                const args_span = try self.ast.addString("arguments");
+                const args_init = try self.ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = args_span,
                     .data = .{ .string_ref = args_span },
@@ -3475,7 +3535,7 @@ pub const Transformer = struct {
         }
         const new_key = try self.visitNode(node.data.binary.left);
         const new_value = try self.visitNode(node.data.binary.right);
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .object_property,
             .span = node.span,
             .data = .{ .binary = .{
@@ -3518,7 +3578,7 @@ pub const Transformer = struct {
 
         // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
         // side-effect import (import 'foo')는 specifier가 없으므로 제거하지 않음.
-        if (self.symbols.len > 0 and self.old_symbol_ids.len > 0 and specs_len > 0) {
+        if (self.symbols.len > 0 and self.symbol_ids.items.len > 0 and specs_len > 0) {
             const all_unused = self.areAllSpecifiersUnused(specs_start, specs_len);
             if (all_unused) return .none;
         }
@@ -3535,10 +3595,10 @@ pub const Transformer = struct {
     fn areAllSpecifiersUnused(self: *Transformer, specs_start: u32, specs_len: u32) bool {
         var i: u32 = 0;
         while (i < specs_len) : (i += 1) {
-            const spec_idx_raw = self.old_ast.extra_data.items[specs_start + i];
+            const spec_idx_raw = self.ast.extra_data.items[specs_start + i];
             const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
             if (spec_idx.isNone()) continue;
-            const spec_node = self.old_ast.getNode(spec_idx);
+            const spec_node = self.ast.getNode(spec_idx);
 
             // type-only specifier (flags & 1 != 0) → 이미 스트리핑됨, 무시
             if (spec_node.tag == .import_specifier and spec_node.data.binary.flags & 1 != 0) continue;
@@ -3556,8 +3616,8 @@ pub const Transformer = struct {
             };
 
             // symbol_ids에서 심볼 ID 조회
-            if (sym_node_idx < self.old_symbol_ids.len) {
-                if (self.old_symbol_ids[sym_node_idx]) |sym_id| {
+            if (sym_node_idx < self.symbol_ids.items.len) {
+                if (self.symbol_ids.items[sym_node_idx]) |sym_id| {
                     if (sym_id < self.symbols.len) {
                         if (self.symbols[sym_id].reference_count > 0) return false;
                         continue; // 미사용 — 다음 specifier 확인
@@ -3711,15 +3771,15 @@ pub const Transformer = struct {
 
     /// 함수 노드에서 이름 텍스트를 추출한다.
     /// function_declaration의 extra[0]이 binding_identifier.
-    /// new_ast의 extra_data에서 읽음 (visitFunction이 이미 new_ast에 노드를 생성했으므로).
+    /// ast의 extra_data에서 읽음 (visitFunction이 이미 노드를 생성했으므로).
     fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
         const e = func_node.data.extra;
-        if (e >= self.new_ast.extra_data.items.len) return null;
-        const name_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[e]);
+        if (e >= self.ast.extra_data.items.len) return null;
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
         if (name_idx.isNone()) return null;
-        const name_node = self.new_ast.getNode(name_idx);
+        const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return null;
-        return self.new_ast.getText(name_node.data.string_ref);
+        return self.ast.getText(name_node.data.string_ref);
     }
 
     /// 변환된 함수 노드가 React 컴포넌트이면 등록 정보를 수집한다.
@@ -3727,7 +3787,7 @@ pub const Transformer = struct {
     fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex) Error!void {
         if (!self.options.react_refresh) return;
 
-        const func_node = self.new_ast.getNode(new_func_idx);
+        const func_node = self.ast.getNode(new_func_idx);
         const name = self.getFunctionName(func_node) orelse return;
         if (!isComponentName(name)) return;
 
@@ -3743,20 +3803,20 @@ pub const Transformer = struct {
     fn makeRefreshHandle(self: *Transformer) Error!Span {
         const idx = self.refresh_registrations.items.len;
         if (idx == 0) {
-            return self.new_ast.addString("_c");
+            return self.ast.addString("_c");
         }
         var buf: [16]u8 = undefined;
         const len = std.fmt.bufPrint(&buf, "_c{d}", .{idx + 1}) catch return error.OutOfMemory;
-        return self.new_ast.addString(len);
+        return self.ast.addString(len);
     }
 
     /// 프로그램 끝에 var _c, _c2; $RefreshReg$(_c, "Name"); ... 를 추가한다.
     fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!NodeIndex {
-        const prog = self.new_ast.getNode(root);
+        const prog = self.ast.getNode(root);
         if (prog.tag != .program) return root;
 
         const old_list = prog.data.list;
-        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3777,7 +3837,7 @@ pub const Transformer = struct {
         try self.scratch.append(self.allocator, var_decl);
 
         // var _s = $RefreshSig$(); 선언들
-        const refresh_sig_span = try self.new_ast.addString("$RefreshSig$");
+        const refresh_sig_span = try self.ast.addString("$RefreshSig$");
         for (self.refresh_signatures.items) |sig| {
             const sig_decl = try self.buildRefreshSigDeclaration(sig, refresh_sig_span);
             try self.scratch.append(self.allocator, sig_decl);
@@ -3790,14 +3850,14 @@ pub const Transformer = struct {
         }
 
         // $RefreshReg$(_c, "ComponentName"); 호출들
-        const refresh_reg_span = try self.new_ast.addString("$RefreshReg$");
+        const refresh_reg_span = try self.ast.addString("$RefreshReg$");
         for (self.refresh_registrations.items) |reg| {
             const reg_stmt = try self.buildRefreshRegCall(reg, refresh_reg_span);
             try self.scratch.append(self.allocator, reg_stmt);
         }
 
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.new_ast.addNode(.{
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{
             .tag = .program,
             .span = prog.span,
             .data = .{ .list = new_list },
@@ -3808,22 +3868,22 @@ pub const Transformer = struct {
     fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Error!NodeIndex {
         const zero_span = Span{ .start = 0, .end = 0 };
 
-        const handle_ref = try self.new_ast.addNode(.{
+        const handle_ref = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = reg.handle_span,
             .data = .{ .string_ref = reg.handle_span },
         });
-        const comp_ref = try self.new_ast.addNode(.{
+        const comp_ref = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = zero_span,
-            .data = .{ .string_ref = try self.new_ast.addString(reg.name) },
+            .data = .{ .string_ref = try self.ast.addString(reg.name) },
         });
-        const assign = try self.new_ast.addNode(.{
+        const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = zero_span,
             .data = .{ .binary = .{ .left = handle_ref, .right = comp_ref, .flags = 0 } },
         });
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
@@ -3837,7 +3897,7 @@ pub const Transformer = struct {
         const none = @intFromEnum(NodeIndex.none);
 
         for (self.refresh_registrations.items) |reg| {
-            const binding = try self.new_ast.addNode(.{
+            const binding = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = reg.handle_span,
                 .data = .{ .string_ref = reg.handle_span },
@@ -3852,7 +3912,7 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, declarator);
         }
 
-        const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         return self.addExtraNode(.variable_declaration, .{ .start = 0, .end = 0 }, &.{
             0, // var
             decl_list.start,
@@ -3864,13 +3924,13 @@ pub const Transformer = struct {
     fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh_reg_span: Span) Error!NodeIndex {
         const zero_span = Span{ .start = 0, .end = 0 };
 
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = refresh_reg_span,
             .data = .{ .string_ref = refresh_reg_span },
         });
 
-        const handle_ref = try self.new_ast.addNode(.{
+        const handle_ref = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = reg.handle_span,
             .data = .{ .string_ref = reg.handle_span },
@@ -3879,14 +3939,14 @@ pub const Transformer = struct {
         // "ComponentName" 문자열 리터럴 (따옴표 포함)
         var quoted_buf: [256]u8 = undefined;
         const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
-        const quoted_span = try self.new_ast.addString(quoted);
-        const name_str = try self.new_ast.addNode(.{
+        const quoted_span = try self.ast.addString(quoted);
+        const name_str = try self.ast.addNode(.{
             .tag = .string_literal,
             .span = quoted_span,
             .data = .{ .string_ref = quoted_span },
         });
 
-        const args = try self.new_ast.addNodeList(&.{ handle_ref, name_str });
+        const args = try self.ast.addNodeList(&.{ handle_ref, name_str });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee),
             args.start,
@@ -3894,7 +3954,7 @@ pub const Transformer = struct {
             0,
         });
 
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
@@ -3907,12 +3967,12 @@ pub const Transformer = struct {
         const none = @intFromEnum(NodeIndex.none);
 
         // $RefreshSig$() 호출
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = refresh_sig_span,
             .data = .{ .string_ref = refresh_sig_span },
         });
-        const empty_args = try self.new_ast.addNodeList(&.{});
+        const empty_args = try self.ast.addNodeList(&.{});
         const init_call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee),
             empty_args.start,
@@ -3921,7 +3981,7 @@ pub const Transformer = struct {
         });
 
         // var _s = $RefreshSig$();
-        const binding = try self.new_ast.addNode(.{
+        const binding = try self.ast.addNode(.{
             .tag = .binding_identifier,
             .span = sig.handle_span,
             .data = .{ .string_ref = sig.handle_span },
@@ -3932,7 +3992,7 @@ pub const Transformer = struct {
             @intFromEnum(init_call),
         });
 
-        const decl_list = try self.new_ast.addNodeList(&.{declarator});
+        const decl_list = try self.ast.addNodeList(&.{declarator});
         return self.addExtraNode(.variable_declaration, zero_span, &.{
             0, // var
             decl_list.start,
@@ -3945,31 +4005,31 @@ pub const Transformer = struct {
         const zero_span = Span{ .start = 0, .end = 0 };
 
         // _s 식별자
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = sig.handle_span,
             .data = .{ .string_ref = sig.handle_span },
         });
 
         // Component 식별자
-        const comp_ref = try self.new_ast.addNode(.{
+        const comp_ref = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = zero_span,
-            .data = .{ .string_ref = try self.new_ast.addString(sig.component_name) },
+            .data = .{ .string_ref = try self.ast.addString(sig.component_name) },
         });
 
         // "signature" 문자열 리터럴
         var quoted_buf: [1024]u8 = undefined;
         const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{sig.signature}) catch return error.OutOfMemory;
-        const quoted_span = try self.new_ast.addString(quoted);
-        const sig_str = try self.new_ast.addNode(.{
+        const quoted_span = try self.ast.addString(quoted);
+        const sig_str = try self.ast.addNode(.{
             .tag = .string_literal,
             .span = quoted_span,
             .data = .{ .string_ref = quoted_span },
         });
 
         // _s(Component, "signature")
-        const args = try self.new_ast.addNodeList(&.{ comp_ref, sig_str });
+        const args = try self.ast.addNodeList(&.{ comp_ref, sig_str });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee),
             args.start,
@@ -3977,7 +4037,7 @@ pub const Transformer = struct {
             0,
         });
 
-        return self.new_ast.addNode(.{
+        return self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
@@ -3997,7 +4057,7 @@ pub const Transformer = struct {
         return name[3] >= 'A' and name[3] <= 'Z';
     }
 
-    /// old_ast에서 함수 body 내의 Hook 호출을 스캔하여 시그니처 문자열을 생성한다.
+    /// ast에서 함수 body 내의 Hook 호출을 스캔하여 시그니처 문자열을 생성한다.
     /// Hook이 없으면 null 반환.
     fn scanHookSignature(self: *Transformer, func_body_idx: NodeIndex) Error!?[]const u8 {
         if (!self.options.react_refresh) return null;
@@ -4006,12 +4066,12 @@ pub const Transformer = struct {
         var sig_buf: std.ArrayList(u8) = .empty;
         defer sig_buf.deinit(self.allocator);
 
-        // old_ast에서 body의 자식 문장들을 순회
-        const body_node = self.old_ast.getNode(func_body_idx);
+        // ast에서 body의 자식 문장들을 순회
+        const body_node = self.ast.getNode(func_body_idx);
         if (body_node.tag != .block_statement) return null;
 
         const list = body_node.data.list;
-        const stmts = self.old_ast.extra_data.items[list.start .. list.start + list.len];
+        const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
 
         for (stmts) |raw_stmt_idx| {
             const stmt_idx: NodeIndex = @enumFromInt(raw_stmt_idx);
@@ -4023,31 +4083,31 @@ pub const Transformer = struct {
         return try self.allocator.dupe(u8, sig_buf.items);
     }
 
-    /// Hook 호출을 찾아 시그니처 버퍼에 추가한다 (old_ast 기준).
+    /// Hook 호출을 찾아 시그니처 버퍼에 추가한다 (파서 노드 영역 기준).
     /// binding_ctx: 부모 variable_declarator의 LHS 바인딩 텍스트 (null이면 없음).
     fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8), binding_ctx: ?[]const u8) Error!void {
         if (idx.isNone()) return;
-        if (@intFromEnum(idx) >= self.old_ast.nodes.items.len) return;
-        const node = self.old_ast.getNode(idx);
+        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
 
         // call_expression에서 Hook 호출 감지
         if (node.tag == .call_expression) {
             const e = node.data.extra;
-            if (self.old_ast.hasExtra(e, 1)) {
-                const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e]);
-                if (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.old_ast.nodes.items.len) {
-                    const callee = self.old_ast.getNode(callee_idx);
+            if (self.ast.hasExtra(e, 1)) {
+                const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                if (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.ast.nodes.items.len) {
+                    const callee = self.ast.getNode(callee_idx);
                     var hook_name: ?[]const u8 = null;
 
                     if (callee.tag == .identifier_reference) {
-                        const name = self.old_ast.getText(callee.data.string_ref);
+                        const name = self.ast.getText(callee.data.string_ref);
                         if (isHookCall(name)) hook_name = name;
                     } else if (callee.tag == .static_member_expression) {
                         const me = callee.data.binary;
-                        if (!me.right.isNone() and @intFromEnum(me.right) < self.old_ast.nodes.items.len) {
-                            const prop = self.old_ast.getNode(me.right);
+                        if (!me.right.isNone() and @intFromEnum(me.right) < self.ast.nodes.items.len) {
+                            const prop = self.ast.getNode(me.right);
                             if (prop.tag == .identifier_reference) {
-                                const name = self.old_ast.getText(prop.data.string_ref);
+                                const name = self.ast.getText(prop.data.string_ref);
                                 if (isHookCall(name)) hook_name = name;
                             }
                         }
@@ -4064,18 +4124,18 @@ pub const Transformer = struct {
                             try sig_buf.appendSlice(self.allocator, b);
                         }
                         // 첫 번째 인자 포함 (useState/useReducer의 초기값)
-                        if (self.old_ast.hasExtra(e, 3)) {
-                            const args_start = self.old_ast.extra_data.items[e + 1];
-                            const args_len = self.old_ast.extra_data.items[e + 2];
-                            if (args_len > 0 and args_start < self.old_ast.extra_data.items.len) {
-                                const first_arg_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[args_start]);
-                                if (!first_arg_idx.isNone() and @intFromEnum(first_arg_idx) < self.old_ast.nodes.items.len) {
-                                    const first_arg = self.old_ast.getNode(first_arg_idx);
+                        if (self.ast.hasExtra(e, 3)) {
+                            const args_start = self.ast.extra_data.items[e + 1];
+                            const args_len = self.ast.extra_data.items[e + 2];
+                            if (args_len > 0 and args_start < self.ast.extra_data.items.len) {
+                                const first_arg_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+                                if (!first_arg_idx.isNone() and @intFromEnum(first_arg_idx) < self.ast.nodes.items.len) {
+                                    const first_arg = self.ast.getNode(first_arg_idx);
                                     if (first_arg.span.start < first_arg.span.end and
                                         first_arg.span.start & 0x8000_0000 == 0)
                                     {
                                         try sig_buf.append(self.allocator, '(');
-                                        try sig_buf.appendSlice(self.allocator, self.old_ast.source[first_arg.span.start..first_arg.span.end]);
+                                        try sig_buf.appendSlice(self.allocator, self.ast.source[first_arg.span.start..first_arg.span.end]);
                                         try sig_buf.append(self.allocator, ')');
                                     }
                                 }
@@ -4103,11 +4163,11 @@ pub const Transformer = struct {
         // variable_declaration → declarator들 탐색
         if (node.tag == .variable_declaration) {
             const e = node.data.extra;
-            if (self.old_ast.hasExtra(e, 3)) {
-                const list_start = self.old_ast.extra_data.items[e + 1];
-                const list_len = self.old_ast.extra_data.items[e + 2];
-                if (list_start + list_len <= self.old_ast.extra_data.items.len) {
-                    const items = self.old_ast.extra_data.items[list_start .. list_start + list_len];
+            if (self.ast.hasExtra(e, 3)) {
+                const list_start = self.ast.extra_data.items[e + 1];
+                const list_len = self.ast.extra_data.items[e + 2];
+                if (list_start + list_len <= self.ast.extra_data.items.len) {
+                    const items = self.ast.extra_data.items[list_start .. list_start + list_len];
                     for (items) |raw| {
                         try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
                     }
@@ -4119,18 +4179,18 @@ pub const Transformer = struct {
         // variable_declarator → LHS 바인딩 추출 + init 탐색
         if (node.tag == .variable_declarator) {
             const e = node.data.extra;
-            if (self.old_ast.hasExtra(e, 3)) {
+            if (self.ast.hasExtra(e, 3)) {
                 // LHS 바인딩 텍스트 추출 (binding_identifier 또는 array/object pattern)
-                const lhs_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e]);
+                const lhs_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 var lhs_text: ?[]const u8 = null;
-                if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.old_ast.nodes.items.len) {
-                    const lhs = self.old_ast.getNode(lhs_idx);
+                if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len) {
+                    const lhs = self.ast.getNode(lhs_idx);
                     if (lhs.span.start < lhs.span.end and lhs.span.start & 0x8000_0000 == 0) {
-                        lhs_text = self.old_ast.source[lhs.span.start..lhs.span.end];
+                        lhs_text = self.ast.source[lhs.span.start..lhs.span.end];
                     }
                 }
 
-                const init_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e + 2]);
+                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                 try self.findHookCallsInNode(init_idx, sig_buf, lhs_text);
             }
             return;
@@ -4139,8 +4199,8 @@ pub const Transformer = struct {
         // block_statement → 자식 문장들 탐색
         if (node.tag == .block_statement) {
             const l = node.data.list;
-            if (l.len > 0 and l.start + l.len <= self.old_ast.extra_data.items.len) {
-                const items = self.old_ast.extra_data.items[l.start .. l.start + l.len];
+            if (l.len > 0 and l.start + l.len <= self.ast.extra_data.items.len) {
+                const items = self.ast.extra_data.items[l.start .. l.start + l.len];
                 for (items) |raw| {
                     try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
                 }
@@ -4152,11 +4212,11 @@ pub const Transformer = struct {
     fn makeSigHandle(self: *Transformer) Error!Span {
         const idx = self.refresh_signatures.items.len;
         if (idx == 0) {
-            return self.new_ast.addString("_s");
+            return self.ast.addString("_s");
         }
         var buf: [16]u8 = undefined;
         const name = std.fmt.bufPrint(&buf, "_s{d}", .{idx + 1}) catch return error.OutOfMemory;
-        return self.new_ast.addString(name);
+        return self.ast.addString(name);
     }
 
     /// Hook 시그니처가 있는 컴포넌트를 등록하고, body에 _s() 호출을 삽입한다.
@@ -4185,43 +4245,48 @@ pub const Transformer = struct {
 
     /// 블록 body 시작에 _s(); 호출문을 삽입한다.
     fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_span: Span) Error!NodeIndex {
-        const body = self.new_ast.getNode(body_idx);
+        const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement) return body_idx;
 
         const old_list = body.data.list;
-        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        const old_stmts_start = old_list.start;
+        const old_stmts_len = old_list.len;
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         // _s() 호출문
         const zero_span = Span{ .start = 0, .end = 0 };
-        const callee = try self.new_ast.addNode(.{
+        const callee = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = handle_span,
             .data = .{ .string_ref = handle_span },
         });
-        const empty_args = try self.new_ast.addNodeList(&.{});
+        const empty_args = try self.ast.addNodeList(&.{});
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee),
             empty_args.start,
             empty_args.len,
             0,
         });
-        const call_stmt = try self.new_ast.addNode(.{
+        const call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
         });
 
-        // [_s(), ...기존 문장들]
+        // [_s(), ...기존 문장들] — AST 변형 후이므로 인덱스로 접근
         try self.scratch.append(self.allocator, call_stmt);
-        for (old_stmts) |raw_idx| {
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        {
+            var i_s: u32 = 0;
+            while (i_s < old_stmts_len) : (i_s += 1) {
+                const raw_idx = self.ast.extra_data.items[old_stmts_start + i_s];
+                try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            }
         }
 
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.new_ast.addNode(.{
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{
             .tag = .block_statement,
             .span = body.span,
             .data = .{ .list = new_list },

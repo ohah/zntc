@@ -483,6 +483,11 @@ pub const Ast = struct {
     /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
     allocator: std.mem.Allocator,
 
+    /// 파서 노드와 트랜스포머 노드의 경계 인덱스.
+    /// cloneForTransformer() 시 설정된다. 0..transformer_node_start-1은 파서 노드,
+    /// transformer_node_start..은 트랜스포머가 추가한 노드.
+    transformer_node_start: u32 = 0,
+
     /// string_table 마커. Span.start의 bit 31이 1이면 string_table 참조.
     pub const STRING_TABLE_BIT: u32 = 0x80000000;
 
@@ -500,6 +505,29 @@ pub const Ast = struct {
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
+    }
+
+    /// 트랜스포머용 AST 복제본을 생성한다.
+    /// 파서의 nodes/extra_data/string_table을 새 allocator로 복사하고,
+    /// transformer_node_start를 현재 노드 수로 설정한다.
+    /// 이후 addNode/addString 등은 새 allocator로 append된다.
+    ///
+    /// 원본 AST는 변경되지 않으므로 HMR 재처리 등에 안전하다.
+    pub fn cloneForTransformer(source_ast: *const Ast, allocator: std.mem.Allocator) !Ast {
+        var cloned: Ast = .{
+            .nodes = .empty,
+            .extra_data = .empty,
+            .string_table = .empty,
+            .source = source_ast.source,
+            .has_jsx = source_ast.has_jsx,
+            .allocator = allocator,
+            .transformer_node_start = @intCast(source_ast.nodes.items.len),
+        };
+        // 파서 데이터를 새 allocator로 복사
+        try cloned.nodes.appendSlice(allocator, source_ast.nodes.items);
+        try cloned.extra_data.appendSlice(allocator, source_ast.extra_data.items);
+        try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);
+        return cloned;
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.

@@ -58,16 +58,20 @@ pub fn ES2022(comptime Transformer: type) type {
             static_block_iifes: *std.ArrayList(NodeIndex),
             class_name_span: ?Span,
         ) Transformer.Error!bool {
-            const body_node = self.old_ast.getNode(body_idx);
-            const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+            const body_node = self.ast.getNode(body_idx);
+            const body_start = body_node.data.list.start;
+            const body_len = body_node.data.list.len;
 
-            // 먼저 static block이 있는지 빠르게 확인
+            // 먼저 static block이 있는지 빠르게 확인 (read-only 스캔이므로 슬라이스 안전)
             var has_static_block = false;
-            for (body_members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-                if (member.tag == .static_block) {
-                    has_static_block = true;
-                    break;
+            {
+                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
+                for (body_members) |raw_idx| {
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (member.tag == .static_block) {
+                        has_static_block = true;
+                        break;
+                    }
                 }
             }
 
@@ -81,8 +85,11 @@ pub fn ES2022(comptime Transformer: type) type {
             const pending_top = self.pending_nodes.items.len;
             defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-            for (body_members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // while 인덱스 루프: visitNode/buildStaticBlockIIFE가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
+            var j: u32 = 0;
+            while (j < body_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[body_start + j];
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .static_block) {
                     // static block → IIFE로 변환
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
@@ -104,8 +111,8 @@ pub fn ES2022(comptime Transformer: type) type {
             }
 
             // 새 class_body 노드 생성
-            const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            new_body_out.* = try self.new_ast.addNode(.{
+            const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            new_body_out.* = try self.ast.addNode(.{
                 .tag = .class_body,
                 .span = body_node.span,
                 .data = .{ .list = new_list },
@@ -134,35 +141,39 @@ pub fn ES2022(comptime Transformer: type) type {
             mappings: *std.ArrayList(Transformer.PrivateMethodMapping),
             has_super: bool,
         ) Transformer.Error!bool {
-            const body_node = self.old_ast.getNode(body_idx);
-            const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+            const body_node = self.ast.getNode(body_idx);
+            const body_start = body_node.data.list.start;
+            const body_len = body_node.data.list.len;
             const span = body_node.span;
 
-            // ── Pass 1: private method 수집 + pre_stmts 생성 ──
-            for (body_members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-                if (member.tag != .method_definition) continue;
+            // ── Pass 1: private method 수집 + pre_stmts 생성 (read-only 스캔이므로 슬라이스 안전) ──
+            {
+                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
+                for (body_members) |raw_idx| {
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (member.tag != .method_definition) continue;
 
-                const extras = self.old_ast.extra_data.items;
-                const me = member.data.extra;
-                const key: NodeIndex = @enumFromInt(extras[me]);
-                const flags = extras[me + 4];
-                const is_static = (flags & 0x01) != 0;
+                    const extras = self.ast.extra_data.items;
+                    const me = member.data.extra;
+                    const key: NodeIndex = @enumFromInt(extras[me]);
+                    const flags = extras[me + 4];
+                    const is_static = (flags & 0x01) != 0;
 
-                if (key.isNone() or is_static) continue;
-                const key_node = self.old_ast.getNode(key);
-                if (key_node.tag != .private_identifier) continue;
+                    if (key.isNone() or is_static) continue;
+                    const key_node = self.ast.getNode(key);
+                    if (key_node.tag != .private_identifier) continue;
 
-                const orig_name = self.old_ast.source[key_node.span.start..key_node.span.end]; // "#bar"
+                    const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#bar"
 
-                const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
+                    const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
 
-                try mappings.append(self.allocator, .{
-                    .original_name = orig_name,
-                    .weakset_name = names.ws_name,
-                    .func_name = names.fn_name,
-                    .member_idx = @enumFromInt(raw_idx),
-                });
+                    try mappings.append(self.allocator, .{
+                        .original_name = orig_name,
+                        .weakset_name = names.ws_name,
+                        .func_name = names.fn_name,
+                        .member_idx = @enumFromInt(raw_idx),
+                    });
+                }
             }
 
             if (mappings.items.len == 0) return false;
@@ -173,13 +184,16 @@ pub fn ES2022(comptime Transformer: type) type {
             defer self.current_private_methods = saved_private_methods;
 
             // ── Pass 2: pre_stmts 생성 + non-private 멤버 visit (단일 루프) ──
+            // while 인덱스 루프: visitNode/buildStandaloneFunc가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
             var body_nodes: std.ArrayList(NodeIndex) = .empty;
             defer body_nodes.deinit(self.allocator);
 
             var found_constructor = false;
             var mapping_idx: usize = 0;
 
-            for (body_members) |raw_idx| {
+            var j: u32 = 0;
+            while (j < body_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[body_start + j];
                 const member_idx: NodeIndex = @enumFromInt(raw_idx);
 
                 // private method → WeakSet 선언 + standalone function + ctor init
@@ -208,13 +222,13 @@ pub fn ES2022(comptime Transformer: type) type {
 
                 // constructor에 WeakSet.add(this) 주입
                 if (ctor_init_stmts.items.len > 0) {
-                    const new_node = self.new_ast.getNode(new_member);
+                    const new_node = self.ast.getNode(new_member);
                     if (new_node.tag == .method_definition) {
                         const ne = new_node.data.extra;
-                        const nkey: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[ne]);
+                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
                         if (!nkey.isNone()) {
-                            const nk = self.new_ast.getNode(nkey);
-                            const kt = self.new_ast.source[nk.span.start..nk.span.end];
+                            const nk = self.ast.getNode(nkey);
+                            const kt = self.ast.source[nk.span.start..nk.span.end];
                             if (std.mem.eql(u8, kt, "constructor")) {
                                 new_member = try injectIntoMethod(self, new_member, ctor_init_stmts.items);
                                 found_constructor = true;
@@ -233,8 +247,8 @@ pub fn ES2022(comptime Transformer: type) type {
             }
 
             // 새 class_body 생성
-            const new_list = try self.new_ast.addNodeList(body_nodes.items);
-            new_body_out.* = try self.new_ast.addNode(.{
+            const new_list = try self.ast.addNodeList(body_nodes.items);
+            new_body_out.* = try self.ast.addNode(.{
                 .tag = .class_body,
                 .span = span,
                 .data = .{ .list = new_list },
@@ -245,8 +259,8 @@ pub fn ES2022(comptime Transformer: type) type {
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
         fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
-            const node = self.new_ast.getNode(method_node_idx);
-            const extras = self.new_ast.extra_data.items;
+            const node = self.ast.getNode(method_node_idx);
+            const extras = self.ast.extra_data.items;
             const me = node.data.extra;
 
             const saved_key = extras[me];
@@ -259,12 +273,12 @@ pub fn ES2022(comptime Transformer: type) type {
 
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
-            const new_me = try self.new_ast.addExtras(&.{
+            const new_me = try self.ast.addExtras(&.{
                 saved_key,              saved_ps,    saved_pl,
                 @intFromEnum(new_body), saved_flags, saved_deco_start,
                 saved_deco_len,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .method_definition,
                 .span = node.span,
                 .data = .{ .extra = new_me },
@@ -278,31 +292,31 @@ pub fn ES2022(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            var params_list = try self.new_ast.addNodeList(&.{});
+            var params_list = try self.ast.addNodeList(&.{});
 
             if (has_super) {
                 // rest parameter: ...args
-                const args_span = try self.new_ast.addString("args");
-                const args_binding = try self.new_ast.addNode(.{
+                const args_span = try self.ast.addString("args");
+                const args_binding = try self.ast.addNode(.{
                     .tag = .binding_identifier,
                     .span = args_span,
                     .data = .{ .string_ref = args_span },
                 });
-                const rest_param = try self.new_ast.addNode(.{
+                const rest_param = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = args_span,
                     .data = .{ .unary = .{ .operand = args_binding, .flags = 0 } },
                 });
-                params_list = try self.new_ast.addNodeList(&.{rest_param});
+                params_list = try self.ast.addNodeList(&.{rest_param});
 
                 // super(...args)
-                const super_node = try self.new_ast.addNode(.{
+                const super_node = try self.ast.addNode(.{
                     .tag = .super_expression,
                     .span = span,
                     .data = .{ .none = 0 },
                 });
                 const args_ref = try es_helpers.makeIdentifierRef(self, "args");
-                const spread = try self.new_ast.addNode(.{
+                const spread = try self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = span,
                     .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
@@ -316,26 +330,26 @@ pub fn ES2022(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, stmt);
             }
 
-            const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const ctor_body = try self.new_ast.addNode(.{
+            const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const ctor_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
-            const ctor_name_span = try self.new_ast.addString("constructor");
-            const ctor_key = try self.new_ast.addNode(.{
+            const ctor_name_span = try self.ast.addString("constructor");
+            const ctor_key = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = ctor_name_span,
                 .data = .{ .string_ref = ctor_name_span },
             });
-            const ctor_extra = try self.new_ast.addExtras(&.{
+            const ctor_extra = try self.ast.addExtras(&.{
                 @intFromEnum(ctor_key),
                 params_list.start,
                 params_list.len,
                 @intFromEnum(ctor_body),
                 0, 0, 0, // flags, deco_start, deco_len
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .method_definition,
                 .span = span,
                 .data = .{ .extra = ctor_extra },
@@ -345,29 +359,32 @@ pub fn ES2022(comptime Transformer: type) type {
         /// this.#method(args) → __classPrivateMethodGet(this, _set, _fn).call(this, args)
         pub fn lowerPrivateMethodCall(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             // call_expression: extra = [callee, args_start, args_len, flags]
-            const extras = self.old_ast.extra_data.items;
             const ce = node.data.extra;
-            if (ce >= extras.len) return null;
-            const callee_idx: NodeIndex = @enumFromInt(extras[ce]);
+            if (ce >= self.ast.extra_data.items.len) return null;
+            const callee_idx: NodeIndex = self.readNodeIdx(ce, 0);
             if (callee_idx.isNone()) return null;
 
-            const callee_node = self.old_ast.getNode(callee_idx);
+            const callee_node = self.ast.getNode(callee_idx);
             if (callee_node.tag != .private_field_expression) return null;
 
             // private_field_expression: extra = [object, property, flags]
             const pfe = callee_node.data.extra;
-            if (pfe + 1 >= extras.len) return null;
-            const obj_idx: NodeIndex = @enumFromInt(extras[pfe]);
-            const prop_idx: NodeIndex = @enumFromInt(extras[pfe + 1]);
+            if (pfe + 1 >= self.ast.extra_data.items.len) return null;
+            const obj_idx: NodeIndex = self.readNodeIdx(pfe, 0);
+            const prop_idx: NodeIndex = self.readNodeIdx(pfe, 1);
             if (prop_idx.isNone()) return null;
 
-            const prop_node = self.old_ast.getNode(prop_idx);
+            const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
 
-            const orig_name = self.old_ast.source[prop_node.span.start..prop_node.span.end];
+            const orig_name = self.ast.source[prop_node.span.start..prop_node.span.end];
 
             // current_private_methods에서 매핑 찾기
             const mapping = findPrivateMethodMapping(self, orig_name) orelse return null;
+
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const args_start = self.readU32(ce, 1);
+            const args_len = self.readU32(ce, 2);
 
             const new_obj = try self.visitNode(obj_idx);
             const get_call = try buildMethodGetCall(self, new_obj, mapping, node.span);
@@ -375,16 +392,15 @@ pub fn ES2022(comptime Transformer: type) type {
             const call_prop = try es_helpers.makeIdentifierRef(self, "call");
             const callee_member = try es_helpers.makeStaticMember(self, get_call, call_prop, node.span);
 
-            const args_start = extras[ce + 1];
-            const args_len = extras[ce + 2];
-
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             // reuse new_obj instead of visiting again
             try self.scratch.append(self.allocator, new_obj);
 
-            const orig_args = extras[args_start .. args_start + args_len];
-            for (orig_args) |arg_raw| {
+            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < args_len) : (i_loop += 1) {
+                const arg_raw = self.ast.extra_data.items[args_start + i_loop];
                 const new_arg = try self.visitNode(@enumFromInt(arg_raw));
                 if (!new_arg.isNone()) {
                     try self.scratch.append(self.allocator, new_arg);
@@ -397,17 +413,16 @@ pub fn ES2022(comptime Transformer: type) type {
         /// private method 단독 참조 변환:
         ///   this.#method → __classPrivateMethodGet(this, _set, _fn).bind(this)
         pub fn lowerPrivateMethodGet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const pfe = node.data.extra;
-            if (pfe + 1 >= extras.len) return null;
-            const obj_idx: NodeIndex = @enumFromInt(extras[pfe]);
-            const prop_idx: NodeIndex = @enumFromInt(extras[pfe + 1]);
+            if (pfe + 1 >= self.ast.extra_data.items.len) return null;
+            const obj_idx: NodeIndex = self.readNodeIdx(pfe, 0);
+            const prop_idx: NodeIndex = self.readNodeIdx(pfe, 1);
             if (prop_idx.isNone()) return null;
 
-            const prop_node = self.old_ast.getNode(prop_idx);
+            const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
 
-            const orig_name = self.old_ast.source[prop_node.span.start..prop_node.span.end];
+            const orig_name = self.ast.source[prop_node.span.start..prop_node.span.end];
             const mapping = findPrivateMethodMapping(self, orig_name) orelse return null;
 
             const new_obj = try self.visitNode(obj_idx);
@@ -458,8 +473,8 @@ pub fn ES2022(comptime Transformer: type) type {
             const span = static_block_node.span;
 
             // 빈 formal_parameters 노드 생성
-            const empty_params_list = try self.new_ast.addNodeList(&.{});
-            const params = try self.new_ast.addNode(.{
+            const empty_params_list = try self.ast.addNodeList(&.{});
+            const params = try self.ast.addNode(.{
                 .tag = .formal_parameters,
                 .span = span,
                 .data = .{ .list = empty_params_list },
@@ -467,12 +482,12 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // arrow_function_expression: extra = [params, body, flags]
             // flags = 0 (non-async)
-            const arrow_extra = try self.new_ast.addExtras(&.{
+            const arrow_extra = try self.ast.addExtras(&.{
                 @intFromEnum(params),
                 @intFromEnum(new_body),
                 0, // flags
             });
-            const arrow = try self.new_ast.addNode(.{
+            const arrow = try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = span,
                 .data = .{ .extra = arrow_extra },
@@ -482,21 +497,21 @@ pub fn ES2022(comptime Transformer: type) type {
             const paren_arrow = try es_helpers.makeParenExpr(self, arrow, span);
 
             // call_expression: extra = [callee, args_start, args_len, flags]
-            const empty_args = try self.new_ast.addNodeList(&.{});
-            const call = try self.new_ast.addExtras(&.{
+            const empty_args = try self.ast.addNodeList(&.{});
+            const call = try self.ast.addExtras(&.{
                 @intFromEnum(paren_arrow),
                 empty_args.start,
                 empty_args.len,
                 0, // flags
             });
-            const call_node = try self.new_ast.addNode(.{
+            const call_node = try self.ast.addNode(.{
                 .tag = .call_expression,
                 .span = span,
                 .data = .{ .extra = call },
             });
 
             // expression_statement로 감싸기
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = call_node, .flags = 0 } },

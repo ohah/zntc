@@ -27,17 +27,17 @@ pub fn ES2015Shorthand(comptime Transformer: type) type {
             const new_key = try self.visitNode(node.data.binary.left);
 
             // key를 복제하여 value로 사용
-            const key_node = self.new_ast.getNode(new_key);
-            const new_value = try self.new_ast.addNode(.{
+            const key_node = self.ast.getNode(new_key);
+            const new_value = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = key_node.span,
                 .data = .{ .string_ref = key_node.data.string_ref },
             });
             // scope hoisting rename이 value에도 적용되도록 symbol_id 복사.
             // key는 프로퍼티 이름이므로 rename 불필요하나, value는 변수 참조이므로 필요.
-            self.copyNewSymbolId(new_key, new_value);
+            self.copySymbolId(new_key, new_value);
 
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .object_property,
                 .span = node.span,
                 .data = .{ .binary = .{

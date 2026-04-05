@@ -31,12 +31,12 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     self.temp_var_counter += 1;
     var buf: [16]u8 = undefined;
     const name = tempVarName(idx, &buf);
-    return self.new_ast.addString(name);
+    return self.ast.addString(name);
 }
 
 /// 임시 변수 identifier_reference 노드 생성.
 pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = node_span,
         .data = .{ .string_ref = span },
@@ -45,23 +45,23 @@ pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
 
 /// left 노드가 단순 식별자(부작용 없음)인지 판단.
 pub fn isSimpleIdentifier(self: anytype, left_idx: NodeIndex) bool {
-    const left_node = self.old_ast.getNode(left_idx);
+    const left_node = self.ast.getNode(left_idx);
     return left_node.tag == .identifier_reference;
 }
 
 /// `void 0` 노드를 새 AST에 생성.
 pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
-    const zero_span = try self.new_ast.addString("0");
-    const zero_node = try self.new_ast.addNode(.{
+    const zero_span = try self.ast.addString("0");
+    const zero_node = try self.ast.addNode(.{
         .tag = .numeric_literal,
         .span = zero_span,
         .data = .{ .none = 0 },
     });
-    const void_extra = try self.new_ast.addExtras(&.{
+    const void_extra = try self.ast.addExtras(&.{
         @intFromEnum(zero_node),
         @intFromEnum(token_mod.Kind.kw_void),
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .unary_expression,
         .span = span,
         .data = .{ .extra = void_extra },
@@ -70,7 +70,7 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
 
 /// 식을 괄호로 감싼 parenthesized_expression 생성.
 pub fn makeParenExpr(self: anytype, inner: NodeIndex, span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .parenthesized_expression,
         .span = span,
         .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
@@ -80,8 +80,8 @@ pub fn makeParenExpr(self: anytype, inner: NodeIndex, span: Span) !NodeIndex {
 /// 이름 문자열로 identifier_reference 노드 생성.
 /// addString + addNode를 한 번에 수행.
 pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
-    const name_span = try self.new_ast.addString(name);
-    return self.new_ast.addNode(.{
+    const name_span = try self.ast.addString(name);
+    return self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = name_span,
         .data = .{ .string_ref = name_span },
@@ -90,7 +90,7 @@ pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
 
 /// Span으로 identifier_reference 노드 생성 (이미 addString된 span 사용).
 pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = name_span,
         .data = .{ .string_ref = name_span },
@@ -100,8 +100,8 @@ pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
 /// obj.prop static member expression 생성.
 /// extra = [object, property, flags=0]
 pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
-    const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
-    return self.new_ast.addNode(.{
+    const me = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    return self.ast.addNode(.{
         .tag = .static_member_expression,
         .span = span,
         .data = .{ .extra = me },
@@ -112,8 +112,8 @@ pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Sp
 /// 문자열 키("aria-busy")나 숫자 키처럼 dot notation이 불가능한 경우 사용.
 /// extra = [object, property, flags=0]
 pub fn makeComputedMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
-    const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
-    return self.new_ast.addNode(.{
+    const me = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    return self.ast.addNode(.{
         .tag = .computed_member_expression,
         .span = span,
         .data = .{ .extra = me },
@@ -130,12 +130,12 @@ pub fn makeMemberFromKey(self: anytype, obj: NodeIndex, prop: NodeIndex, key_tag
     };
 }
 
-/// old_ast의 key_idx로부터 obj.key 또는 obj[key] member expression 생성.
+/// ast의 key_idx로부터 obj.key 또는 obj[key] member expression 생성.
 /// computed_property_key → 내부 표현식을 unwrap하여 bracket notation.
 /// string_literal, numeric_literal → bracket notation.
 /// 그 외 (identifier) → dot notation (symbol 전파 없음 — 프로퍼티 이름은 리네이밍 대상이 아님).
 pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, span: Span) !NodeIndex {
-    const key_node = self.old_ast.getNode(key_idx);
+    const key_node = self.ast.getNode(key_idx);
     if (key_node.tag == .computed_property_key) {
         const inner = try self.visitNode(key_node.data.unary.operand);
         return makeComputedMember(self, obj, inner, span);
@@ -151,11 +151,11 @@ pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, s
 /// callee(args...) call expression 생성.
 /// extra = [callee, args_start, args_len, flags=0]
 pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, span: Span) !NodeIndex {
-    const args_list = try self.new_ast.addNodeList(args);
-    const call_extra = try self.new_ast.addExtras(&.{
+    const args_list = try self.ast.addNodeList(args);
+    const call_extra = try self.ast.addExtras(&.{
         @intFromEnum(callee), args_list.start, args_list.len, 0,
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .call_expression,
         .span = span,
         .data = .{ .extra = call_extra },
@@ -166,8 +166,8 @@ pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, s
 pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
     var buf: [16]u8 = undefined;
     const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
-    const num_span = try self.new_ast.addString(str);
-    return self.new_ast.addNode(.{
+    const num_span = try self.ast.addString(str);
+    return self.ast.addNode(.{
         .tag = .numeric_literal,
         .span = num_span,
         .data = .{ .none = 0 },
@@ -176,13 +176,13 @@ pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
 
 /// `base == null` 노드를 새 AST에 생성.
 pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
-    const null_span = try self.new_ast.addString("null");
-    const null_node = try self.new_ast.addNode(.{
+    const null_span = try self.ast.addString("null");
+    const null_node = try self.ast.addNode(.{
         .tag = .null_literal,
         .span = null_span,
         .data = .{ .none = 0 },
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .binary_expression,
         .span = span,
         .data = .{ .binary = .{
@@ -196,7 +196,7 @@ pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
 /// binding_identifier 노드 생성 (변수 바인딩용).
 /// span은 이미 addString된 이름 span.
 pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .binding_identifier,
         .span = name_span,
         .data = .{ .string_ref = name_span },
@@ -206,10 +206,10 @@ pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
 /// variable_declarator 노드 생성 (binding + optional init).
 /// extra = [binding, type_annotation(none), init]
 pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: Span) !NodeIndex {
-    const de = try self.new_ast.addExtras(&.{
+    const de = try self.ast.addExtras(&.{
         @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .variable_declarator,
         .span = span,
         .data = .{ .extra = de },
@@ -219,9 +219,9 @@ pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: 
 /// variable_declaration 노드 생성 (var 키워드, declarators 배열).
 /// kind_flags: 0 = var, 1 = let, 2 = const
 pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind_flags: u32, span: Span) !NodeIndex {
-    const decl_list = try self.new_ast.addNodeList(declarators);
-    const var_extra = try self.new_ast.addExtras(&.{ kind_flags, decl_list.start, decl_list.len });
-    return self.new_ast.addNode(.{
+    const decl_list = try self.ast.addNodeList(declarators);
+    const var_extra = try self.ast.addExtras(&.{ kind_flags, decl_list.start, decl_list.len });
+    return self.ast.addNode(.{
         .tag = .variable_declaration,
         .span = span,
         .data = .{ .extra = var_extra },
@@ -230,7 +230,7 @@ pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind_fl
 
 /// expression을 expression_statement로 감싸기.
 pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .expression_statement,
         .span = span,
         .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
@@ -250,7 +250,7 @@ pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) 
     return makeCallExpr(self, callee, args, span);
 }
 
-/// 이미 변환된 프로퍼티 목록(new_ast 노드, spread 포함)을 Object.assign()으로 변환.
+/// 이미 변환된 프로퍼티 목록(ast 노드, spread 포함)을 Object.assign()으로 변환.
 ///
 /// { a: 1, ...obj, b: 2 } → Object.assign({ a: 1 }, obj, { b: 2 })
 ///
@@ -267,7 +267,7 @@ pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span
     var group_start: usize = scratch_top;
 
     for (properties) |prop_idx| {
-        const prop = self.new_ast.getNode(prop_idx);
+        const prop = self.ast.getNode(prop_idx);
         if (prop.tag == .spread_element) {
             // 쌓아둔 non-spread 그룹을 object literal로 플러시
             if (self.scratch.items.len > group_start) {
@@ -297,7 +297,7 @@ pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span
 
     // 첫 인자가 object literal이 아니면 빈 {}를 target으로 삽입
     const need_empty_target = args_slice.len == 0 or blk: {
-        const first_node = self.new_ast.getNode(args_slice[0]);
+        const first_node = self.ast.getNode(args_slice[0]);
         break :blk first_node.tag != .object_expression;
     };
 
@@ -319,8 +319,8 @@ pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span
 
 /// 프로퍼티 배열로 object_expression 생성 (spread 없는 단순 객체).
 fn makeObjectLiteral(self: anytype, props: []const NodeIndex, span: Span) !NodeIndex {
-    const list = try self.new_ast.addNodeList(props);
-    return self.new_ast.addNode(.{
+    const list = try self.ast.addNodeList(props);
+    return self.ast.addNode(.{
         .tag = .object_expression,
         .span = span,
         .data = .{ .list = list },
@@ -353,11 +353,11 @@ pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u
 /// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
 pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_name: []const u8, span: Span) !NodeIndex {
     const ctor_ref = try makeIdentifierRef(self, constructor_name);
-    const empty_args = try self.new_ast.addNodeList(&.{});
-    const new_extra = try self.new_ast.addExtras(&.{
+    const empty_args = try self.ast.addNodeList(&.{});
+    const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(ctor_ref), empty_args.start, empty_args.len, 0,
     });
-    const new_expr = try self.new_ast.addNode(.{
+    const new_expr = try self.ast.addNode(.{
         .tag = .new_expression,
         .span = span,
         .data = .{ .extra = new_extra },
@@ -368,12 +368,12 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 /// method_definition → standalone function declaration으로 추출.
 /// method_definition: extra = [key, params_start, params_len, body, flags, ...]
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
-    const method_node = self.old_ast.getNode(method_idx);
-    const extras = self.old_ast.extra_data.items;
+    const method_node = self.ast.getNode(method_idx);
     const me = method_node.data.extra;
-    const params_start = extras[me + 1];
-    const params_len = extras[me + 2];
-    const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
+    // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+    const params_start = self.ast.extra_data.items[me + 1];
+    const params_len = self.ast.extra_data.items[me + 2];
+    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 3]);
 
     const Self = @TypeOf(self.*);
     const es2015_params_mod = @import("es2015_params.zig");
@@ -398,11 +398,11 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         }
     }
 
-    const name_span = try self.new_ast.addString(name);
+    const name_span = try self.ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
 
     const none = @intFromEnum(NodeIndex.none);
-    const func_extra = try self.new_ast.addExtras(&.{
+    const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(name_node),
         new_params.start,
         new_params.len,
@@ -410,7 +410,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         0,
         none,
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .function_declaration,
         .span = span,
         .data = .{ .extra = func_extra },
@@ -421,7 +421,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
 pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !NodeIndex {
     self.runtime_helpers.class_private_method_init = true;
     const callee = try makeIdentifierRef(self, "__classPrivateMethodInit");
-    const this_node = try self.new_ast.addNode(.{
+    const this_node = try self.ast.addNode(.{
         .tag = .this_expression,
         .span = span,
         .data = .{ .none = 0 },
@@ -437,19 +437,19 @@ pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !N
 
 /// expr을 body로 하는 function expression 생성: function() { return expr; }
 pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
-    const ret = try self.new_ast.addNode(.{
+    const ret = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
         .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
     });
-    const body_list = try self.new_ast.addNodeList(&.{ret});
-    const body_block = try self.new_ast.addNode(.{
+    const body_list = try self.ast.addNodeList(&.{ret});
+    const body_block = try self.ast.addNode(.{
         .tag = .block_statement,
         .span = span,
         .data = .{ .list = body_list },
     });
-    const empty_params = try self.new_ast.addNodeList(&.{});
-    const func_extra = try self.new_ast.addExtras(&.{
+    const empty_params = try self.ast.addNodeList(&.{});
+    const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
         empty_params.start,
         empty_params.len,
@@ -457,7 +457,7 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
         0,
         @intFromEnum(NodeIndex.none),
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .function_expression,
         .span = span,
         .data = .{ .extra = func_extra },
@@ -466,8 +466,8 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
 
 /// body를 감싸는 generator function expression 생성: function*() { ...body... }
 pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIndex {
-    const empty_params = try self.new_ast.addNodeList(&.{});
-    const gen_extra = try self.new_ast.addExtras(&.{
+    const empty_params = try self.ast.addNodeList(&.{});
+    const gen_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
         empty_params.start,
         empty_params.len,
@@ -475,7 +475,7 @@ pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIn
         ast_mod.FunctionFlags.is_generator,
         @intFromEnum(NodeIndex.none),
     });
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .function_expression,
         .span = span,
         .data = .{ .extra = gen_extra },

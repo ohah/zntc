@@ -27,13 +27,13 @@ pub fn ES2015Computed(comptime Transformer: type) type {
     return struct {
         /// object_expression에 computed property가 있는지 확인한다.
         pub fn hasComputedProperty(self: *const Transformer, node: Node) bool {
-            const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .object_property) {
                     const key_idx = member.data.binary.left;
                     if (!key_idx.isNone()) {
-                        const key = self.old_ast.getNode(key_idx);
+                        const key = self.ast.getNode(key_idx);
                         if (key.tag == .computed_property_key) return true;
                     }
                 }
@@ -47,7 +47,8 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         /// → (_a = { a: 1 }, _a[k] = v, _a.b = 2, _a)
         pub fn lowerComputedProperties(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
-            const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            const members_start = node.data.list.start;
+            const members_len = node.data.list.len;
 
             // 임시 변수 생성
             const temp_span = try es_helpers.makeTempVarSpan(self);
@@ -55,33 +56,42 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             // Phase 1: 첫 computed property 이전의 property를 일반 object로 수집
-            var first_computed: usize = members.len;
-            for (members, 0..) |raw_idx, idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-                if (member.tag == .object_property) {
-                    const key_idx = member.data.binary.left;
-                    if (!key_idx.isNone()) {
-                        const key = self.old_ast.getNode(key_idx);
-                        if (key.tag == .computed_property_key) {
-                            first_computed = idx;
-                            break;
+            // 이 루프는 읽기만 하므로 슬라이스 안전
+            var first_computed: usize = members_len;
+            {
+                const members = self.ast.extra_data.items[members_start .. members_start + members_len];
+                for (members, 0..) |raw_idx, idx| {
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (member.tag == .object_property) {
+                        const key_idx = member.data.binary.left;
+                        if (!key_idx.isNone()) {
+                            const key = self.ast.getNode(key_idx);
+                            if (key.tag == .computed_property_key) {
+                                first_computed = idx;
+                                break;
+                            }
                         }
                     }
                 }
             }
 
             // _a = { prop1, prop2, ... } (computed 이전까지)
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
             const obj_scratch_top = self.scratch.items.len;
-            for (members[0..first_computed]) |raw_idx| {
-                const new_member = try self.visitNode(@enumFromInt(raw_idx));
-                if (!new_member.isNone()) {
-                    try self.scratch.append(self.allocator, new_member);
+            {
+                var i_pre: u32 = 0;
+                while (i_pre < @as(u32, @intCast(first_computed))) : (i_pre += 1) {
+                    const raw_idx = self.ast.extra_data.items[members_start + i_pre];
+                    const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                    if (!new_member.isNone()) {
+                        try self.scratch.append(self.allocator, new_member);
+                    }
                 }
             }
-            const obj_list = try self.new_ast.addNodeList(self.scratch.items[obj_scratch_top..]);
+            const obj_list = try self.ast.addNodeList(self.scratch.items[obj_scratch_top..]);
             self.scratch.shrinkRetainingCapacity(obj_scratch_top);
 
-            const obj_node = try self.new_ast.addNode(.{
+            const obj_node = try self.ast.addNode(.{
                 .tag = .object_expression,
                 .span = span,
                 .data = .{ .list = obj_list },
@@ -89,7 +99,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
 
             // _a = { ... }
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-            const init_assign = try self.new_ast.addNode(.{
+            const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = temp_ref, .right = obj_node, .flags = 0 } },
@@ -100,8 +110,11 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, init_assign);
 
             // Phase 2: computed 이후 property를 assignment로 변환
-            for (members[first_computed..]) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            var i_post: u32 = @intCast(first_computed);
+            while (i_post < members_len) : (i_post += 1) {
+                const raw_idx = self.ast.extra_data.items[members_start + i_post];
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (member.tag == .method_definition or member.tag == .spread_element) {
                     // method_definition은 Object.defineProperty로 변환해야 하나
@@ -116,7 +129,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const val_idx = member.data.binary.right;
                 if (key_idx.isNone()) continue;
 
-                const key = self.old_ast.getNode(key_idx);
+                const key = self.ast.getNode(key_idx);
                 const new_val = if (val_idx.isNone())
                     // shorthand → key 복제
                     try self.visitNode(key_idx)
@@ -127,12 +140,12 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const member_expr = if (key.tag == .computed_property_key) blk: {
                     // computed: _a[expr]
                     const inner_key = try self.visitNode(key.data.unary.operand);
-                    const me = try self.new_ast.addExtras(&.{
+                    const me = try self.ast.addExtras(&.{
                         @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
                         @intFromEnum(inner_key),
                         0,
                     });
-                    break :blk try self.new_ast.addNode(.{
+                    break :blk try self.ast.addNode(.{
                         .tag = .computed_member_expression,
                         .span = span,
                         .data = .{ .extra = me },
@@ -140,19 +153,19 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 } else blk: {
                     // static: _a.key
                     const new_key = try self.visitNode(key_idx);
-                    const me = try self.new_ast.addExtras(&.{
+                    const me = try self.ast.addExtras(&.{
                         @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
                         @intFromEnum(new_key),
                         0,
                     });
-                    break :blk try self.new_ast.addNode(.{
+                    break :blk try self.ast.addNode(.{
                         .tag = .static_member_expression,
                         .span = span,
                         .data = .{ .extra = me },
                     });
                 };
 
-                const assign = try self.new_ast.addNode(.{
+                const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
                     .data = .{ .binary = .{ .left = member_expr, .right = new_val, .flags = 0 } },
@@ -164,10 +177,10 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
 
             // (sequence_expression) — 괄호로 감싸야 올바른 우선순위
-            const seq_list = try self.new_ast.addNodeList(self.scratch.items[seq_scratch_top..]);
+            const seq_list = try self.ast.addNodeList(self.scratch.items[seq_scratch_top..]);
             self.scratch.shrinkRetainingCapacity(seq_scratch_top);
 
-            const seq = try self.new_ast.addNode(.{
+            const seq = try self.ast.addNode(.{
                 .tag = .sequence_expression,
                 .span = span,
                 .data = .{ .list = seq_list },

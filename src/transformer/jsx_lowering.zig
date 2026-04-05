@@ -129,7 +129,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// jsx_text → string_literal 변환. 공백만인 텍스트는 .none 반환.
         pub fn lowerJSXText(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const source = self.old_ast.source;
+            const source = self.ast.source;
             const raw = source[node.span.start..node.span.end];
 
             // 공백 트리밍 (esbuild 호환)
@@ -147,8 +147,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // 따옴표로 감싸기 (codegen의 writeStringLiteral이 "..." 형태를 기대)
             // 내부의 " 와 \ 를 이스케이프
             const quoted = try quoteString(self, processed);
-            const str_span = try self.new_ast.addString(quoted);
-            return self.new_ast.addNode(.{
+            const str_span = try self.ast.addString(quoted);
+            return self.ast.addNode(.{
                 .tag = .string_literal,
                 .span = str_span,
                 .data = .{ .string_ref = str_span },
@@ -287,8 +287,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 }
                 // isStaticChildren
                 const bool_text = if (is_static) "true" else "false";
-                const bool_span = try self.new_ast.addString(bool_text);
-                const bool_node = try self.new_ast.addNode(.{
+                const bool_span = try self.ast.addString(bool_text);
+                const bool_node = try self.ast.addNode(.{
                     .tag = .boolean_literal,
                     .span = bool_span,
                     .data = .{ .none = 0 },
@@ -300,8 +300,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, source_obj);
 
                 // this
-                const this_span = try self.new_ast.addString("this");
-                const this_node = try self.new_ast.addNode(.{
+                const this_span = try self.ast.addString("this");
+                const this_node = try self.ast.addNode(.{
                     .tag = .this_expression,
                     .span = this_span,
                     .data = .{ .none = 0 },
@@ -357,8 +357,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try helpers.makeIdentifierRef(self, "undefined"));
                 // isStaticChildren
                 const bool_text = if (is_static) "true" else "false";
-                const bool_span = try self.new_ast.addString(bool_text);
-                const bool_node = try self.new_ast.addNode(.{
+                const bool_span = try self.ast.addString(bool_text);
+                const bool_node = try self.ast.addNode(.{
                     .tag = .boolean_literal,
                     .span = bool_span,
                     .data = .{ .none = 0 },
@@ -367,8 +367,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 // source info
                 try self.scratch.append(self.allocator, try buildDevSourceInfo(self, span));
                 // this
-                const this_span = try self.new_ast.addString("this");
-                const this_node = try self.new_ast.addNode(.{
+                const this_span = try self.ast.addString("this");
+                const this_node = try self.ast.addNode(.{
                     .tag = .this_expression,
                     .span = this_span,
                     .data = .{ .none = 0 },
@@ -422,24 +422,24 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// - 대문자 시작 → identifier_reference (MyComp) — visitNode로 재귀
         /// - member expression → 그대로 visitNode
         fn lowerTagName(self: *Transformer, tag_name_idx: NodeIndex) Transformer.Error!NodeIndex {
-            const tag_node = self.old_ast.getNode(tag_name_idx);
+            const tag_node = self.ast.getNode(tag_name_idx);
 
             switch (tag_node.tag) {
                 .jsx_identifier => {
-                    const text = self.old_ast.source[tag_node.span.start..tag_node.span.end];
+                    const text = self.ast.source[tag_node.span.start..tag_node.span.end];
                     if (text.len > 0 and text[0] >= 'a' and text[0] <= 'z') {
                         // 소문자 → string_literal (따옴표 포함: codegen의 writeStringLiteral이 기대)
                         const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{text});
-                        const str_span = try self.new_ast.addString(quoted);
-                        return self.new_ast.addNode(.{
+                        const str_span = try self.ast.addString(quoted);
+                        return self.ast.addNode(.{
                             .tag = .string_literal,
                             .span = str_span,
                             .data = .{ .string_ref = str_span },
                         });
                     } else {
                         // 대문자 → identifier_reference (symbol_id 전파로 번들러 rename 반영)
-                        const id_span = try self.new_ast.addString(text);
-                        const new_idx = try self.new_ast.addNode(.{
+                        const id_span = try self.ast.addString(text);
+                        const new_idx = try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = tag_node.span,
                             .data = .{ .string_ref = id_span },
@@ -454,10 +454,10 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 },
                 .jsx_namespaced_name => {
                     // <xml:lang> → string_literal "xml:lang"
-                    const text = self.old_ast.source[tag_node.span.start..tag_node.span.end];
+                    const text = self.ast.source[tag_node.span.start..tag_node.span.end];
                     const quoted = try quoteString(self, text);
-                    const str_span = try self.new_ast.addString(quoted);
-                    return self.new_ast.addNode(.{
+                    const str_span = try self.ast.addString(quoted);
+                    return self.ast.addNode(.{
                         .tag = .string_literal,
                         .span = str_span,
                         .data = .{ .string_ref = str_span },
@@ -475,14 +475,14 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const right_idx = node.data.binary.right;
 
             // left: jsx_identifier or jsx_member_expression
-            const left_node = self.old_ast.getNode(left_idx);
+            const left_node = self.ast.getNode(left_idx);
             const new_left = if (left_node.tag == .jsx_member_expression)
                 try lowerJSXMemberExpr(self, left_node)
             else blk: {
                 // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
-                const text = self.old_ast.source[left_node.span.start..left_node.span.end];
-                const id_span = try self.new_ast.addString(text);
-                const new_idx = try self.new_ast.addNode(.{
+                const text = self.ast.source[left_node.span.start..left_node.span.end];
+                const id_span = try self.ast.addString(text);
+                const new_idx = try self.ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = left_node.span,
                     .data = .{ .string_ref = id_span },
@@ -494,8 +494,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // right: always jsx_identifier → identifier_reference
             // data.string_ref는 원본 소스 span을 사용해야 함.
             // codegen의 emitStaticMember가 source[span.start..end]로 프로퍼티 이름을 읽기 때문.
-            const right_node = self.old_ast.getNode(right_idx);
-            const new_right = try self.new_ast.addNode(.{
+            const right_node = self.ast.getNode(right_idx);
+            const new_right = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = right_node.span,
                 .data = .{ .string_ref = right_node.span },
@@ -515,9 +515,11 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            const attr_indices = self.old_ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
-            for (attr_indices) |raw_idx| {
-                const attr = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // while 인덱스 루프: lowerAttribute→visitNode가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
+            var j: u32 = 0;
+            while (j < attrs_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[attrs_start + j];
+                const attr = self.ast.getNode(@enumFromInt(raw_idx));
                 const prop = try lowerAttribute(self, attr, span);
                 if (!prop.isNone()) {
                     try self.scratch.append(self.allocator, prop);
@@ -547,7 +549,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             if (!has_attrs and effective_children == 0) {
                 // 빈 객체 {}
                 const empty_list = NodeList{ .start = 0, .len = 0 };
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .object_expression,
                     .span = span,
                     .data = .{ .list = empty_list },
@@ -558,11 +560,13 @@ pub fn JsxLowering(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             // attrs (key 제외)
+            // while 인덱스 루프: lowerAttribute→visitNode가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
             if (attrs_len > 0) {
-                const attr_indices = self.old_ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
-                for (attr_indices, 0..) |raw_idx, i| {
-                    if (key_idx != null and i == key_idx.?) continue;
-                    const attr = self.old_ast.getNode(@enumFromInt(raw_idx));
+                var j: u32 = 0;
+                while (j < attrs_len) : (j += 1) {
+                    if (key_idx != null and j == key_idx.?) continue;
+                    const raw_idx = self.ast.extra_data.items[attrs_start + j];
+                    const attr = self.ast.getNode(@enumFromInt(raw_idx));
                     const prop = try lowerAttribute(self, attr, span);
                     if (!prop.isNone()) {
                         try self.scratch.append(self.allocator, prop);
@@ -590,8 +594,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
             effective_children: u32,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const key_span = try self.new_ast.addString("children");
-            const key_node = try self.new_ast.addNode(.{
+            const key_span = try self.ast.addString("children");
+            const key_node = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = key_span,
                 .data = .{ .string_ref = key_span },
@@ -600,13 +604,13 @@ pub fn JsxLowering(comptime Transformer: type) type {
             if (effective_children > 1) {
                 // 배열로 감싸기
                 const children = try collectChildren(self, children_start, children_len);
-                const list = try self.new_ast.addNodeList(children);
-                const arr_node = try self.new_ast.addNode(.{
+                const list = try self.ast.addNodeList(children);
+                const arr_node = try self.ast.addNode(.{
                     .tag = .array_expression,
                     .span = span,
                     .data = .{ .list = list },
                 });
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .object_property,
                     .span = span,
                     .data = .{ .binary = .{ .left = key_node, .right = arr_node, .flags = 0 } },
@@ -615,7 +619,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 // 단일 child
                 const child = try collectSingleChild(self, children_start, children_len);
                 if (child.isNone()) return .none;
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .object_property,
                     .span = span,
                     .data = .{ .binary = .{ .left = key_node, .right = child, .flags = 0 } },
@@ -634,7 +638,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             } else if (attr.tag == .jsx_spread_attribute) {
                 // {...props} → spread_element
                 const inner = try self.visitNode(attr.data.unary.operand);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = attr.span,
                     .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
@@ -650,12 +654,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const name_idx = attr.data.binary.left;
             const value_idx = attr.data.binary.right;
 
-            const name_node = self.old_ast.getNode(name_idx);
-            const name_text = self.old_ast.source[name_node.span.start..name_node.span.end];
+            const name_node = self.ast.getNode(name_idx);
+            const name_text = self.ast.source[name_node.span.start..name_node.span.end];
 
             // key: identifier_reference로 생성
-            const key_span = try self.new_ast.addString(name_text);
-            const key_node = try self.new_ast.addNode(.{
+            const key_span = try self.ast.addString(name_text);
+            const key_node = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = key_span,
                 .data = .{ .string_ref = key_span },
@@ -663,15 +667,15 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             // value: 없으면 true
             const val_node = if (value_idx.isNone()) blk: {
-                const true_span = try self.new_ast.addString("true");
-                break :blk try self.new_ast.addNode(.{
+                const true_span = try self.ast.addString("true");
+                break :blk try self.ast.addNode(.{
                     .tag = .boolean_literal,
                     .span = true_span,
                     .data = .{ .none = 0 },
                 });
             } else try self.visitNode(value_idx);
 
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .object_property,
                 .span = attr.span,
                 .data = .{ .binary = .{ .left = key_node, .right = val_node, .flags = 0 } },
@@ -689,10 +693,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             // Note: 이 함수는 caller가 scratch를 복원하므로, 여기선 복원하지 않음
 
-            const indices = self.old_ast.extra_data.items[start .. start + len];
-            for (indices) |raw_idx| {
+            // while 인덱스 루프: visitNode/addNode가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
+            var j: u32 = 0;
+            while (j < len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[start + j];
                 const child_idx: NodeIndex = @enumFromInt(raw_idx);
-                const child = self.old_ast.getNode(child_idx);
+                const child = self.ast.getNode(child_idx);
 
                 switch (child.tag) {
                     .jsx_text => {
@@ -710,7 +716,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     },
                     .jsx_spread_child => {
                         const inner = try self.visitNode(child.data.unary.operand);
-                        const spread = try self.new_ast.addNode(.{
+                        const spread = try self.ast.addNode(.{
                             .tag = .spread_element,
                             .span = child.span,
                             .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
@@ -737,10 +743,12 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// 단일 effective child를 반환
         fn collectSingleChild(self: *Transformer, start: u32, len: u32) Transformer.Error!NodeIndex {
-            const indices = self.old_ast.extra_data.items[start .. start + len];
-            for (indices) |raw_idx| {
+            // while 인덱스 루프: visitNode/addNode가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
+            var j: u32 = 0;
+            while (j < len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[start + j];
                 const child_idx: NodeIndex = @enumFromInt(raw_idx);
-                const child = self.old_ast.getNode(child_idx);
+                const child = self.ast.getNode(child_idx);
 
                 switch (child.tag) {
                     .jsx_text => {
@@ -753,7 +761,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     },
                     .jsx_spread_child => {
                         const inner = try self.visitNode(child.data.unary.operand);
-                        return self.new_ast.addNode(.{
+                        return self.ast.addNode(.{
                             .tag = .spread_element,
                             .span = child.span,
                             .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
@@ -771,11 +779,11 @@ pub fn JsxLowering(comptime Transformer: type) type {
         fn countEffective(self: *Transformer, start: u32, len: u32) u32 {
             if (len == 0) return 0;
             var count: u32 = 0;
-            const indices = self.old_ast.extra_data.items[start .. start + len];
+            const indices = self.ast.extra_data.items[start .. start + len];
             for (indices) |raw_idx| {
-                const child = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@enumFromInt(raw_idx));
                 if (child.tag == .jsx_text) {
-                    const text = self.old_ast.source[child.span.start..child.span.end];
+                    const text = self.ast.source[child.span.start..child.span.end];
                     const trimmed = std.mem.trim(u8, text, " \t\n\r");
                     if (trimmed.len == 0) continue;
                 } else if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) {
@@ -799,14 +807,14 @@ pub fn JsxLowering(comptime Transformer: type) type {
         fn findKeyAttr(self: *Transformer, attrs_start: u32, attrs_len: u32) KeySearchResult {
             if (attrs_len == 0) return .{ .key_idx = null, .key_after_spread = false };
             var seen_spread = false;
-            const attr_indices = self.old_ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
+            const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
             for (attr_indices, 0..) |raw_idx, i| {
-                const attr = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const attr = self.ast.getNode(@enumFromInt(raw_idx));
                 if (attr.tag == .jsx_spread_attribute) {
                     seen_spread = true;
                 } else if (attr.tag == .jsx_attribute) {
-                    const key_node = self.old_ast.getNode(attr.data.binary.left);
-                    const name = self.old_ast.source[key_node.span.start..key_node.span.end];
+                    const key_node = self.ast.getNode(attr.data.binary.left);
+                    const name = self.ast.source[key_node.span.start..key_node.span.end];
                     if (std.mem.eql(u8, name, "key")) {
                         return .{ .key_idx = @intCast(i), .key_after_spread = seen_spread };
                     }
@@ -817,8 +825,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// key attribute의 value 노드를 방문하여 반환
         fn getKeyValue(self: *Transformer, attrs_start: u32, key_idx: u32) Transformer.Error!NodeIndex {
-            const attr_node_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[attrs_start + key_idx]);
-            const attr = self.old_ast.getNode(attr_node_idx);
+            const attr_node_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + key_idx]);
+            const attr = self.ast.getNode(attr_node_idx);
             return self.visitNode(attr.data.binary.right);
         }
 
@@ -831,62 +839,62 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const loc = spanToLineCol(self, span.start);
 
             // fileName property
-            const fn_key_span = try self.new_ast.addString("fileName");
-            const fn_key = try self.new_ast.addNode(.{
+            const fn_key_span = try self.ast.addString("fileName");
+            const fn_key = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = fn_key_span,
                 .data = .{ .string_ref = fn_key_span },
             });
             const quoted_filename = try quoteString(self, self.options.jsx_filename);
-            const fn_val_span = try self.new_ast.addString(quoted_filename);
-            const fn_val = try self.new_ast.addNode(.{
+            const fn_val_span = try self.ast.addString(quoted_filename);
+            const fn_val = try self.ast.addNode(.{
                 .tag = .string_literal,
                 .span = fn_val_span,
                 .data = .{ .string_ref = fn_val_span },
             });
-            const fn_prop = try self.new_ast.addNode(.{
+            const fn_prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = fn_key_span,
                 .data = .{ .binary = .{ .left = fn_key, .right = fn_val, .flags = 0 } },
             });
 
             // lineNumber property
-            const ln_key_span = try self.new_ast.addString("lineNumber");
-            const ln_key = try self.new_ast.addNode(.{
+            const ln_key_span = try self.ast.addString("lineNumber");
+            const ln_key = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = ln_key_span,
                 .data = .{ .string_ref = ln_key_span },
             });
             var ln_buf: [10]u8 = undefined;
             const ln_text = std.fmt.bufPrint(&ln_buf, "{d}", .{loc.line}) catch "0";
-            const ln_val_span = try self.new_ast.addString(ln_text);
-            const ln_val = try self.new_ast.addNode(.{
+            const ln_val_span = try self.ast.addString(ln_text);
+            const ln_val = try self.ast.addNode(.{
                 .tag = .numeric_literal,
                 .span = ln_val_span,
                 .data = .{ .none = 0 },
             });
-            const ln_prop = try self.new_ast.addNode(.{
+            const ln_prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = ln_key_span,
                 .data = .{ .binary = .{ .left = ln_key, .right = ln_val, .flags = 0 } },
             });
 
             // columnNumber property
-            const cn_key_span = try self.new_ast.addString("columnNumber");
-            const cn_key = try self.new_ast.addNode(.{
+            const cn_key_span = try self.ast.addString("columnNumber");
+            const cn_key = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = cn_key_span,
                 .data = .{ .string_ref = cn_key_span },
             });
             var cn_buf: [10]u8 = undefined;
             const cn_text = std.fmt.bufPrint(&cn_buf, "{d}", .{loc.col}) catch "0";
-            const cn_val_span = try self.new_ast.addString(cn_text);
-            const cn_val = try self.new_ast.addNode(.{
+            const cn_val_span = try self.ast.addString(cn_text);
+            const cn_val = try self.ast.addNode(.{
                 .tag = .numeric_literal,
                 .span = cn_val_span,
                 .data = .{ .none = 0 },
             });
-            const cn_prop = try self.new_ast.addNode(.{
+            const cn_prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = cn_key_span,
                 .data = .{ .binary = .{ .left = cn_key, .right = cn_val, .flags = 0 } },
@@ -913,7 +921,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const line_start = if (line > 1) self.line_offsets[line - 1] else 0;
 
             // UTF-16 code unit 기준 column 계산 (JSX devtools 호환)
-            const source = self.old_ast.source;
+            const source = self.ast.source;
             var col: u32 = 0;
             var i: u32 = line_start;
             while (i < offset and i < source.len) {
@@ -1113,7 +1121,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// call_expression 생성: extra = [callee, args_start, args_len, flags]
         fn makeCallExpr(self: *Transformer, callee: NodeIndex, args: []const NodeIndex, span: Span, pure: bool) Transformer.Error!NodeIndex {
-            const args_list = try self.new_ast.addNodeList(args);
+            const args_list = try self.ast.addNodeList(args);
             const flags: u32 = if (pure) CallFlags.is_pure else 0;
             return self.addExtraNode(.call_expression, span, &.{
                 @intFromEnum(callee),
@@ -1125,8 +1133,8 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// null 리터럴 노드 생성
         fn makeNullLiteral(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
-            const null_span = try self.new_ast.addString("null");
-            return self.new_ast.addNode(.{
+            const null_span = try self.ast.addString("null");
+            return self.ast.addNode(.{
                 .tag = .null_literal,
                 .span = null_span,
                 .data = .{ .none = 0 },
@@ -1138,19 +1146,19 @@ pub fn JsxLowering(comptime Transformer: type) type {
         fn makeObjectExpr(self: *Transformer, properties: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             // ES2018 object spread 다운레벨링: JSX lowering이 만든 object에 spread가 있으면
             // Object.assign({a: 1}, obj, {b: 2}) 형태로 변환해야 한다.
-            // (JSX lowering이 new_ast에 직접 노드를 생성하므로, transformer의 visitNode를
+            // (JSX lowering이 ast에 직접 노드를 생성하므로, transformer의 visitNode를
             //  다시 거치지 않아 es2018.lowerObjectSpread가 적용되지 않기 때문)
             if (self.options.unsupported.object_spread) {
                 for (properties) |prop_idx| {
-                    const prop = self.new_ast.getNode(prop_idx);
+                    const prop = self.ast.getNode(prop_idx);
                     if (prop.tag == .spread_element) {
                         return helpers.lowerObjectSpreadProps(self, properties, span);
                     }
                 }
             }
 
-            const list = try self.new_ast.addNodeList(properties);
-            return self.new_ast.addNode(.{
+            const list = try self.ast.addNodeList(properties);
+            return self.ast.addNode(.{
                 .tag = .object_expression,
                 .span = span,
                 .data = .{ .list = list },
@@ -1177,7 +1185,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 if (current.isNone()) {
                     current = part_node;
                 } else {
-                    const span_val = try self.new_ast.addString(factory);
+                    const span_val = try self.ast.addString(factory);
                     current = try helpers.makeStaticMember(self, current, part_node, span_val);
                 }
                 start = end + 1;

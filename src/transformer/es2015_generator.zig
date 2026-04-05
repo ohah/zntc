@@ -73,15 +73,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// generator function을 상태 머신으로 변환.
         /// function*: extra = [name, params_start, params_len, body, flags, return_type]
         pub fn lowerGeneratorFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
             const span = node.span;
 
-            const name_idx: NodeIndex = @enumFromInt(extras[e]);
-            const params_start = extras[e + 1];
-            const params_len = extras[e + 2];
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
-            const flags = extras[e + 4];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const params_start = self.readU32(e, 1);
+            const params_len = self.readU32(e, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
+            const flags = self.readU32(e, 4);
 
             const new_name = try self.visitNode(name_idx);
 
@@ -103,7 +103,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const gen_call = try buildGeneratorHelperCall(self, sm_result.body, span);
 
             // return __generator(...) 문
-            const ret_stmt = try self.new_ast.addNode(.{
+            const ret_stmt = try self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = gen_call, .flags = 0 } },
@@ -123,8 +123,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
             try self.scratch.append(self.allocator, ret_stmt);
 
-            const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const new_body = try self.new_ast.addNode(.{
+            const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const new_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
@@ -133,7 +133,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
             const none = @intFromEnum(NodeIndex.none);
-            const new_extra = try self.new_ast.addExtras(&.{
+            const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 new_params.start,
                 new_params.len,
@@ -141,7 +141,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 new_flags,
                 none,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = span,
                 .data = .{ .extra = new_extra },
@@ -158,14 +158,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
-            const body = self.old_ast.getNode(body_idx);
+            const body = self.ast.getNode(body_idx);
 
             // expression body (arrow function): implicit return으로 처리
             if (body.tag != .block_statement and body.tag != .function_body) {
                 return buildExpressionBodyStateMachine(self, body_idx, body, span);
             }
 
-            const stmts = self.old_ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
+            const stmts_start = body.data.list.start;
+            const stmts_len = body.data.list.len;
 
             // Phase 1: 연산 수집 (yield/return/statement를 Operation으로 변환)
             var ops: std.ArrayList(Operation) = .empty;
@@ -177,9 +178,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // JS의 var는 function-scoped이므로 switch case 안에 두면 안 됨.
             var hoisted_vars: std.ArrayList(NodeIndex) = .empty;
             defer hoisted_vars.deinit(self.allocator);
-            try collectHoistedVars(self, stmts, &hoisted_vars);
+            // collectBindingIdentifiers가 visitNode를 호출하므로 인덱스 기반 접근 사용
+            try collectHoistedVarsRange(self, stmts_start, stmts_len, &hoisted_vars);
 
-            for (stmts) |raw_idx| {
+            // collectOperations는 AST를 변형하므로 인덱스 루프 사용
+            var i_stmts: u32 = 0;
+            while (i_stmts < stmts_len) : (i_stmts += 1) {
+                const raw_idx = self.ast.extra_data.items[stmts_start + i_stmts];
                 try collectOperations(self, @enumFromInt(raw_idx), &ops, &next_label);
             }
 
@@ -219,13 +224,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 문을 순회하며 연산을 수집.
         fn collectOperations(self: *Transformer, stmt_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             if (stmt_idx.isNone()) return;
-            const stmt = self.old_ast.getNode(stmt_idx);
+            const stmt = self.ast.getNode(stmt_idx);
 
             switch (stmt.tag) {
                 .expression_statement => {
                     // expression_statement 안의 yield/await 감지
                     const expr_idx = stmt.data.unary.operand;
-                    const expr = self.old_ast.getNode(expr_idx);
+                    const expr = self.ast.getNode(expr_idx);
 
                     if (expr.tag == .yield_expression or expr.tag == .await_expression) {
                         const value_idx = expr.data.unary.operand;
@@ -242,7 +247,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     } else if (expr.tag == .assignment_expression) {
                         // x = yield value / x = await value 패턴 감지
                         const right_idx = expr.data.binary.right;
-                        const right = self.old_ast.getNode(right_idx);
+                        const right = self.ast.getNode(right_idx);
                         if (right.tag == .yield_expression or right.tag == .await_expression) {
                             const yield_value_idx = right.data.unary.operand;
                             const new_yield_value = try visitExprWithYieldExtraction(self, yield_value_idx, ops, next_label);
@@ -270,7 +275,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .return_statement => {
                     const value_idx = stmt.data.unary.operand;
                     if (!value_idx.isNone()) {
-                        const value_node = self.old_ast.getNode(value_idx);
+                        const value_node = self.ast.getNode(value_idx);
                         if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
                             // return yield/await x → yield x + return _state.sent()
                             const inner_value = value_node.data.unary.operand;
@@ -332,8 +337,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .break_statement, .continue_statement => {
                     const label_idx = stmt.data.unary.operand;
                     if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
-                        const label_node = self.old_ast.getNode(label_idx);
-                        const label_text = self.old_ast.source[label_node.span.start..label_node.span.end];
+                        const label_node = self.ast.getNode(label_idx);
+                        const label_text = self.ast.source[label_node.span.start..label_node.span.end];
                         const stack = self.generator_label_stack.items;
                         var found = false;
                         var i = stack.len;
@@ -432,12 +437,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// for문의 연산 수집.
         fn collectForOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            const extras = self.old_ast.extra_data.items;
             const e = stmt.data.extra;
-            const init_idx: NodeIndex = @enumFromInt(extras[e]);
-            const test_idx: NodeIndex = @enumFromInt(extras[e + 1]);
-            const update_idx: NodeIndex = @enumFromInt(extras[e + 2]);
-            const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const init_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const test_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const update_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
 
             if (!containsYield(self, body_idx) and !containsYield(self, test_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
@@ -449,7 +454,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // init: var는 호이스팅 후 assignment로 변환, expression은 그대로
             if (!init_idx.isNone()) {
-                const init_node = self.old_ast.getNode(init_idx);
+                const init_node = self.ast.getNode(init_idx);
                 if (init_node.tag == .variable_declaration) {
                     // var i = 0 → i = 0 (var는 이미 호이스팅됨)
                     try collectVarDeclWithYield(self, init_node, ops, next_label);
@@ -547,7 +552,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // assignment만 사용하고 var는 collectHoistedVars에서 처리.
             const idx_ref_init = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
             const zero = try es_helpers.makeNumericLiteral(self, 0);
-            const idx_assign = try self.new_ast.addNode(.{
+            const idx_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = idx_ref_init, .right = zero, .flags = 0 } },
@@ -556,7 +561,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = idx_stmt } });
 
             const arr_ref_init = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
-            const arr_assign = try self.new_ast.addNode(.{
+            const arr_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = arr_ref_init, .right = new_right, .flags = 0 } },
@@ -576,7 +581,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
             const length_prop = try es_helpers.makeIdentifierRef(self, "length");
             const arr_length = try es_helpers.makeStaticMember(self, arr_ref_test, length_prop, span);
-            const test_expr = try self.new_ast.addNode(.{
+            const test_expr = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{
@@ -593,29 +598,28 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // body 앞에 var x = _arr[_i] 삽입
             const arr_ref_body = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
             const idx_ref_body = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const elem_access_extra = try self.new_ast.addExtras(&.{
+            const elem_access_extra = try self.ast.addExtras(&.{
                 @intFromEnum(arr_ref_body), @intFromEnum(idx_ref_body), 0,
             });
-            const elem_access = try self.new_ast.addNode(.{
+            const elem_access = try self.ast.addNode(.{
                 .tag = .computed_member_expression,
                 .span = span,
                 .data = .{ .extra = elem_access_extra },
             });
 
             // loop variable assignment: x = _arr[_i]
-            const left_node = self.old_ast.getNode(left);
+            const left_node = self.ast.getNode(left);
             if (left_node.tag == .variable_declaration) {
                 // const/let/var x → x = _arr[_i]
-                const decl_extras = self.old_ast.extra_data.items;
                 const decl_e = left_node.data.extra;
-                const decl_start = decl_extras[decl_e + 1];
-                const decl_len = decl_extras[decl_e + 2];
+                const decl_start = self.readU32(decl_e, 1);
+                const decl_len = self.readU32(decl_e, 2);
                 if (decl_len > 0) {
-                    const declarator = self.old_ast.getNode(@enumFromInt(decl_extras[decl_start]));
+                    const declarator = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[decl_start]));
                     if (declarator.tag == .variable_declarator) {
-                        const binding: NodeIndex = @enumFromInt(decl_extras[declarator.data.extra]);
+                        const binding: NodeIndex = self.readNodeIdx(declarator.data.extra, 0);
                         const new_binding = try self.visitNode(binding);
-                        const assign = try self.new_ast.addNode(.{
+                        const assign = try self.ast.addNode(.{
                             .tag = .assignment_expression,
                             .span = span,
                             .data = .{ .binary = .{ .left = new_binding, .right = elem_access, .flags = 0 } },
@@ -627,7 +631,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             } else {
                 // expression: x = _arr[_i]
                 const new_left = try self.visitNode(left);
-                const assign = try self.new_ast.addNode(.{
+                const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
                     .data = .{ .binary = .{ .left = new_left, .right = elem_access, .flags = 0 } },
@@ -645,11 +649,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_for_update_label = update_label;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
             const idx_ref_update = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
-            const update_extra = try self.new_ast.addExtras(&.{
+            const update_extra = try self.ast.addExtras(&.{
                 @intFromEnum(idx_ref_update),
                 @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
             });
-            const update_expr = try self.new_ast.addNode(.{
+            const update_expr = try self.ast.addNode(.{
                 .tag = .update_expression,
                 .span = span,
                 .data = .{ .extra = update_extra },
@@ -747,11 +751,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const body_idx = stmt.data.binary.right;
 
             const label_name = if (!label_idx.isNone()) blk: {
-                const label_node = self.old_ast.getNode(label_idx);
-                break :blk self.old_ast.source[label_node.span.start..label_node.span.end];
+                const label_node = self.ast.getNode(label_idx);
+                break :blk self.ast.source[label_node.span.start..label_node.span.end];
             } else "";
 
-            const body_node = self.old_ast.getNode(body_idx);
+            const body_node = self.ast.getNode(body_idx);
             const is_loop = body_node.tag == .for_statement or
                 body_node.tag == .while_statement or
                 body_node.tag == .do_while_statement or
@@ -805,11 +809,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// → if-else 체인으로 분해 + 각 case body를 순서대로 배치.
         /// case_labels는 sentinel+fixup으로 body 처리 후 결정.
         fn collectSwitchOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            const all_extras = self.old_ast.extra_data.items;
             const e = stmt.data.extra;
-            const disc_idx: NodeIndex = @enumFromInt(all_extras[e]);
-            const cases_start_val = all_extras[e + 1];
-            const cases_len_val = all_extras[e + 2];
+            // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+            const disc_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const cases_start_val = self.readU32(e, 1);
+            const cases_len_val = self.readU32(e, 2);
 
             if (!containsYield(self, stmt_idx)) {
                 const new_stmt = try self.visitNode(stmt_idx);
@@ -820,39 +824,42 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const new_disc = try self.visitNode(disc_idx);
-            const cases = all_extras[cases_start_val .. cases_start_val + cases_len_val];
 
             // 각 case에 고유 sentinel 할당 (body 처리 후 실제 label로 fixup)
             const sentinel_base = LABEL_SENTINEL_BASE - 100; // 충분히 떨어진 sentinel 영역
-            var case_sentinels = try self.allocator.alloc(u32, cases.len);
+            var case_sentinels = try self.allocator.alloc(u32, cases_len_val);
             defer self.allocator.free(case_sentinels);
             var default_case_idx: ?usize = null;
 
-            for (cases, 0..) |raw_idx, i| {
+            // Pass 1: sentinel 할당 + default 감지 (visitNode 호출 없음)
+            for (0..cases_len_val) |i| {
                 case_sentinels[i] = sentinel_base - @as(u32, @intCast(i));
 
                 // default case 감지
-                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const raw_idx = self.ast.extra_data.items[cases_start_val + i];
+                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
                 const ce = case_node.data.extra;
-                const test_idx: NodeIndex = @enumFromInt(all_extras[ce]);
+                const test_idx: NodeIndex = self.readNodeIdx(ce, 0);
                 if (test_idx.isNone()) {
                     default_case_idx = i;
                 }
             }
 
-            const end_sentinel = sentinel_base - @as(u32, @intCast(cases.len));
+            const end_sentinel = sentinel_base - @as(u32, @intCast(cases_len_val));
             const ops_start = ops.items.len;
 
             // 분기 코드: if (disc === caseTest) goto case_sentinel
-            for (cases, 0..) |raw_idx, i| {
-                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            for (0..cases_len_val) |i| {
+                const raw_idx = self.ast.extra_data.items[cases_start_val + i];
+                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
                 const ce = case_node.data.extra;
-                const test_idx: NodeIndex = @enumFromInt(all_extras[ce]);
+                const test_idx: NodeIndex = self.readNodeIdx(ce, 0);
 
                 if (test_idx.isNone()) continue; // default
 
                 const new_test = try self.visitNode(test_idx);
-                const eq_check = try self.new_ast.addNode(.{
+                const eq_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = stmt.span,
                     .data = .{ .binary = .{
@@ -876,23 +883,27 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // 각 case body 출력 + 실제 label 할당
-            var actual_labels = try self.allocator.alloc(u32, cases.len);
+            var actual_labels = try self.allocator.alloc(u32, cases_len_val);
             defer self.allocator.free(actual_labels);
 
-            for (cases, 0..) |raw_idx, i| {
+            // visitNode/collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            for (0..cases_len_val) |i| {
                 // case body 시작 지점에 실제 label 할당
                 actual_labels[i] = next_label.*;
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
-                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const raw_idx = self.ast.extra_data.items[cases_start_val + i];
+                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
                 const ce = case_node.data.extra;
-                const stmts_s = all_extras[ce + 1];
-                const stmts_l = all_extras[ce + 2];
-                const case_stmts = all_extras[stmts_s .. stmts_s + stmts_l];
+                const stmts_s = self.readU32(ce, 1);
+                const stmts_l = self.readU32(ce, 2);
 
-                for (case_stmts) |case_stmt_raw| {
-                    const case_stmt = self.old_ast.getNode(@enumFromInt(case_stmt_raw));
+                // visitNode/collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var j_loop: u32 = 0;
+                while (j_loop < stmts_l) : (j_loop += 1) {
+                    const case_stmt_raw = self.ast.extra_data.items[stmts_s + j_loop];
+                    const case_stmt = self.ast.getNode(@enumFromInt(case_stmt_raw));
                     if (case_stmt.tag == .break_statement and case_stmt.data.unary.operand.isNone()) {
                         try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_sentinel } });
                     } else {
@@ -990,14 +1001,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
             if (!catch_clause.isNone()) {
-                const catch_node = self.old_ast.getNode(catch_clause);
+                const catch_node = self.ast.getNode(catch_clause);
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
 
                 if (!catch_param.isNone()) {
                     const new_param = try self.visitNode(catch_param);
                     const sent = try buildSentCall(self, stmt.span);
-                    const assign = try self.new_ast.addNode(.{
+                    const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
                         .span = stmt.span,
                         .data = .{ .binary = .{ .left = new_param, .right = sent, .flags = 0 } },
@@ -1060,8 +1071,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             else
                 try es_helpers.makeVoidZero(self, span);
             const n3 = try es_helpers.makeNumericLiteral(self, end_label);
-            const arr_list = try self.new_ast.addNodeList(&.{ n0, n1, n2, n3 });
-            const arr = try self.new_ast.addNode(.{
+            const arr_list = try self.ast.addNodeList(&.{ n0, n1, n2, n3 });
+            const arr = try self.ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
                 .data = .{ .list = arr_list },
@@ -1076,37 +1087,40 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// let/const는 block-scoped이므로 호이스팅하지 않음 (ES2015 변환에서 var로 바뀌므로 포함).
         /// destructuring 패턴은 개별 identifier로 분해하여 호이스팅.
         /// (var {a, b} = expr → var a, b; 로 호이스팅. var {a, b}; 는 문법 에러)
-        fn collectHoistedVars(self: *Transformer, stmts: []const u32, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
-            for (stmts) |raw_idx| {
-                const node = self.old_ast.getNode(@enumFromInt(raw_idx));
+        fn collectHoistedVarsRange(self: *Transformer, stmts_start: u32, stmts_len: u32, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < stmts_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[stmts_start + i_loop];
+                const node = self.ast.getNode(@enumFromInt(raw_idx));
                 if (node.tag == .variable_declaration) {
-                    const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
-                    const list_start = extras[e + 1];
-                    const list_len = extras[e + 2];
-                    const decls = extras[list_start .. list_start + list_len];
-                    for (decls) |decl_raw| {
-                        const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+                    const list_start = self.readU32(e, 1);
+                    const list_len = self.readU32(e, 2);
+                    // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                    var j_loop: u32 = 0;
+                    while (j_loop < list_len) : (j_loop += 1) {
+                        const decl_raw = self.ast.extra_data.items[list_start + j_loop];
+                        const decl = self.ast.getNode(@enumFromInt(decl_raw));
                         if (decl.tag != .variable_declarator) continue;
-                        const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                        const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
                         if (!binding.isNone()) {
                             try collectBindingIdentifiers(self, binding, hoisted);
                         }
                     }
                 } else if (node.tag == .block_statement or node.tag == .function_body) {
-                    const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    try collectHoistedVars(self, inner, hoisted);
+                    try collectHoistedVarsRange(self, node.data.list.start, node.data.list.len, hoisted);
                 } else if (node.tag == .if_statement) {
                     // then/else body 재귀
                     try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
                     try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
                 } else if (node.tag == .for_statement) {
-                    const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
-                    // init (variable_declaration일 수 있음)
-                    try collectHoistedVarFromNode(self, @enumFromInt(extras[e]), hoisted);
-                    // body
-                    try collectHoistedVarFromNode(self, @enumFromInt(extras[e + 3]), hoisted);
+                    // extras를 collectHoistedVarFromNode 전에 모두 읽기 (재할당 방지)
+                    const init_node_idx: NodeIndex = self.readNodeIdx(e, 0);
+                    const body_node_idx: NodeIndex = self.readNodeIdx(e, 3);
+                    try collectHoistedVarFromNode(self, init_node_idx, hoisted);
+                    try collectHoistedVarFromNode(self, body_node_idx, hoisted);
                 } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
                     try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
                 } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
@@ -1117,7 +1131,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // try body + catch body + finally body 재귀
                     try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
                     if (!node.data.ternary.b.isNone()) {
-                        const catch_node = self.old_ast.getNode(node.data.ternary.b);
+                        const catch_node = self.ast.getNode(node.data.ternary.b);
                         // catch 파라미터를 var로 호이스팅 (state machine에서 접근 가능하도록)
                         if (!catch_node.data.binary.left.isNone()) {
                             try collectBindingIdentifiers(self, catch_node.data.binary.left, hoisted);
@@ -1132,21 +1146,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 단일 노드에서 호이스팅할 var를 수집 (block이면 재귀).
         fn collectHoistedVarFromNode(self: *Transformer, idx: NodeIndex, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             if (idx.isNone()) return;
-            const node = self.old_ast.getNode(idx);
+            const node = self.ast.getNode(idx);
             if (node.tag == .block_statement or node.tag == .function_body) {
-                const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                try collectHoistedVars(self, inner, hoisted);
+                try collectHoistedVarsRange(self, node.data.list.start, node.data.list.len, hoisted);
             } else if (node.tag == .variable_declaration) {
                 // for-in/for-of의 left가 variable_declaration인 경우
-                const extras = self.old_ast.extra_data.items;
                 const e = node.data.extra;
-                const list_start = extras[e + 1];
-                const list_len = extras[e + 2];
-                const decls = extras[list_start .. list_start + list_len];
-                for (decls) |decl_raw| {
-                    const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+                const list_start = self.readU32(e, 1);
+                const list_len = self.readU32(e, 2);
+                // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var j_loop: u32 = 0;
+                while (j_loop < list_len) : (j_loop += 1) {
+                    const decl_raw = self.ast.extra_data.items[list_start + j_loop];
+                    const decl = self.ast.getNode(@enumFromInt(decl_raw));
                     if (decl.tag != .variable_declarator) continue;
-                    const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                    const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
                     if (!binding.isNone()) {
                         try collectBindingIdentifiers(self, binding, hoisted);
                     }
@@ -1159,16 +1173,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// `var {a, b}` → `var a, b` (destructuring 없이 개별 identifier로 호이스팅)
         fn collectBindingIdentifiers(self: *Transformer, binding_idx: NodeIndex, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             if (binding_idx.isNone()) return;
-            const node = self.old_ast.getNode(binding_idx);
+            const node = self.ast.getNode(binding_idx);
             switch (node.tag) {
                 .binding_identifier => {
                     const new_binding = try self.visitNode(binding_idx);
                     try hoisted.append(self.allocator, new_binding);
                 },
                 .object_pattern => {
-                    const props = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    for (props) |raw_idx| {
-                        const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+                    const props_start = node.data.list.start;
+                    const props_len = node.data.list.len;
+                    // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                    var p_loop: u32 = 0;
+                    while (p_loop < props_len) : (p_loop += 1) {
+                        const raw_idx = self.ast.extra_data.items[props_start + p_loop];
+                        const prop = self.ast.getNode(@enumFromInt(raw_idx));
                         if (prop.tag == .binding_property) {
                             // {key: value} → value 쪽에서 identifier 추출
                             try collectBindingIdentifiers(self, prop.data.binary.right, hoisted);
@@ -1181,8 +1199,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                 },
                 .array_pattern => {
-                    const elements = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    for (elements) |raw_idx| {
+                    const elems_start = node.data.list.start;
+                    const elems_len = node.data.list.len;
+                    // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                    var e_loop: u32 = 0;
+                    while (e_loop < elems_len) : (e_loop += 1) {
+                        const raw_idx = self.ast.extra_data.items[elems_start + e_loop];
                         const elem_idx: NodeIndex = @enumFromInt(raw_idx);
                         if (elem_idx.isNone()) continue; // array hole
                         try collectBindingIdentifiers(self, elem_idx, hoisted);
@@ -1203,12 +1225,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// object_pattern이 좌변이면 괄호로 감싸서 block statement와 구분.
         /// ({a, b} = expr); vs {a, b} = expr; (후자는 syntax error)
         fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const assign = try self.new_ast.addNode(.{
+            const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = lhs, .right = rhs, .flags = 0 } },
             });
-            const expr = if (self.new_ast.getNode(lhs).tag == .object_pattern)
+            const expr = if (self.ast.getNode(lhs).tag == .object_pattern)
                 try es_helpers.makeParenExpr(self, assign, span)
             else
                 assign;
@@ -1219,22 +1241,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// var x = yield 1 → yield 1 (op) + x = _state.sent() (op)
         /// var x = expr (no yield) → x = expr (statement op)
         fn collectVarDeclWithYield(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            const extras = self.old_ast.extra_data.items;
             const e = stmt.data.extra;
-            const list_start = extras[e + 1];
-            const list_len = extras[e + 2];
-            const decls = extras[list_start .. list_start + list_len];
+            const list_start = self.readU32(e, 1);
+            const list_len = self.readU32(e, 2);
 
-            for (decls) |decl_raw| {
-                const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            var i_loop: u32 = 0;
+            while (i_loop < list_len) : (i_loop += 1) {
+                const decl_raw = self.ast.extra_data.items[list_start + i_loop];
+                const decl = self.ast.getNode(@enumFromInt(decl_raw));
                 if (decl.tag != .variable_declarator) continue;
 
-                const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
-                const init_idx: NodeIndex = @enumFromInt(extras[decl.data.extra + 2]);
+                const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
+                const init_idx: NodeIndex = self.readNodeIdx(decl.data.extra, 2);
 
                 if (init_idx.isNone()) continue;
 
-                const init_node = self.old_ast.getNode(init_idx);
+                const init_node = self.ast.getNode(init_idx);
                 if (init_node.tag == .yield_expression or init_node.tag == .await_expression) {
                     // var x = yield/await value → yield value + x = _state.sent()
                     const yield_val = init_node.data.unary.operand;
@@ -1267,14 +1290,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// AST 서브트리에 yield_expression 또는 generator labeled jump가 있는지 체크.
         fn containsYield(self: *const Transformer, idx: NodeIndex) bool {
             if (idx.isNone()) return false;
-            const node = self.old_ast.getNode(idx);
+            const node = self.ast.getNode(idx);
             if (node.tag == .yield_expression or node.tag == .await_expression) return true;
             // labeled break/continue: generator label stack에 등록된 label 참조 시 처리 필요
             if ((node.tag == .break_statement or node.tag == .continue_statement) and
                 !node.data.unary.operand.isNone() and self.generator_label_stack.items.len > 0)
             {
-                const label_node = self.old_ast.getNode(node.data.unary.operand);
-                const label_text = self.old_ast.source[label_node.span.start..label_node.span.end];
+                const label_node = self.ast.getNode(node.data.unary.operand);
+                const label_text = self.ast.source[label_node.span.start..label_node.span.end];
                 for (self.generator_label_stack.items) |entry| {
                     if (std.mem.eql(u8, entry.name, label_text)) return true;
                 }
@@ -1294,7 +1317,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .formal_parameters,
                 .class_body,
                 => {
-                    const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                     for (members) |raw_idx| {
                         if (containsYield(self, @enumFromInt(raw_idx))) return true;
                     }
@@ -1309,7 +1332,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 => containsYield(self, node.data.unary.operand),
                 .unary_expression, .update_expression => {
                     // extra = [operand, operator_and_flags]
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e >= extras.len) return false;
                     return containsYield(self, @enumFromInt(extras[e]));
@@ -1324,7 +1347,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .computed_member_expression,
                 .tagged_template_expression,
                 => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     return containsYield(self, @enumFromInt(extras[e])) or containsYield(self, @enumFromInt(extras[e + 1]));
                 },
@@ -1340,14 +1363,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .labeled_statement,
                 => containsYield(self, node.data.binary.left) or containsYield(self, node.data.binary.right),
                 .for_statement => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 3 >= extras.len) return false;
                     return containsYield(self, @enumFromInt(extras[e + 3])); // body
                 },
                 .switch_statement => {
                     // switch_statement: extra = [discriminant, cases.start, cases.len]
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     const cases_start = extras[e + 1];
@@ -1360,7 +1383,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .switch_case => {
                     // switch_case: extra = [test, stmts_start, stmts_len]
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     const stmts_start = extras[e + 1];
@@ -1373,7 +1396,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .call_expression, .new_expression => {
                     // extra = [callee, args_start, args_len, flags]
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     if (containsYield(self, @enumFromInt(extras[e]))) return true; // callee
@@ -1386,7 +1409,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     return false;
                 },
                 .variable_declaration => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     const list_start = extras[e + 1];
@@ -1398,7 +1421,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     return false;
                 },
                 .variable_declarator => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     return containsYield(self, @enumFromInt(extras[e + 2])); // init
@@ -1412,7 +1435,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// return [2]로 변환됨.
         fn containsReturn(self: *const Transformer, idx: NodeIndex) bool {
             if (idx.isNone()) return false;
-            const node = self.old_ast.getNode(idx);
+            const node = self.ast.getNode(idx);
             if (node.tag == .return_statement) return true;
             // function/arrow 경계 중단
             if (node.tag == .function_declaration or node.tag == .function_expression or
@@ -1420,7 +1443,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             return switch (node.tag) {
                 .block_statement, .function_body => {
-                    const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                     for (members) |raw_idx| {
                         if (containsReturn(self, @enumFromInt(raw_idx))) return true;
                     }
@@ -1431,13 +1454,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .while_statement, .do_while_statement, .labeled_statement => containsReturn(self, node.data.binary.right),
                 .for_statement => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 3 >= extras.len) return false;
                     return containsReturn(self, @enumFromInt(extras[e + 3]));
                 },
                 .switch_statement => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     const cases_start = extras[e + 1];
@@ -1449,7 +1472,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     return false;
                 },
                 .switch_case => {
-                    const extras = self.old_ast.extra_data.items;
+                    const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     const stmts_start = extras[e + 1];
@@ -1478,7 +1501,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 주의: short-circuit 평가(&&, ||)가 보존되지 않음 — await가 항상 평가됨.
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
-            const node = self.old_ast.getNode(expr_idx);
+            const node = self.ast.getNode(expr_idx);
 
             // yield/await → yield operation 추출 + temp 변수에 결과 저장
             // 하나의 expression에 여러 yield가 있으면 각 결과를 temp에 저장해야 함
@@ -1498,7 +1521,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const temp_span = try es_helpers.makeTempVarSpan(self);
                 const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
                 const sent_call = try buildSentCall(self, temp_span);
-                const assign = try self.new_ast.addNode(.{
+                const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = temp_span,
                     .data = .{ .binary = .{ .left = temp_ref, .right = sent_call, .flags = 0 } },
@@ -1523,7 +1546,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag == .logical_expression or node.tag == .binary_expression) {
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = node.data.binary.flags } },
@@ -1535,7 +1558,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const new_a = try visitExprWithYieldExtraction(self, node.data.ternary.a, ops, next_label);
                 const new_b = try visitExprWithYieldExtraction(self, node.data.ternary.b, ops, next_label);
                 const new_c = try visitExprWithYieldExtraction(self, node.data.ternary.c, ops, next_label);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
                     .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
@@ -1544,15 +1567,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // unary/update expression: extra = [operand, operator_and_flags]
             if (node.tag == .unary_expression or node.tag == .update_expression) {
-                const extras = self.old_ast.extra_data.items;
                 const e = node.data.extra;
-                const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+                const operand_idx: NodeIndex = self.readNodeIdx(e, 0);
+                const op_flags = self.readU32(e, 1);
                 const new_operand = try visitExprWithYieldExtraction(self, operand_idx, ops, next_label);
-                const new_extra = try self.new_ast.addExtras(&.{
+                const new_extra = try self.ast.addExtras(&.{
                     @intFromEnum(new_operand),
-                    extras[e + 1], // operator_and_flags
+                    op_flags, // operator_and_flags
                 });
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .extra = new_extra },
@@ -1563,7 +1587,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag == .assignment_expression) {
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = node.span,
                     .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = node.data.binary.flags } },
@@ -1574,16 +1598,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (node.tag == .static_member_expression or node.tag == .computed_member_expression or
                 node.tag == .tagged_template_expression)
             {
-                const extras = self.old_ast.extra_data.items;
                 const e = node.data.extra;
-                const new_child0 = try visitExprWithYieldExtraction(self, @enumFromInt(extras[e]), ops, next_label);
-                const new_child1 = try visitExprWithYieldExtraction(self, @enumFromInt(extras[e + 1]), ops, next_label);
-                const new_extra = try self.new_ast.addExtras(&.{
+                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+                const child0_idx: NodeIndex = self.readNodeIdx(e, 0);
+                const child1_idx: NodeIndex = self.readNodeIdx(e, 1);
+                const flags = self.readU32(e, 2);
+                const new_child0 = try visitExprWithYieldExtraction(self, child0_idx, ops, next_label);
+                const new_child1 = try visitExprWithYieldExtraction(self, child1_idx, ops, next_label);
+                const new_extra = try self.ast.addExtras(&.{
                     @intFromEnum(new_child0),
                     @intFromEnum(new_child1),
-                    extras[e + 2],
+                    flags,
                 });
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .extra = new_extra },
@@ -1592,29 +1619,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // call/new expression: callee + args 재귀
             if (node.tag == .call_expression or node.tag == .new_expression) {
-                const extras = self.old_ast.extra_data.items;
                 const e = node.data.extra;
-                const callee_idx: NodeIndex = @enumFromInt(extras[e]);
-                const args_start = extras[e + 1];
-                const args_len = extras[e + 2];
+                // extras를 visitNode 전에 모두 읽기 (재할당 방지)
+                const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
+                const args_start = self.readU32(e, 1);
+                const args_len = self.readU32(e, 2);
+                const call_flags = self.readU32(e, 3);
 
                 const new_callee = try visitExprWithYieldExtraction(self, callee_idx, ops, next_label);
 
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                const args = extras[args_start .. args_start + args_len];
-                for (args) |arg_raw| {
+                // visitExprWithYieldExtraction이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var i_arg: u32 = 0;
+                while (i_arg < args_len) : (i_arg += 1) {
+                    const arg_raw = self.ast.extra_data.items[args_start + i_arg];
                     const new_arg = try visitExprWithYieldExtraction(self, @enumFromInt(arg_raw), ops, next_label);
                     try self.scratch.append(self.allocator, new_arg);
                 }
-                const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-                const new_extra = try self.new_ast.addExtras(&.{
+                const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                const new_extra = try self.ast.addExtras(&.{
                     @intFromEnum(new_callee),
                     new_args.start,
                     new_args.len,
-                    extras[e + 3], // flags
+                    call_flags,
                 });
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = node.tag, // call_expression or new_expression
                     .span = node.span,
                     .data = .{ .extra = new_extra },
@@ -1627,13 +1657,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                const elements = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (elements) |raw_idx| {
+                const list_start = node.data.list.start;
+                const list_len = node.data.list.len;
+                // visitExprWithYieldExtraction이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var i_elem: u32 = 0;
+                while (i_elem < list_len) : (i_elem += 1) {
+                    const raw_idx = self.ast.extra_data.items[list_start + i_elem];
                     const new_elem = try visitExprWithYieldExtraction(self, @enumFromInt(raw_idx), ops, next_label);
                     try self.scratch.append(self.allocator, new_elem);
                 }
-                const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-                return self.new_ast.addNode(.{
+                const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
                     .data = .{ .list = new_list },
@@ -1647,7 +1681,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label)
                 else
                     NodeIndex.none;
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .object_property,
                     .span = node.span,
                     .data = .{ .binary = .{ .left = new_key, .right = new_value, .flags = node.data.binary.flags } },
@@ -1657,7 +1691,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // spread_element: unary
             if (node.tag == .spread_element) {
                 const new_operand = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .spread_element,
                     .span = node.span,
                     .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
@@ -1717,7 +1751,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         // break_op 모두 buildInstructionReturn을 거쳐 return_statement 생성.
                         if (current_case_stmts.items.len > 0) {
                             const next_case = case_num + 1;
-                            const last_node = self.new_ast.getNode(current_case_stmts.items[current_case_stmts.items.len - 1]);
+                            const last_node = self.ast.getNode(current_case_stmts.items[current_case_stmts.items.len - 1]);
                             if (last_node.tag != .return_statement) {
                                 const jump = try buildInstructionReturn(self, 3, try es_helpers.makeNumericLiteral(self, next_case), span);
                                 try current_case_stmts.append(self.allocator, jump);
@@ -1783,13 +1817,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const discriminant = try es_helpers.makeStaticMember(self, state_ref, label_prop, span);
 
             // switch_statement: extra = [discriminant, cases_start, cases_len]
-            const cases_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-            const switch_extra = try self.new_ast.addExtras(&.{
+            const cases_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const switch_extra = try self.ast.addExtras(&.{
                 @intFromEnum(discriminant),
                 cases_list.start,
                 cases_list.len,
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .switch_statement,
                 .span = span,
                 .data = .{ .extra = switch_extra },
@@ -1798,10 +1832,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// block_statement이면 내부 문들을 순회, 아니면 단일 문으로 collectOperations.
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
-            const body_node = self.old_ast.getNode(body_idx);
+            const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                const stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-                for (stmts) |raw_idx| {
+                const stmts_start = body_node.data.list.start;
+                const stmts_len = body_node.data.list.len;
+                // collectOperations가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+                var i_stmt: u32 = 0;
+                while (i_stmt < stmts_len) : (i_stmt += 1) {
+                    const raw_idx = self.ast.extra_data.items[stmts_start + i_stmt];
                     try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
                 }
             } else {
@@ -1814,10 +1852,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn buildConditionalBreak(self: *Transformer, label: u32, cond: NodeIndex, negate: bool, span: Span) Transformer.Error!NodeIndex {
             const final_cond = if (negate) blk: {
                 const paren_cond = try es_helpers.makeParenExpr(self, cond, span);
-                break :blk try self.new_ast.addNode(.{
+                break :blk try self.ast.addNode(.{
                     .tag = .unary_expression,
                     .span = span,
-                    .data = .{ .extra = try self.new_ast.addExtras(&.{
+                    .data = .{ .extra = try self.ast.addExtras(&.{
                         @intFromEnum(paren_cond),
                         @intFromEnum(token_mod.Kind.bang),
                     }) },
@@ -1826,13 +1864,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const label_node = try es_helpers.makeNumericLiteral(self, label);
             const break_ret = try buildInstructionReturn(self, 3, label_node, span);
-            const if_body_list = try self.new_ast.addNodeList(&.{break_ret});
-            const if_body = try self.new_ast.addNode(.{
+            const if_body_list = try self.ast.addNodeList(&.{break_ret});
+            const if_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = if_body_list },
             });
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .if_statement,
                 .span = span,
                 .data = .{ .ternary = .{ .a = final_cond, .b = if_body, .c = .none } },
@@ -1844,14 +1882,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn buildSwitchCase(self: *Transformer, case_num: u32, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const test_node = try es_helpers.makeNumericLiteral(self, case_num);
 
-            const body_list = try self.new_ast.addNodeList(stmts);
-            const case_extra = try self.new_ast.addExtras(&.{
+            const body_list = try self.ast.addNodeList(stmts);
+            const case_extra = try self.ast.addExtras(&.{
                 @intFromEnum(test_node),
                 body_list.start,
                 body_list.len,
             });
 
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .switch_case,
                 .span = span,
                 .data = .{ .extra = case_extra },
@@ -1863,17 +1901,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const inst_node = try es_helpers.makeNumericLiteral(self, instruction);
 
             const arr_items = if (!value.isNone())
-                try self.new_ast.addNodeList(&.{ inst_node, value })
+                try self.ast.addNodeList(&.{ inst_node, value })
             else
-                try self.new_ast.addNodeList(&.{inst_node});
+                try self.ast.addNodeList(&.{inst_node});
 
-            const arr = try self.new_ast.addNode(.{
+            const arr = try self.ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
                 .data = .{ .list = arr_items },
             });
 
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = arr, .flags = 0 } },
@@ -1906,21 +1944,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터
-            const state_span = try self.new_ast.addString("_state");
+            const state_span = try self.ast.addString("_state");
             const state_param = try es_helpers.makeBindingIdentifier(self, state_span);
 
             // function body: switch_body를 block으로 감싸기
-            const body_list = try self.new_ast.addNodeList(&.{switch_body});
-            const body = try self.new_ast.addNode(.{
+            const body_list = try self.ast.addNodeList(&.{switch_body});
+            const body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
 
             // function(_state) { ... }
-            const params = try self.new_ast.addNodeList(&.{state_param});
+            const params = try self.ast.addNodeList(&.{state_param});
             const none = @intFromEnum(NodeIndex.none);
-            const func_extra = try self.new_ast.addExtras(&.{
+            const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 params.start,
                 params.len,
@@ -1928,7 +1966,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 0, // flags
                 none,
             });
-            const func_expr = try self.new_ast.addNode(.{
+            const func_expr = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = span,
                 .data = .{ .extra = func_extra },

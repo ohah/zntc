@@ -46,7 +46,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
 
             // Data는 extern union이므로 data.none=0 시 data.list는 미초기화.
             // 소스를 스캔하여 ${가 있는지로 substitution 여부를 판별한다.
-            const source = self.old_ast.source;
+            const source = self.ast.source;
             const is_substitution = blk: {
                 var pos = span.start + 1;
                 while (pos < span.end) {
@@ -67,30 +67,33 @@ pub fn ES2015Template(comptime Transformer: type) type {
                 return buildStringLiteral(self, text);
             }
 
-            const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-            if (members.len == 0) return NodeIndex.none;
+            const tl_start = node.data.list.start;
+            const tl_len = node.data.list.len;
+            if (tl_len == 0) return NodeIndex.none;
 
-            const first_elem = self.old_ast.getNode(@enumFromInt(members[0]));
-            const head_text = getTemplateElementText(self.old_ast.source, first_elem.span);
+            const first_elem = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[tl_start]));
+            const head_text = getTemplateElementText(self.ast.source, first_elem.span);
 
-            if (members.len == 1) {
+            if (tl_len == 1) {
                 return buildStringLiteral(self, head_text);
             }
 
-            // 빈 head라도 "" + expr 로 시작해야 toString 보장
+            // 빈 head라도 "" + expr 로 ��작해야 toString 보장
             var result = try buildStringLiteral(self, head_text);
 
-            var i: usize = 1;
-            while (i < members.len) : (i += 1) {
-                const member = self.old_ast.getNode(@enumFromInt(members[i]));
+            // visitNode가 AST를 ���형하므로 인덱스 루프 사용 (슬라이스 캐시 금��)
+            var i: u32 = 1;
+            while (i < tl_len) : (i += 1) {
+                const raw_idx = self.ast.extra_data.items[tl_start + i];
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .template_element) {
-                    const text = getTemplateElementText(self.old_ast.source, member.span);
+                    const text = getTemplateElementText(self.ast.source, member.span);
                     if (text.len > 0) {
                         const str_node = try buildStringLiteral(self, text);
                         result = try buildBinaryPlus(self, result, str_node, span);
                     }
                 } else {
-                    const visited = try self.visitNode(@enumFromInt(members[i]));
+                    const visited = try self.visitNode(@enumFromInt(raw_idx));
                     if (!visited.isNone()) {
                         result = try buildBinaryPlus(self, result, visited, span);
                     }
@@ -161,8 +164,8 @@ fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
 
     buf.appendAssumeCapacity('"');
 
-    const str_span = try self.new_ast.addString(buf.items);
-    return self.new_ast.addNode(.{
+    const str_span = try self.ast.addString(buf.items);
+    return self.ast.addNode(.{
         .tag = .string_literal,
         .span = str_span,
         .data = .{ .string_ref = str_span },
@@ -171,7 +174,7 @@ fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
 
 /// a + b binary expression을 만든다.
 fn buildBinaryPlus(self: anytype, left: NodeIndex, right: NodeIndex, span: Span) !NodeIndex {
-    return self.new_ast.addNode(.{
+    return self.ast.addNode(.{
         .tag = .binary_expression,
         .span = span,
         .data = .{ .binary = .{

@@ -28,7 +28,7 @@ test "Transformer: empty program" {
     defer t.deinit();
 
     const root = try t.transform();
-    const result = t.new_ast.getNode(root);
+    const result = t.ast.getNode(root);
 
     try std_lib.testing.expectEqual(Tag.program, result.tag);
     try std_lib.testing.expectEqual(@as(u32, 0), result.data.list.len);
@@ -59,7 +59,7 @@ test "Transformer: strip type alias declaration" {
     defer t.deinit();
 
     const root = try t.transform();
-    const result = t.new_ast.getNode(root);
+    const result = t.ast.getNode(root);
 
     // type alias가 제거되어 빈 program
     try std_lib.testing.expectEqual(Tag.program, result.tag);
@@ -99,7 +99,7 @@ test "Transformer: preserve JS expression statement" {
     defer t.deinit();
 
     const root = try t.transform();
-    const result = t.new_ast.getNode(root);
+    const result = t.ast.getNode(root);
 
     // program에 statement 1개 보존
     try std_lib.testing.expectEqual(Tag.program, result.tag);
@@ -156,16 +156,16 @@ test "Transformer: strip ts_as_expression" {
     const root = try t.transform();
 
     // program → expression_statement → identifier_reference (as 제거됨)
-    const prog = t.new_ast.getNode(root);
+    const prog = t.ast.getNode(root);
     try std_lib.testing.expectEqual(Tag.program, prog.tag);
     try std_lib.testing.expectEqual(@as(u32, 1), prog.data.list.len);
 
     // expression_statement의 operand가 직접 identifier_reference를 가리킴
-    const stmt_indices = t.new_ast.extra_data.items[prog.data.list.start .. prog.data.list.start + prog.data.list.len];
-    const new_stmt = t.new_ast.getNode(@enumFromInt(stmt_indices[0]));
+    const stmt_indices = t.ast.extra_data.items[prog.data.list.start .. prog.data.list.start + prog.data.list.len];
+    const new_stmt = t.ast.getNode(@enumFromInt(stmt_indices[0]));
     try std_lib.testing.expectEqual(Tag.expression_statement, new_stmt.tag);
 
-    const inner = t.new_ast.getNode(new_stmt.data.unary.operand);
+    const inner = t.ast.getNode(new_stmt.data.unary.operand);
     try std_lib.testing.expectEqual(Tag.identifier_reference, inner.tag);
 }
 
@@ -209,7 +209,7 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResu
     const root = try t.transform();
     t.scratch.deinit(allocator);
 
-    return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+    return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
 test "Integration: type alias stripped" {
@@ -282,7 +282,7 @@ fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8
     t.scratch.deinit(allocator);
     t.pending_nodes.deinit(allocator);
 
-    return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+    return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
 // ============================================================

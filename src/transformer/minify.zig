@@ -1,6 +1,6 @@
 //! ZTS AST Minifier — Phase 1: Constant Folding
 //!
-//! transformer 완료 후 new_ast를 in-place 수정하여 코드 크기를 줄인다.
+//! transformer 완료 후 ast를 in-place 수정하여 코드 크기를 줄인다.
 //! 별도 패스로 실행 — transformer와 독립적, 끄면 기존 동작 보장.
 //!
 //! Phase 1: Constant folding
@@ -79,7 +79,7 @@ fn formatNumber(ast: *Ast, value: f64) ?Span {
     return ast.addString(text) catch null;
 }
 
-/// AST minify 패스를 실행한다. new_ast를 in-place 수정.
+/// AST minify 패스를 실행한다. ast를 in-place 수정.
 pub fn minify(ast: *Ast) void {
     for (ast.nodes.items, 0..) |node, i| {
         switch (node.tag) {

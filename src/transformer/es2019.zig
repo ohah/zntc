@@ -30,7 +30,7 @@ pub fn ES2019(comptime Transformer: type) type {
             if (!param.isNone()) {
                 const new_param = try self.visitNode(param);
                 const new_body = try self.visitNode(body);
-                return self.new_ast.addNode(.{
+                return self.ast.addNode(.{
                     .tag = .catch_clause,
                     .span = node.span,
                     .data = .{ .binary = .{ .left = new_param, .right = new_body, .flags = 0 } },
@@ -38,14 +38,14 @@ pub fn ES2019(comptime Transformer: type) type {
             }
 
             // binding 없음 → _unused 합성
-            const unused_span = try self.new_ast.addString("_unused");
-            const unused_binding = try self.new_ast.addNode(.{
+            const unused_span = try self.ast.addString("_unused");
+            const unused_binding = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = unused_span,
                 .data = .{ .string_ref = unused_span },
             });
             const new_body = try self.visitNode(body);
-            return self.new_ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .catch_clause,
                 .span = node.span,
                 .data = .{ .binary = .{ .left = unused_binding, .right = new_body, .flags = 0 } },
