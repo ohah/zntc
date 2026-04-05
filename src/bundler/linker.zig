@@ -972,7 +972,12 @@ pub const Linker = struct {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                    try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
+                    // ESM-wrapped + synthetic binding: top-level에 이미 var 선언됨 → 할당만
+                    if (is_synthetic and m.wrap_kind == .esm) {
+                        try preamble.writeCjsImportAssignOnly(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
+                    } else {
+                        try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
+                    }
                     continue;
                 }
 
@@ -2416,7 +2421,30 @@ const PreambleWriter = struct {
         is_namespace: bool,
         interop: types.Interop,
     ) !void {
-        try self.write("var ");
+        try self.writeCjsImportInner(local_name, imported_name, req_var, is_namespace, interop, false);
+    }
+
+    fn writeCjsImportAssignOnly(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        imported_name: []const u8,
+        req_var: []const u8,
+        is_namespace: bool,
+        interop: types.Interop,
+    ) !void {
+        try self.writeCjsImportInner(local_name, imported_name, req_var, is_namespace, interop, true);
+    }
+
+    fn writeCjsImportInner(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        imported_name: []const u8,
+        req_var: []const u8,
+        is_namespace: bool,
+        interop: types.Interop,
+        assign_only: bool,
+    ) !void {
+        if (!assign_only) try self.write("var ");
         try self.write(local_name);
         // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
         const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
