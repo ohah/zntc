@@ -413,6 +413,9 @@ pub const Transformer = struct {
 
             .flow_match_expression => self.visitFlowMatch(node),
 
+            // Flow component with ref → function Name_withRef + const Name = React.forwardRef(...)
+            .flow_component_wrapper => self.visitFlowComponentWrapper(node),
+
             // === 리스트 노드: 자식을 하나씩 방문하며 복사 ===
             .program,
             .block_statement,
@@ -1274,6 +1277,86 @@ pub const Transformer = struct {
             .span = span,
             .data = .{ .extra = call_extra },
         });
+    }
+
+    /// Flow component with ref → 2개 statement로 변환:
+    ///   function Name_withRef({...props}, ref) { ... }    ← pending_nodes
+    ///   const Name = React.forwardRef(Name_withRef);       ← 반환값
+    ///
+    /// extra = [name, params_start, params_len, body]
+    fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex {
+        const extras = self.old_ast.extra_data.items;
+        const e = node.data.extra;
+        const name_idx: NodeIndex = @enumFromInt(extras[e]);
+        const params_start = extras[e + 1];
+        const params_len = extras[e + 2];
+        const body_idx: NodeIndex = @enumFromInt(extras[e + 3]);
+        const span = node.span;
+
+        // 원본 이름에서 _withRef suffix 생성
+        const name_node = self.old_ast.getNode(name_idx);
+        const name_text = self.old_ast.source[name_node.span.start..name_node.span.end];
+
+        const suffix = "_withRef";
+        const with_ref_buf = try self.allocator.alloc(u8, name_text.len + suffix.len);
+        @memcpy(with_ref_buf[0..name_text.len], name_text);
+        @memcpy(with_ref_buf[name_text.len..], suffix);
+
+        // 1) function Name_withRef({...props}, ref) { ... } 생성
+        const with_ref_span = try self.new_ast.addString(with_ref_buf);
+        const with_ref_name = try es_helpers.makeBindingIdentifier(self, with_ref_span);
+
+        // ES2015 params lowering
+        var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+        defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+        const new_params = if (self.options.unsupported.default_params and
+            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+        blk: {
+            const lr = try es2015_params.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
+            es2015_body_stmts = lr.body_stmts;
+            break :blk lr.new_params;
+        } else try self.visitExtraList(params_start, params_len);
+
+        var new_body = try self.visitNode(body_idx);
+
+        if (es2015_body_stmts) |stmts| {
+            if (stmts.items.len > 0 and !new_body.isNone()) {
+                new_body = try self.prependStatementsToBody(new_body, stmts.items);
+            }
+        }
+
+        const none = @intFromEnum(NodeIndex.none);
+        const func_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(with_ref_name),
+            new_params.start,
+            new_params.len,
+            @intFromEnum(new_body),
+            0, // flags
+            none, // return_type
+        });
+        const inner_func = try self.new_ast.addNode(.{
+            .tag = .function_declaration,
+            .span = span,
+            .data = .{ .extra = func_extra },
+        });
+
+        // pending_nodes에 삽입 → visitExtraList가 이 문 다음에 const 선언을 배치
+        try self.pending_nodes.append(self.allocator, inner_func);
+
+        // 2) const Name = React.forwardRef(Name_withRef) 생성
+        const react_ref = try es_helpers.makeIdentifierRef(self, "React");
+        const forward_ref = try es_helpers.makeIdentifierRef(self, "forwardRef");
+        const callee = try es_helpers.makeStaticMember(self, react_ref, forward_ref, span);
+
+        const arg = try es_helpers.makeIdentifierRef(self, with_ref_buf);
+        const call = try es_helpers.makeCallExpr(self, callee, &.{arg}, span);
+
+        const binding_span = try self.new_ast.addString(name_text);
+        const binding = try es_helpers.makeBindingIdentifier(self, binding_span);
+        const declarator = try es_helpers.makeDeclarator(self, binding, call, span);
+
+        return es_helpers.makeVarDeclaration(self, &.{declarator}, 2, span); // 2 = const
     }
 
     fn visitTsExpression(self: *Transformer, node: Node) Error!NodeIndex {

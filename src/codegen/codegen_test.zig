@@ -3919,19 +3919,45 @@ test "Flow: class with typed methods does not crash transformer" {
 // Flow: component declaration → props destructuring
 // ============================================================
 
-test "Flow: component params → object destructuring" {
+test "Flow: component with ref → React.forwardRef" {
     var r = try e2eFlow(std.testing.allocator,
         \\component View(ref, ...props: any) {
         \\  return null;
         \\}
     );
     defer r.deinit();
-    // component View(ref, ...props) → function View({ ref:ref, ...props })
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function View(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "ref:ref") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "...props") != null);
-    // 별도 함수 파라미터가 아닌 단일 destructuring 파라미터여야 함
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function View(ref,") == null);
+    // component View(ref, ...props) →
+    //   function View_withRef({...props}, ref) { ... }
+    //   const View = React.forwardRef(View_withRef);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function View_withRef(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "React.forwardRef(View_withRef)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const View") != null);
+    // ref는 두 번째 파라미터
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "},ref)") != null or
+        std.mem.indexOf(u8, r.output, "}, ref)") != null or
+        std.mem.indexOf(u8, r.output, " },ref)") != null);
+}
+
+test "Flow: component without ref → plain function" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component Bar(name: string, age: number) {
+        \\  return null;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Bar(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "forwardRef") == null);
+}
+
+test "Flow: component rest only → single param" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\component Baz(...props: any) {
+        \\  return null;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Baz(props)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "forwardRef") == null);
 }
 
 test "Flow: component param with type annotation stripped" {

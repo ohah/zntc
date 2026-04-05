@@ -360,6 +360,9 @@ pub const Node = struct {
         flow_exact_object_type,
         /// match (expr) { ... } — Flow match expression
         flow_match_expression,
+        /// Flow component with ref → React.forwardRef wrapper
+        /// extra = [name, params_start, params_len, body]
+        flow_component_wrapper,
 
         // ==============================================================
         // TypeScript Expressions
