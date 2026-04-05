@@ -12574,3 +12574,216 @@ test "Bundle: module with syntax errors does not crash transformer" {
     // Should not crash — broken module is skipped, bundle still produced
     try std.testing.expect(result.output.len > 0 or result.hasErrors());
 }
+
+// ============================================================
+// __esm live binding 테스트 (rolldown 방식)
+// ============================================================
+
+test "ESM live binding: function hoisted outside __esm references canonical var" {
+    // __esm 모듈의 function이 다른 __esm 모듈의 변수를 참조할 때,
+    // function은 밖에 호이스팅되고 canonical 변수를 직접 참조해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "style.js",
+        \\export var color = 'red';
+    );
+    try writeFile(tmp.dir, "component.js",
+        \\import { color } from './style.js';
+        \\export function getColor() { return color; }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./component.js');
+        \\console.log(m.getColor());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // function이 __esm 밖에 호이스팅
+    const esm_start = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
+    const fn_pos = std.mem.indexOf(u8, result.output, "function getColor()") orelse unreachable;
+    try std.testing.expect(fn_pos < esm_start);
+    // live binding: component.js의 __esm init에 import 스냅샷 할당이 없어야 함.
+    // init에는 init_xxx() 호출만 있고 __toCommonJS 패턴이 없어야 함.
+    const component_init = std.mem.indexOf(u8, result.output, "\"component.js\"()") orelse unreachable;
+    // init body는 다음 }); 까지
+    const init_end = std.mem.indexOf(u8, result.output[component_init..], "\n\t}\n});") orelse
+        std.mem.indexOf(u8, result.output[component_init..], "}});") orelse unreachable;
+    const init_body = result.output[component_init .. component_init + init_end];
+    try std.testing.expect(std.mem.indexOf(u8, init_body, "__toCommonJS") == null);
+}
+
+test "ESM live binding: init only contains dependency init calls" {
+    // __esm → __esm import 시, init 함수에는 의존 init 호출만 있어야 함.
+    // 스냅샷 할당 코드(= (init_xxx(), __toCommonJS(exports_xxx)).xxx)가 없어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.js",
+        \\export const value = 42;
+    );
+    try writeFile(tmp.dir, "mod.js",
+        \\import { value } from './dep.js';
+        \\export function getValue() { return value; }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./mod.js');
+        \\const d = require('./dep.js');
+        \\console.log(m.getValue(), d.value);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // mod.js의 init에 init_dep 호출이 있어야 함
+    const mod_init = std.mem.indexOf(u8, result.output, "\"mod.js\"()") orelse unreachable;
+    const init_end2 = std.mem.indexOf(u8, result.output[mod_init..], "\n\t}\n});") orelse
+        std.mem.indexOf(u8, result.output[mod_init..], "}});") orelse unreachable;
+    const mod_body = result.output[mod_init .. mod_init + init_end2];
+    try std.testing.expect(std.mem.indexOf(u8, mod_body, "init_") != null);
+    // init 안에 __toCommonJS 스냅샷 복사가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, mod_body, "__toCommonJS") == null);
+}
+
+test "ESM live binding: namespace import uses exports_xxx (not live binding)" {
+    // namespace import(import * as X)는 exports_xxx로 rename되어야 함.
+    // 이 import_declaration은 body codegen에서 할당문으로 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.js",
+        \\export function add(a, b) { return a + b; }
+        \\export function sub(a, b) { return a - b; }
+    );
+    try writeFile(tmp.dir, "mod.js",
+        \\import * as Utils from './utils.js';
+        \\export default Utils.add(1, 2);
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./mod.js');
+        \\console.log(m.default);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // namespace import는 exports_xxx로 참조
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") != null);
+}
+
+test "ESM live binding: re-export from __esm uses source canonical name" {
+    // re-export(export { X } from './dep')에서 __esm 타겟의 canonical name을 사용해야 함.
+    // __export getter가 올바른 변수를 참조.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "impl.js",
+        \\export function doWork() { return 'done'; }
+    );
+    try writeFile(tmp.dir, "facade.js",
+        \\export { doWork } from './impl.js';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./facade.js');
+        \\console.log(m.doWork());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // facade.js의 __export getter가 doWork를 참조 (undefined가 아닌 실제 함수)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "doWork") != null);
+    // function doWork이 번들에 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function doWork()") != null);
+}
+
+test "ESM live binding: class stays inside __esm init (block-scoped)" {
+    // class는 block-scoped이므로 __esm init 안에 할당문으로 유지되어야 함.
+    // function과 다르게 밖으로 호이스팅되면 안 됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "mod.js",
+        \\export class Greeter {
+        \\  greet() { return 'hello'; }
+        \\}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const m = require('./mod.js');
+        \\console.log(new m.Greeter().greet());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const esm_start = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
+    // class는 할당문으로 __esm 안에 있어야 함
+    const class_pos = std.mem.indexOf(u8, result.output, "Greeter = class") orelse unreachable;
+    try std.testing.expect(class_pos > esm_start);
+}
+
+test "ESM live binding: RN platform forces __esm wrapping with live binding" {
+    // --platform=react-native 시 모든 비-엔트리 ESM 모듈이 __esm 래핑되고,
+    // 모듈 간 import가 live binding으로 처리되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "helper.js",
+        \\export function format(s) { return '[' + s + ']'; }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { format } from './helper.js';
+        \\console.log(format('test'));
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __esm 래핑이 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm({") != null);
+    // function이 __esm 밖에 호이스팅
+    const esm_pos = std.mem.indexOf(u8, result.output, "__esm({") orelse unreachable;
+    const fn_pos = std.mem.indexOf(u8, result.output, "function format(") orelse unreachable;
+    try std.testing.expect(fn_pos < esm_pos);
+    // helper.js의 init에 __toCommonJS 스냅샷 없음
+    // (엔트리에서 require() 시 __toCommonJS가 사용될 수 있지만, 모듈 간 import에는 없어야 함)
+    const helper_init = std.mem.indexOf(u8, result.output, "\"helper.js\"()") orelse unreachable;
+    const helper_end = std.mem.indexOf(u8, result.output[helper_init..], "\n\t}\n});") orelse
+        std.mem.indexOf(u8, result.output[helper_init..], "}});") orelse unreachable;
+    const helper_body = result.output[helper_init .. helper_init + helper_end];
+    try std.testing.expect(std.mem.indexOf(u8, helper_body, "__toCommonJS") == null);
+}
