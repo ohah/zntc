@@ -119,6 +119,14 @@ pub const BundleOptions = struct {
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
     jsx_in_js: bool = false,
+    /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev)
+    jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+    /// classic 모드 JSX factory (--jsx-factory)
+    jsx_factory: []const u8 = "React.createElement",
+    /// classic 모드 Fragment factory (--jsx-fragment)
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// automatic 모드 import source (--jsx-import-source)
+    jsx_import_source: []const u8 = "react",
     /// 커스텀 확장자 탐색 순서 (--resolve-extensions). 비어있으면 기본값 사용.
     resolve_extensions: []const []const u8 = &.{},
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 (module → main).
@@ -296,6 +304,10 @@ pub const Bundler = struct {
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
             .keep_names = self.options.keep_names,
+            .jsx_runtime = self.options.jsx_runtime,
+            .jsx_factory = self.options.jsx_factory,
+            .jsx_fragment = self.options.jsx_fragment,
+            .jsx_import_source = self.options.jsx_import_source,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
             .run_before_main = self.options.run_before_main,
