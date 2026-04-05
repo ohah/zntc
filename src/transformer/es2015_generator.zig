@@ -40,6 +40,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_params_mod = @import("es2015_params.zig");
 
 /// 상태 머신의 개별 연산.
 const OpCode = enum {
@@ -83,7 +84,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const flags = extras[e + 4];
 
             const new_name = try self.visitNode(name_idx);
-            const new_params = try self.visitExtraList(params_start, params_len);
+
+            // ES2015 params lowering
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
+                es2015_body_stmts = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
 
             const sm_result = try buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
@@ -97,11 +109,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = gen_call, .flags = 0 } },
             });
 
-            // hoisted var 선언을 __generator 밖에 배치
-            const body_list = if (sm_result.var_decl.isNone())
-                try self.new_ast.addNodeList(&.{ret_stmt})
-            else
-                try self.new_ast.addNodeList(&.{ sm_result.var_decl, ret_stmt });
+            // hoisted var + ES2015 params body stmts + return __generator(...)
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            if (!sm_result.var_decl.isNone()) {
+                try self.scratch.append(self.allocator, sm_result.var_decl);
+            }
+            if (es2015_body_stmts) |stmts| {
+                for (stmts.items) |stmt| {
+                    try self.scratch.append(self.allocator, stmt);
+                }
+            }
+            try self.scratch.append(self.allocator, ret_stmt);
+
+            const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
             const new_body = try self.new_ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,

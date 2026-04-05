@@ -15,6 +15,7 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const es_helpers = @import("es_helpers.zig");
 const es2015_generator = @import("es2015_generator.zig");
+const es2015_params_mod = @import("es2015_params.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
@@ -46,7 +47,18 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitNode(body_idx);
-            const new_params = try self.visitExtraList(params_start, params_len);
+
+            // ES2015 params lowering
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, node.span);
+                es2015_body_stmts = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
 
             const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
@@ -56,7 +68,16 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
             });
-            const body_list = try self.new_ast.addNodeList(&.{return_stmt});
+
+            // ES2015 params body stmts + return __async(...)
+            const body_list = if (es2015_body_stmts) |stmts| blk: {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
+                try self.scratch.append(self.allocator, return_stmt);
+                break :blk try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            } else try self.new_ast.addNodeList(&.{return_stmt});
+
             const wrapper_body = try self.new_ast.addNode(.{
                 .tag = .block_statement,
                 .span = node.span,
@@ -139,7 +160,18 @@ pub fn ES2017(comptime Transformer: type) type {
             const flags = extras[e + 4];
 
             const new_name = try self.visitNode(name_idx);
-            const new_params = try self.visitExtraList(params_start, params_len);
+
+            // ES2015 params lowering
+            var es2015_body_stmts2: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts2) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
+                es2015_body_stmts2 = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
 
             const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
@@ -156,11 +188,15 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
             });
 
-            // hoisted var 선언을 __generator 밖에 배치
-            const body_list = if (sm_result.var_decl.isNone())
-                try self.new_ast.addNodeList(&.{return_stmt})
-            else
-                try self.new_ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
+            // hoisted var + ES2015 params stmts + return __async(...)
+            const body_list = blk: {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
+                if (es2015_body_stmts2) |stmts| for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
+                try self.scratch.append(self.allocator, return_stmt);
+                break :blk try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            };
             const wrapper_body = try self.new_ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,

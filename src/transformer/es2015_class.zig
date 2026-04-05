@@ -1070,7 +1070,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.super_call_this_alias = false;
             defer self.super_call_this_alias = saved_super_alias;
 
-            const new_params = try self.visitExtraList(params_start, params_len);
+            // ES2015 params lowering (constructor destructuring/rest/default)
+            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+            const new_params = if (self.options.unsupported.default_params and
+                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+            blk: {
+                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
+                es2015_body_stmts = lr.body_stmts;
+                break :blk lr.new_params;
+            } else try self.visitExtraList(params_start, params_len);
+
             var new_body = try visitMethodBody(self, body_idx, span);
 
             // super() 호출이 있었으면 body 후처리:
@@ -1078,6 +1089,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 2. body 끝에 return _this 추가
             if (self.super_call_this_alias) {
                 new_body = try postProcessSuperCallBody(self, new_body, instance_fields, span);
+            }
+
+            // ES2015 params body 문 삽입
+            if (es2015_body_stmts) |stmts| {
+                if (stmts.items.len > 0 and !new_body.isNone()) {
+                    new_body = try self.prependStatementsToBody(new_body, stmts.items);
+                }
             }
 
             const none = @intFromEnum(NodeIndex.none);
