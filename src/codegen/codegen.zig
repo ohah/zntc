@@ -2696,6 +2696,7 @@ pub const Codegen = struct {
         const prefix = factory[0..dot_pos];
         const suffix = factory[dot_pos..];
 
+        // 1차: rename된 식별자 탐색 (React → React$84)
         for (meta.symbol_ids, 0..) |maybe_sid, node_i| {
             const sid = maybe_sid orelse continue;
             const new_name = meta.renames.get(sid) orelse continue;
@@ -2706,6 +2707,35 @@ pub const Codegen = struct {
                 return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_name, suffix }) catch null;
             }
         }
+
+        // 2차: rename 안 된 식별자라도 symbol_id가 있으면 스코프에 존재 → null (원본 사용)
+        // symbol_id가 없으면 이 모듈에 해당 import가 없으므로
+        // 다른 모듈의 rename된 이름을 찾아야 함
+        var has_unrenamed = false;
+        for (meta.symbol_ids, 0..) |maybe_sid, node_i| {
+            const sid = maybe_sid orelse continue;
+            if (meta.renames.get(sid) != null) continue; // 이미 rename된 건 스킵
+            const node_idx: NodeIndex = @enumFromInt(node_i);
+            const node = ast.getNode(node_idx);
+            if (node.tag != .identifier_reference and node.tag != .binding_identifier) continue;
+            if (std.mem.eql(u8, ast.getText(node.data.string_ref), prefix)) {
+                has_unrenamed = true;
+                break;
+            }
+        }
+        if (has_unrenamed) return null; // 원본 이름이 스코프에 있으므로 그대로 사용
+
+        // 3차: 이 모듈에 React import가 없고, 다른 모듈이 rename했을 수 있음
+        // renames 맵 전체에서 "React$" 패턴의 rename을 찾아 사용
+        var it = meta.renames.iterator();
+        while (it.next()) |entry| {
+            const new_name = entry.value_ptr.*;
+            // "React$1", "React$84" 등 prefix + "$" + 숫자 패턴
+            if (new_name.len > prefix.len and std.mem.startsWith(u8, new_name, prefix) and new_name[prefix.len] == '$') {
+                return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_name, suffix }) catch null;
+            }
+        }
+
         return null;
     }
 
