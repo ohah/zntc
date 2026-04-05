@@ -173,9 +173,17 @@ pub fn transpileWithCallback(
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
         .unsupported = options.unsupported,
+        // JSX lowering: 트랜스파일 모드에서 항상 활성화
+        .jsx_transform = true,
+        .jsx_runtime = options.jsx_runtime,
+        .jsx_factory = options.jsx_factory,
+        .jsx_fragment = options.jsx_fragment,
+        .jsx_import_source = options.jsx_import_source,
+        .jsx_filename = file_path,
     });
     transformer.old_symbol_ids = analyzer.symbol_ids.items;
     transformer.symbols = analyzer.symbols.items;
+    transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
 
     if (options.minify_syntax) {
@@ -226,16 +234,28 @@ pub fn transpileWithCallback(
     }
     const raw_output = cg.generate(root) catch return error.CodegenError;
 
+    // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우)
+    const jsx_output = if (transformer.jsx_import_info.hasImports()) blk: {
+        const is_dev = options.jsx_runtime == .automatic_dev;
+        if (transformer.jsx_import_info.buildImportString(arena_alloc, options.jsx_import_source, is_dev)) |import_str| {
+            var combined: std.ArrayList(u8) = .empty;
+            combined.ensureTotalCapacity(arena_alloc, import_str.len + raw_output.len) catch break :blk raw_output;
+            combined.appendSliceAssumeCapacity(import_str);
+            combined.appendSliceAssumeCapacity(raw_output);
+            break :blk combined.items;
+        } else break :blk raw_output;
+    } else raw_output;
+
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
     const has_helpers = @as(u16, @bitCast(rh)) != 0;
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
-            break :blk raw_output;
-        buf.appendSlice(arena_alloc, raw_output) catch break :blk raw_output;
+            break :blk jsx_output;
+        buf.appendSlice(arena_alloc, jsx_output) catch break :blk jsx_output;
         break :blk buf.items;
-    } else raw_output;
+    } else jsx_output;
 
     // 8. 소스맵 생성
     var sourcemap_json: ?[]const u8 = null;

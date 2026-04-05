@@ -41,6 +41,7 @@ const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_generator = @import("es2015_generator.zig");
+const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -73,6 +74,20 @@ pub const TransformOptions = struct {
     /// Unsupported features bitmask. feature별로 다운레벨링 여부를 결정.
     /// ESTarget(es2020) 또는 엔진 버전(chrome80,safari14)에서 변환됨.
     unsupported: compat.UnsupportedFeatures = .{},
+
+    // --- JSX lowering (Phase 1: 트랜스파일 모드) ---
+    /// JSX AST → call_expression 변환 활성화
+    jsx_transform: bool = false,
+    /// JSX 런타임 모드 (codegen.JsxRuntime과 동일 enum 사용)
+    jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
+    /// classic 모드 factory (기본: "React.createElement")
+    jsx_factory: []const u8 = "React.createElement",
+    /// classic 모드 fragment (기본: "React.Fragment")
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// automatic 모드 import source (기본: "react")
+    jsx_import_source: []const u8 = "react",
+    /// jsxDEV의 fileName 출력용 파일 경로
+    jsx_filename: []const u8 = "",
 
     pub const compat = @import("compat.zig");
 };
@@ -215,6 +230,12 @@ pub const Transformer = struct {
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
     runtime_es5_compat: bool = false,
+
+    /// JSX lowering: 사용된 import 추적 (automatic 모드에서 import문 생성용)
+    jsx_import_info: jsx_lowering_mod.JsxImportInfo = .{},
+
+    /// 소스의 줄 오프셋 테이블 (Scanner에서 전달). jsxDEV source info 계산용.
+    line_offsets: []const u32 = &.{},
 
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
@@ -398,10 +419,16 @@ pub const Transformer = struct {
             .sequence_expression,
             .class_body,
             .formal_parameters,
-            // JSX — fragment는 .list, element/opening_element는 .extra
-            .jsx_fragment,
             .function_body,
             => self.visitListNode(node),
+
+            // JSX — fragment는 .list, element/opening_element는 .extra
+            .jsx_fragment => {
+                if (self.options.jsx_transform) {
+                    return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXFragment(self, node);
+                }
+                return self.visitListNode(node);
+            },
 
             .template_literal => {
                 if (self.options.unsupported.template_literal) {
@@ -439,7 +466,12 @@ pub const Transformer = struct {
             },
 
             // JSX element/opening_element: .extra 형식 (tag, attrs, children)
-            .jsx_element => self.visitJSXElement(node),
+            .jsx_element => {
+                if (self.options.jsx_transform) {
+                    return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXElement(self, node);
+                }
+                return self.visitJSXElement(node);
+            },
             .jsx_opening_element => self.visitJSXOpeningElement(node),
 
             // === 단항 노드: 자식 1개 재귀 방문 ===
@@ -476,7 +508,12 @@ pub const Transformer = struct {
             .decorator,
             // JSX
             .jsx_spread_attribute,
-            .jsx_expression_container,
+            .jsx_expression_container => {
+                if (self.options.jsx_transform) {
+                    return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXExpressionContainer(self, node);
+                }
+                return self.visitUnaryNode(node);
+            },
             .jsx_spread_child,
             .chain_expression,
             .computed_property_key,
@@ -803,8 +840,6 @@ pub const Transformer = struct {
             .meta_property,
             .template_element,
             .elision,
-            // JSX leaf
-            .jsx_text,
             .jsx_empty_expression,
             .jsx_identifier,
             .jsx_closing_element,
@@ -812,6 +847,14 @@ pub const Transformer = struct {
             .jsx_closing_fragment,
             .assignment_target_identifier,
             => self.copyNodeDirect(node),
+
+            // JSX leaf — jsx_text는 별도 처리 (jsx_transform 시 lowerJSXText)
+            .jsx_text => {
+                if (self.options.jsx_transform) {
+                    return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXText(self, node);
+                }
+                return self.copyNodeDirect(node);
+            },
 
             // === import/export specifiers ===
             .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
@@ -1419,17 +1462,17 @@ pub const Transformer = struct {
     }
 
     /// extra 인덱스로 NodeIndex 읽기.
-    fn readNodeIdx(self: *const Transformer, extra_start: u32, offset: u32) NodeIndex {
+    pub fn readNodeIdx(self: *const Transformer, extra_start: u32, offset: u32) NodeIndex {
         return @enumFromInt(self.old_ast.extra_data.items[extra_start + offset]);
     }
 
     /// extra 인덱스로 u32 읽기.
-    fn readU32(self: *const Transformer, extra_start: u32, offset: u32) u32 {
+    pub fn readU32(self: *const Transformer, extra_start: u32, offset: u32) u32 {
         return self.old_ast.extra_data.items[extra_start + offset];
     }
 
     /// 노드를 extra_data로 만들어 새 AST에 추가.
-    fn addExtraNode(self: *Transformer, tag: Tag, span: Span, extras: []const u32) Error!NodeIndex {
+    pub fn addExtraNode(self: *Transformer, tag: Tag, span: Span, extras: []const u32) Error!NodeIndex {
         const new_extra = try self.new_ast.addExtras(extras);
         return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
     }
