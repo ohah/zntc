@@ -31,11 +31,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .unary = .{ .operand = new_operand, .flags = 0 } },
             });
-            return self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = yield_node, .flags = 0 } },
-            });
+            return es_helpers.makeParenExpr(self, yield_node, node.span);
         }
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }

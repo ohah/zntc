@@ -1187,11 +1187,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = lhs, .right = rhs, .flags = 0 } },
             });
             const expr = if (self.new_ast.getNode(lhs).tag == .object_pattern)
-                try self.new_ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = span,
-                    .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                })
+                try es_helpers.makeParenExpr(self, assign, span)
             else
                 assign;
             return es_helpers.makeExprStmt(self, expr, span);
@@ -1498,11 +1494,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // parenthesized_expression: 내부 재귀
             if (node.tag == .parenthesized_expression) {
                 const inner = try visitExprWithYieldExtraction(self, node.data.unary.operand, ops, next_label);
-                return self.new_ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = node.span,
-                    .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
-                });
+                return es_helpers.makeParenExpr(self, inner, node.span);
             }
 
             // logical/binary expression: 양쪽 재귀
@@ -1799,11 +1791,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// negate=true이면 조건을 !로 반전.
         fn buildConditionalBreak(self: *Transformer, label: u32, cond: NodeIndex, negate: bool, span: Span) Transformer.Error!NodeIndex {
             const final_cond = if (negate) blk: {
-                const paren_cond = try self.new_ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = span,
-                    .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
-                });
+                const paren_cond = try es_helpers.makeParenExpr(self, cond, span);
                 break :blk try self.new_ast.addNode(.{
                     .tag = .unary_expression,
                     .span = span,

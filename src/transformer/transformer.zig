@@ -1215,11 +1215,7 @@ pub const Transformer = struct {
 
         // (function(_m){...})(discriminant)
         // function expression을 parenthesized로 감싸서 IIFE 형태로 만듦
-        const paren_fn = try self.new_ast.addNode(.{
-            .tag = .parenthesized_expression,
-            .span = span,
-            .data = .{ .unary = .{ .operand = fn_expr, .flags = 0 } },
-        });
+        const paren_fn = try es_helpers.makeParenExpr(self, fn_expr, span);
         // call_expression extra: [callee, args_start, args_len, flags]
         const args_list = try self.new_ast.addNodeList(&.{new_discriminant});
         const call_extra = try self.new_ast.addExtras(&.{
