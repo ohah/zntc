@@ -906,6 +906,28 @@ pub const Linker = struct {
             cjs_var_cache.deinit();
         }
 
+        // namespace import export 수집 캐시: target_mod_idx → []NsExportPair
+        // 같은 타겟을 여러 모듈이 namespace import할 때 collectExportsRecursive 반복 순회 방지.
+        var ns_export_cache = std.AutoHashMap(u32, []NsExportPair).init(self.allocator);
+        defer {
+            var cache_it = ns_export_cache.iterator();
+            while (cache_it.next()) |entry| {
+                for (entry.value_ptr.*) |exp| {
+                    if (exp.owned) self.allocator.free(exp.local);
+                }
+                self.allocator.free(entry.value_ptr.*);
+            }
+            ns_export_cache.deinit();
+        }
+
+        // buildInlineObjectStr 결과 캐시: target_mod_idx → 할당된 인라인 객체 문자열
+        var ns_inline_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
+        defer {
+            var inline_it = ns_inline_cache.valueIterator();
+            while (inline_it.next()) |v| self.allocator.free(v.*);
+            ns_inline_cache.deinit();
+        }
+
         if (sem.scope_maps.len > 0) {
             const module_scope = sem.scope_maps[0];
 
@@ -983,6 +1005,8 @@ pub const Linker = struct {
                         @intCast(ns_sym_id),
                         @intCast(canonical_mod),
                         ib.local_name,
+                        &ns_export_cache,
+                        &ns_inline_cache,
                     );
                     continue;
                 }
@@ -1027,6 +1051,8 @@ pub const Linker = struct {
                                                     @intCast(import_sym_id),
                                                     @intFromEnum(src),
                                                     ib.local_name,
+                                                    &ns_export_cache,
+                                                    &ns_inline_cache,
                                                 );
                                                 break :blk ib.local_name;
                                             }
@@ -1053,6 +1079,8 @@ pub const Linker = struct {
                                         @intCast(imp_sym),
                                         @intCast(ns_target_mod),
                                         ib.local_name,
+                                        &ns_export_cache,
+                                        &ns_inline_cache,
                                     );
                                     break :blk ib.local_name;
                                 }
@@ -1936,19 +1964,41 @@ pub const Linker = struct {
         symbol_id: u32,
         target_mod_idx: u32,
         var_name: []const u8,
+        ns_export_cache: *std.AutoHashMap(u32, []NsExportPair),
+        ns_inline_cache: *std.AutoHashMap(u32, []const u8),
     ) std.mem.Allocator.Error!void {
-        var exports: std.ArrayList(NsExportPair) = .empty;
-        // owned 문자열은 inner_map으로 소유권 이동 — 여기서 free하지 않음
-        defer exports.deinit(self.allocator);
-        var seen = std.StringHashMap(void).init(self.allocator);
-        defer seen.deinit();
-        var visited = std.AutoHashMap(u32, void).init(self.allocator);
-        defer visited.deinit();
-        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+        // 캐시에서 조회, 없으면 수집 후 캐시에 저장
+        const cached_exports = if (ns_export_cache.get(target_mod_idx)) |cached| cached else blk: {
+            var exports: std.ArrayList(NsExportPair) = .empty;
+            // 에러 시에만 정리 — 정상 경로에서는 캐시로 소유권 이동
+            errdefer {
+                for (exports.items) |exp| {
+                    if (exp.owned) self.allocator.free(exp.local);
+                }
+                exports.deinit(self.allocator);
+            }
+            var seen = std.StringHashMap(void).init(self.allocator);
+            defer seen.deinit();
+            var visited = std.AutoHashMap(u32, void).init(self.allocator);
+            defer visited.deinit();
+            try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0, ns_inline_cache);
 
+            const owned_slice = try self.allocator.dupe(NsExportPair, exports.items);
+            // ArrayList 백킹 해제, 슬라이스로 소유권 이동 (owned 문자열은 슬라이스가 소유)
+            exports.deinit(self.allocator);
+            try ns_export_cache.put(target_mod_idx, owned_slice);
+            break :blk owned_slice;
+        };
+
+        // 캐시된 exports로 inner_map 구축.
+        // owned 문자열은 캐시가 소유하므로, inner_map에서 사용할 복사본 생성.
         var inner_map = std.StringHashMap([]const u8).init(self.allocator);
-        for (exports.items) |exp| {
-            try inner_map.put(exp.exported, exp.local);
+        for (cached_exports) |exp| {
+            const local = if (exp.owned)
+                try self.allocator.dupe(u8, exp.local)
+            else
+                exp.local;
+            try inner_map.put(exp.exported, local);
         }
         try ns_rewrite_list.append(self.allocator, .{
             .symbol_id = symbol_id,
@@ -1956,8 +2006,13 @@ pub const Linker = struct {
         });
 
         if (ns_inline_list) |list| {
-            const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
-            // 충돌 방지: export 이름과 겹치지 않는 변수명 생성
+            const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0, ns_inline_cache);
+            // seen 맵 재구성 — makeUniqueNsVarName에서 export 이름 충돌 확인용
+            var seen = std.StringHashMap(void).init(self.allocator);
+            defer seen.deinit();
+            for (cached_exports) |exp| {
+                try seen.put(exp.exported, {});
+            }
             const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen);
             try list.append(self.allocator, .{
                 .symbol_id = symbol_id,
@@ -1989,13 +2044,22 @@ pub const Linker = struct {
 
     /// 모듈의 모든 export를 인라인 객체 문자열로 생성 (재귀적).
     /// `export * as ns` export는 소스 모듈의 인라인 객체로 중첩.
+    /// ns_inline_cache가 제공되면 동일 target_mod_idx에 대한 결과를 캐싱.
     fn buildInlineObjectStr(
         self: *const Linker,
         target_mod_idx: u32,
         depth: u32,
+        ns_inline_cache: ?*std.AutoHashMap(u32, []const u8),
     ) std.mem.Allocator.Error![]const u8 {
         if (depth > max_chain_depth) return try self.allocator.dupe(u8, "{}");
         if (target_mod_idx >= self.modules.len) return try self.allocator.dupe(u8, "{}");
+
+        // 캐시 히트: 복사본 반환 (호출자가 소유권을 가짐)
+        if (ns_inline_cache) |cache| {
+            if (cache.get(target_mod_idx)) |cached_str| {
+                return try self.allocator.dupe(u8, cached_str);
+            }
+        }
 
         var exports: std.ArrayList(NsExportPair) = .empty;
         defer {
@@ -2008,7 +2072,7 @@ pub const Linker = struct {
         defer seen.deinit();
         var visited = std.AutoHashMap(u32, void).init(self.allocator);
         defer visited.deinit();
-        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0, ns_inline_cache);
 
         // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
         const target = self.modules[target_mod_idx];
@@ -2040,7 +2104,7 @@ pub const Linker = struct {
             }
             // export * as ns 패턴이면 재귀 인라인
             if (ns_re_exports.get(exp.exported)) |src_mod| {
-                const nested = try self.buildInlineObjectStr(src_mod, depth + 1);
+                const nested = try self.buildInlineObjectStr(src_mod, depth + 1, ns_inline_cache);
                 defer self.allocator.free(nested);
                 try buf.appendSlice(self.allocator, nested);
             } else {
@@ -2048,7 +2112,15 @@ pub const Linker = struct {
             }
         }
         try buf.appendSlice(self.allocator, "}");
-        return try self.allocator.dupe(u8, buf.items);
+        const result = try self.allocator.dupe(u8, buf.items);
+
+        // 결과를 캐시에 저장 (캐시가 소유, 호출자에게는 별도 복사본 반환)
+        if (ns_inline_cache) |cache| {
+            const cache_copy = try self.allocator.dupe(u8, result);
+            try cache.put(target_mod_idx, cache_copy);
+        }
+
+        return result;
     }
 
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
@@ -2060,6 +2132,7 @@ pub const Linker = struct {
         visited: *std.AutoHashMap(u32, void),
         module_idx: ModuleIndex,
         depth: u32,
+        ns_inline_cache: ?*std.AutoHashMap(u32, []const u8),
     ) std.mem.Allocator.Error!void {
         if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
@@ -2091,7 +2164,7 @@ pub const Linker = struct {
                     if (rec_idx < m.import_records.len) {
                         const src = m.import_records[rec_idx].resolved;
                         if (!src.isNone()) {
-                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1, ns_inline_cache);
                         }
                     }
                 }
@@ -2110,7 +2183,7 @@ pub const Linker = struct {
                                     if (rec_idx < self.modules[cmod_i].import_records.len) {
                                         const src = self.modules[cmod_i].import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
-                                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1, ns_inline_cache);
                                         }
                                     }
                                 }
@@ -2127,7 +2200,7 @@ pub const Linker = struct {
                     if (rec_idx < m.import_records.len) {
                         const src = m.import_records[rec_idx].resolved;
                         if (!src.isNone()) {
-                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1, ns_inline_cache);
                         }
                     }
                 }
@@ -2157,7 +2230,7 @@ pub const Linker = struct {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
                     if (!source_mod.isNone()) {
-                        try self.collectExportsRecursive(exports, seen, visited, source_mod, depth + 1);
+                        try self.collectExportsRecursive(exports, seen, visited, source_mod, depth + 1, ns_inline_cache);
                     }
                 }
             }
