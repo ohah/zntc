@@ -1015,6 +1015,10 @@ pub fn main() !void {
             }
             opts.flow = true;
             opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
+            // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
+            if (opts.jsx_runtime == .classic) {
+                opts.jsx_runtime = .automatic;
+            }
 
             // RN 에셋 기본 로더: Metro assetExts 호환.
             // 사용자 --loader 오버라이드가 loader_list 앞에 이미 있으므로
@@ -1087,6 +1091,10 @@ pub fn main() !void {
             .plugins = plugin_list.items,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
+            .jsx_runtime = opts.jsx_runtime,
+            .jsx_factory = opts.jsx_factory,
+            .jsx_fragment = opts.jsx_fragment,
+            .jsx_import_source = opts.jsx_import_source,
             .resolve_extensions = opts.resolve_extensions_list.items,
             .main_fields = opts.main_fields_list.items,
             .sourcemap = opts.sourcemap,
