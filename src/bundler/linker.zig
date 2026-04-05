@@ -133,6 +133,7 @@ pub const LinkingMetadata = struct {
             }
             self.allocator.free(self.ns_inline_objects.entries);
         }
+        self.export_getter_overrides.deinit(self.allocator);
     }
 };
 
@@ -859,6 +860,7 @@ pub const Linker = struct {
         // __esm live binding: __export getter에서 사용할 이름 override
         var export_getter_overrides: std.StringHashMapUnmanaged([]const u8) = .{};
         errdefer {
+            export_getter_overrides.deinit(self.allocator);
             for (owned_nested_renames.items) |v| self.allocator.free(v);
             owned_nested_renames.deinit(self.allocator);
         }
@@ -879,11 +881,6 @@ pub const Linker = struct {
         var esm_init_set = std.AutoHashMap(u32, void).init(self.allocator);
         defer esm_init_set.deinit();
         defer preamble.deinit();
-
-        // __esm → __esm live binding으로 rename된 심볼 추적.
-        // 자체 rename 루프에서 이 심볼들을 덮어쓰지 않도록 보호.
-        var live_binding_syms = std.AutoHashMap(u32, void).init(self.allocator);
-        defer live_binding_syms.deinit();
 
         // namespace member rewrite 엔트리 수집 (esbuild 방식)
         var ns_rewrite_list: std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry) = .empty;
@@ -980,7 +977,6 @@ pub const Linker = struct {
                             try renames.put(@intCast(sym_idx), exports_var);
                             try owned_nested_renames.append(self.allocator, exports_var);
                             if (m.wrap_kind == .esm) {
-                                try live_binding_syms.put(@intCast(sym_idx), {});
                                 try export_getter_overrides.put(self.allocator, ib.local_name, exports_var);
                             }
                         } else {
@@ -1089,12 +1085,11 @@ pub const Linker = struct {
                 if (!isReservedName(target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
-                        // __esm → __esm live binding: 자체 rename에서 덮어쓰기 방지 +
-                        // __export getter override 등록
+                        // __esm → __esm live binding: __export getter override 등록 +
+                        // 자체 rename 루프에서 덮어쓰기 방지
                         if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
                             self.modules[canonical_mod].wrap_kind == .esm)
                         {
-                            try live_binding_syms.put(@intCast(sym_idx), {});
                             try export_getter_overrides.put(self.allocator, ib.local_name, target_name);
                         }
                     }
@@ -1145,13 +1140,13 @@ pub const Linker = struct {
             }
 
             // 자체 top-level 심볼 리네임 (이름 충돌 + mangling)
-            // __esm → __esm live binding으로 설정된 심볼은 skip (source 모듈의 canonical name 유지)
+            // live binding으로 설정된 심볼은 skip (source 모듈의 canonical name 유지)
             var sit = module_scope.iterator();
             while (sit.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (self.getCanonicalName(module_index, sym_name)) |renamed| {
-                    const sym_idx = scope_entry.value_ptr.*;
-                    if (!live_binding_syms.contains(@intCast(sym_idx))) {
+                    if (!export_getter_overrides.contains(sym_name)) {
+                        const sym_idx = scope_entry.value_ptr.*;
                         try renames.put(@intCast(sym_idx), renamed);
                     }
                 }
