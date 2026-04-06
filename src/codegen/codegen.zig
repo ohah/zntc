@@ -1999,6 +1999,8 @@ pub const Codegen = struct {
             0 => "var ",
             1 => "let ",
             2 => "const ",
+            3 => "using ",
+            4 => "await using ",
             else => "var ",
         };
         try self.write(keyword);

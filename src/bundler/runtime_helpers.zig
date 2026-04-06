@@ -415,6 +415,99 @@ pub const HMR_RUNTIME_LINES = blk: {
 };
 
 // ============================================================
+// Using (Explicit Resource Management, ES2025)
+// ============================================================
+
+/// __using: 리소스를 dispose 스택에 등록 (esbuild 호환).
+/// __callDispose: 스택의 리소스를 역순으로 dispose (esbuild 호환).
+pub const USING_RUNTIME =
+    \\var __using = (stack, value, async) => {
+    \\  if (value != null) {
+    \\    if (typeof value !== "object" && typeof value !== "function") throw new TypeError("Object expected");
+    \\    var dispose, inner;
+    \\    if (async) dispose = value[Symbol.asyncDispose];
+    \\    if (dispose === void 0) {
+    \\      dispose = value[Symbol.dispose];
+    \\      if (async) inner = dispose;
+    \\    }
+    \\    if (typeof dispose !== "function") throw new TypeError("Object not disposable");
+    \\    if (inner) dispose = function() { try { inner.call(this); } catch (e) { return Promise.reject(e); } };
+    \\    stack.push([async, dispose, value]);
+    \\  } else if (async) {
+    \\    stack.push([async]);
+    \\  }
+    \\  return value;
+    \\};
+    \\var __callDispose = (stack, error, hasError) => {
+    \\  var E = typeof SuppressedError === "function" ? SuppressedError : function(e, s, m) {
+    \\    var err = new Error(m);
+    \\    err.error = e;
+    \\    err.suppressed = s;
+    \\    return err;
+    \\  };
+    \\  var fail = (e) => error = hasError ? new E(e, error, "An error was suppressed during disposal") : (hasError = true, e);
+    \\  var next = (it) => {
+    \\    while (it = stack.pop()) {
+    \\      try {
+    \\        var result = it[1] && it[1].call(it[2]);
+    \\        if (it[0]) return Promise.resolve(result).then(next, (e) => { fail(e); return next(); });
+    \\      } catch (e) {
+    \\        fail(e);
+    \\      }
+    \\    }
+    \\    if (hasError) throw error;
+    \\  };
+    \\  return next();
+    \\};
+    \\
+;
+pub const USING_RUNTIME_MIN = "var __using=(stack,value,async)=>{if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var __callDispose=(stack,error,hasError)=>{var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=(e)=>error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e);var next=(it)=>{while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,(e)=>{fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
+
+/// __using/__callDispose ES5 호환: arrow → function.
+pub const USING_RUNTIME_ES5 =
+    \\var __using = function(stack, value, async) {
+    \\  if (value != null) {
+    \\    if (typeof value !== "object" && typeof value !== "function") throw new TypeError("Object expected");
+    \\    var dispose, inner;
+    \\    if (async) dispose = value[Symbol.asyncDispose];
+    \\    if (dispose === void 0) {
+    \\      dispose = value[Symbol.dispose];
+    \\      if (async) inner = dispose;
+    \\    }
+    \\    if (typeof dispose !== "function") throw new TypeError("Object not disposable");
+    \\    if (inner) dispose = function() { try { inner.call(this); } catch (e) { return Promise.reject(e); } };
+    \\    stack.push([async, dispose, value]);
+    \\  } else if (async) {
+    \\    stack.push([async]);
+    \\  }
+    \\  return value;
+    \\};
+    \\var __callDispose = function(stack, error, hasError) {
+    \\  var E = typeof SuppressedError === "function" ? SuppressedError : function(e, s, m) {
+    \\    var err = new Error(m);
+    \\    err.error = e;
+    \\    err.suppressed = s;
+    \\    return err;
+    \\  };
+    \\  var fail = function(e) { error = hasError ? new E(e, error, "An error was suppressed during disposal") : (hasError = true, e); };
+    \\  var next = function(it) {
+    \\    while (it = stack.pop()) {
+    \\      try {
+    \\        var result = it[1] && it[1].call(it[2]);
+    \\        if (it[0]) return Promise.resolve(result).then(next, function(e) { fail(e); return next(); });
+    \\      } catch (e) {
+    \\        fail(e);
+    \\      }
+    \\    }
+    \\    if (hasError) throw error;
+    \\  };
+    \\  return next();
+    \\};
+    \\
+;
+pub const USING_RUNTIME_ES5_MIN = "var __using=function(stack,value,async){if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var __callDispose=function(stack,error,hasError){var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=function(e){error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e)};var next=function(it){while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,function(e){fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
+
+// ============================================================
 // Append Helper
 // ============================================================
 
@@ -457,6 +550,13 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.tagged_template_literal) {
         try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);
+    }
+    if (helpers.using_ctx) {
+        if (es5_compat) {
+            try buf.appendSlice(allocator, if (minify) USING_RUNTIME_ES5_MIN else USING_RUNTIME_ES5);
+        } else {
+            try buf.appendSlice(allocator, if (minify) USING_RUNTIME_MIN else USING_RUNTIME);
+        }
     }
 }
 

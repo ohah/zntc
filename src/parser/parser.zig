@@ -119,6 +119,8 @@ pub const Parser = struct {
     allow_new_target: bool = false,
     /// constructor 안인지
     is_constructor: bool = false,
+    /// await using 파싱 중인지 (parseAwaitUsingDeclaration → parseVariableDeclaration에서 kind_flags=4로 설정)
+    is_await_using: bool = false,
     /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
     is_strict_mode: bool = false,
     /// strict mode가 "use strict" directive에 의해 설정되었는지.

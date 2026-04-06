@@ -27,6 +27,8 @@ const CliOptions = struct {
     drop_console: bool = false,
     drop_debugger: bool = false,
     sourcemap: bool = false,
+    /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
+    sourcemap_debug_ids: bool = false,
     ascii_only: bool = false,
     quote_style: lib.codegen.QuoteStyle = .double,
     watch: bool = false,
@@ -246,6 +248,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             opts.sourcemap = true;
+        } else if (std.mem.eql(u8, arg, "--sourcemap-debug-ids")) {
+            opts.sourcemap_debug_ids = true;
         } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1163,6 +1167,7 @@ pub fn main() !void {
             .resolve_extensions = opts.resolve_extensions_list.items,
             .main_fields = opts.main_fields_list.items,
             .sourcemap = opts.sourcemap,
+            .sourcemap_debug_ids = opts.sourcemap_debug_ids,
             .output_filename = if (opts.output_file) |of| std.fs.path.basename(of) else "bundle.js",
         };
 
@@ -1513,6 +1518,7 @@ pub fn main() !void {
             .drop_console = opts.drop_console,
             .drop_debugger = opts.drop_debugger,
             .sourcemap = opts.sourcemap,
+            .sourcemap_debug_ids = opts.sourcemap_debug_ids,
             .ascii_only = opts.ascii_only,
             .quote_style = opts.quote_style,
             .define = opts.define_list.items,
@@ -1884,6 +1890,7 @@ fn printUsage(writer: anytype) !void {
         \\  --drop=debugger                  Remove debugger statements
         \\  --define:KEY=VALUE               Replace KEY with VALUE globally
         \\  --sourcemap                      Generate source map (.js.map)
+        \\  --sourcemap-debug-ids            Add Sentry debugId to JS and source map
         \\  --ascii-only                     Escape non-ASCII to \uXXXX
         \\  --quotes=<style>                 String quote style (double|single|preserve)
         \\  -w, --watch                      Watch for file changes

@@ -91,6 +91,9 @@ pub const SourceMapBuilder = struct {
     source_root: []const u8 = "",
     /// sourcesContent 포함 여부. true이고 source_contents가 비어있지 않으면 JSON에 포함.
     sources_content: bool = true,
+    /// Sentry Debug ID. non-null이면 JSON에 "debugId" 필드를 추가한다.
+    /// UUID v4 문자열 (예: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx").
+    debug_id: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
@@ -131,7 +134,16 @@ pub const SourceMapBuilder = struct {
         self.buf.clearRetainingCapacity();
 
         // JSON 시작
-        try self.buf.appendSlice(self.allocator, "{\"version\":3,\"file\":\"");
+        try self.buf.appendSlice(self.allocator, "{\"version\":3,");
+
+        // debugId 필드 (Sentry Debug ID — version 바로 뒤)
+        if (self.debug_id) |did| {
+            try self.buf.appendSlice(self.allocator, "\"debugId\":\"");
+            try self.buf.appendSlice(self.allocator, did);
+            try self.buf.appendSlice(self.allocator, "\",");
+        }
+
+        try self.buf.appendSlice(self.allocator, "\"file\":\"");
         try self.buf.appendSlice(self.allocator, output_file);
         try self.buf.appendSlice(self.allocator, "\",\"sourceRoot\":\"");
         try self.buf.appendSlice(self.allocator, self.source_root);
@@ -297,4 +309,62 @@ test "sourcesContent — JSON escaping" {
     // 따옴표와 백슬래시가 이스케이프되어야 한다
     try std.testing.expect(std.mem.indexOf(u8, json, "sourcesContent") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\\\"hello") != null);
+}
+
+// ============================================================
+// UUID v4 생성 (Sentry Debug ID용)
+// ============================================================
+
+/// 크립토 난수 기반 UUID v4를 생성한다.
+/// RFC 4122: version=4 (bytes[6] 상위 4비트 = 0100), variant=10xx (bytes[8] 상위 2비트).
+/// 결과: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx" (36자).
+pub fn generateUuidV4(buf: *[36]u8) void {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
+    const hex = "0123456789abcdef";
+    var i: usize = 0;
+    for (bytes, 0..) |b, idx| {
+        if (idx == 4 or idx == 6 or idx == 8 or idx == 10) {
+            buf[i] = '-';
+            i += 1;
+        }
+        buf[i] = hex[b >> 4];
+        buf[i + 1] = hex[b & 0xf];
+        i += 2;
+    }
+}
+
+test "debugId — included in JSON when set" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    sm.debug_id = "12345678-1234-4abc-9def-123456789abc";
+    const json = try sm.generateJSON("output.js");
+    // version 뒤에 debugId가 있어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"debugId\":\"12345678-1234-4abc-9def-123456789abc\"") != null);
+}
+
+test "debugId — not included when null" {
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+    _ = try sm.addSource("input.ts");
+    const json = try sm.generateJSON("output.js");
+    try std.testing.expect(std.mem.indexOf(u8, json, "debugId") == null);
+}
+
+test "generateUuidV4 — format and version/variant" {
+    var buf: [36]u8 = undefined;
+    generateUuidV4(&buf);
+    // 하이픈 위치: 8, 13, 18, 23
+    try std.testing.expectEqual(@as(u8, '-'), buf[8]);
+    try std.testing.expectEqual(@as(u8, '-'), buf[13]);
+    try std.testing.expectEqual(@as(u8, '-'), buf[18]);
+    try std.testing.expectEqual(@as(u8, '-'), buf[23]);
+    // version nibble = '4'
+    try std.testing.expectEqual(@as(u8, '4'), buf[14]);
+    // variant nibble ∈ {8, 9, a, b}
+    const variant = buf[19];
+    try std.testing.expect(variant == '8' or variant == '9' or variant == 'a' or variant == 'b');
 }

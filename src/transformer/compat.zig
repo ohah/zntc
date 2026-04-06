@@ -48,6 +48,7 @@ pub const ESTarget = enum(u8) {
     es2021,
     es2022,
     es2024,
+    es2025,
     esnext,
 };
 
@@ -82,6 +83,8 @@ pub const Feature = enum(u5) {
     // ES2022
     class_static_block,
     class_private_method,
+    // ES2025
+    using,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -94,6 +97,7 @@ pub const Feature = enum(u5) {
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
             .class_static_block, .class_private_method => .es2022,
+            .using => .es2025,
         };
     }
 };
@@ -130,8 +134,10 @@ pub const UnsupportedFeatures = packed struct(u32) {
     // ES2022
     class_static_block: bool = false,
     class_private_method: bool = false,
+    // ES2025
+    using: bool = false,
 
-    _: u12 = 0,
+    _: u11 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -399,6 +405,14 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .class_private_method, .engine = .deno, .major = 1 },
     .{ .feature = .class_private_method, .engine = .ios, .major = 15 },
     // hermes: private methods 미지원 → compat_table에 없음 → 항상 다운레벨링
+
+    // ── ES2025: using (Explicit Resource Management) ──
+    .{ .feature = .using, .engine = .chrome, .major = 134 },
+    .{ .feature = .using, .engine = .firefox, .major = 132 },
+    .{ .feature = .using, .engine = .safari, .major = 18, .minor = 2 },
+    .{ .feature = .using, .engine = .node, .major = 22 },
+    .{ .feature = .using, .engine = .deno, .major = 1, .minor = 38 },
+    // edge, ios, hermes: 미지원 → compat_table에 없음 → 항상 다운레벨링
 };
 
 // ─── 변환 함수 ───
@@ -485,6 +499,7 @@ test "fromESTarget — es5는 모든 feature true" {
     try std.testing.expect(f.logical_assignment);
     try std.testing.expect(f.class_static_block);
     try std.testing.expect(f.class_private_method);
+    try std.testing.expect(f.using);
 }
 
 test "fromESTarget — es2020은 ES2020까지 지원, ES2021 이상 미지원" {
@@ -616,8 +631,8 @@ test "fromESTarget — es2022는 class_static_block, class_private_method 지원
     try std.testing.expect(!f.class_private_method);
     try std.testing.expect(!f.logical_assignment);
     try std.testing.expect(!f.optional_chaining);
-    // es2022에서 모든 feature 지원 — 0이어야 함
-    try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
+    // es2022에서 ES2025 using만 미지원
+    try std.testing.expect(f.using);
 }
 
 // ─── 엔진 버전 경계값 테스트 ───
@@ -677,13 +692,14 @@ test "unsupportedFeatures — 3개 엔진 교집합" {
     try std.testing.expect(!f.nullish_coalescing);
     try std.testing.expect(f.class_static_block); // safari + node 모두 미지원
     try std.testing.expect(f.optional_chaining); // node16.0 < 16.9
+    try std.testing.expect(f.using); // 모든 엔진이 using 미지원
 }
 
 test "unsupportedFeatures — 최신 엔진은 모두 지원" {
     const f = unsupportedFeatures(&.{
-        .{ .engine = .chrome, .major = 100 },
-        .{ .engine = .firefox, .major = 100 },
-        .{ .engine = .safari, .major = 17 },
+        .{ .engine = .chrome, .major = 134 },
+        .{ .engine = .firefox, .major = 132 },
+        .{ .engine = .safari, .major = 18, .minor = 2 },
     });
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(f)));
 }

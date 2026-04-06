@@ -81,6 +81,8 @@ pub const BundleOptions = struct {
     sources_content: bool = true,
     /// 소스맵 생성 (--sourcemap)
     sourcemap: bool = false,
+    /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
+    sourcemap_debug_ids: bool = false,
     /// 출력 파일명 (소스맵 참조용)
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
@@ -314,6 +316,7 @@ pub const Bundler = struct {
             .jsx_factory = self.options.jsx_factory,
             .jsx_fragment = self.options.jsx_fragment,
             .jsx_import_source = self.options.jsx_import_source,
+            .sourcemap_debug_ids = self.options.sourcemap_debug_ids,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
             .run_before_main = self.options.run_before_main,

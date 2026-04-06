@@ -16,6 +16,7 @@ const Transformer = @import("transformer/transformer.zig").Transformer;
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
 const DefineEntry = @import("transformer/transformer.zig").DefineEntry;
 const Codegen = @import("codegen/codegen.zig").Codegen;
+const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
@@ -43,6 +44,8 @@ pub const TranspileOptions = struct {
     charset_utf8: bool = false,
     quote_style: @import("codegen/codegen.zig").QuoteStyle = .double,
     sourcemap: bool = false,
+    /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
+    sourcemap_debug_ids: bool = false,
     source_root: []const u8 = "",
     sources_content: bool = true,
     platform: @import("codegen/codegen.zig").Platform = .browser,
@@ -253,16 +256,36 @@ pub fn transpileWithCallback(
         break :blk buf.items;
     } else jsx_output;
 
-    // 8. 소스맵 생성
+    // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
+    var debug_id_buf: [36]u8 = undefined;
+    const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
+        SourceMap.generateUuidV4(&debug_id_buf);
+        break :blk &debug_id_buf;
+    } else null;
+
+    // 9. 소스맵 생성
     var sourcemap_json: ?[]const u8 = null;
     if (options.sourcemap) {
-        if (cg.generateSourceMap(file_path) catch null) |sm| {
-            sourcemap_json = allocator.dupe(u8, sm) catch null;
+        if (cg.sm_builder) |*sm| {
+            sm.debug_id = debug_id;
+            if (sm.generateJSON(file_path) catch null) |sm_json| {
+                sourcemap_json = allocator.dupe(u8, sm_json) catch null;
+            }
         }
     }
 
+    // 10. debugId 주석을 출력 코드 끝에 추가
+    const final_output = if (debug_id) |did| blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        buf.appendSlice(arena_alloc, output) catch break :blk output;
+        buf.appendSlice(arena_alloc, "//# debugId=") catch break :blk output;
+        buf.appendSlice(arena_alloc, did) catch break :blk output;
+        buf.append(arena_alloc, '\n') catch break :blk output;
+        break :blk buf.items;
+    } else output;
+
     // Arena 밖으로 복제
-    const result_code = allocator.dupe(u8, output) catch return error.OutOfMemory;
+    const result_code = allocator.dupe(u8, final_output) catch return error.OutOfMemory;
     arena.deinit();
     return .{ .code = result_code, .sourcemap = sourcemap_json, .has_helpers = has_helpers };
 }

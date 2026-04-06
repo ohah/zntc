@@ -397,6 +397,8 @@ fn isAwaitUsingDeclarationStart(self: *Parser) ParseError2!bool {
 /// `await using x = expr;` 선언을 파싱한다.
 fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'await'
+    self.is_await_using = true; // parseVariableDeclaration에서 kind_flags=4로 설정
+    defer self.is_await_using = false;
     return parseVariableDeclaration(self); // 'using'부터 parseVariableDeclaration 진행
 }
 
@@ -492,7 +494,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
         .kw_var => 0,
         .kw_let => 1,
         .kw_const => 2,
-        .kw_using => 2, // using은 const처럼 동작 (block-scoped, immutable)
+        .kw_using => if (self.is_await_using) @as(u32, 4) else @as(u32, 3), // 3=using, 4=await using
         else => 0,
     };
     try self.advance(); // skip var/let/const/using
