@@ -983,6 +983,42 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(code).toContain("var ");
     });
 
+    // AST layout 정합성: export_default_declaration (unary) + jsx_fragment (list)
+    test("export default + es5 target: layout mismatch 수정 확인", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          function greet() { return "hello"; }
+          export default greet;
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const transpile = await runZts([join(dir, "index.ts"), "-o", outFile, "--target=es5"]);
+      expect(transpile.exitCode).toBe(0);
+      const code = readFileSync(outFile, "utf-8");
+      expect(code).toContain("export default greet");
+    });
+
+    test("jsx fragment in for-let: layout mismatch 수정 확인", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.tsx": `
+          const items: any[] = [];
+          for (let i = 0; i < 3; i++) {
+            items.push(<><span>{i}</span></>);
+          }
+          console.log(items.length);
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const transpile = await runZts([join(dir, "index.tsx"), "-o", outFile, "--target=es5"]);
+      expect(transpile.exitCode).toBe(0);
+      const code = readFileSync(outFile, "utf-8");
+      // let/const가 var로 변환되었는지 확인
+      expect(code).not.toContain("let ");
+      expect(code).toContain("var ");
+    });
+
     // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현 (Phase 4)
     test.todo("let shadow in nested block", async () => {
       const result = await bundleAndRun(
