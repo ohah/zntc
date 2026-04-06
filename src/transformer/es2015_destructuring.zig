@@ -391,11 +391,21 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { a } → var a = _ref.a
-                    // symbol_id 전파: linker가 리네이밍한 경우 binding에도 반영되어야 함.
+                    // block scoping rename이 필요한 경우 이름 교체.
+                    var binding_span = key_node.span;
+                    var binding_data = key_node.data.string_ref;
+                    if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
+                        const text = self.ast.getText(key_node.data.string_ref);
+                        if (self.lookupBlockRename(text)) |new_name| {
+                            const new_span = try self.ast.addString(new_name);
+                            binding_span = new_span;
+                            binding_data = new_span;
+                        }
+                    }
                     const binding = try self.ast.addNode(.{
                         .tag = .binding_identifier,
-                        .span = key_node.span,
-                        .data = .{ .string_ref = key_node.data.string_ref },
+                        .span = binding_span,
+                        .data = .{ .string_ref = binding_data },
                     });
                     self.propagateSymbolId(key_idx, binding);
                     const decl = try es_helpers.makeDeclarator(self, binding, member_access, span);
