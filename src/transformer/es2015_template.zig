@@ -112,7 +112,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
 ///   middle:  }text${  → 앞 1(}), 뒤 2(${)
 ///   tail:    }text`   → 앞 1(}), 뒤 1(`)
 ///   no_sub:  `text`   → 앞 1(`), 뒤 1(`)
-fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
+pub fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
     if (span.end <= span.start + 2) return "";
 
     const start = span.start + 1; // 앞: ` 또는 } (항상 1바이트)
@@ -124,10 +124,58 @@ fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
     return source[start..end];
 }
 
+/// template_element span에서 raw 텍스트 부분을 반환한다.
+/// getTemplateElementText와 동일 (구분자 제거).
+/// tagged template의 .raw 배열에 사용. buildRawStringLiteral로 이스케이프 처리.
+pub fn getRawTemplateElementText(source: []const u8, span: Span) []const u8 {
+    return getTemplateElementText(source, span);
+}
+
+/// raw template 텍스트를 string_literal 노드로 변환한다.
+/// backslash를 이중 이스케이프하여 JS 문자열에서 원본 그대로 보이도록 한다.
+/// `hello\nworld` → `"hello\\nworld"` (JS에서 실행 시 "hello\nworld" 문자열)
+pub fn buildRawStringLiteral(self: anytype, text: []const u8) !NodeIndex {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(self.allocator);
+
+    try buf.ensureUnusedCapacity(self.allocator, text.len * 2 + 2);
+    buf.appendAssumeCapacity('"');
+
+    var j: usize = 0;
+    while (j < text.len) : (j += 1) {
+        const c = text[j];
+        if (c == '"') {
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('"');
+        } else if (c == '\\') {
+            // raw: backslash를 이중 이스케이프
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('\\');
+        } else if (c == '\n') {
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('n');
+        } else if (c == '\r') {
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('r');
+        } else {
+            buf.appendAssumeCapacity(c);
+        }
+    }
+
+    buf.appendAssumeCapacity('"');
+
+    const str_span = try self.ast.addString(buf.items);
+    return self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = str_span,
+        .data = .{ .string_ref = str_span },
+    });
+}
+
 /// template 텍스트를 string_literal 노드로 변환한다.
 /// \` → ` (backtick escape 제거), " → \" (quote escape 추가),
 /// 실제 줄바꿈(\n, \r) 및 U+2028/U+2029 → 이스케이프 시퀀스로 변환.
-fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
+pub fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
 

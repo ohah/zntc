@@ -120,7 +120,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     class_call_check: bool = false,
     /// __callSuper: Reflect.construct 기반 super() 호출 (네이티브 클래스 extends 지원)
     call_super: bool = false,
-    _padding: u4 = 0,
+    /// __taggedTemplateLiteral: tagged template 객체 생성 (ES2015)
+    tagged_template_literal: bool = false,
+    _padding: u3 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -236,6 +238,13 @@ pub const Transformer = struct {
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
     runtime_es5_compat: bool = false,
+
+    /// ES2015 tagged template: 호이스팅할 _templateObject 캐싱 함수 목록.
+    /// 모듈 root 방문 완료 시 program body 맨 앞에 삽입.
+    tagged_template_fns: std.ArrayList(NodeIndex) = .empty,
+
+    /// ES2015 tagged template: _templateObject 카운터 (1부터: _templateObject2, _templateObject3, ...).
+    tagged_template_counter: u32 = 0,
 
     /// JSX lowering: 사용된 import 추적 (automatic 모드에서 import문 생성용)
     jsx_import_info: jsx_lowering_mod.JsxImportInfo = .{},
@@ -363,6 +372,11 @@ pub const Transformer = struct {
         // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
         if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
             root = try self.hoistTempVars(root, saved_temp_counter, self.ast.getNode(root_idx).span);
+        }
+
+        // ES2015 tagged template: _templateObject 캐싱 함수를 program 맨 앞에 호이스팅
+        if (self.tagged_template_fns.items.len > 0 and !root.isNone()) {
+            root = try self.prependStatementsToBody(root, self.tagged_template_fns.items);
         }
 
         // React Fast Refresh: 컴포넌트 등록 + Hook 시그니처 코드를 프로그램 끝에 추가
@@ -1147,6 +1161,12 @@ pub const Transformer = struct {
         const tag_idx = self.readNodeIdx(e, 0);
         const tmpl_idx = self.readNodeIdx(e, 1);
         const flags = self.readU32(e, 2);
+
+        // ES2015 tagged template 다운레벨링
+        if (self.options.unsupported.template_literal) {
+            return self.lowerTaggedTemplate(tag_idx, tmpl_idx, node.span);
+        }
+
         const new_tag = try self.visitNode(tag_idx);
         const new_tmpl = try self.visitNode(tmpl_idx);
         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_tmpl), flags });
@@ -2000,6 +2020,212 @@ pub const Transformer = struct {
                 });
             },
         };
+    }
+
+    /// ES2015 tagged template 다운레벨링.
+    /// tag`hello ${name} world` →
+    ///   function _templateObject() { var data = __taggedTemplateLiteral(["hello "," world"]); _templateObject = function(){ return data; }; return data; }
+    ///   tag(_templateObject(), name)
+    fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeIndex, span: Span) Error!NodeIndex {
+        const tmpl = self.ast.getNode(tmpl_idx);
+        const source = self.ast.source;
+
+        // template_literal의 quasis(element)와 expressions 분리
+        // 구조: [element, expr, element, expr, ..., element]
+        // substitution이 없으면 data.none=0, element 1개뿐
+
+        const is_substitution = blk: {
+            var pos = tmpl.span.start + 1;
+            while (pos < tmpl.span.end) {
+                if (source[pos] == '\\') { pos += 2; continue; }
+                if (source[pos] == '$' and pos + 1 < tmpl.span.end and source[pos + 1] == '{') break :blk true;
+                pos += 1;
+            }
+            break :blk false;
+        };
+
+        // --- cooked/raw 배열 구축 ---
+        var cooked_items: std.ArrayList(NodeIndex) = .empty;
+        defer cooked_items.deinit(self.allocator);
+        var raw_items: std.ArrayList(NodeIndex) = .empty;
+        defer raw_items.deinit(self.allocator);
+        var expr_items: std.ArrayList(NodeIndex) = .empty;
+        defer expr_items.deinit(self.allocator);
+        var has_escape = false;
+
+        if (!is_substitution) {
+            // 단일 element
+            const text = es2015_template.getTemplateElementText(source, tmpl.span);
+            const raw_text = es2015_template.getRawTemplateElementText(source, tmpl.span);
+            try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+            try raw_items.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
+            if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
+        } else {
+            const tl_start = tmpl.data.list.start;
+            const tl_len = tmpl.data.list.len;
+            var i: u32 = 0;
+            while (i < tl_len) : (i += 1) {
+                const raw_idx = self.ast.extra_data.items[tl_start + i];
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                if (member.tag == .template_element) {
+                    const text = es2015_template.getTemplateElementText(source, member.span);
+                    const raw_text = es2015_template.getRawTemplateElementText(source, member.span);
+                    try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+                    try raw_items.append(self.allocator, try es2015_template.buildStringLiteral(self, raw_text));
+                    if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
+                } else {
+                    const visited = try self.visitNode(@enumFromInt(raw_idx));
+                    try expr_items.append(self.allocator, visited);
+                }
+            }
+        }
+
+        // --- _templateObject 함수명 생성 ---
+        self.tagged_template_counter += 1;
+        const fn_name = if (self.tagged_template_counter == 1)
+            "_templateObject"
+        else blk: {
+            break :blk try std.fmt.allocPrint(self.allocator, "_templateObject{d}", .{self.tagged_template_counter});
+        };
+        defer if (self.tagged_template_counter > 1) self.allocator.free(fn_name);
+
+        // --- cooked 배열 노드 ---
+        const cooked_list = try self.ast.addNodeList(cooked_items.items);
+        const cooked_arr = try self.ast.addNode(.{
+            .tag = .array_expression,
+            .span = span,
+            .data = .{ .list = cooked_list },
+        });
+
+        // --- __taggedTemplateLiteral(cooked, [raw]) 호출 ---
+        const helper_ref = try es_helpers.makeIdentifierRef(self, "__taggedTemplateLiteral");
+        var call_args: [2]NodeIndex = undefined;
+        var call_arg_count: u32 = 1;
+        call_args[0] = cooked_arr;
+
+        if (has_escape) {
+            const raw_list = try self.ast.addNodeList(raw_items.items);
+            const raw_arr = try self.ast.addNode(.{
+                .tag = .array_expression,
+                .span = span,
+                .data = .{ .list = raw_list },
+            });
+            call_args[1] = raw_arr;
+            call_arg_count = 2;
+        }
+
+        const helper_args = try self.ast.addNodeList(call_args[0..call_arg_count]);
+        const helper_call_extra = try self.ast.addExtras(&.{
+            @intFromEnum(helper_ref), helper_args.start, helper_args.len, 0,
+        });
+        const helper_call = try self.ast.addNode(.{
+            .tag = .call_expression,
+            .span = span,
+            .data = .{ .extra = helper_call_extra },
+        });
+
+        // --- var data = __taggedTemplateLiteral(...) ---
+        const data_decl = try self.buildVarDecl("data", helper_call, span);
+
+        // --- _templateObject = function() { return data; } ---
+        const fn_name_ref = try es_helpers.makeIdentifierRef(self, fn_name);
+        const data_ref = try es_helpers.makeIdentifierRef(self, "data");
+        const return_stmt = try self.ast.addNode(.{
+            .tag = .return_statement,
+            .span = span,
+            .data = .{ .unary = .{ .operand = data_ref, .flags = 0 } },
+        });
+        const inner_body_list = try self.ast.addNodeList(&.{return_stmt});
+        const inner_body = try self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = span,
+            .data = .{ .list = inner_body_list },
+        });
+        const none = @intFromEnum(NodeIndex.none);
+        const inner_func_extra = try self.ast.addExtras(&.{
+            none, 0, 0, @intFromEnum(inner_body), 0, none,
+        });
+        const inner_func = try self.ast.addNode(.{
+            .tag = .function_expression,
+            .span = span,
+            .data = .{ .extra = inner_func_extra },
+        });
+
+        // _templateObject = function() { return data; }
+        const reassign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = span,
+            .data = .{ .binary = .{ .left = fn_name_ref, .right = inner_func, .flags = 0 } },
+        });
+        const reassign_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement,
+            .span = span,
+            .data = .{ .unary = .{ .operand = reassign, .flags = 0 } },
+        });
+
+        // return data
+        const data_ref2 = try es_helpers.makeIdentifierRef(self, "data");
+        const return_stmt2 = try self.ast.addNode(.{
+            .tag = .return_statement,
+            .span = span,
+            .data = .{ .unary = .{ .operand = data_ref2, .flags = 0 } },
+        });
+
+        // --- function _templateObject() { var data = ...; _templateObject = ...; return data; } ---
+        const outer_body_list = try self.ast.addNodeList(&.{ data_decl, reassign_stmt, return_stmt2 });
+        const outer_body = try self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = span,
+            .data = .{ .list = outer_body_list },
+        });
+        const fn_name_binding_span = try self.ast.addString(fn_name);
+        const fn_name_binding = try self.ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = fn_name_binding_span,
+            .data = .{ .string_ref = fn_name_binding_span },
+        });
+        const outer_func_extra = try self.ast.addExtras(&.{
+            @intFromEnum(fn_name_binding), 0, 0, @intFromEnum(outer_body), 0, none,
+        });
+        const fn_decl = try self.ast.addNode(.{
+            .tag = .function_declaration,
+            .span = span,
+            .data = .{ .extra = outer_func_extra },
+        });
+
+        // 호이스팅 목록에 추가
+        try self.tagged_template_fns.append(self.allocator, fn_decl);
+        self.runtime_helpers.tagged_template_literal = true;
+
+        // --- tag(_templateObject(), ...exprs) 호출 ---
+        const new_tag = try self.visitNode(tag_idx);
+        const fn_call_ref = try es_helpers.makeIdentifierRef(self, fn_name);
+        const empty_args = try self.ast.addNodeList(&.{});
+        const tmpl_call_extra = try self.ast.addExtras(&.{
+            @intFromEnum(fn_call_ref), empty_args.start, empty_args.len, 0,
+        });
+        const tmpl_call = try self.ast.addNode(.{
+            .tag = .call_expression,
+            .span = span,
+            .data = .{ .extra = tmpl_call_extra },
+        });
+
+        // tag(_templateObject(), expr1, expr2, ...)
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        try self.scratch.append(self.allocator, tmpl_call);
+        for (expr_items.items) |expr| {
+            try self.scratch.append(self.allocator, expr);
+        }
+        const final_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const final_call_extra = try self.ast.addExtras(&.{
+            @intFromEnum(new_tag), final_args.start, final_args.len, 0,
+        });
+        return self.ast.addNode(.{
+            .tag = .call_expression,
+            .span = span,
+            .data = .{ .extra = final_call_extra },
+        });
     }
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
