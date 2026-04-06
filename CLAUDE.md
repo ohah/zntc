@@ -92,6 +92,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --legal-comments=<mode>      라이센스 주석 처리 (none, inline, eof, linked, external)
 --inject:<path>              모든 엔트리에 자동 import (반복 가능)
 --keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
+--shim-missing-exports       존재하지 않는 export import 시 undefined 제공 (롤다운 호환)
 --resolve-extensions=<exts>  확장자 탐색 순서 (쉼표 구분, 예: .ios.ts,.ts,.js)
 --main-fields=<fields>       package.json 필드 순서 (쉼표 구분, 예: react-native,browser,main)
 --rn-platform=ios|android    RN 서브 플랫폼 (.ios.*/.android.* + .native.* 확장자 자동 추가)

@@ -34,6 +34,8 @@ cd tests/e2e && bun test             # Playwright E2E (dev server)
 - `tests/integration/tests/plugin.test.ts` — JS 플러그인
 - `tests/integration/tests/polyfill-rbm.test.ts` — 폴리필 + run-before-main
 - `tests/integration/tests/watch-json.test.ts` — watch-json NDJSON 이벤트
+- `tests/integration/tests/compat-table.test.ts` — kangax compat-table ES5~ES2022 (237 subtests)
+- `tests/integration/tests/swc-compare.test.ts` — ZTS vs SWC 다운레벨링 비교 (29 cases × 9 targets)
 - `tests/e2e/tests/smoke.test.ts` — E2E 스모크 (브라우저 실행)
 - `tests/e2e/tests/browser-smoke.test.ts` — 브라우저 번들 E2E
 

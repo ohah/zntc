@@ -34,6 +34,9 @@
 | 21. watch-json | `--watch-json` NDJSON 이벤트 출력 (외부 번들러 연동용) | ✅ |
 | 22. 증분 빌드 | PersistentModuleStore 파싱 캐시 + ResolveCache 보존 (watch/serve 리빌드 최적화) | ✅ |
 | 23. jsx-dev | React 개발 모드 `jsxDEV` + `__source`/`__self`, `--jsx=automatic-dev` / `--jsx-dev` | ✅ |
+| 24. RN 호환 | self-require 방지, shimMissingExports, __rest Symbol, class field _this 캡처 | ✅ |
+| 25. ES5 다운레벨 | let→var void 0 초기화, spread string, for-in destructuring, computed destr, super computed | ✅ |
+| 26. compat-table | kangax ES5~ES2022 100% + SWC 비교 29 cases × 9 targets CI | ✅ |
 
 ## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
 ZTS 136ms vs esbuild 110ms (**1.24배**).
