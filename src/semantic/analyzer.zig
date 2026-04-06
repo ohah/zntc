@@ -896,6 +896,39 @@ pub const SemanticAnalyzer = struct {
             .export_default_declaration => try self.visitExportDefaultDeclaration(node, idx),
             .export_all_declaration => try self.visitExportAllDeclaration(node),
 
+            // Flow component syntax: extra = [func_decl, const_decl]
+            // 파서가 component View(ref, ...props) { body } 를 변환한 래퍼.
+            // func_decl 내부의 body만 방문: body 안의 identifier 참조에
+            // symbol_id를 설정하여 scope hoisting rename이 적용되도록 함.
+            // func_decl의 이름/params는 합성 span(string_table)을 사용하므로
+            // declareSymbolWithNode가 source 접근 시 범위 초과 → body만 안전하게 방문.
+            .flow_component_wrapper => {
+                const e = node.data.extra;
+                if (e < self.ast.extra_data.items.len) {
+                    const func_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    if (!func_idx.isNone() and @intFromEnum(func_idx) < self.ast.nodes.items.len) {
+                        const func_node = self.ast.getNode(func_idx);
+                        if (func_node.tag == .function_declaration) {
+                            // function body는 extra[3] (원본 파서가 생성한 block_statement)
+                            const fe = func_node.data.extra;
+                            if (fe + 3 < self.ast.extra_data.items.len) {
+                                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 3]);
+                                if (!body_idx.isNone()) {
+                                    // 함수 스코프 진입 → body 방문 → 스코프 퇴장
+                                    const saved = try self.enterScope(.function, self.is_strict_mode);
+                                    // params를 현재 function scope에 등록 (합성이 아닌 원본 params)
+                                    const params_start = self.ast.extra_data.items[fe + 1];
+                                    const params_len = self.ast.extra_data.items[fe + 2];
+                                    try self.registerParams(params_start, params_len);
+                                    try self.visitFunctionBodyInner(body_idx);
+                                    self.exitScope(saved);
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
                 // extra: [object, property, flags]
