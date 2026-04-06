@@ -1128,6 +1128,26 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(result.runOutput).toBe("function:shadow");
   });
 
+  test("Flow component syntax: body 내 import 참조에 rename이 적용된다", async () => {
+    // Flow의 `component View(ref, ...props) { use(ctx) }` 구문은
+    // 파서가 flow_component_wrapper로 변환하며, semantic analyzer가
+    // body를 방문하지 않으면 symbol_id가 설정되지 않아 rename이 누락된다.
+    const fixture = await createFixture({
+      "index.ts": `const v = require('./comp'); import { other } from './other'; console.log(typeof v.default + ":" + other());`,
+      "comp.js": `// @flow\nimport { use } from './cjs-lib';\ncomponent View(ref: any, ...props: any) {\n  const val = use("ctx");\n  return val;\n}\nexport default View;`,
+      "other.ts": `import { use } from './cjs-lib'; export function other() { return use("x"); }`,
+      "cjs-lib.js": `function use(ctx) { return "used:" + ctx; }\nmodule.exports = { use };`,
+    });
+    cleanup = fixture.cleanup;
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "--flow"]);
+    expect(bundle.exitCode).toBe(0);
+    // use가 rename되어야 함 (use$1 또는 use$2)
+    // rename이 안 되면 bare 'use'가 CJS wrapper 내부의 'use'를 참조하여 ReferenceError
+    expect(bundle.stdout).not.toMatch(/\buse\("ctx"\)/);
+    expect(bundle.stdout).toMatch(/use\$\d+\("ctx"\)/);
+  });
+
   test("import Default, { named } from 동시 사용 시 default와 named 모두 정상 바인딩", async () => {
     const result = await bundleAndRun({
       "index.ts": `import Cls, { helper } from "./lib"; console.log(new Cls().name + ":" + helper());`,
