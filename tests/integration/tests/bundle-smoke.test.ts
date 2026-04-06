@@ -1887,7 +1887,6 @@ describe("JSX classic 모드 번들러 rename", () => {
     // mid.js의 __esm body에 async가 포함되어야 함 (TLA 전이)
     expect(code).toContain('async "mid.js"()');
   });
-
 });
 
 describe("ESM default re-export CJS interop (#812)", () => {
