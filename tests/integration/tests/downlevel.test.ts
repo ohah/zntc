@@ -782,11 +782,53 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("world two");
     });
 
+    // --- SWC 대비 추가 테스트: new.target ---
+
+    test("new.target in constructor function (called with new)", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `function Foo() { console.log((new.target as any) === Foo); } new Foo();` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
+    });
+
+    test("new.target undefined when called normally", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `function Foo() { console.log(new.target); } Foo();` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined");
+    });
+
+    test("new.target in class constructor", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { constructor() { console.log((new.target as any) === Foo); } }
+            new Foo();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
+    });
+
     // --- SWC 대비 추가 테스트: Arrow Functions ---
 
     test("arrow with destructuring parameter", async () => {
       const result = await bundleAndRun(
-        { "index.ts": `const fn = ({a, b}: {a:number, b:number}) => a + b; console.log(fn({a:1, b:2}));` },
+        {
+          "index.ts": `const fn = ({a, b}: {a:number, b:number}) => a + b; console.log(fn({a:1, b:2}));`,
+        },
         "index.ts",
         ["--target=es5"],
       );
@@ -797,7 +839,9 @@ describe("ES 다운레벨링 런타임 테스트", () => {
 
     test("arrow returning object literal", async () => {
       const result = await bundleAndRun(
-        { "index.ts": `const fn = (x: number) => ({value: x}); console.log(JSON.stringify(fn(42)));` },
+        {
+          "index.ts": `const fn = (x: number) => ({value: x}); console.log(JSON.stringify(fn(42)));`,
+        },
         "index.ts",
         ["--target=es5"],
       );

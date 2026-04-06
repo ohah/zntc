@@ -746,7 +746,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const new_params = try self.visitExtraList(params_start, params_len);
 
-            const new_body = try visitMethodBody(self, body_idx, span);
+            const nt_ctx: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
+            const new_body = try visitMethodBodyWithCtx(self, body_idx, span, nt_ctx);
 
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
@@ -1060,6 +1061,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // ES2015 params lowering은 Pass 2에서 일괄 처리
             const new_params = try self.visitExtraList(params_start, params_len);
 
+            // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
+            const saved_new_target_ctx = self.new_target_ctx;
+            if (self.options.unsupported.new_target) {
+                self.new_target_ctx = .{ .function_named = self.ast.getNode(name).data.string_ref };
+            }
+            defer self.new_target_ctx = saved_new_target_ctx;
+
             var new_body = try visitMethodBody(self, body_idx, span);
 
             // super() 호출이 있었으면 body 후처리:
@@ -1357,6 +1365,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// 메서드 body를 방문하면서 arrow this/arguments 캡처를 관리.
         /// visitFunction과 동일한 save/restore/prepend 로직.
         fn visitMethodBody(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return visitMethodBodyWithCtx(self, body_idx, span, null);
+        }
+
+        /// visitMethodBody + new.target 컨텍스트 지정
+        fn visitMethodBodyWithCtx(self: *Transformer, body_idx: NodeIndex, span: Span, nt_ctx: ?Transformer.NewTargetCtx) Transformer.Error!NodeIndex {
             // arrow this state save/restore (일반 함수는 자체 this 바인딩)
             const saved_arrow_depth = self.arrow_this_depth;
             const saved_needs_this = self.needs_this_var;
@@ -1364,6 +1377,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.arrow_this_depth = 0;
             self.needs_this_var = false;
             self.needs_arguments_var = false;
+
+            // new.target context
+            const saved_nt = self.new_target_ctx;
+            if (nt_ctx) |ctx| self.new_target_ctx = ctx;
+            defer self.new_target_ctx = saved_nt;
 
             var new_body = try self.visitNode(body_idx);
 
@@ -1440,13 +1458,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
                 }
-                const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBody(self, body_idx, span), span);
+                const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
+                const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBodyWithCtx(self, body_idx, span, method_nt), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
                 const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }
 
-            const new_body = try visitMethodBody(self, body_idx, span);
+            const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
+            const new_body = try visitMethodBodyWithCtx(self, body_idx, span, method_nt);
 
             const func_flags: u32 = blk: {
                 var f: u32 = 0;
