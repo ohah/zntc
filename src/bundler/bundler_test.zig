@@ -13323,3 +13323,109 @@ test "runtime helper: __toCommonJS has module.exports direct return path" {
     // module.exports 직접 반환 경로가 있어야 함 (rolldown 방식)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
 }
+
+// ============================================================
+// RN 엔트리 __esm 래핑 (Rolldown 호환 초기화 순서 보장)
+// ============================================================
+
+test "RN platform: entry module is __esm wrapped (not scope-hoisted)" {
+    // RN에서 엔트리도 __esm 래핑되어야 circular dep 초기화 순서가 보장됨.
+    // Rolldown 방식: 번들 끝에 init_entry()를 호출하여 실행 시작.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { View } from './view.js';
+        \\console.log(View);
+    );
+    try writeFile(tmp.dir, "view.js",
+        \\export const View = "MockView";
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 엔트리가 __esm 래핑됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index = __esm(") != null or
+        std.mem.indexOf(u8, result.output, "init_entry = __esm(") != null);
+    // 번들 끝에 init_xxx() 호출이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index();\n") != null or
+        std.mem.indexOf(u8, result.output, "init_entry();\n") != null);
+    // top-level var View = require_xxx().View 패턴이 없어야 함 (즉시 평가 방지)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var View = require_") == null);
+}
+
+test "RN platform: entry __esm contains import bindings inside init body" {
+    // 엔트리의 import 바인딩이 __esm body 안에 있어야 함 (lazy 평가).
+    // top-level에 var X = require_Y().X 형태로 노출되면 안 됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { add, PI } from './math.js';
+        \\console.log(add(1, 2), PI);
+    );
+    try writeFile(tmp.dir, "math.js",
+        \\exports.add = function(a, b) { return a + b; };
+        \\exports.PI = 3.14;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 엔트리가 __esm 래핑됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_entry = __esm(") != null);
+    // __esm body 안에서 require_math() 호출이 있어야 함 (lazy 평가)
+    // __esm body는 "entry.ts"() { ... } 형태
+    const body_start = std.mem.indexOf(u8, result.output, "\"entry.ts\"()") orelse {
+        return error.TestUnexpectedResult;
+    };
+    const body_slice = result.output[body_start..];
+    // body 안에서 require_math() 호출 확인
+    try std.testing.expect(std.mem.indexOf(u8, body_slice, "require_math()") != null);
+    // init_entry() 호출이 번들 끝에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_entry();\n") != null);
+}
+
+test "non-RN platform: entry is NOT __esm wrapped (scope-hoisted)" {
+    // browser/node 플랫폼에서는 엔트리가 scope-hoisted로 유지되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { greet } from './mod.js';
+        \\console.log(greet());
+    );
+    try writeFile(tmp.dir, "mod.js",
+        \\export function greet() { return 'hello'; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 엔트리는 __esm 래핑 안 됨 (기본 browser 플랫폼)
+    // init_entry() 호출이 번들 끝에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_entry()") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index()") == null);
+}
