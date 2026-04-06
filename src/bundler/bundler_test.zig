@@ -8483,8 +8483,10 @@ test "ESM wrap: export default named ref — no duplicate var" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // module.exports=Platform 없어야 함 (__export가 처리)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") == null);
+    // module.exports=Platform 직접 대입이 없어야 함 (__export가 처리)
+    // __toCommonJS 런타임 헬퍼의 "module.exports"는 허용 (mod['module.exports'] 패턴)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports =") == null);
     // __export에서 default getter가 Platform을 참조
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Platform") != null);
 }
@@ -8509,7 +8511,9 @@ test "ESM wrap: export default anonymous expr — var _default" {
     try std.testing.expect(!result.hasErrors());
     // var _default = { value: 42 }; 형태
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") == null);
+    // module.exports= 직접 대입이 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports =") == null);
 }
 
 test "ESM wrap: var hoisting + __export outside __esm (esbuild/rolldown 방식)" {
@@ -13253,4 +13257,69 @@ test "JSX automatic: non-ESM-wrapped module still uses var declaration" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") == null);
     // var _jsx = require(...) 형태 (var 포함)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var _jsx") != null);
+}
+
+// ============================================================
+// Runtime helper: __copyProps / __toCommonJS (rolldown 호환)
+// ============================================================
+
+test "runtime helper: __copyProps uses getOwnPropertyNames, not Object.keys" {
+    // ESM에서 CJS를 import할 때 __toESM → __copyProps가 주입됨.
+    // __copyProps가 getOwnPropertyNames를 사용하여 non-enumerable 프로퍼티도 복사하는지 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // ESM entry가 CJS를 import → __toESM/__copyProps 필요
+    try writeFile(tmp.dir, "entry.ts", "import greet from './cjs-mod.js';\nconsole.log(greet());");
+    try writeFile(tmp.dir, "cjs-mod.js",
+        \\module.exports = function greet() { return 'hello'; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // getOwnPropertyNames 사용 확인 (Object.keys가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyNames") != null);
+    // getOwnPropertyDescriptor로 enumerable 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyDescriptor") != null);
+    // __copyProps 정의 부분에서 Object.keys가 없는지 확인
+    if (std.mem.indexOf(u8, result.output, "__copyProps")) |cp_pos| {
+        const end = @min(cp_pos + 300, result.output.len);
+        const slice = result.output[cp_pos..end];
+        try std.testing.expect(std.mem.indexOf(u8, slice, "Object.keys") == null);
+    }
+    // bind(null, key) 패턴으로 var 루프에서 key 고정 확인
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".bind(null,") != null or
+        std.mem.indexOf(u8, result.output, ".bind(null, ") != null);
+}
+
+test "runtime helper: __toCommonJS has module.exports direct return path" {
+    // ESM 모듈이 CJS로 소비될 때 __toCommonJS가 주입됨.
+    // __commonJS로 래핑된 모듈은 module.exports를 직접 반환하여 getter를 보존해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // CJS entry가 ESM을 require → __esm + __toCommonJS 필요
+    try writeFile(tmp.dir, "entry.ts", "const lib = require('./esm-mod.js');\nconsole.log(lib.value);");
+    try writeFile(tmp.dir, "esm-mod.js",
+        \\export const value = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __toCommonJS 헬퍼가 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toCommonJS") != null);
+    // module.exports 직접 반환 경로가 있어야 함 (rolldown 방식)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
 }
