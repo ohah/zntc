@@ -932,6 +932,24 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("1");
     });
 
+    test("sibling blocks with same let name (#784)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let result = '';
+            { let x = 'a'; result += x; }
+            { let x = 'b'; result += x; }
+            console.log(result);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ab");
+    });
+
     test("const in for loop accumulation", async () => {
       const result = await bundleAndRun(
         {
