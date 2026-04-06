@@ -83,6 +83,9 @@ jobs:
           name: compat-table-report
           path: tests/integration/compat-table-report.json
 
+      - name: Run SWC comparison tests
+        run: cd tests/integration && bun test tests/swc-compare.test.ts --timeout 600000
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
