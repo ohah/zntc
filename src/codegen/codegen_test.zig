@@ -4557,3 +4557,27 @@ test "ES2015: let in for loop → var = void 0 per iteration" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=void 0") != null);
 }
+
+test "ES2015: class field arrow function this 캡처 (super 없음)" {
+    var r = try e2eTarget(std.testing.allocator, "class A { _cb = (x) => { this._data = x; }; }", .es5);
+    defer r.deinit();
+    // minify: "var _this=this"
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this._data") != null);
+}
+
+test "ES2015: class field arrow this 순서 (classCallCheck → _this → fields)" {
+    var r = try e2eTarget(std.testing.allocator, "class A { f = () => this.x; constructor() {} }", .es5);
+    defer r.deinit();
+    const check_pos = std.mem.indexOf(u8, r.output, "__classCallCheck") orelse return error.TestExpectedEqual;
+    const this_pos = std.mem.indexOf(u8, r.output, "var _this=this") orelse return error.TestExpectedEqual;
+    const field_pos = std.mem.indexOf(u8, r.output, "_this.x") orelse return error.TestExpectedEqual;
+    try std.testing.expect(check_pos < this_pos);
+    try std.testing.expect(this_pos < field_pos);
+}
+
+test "ES2015: class field arrow this 불필요 시 _this 미생성" {
+    var r = try e2eTarget(std.testing.allocator, "class A { x = 1; y = 2; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this") == null);
+}
