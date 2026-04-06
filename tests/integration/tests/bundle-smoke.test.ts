@@ -1786,4 +1786,55 @@ describe("JSX classic 모드 번들러 rename", () => {
     const inlinedMatch = output.match(/React\.createElement\(Button[\s,]/);
     expect(inlinedMatch).not.toBeNull();
   });
+
+  // ===== Top-Level Await =====
+
+  test("TLA: __esm 래핑 시 async 키워드가 포함된다 (#779)", async () => {
+    const result = await bundleAndRun(
+      {
+        "esm.js": "export const val = await Promise.resolve(42);",
+        "entry.cjs": 'const { val } = require("./esm.js"); console.log(val);',
+      },
+      "entry.cjs",
+      ["--format=cjs"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // __esm body에 async 키워드가 있어야 함
+    const { dir } = await createFixture({
+      "esm.js": "export const val = await Promise.resolve(42);",
+      "entry.cjs": 'const { val } = require("./esm.js"); console.log(val);',
+    });
+    const outFile = join(dir, "out.js");
+    await runZts(["--bundle", join(dir, "entry.cjs"), "-o", outFile, "--format=cjs"]);
+    const code = readFileSync(outFile, "utf-8");
+    expect(code).toContain('async "esm.js"()');
+  });
+
+  test("TLA: scope-hoisted IIFE에서 async function으로 감싼다 (#779)", async () => {
+    const { dir, cleanup: cl } = await createFixture({
+      "dep.ts": "export const val = await Promise.resolve(42);",
+      "index.ts": 'import { val } from "./dep.ts"; console.log(val);',
+    });
+    cleanup = cl;
+    const outFile = join(dir, "out.js");
+    await runZts(["--bundle", join(dir, "index.ts"), "-o", outFile, "--platform=browser"]);
+    const code = readFileSync(outFile, "utf-8");
+    expect(code).toContain("(async function()");
+    expect(code).not.toContain("(function()");
+  });
+
+  test("TLA: __esm 전이 전파 — import하는 모듈도 async 래핑 (#779)", async () => {
+    const { dir, cleanup: cl } = await createFixture({
+      "tla.js": "export const val = await Promise.resolve(99);",
+      "mid.js": 'import { val } from "./tla.js"; export const doubled = val * 2;',
+      "entry.cjs": 'const { doubled } = require("./mid.js"); console.log(doubled);',
+    });
+    cleanup = cl;
+    const outFile = join(dir, "out.js");
+    await runZts(["--bundle", join(dir, "entry.cjs"), "-o", outFile, "--format=cjs"]);
+    const code = readFileSync(outFile, "utf-8");
+    // mid.js의 __esm body에 async가 포함되어야 함 (TLA 전이)
+    expect(code).toContain('async "mid.js"()');
+  });
 });

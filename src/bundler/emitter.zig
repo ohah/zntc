@@ -186,22 +186,35 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
+    // TLA 포함 여부: IIFE를 async로 감싸야 하는지 결정
+    const has_tla = blk: {
+        for (sorted.items) |m| {
+            if (m.uses_top_level_await) break :blk true;
+        }
+        break :blk false;
+    };
+    const iife_fn = if (has_tla) "(async function() {\n" else "(function() {\n";
+
     // 포맷별 prologue
     switch (options.format) {
         .iife => {
+            if (has_tla) {
+                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+            }
             if (options.global_name) |gn| {
                 if (std.mem.indexOfScalar(u8, gn, '.') != null) {
                     try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
                     try output.appendSlice(allocator, gn);
                     try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
-                    try output.appendSlice(allocator, "(function() {\n");
+                    try output.appendSlice(allocator, iife_fn);
                 } else {
                     try output.appendSlice(allocator, "var ");
                     try output.appendSlice(allocator, gn);
-                    try output.appendSlice(allocator, " = (function() {\n");
+                    try output.appendSlice(allocator, " = ");
+                    try output.appendSlice(allocator, iife_fn);
                 }
             } else {
-                try output.appendSlice(allocator, "(function() {\n");
+                try output.appendSlice(allocator, iife_fn);
             }
         },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
