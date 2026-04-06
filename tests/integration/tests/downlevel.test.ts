@@ -949,6 +949,40 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("20");
     });
 
+    // #790: for-loop �� object_property가 block scoping 스캔에서 ��한 루프를 유발하던 버그 수정
+    test("block scoping: for-let with nested if + object property (#790)", async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        "index.ts": `
+          function test(arr: {a: any, b: number}[]) {
+            const result: any[] = [];
+            for (let i = 0; i < arr.length; i++) {
+              if (arr[i].a == null) {
+                const y = arr[i].b;
+                if (typeof y === 'number') {
+                  result.push({ b: y });
+                } else {
+                  return null;
+                }
+              }
+            }
+            return result;
+          }
+          const out = test([{a: null, b: 42}, {a: null, b: 7}]);
+          console.log(JSON.stringify(out));
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, "out.js");
+      const transpile = await runZts([join(dir, "index.ts"), "-o", outFile, "--target=es5"]);
+      expect(transpile.exitCode).toBe(0);
+
+      const code = readFileSync(outFile, "utf-8");
+      // let/const�� var로 변환되었는지 확인
+      expect(code).not.toContain("let ");
+      expect(code).not.toContain("const ");
+      expect(code).toContain("var ");
+    });
+
     // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현 (Phase 4)
     test.todo("let shadow in nested block", async () => {
       const result = await bundleAndRun(
