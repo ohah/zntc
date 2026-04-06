@@ -1887,4 +1887,173 @@ describe("JSX classic 모드 번들러 rename", () => {
     // mid.js의 __esm body에 async가 포함되어야 함 (TLA 전이)
     expect(code).toContain('async "mid.js"()');
   });
+
+});
+
+describe("ESM default re-export CJS interop (#812)", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("import X from CJS → export default X: __toESM 적용 + 런타임 정상", async () => {
+    // import X from './cjs'; export default X; 패턴에서
+    // preamble 변수를 재사용하여 중복 require 호출 및 __toESM 누락을 방지한다.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import MyPromise from './reexporter.js';
+        console.log(typeof MyPromise);
+      `,
+      "reexporter.js": `
+        import MyPromise from './cjs-promise.js';
+        export default MyPromise;
+      `,
+      "cjs-promise.js": `module.exports = function FakePromise() {};`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("function");
+  });
+
+  test("순수 re-export: export { default } from CJS", async () => {
+    // import binding 없이 순수 re-export하는 경우에도 __toESM이 적용되어야 함.
+    const result = await bundleAndRun({
+      "index.ts": `
+        import val from './reexporter.js';
+        console.log(typeof val);
+      `,
+      "reexporter.js": `export { default } from './cjs-mod.js';`,
+      "cjs-mod.js": `module.exports = { hello: 42 };`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("object");
+  });
+
+  test("체이닝: A → B → C(CJS)", async () => {
+    // 2단계 체이닝: B가 CJS를 re-export, A가 B를 re-export
+    const result = await bundleAndRun({
+      "index.ts": `
+        import val from './a.js';
+        console.log(val);
+      `,
+      "a.js": `
+        import val from './b.js';
+        export default val;
+      `,
+      "b.js": `
+        import val from './cjs.js';
+        export default val;
+      `,
+      "cjs.js": `module.exports = "deep-chain";`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("deep-chain");
+  });
+
+  test("module.exports = 원시값 (number, string, null)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import num from './re-num.js';
+        import str from './re-str.js';
+        import nil from './re-nil.js';
+        console.log(num, str, nil);
+      `,
+      "re-num.js": `import n from './num.cjs'; export default n;`,
+      "re-str.js": `import s from './str.cjs'; export default s;`,
+      "re-nil.js": `import n from './nil.cjs'; export default n;`,
+      "num.cjs": `module.exports = 42;`,
+      "str.cjs": `module.exports = "hello";`,
+      "nil.cjs": `module.exports = null;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("42 hello null");
+  });
+
+  test("default re-export + named export 혼합", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import lib, { version } from './wrapper.js';
+        console.log(lib.greet(), version);
+      `,
+      "wrapper.js": `
+        import lib from './cjs-lib.js';
+        export default lib;
+        export const version = "1.0";
+      `,
+      "cjs-lib.js": `module.exports = { greet: function() { return "hi"; } };`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("hi 1.0");
+  });
+
+  test("다이아몬드 의존: 두 모듈이 같은 CJS를 default re-export", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import a from './a.js';
+        import b from './b.js';
+        console.log(a === b);
+      `,
+      "a.js": `import x from './shared.cjs'; export default x;`,
+      "b.js": `import x from './shared.cjs'; export default x;`,
+      "shared.cjs": `module.exports = { id: 1 };`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("true");
+  });
+
+  test("CJS __esModule 플래그가 있는 모듈 re-export", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import val from './re.js';
+        console.log(val);
+      `,
+      "re.js": `import val from './esmodule-cjs.js'; export default val;`,
+      "esmodule-cjs.js": `
+        Object.defineProperty(exports, "__esModule", { value: true });
+        exports.default = "from-esmodule";
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("from-esmodule");
+  });
+
+  test("번들 출력에 __toESM 포함, bare require().default 없음", async () => {
+    const fixture = await createFixture({
+      "index.js": `
+        import val from './re.js';
+        console.log(val);
+      `,
+      "re.js": `
+        import val from './cjs.js';
+        export default val;
+      `,
+      "cjs.js": `module.exports = "ok";`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.js"), "-o", outFile]);
+    const output = readFileSync(outFile, "utf-8");
+    expect(output).toContain("__toESM");
+    // __toESM 없이 require_cjs().default 직접 접근이 없어야 함
+    expect(output).not.toMatch(/[^(]require_cjs\(\)\.default/);
+  });
+
+  test("{ default as X } import로 CJS re-export 소비", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { default as val } from './re.js';
+        console.log(val);
+      `,
+      "re.js": `
+        import val from './cjs.js';
+        export default val;
+      `,
+      "cjs.js": `module.exports = "named-default";`,
+    });
+    cleanup = result.cleanup;
+    expect(result.runOutput).toBe("named-default");
+  });
 });
