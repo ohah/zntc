@@ -10602,6 +10602,7 @@ test "namespace object: bare default keyword prevention (eventemitter3 pattern)"
 
     try std.testing.expect(!result.hasErrors());
     // "default" bare 키워드가 값 위치에 나타나면 안 됨
+    // getter 형태("get \"default\"()")는 허용, 값 위치(": default,")는 불가
     try std.testing.expect(std.mem.indexOf(u8, result.output, ": default,") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, ": default}") == null);
 }
@@ -10624,9 +10625,11 @@ test "namespace barrel re-export: import * as X; export { X } (fp-ts pattern)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // sub가 인라인 객체로 생성됨 (undefined가 아님)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "x:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "y:") != null);
+    // sub가 getter 객체로 생성됨 (live binding)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get x()") != null or
+        std.mem.indexOf(u8, result.output, "x:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get y()") != null or
+        std.mem.indexOf(u8, result.output, "y:") != null);
 }
 
 test "export *: excludes default (ESM spec 15.2.3.5)" {
@@ -11025,9 +11028,9 @@ test "TreeShaking: namespace barrel re-export — import * as z; export { z }" {
     try std.testing.expect(!result.hasErrors());
     // foo 함수 정의가 포함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function foo") != null);
-    // namespace 객체가 생성
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "foo:") != null or
-        std.mem.indexOf(u8, result.output, "foo: foo") != null);
+    // namespace getter 객체가 생성
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get foo()") != null or
+        std.mem.indexOf(u8, result.output, "foo:") != null);
 }
 
 test "Codegen: else if (false) chain — no syntax error" {
@@ -13428,4 +13431,35 @@ test "non-RN platform: entry is NOT __esm wrapped (scope-hoisted)" {
     // init_entry() 호출이 번들 끝에 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "init_entry()") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "init_index()") == null);
+}
+
+// ============================================================
+// Namespace inline 객체: getter live binding (Rolldown 호환)
+// ============================================================
+
+test "namespace inline object uses getter for live binding" {
+    // import * as X를 값으로 사용할 때, 인라인 객체가 getter로 생성되어야 함.
+    // circular dep에서 init 시점에 undefined인 변수도 사용 시점에 올바르게 참조.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as mod from './mod.js';\nexport { mod };\nconsole.log(mod.greet());");
+    try writeFile(tmp.dir, "mod.js",
+        \\export function greet() { return 'hello'; }
+        \\export const PI = 3.14;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // getter 형태: get greet() { return ...; }
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get greet()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get PI()") != null);
+    // 값 복사 형태가 아님: greet: greet (이건 없어야 함)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "greet: greet") == null);
 }
