@@ -4581,3 +4581,69 @@ test "ES2015: class field arrow this 불필요 시 _this 미생성" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this") == null);
 }
+
+// ============================================================
+// ES2025: using / await using
+// ============================================================
+
+test "ES2025: using → try-finally + __using" {
+    var r = try e2eTarget(std.testing.allocator, "using x = getResource(); doSomething(x);", .es2024);
+    defer r.deinit();
+    // __using 호출 존재
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__using(_stack,") != null);
+    // __callDispose 호출 존재
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack,") != null);
+    // try-catch-finally 구조
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "try{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch(_)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "finally{") != null);
+    // var로 변환됨 (using 키워드 없음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=__using") != null);
+    // _stack 선언
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stack=[]") != null);
+}
+
+test "ES2025: await using → async try-finally" {
+    var r = try e2eFull(std.testing.allocator, "export async function main() { await using x = openAsync(); use(x); }", .{ .unsupported = TransformOptions.compat.fromESTarget(.es2024) }, .{ .minify_whitespace = true }, ".ts");
+    defer r.deinit();
+    // __using에 true 인수 (async)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__using(_stack,openAsync(),true)") != null);
+    // finally에서 await
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "await __callDispose(") != null);
+}
+
+test "ES2025: using esnext → 변환 없이 그대로 출력" {
+    var r = try e2eTarget(std.testing.allocator, "using x = getResource();", .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "using x=getResource()") != null);
+    // __using 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__using") == null);
+}
+
+test "ES2025: using es2025 → 변환 없이 그대로 출력" {
+    var r = try e2eTarget(std.testing.allocator, "using x = getResource();", .es2025);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "using x=getResource()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__using") == null);
+}
+
+test "ES2025: using 다중 선언" {
+    var r = try e2eTarget(std.testing.allocator, "using a = getA(); using b = getB(); use(a, b);", .es2024);
+    defer r.deinit();
+    // 두 using 모두 __using으로 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a=__using(_stack,getA())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var b=__using(_stack,getB())") != null);
+    // _stack은 하나만
+    // 같은 _stack을 공유 (하나의 try-finally)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callDispose(_stack,") != null);
+}
+
+test "ES2025: using 앞 문장은 try 밖에 출력" {
+    var r = try e2eTarget(std.testing.allocator, "let a = 1; using x = getResource(); use(x);", .es2024);
+    defer r.deinit();
+    // let a=1은 try 앞에 (var _stack=[] 앞에 위치)
+    const output = r.output;
+    const a_pos = std.mem.indexOf(u8, output, "let a=1") orelse return error.TestUnexpectedResult;
+    const stack_pos = std.mem.indexOf(u8, output, "var _stack=[]") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(a_pos < stack_pos);
+}

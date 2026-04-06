@@ -41,6 +41,7 @@ const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_generator = @import("es2015_generator.zig");
+const es2025_using = @import("es2025_using.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
@@ -122,7 +123,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     call_super: bool = false,
     /// __taggedTemplateLiteral: tagged template 객체 생성 (ES2015)
     tagged_template_literal: bool = false,
-    _padding: u3 = 0,
+    /// __using/__callDispose: using/await using 변환 (ES2025)
+    using_ctx: bool = false,
+    _padding: u2 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -1280,6 +1283,18 @@ pub const Transformer = struct {
         if (self.options.unsupported.block_scoping and (node.tag == .program or node.tag == .function_body)) {
             self.collectTopLevelVarNames(node.data.list.start, node.data.list.len);
         }
+        // ES2025: using/await using → try-finally 래핑
+        if (self.options.unsupported.using) {
+            const Using = es2025_using.ES2025Using(Transformer);
+            if (Using.hasUsingDeclaration(self, node.data.list.start, node.data.list.len)) {
+                const new_list = try Using.lowerUsingInStatements(self, node.data.list.start, node.data.list.len);
+                return self.ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .list = new_list },
+                });
+            }
+        }
         const new_list = try self.visitExtraList(node.data.list.start, node.data.list.len);
         return self.ast.addNode(.{
             .tag = node.tag,
@@ -1809,7 +1824,7 @@ pub const Transformer = struct {
         // let/const → var 변환 시: 초기화 없는 declarator에 = void 0 추가.
         // let은 블록 스코프로 매 반복 새 바인딩이지만, var는 hoisted되어 이전 값 유지.
         // Metro(Babel)와 동일하게 명시적 undefined 초기화로 의미론 보존.
-        const needs_void_init = self.options.unsupported.block_scoping and (orig_kind == 1 or orig_kind == 2);
+        const needs_void_init = self.options.unsupported.block_scoping and (orig_kind >= 1 and orig_kind <= 4);
 
         const list_start = self.readU32(e, 1);
         const list_len = self.readU32(e, 2);
@@ -2491,7 +2506,7 @@ pub const Transformer = struct {
 
             const ve = stmt.data.extra;
             const kind_flags = self.readU32(ve, 0);
-            if (kind_flags != 1 and kind_flags != 2) continue; // var(0)은 무시, let(1)/const(2)만
+            if (kind_flags == 0) continue; // var(0)은 무시, let(1)/const(2)/using(3)/await_using(4)만
 
             const decl_start = self.readU32(ve, 1);
             const decl_len = self.readU32(ve, 2);

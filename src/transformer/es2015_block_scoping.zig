@@ -34,9 +34,9 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 
-/// let(1) 또는 const(2)이면 var(0)으로 변환.
+/// let(1), const(2), using(3), await_using(4)이면 var(0)으로 변환.
 pub fn lowerKindFlags(kind_flags: u32) u32 {
-    return if (kind_flags == 1 or kind_flags == 2) 0 else kind_flags;
+    return if (kind_flags >= 1 and kind_flags <= 4) 0 else kind_flags;
 }
 
 pub fn ES2015BlockScoping(comptime Transformer: type) type {
@@ -56,7 +56,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             const e = init.data.extra;
             const kind_flags = self.readU32(e, 0);
-            if (kind_flags != 1 and kind_flags != 2) return names; // var는 무시
+            if (kind_flags == 0) return names; // var(0)는 무시, let(1)/const(2)/using(3)/await_using(4)만
 
             const list_start = self.readU32(e, 1);
             const list_len = self.readU32(e, 2);
@@ -814,4 +814,6 @@ test "ES2015 block scoping module compiles" {
     try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(0)); // var → var
     try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(1)); // let → var
     try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(2)); // const → var
+    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(3)); // using → var
+    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(4)); // await_using → var
 }

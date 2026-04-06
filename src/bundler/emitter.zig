@@ -49,6 +49,9 @@ pub const EmitOptions = struct {
     minify_syntax: bool = false,
     /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
     sourcemap: bool = false,
+    /// Sentry Debug ID. --sourcemap-debug-ids 활성화 시 true.
+    /// 번들 끝에 `//# debugId=<UUID>` 주석을 추가하고, 소스맵 JSON에 `"debugId"` 필드를 삽입.
+    sourcemap_debug_ids: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -428,6 +431,13 @@ pub fn emitWithTreeShaking(
     // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
     const prologue_lines: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
 
+    // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
+    var debug_id_buf: [36]u8 = undefined;
+    const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
+        SourceMap.generateUuidV4(&debug_id_buf);
+        break :blk &debug_id_buf;
+    } else null;
+
     // 소스맵 JSON 생성
     var sourcemap_json: ?[]const u8 = null;
     if (bundle_sm) |*sm| {
@@ -437,6 +447,8 @@ pub fn emitWithTreeShaking(
                 mapping.generated_line += prologue_lines;
             }
         }
+        // debugId 설정
+        sm.debug_id = debug_id;
         const json = try sm.generateJSON(options.output_filename);
         sourcemap_json = try allocator.dupe(u8, json);
     }
@@ -446,6 +458,13 @@ pub fn emitWithTreeShaking(
         try output.appendSlice(allocator, "//# sourceMappingURL=");
         try output.appendSlice(allocator, options.output_filename);
         try output.appendSlice(allocator, ".map\n");
+    }
+
+    // debugId 주석 추가 (sourceMappingURL 뒤)
+    if (debug_id) |did| {
+        try output.appendSlice(allocator, "//# debugId=");
+        try output.appendSlice(allocator, did);
+        try output.append(allocator, '\n');
     }
 
     return .{
@@ -626,9 +645,17 @@ pub fn emitDevBundle(
         }
     }
 
+    // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
+    var debug_id_buf: [36]u8 = undefined;
+    const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
+        SourceMap.generateUuidV4(&debug_id_buf);
+        break :blk &debug_id_buf;
+    } else null;
+
     // 소스맵 JSON 생성
     var sourcemap_json: ?[]const u8 = null;
     if (bundle_sm) |*sm| {
+        sm.debug_id = debug_id;
         const json = try sm.generateJSON(options.output_filename);
         sourcemap_json = try allocator.dupe(u8, json);
     }
@@ -638,6 +665,13 @@ pub fn emitDevBundle(
         try output.appendSlice(allocator, "//# sourceMappingURL=/");
         try output.appendSlice(allocator, options.output_filename);
         try output.appendSlice(allocator, ".map\n");
+    }
+
+    // debugId 주석 추가 (sourceMappingURL 뒤)
+    if (debug_id) |did| {
+        try output.appendSlice(allocator, "//# debugId=");
+        try output.appendSlice(allocator, did);
+        try output.append(allocator, '\n');
     }
 
     return .{
