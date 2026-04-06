@@ -154,12 +154,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try buildEmptyFunction(self, fresh_name, span);
 
-            // instance fields: super가 있으면 __callSuper 이후에 _this로 초기화해야 하므로
-            // postProcessSuperCallBody가 처리. super가 없으면 constructor body 앞에 prepend.
+            // 순서: __classCallCheck → var _this = this → fields → 원래 constructor body
+            // prependToFunctionBody는 앞에 삽입하므로 역순으로 호출.
+
+            // 3. instance fields prepend (가장 마지막에 호출 → classCallCheck/this_decl 뒤에 위치)
             if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
-            // __classCallCheck(this, ClassName) — constructor body 맨 앞
+            // 2. var _this = this; (field에 arrow this 캡처가 있는 경우)
+            if (cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                }), span);
+                func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
+            }
+            // 1. __classCallCheck(this, ClassName) — constructor body 맨 앞
             {
                 const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
@@ -357,10 +368,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             else
                 try buildEmptyFunction(self, func_name, span);
 
+            // 순서: __classCallCheck → var _this = this → fields → body (역순 prepend)
             if (cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
                 func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
-            // __classCallCheck(this, ClassName) — constructor body 맨 앞
+            if (cm.fields_need_this_alias and cm.instance_fields.items.len > 0 and !(has_super and super_span != null)) {
+                const this_decl = try self.buildVarDecl("_this", try self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                }), span);
+                func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
+            }
             {
                 const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
@@ -909,6 +928,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             private_fields: std.ArrayList(PrivateFieldInfo),
             private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
             static_block_stmts: std.ArrayList(NodeIndex),
+            /// instance field init에 arrow this 캡처가 필요한 경우 true.
+            /// super class 없는 class에서 var _this = this; 삽입에 사용.
+            fields_need_this_alias: bool = false,
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
@@ -1026,11 +1048,21 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             .span = span,
                             .data = .{ .none = 0 },
                         });
-                        // super class가 있으면 field value의 this → _this 치환
+                        // field init의 arrow function이 this를 캡처하려면 _this 필요.
+                        // super class 있으면 _this = __callSuper(...)로 이미 존재.
+                        // super class 없어도 arrow → function 변환 시 _this 캡처 필요.
                         const saved_field_alias = self.super_call_this_alias;
-                        if (self.current_super_class != null) self.super_call_this_alias = true;
+                        const saved_needs_this = self.needs_this_var;
+                        if (self.current_super_class != null or self.options.unsupported.arrow) {
+                            self.super_call_this_alias = true;
+                        }
                         defer self.super_call_this_alias = saved_field_alias;
                         const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
+                        // arrow → function 변환이 needs_this_var를 설정했으면 기록
+                        if (self.needs_this_var and !saved_needs_this) {
+                            cm.fields_need_this_alias = true;
+                        }
+                        self.needs_this_var = saved_needs_this;
                         try cm.instance_fields.append(self.allocator, field_stmt);
                     }
                 } else if (member.tag == .static_block) {
