@@ -504,8 +504,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const callee = try es_helpers.makeIdentifierRef(self, "__callSuper");
 
-            // super() 이전이므로 원래 this 사용 — 아직 alias 활성화 전
-            const this_node = try self.ast.addNode(.{
+            // arrow function 내부에서 super() 호출 시, arrow → function 변환 후
+            // this가 외부 바인딩(_this)을 참조해야 하므로 _this 식별자를 사용.
+            // arrow 외부(일반 constructor)에서는 아직 alias 활성화 전이므로 원래 this 사용.
+            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
+                self.needs_this_var = true;
+                break :blk try es_helpers.makeIdentifierRef(self, "_this");
+            } else try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
@@ -592,7 +597,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             // args: [this, ...original_args]
-            const this_node = try self.ast.addNode(.{
+            // arrow function 내부에서 super.method() 호출 시 _this를 사용해야 함
+            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
+                self.needs_this_var = true;
+                break :blk try es_helpers.makeIdentifierRef(self, "_this");
+            } else try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
@@ -648,6 +657,98 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // Parent.prototype.method
             const new_prop = try self.visitNode(prop_idx);
             return es_helpers.makeStaticMember(self, proto_member, new_prop, span);
+        }
+
+        /// computed_member_expression의 object가 super_expression인지 확인.
+        /// super["prop"] 형태를 감지한다.
+        pub fn isSuperComputedMember(self: *Transformer, node: Node) bool {
+            const extras = self.ast.extra_data.items;
+            const e = node.data.extra;
+            if (e >= extras.len) return false;
+            const obj: NodeIndex = @enumFromInt(extras[e]);
+            if (obj.isNone()) return false;
+            return self.ast.getNode(obj).tag == .super_expression;
+        }
+
+        /// super["prop"] → Parent.prototype["prop"]
+        pub fn lowerSuperComputedMember(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const super_class_span = self.current_super_class orelse return self.visitMemberExpression(node);
+            const e = node.data.extra;
+            const prop_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const span = node.span;
+            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+            const new_prop = try self.visitNode(prop_idx);
+            return es_helpers.makeComputedMember(self, proto_member, new_prop, span);
+        }
+
+        /// call_expression의 callee가 super["method"] 인지 확인.
+        pub fn isSuperComputedMethodCall(self: *Transformer, node: Node) bool {
+            const extras = self.ast.extra_data.items;
+            const e = node.data.extra;
+            if (e >= extras.len) return false;
+            const callee: NodeIndex = @enumFromInt(extras[e]);
+            if (callee.isNone()) return false;
+            const callee_node = self.ast.getNode(callee);
+            if (callee_node.tag != .computed_member_expression) return false;
+            const me = callee_node.data.extra;
+            if (me >= extras.len) return false;
+            const obj: NodeIndex = @enumFromInt(extras[me]);
+            if (obj.isNone()) return false;
+            return self.ast.getNode(obj).tag == .super_expression;
+        }
+
+        /// super["method"](args) → Parent.prototype["method"].call(this, args)
+        pub fn lowerSuperComputedMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
+            const e = node.data.extra;
+            const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const args_start = self.readU32(e, 1);
+            const args_len = self.readU32(e, 2);
+            const span = node.span;
+
+            const callee_node = self.ast.getNode(callee_idx);
+            const ce = callee_node.data.extra;
+            const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
+
+            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+            const new_method_prop = try self.visitNode(method_prop_idx);
+            const method_member = try es_helpers.makeComputedMember(self, proto_member, new_method_prop, span);
+
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
+
+            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
+                self.needs_this_var = true;
+                break :blk try es_helpers.makeIdentifierRef(self, "_this");
+            } else try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            try self.scratch.append(self.allocator, this_node);
+            {
+                var i_loop: u32 = 0;
+                while (i_loop < args_len) : (i_loop += 1) {
+                    const raw_idx = self.ast.extra_data.items[args_start + i_loop];
+                    const new_arg = try self.visitNode(@enumFromInt(raw_idx));
+                    if (!new_arg.isNone()) {
+                        try self.scratch.append(self.allocator, new_arg);
+                    }
+                }
+            }
+
+            const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const new_extra = try self.ast.addExtras(&.{
+                @intFromEnum(call_callee), new_args.start, new_args.len, 0,
+            });
+            return self.ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = new_extra },
+            });
         }
 
         // ================================================================

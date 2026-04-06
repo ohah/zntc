@@ -125,7 +125,7 @@ pub fn makeComputedMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: 
 /// 그 외 (identifier 등) → dot notation (_ref.key)
 pub fn makeMemberFromKey(self: anytype, obj: NodeIndex, prop: NodeIndex, key_tag: ast_mod.Node.Tag, span: Span) !NodeIndex {
     return switch (key_tag) {
-        .string_literal, .numeric_literal => makeComputedMember(self, obj, prop, span),
+        .string_literal, .numeric_literal, .computed_property_key => makeComputedMember(self, obj, prop, span),
         else => makeStaticMember(self, obj, prop, span),
     };
 }

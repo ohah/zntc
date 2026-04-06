@@ -7,6 +7,7 @@
     "test:hermes": "bun test tests/es5-rn.test.ts --filter 'Hermes'",
     "test:smoke": "bun test tests/bundle-smoke.test.ts",
     "test:rn": "bun test tests/es5-rn.test.ts",
+    "test:compat": "node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json && bun test tests/compat-table.test.ts --timeout 600000",
     "build:zts": "cd ../.. && zig build -Doptimize=ReleaseFast"
   },
   "devDependencies": {

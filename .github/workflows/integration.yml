@@ -57,6 +57,32 @@ jobs:
       - name: Run Hermes validation (hermesc + runtime)
         run: cd tests/integration && bun test tests/hermes-runtime.test.ts
 
+  compat-table:
+    name: compat-table ES Downlevel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-zts
+
+      - name: Install compat-table
+        run: cd tests/integration && bun install
+
+      - name: Extract compat-table tests
+        run: cd tests/integration && node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json
+
+      - name: Run compat-table tests
+        run: cd tests/integration && bun test tests/compat-table.test.ts --timeout 600000
+
+      - name: Upload compat-table report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-table-report
+          path: tests/integration/compat-table-report.json
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest

@@ -748,6 +748,12 @@ pub const Transformer = struct {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
+                // ES2015: super["prop"] → Parent.prototype["prop"]
+                if (self.options.unsupported.class and self.current_super_class != null) {
+                    if (es2015_class.ES2015Class(Transformer).isSuperComputedMember(self, node)) {
+                        return es2015_class.ES2015Class(Transformer).lowerSuperComputedMember(self, node);
+                    }
+                }
                 return self.visitMemberExpression(node);
             },
 
@@ -757,9 +763,21 @@ pub const Transformer = struct {
             => self.visitUnaryExtra(node),
 
             // === 삼항 노드: 자식 3개 재귀 방문 ===
-            .if_statement,
-            .conditional_expression,
-            .for_in_statement,
+            .if_statement, .conditional_expression, .for_in_statement => {
+                if (self.options.unsupported.destructuring) {
+                    // for (var [i,j,k] in obj) → for (var _ref in obj) { var i=_ref[0],...; body }
+                    const left = node.data.ternary.a;
+                    if (!left.isNone()) {
+                        const left_node = self.ast.getNode(left);
+                        if (left_node.tag == .variable_declaration and
+                            es2015_destructuring.ES2015Destructuring(Transformer).hasDestructuring(self, left_node))
+                        {
+                            return es2015_destructuring.ES2015Destructuring(Transformer).lowerForInDestructuring(self, node);
+                        }
+                    }
+                }
+                return self.visitTernaryNode(node);
+            },
             .for_await_of_statement,
             .try_statement,
             => self.visitTernaryNode(node),
@@ -852,6 +870,9 @@ pub const Transformer = struct {
                     }
                     if (es2015_class.ES2015Class(Transformer).isSuperMethodCall(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperMethodCall(self, node);
+                    }
+                    if (es2015_class.ES2015Class(Transformer).isSuperComputedMethodCall(self, node)) {
+                        return es2015_class.ES2015Class(Transformer).lowerSuperComputedMethodCall(self, node);
                     }
                 }
                 // ES2015: spread in call → .apply()

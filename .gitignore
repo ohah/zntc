@@ -8,6 +8,9 @@ node_modules/
 
 # Playwright
 test-results/
+
+# compat-table report (CI에서 생성)
+tests/integration/compat-table-report.json
 playwright-report/
 
 # OS
