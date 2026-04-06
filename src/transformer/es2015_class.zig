@@ -504,17 +504,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const callee = try es_helpers.makeIdentifierRef(self, "__callSuper");
 
-            // arrow function 내부에서 super() 호출 시, arrow → function 변환 후
-            // this가 외부 바인딩(_this)을 참조해야 하므로 _this 식별자를 사용.
-            // arrow 외부(일반 constructor)에서는 아직 alias 활성화 전이므로 원래 this 사용.
-            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
-                self.needs_this_var = true;
-                break :blk try es_helpers.makeIdentifierRef(self, "_this");
-            } else try self.ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
+            const this_node = try makeThisOrAlias(self, span);
 
             const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
             const scratch_top = self.scratch.items.len;
@@ -597,15 +587,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             // args: [this, ...original_args]
-            // arrow function 내부에서 super.method() 호출 시 _this를 사용해야 함
-            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
-                self.needs_this_var = true;
-                break :blk try es_helpers.makeIdentifierRef(self, "_this");
-            } else try self.ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
+            const this_node = try makeThisOrAlias(self, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -717,14 +699,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const call_prop = try es_helpers.makeIdentifierRef(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
-            const this_node = if (self.options.unsupported.arrow and self.arrow_this_depth > 0) blk: {
-                self.needs_this_var = true;
-                break :blk try es_helpers.makeIdentifierRef(self, "_this");
-            } else try self.ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
+            const this_node = try makeThisOrAlias(self, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -754,6 +729,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // ================================================================
         // 내부 헬퍼
         // ================================================================
+
+        /// arrow function 내부이면 _this, 아니면 this 노드 생성.
+        /// super() / super.method() 변환에서 공통 사용.
+        fn makeThisOrAlias(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
+                self.needs_this_var = true;
+                return es_helpers.makeIdentifierRef(self, "_this");
+            }
+            return self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+        }
 
         /// this.#x → _x.get(this).
         pub fn lowerPrivateFieldGet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {

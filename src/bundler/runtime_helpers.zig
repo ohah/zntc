@@ -217,12 +217,13 @@ pub const GENERATOR_RUNTIME =
     \\  var __iterProto = {};
     \\  __iterProto[Symbol.iterator] = function() { return this; };
     \\  var __genProto = Object.create(__iterProto);
+    \\  var __protoSet = typeof Symbol !== "undefined" ? Symbol("__protoSet") : "__gen_proto_set__";
     \\  return function(body, genFn) {
     \\    var _ = { label: 0, sent: function() { return t[1]; }, trys: [], ops: [] }, f, y, t, g;
     \\    if (genFn) {
-    \\      if (!genFn.__proto_set) {
+    \\      if (!genFn[__protoSet]) {
     \\        Object.setPrototypeOf(genFn.prototype, __genProto);
-    \\        genFn.__proto_set = true;
+    \\        genFn[__protoSet] = true;
     \\      }
     \\      g = Object.create(genFn.prototype);
     \\    } else {
