@@ -950,6 +950,40 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("ab");
     });
 
+    test("destructuring let in block scope isolation (#800)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let x = 1;
+            if (true) { let { x } = { x: 2 }; }
+            console.log(x);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("array destructuring let in block scope isolation (#800)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let a = 10;
+            if (true) { let [a, b] = [20, 30]; }
+            console.log(a);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
     test("const in for loop accumulation", async () => {
       const result = await bundleAndRun(
         {

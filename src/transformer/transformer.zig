@@ -1309,12 +1309,16 @@ pub const Transformer = struct {
 
                 const name_idx = self.readNodeIdx(decl.data.extra, 0);
                 if (name_idx.isNone()) continue;
-                const name_node = self.ast.getNode(name_idx);
-                if (name_node.tag != .binding_identifier) continue;
 
-                const name = self.ast.getText(name_node.data.string_ref);
-                if (!self.isNameInScope(name)) {
-                    self.scope_var_names.append(self.allocator, name) catch {};
+                const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+                var names: std.ArrayList([]const u8) = .empty;
+                defer names.deinit(self.allocator);
+                BlockScoping.collectBindingNames(self, name_idx, &names) catch continue;
+
+                for (names.items) |name| {
+                    if (!self.isNameInScope(name)) {
+                        self.scope_var_names.append(self.allocator, name) catch {};
+                    }
                 }
             }
         }
@@ -2388,7 +2392,7 @@ pub const Transformer = struct {
     }
 
     /// block_rename_stack에서 이름 조회. 스택 뒤(가장 안쪽 블록)부터 검색.
-    fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8 {
+    pub fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8 {
         var i = self.block_rename_stack.items.len;
         while (i > 0) {
             i -= 1;
@@ -2433,20 +2437,22 @@ pub const Transformer = struct {
 
                 const name_idx = self.readNodeIdx(decl.data.extra, 0);
                 if (name_idx.isNone()) continue;
-                const name_node = self.ast.getNode(name_idx);
-                if (name_node.tag != .binding_identifier) continue;
 
-                const name = self.ast.getText(name_node.data.string_ref);
+                // binding pattern에서 모든 이름 수집 (destructuring 지원)
+                const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+                var names: std.ArrayList([]const u8) = .empty;
+                defer names.deinit(self.allocator);
+                BlockScoping.collectBindingNames(self, name_idx, &names) catch continue;
 
-                if (self.isNameInScope(name)) {
-                    // 충돌 — 리네이밍
-                    self.block_rename_counter += 1;
-                    const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
-                    self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
-                    renames_added += 1;
-                } else {
-                    // 충돌 없음 — 외부 스코프에 이름 등록 (이후 내부 블록에서 충돌 감지용)
-                    self.scope_var_names.append(self.allocator, name) catch return Error.OutOfMemory;
+                for (names.items) |name| {
+                    if (self.isNameInScope(name)) {
+                        self.block_rename_counter += 1;
+                        const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
+                        self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
+                        renames_added += 1;
+                    } else {
+                        self.scope_var_names.append(self.allocator, name) catch return Error.OutOfMemory;
+                    }
                 }
             }
         }
@@ -4100,7 +4106,13 @@ pub const Transformer = struct {
         if (self.options.unsupported.object_extensions and node.data.binary.right.isNone()) {
             return es2015_shorthand.ES2015Shorthand(Transformer).expandShorthand(self, node);
         }
-        const new_key = try self.visitNode(node.data.binary.left);
+        // non-computed key(identifier, string, numeric)는 property 이름이므로
+        // block scoping rename 등 변수 치환을 적용하면 안 됨. copyNodeDirect 사용.
+        const key_idx = node.data.binary.left;
+        const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag != .computed_property_key)
+            try self.copyNodeDirect(self.ast.getNode(key_idx))
+        else
+            try self.visitNode(key_idx);
         const new_value = try self.visitNode(node.data.binary.right);
         return self.ast.addNode(.{
             .tag = .object_property,

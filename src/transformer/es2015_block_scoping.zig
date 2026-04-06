@@ -73,7 +73,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         /// binding pattern에서 모든 identifier 이름을 수집한다.
-        fn collectBindingNames(
+        /// destructuring 포함 (array_pattern, object_pattern, rest_element, assignment_pattern).
+        pub fn collectBindingNames(
             self: *Transformer,
             idx: NodeIndex,
             names: *std.ArrayList([]const u8),
@@ -97,10 +98,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
                     for (stmts) |raw| {
                         const prop = self.ast.getNode(@enumFromInt(raw));
-                        // object_pattern_property: extra = [key, value, flags]
+                        // binding_property: binary = { left: key, right: value, flags }
                         // rest_element: unary = { operand, flags }
                         if (prop.tag == .binding_property) {
-                            try collectBindingNames(self, self.readNodeIdx(prop.data.extra, 1), names);
+                            try collectBindingNames(self, prop.data.binary.right, names);
                         } else if (prop.tag == .rest_element) {
                             try collectBindingNames(self, prop.data.unary.operand, names);
                         }
