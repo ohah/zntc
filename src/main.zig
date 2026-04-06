@@ -526,7 +526,9 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     // --bundle + --platform=browser + --format 미지정이면 IIFE로 기본 설정 (esbuild 호환).
     // 브라우저 <script> 태그에서 로드할 때 top-level 선언이 글로벌을 오염시키지 않도록
     // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
-    if (opts.is_bundle and opts.platform.isBrowserLike() and !opts.bundle_format_explicit) {
+    // react-native는 IIFE 불필요 — Metro/Rollipop도 IIFE 없이 글로벌 스코프에서 실행.
+    // preamble과 __esm 래핑이 스코프 격리를 담당.
+    if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit) {
         opts.bundle_format = .iife;
     }
 
