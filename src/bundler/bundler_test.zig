@@ -13463,3 +13463,29 @@ test "namespace inline object uses getter for live binding" {
     // 값 복사 형태가 아님: greet: greet (이건 없어야 함)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "greet: greet") == null);
 }
+
+test "namespace inline object: default export quoted in getter" {
+    // default는 JS 예약어이므로 get "default"() 형태로 따옴표 필요.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as mod from './mod.js';\nexport { mod };\nconsole.log(mod.default);");
+    try writeFile(tmp.dir, "mod.js",
+        \\const val = 42;
+        \\export default val;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // default가 따옴표로 감싸져야 함: get "default"()
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get \"default\"()") != null);
+    // bare default가 값 위치에 나타나면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ": default,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ": default}") == null);
+}
