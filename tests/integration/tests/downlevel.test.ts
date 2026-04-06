@@ -1052,8 +1052,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("30");
     });
 
-    // TODO: for-of + destructuring 조합에서 변수 바인딩 미생성 버그
-    test.todo("destructuring in for-of with default value", async () => {
+    test("destructuring in for-of with default value", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -1079,7 +1078,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
           "index.ts": `
             const items = [{v:10},{v:20},{v:30}];
             let sum = 0;
-            for (const item of items) { sum += item.v; }
+            for (const item of items) sum += item.v;
             console.log(sum);
           `,
         },
@@ -1108,8 +1107,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("12");
     });
 
-    // TODO: nested for-of에서 내부 루프 변수가 외부 루프 변수를 참조하지 못하는 버그
-    test.todo("nested for-of loops", async () => {
+    test("nested for-of loops", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -1125,6 +1123,24 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("10");
+    });
+
+    test("for-of without block body", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [10, 20, 30];
+            let sum = 0;
+            for (const x of arr) sum += x;
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("60");
     });
 
     // --- SWC 대비 추가 테스트: Spread ---

@@ -1866,7 +1866,21 @@ pub const Transformer = struct {
     /// block_statement / program / function_body 앞에 문들을 삽입한다.
     pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
         const body = self.ast.getNode(body_idx);
-        if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) return body_idx;
+        if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) {
+            // 단일 문(non-block)이면 블록으로 감싸서 prepend
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            for (stmts) |stmt| {
+                try self.scratch.append(self.allocator, stmt);
+            }
+            try self.scratch.append(self.allocator, body_idx);
+            const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = body.span,
+                .data = .{ .list = new_list },
+            });
+        }
 
         const old_list = body.data.list;
         const scratch_top = self.scratch.items.len;
