@@ -1499,8 +1499,8 @@ pub const Transformer = struct {
     /// 노드의 소스 텍스트를 반환. identifier_reference와 static_member_expression만 지원.
     fn getNodeText(self: *const Transformer, node: Node) ?[]const u8 {
         return switch (node.tag) {
-            .identifier_reference => self.ast.source[node.data.string_ref.start..node.data.string_ref.end],
-            .static_member_expression => self.ast.source[node.span.start..node.span.end],
+            .identifier_reference => self.ast.getText(node.span),
+            .static_member_expression => self.ast.getText(node.span),
             else => null,
         };
     }
