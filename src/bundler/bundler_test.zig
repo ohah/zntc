@@ -13622,3 +13622,13 @@ test "Self-re-export: default re-export가 자기 자신을 가리킬 때 skip" 
     // 선언 1회만 허용 — body 안에서 자기호출이 있으면 2회 이상
     try std.testing.expect(init_count <= 1);
 }
+
+test "__rest: Symbol 프로퍼티 복사 포함" {
+    // TypeScript __rest 호환: Object.getOwnPropertySymbols로 Symbol도 복사
+    // runtime_helpers의 REST_RUNTIME 문자열을 직접 검증
+    const runtime = @import("runtime_helpers.zig");
+    try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME, "getOwnPropertySymbols") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME, "propertyIsEnumerable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME_MIN, "getOwnPropertySymbols") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME_MIN, "propertyIsEnumerable") != null);
+}
