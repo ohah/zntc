@@ -410,11 +410,25 @@ pub const Node = struct {
             extra,
         };
 
-        /// 태그에 따른 데이터 레이아웃을 반환한다.
-        /// transformer의 visitNodeInner switch문과 codegen의 emitNode를 기반으로 분류.
-        pub fn dataKind(tag: Tag) DataKind {
+        /// 노드 레이아웃 정의 (Single Source of Truth).
+        /// 모든 Tag는 반드시 여기에 등록되어야 한다.
+        /// extra 노드의 child_offsets는 NodeIndex인 필드의 오프셋만 포함.
+        const Layout = struct {
+            kind: DataKind,
+            /// extra 노드의 NodeIndex 필드 오프셋. leaf/unary/binary/ternary/list는 비어 있음.
+            child_offsets: []const u8 = &.{},
+            /// extra 노드의 간접 NodeIndex 리스트 필드. {start_offset, len_offset} 쌍.
+            /// extra_data[e + start_offset .. + start_offset + extra_data[e + len_offset]]가 NodeIndex 리스트.
+            list_offsets: []const [2]u8 = &.{},
+        };
+
+        // ────────────────────────────────────────────────────
+        // 노드 레이아웃 테이블 — 태그 추가 시 반드시 여기에 등록.
+        // comptime 검증으로 누락 시 컴파일 에러.
+        // ────────────────────────────────────────────────────
+        fn getLayout(tag: Tag) Layout {
             return switch (tag) {
-                // === leaf: 자식 없음 ===
+                // === leaf ===
                 .invalid,
                 .elision,
                 .boolean_literal,
@@ -444,7 +458,6 @@ pub const Node = struct {
                 .jsx_closing_element,
                 .jsx_opening_fragment,
                 .jsx_closing_fragment,
-                // TS type keywords
                 .ts_any_keyword,
                 .ts_string_keyword,
                 .ts_boolean_keyword,
@@ -459,7 +472,6 @@ pub const Node = struct {
                 .ts_bigint_keyword,
                 .ts_this_type,
                 .ts_intrinsic_keyword,
-                // Flow type keywords
                 .flow_any_keyword,
                 .flow_string_keyword,
                 .flow_boolean_keyword,
@@ -472,9 +484,9 @@ pub const Node = struct {
                 .flow_this_type,
                 .flow_mixed_keyword,
                 .flow_empty_keyword,
-                => .leaf,
+                => .{ .kind = .leaf },
 
-                // === unary: operand 1개 ===
+                // === unary ===
                 .expression_statement,
                 .return_statement,
                 .throw_statement,
@@ -502,20 +514,19 @@ pub const Node = struct {
                 .ts_type_operator,
                 .ts_non_null_expression,
                 .flow_nullable_type,
-                => .unary,
+                => .{ .kind = .unary },
 
-                // === binary: left + right ===
+                // === binary ===
                 .binary_expression,
                 .logical_expression,
                 .assignment_expression,
-                .switch_case,
+                // switch_case → extra (아래에서 처리)
                 .catch_clause,
                 .labeled_statement,
                 .while_statement,
                 .do_while_statement,
                 .with_statement,
-                .static_member_expression,
-                .private_field_expression,
+                // static_member_expression, private_field_expression → extra (아래에서 처리)
                 .assignment_target_property_identifier,
                 .assignment_target_property_property,
                 .binding_property,
@@ -533,18 +544,18 @@ pub const Node = struct {
                 .ts_enum_member,
                 .flow_qualified_name,
                 .flow_literal_type,
-                => .binary,
+                => .{ .kind = .binary },
 
-                // === ternary: a + b + c ===
+                // === ternary ===
                 .conditional_expression,
                 .for_in_statement,
                 .for_of_statement,
                 .for_await_of_statement,
                 .if_statement,
                 .try_statement,
-                => .ternary,
+                => .{ .kind = .ternary },
 
-                // === list: 가변 자식 목록 ===
+                // === list ===
                 .program,
                 .block_statement,
                 .sequence_expression,
@@ -573,12 +584,137 @@ pub const Node = struct {
                 .flow_exact_object_type,
                 .flow_type_parameter_declaration,
                 .flow_type_parameter_instantiation,
-                => .list,
+                => .{ .kind = .list },
 
-                // === extra: extra_data 기반 ===
-                // 나머지 모든 노드: 가변 길이 extra 데이터
-                else => .extra,
+                // === extra: 태그별 NodeIndex 오프셋 명시 ===
+                // 호출: extra = [callee(0), args_start(1), args_len(2), flags]
+                .call_expression, .new_expression => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                // tagged template: extra = [tag(0), template(1), flags]
+                .tagged_template_expression => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // member: extra = [object(0), property(1), flags]
+                .static_member_expression,
+                .private_field_expression,
+                .computed_member_expression,
+                => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // function: extra = [name(0), params_start(1), params_len(2), body(3), flags, ret_type(5)]
+                .function_expression, .function_declaration, .function => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
+                // arrow: extra = [params(0), body(1), flags]
+                .arrow_function_expression => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // class: extra = [name(0), super(1), body(2), type_params(3), impl_start, impl_len, deco_start, deco_len]
+                .class_expression, .class_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
+                // method: extra = [key(0), params_start(1), params_len(2), body(3), flags, deco_start, deco_len]
+                .method_definition => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
+                // property_definition: extra = [key(0), init(1), flags, deco_start, deco_len]
+                .property_definition, .accessor_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // for_statement: extra = [init(0), test(1), update(2), body(3)]
+                .for_statement => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2, 3 } },
+                // switch_statement: extra = [discriminant(0), cases_start(1), cases_len(2)]
+                .switch_statement => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                // switch_case: extra = [test(0), stmts_start(1), stmts_len(2)]
+                .switch_case => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
+                // variable_declaration: extra = [kind_flags, list_start(1), list_len(2)]
+                .variable_declaration => .{ .kind = .extra, .child_offsets = &.{}, .list_offsets = &.{.{ 1, 2 }} },
+                // variable_declarator: extra = [name(0), type_ann(1), init(2)]
+                .variable_declarator => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
+                // formal_parameter: extra = [pattern(0), type_ann(1), default(2), flags, deco_start, deco_len]
+                .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
+                // object_property: extra = [key(0), value(1), flags]
+                .object_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // import_declaration: extra = [specs_start, specs_len, source(2)]
+                .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
+                // export_named: extra = [decl(0), specs_start, specs_len, source(3)]
+                .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 } },
+                // export_default: extra = [decl(0), ...] — decl만 NodeIndex
+                .export_default_declaration => .{ .kind = .extra, .child_offsets = &.{0} },
+                // jsx_element: extra = [tag(0), attrs_start, attrs_len, children_start, children_len]
+                .jsx_element => .{ .kind = .extra, .child_offsets = &.{0} },
+                // jsx_opening_element: extra = [tag(0), attrs_start, attrs_len]
+                .jsx_opening_element => .{ .kind = .extra, .child_offsets = &.{0} },
+                // jsx_fragment: transformer에서 list로 처리하지만 extra로 분류
+                .jsx_fragment => .{ .kind = .extra, .child_offsets = &.{} },
+                // flow_component_wrapper: extra = [func_decl(0), const_decl(1)]
+                .flow_component_wrapper => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // TS declarations — 대부분 타입 전용이므로 런타임 워커에서 무시 가능
+                .ts_type_reference,
+                .ts_array_type,
+                .ts_named_tuple_member,
+                .ts_conditional_type,
+                .ts_indexed_access_type,
+                .ts_function_type,
+                .ts_constructor_type,
+                .ts_mapped_type,
+                .ts_template_literal_type,
+                .ts_infer_type,
+                .ts_parenthesized_type,
+                .ts_import_type,
+                .ts_type_query,
+                .ts_type_alias_declaration,
+                .ts_interface_declaration,
+                .ts_property_signature,
+                .ts_method_signature,
+                .ts_call_signature,
+                .ts_construct_signature,
+                .ts_index_signature,
+                .ts_getter_signature,
+                .ts_setter_signature,
+                .ts_enum_declaration,
+                .ts_module_declaration,
+                .ts_import_equals_declaration,
+                .ts_external_module_reference,
+                .ts_export_assignment,
+                .ts_namespace_export_declaration,
+                .ts_type_parameter,
+                .ts_this_parameter,
+                .ts_class_implements,
+                .ts_as_expression,
+                .ts_satisfies_expression,
+                .ts_type_assertion,
+                .ts_instantiation_expression,
+                => .{ .kind = .extra, .child_offsets = &.{} },
+                // Flow declarations — 타입 전용
+                .flow_type_reference,
+                .flow_array_type,
+                .flow_function_type,
+                .flow_parenthesized_type,
+                .flow_type_query,
+                .flow_type_parameter,
+                .flow_this_parameter,
+                .flow_type_alias_declaration,
+                .flow_opaque_type,
+                .flow_interface_declaration,
+                .flow_as_expression,
+                .flow_type_cast_expression,
+                .flow_match_expression,
+                => .{ .kind = .extra, .child_offsets = &.{} },
             };
+        }
+
+        // ────────────────────────────────────────────────────
+        // comptime 전수 검증: 모든 Tag가 getLayout에 등록되어 있는지 확인.
+        // 태그를 추가하고 getLayout에 등록하지 않으면 컴파일 에러.
+        // ────────────────────────────────────────────────────
+        comptime {
+            for (std.enums.values(Tag)) |t| {
+                _ = getLayout(t);
+            }
+        }
+
+        /// 태그의 데이터 레이아웃 종류를 반환한다.
+        pub fn dataKind(tag: Tag) DataKind {
+            return getLayout(tag).kind;
+        }
+
+        /// extra 노드의 NodeIndex 자식 필드 오프셋을 반환한다.
+        /// extra가 아닌 노드는 빈 배열 반환.
+        pub fn extraChildOffsets(tag: Tag) []const u8 {
+            return getLayout(tag).child_offsets;
+        }
+
+        /// extra 노드의 간접 NodeIndex 리스트 필드 오프셋을 반환한다.
+        /// 각 항목은 {start_offset, len_offset} 쌍.
+        /// extra_data[e + start]부터 len개의 NodeIndex가 자식 리스트.
+        pub fn extraListOffsets(tag: Tag) []const [2]u8 {
+            return getLayout(tag).list_offsets;
         }
     };
 

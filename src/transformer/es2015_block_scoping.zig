@@ -125,8 +125,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             lexical_names: []const []const u8,
         ) bool {
             if (body_idx.isNone() or lexical_names.len == 0) return false;
+            // 원본 AST에서 스캔 — parser_node_count 이내의 노드만 방문
             return scanForCapture(self, body_idx, lexical_names, 0);
+            // TODO: scanForCapture가 원본 AST 범위를 벗어나면 false negative 가능
         }
+
+        const MAX_SCAN_DEPTH: u32 = 128;
 
         fn scanForCapture(
             self: *Transformer,
@@ -134,20 +138,31 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             lexical_names: []const []const u8,
             fn_depth: u32,
         ) bool {
+            return scanImpl(self, idx, lexical_names, fn_depth, 0);
+        }
+
+        fn scanImpl(
+            self: *Transformer,
+            idx: NodeIndex,
+            lexical_names: []const []const u8,
+            fn_depth: u32,
+            depth: u32,
+        ) bool {
             if (idx.isNone()) return false;
             if (@intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+            if (depth >= MAX_SCAN_DEPTH) return false;
             const node = self.ast.getNode(idx);
 
-            // 클로저 경계: depth 증가
+            // 클로저 경계: fn_depth 증가
             if (node.tag == .function_expression or
                 node.tag == .function_declaration or
                 node.tag == .arrow_function_expression or
                 node.tag == .function)
             {
-                return scanChildren(self, node, lexical_names, fn_depth + 1);
+                return scanChildNodes(self, node, lexical_names, fn_depth + 1, depth + 1);
             }
 
-            // identifier_reference: depth > 0이면 캡처 검사
+            // identifier_reference: fn_depth > 0이면 캡처 검사
             if (node.tag == .identifier_reference and fn_depth > 0) {
                 const name = self.ast.getText(node.span);
                 for (lexical_names) |ln| {
@@ -155,93 +170,57 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 }
             }
 
-            return scanChildren(self, node, lexical_names, fn_depth);
+            return scanChildNodes(self, node, lexical_names, fn_depth, depth + 1);
         }
 
-        /// extra 노드에서 NodeIndex인 필드의 오프셋 목록을 반환한다.
-        /// 숫자 (kind_flags, params_len 등)는 제외하여 false positive를 방지.
-        fn getExtraNodeOffsets(tag: Tag) []const usize {
-            return switch (tag) {
-                // function/method: extra = [name(0), params_start, params_len, body(3), flags, deco]
-                .function_expression, .function_declaration, .function, .method_definition => &.{ 0, 3 },
-                // property_definition: extra = [key(0), value(1), ...]
-                .property_definition => &.{ 0, 1 },
-                // for_statement: extra = [init(0), test(1), update(2), body(3)]
-                .for_statement => &.{ 0, 1, 2, 3 },
-                // call/new: extra = [callee(0), args_start, args_len, flags]
-                .call_expression, .new_expression => &.{0},
-                // variable_declaration: extra = [kind_flags, list_start, list_len] — 자식 없음 (list로 간접)
-                .variable_declaration => &.{},
-                // variable_declarator: extra = [name(0), type_ann(1), init(2)]
-                .variable_declarator => &.{ 0, 2 },
-                // arrow: extra = [params(0), body(1), flags]
-                .arrow_function_expression => &.{ 0, 1 },
-                // class: extra = [name(0), super(1), body(2), ...]
-                .class_expression, .class_declaration => &.{ 0, 1, 2 },
-                // tagged_template: extra = [tag(0), template(1), flags]
-                .tagged_template_expression => &.{ 0, 1 },
-                // member expression: extra = [object(0), property(1), flags]
-                .computed_member_expression => &.{ 0, 1 },
-                // object_property: extra = [key(0), value(1), flags]
-                .object_property => &.{ 0, 1 },
-                // assignment_pattern: extra = [left(0), right(1), flags]
-                .assignment_pattern => &.{ 0, 1 },
-                // formal_parameter: extra = [binding(0), type_ann(1), init(2), ...]
-                .formal_parameter => &.{ 0, 2 },
-                // import/export: 복잡한 구조, 캡처 분석에서는 무시 가능
-                .import_declaration,
-                .export_named_declaration,
-                .export_default_declaration,
-                .export_all_declaration,
-                => &.{},
-                // switch_statement: extra = [discriminant(0), cases_start, cases_len]
-                .switch_statement => &.{0},
-                // jsx: extra = [tag(0), attrs(1), children(2)]
-                .jsx_element, .jsx_opening_element => &.{ 0, 1, 2 },
-                .jsx_attribute => &.{ 0, 1 },
-                // accessor_property: extra = [key(0), value(1), ...]
-                .accessor_property => &.{ 0, 1 },
-                // 기타: 보수적으로 처음 2개만 시도
-                else => &.{ 0, 1 },
-            };
-        }
-
-        fn scanChildren(
+        fn scanChildNodes(
             self: *Transformer,
             node: Node,
             lexical_names: []const []const u8,
             fn_depth: u32,
+            depth: u32,
         ) bool {
             switch (node.tag.dataKind()) {
                 .leaf => {},
                 .unary => {
-                    if (scanForCapture(self, node.data.unary.operand, lexical_names, fn_depth)) return true;
+                    if (scanImpl(self, node.data.unary.operand, lexical_names, fn_depth, depth)) return true;
                 },
                 .binary => {
-                    if (scanForCapture(self, node.data.binary.left, lexical_names, fn_depth)) return true;
-                    if (scanForCapture(self, node.data.binary.right, lexical_names, fn_depth)) return true;
+                    if (scanImpl(self, node.data.binary.left, lexical_names, fn_depth, depth)) return true;
+                    if (scanImpl(self, node.data.binary.right, lexical_names, fn_depth, depth)) return true;
                 },
                 .ternary => {
-                    if (scanForCapture(self, node.data.ternary.a, lexical_names, fn_depth)) return true;
-                    if (scanForCapture(self, node.data.ternary.b, lexical_names, fn_depth)) return true;
-                    if (scanForCapture(self, node.data.ternary.c, lexical_names, fn_depth)) return true;
+                    if (scanImpl(self, node.data.ternary.a, lexical_names, fn_depth, depth)) return true;
+                    if (scanImpl(self, node.data.ternary.b, lexical_names, fn_depth, depth)) return true;
+                    if (scanImpl(self, node.data.ternary.c, lexical_names, fn_depth, depth)) return true;
                 },
                 .list => {
                     const list = node.data.list;
                     const items = self.ast.extra_data.items[list.start .. list.start + list.len];
                     for (items) |raw| {
-                        if (scanForCapture(self, @enumFromInt(raw), lexical_names, fn_depth)) return true;
+                        if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
                     }
                 },
                 .extra => {
-                    // extra 노드의 NodeIndex 필드만 정확히 방문 (숫자 필드 제외).
                     const e = node.data.extra;
-                    const offsets = getExtraNodeOffsets(node.tag);
-                    for (offsets) |offset| {
+                    // 직접 NodeIndex 필드
+                    for (node.tag.extraChildOffsets()) |offset| {
                         if (e + offset >= self.ast.extra_data.items.len) break;
                         const raw = self.ast.extra_data.items[e + offset];
                         if (raw > 0 and raw < self.ast.nodes.items.len) {
-                            if (scanForCapture(self, @enumFromInt(raw), lexical_names, fn_depth)) return true;
+                            if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
+                        }
+                    }
+                    // 간접 NodeIndex 리스트 필드 (args, params, cases 등)
+                    for (node.tag.extraListOffsets()) |lo| {
+                        const start_off = lo[0];
+                        const len_off = lo[1];
+                        if (e + len_off >= self.ast.extra_data.items.len) continue;
+                        const list_start = self.ast.extra_data.items[e + start_off];
+                        const list_len = self.ast.extra_data.items[e + len_off];
+                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
+                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
+                            if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
                         }
                     }
                 },
@@ -468,11 +447,21 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 },
                 .extra => {
                     const e = node.data.extra;
-                    const offsets = getExtraNodeOffsets(node.tag);
-                    for (offsets) |offset| {
+                    for (node.tag.extraChildOffsets()) |offset| {
                         if (e + offset >= self.ast.extra_data.items.len) break;
                         const raw = self.ast.extra_data.items[e + offset];
                         if (raw > 0 and raw < self.ast.nodes.items.len) {
+                            analyzeControlFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth);
+                        }
+                    }
+                    for (node.tag.extraListOffsets()) |lo| {
+                        const start_off = lo[0];
+                        const len_off = lo[1];
+                        if (e + len_off >= self.ast.extra_data.items.len) continue;
+                        const list_start = self.ast.extra_data.items[e + start_off];
+                        const list_len = self.ast.extra_data.items[e + len_off];
+                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
+                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
                             analyzeControlFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth);
                         }
                     }
