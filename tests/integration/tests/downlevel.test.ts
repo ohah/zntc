@@ -1481,8 +1481,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
 
     // --- SWC 대비 추가 테스트: Template Literals ---
 
-    // TODO: template literal 변환에서 연산자 우선순위 누락 — "" + 1 + 2 → "12" (기대: "3")
-    test.todo("template literal with expression", async () => {
+    // #782: template literal 변환에서 보간 표현식에 괄호 추가
+    test("template literal with expression (#782)", async () => {
       const result = await bundleAndRun(
         { "index.ts": "console.log(`${1 + 2} is three`);" },
         "index.ts",
@@ -1504,8 +1504,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("ab1cd");
     });
 
-    // TODO: template literal 변환에서 ternary 연산자 우선순위 누락
-    test.todo("template literal with ternary expression", async () => {
+    // #782: template literal 변환에서 ternary 표현식에 괄호 추가
+    test("template literal with ternary expression (#782)", async () => {
       const result = await bundleAndRun(
         { "index.ts": "const x = true; console.log(`val=${x ? 'yes' : 'no'}`);" },
         "index.ts",
