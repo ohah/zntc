@@ -271,12 +271,17 @@ pub fn makeObjectAssignCall(self: anytype, args: []const NodeIndex, span: Span) 
 /// 4. 첫 번째 인자가 이미 object literal이면 그것이 target, 아니면 {}를 삽입
 /// 5. Object.assign(target, ...groups) 호출로 변환
 pub fn lowerObjectSpreadProps(self: anytype, properties: []const NodeIndex, span: Span) !NodeIndex {
+    // properties가 scratch의 슬라이스일 수 있으므로 먼저 복사.
+    // scratch append로 재할당되면 슬라이스가 무효화됨 (use-after-free 방지).
+    const owned_props = try self.allocator.dupe(NodeIndex, properties);
+    defer self.allocator.free(owned_props);
+
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
     var group_start: usize = scratch_top;
 
-    for (properties) |prop_idx| {
+    for (owned_props) |prop_idx| {
         const prop = self.ast.getNode(prop_idx);
         if (prop.tag == .spread_element) {
             // 쌓아둔 non-spread 그룹을 object literal로 플러시

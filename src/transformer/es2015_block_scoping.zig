@@ -117,119 +117,80 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             }
         }
 
-        /// loop body 내부를 스캔하여 클로저(arrow/function)가 lexical 변수를 캡처하는지 검사한다.
-        /// function_depth > 0 인 상태에서 lexical 변수 이름과 일치하는 identifier_reference가 있으면 true.
+        /// loop body 내부를 반복적(iterative)으로 스캔하여
+        /// 클로저(arrow/function)가 lexical 변수를 캡처하는지 검사한다.
+        /// 명시적 스택 사용 — stack overflow 불가능.
         pub fn hasCapturedClosure(
             self: *Transformer,
             body_idx: NodeIndex,
             lexical_names: []const []const u8,
         ) bool {
             if (body_idx.isNone() or lexical_names.len == 0) return false;
-            // 원본 AST에서 스캔 — parser_node_count 이내의 노드만 방문
-            return scanForCapture(self, body_idx, lexical_names, 0);
-            // TODO: scanForCapture가 원본 AST 범위를 벗어나면 false negative 가능
-        }
+            // 원본 AST 범위. 원본 파서 노드만 방문 (transformer가 추가한 노드는 무시).
+            const max_node = self.parser_node_count;
 
-        /// 재귀 깊이 제한. 초과 시 보수적으로 캡처 있음(true) 반환.
-        /// SWC/oxc는 제한 없음 (Rust 8MB 스택), esbuild도 없음 (Go goroutine 자동 확장).
-        /// Zig 8MB 스택에서 프레임 ~500바이트 기준 ~16K 깊이까지 안전하지만,
-        /// 256으로 설정하여 극단적 중첩 코드에서도 올바른 동작 보장.
-        const MAX_SCAN_DEPTH: u32 = 256;
+            const ScanEntry = struct { idx: NodeIndex, fn_depth: u32 };
+            var stack: std.ArrayList(ScanEntry) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, .{ .idx = body_idx, .fn_depth = 0 }) catch return false;
 
-        fn scanForCapture(
-            self: *Transformer,
-            idx: NodeIndex,
-            lexical_names: []const []const u8,
-            fn_depth: u32,
-        ) bool {
-            return scanImpl(self, idx, lexical_names, fn_depth, 0);
-        }
+            while (stack.items.len > 0) {
+                const entry = stack.pop() orelse break;
+                if (entry.idx.isNone()) continue;
+                if (@intFromEnum(entry.idx) >= max_node) continue;
+                const node = self.ast.getNode(entry.idx);
 
-        fn scanImpl(
-            self: *Transformer,
-            idx: NodeIndex,
-            lexical_names: []const []const u8,
-            fn_depth: u32,
-            depth: u32,
-        ) bool {
-            if (idx.isNone()) return false;
-            if (@intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-            if (depth >= MAX_SCAN_DEPTH) return true; // 보수적: 깊이 초과 시 캡처 있음 가정
-            const node = self.ast.getNode(idx);
+                // 클로저 경계: fn_depth 증가
+                const fn_depth = if (node.tag == .function_expression or
+                    node.tag == .function_declaration or
+                    node.tag == .arrow_function_expression or
+                    node.tag == .function)
+                    entry.fn_depth + 1
+                else
+                    entry.fn_depth;
 
-            // 클로저 경계: fn_depth 증가
-            if (node.tag == .function_expression or
-                node.tag == .function_declaration or
-                node.tag == .arrow_function_expression or
-                node.tag == .function)
-            {
-                return scanChildNodes(self, node, lexical_names, fn_depth + 1, depth + 1);
-            }
-
-            // identifier_reference: fn_depth > 0이면 캡처 검사
-            if (node.tag == .identifier_reference and fn_depth > 0) {
-                const name = self.ast.getText(node.span);
-                for (lexical_names) |ln| {
-                    if (std.mem.eql(u8, name, ln)) return true;
-                }
-            }
-
-            return scanChildNodes(self, node, lexical_names, fn_depth, depth + 1);
-        }
-
-        fn scanChildNodes(
-            self: *Transformer,
-            node: Node,
-            lexical_names: []const []const u8,
-            fn_depth: u32,
-            depth: u32,
-        ) bool {
-            return forEachChild(self, node, .{ .scan = .{
-                .lexical_names = lexical_names,
-                .fn_depth = fn_depth,
-                .depth = depth,
-            } });
-        }
-
-        /// 범용 자식 노드 순회. dataKind()와 extraChildOffsets/extraListOffsets를 사용.
-        /// visitor에 따라 scanImpl(bool 반환) 또는 analyzeControlFlow(void) 호출.
-        const ChildVisitor = union(enum) {
-            scan: struct { lexical_names: []const []const u8, fn_depth: u32, depth: u32 },
-            flow: struct { flow: *FlowResult, loop_depth: u32, switch_depth: u32 },
-        };
-
-        fn forEachChild(self: *Transformer, node: Node, visitor: ChildVisitor) bool {
-            const visit = struct {
-                fn call(s: *Transformer, idx: NodeIndex, v: ChildVisitor) bool {
-                    switch (v) {
-                        .scan => |ctx| return scanImpl(s, idx, ctx.lexical_names, ctx.fn_depth, ctx.depth),
-                        .flow => |ctx| {
-                            analyzeControlFlow(s, idx, ctx.flow, ctx.loop_depth, ctx.switch_depth);
-                            return false;
-                        },
+                // identifier_reference: fn_depth > 0이면 캡처 검사
+                if (node.tag == .identifier_reference and fn_depth > 0) {
+                    const name = self.ast.getText(node.span);
+                    for (lexical_names) |ln| {
+                        if (std.mem.eql(u8, name, ln)) return true;
                     }
                 }
-            };
 
+                // 자식 노드를 스택에 push
+                pushChildren(self, &stack, node, fn_depth) catch return true;
+            }
+            return false;
+        }
+
+        /// 노드의 자식들을 명시적 스택에 push한다.
+        /// dataKind + extraChildOffsets + extraListOffsets 기반.
+        fn pushChildren(
+            self: *Transformer,
+            stack: anytype,
+            node: Node,
+            fn_depth: u32,
+        ) !void {
             switch (node.tag.dataKind()) {
                 .leaf => {},
                 .unary => {
-                    if (visit.call(self, node.data.unary.operand, visitor)) return true;
+                    try stack.append(self.allocator, .{ .idx = node.data.unary.operand, .fn_depth = fn_depth });
                 },
                 .binary => {
-                    if (visit.call(self, node.data.binary.left, visitor)) return true;
-                    if (visit.call(self, node.data.binary.right, visitor)) return true;
+                    try stack.append(self.allocator, .{ .idx = node.data.binary.left, .fn_depth = fn_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.binary.right, .fn_depth = fn_depth });
                 },
                 .ternary => {
-                    if (visit.call(self, node.data.ternary.a, visitor)) return true;
-                    if (visit.call(self, node.data.ternary.b, visitor)) return true;
-                    if (visit.call(self, node.data.ternary.c, visitor)) return true;
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.a, .fn_depth = fn_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.b, .fn_depth = fn_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.c, .fn_depth = fn_depth });
                 },
                 .list => {
                     const list = node.data.list;
-                    const items = self.ast.extra_data.items[list.start .. list.start + list.len];
-                    for (items) |raw| {
-                        if (visit.call(self, @enumFromInt(raw), visitor)) return true;
+                    if (list.start + list.len <= self.ast.extra_data.items.len) {
+                        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
+                        }
                     }
                 },
                 .extra => {
@@ -237,8 +198,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     for (node.tag.extraChildOffsets()) |offset| {
                         if (e + offset >= self.ast.extra_data.items.len) break;
                         const raw = self.ast.extra_data.items[e + offset];
-                        if (raw > 0 and raw < self.ast.nodes.items.len) {
-                            if (visit.call(self, @enumFromInt(raw), visitor)) return true;
+                        if (raw > 0 and raw < self.parser_node_count) {
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
                         }
                     }
                     for (node.tag.extraListOffsets()) |lo| {
@@ -247,12 +208,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const list_len = self.ast.extra_data.items[e + lo[1]];
                         if (list_start + list_len > self.ast.extra_data.items.len) continue;
                         for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                            if (visit.call(self, @enumFromInt(raw), visitor)) return true;
+                            if (raw < self.parser_node_count) {
+                                try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
+                            }
                         }
                     }
                 },
             }
-            return false;
         }
 
         /// 제어 흐름 분석 결과.
@@ -367,95 +329,142 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return .{ .loop_fn = loop_var, .call_and_check = call_block };
         }
 
-        /// body AST를 스캔하여 break/continue/return 사용을 분석한다.
+        /// body AST를 반복적(iterative)으로 스캔하여 break/continue/return 사용을 분석한다.
+        /// 명시적 스택 사용 — stack overflow 불가능.
         pub fn analyzeControlFlow(
             self: *Transformer,
-            idx: NodeIndex,
+            body_idx: NodeIndex,
             flow: *FlowResult,
-            loop_depth: u32,
-            switch_depth: u32,
+            init_loop_depth: u32,
+            init_switch_depth: u32,
         ) void {
-            if (idx.isNone()) return;
-            if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
-            const node = self.ast.getNode(idx);
+            const FlowEntry = struct { idx: NodeIndex, loop_depth: u32, switch_depth: u32 };
+            var stack: std.ArrayList(FlowEntry) = .empty;
+            defer stack.deinit(self.allocator);
+            stack.append(self.allocator, .{ .idx = body_idx, .loop_depth = init_loop_depth, .switch_depth = init_switch_depth }) catch return;
 
-            switch (node.tag) {
-                // 중첩 루프: break/continue는 내부 루프 대상
-                .for_statement,
-                .for_in_statement,
-                .for_of_statement,
-                .for_await_of_statement,
-                .while_statement,
-                .do_while_statement,
-                => {
-                    analyzeFlowChildren(self, node, flow, loop_depth + 1, switch_depth);
-                    return;
-                },
-                // switch: break는 switch 대상
-                .switch_statement => {
-                    analyzeFlowChildren(self, node, flow, loop_depth, switch_depth + 1);
-                    return;
-                },
-                // 클로저 경계: 내부의 break/continue/return은 이 클로저 대상
-                .function_expression,
-                .function_declaration,
-                .arrow_function_expression,
-                .function,
-                => return,
+            while (stack.items.len > 0) {
+                const entry = stack.pop() orelse break;
+                if (entry.idx.isNone()) continue;
+                if (@intFromEnum(entry.idx) >= self.parser_node_count) continue;
+                const node = self.ast.getNode(entry.idx);
 
-                .return_statement => {
-                    flow.has_return = true;
-                    return;
-                },
-                .break_statement => {
-                    if (node.data.unary.operand.isNone()) {
-                        // unlabeled break
-                        if (loop_depth == 0 and switch_depth == 0) {
-                            flow.has_break = true;
+                var loop_depth = entry.loop_depth;
+                var switch_depth = entry.switch_depth;
+
+                switch (node.tag) {
+                    .for_statement,
+                    .for_in_statement,
+                    .for_of_statement,
+                    .for_await_of_statement,
+                    .while_statement,
+                    .do_while_statement,
+                    => {
+                        loop_depth += 1;
+                    },
+                    .switch_statement => {
+                        switch_depth += 1;
+                    },
+                    .function_expression,
+                    .function_declaration,
+                    .arrow_function_expression,
+                    .function,
+                    => continue, // 클로저 경계: 내부 무시
+
+                    .return_statement => {
+                        flow.has_return = true;
+                        continue;
+                    },
+                    .break_statement => {
+                        if (node.data.unary.operand.isNone()) {
+                            if (loop_depth == 0 and switch_depth == 0) flow.has_break = true;
+                        } else {
+                            flow.has_labeled_break = true;
+                            const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
+                            var found = false;
+                            for (flow.labels.items) |l| {
+                                if (std.mem.eql(u8, l, label_text)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) flow.labels.append(self.allocator, label_text) catch {};
                         }
-                    } else {
-                        // labeled break
-                        flow.has_labeled_break = true;
-                        const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
-                        // 중복 방지
-                        for (flow.labels.items) |l| {
-                            if (std.mem.eql(u8, l, label_text)) return;
+                        continue;
+                    },
+                    .continue_statement => {
+                        if (!node.data.unary.operand.isNone()) {
+                            flow.has_labeled_continue = true;
+                            const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
+                            var found = false;
+                            for (flow.labels.items) |l| {
+                                if (std.mem.eql(u8, l, label_text)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) flow.labels.append(self.allocator, label_text) catch {};
                         }
-                        flow.labels.append(self.allocator, label_text) catch {};
-                    }
-                    return;
-                },
-                .continue_statement => {
-                    if (!node.data.unary.operand.isNone()) {
-                        // labeled continue
-                        flow.has_labeled_continue = true;
-                        const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
-                        for (flow.labels.items) |l| {
-                            if (std.mem.eql(u8, l, label_text)) return;
-                        }
-                        flow.labels.append(self.allocator, label_text) catch {};
-                    }
-                    // unlabeled continue: 변환 시 그냥 return (다음 반복으로)
-                    return;
-                },
-                else => {},
+                        continue;
+                    },
+                    else => {},
+                }
+
+                // 자식 노드를 스택에 push (fn_depth는 사용하지 않으므로 0)
+                pushFlowChildren(self, &stack, node, loop_depth, switch_depth) catch {};
             }
-
-            analyzeFlowChildren(self, node, flow, loop_depth, switch_depth);
         }
 
-        fn analyzeFlowChildren(
+        fn pushFlowChildren(
             self: *Transformer,
+            stack: anytype,
             node: Node,
-            flow: *FlowResult,
             loop_depth: u32,
             switch_depth: u32,
-        ) void {
-            _ = forEachChild(self, node, .{ .flow = .{
-                .flow = flow,
-                .loop_depth = loop_depth,
-                .switch_depth = switch_depth,
-            } });
+        ) !void {
+            switch (node.tag.dataKind()) {
+                .leaf => {},
+                .unary => {
+                    try stack.append(self.allocator, .{ .idx = node.data.unary.operand, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                },
+                .binary => {
+                    try stack.append(self.allocator, .{ .idx = node.data.binary.left, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.binary.right, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                },
+                .ternary => {
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.a, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.b, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                    try stack.append(self.allocator, .{ .idx = node.data.ternary.c, .loop_depth = loop_depth, .switch_depth = switch_depth });
+                },
+                .list => {
+                    const list = node.data.list;
+                    if (list.start + list.len <= self.ast.extra_data.items.len) {
+                        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
+                        }
+                    }
+                },
+                .extra => {
+                    const e = node.data.extra;
+                    for (node.tag.extraChildOffsets()) |offset| {
+                        if (e + offset >= self.ast.extra_data.items.len) break;
+                        const raw = self.ast.extra_data.items[e + offset];
+                        if (raw > 0 and raw < self.parser_node_count) {
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
+                        }
+                    }
+                    for (node.tag.extraListOffsets()) |lo| {
+                        if (e + lo[1] >= self.ast.extra_data.items.len) continue;
+                        const list_start = self.ast.extra_data.items[e + lo[0]];
+                        const list_len = self.ast.extra_data.items[e + lo[1]];
+                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
+                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
+                            if (raw >= self.parser_node_count) continue;
+                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
+                        }
+                    }
+                },
+            }
         }
 
         /// body 내부의 break/continue/return을 _loop 함수에 맞게 변환한다.
