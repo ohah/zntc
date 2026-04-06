@@ -54,21 +54,25 @@ ZTS 136ms vs esbuild 110ms (**1.24배**).
 **배치 E (S급 일괄)** — 반나절~1일
 - esbuild/rolldown 호환 CLI 옵션 ~20개 일괄 추가
 - `--outbase`, `--packages=external`, `--drop-labels`, `--pure:fn`, `--line-limit` 등
-- 개별 난이도 S, 한 PR로 묶어서 처리
 
 **CSS 번들링** — XL (1주+)
 - 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
-- 실사용에서 가장 자주 부딪히는 부재 기능
 - 자체 CSS 파서 (Zig 네이티브 `@import` 해석, CSS Modules)
 
-**import.meta.glob** — M (1~2일)
-- Vite 호환 기능, DX 개선
+**플러그인 3단계 (N-API)** — XL (2~3주)
+- 현재 subprocess IPC만 (매 모듈마다 JSON 왕복 — 느림)
+- N-API .node addon으로 in-process 플러그인 실행
 
-**using 다운레벨링** — L (3~5일)
-- `using`/`await using` → try-finally (TC39 Stage 3 확정, ES2024 이하 타겟)
+**HMR 고도화** — L (3~5일)
+- 현재: React Fast Refresh + full-reload 기반
+- 필요: 일반 모듈의 `import.meta.hot.accept()` 세밀한 갱신
+- rolldown DevEngine / Vite HMR 수준 module-level HMR
 
 **설정 파일 + JS Build API** — L (3~5일)
 - `zts.config.js`로 빌드 옵션 정의 + 프로그래밍 `build()` 호출
+
+**import.meta.glob** — M (1~2일)
+- Vite 호환 기능, DX 개선
 
 ## ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
@@ -88,7 +92,7 @@ AST 안정화 ──────────────┬──→ WASM 공개
                          ├──→ 배치 E (S급 CLI 옵션 일괄)
                          └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
-독립 (아무 때나): ✅ Flow (완료), ✅ jsx-dev (완료), SIMD, using 다운레벨링
+독립 (아무 때나): ✅ Flow, ✅ jsx-dev, ✅ using 다운레벨링, ✅ sourcemapDebugIds, SIMD
 ```
 
 ## 미지원 기능 (상용 번들러 대비)
@@ -133,7 +137,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **UMD/AMD 포맷** — `M` | `--format=umd` / `--format=amd` 출력 (라이브러리 빌드)
 - **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
 - **preserveModules** — `L` | 모듈 구조 유지 출력 (라이브러리 빌드용)
-- **using 다운레벨링** — `L` | `using`/`await using` → try-finally (TC39 Stage 3 확정)
+- ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
 - **설정 파일 (zts.config.js)** — `L` | 복잡한 프로젝트에서 CLI 한계
 - **JS Build API** — `L` | 프로그래밍 연동 (`build()`, `rebuild()`, `cancel()`)
 - **HTTPS dev server** — `M` | `--certfile`/`--keyfile` TLS 지원
@@ -148,7 +152,19 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
 - **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
 - **realContentHash** — `M` | 최종 콘텐츠 기반 정확한 해시
-- **sourcemapDebugIds** — `S` | Sentry 등 모니터링 도구 연동
+- ~~**sourcemapDebugIds**~~ — ✅ 완료. `--sourcemap-debug-ids` UUID v4, 번들+소스맵 매칭
+- ~~**shimMissingExports**~~ — ✅ 완료. `--shim-missing-exports` 롤다운 호환
+
+### 번들러 인프라 (미구현)
+
+| 항목 | 난이도 | esbuild | rolldown | rspack | 설명 |
+|------|--------|---------|----------|--------|------|
+| **CSS 번들링** | XL | ✅ | ✅ | ✅ | 자체 CSS 파서, @import, CSS Modules |
+| **플러그인 N-API** | XL | ✅ (Go) | ✅ (Rust) | ✅ | in-process 플러그인 (현재 subprocess IPC만) |
+| **HMR module-level** | L | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 세밀한 갱신 |
+| **설정 파일** | L | ❌ | ✅ | ✅ | `zts.config.js` |
+| **JS Build API** | L | ✅ | ✅ | ✅ | `build()`, `rebuild()`, `cancel()` |
+| **HTTPS dev server** | M | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
 
 ### 배치 그룹 & 구현 순서
 
@@ -216,7 +232,7 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 
 | Target | Pass | Total | Rate |
 |--------|------|-------|------|
-| ES5 | 257 | 259 | 99% |
+| ES5 | 237 | 237 | 100% |
 | ES2015 | 17 | 17 | 100% |
 | ES2016 | 14 | 14 | 100% |
 | ES2017 | 14 | 14 | 100% |
@@ -224,7 +240,8 @@ esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 
 | ES2019 | 10 | 10 | 100% |
 | ES2020 | 9 | 9 | 100% |
 
-ES5 미통과 2건: GeneratorFunction 생성자 (polyfill 불가), yield* iterator throw (테스트 헬퍼 의존)
+네이티브 엔진 전용 테스트 스킵 (GeneratorFunction 생성자, iterable 프로토콜).
+SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 ## 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
