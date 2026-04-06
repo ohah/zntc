@@ -529,7 +529,6 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const props = self.scratch.items[scratch_top..];
             if (props.len == 0) return makeNullLiteral(self, span);
 
-            // object_expression 생성
             return makeObjectExpr(self, props, span);
         }
 
