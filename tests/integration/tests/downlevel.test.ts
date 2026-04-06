@@ -1429,6 +1429,81 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("val=yes");
     });
 
+    // --- SWC 대비 추가 테스트: Tagged Template Literals ---
+
+    test("tagged template basic", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag(strings: TemplateStringsArray, ...vals: any[]) {
+              return strings[0] + vals[0] + strings[1];
+            }
+            console.log(tag\`hello \${'world'}!\`);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hello world!");
+    });
+
+    test("tagged template .raw property", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag(s: TemplateStringsArray) { return s.raw[0]; }
+            console.log(tag\`hello\\nworld\`);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hello\\nworld");
+    });
+
+    test("tagged template caching (same site identity)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag(s: TemplateStringsArray) { return s; }
+            function test() { return tag\`test\`; }
+            const a = test();
+            const b = test();
+            console.log(a === b);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
+    });
+
+    test("tagged template with multiple substitutions", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function join(s: TemplateStringsArray, ...v: any[]) {
+              let r = '';
+              s.forEach((str: string, i: number) => { r += str + (v[i] !== undefined ? v[i] : ''); });
+              return r;
+            }
+            console.log(join\`a\${1}b\${2}c\`);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a1b2c");
+    });
+
     // --- SWC 대비 추가 테스트: Computed Properties ---
 
     test("computed property with getter and setter", async () => {
