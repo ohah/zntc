@@ -781,6 +781,651 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("world two");
     });
+
+    // --- SWC 대비 추가 테스트: Arrow Functions ---
+
+    test("arrow with destructuring parameter", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const fn = ({a, b}: {a:number, b:number}) => a + b; console.log(fn({a:1, b:2}));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("arrow returning object literal", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const fn = (x: number) => ({value: x}); console.log(JSON.stringify(fn(42)));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"value":42}');
+    });
+
+    test("arrow in array.map", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `console.log([1,2,3].map(x => x * 2).join(","));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2,4,6");
+    });
+
+    test("immediately invoked arrow", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `console.log(((x: number) => x + 1)(9));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("nested arrow with this and arguments", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function outer(this: any) {
+              this.x = 10;
+              const mid = () => {
+                const inner = () => this.x + arguments.length;
+                return inner();
+              };
+              return mid();
+            }
+            console.log(outer.call({x: 0}, 'a', 'b'));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("12");
+    });
+
+    // --- SWC 대비 추가 테스트: Block Scoping ---
+
+    // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현 (Phase 4)
+    test.todo("let in if block scope isolation", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let x = 1;
+            if (true) { let x = 2; }
+            console.log(x);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("const in for loop accumulation", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            var sum = 0;
+            for (let i = 0; i < 5; i++) { const v = i * 2; sum += v; }
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("20");
+    });
+
+    // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현 (Phase 4)
+    test.todo("let shadow in nested block", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let x = 'outer';
+            { let x = 'inner'; }
+            console.log(x);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("outer");
+    });
+
+    // --- SWC 대비 추가 테스트: Classes ---
+
+    test("class with computed method name", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const key = 'greet';
+            class Foo { [key]() { return 'hi'; } }
+            console.log(new Foo().greet());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi");
+    });
+
+    test("3-level inheritance chain", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class A { x() { return 'A'; } }
+            class B extends A { y() { return 'B'; } }
+            class C extends B { z() { return this.x() + this.y() + 'C'; } }
+            console.log(new C().z());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ABC");
+    });
+
+    test("class property initializer referencing constructor param", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              doubled: number;
+              constructor(x: number) { this.doubled = x * 2; }
+            }
+            console.log(new Foo(5).doubled);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("class with static and instance methods combined", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Counter {
+              count = 0;
+              inc() { this.count++; return this; }
+              static create() { return new Counter(); }
+            }
+            console.log(Counter.create().inc().inc().count);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2");
+    });
+
+    test("class extends with super in constructor and method", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              name: string;
+              constructor(name: string) { this.name = name; }
+              greet() { return 'Hello ' + this.name; }
+            }
+            class Child extends Base {
+              constructor(name: string) { super(name.toUpperCase()); }
+              greet() { return super.greet() + '!'; }
+            }
+            console.log(new Child('world').greet());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Hello WORLD!");
+    });
+
+    // --- SWC 대비 추가 테스트: Destructuring ---
+
+    test("sparse array destructuring", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const [,,third] = [1,2,3]; console.log(third);` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("deeply nested mixed destructuring", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const {a: [, {b}]} = {a: [1, {b: 42}]}; console.log(b);` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("destructuring with computed property key", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const key = 'x'; const {[key]: val} = {x: 42}; console.log(val);` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("destructuring assignment (not declaration)", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `let a: number, b: number; ({a, b} = {a: 10, b: 20}); console.log(a + b);` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("30");
+    });
+
+    // TODO: for-of + destructuring 조합에서 변수 바인딩 미생성 버그
+    test.todo("destructuring in for-of with default value", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [{x:1}, {x:undefined as any}];
+            const out: number[] = [];
+            for (const {x=99} of arr) out.push(x);
+            console.log(out.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,99");
+    });
+
+    // --- SWC 대비 추가 테스트: For-of ---
+
+    test("for-of with array of objects", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const items = [{v:10},{v:20},{v:30}];
+            let sum = 0;
+            for (const item of items) { sum += item.v; }
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("60");
+    });
+
+    test("for-of with let mutable binding", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1,2,3]; let sum = 0;
+            for (let x of arr) { x = x * 2; sum += x; }
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("12");
+    });
+
+    // TODO: nested for-of에서 내부 루프 변수가 외부 루프 변수를 참조하지 못하는 버그
+    test.todo("nested for-of loops", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const matrix = [[1,2],[3,4]];
+            let sum = 0;
+            for (const row of matrix) for (const v of row) sum += v;
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    // --- SWC 대비 추가 테스트: Spread ---
+
+    // TODO: spread in new에서 괄호 누락 — new Foo.bind.apply(...)() → new (Foo.bind.apply(...))()
+    test.todo("spread in new expression", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Pair {
+              a: number; b: number;
+              constructor(a: number, b: number) { this.a = a; this.b = b; }
+              sum() { return this.a + this.b; }
+            }
+            const args: [number, number] = [3, 4];
+            console.log(new Pair(...args).sum());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("multiple spreads in array", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `const a=[1,2], b=[3,4]; console.log([...a,...b,5].join(','));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,3,4,5");
+    });
+
+    test("spread with method call preserving this", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj = {
+              x: 1,
+              fn(...args: number[]) { return this.x + args.reduce((a: number, b: number) => a + b, 0); }
+            };
+            console.log(obj.fn(...[2, 3]));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    test("spread in nested function call", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function sum(...args: number[]) { return args.reduce((a, b) => a + b, 0); }
+            const inner = [1, 2];
+            console.log(sum(0, ...inner, 3));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    // --- SWC 대비 추가 테스트: Parameters ---
+
+    test("default param depending on previous param", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": `function f(a: number, b = a * 2) { return b; } console.log(f(5));` },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("rest param with preceding default", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function f(sep: string = '-', ...items: string[]) { return items.join(sep); }
+            console.log(f(undefined as any, 'a', 'b', 'c'));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a-b-c");
+    });
+
+    test("destructuring parameter with default in class method", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              greet({name = 'world'}: {name?: string} = {}) { return 'hi ' + name; }
+            }
+            console.log(new Foo().greet());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi world");
+    });
+
+    // --- SWC 대비 추가 테스트: Generators ---
+
+    test("generator consumed manually with .next()", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* range(a: number, b: number) { for (let i = a; i <= b; i++) yield i; }
+            const out: number[] = [];
+            const g = range(1, 5);
+            let r = g.next();
+            while (!r.done) { out.push(r.value); r = g.next(); }
+            console.log(out.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,3,4,5");
+    });
+
+    test("generator as class method with .next()", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              *items() { yield 'a'; yield 'b'; yield 'c'; }
+            }
+            const out: string[] = [];
+            const g = new Foo().items();
+            let r = g.next();
+            while (!r.done) { out.push(r.value); r = g.next(); }
+            console.log(out.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a,b,c");
+    });
+
+    test("infinite generator with manual consumption", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* naturals() { let i = 1; while (true) yield i++; }
+            const out: number[] = [];
+            const g = naturals();
+            for (let i = 0; i < 3; i++) out.push(g.next().value);
+            console.log(out.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,3");
+    });
+
+    test("generator with try/finally", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const log: string[] = [];
+            function* gen() {
+              try { yield 1; yield 2; }
+              finally { log.push('finally'); }
+            }
+            const g = gen();
+            log.push(String(g.next().value));
+            log.push(String(g.next().value));
+            g.next();
+            console.log(log.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,finally");
+    });
+
+    // --- SWC 대비 추가 테스트: Template Literals ---
+
+    // TODO: template literal 변환에서 연산자 우선순위 누락 — "" + 1 + 2 → "12" (기대: "3")
+    test.todo("template literal with expression", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "console.log(`${1 + 2} is three`);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3 is three");
+    });
+
+    test("nested template literals", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const x = `a${`b${1}c`}d`; console.log(x);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ab1cd");
+    });
+
+    // TODO: template literal 변환에서 ternary 연산자 우선순위 누락
+    test.todo("template literal with ternary expression", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const x = true; console.log(`val=${x ? 'yes' : 'no'}`);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("val=yes");
+    });
+
+    // --- SWC 대비 추가 테스트: Computed Properties ---
+
+    test("computed property with getter and setter", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = 'val';
+            const obj: any = {
+              _v: 0,
+              get [k]() { return this._v; },
+              set [k](v: number) { this._v = v; }
+            };
+            obj.val = 42;
+            console.log(obj.val);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("multiple computed properties in one object", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a = 'x', b = 'y';
+            const obj: any = {[a]: 1, [b]: 2, z: 3};
+            console.log(obj.x, obj.y, obj.z);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2 3");
+    });
+
+    test("computed property with Symbol key", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const s = Symbol('test');
+            const obj: any = {[s]: 42};
+            console.log(obj[s]);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
   });
 
   // ===== ES2016 (target=es2015) =====
