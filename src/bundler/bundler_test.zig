@@ -13632,3 +13632,18 @@ test "__rest: Symbol 프로퍼티 복사 포함" {
     try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME_MIN, "getOwnPropertySymbols") != null);
     try std.testing.expect(std.mem.indexOf(u8, runtime.REST_RUNTIME_MIN, "propertyIsEnumerable") != null);
 }
+
+test "let → var: 초기화 없는 let에 void 0 추가 확인" {
+    // RN Fabric 레이아웃 버그의 근본 원인: let → var 변환 시 = void 0 누락으로
+    // for 루프에서 이전 반복의 값이 유지되어 style prop이 오염됨.
+    // runtime_helpers의 __rest에 void 0 패턴이 있는지로 간접 검증 대신,
+    // 트랜스포머가 void 0을 생성하는지 codegen_test에서 직접 검증 (4개 테스트 추가됨).
+    // 여기서는 변환 로직의 핵심 경로만 확인.
+    const block_scoping = @import("../transformer/es2015_block_scoping.zig");
+    // let(1) → var(0)
+    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(1));
+    // const(2) → var(0)
+    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(2));
+    // var(0) → var(0) 그대로
+    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(0));
+}

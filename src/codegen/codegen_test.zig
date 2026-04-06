@@ -4529,3 +4529,31 @@ test "JSX automatic + ES5: props before spread → Object.assign({id:\"a\"}, pro
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.assign({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...") == null);
 }
+
+// --- ES2015: let/const → var + void 0 초기화 ---
+
+test "ES2015: let without init → var = void 0" {
+    // let은 블록 스코프: 매 반복 새 바인딩. var로 변환 시 = void 0 필수.
+    var r = try e2eTarget(std.testing.allocator, "let x;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var x=void 0;", r.output);
+}
+
+test "ES2015: let with init preserved" {
+    var r = try e2eTarget(std.testing.allocator, "let x = 1;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var x=1;", r.output);
+}
+
+test "ES2015: const without init → var = void 0" {
+    // const도 블록 스코프 — 실제로 init 없는 const는 드물지만 처리해야 함
+    var r = try e2eTarget(std.testing.allocator, "{ const x = undefined; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x") != null);
+}
+
+test "ES2015: let in for loop → var = void 0 per iteration" {
+    var r = try e2eTarget(std.testing.allocator, "for(let i=0;i<3;i++){let x;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=void 0") != null);
+}

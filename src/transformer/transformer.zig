@@ -1800,11 +1800,57 @@ pub const Transformer = struct {
             }
         }
         const e = node.data.extra;
+        const orig_kind = self.readU32(e, 0);
         const kind_flags = if (self.options.unsupported.block_scoping)
-            es2015_block_scoping.lowerKindFlags(self.readU32(e, 0))
+            es2015_block_scoping.lowerKindFlags(orig_kind)
         else
-            self.readU32(e, 0);
-        const new_list = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+            orig_kind;
+
+        // let/const → var 변환 시: 초기화 없는 declarator에 = void 0 추가.
+        // let은 블록 스코프로 매 반복 새 바인딩이지만, var는 hoisted되어 이전 값 유지.
+        // Metro(Babel)와 동일하게 명시적 undefined 초기화로 의미론 보존.
+        const needs_void_init = self.options.unsupported.block_scoping and (orig_kind == 1 or orig_kind == 2);
+
+        const list_start = self.readU32(e, 1);
+        const list_len = self.readU32(e, 2);
+
+        if (needs_void_init) {
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            var i_loop: u32 = 0;
+            while (i_loop < list_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[list_start + i_loop];
+                const decl = self.ast.getNode(@enumFromInt(raw_idx));
+                if (decl.tag != .variable_declarator) {
+                    const new_node = try self.visitNode(@enumFromInt(raw_idx));
+                    if (!new_node.isNone()) try self.scratch.append(self.allocator, new_node);
+                    continue;
+                }
+                const de = decl.data.extra;
+                const name_idx = self.readNodeIdx(de, 0);
+                const init_idx = self.readNodeIdx(de, 2);
+                const new_name = try self.visitNode(name_idx);
+
+                if (init_idx.isNone()) {
+                    // let x; → var x = void 0;
+                    const void_init = try es_helpers.makeVoidZero(self, node.span);
+                    const none = @intFromEnum(NodeIndex.none);
+                    const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(void_init) });
+                    try self.scratch.append(self.allocator, new_decl);
+                } else {
+                    const new_init = try self.visitNode(init_idx);
+                    const none = @intFromEnum(NodeIndex.none);
+                    const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
+                    try self.scratch.append(self.allocator, new_decl);
+                }
+            }
+
+            const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.addExtraNode(.variable_declaration, node.span, &.{ kind_flags, new_list.start, new_list.len });
+        }
+
+        const new_list = try self.visitExtraList(list_start, list_len);
         return self.addExtraNode(.variable_declaration, node.span, &.{ kind_flags, new_list.start, new_list.len });
     }
 
