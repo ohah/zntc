@@ -268,9 +268,20 @@ pub const TAGGED_TEMPLATE_RUNTIME = "var __taggedTemplateLiteral = function(cook
 pub const TAGGED_TEMPLATE_RUNTIME_MIN = "var __taggedTemplateLiteral=function(cooked,raw){if(!raw)raw=cooked.slice(0);return Object.freeze(Object.defineProperty(cooked,\"raw\",{value:Object.freeze(raw)}))};";
 
 /// __rest: object destructuring rest (ES2018). TypeScript __rest 호환.
-/// exclude 배열에 없는 own 프로퍼티만 복사.
-pub const REST_RUNTIME = "var __rest = function(s, e) {\n  var t = {};\n  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];\n  return t;\n};\n";
-pub const REST_RUNTIME_MIN = "var __rest=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];return t};";
+/// exclude 배열에 없는 own 프로퍼티 + Symbol 프로퍼티 복사.
+pub const REST_RUNTIME =
+    \\var __rest = function(s, e) {
+    \\  var t = {};
+    \\  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];
+    \\  if (typeof Object.getOwnPropertySymbols === "function")
+    \\    for (var i = 0, symbols = Object.getOwnPropertySymbols(s); i < symbols.length; i++)
+    \\      if (e.indexOf(symbols[i]) < 0 && Object.prototype.propertyIsEnumerable.call(s, symbols[i]))
+    \\        t[symbols[i]] = s[symbols[i]];
+    \\  return t;
+    \\};
+    \\
+;
+pub const REST_RUNTIME_MIN = "var __rest=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];if(typeof Object.getOwnPropertySymbols===\"function\")for(var i=0,symbols=Object.getOwnPropertySymbols(s);i<symbols.length;i++)if(e.indexOf(symbols[i])<0&&Object.prototype.propertyIsEnumerable.call(s,symbols[i]))t[symbols[i]]=s[symbols[i]];return t};";
 
 // ============================================================
 // Asset Loader
