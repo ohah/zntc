@@ -14,7 +14,7 @@
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 131개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.94x, ❌ 0개 | ✅ |
+| Smoke | 143개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.94x, ❌ 0개 | ✅ |
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
@@ -33,6 +33,7 @@
 | 20. RN 플랫폼 | `--platform=react-native` 프리셋 (resolve-extensions, main-fields, Flow, exports 조건) | ✅ |
 | 21. watch-json | `--watch-json` NDJSON 이벤트 출력 (외부 번들러 연동용) | ✅ |
 | 22. 증분 빌드 | PersistentModuleStore 파싱 캐시 + ResolveCache 보존 (watch/serve 리빌드 최적화) | ✅ |
+| 23. jsx-dev | React 개발 모드 `jsxDEV` + `__source`/`__self`, `--jsx=automatic-dev` / `--jsx-dev` | ✅ |
 
 ## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
 ZTS 136ms vs esbuild 110ms (**1.24배**).
@@ -51,10 +52,6 @@ ZTS 136ms vs esbuild 110ms (**1.24배**).
 - esbuild/rolldown 호환 CLI 옵션 ~20개 일괄 추가
 - `--outbase`, `--packages=external`, `--drop-labels`, `--pure:fn`, `--line-limit` 등
 - 개별 난이도 S, 한 PR로 묶어서 처리
-
-**jsx-dev** — M (1~2일)
-- React 개발 모드 `jsxDEV` + `__source`/`__self` 정보 삽입
-- dev server HMR에서 에러 위치 표시에 필수
 
 **CSS 번들링** — XL (1주+)
 - 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
@@ -88,7 +85,7 @@ AST 안정화 ──────────────┬──→ WASM 공개
                          ├──→ 배치 E (S급 CLI 옵션 일괄)
                          └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
-독립 (아무 때나): ✅ Flow (완료), SIMD, jsx-dev, using 다운레벨링
+독립 (아무 때나): ✅ Flow (완료), ✅ jsx-dev (완료), SIMD, using 다운레벨링
 ```
 
 ## 미지원 기능 (상용 번들러 대비)
@@ -129,7 +126,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   esbuild compat-table 기반, 8개 엔진(chrome/firefox/safari/edge/node/deno/ios/hermes) × 18개 feature.
   ES 버전 타겟(`--target=es2015~esnext`)도 동일한 UnsupportedFeatures bitmask로 통합.
 
-- **jsx-dev** — `M` | React 개발 모드 `jsxDEV` + `__source`/`__self` 정보 삽입
+- ~~**jsx-dev**~~ — ✅ 완료. `--jsx=automatic-dev` / `--jsx-dev` React 개발 모드 `jsxDEV` + `__source`/`__self`
 - **UMD/AMD 포맷** — `M` | `--format=umd` / `--format=amd` 출력 (라이브러리 빌드)
 - **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
 - **preserveModules** — `L` | 모듈 구조 유지 출력 (라이브러리 빌드용)
@@ -193,10 +190,14 @@ CSS 번들링/플러그인 API는 JS 전용 경계를 넘어야 함.
 | Chunk | chunk.zig | CSS 별도 청크 타입 추가 |
 
 ### 최근 버그 수정
-- ✅ JSX 파서: closing tag 뒤 텍스트 파싱 실패 (advanceAfterJSXClose — Vite 템플릿 번들링 가능)
-- ✅ enum re-export: `enum Foo {} export { Foo }` semantic 에러 (predeclareEnumDecl 추가)
+- ✅ TLA(Top-Level Await): `__esm` 래핑 시 `async` 키워드 누락 + preamble `await` 누락 (#779)
+- ✅ _default 합성 변수 충돌: 여러 ESM 모듈의 export default가 같은 변수 공유 (#704)
+- ✅ re-export default 할당 누락: `export { default } from` 패턴에서 __esm body 비어있음 (#705)
+- ✅ var _default 중복 선언: import + export default 패턴에서 호이스팅 충돌 (#706)
+- ✅ CJS 엔트리 자동 호출 누락: IIFE 번들에서 `require_index()` 미삽입 (#707)
+- ✅ JSX 파서: closing tag 뒤 텍스트 파싱 실패 (advanceAfterJSXClose)
+- ✅ enum re-export: `enum Foo {} export { Foo }` semantic 에러
 - ✅ CLI memory leak: `--plugin`, `--proxy` 옵션의 ArrayList 미해제
-- ✅ `--external=pkg` 형태 미지원 (기존 `--external pkg`만 가능)
 
 ### 알려진 제한 (Known Limitations)
 

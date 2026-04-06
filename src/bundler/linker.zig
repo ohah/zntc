@@ -987,7 +987,9 @@ pub const Linker = struct {
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .esm) {
                     if (!esm_init_set.contains(@intCast(canonical_mod))) {
                         try esm_init_set.put(@intCast(canonical_mod), {});
-                        const init_name = try types.makeInitVarName(self.allocator, self.modules[canonical_mod].path);
+                        const target_mod = &self.modules[canonical_mod];
+                        if (target_mod.uses_top_level_await) try preamble.write("await ");
+                        const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
                         defer self.allocator.free(init_name);
                         try preamble.write(init_name);
                         try preamble.write("();\n");

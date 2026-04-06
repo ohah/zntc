@@ -24,8 +24,20 @@ zig build test                          # 모든 모듈 테스트
 cd tests/integration && bun test     # CLI 통합 테스트
 cd tests/e2e && bun test             # Playwright E2E (dev server)
 ```
+테스트 파일:
+- `tests/integration/tests/bundle-smoke.test.ts` — 번들 스모크 (99개 케이스)
+- `tests/integration/tests/devserver.test.ts` — 개발 서버
+- `tests/integration/tests/downlevel.test.ts` — ES 다운레벨링
+- `tests/integration/tests/es5-rn.test.ts` — RN ES5 + Hermes
+- `tests/integration/tests/flow-rn.test.ts` — Flow + React Native
+- `tests/integration/tests/hermes-runtime.test.ts` — Hermes 런타임
+- `tests/integration/tests/plugin.test.ts` — JS 플러그인
+- `tests/integration/tests/polyfill-rbm.test.ts` — 폴리필 + run-before-main
+- `tests/integration/tests/watch-json.test.ts` — watch-json NDJSON 이벤트
+- `tests/e2e/tests/smoke.test.ts` — E2E 스모크 (브라우저 실행)
+- `tests/e2e/tests/browser-smoke.test.ts` — 브라우저 번들 E2E
 
 ## 스모크 테스트 (실제 패키지 빌드)
 ```bash
-cd tests/benchmark && bun run smoke.ts  # 125개 패키지 빌드+실행 검증 (avg 0.74x)
+cd tests/benchmark && bun run smoke.ts  # 143개 패키지 빌드+실행 검증
 ```

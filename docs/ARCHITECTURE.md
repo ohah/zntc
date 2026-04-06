@@ -67,12 +67,12 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 ### TypeScript/Flow Handling (D002, D005, D024)
 - 타입 체크 안 함 (스트리핑만)
 - TS 5.8까지 전체 지원
-- Flow: 미지원 (현재 우선순위 낮음, RN 지원 시 결정. 상세: [FLOW.md](../FLOW.md))
+- ✅ Flow: TIER 1+2+3 타입 스트리핑 완료 (flow.zig 독립 구현, Metro 410/410 통과. 상세: [FLOW.md](../FLOW.md))
 - ✅ Legacy decorator 구현 완료 (experimentalDecorators)
 - Stage 3 decorator: 후순위 (스펙 안정화 후)
 
 ### Output (D006, D008, D009, D012)
-- ESM + CJS (UMD는 번들러 Phase)
+- ESM + CJS + IIFE (UMD/AMD는 후순위)
 - JSX Classic + Automatic 둘 다
 - 소스맵 inline + external + hidden 전부
 - 에러 출력: 코드 프레임 + JSON
