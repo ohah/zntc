@@ -246,6 +246,9 @@ pub const Transformer = struct {
     /// ES2015 tagged template: _templateObject 카운터 (1부터: _templateObject2, _templateObject3, ...).
     tagged_template_counter: u32 = 0,
 
+    /// ES2015 block scoping: _loop 함수명 카운터 (_loop, _loop2, ...)
+    loop_counter: u32 = 0,
+
     /// JSX lowering: 사용된 import 추적 (automatic 모드에서 import문 생성용)
     jsx_import_info: jsx_lowering_mod.JsxImportInfo = .{},
 
@@ -2234,10 +2237,11 @@ pub const Transformer = struct {
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
     /// prefix + 카운터로 고유 이름을 생성한다. (예: _loop, _loop2, _loop3, ...)
-    pub fn buildUniqueName(self: *Transformer, prefix: []const u8) Error![]const u8 {
-        self.temp_var_counter += 1;
-        if (self.temp_var_counter == 1) return prefix;
-        return std.fmt.allocPrint(self.allocator, "{s}{d}", .{ prefix, self.temp_var_counter }) catch return Error.OutOfMemory;
+    /// 호출부에서 전용 카운터 포인터를 전달하여 다른 기능과 충돌 방지.
+    pub fn buildUniqueName(self: *Transformer, prefix: []const u8, counter: *u32) Error![]const u8 {
+        counter.* += 1;
+        if (counter.* == 1) return prefix;
+        return std.fmt.allocPrint(self.allocator, "{s}{d}", .{ prefix, counter.* }) catch return Error.OutOfMemory;
     }
 
     pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {

@@ -130,7 +130,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // TODO: scanForCapture가 원본 AST 범위를 벗어나면 false negative 가능
         }
 
-        const MAX_SCAN_DEPTH: u32 = 128;
+        /// 재귀 깊이 제한. 초과 시 보수적으로 캡처 있음(true) 반환.
+        /// SWC/oxc는 제한 없음 (Rust 8MB 스택), esbuild도 없음 (Go goroutine 자동 확장).
+        /// Zig 8MB 스택에서 프레임 ~500바이트 기준 ~16K 깊이까지 안전하지만,
+        /// 256으로 설정하여 극단적 중첩 코드에서도 올바른 동작 보장.
+        const MAX_SCAN_DEPTH: u32 = 256;
 
         fn scanForCapture(
             self: *Transformer,
@@ -150,7 +154,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         ) bool {
             if (idx.isNone()) return false;
             if (@intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-            if (depth >= MAX_SCAN_DEPTH) return false;
+            if (depth >= MAX_SCAN_DEPTH) return true; // 보수적: 깊이 초과 시 캡처 있음 가정
             const node = self.ast.getNode(idx);
 
             // 클로저 경계: fn_depth 증가
@@ -249,7 +253,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
             const loop_prefix = "_loop";
-            const loop_name = try self.buildUniqueName(loop_prefix);
+            const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
             defer if (loop_name.ptr != loop_prefix.ptr) self.allocator.free(loop_name);
 
             const needs_ret_var = flow.has_return or flow.has_break or flow.has_labeled_break or flow.has_labeled_continue;
@@ -706,12 +710,21 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     for (0..cases_len) |ci| {
                         const case_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[cases_start + ci]);
                         const case_node = self.ast.getNode(case_idx);
-                        // switch_case: binary = { left = test, right = consequent_block }
-                        const new_cons = try transformStmtFlow(self, case_node.data.binary.right, flow, loop_depth, switch_depth);
-                        try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                            .tag = case_node.tag,
-                            .span = case_node.span,
-                            .data = .{ .binary = .{ .left = case_node.data.binary.left, .right = new_cons, .flags = case_node.data.binary.flags } },
+                        // switch_case: extra = [test(0), stmts_start(1), stmts_len(2)]
+                        const ce = case_node.data.extra;
+                        const test_node: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+                        const case_stmts_start = self.ast.extra_data.items[ce + 1];
+                        const case_stmts_len = self.ast.extra_data.items[ce + 2];
+                        // case body의 각 문을 재귀 변환
+                        const inner_scratch = self.scratch.items.len;
+                        defer self.scratch.shrinkRetainingCapacity(inner_scratch);
+                        for (0..case_stmts_len) |si| {
+                            const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[case_stmts_start + si]);
+                            try self.scratch.append(self.allocator, try transformStmtFlow(self, stmt_idx, flow, loop_depth, switch_depth));
+                        }
+                        const new_stmts = try self.ast.addNodeList(self.scratch.items[inner_scratch..]);
+                        try self.scratch.append(self.allocator, try self.addExtraNode(.switch_case, case_node.span, &.{
+                            @intFromEnum(test_node), new_stmts.start, new_stmts.len,
                         }));
                     }
                     const new_cases = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
