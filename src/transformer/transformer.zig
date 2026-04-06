@@ -277,8 +277,6 @@ pub const Transformer = struct {
     pub const BlockRenameEntry = struct {
         old_name: []const u8,
         new_name: []const u8,
-        /// scope_var_names에 추가한 개수 (퇴장 시 pop할 양)
-        scope_vars_added: u32 = 0,
     };
 
     pub const GeneratorLabelEntry = struct {
@@ -1274,13 +1272,15 @@ pub const Transformer = struct {
         const list_start = node.data.list.start;
         const list_len = node.data.list.len;
 
+        const saved_scope_len = self.scope_var_names.items.len;
         const renames_added = try self.pushBlockRenames(list_start, list_len);
         const new_list = try self.visitExtraList(list_start, list_len);
 
-        // 리네이밍 맵 pop
+        // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
         if (renames_added > 0) {
             self.block_rename_stack.shrinkRetainingCapacity(self.block_rename_stack.items.len - renames_added);
         }
+        self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
 
         return self.ast.addNode(.{
             .tag = .block_statement,
@@ -2387,9 +2387,6 @@ pub const Transformer = struct {
         });
     }
 
-    /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
-    /// prefix + 카운터로 고유 이름을 생성한다. (예: _loop, _loop2, _loop3, ...)
-    /// 호출부에서 전용 카운터 포인터를 전달하여 다른 기능과 충돌 방지.
     /// block_rename_stack에서 이름 조회. 스택 뒤(가장 안쪽 블록)부터 검색.
     fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8 {
         var i = self.block_rename_stack.items.len;
@@ -2414,7 +2411,6 @@ pub const Transformer = struct {
     /// 반환값: push한 rename entry 수 (퇴장 시 pop할 양).
     fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u32 {
         var renames_added: u32 = 0;
-        var vars_added: u32 = 0;
 
         var i: u32 = 0;
         while (i < list_len) : (i += 1) {
@@ -2451,7 +2447,6 @@ pub const Transformer = struct {
                 } else {
                     // 충돌 없음 — 외부 스코프에 이름 등록 (이후 내부 블록에서 충돌 감지용)
                     self.scope_var_names.append(self.allocator, name) catch return Error.OutOfMemory;
-                    vars_added += 1;
                 }
             }
         }
@@ -2459,6 +2454,9 @@ pub const Transformer = struct {
         return renames_added;
     }
 
+    /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
+    /// prefix + 카운터로 고유 이름을 생성한다. (예: _loop, _loop2, _loop3, ...)
+    /// 호출부에서 전용 카운터 포인터를 전달하여 다른 기능과 충돌 방지.
     pub fn buildUniqueName(self: *Transformer, prefix: []const u8, counter: *u32) Error![]const u8 {
         counter.* += 1;
         if (counter.* == 1) return prefix;
