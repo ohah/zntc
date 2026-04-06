@@ -2252,7 +2252,7 @@ fn emitBundleRuntimeHelpers(
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
     if (options.unsupported.async_await) {
-        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
     }
 }
 
@@ -2286,7 +2286,7 @@ fn emitChunkRuntimeHelpers(
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
     if (options.unsupported.async_await) {
-        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace);
+        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
     }
     if (needs_to_binary) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
@@ -2699,11 +2699,11 @@ fn emitEsmWrappedModule(
                                 break :blk renamed;
                         }
                         break :blk eb.local_name;
-                    });
+                    }, options.configurable_exports);
                 }
             }
             for (star_entries.items) |entry| {
-                try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value);
+                try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value, options.configurable_exports);
             }
 
             try wrapped.appendSlice(allocator, "});\n");
@@ -2912,6 +2912,7 @@ fn appendExportGetter(
     allocator: std.mem.Allocator,
     name: []const u8,
     value: []const u8,
+    es5: bool,
 ) !void {
     try buf.appendSlice(allocator, "\t");
     if (needsPropertyQuote(name)) {
@@ -2921,9 +2922,15 @@ fn appendExportGetter(
     } else {
         try buf.appendSlice(allocator, name);
     }
-    try buf.appendSlice(allocator, ": () => ");
-    try buf.appendSlice(allocator, value);
-    try buf.appendSlice(allocator, ",\n");
+    if (es5) {
+        try buf.appendSlice(allocator, ": function() { return ");
+        try buf.appendSlice(allocator, value);
+        try buf.appendSlice(allocator, "; },\n");
+    } else {
+        try buf.appendSlice(allocator, ": () => ");
+        try buf.appendSlice(allocator, value);
+        try buf.appendSlice(allocator, ",\n");
+    }
 }
 
 /// export * from 체인을 따라가며 모든 export 이름을 수집한다.
