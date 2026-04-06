@@ -337,28 +337,12 @@ pub fn emitWithTreeShaking(
         const code = results[i].code orelse continue;
 
         // --run-before-main: 엔트리 모듈 직전에 해당 모듈의 require/init 호출 삽입.
+        // __esm 래핑된 엔트리(RN)는 emitEsmWrappedModule에서 body 안에 삽입.
         const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
-        if (is_entry and options.run_before_main.len > 0) {
-            for (options.run_before_main) |rbm_path| {
-                for (graph.modules.items) |*rbm| {
-                    if (std.mem.eql(u8, rbm.path, rbm_path)) {
-                        const call_name = if (rbm.wrap_kind == .cjs)
-                            types.makeRequireVarName(allocator, rbm.path) catch null
-                        else
-                            types.makeInitVarName(allocator, rbm.path) catch null;
-                        if (call_name) |name| {
-                            defer allocator.free(name);
-                            if (rbm.wrap_kind != .cjs and rbm.uses_top_level_await) {
-                                try module_output.appendSlice(allocator, "await ");
-                            }
-                            try module_output.appendSlice(allocator, name);
-                            try module_output.appendSlice(allocator, "();\n");
-                            module_line += 1;
-                        }
-                        break;
-                    }
-                }
-            }
+        if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
+            const before_len = module_output.items.len;
+            try appendRunBeforeMainCalls(&module_output, allocator, graph.modules.items, options.run_before_main);
+            module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         }
 
         if (!options.minify_whitespace) {
@@ -412,16 +396,12 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // CJS 엔트리 자동 호출: __commonJS로 래핑된 엔트리 모듈은 require_xxx()를 호출해야 실행됨.
-    // esbuild와 동일하게 번들 끝(IIFE epilogue 직전)에 require_xxx() 삽입.
-    // entry_idx로 실제 엔트리 모듈을 찾는다 (exec_index 기반).
+    // 래핑된 엔트리 자동 호출: __commonJS → require_xxx(), __esm → init_xxx().
+    // RN 플랫폼에서는 엔트리도 __esm 래핑되므로 init_xxx() 호출이 필요.
     if (entry_idx) |ei| {
         for (sorted.items) |em| {
-            if (@intFromEnum(em.index) == ei and em.wrap_kind == .cjs) {
-                const call_name = try types.makeRequireVarName(allocator, em.path);
-                defer allocator.free(call_name);
-                try output.appendSlice(allocator, call_name);
-                try output.appendSlice(allocator, "();\n");
+            if (@intFromEnum(em.index) == ei and em.wrap_kind.isWrapped()) {
+                try appendModuleCall(&output, allocator, em);
                 break;
             }
         }
@@ -1691,6 +1671,33 @@ fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator, tex
     }
 }
 
+/// 모듈의 wrap_kind에 따라 require_xxx() 또는 init_xxx() 호출 코드를 생성한다.
+/// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
+fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype) !void {
+    const call_name = if (mod.wrap_kind == .cjs)
+        types.makeRequireVarName(allocator, mod.path) catch return
+    else
+        types.makeInitVarName(allocator, mod.path) catch return;
+    defer allocator.free(call_name);
+    if (mod.wrap_kind != .cjs and mod.uses_top_level_await) {
+        try output.appendSlice(allocator, "await ");
+    }
+    try output.appendSlice(allocator, call_name);
+    try output.appendSlice(allocator, "();\n");
+}
+
+/// run-before-main 모듈의 호출 코드를 output에 추가한다.
+fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, modules: anytype, run_before_main: []const []const u8) !void {
+    for (run_before_main) |rbm_path| {
+        for (modules) |*rbm| {
+            if (std.mem.eql(u8, rbm.path, rbm_path)) {
+                try appendModuleCall(output, allocator, rbm);
+                break;
+            }
+        }
+    }
+}
+
 fn emitModuleThread(
     allocator: std.mem.Allocator,
     module: *const Module,
@@ -2838,6 +2845,16 @@ fn emitEsmWrappedModule(
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
+    // 엔트리 모듈이 __esm 래핑된 경우(RN), run-before-main 호출을 body 맨 앞에 삽입.
+    // InitializeCore 등이 의존 모듈보다 먼저 실행되어야 하므로 preamble보다 앞에 위치.
+    var rbm_code: std.ArrayList(u8) = .empty;
+    defer rbm_code.deinit(allocator);
+    if (module.is_entry_point and options.run_before_main.len > 0) {
+        if (linker) |l| {
+            try appendRunBeforeMainCalls(&rbm_code, allocator, l.modules, options.run_before_main);
+        }
+    }
+
     const is_async = module.uses_top_level_await;
 
     if (options.minify_whitespace) {
@@ -2848,6 +2865,7 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
+        if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
         try wrapped.appendSlice(allocator, body_code);
@@ -2861,6 +2879,10 @@ fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"() {\n");
+        if (rbm_code.items.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, rbm_code.items);
+        }
         if (preamble_code) |p| {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, p);

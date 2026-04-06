@@ -325,7 +325,7 @@ pub const ModuleGraph = struct {
             }
         }
 
-        self.promoteExportsKinds(entry_points);
+        self.promoteExportsKinds();
         self.propagateTopLevelAwait();
     }
 
@@ -1155,7 +1155,7 @@ pub const ModuleGraph = struct {
     /// - ESM 모듈 + require 소비 → WrapKind.esm (__esm 래퍼)
     /// - CJS/none 모듈 + require 소비 → WrapKind.cjs (__commonJS 래퍼)
     /// - .none 모듈 + import 소비 → .esm 승격 (래핑된 모듈은 변경하지 않음)
-    fn promoteExportsKinds(self: *ModuleGraph, entry_points: []const []const u8) void {
+    fn promoteExportsKinds(self: *ModuleGraph) void {
         // Pass 1: require() 소비 처리 (래핑 결정)
         for (self.modules.items) |m| {
             for (m.import_records) |rec| {
@@ -1207,20 +1207,16 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // Pass 3: React Native — Metro 호환 lazy loading.
-        // Metro는 모든 모듈을 factory로 감싸 require() 시점에만 실행.
-        // scope-hoisted ESM 모듈의 top-level 코드(TurboModule.getEnforcing 등)가
-        // 번들 초기화 시 즉시 실행되면 아직 등록되지 않은 native 모듈에서 크래시.
-        // 엔트리를 제외한 모든 ESM 모듈을 __esm 래핑하여 lazy loading을 보장한다.
+        // Pass 3: React Native — Rolldown 호환 lazy loading.
+        // 모든 ESM 모듈(엔트리 포함)을 __esm 래핑하여 init 체인으로 초기화 순서를 보장한다.
+        // 엔트리도 래핑하면 번들 끝에서 init_entry()를 호출하여 실행을 시작한다.
+        //
+        // 이유: scope-hoisted 엔트리의 top-level import(var View = require_rn().View)가
+        // 즉시 평가되면서 circular dep 체인의 모듈이 아직 초기화되지 않은 상태에서 접근,
+        // RN Fabric 렌더링 실패(스타일 미적용, 컴포넌트 미등록 등)를 유발.
+        // Rolldown은 엔트리도 __esmMin으로 래핑하여 이 문제를 회피한다.
         if (self.resolve_cache.platform == .react_native) {
-            // 엔트리 모듈 인덱스 set 구축 (O(1) 조회용)
-            var entry_set = std.DynamicBitSet.initEmpty(self.allocator, self.modules.items.len) catch return;
-            defer entry_set.deinit();
-            for (entry_points) |ep| {
-                if (self.path_to_module.get(ep)) |idx| entry_set.set(@intFromEnum(idx));
-            }
-            for (self.modules.items, 0..) |*m, i| {
-                if (entry_set.isSet(i)) continue;
+            for (self.modules.items) |*m| {
                 if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
                     m.wrap_kind = .esm;
                 }
