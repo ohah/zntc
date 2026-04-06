@@ -49,9 +49,8 @@ pub const TOESM_RUNTIME =
 ;
 pub const TOESM_RUNTIME_MIN = "var __create=Object.create;var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __getOwnPropNames=Object.getOwnPropertyNames;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from,except,desc)=>{if(from&&typeof from===\"object\"||typeof from===\"function\"){for(var keys=__getOwnPropNames(from),i=0,n=keys.length,key;i<n;i++){key=keys[i];if(!__hasOwn.call(to,key)&&key!==except)__defProp(to,key,{get:((k)=>from[k]).bind(null,key),enumerable:!(desc=__getOwnPropDesc(from,key))||desc.enumerable})}}return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?__create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 
-/// __toESM configurable 버전: RN/Hermes 호환을 위해 configurable: true 추가.
-/// --platform=react-native에서 자동 활성화.
-/// __toESM configurable + ES5 호환: RN/Hermes용. arrow → function, configurable: true.
+/// __toESM configurable + ES5 호환: RN/Hermes용.
+/// arrow → function, configurable: true. --platform=react-native에서 자동 활성화.
 pub const TOESM_RUNTIME_CONFIGURABLE =
     \\var __create = Object.create;
     \\var __getProtoOf = Object.getPrototypeOf;
