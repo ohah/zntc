@@ -382,7 +382,7 @@ pub const Transformer = struct {
                     if (params_len == 0) continue;
                     if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len)) continue;
 
-                    var lr = try es2015_params.ES2015Params(Transformer).lowerParams(self, params_start, params_len, node.span);
+                    var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_start, params_len, node.span);
                     defer lr.body_stmts.deinit(self.allocator);
 
                     self.ast.extra_data.items[e + 1] = lr.new_params.start;

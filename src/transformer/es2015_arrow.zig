@@ -43,56 +43,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, 2);
 
-            // ES2015 default/rest/destructuring lowering:
-            // 화살표 함수 파라미터에서 extra list 형태(start/len)를 추출 가능한 경우에만 적용.
-            // 단일 파라미터(x => ...) 등은 destructuring/rest가 아니므로 해당 없음.
-            // params 슬롯의 형태:
-            //   1. none → () => ... (빈 파라미터)
-            //   2. formal_parameters(list) → <T>(x, y) => ... (TS 제네릭 arrow)
-            //   3. binding_identifier → x => ... (단일 파라미터, 괄호 없음)
-            //   4. parenthesized_expression → (x) => ... (cover grammar)
-            //      내부: identifier_reference (단일) 또는 sequence_expression (복수)
-            const param_list: NodeList = if (params_idx.isNone())
-                try self.ast.addNodeList(&.{})
-            else blk: {
-                const params_node = self.ast.getNode(params_idx);
-                switch (params_node.tag) {
-                    .formal_parameters => {
-                        break :blk try self.visitExtraList(
-                            params_node.data.list.start,
-                            params_node.data.list.len,
-                        );
-                    },
-                    .parenthesized_expression => {
-                        // cover grammar: (x) 또는 (a, b, ...rest)
-                        const inner_idx = params_node.data.unary.operand;
-                        if (inner_idx.isNone()) {
-                            break :blk try self.ast.addNodeList(&.{});
-                        }
-                        const inner = self.ast.getNode(inner_idx);
-                        if (inner.tag == .sequence_expression) {
-                            // (a, b, c) → sequence_expression의 list에서 추출
-                            break :blk try self.visitExtraList(
-                                inner.data.list.start,
-                                inner.data.list.len,
-                            );
-                        } else {
-                            // (x) → 단일 파라미터 (destructuring/rest 아님)
-                            const new_param = try self.visitNode(inner_idx);
-                            break :blk try self.ast.addNodeList(
-                                if (!new_param.isNone()) &.{new_param} else &.{},
-                            );
-                        }
-                    },
-                    else => {
-                        // x => ... — 단일 binding_identifier (destructuring/rest 아님)
-                        const new_param = try self.visitNode(params_idx);
-                        break :blk try self.ast.addNodeList(
-                            if (!new_param.isNone()) &.{new_param} else &.{},
-                        );
-                    },
-                }
-            };
+            const param_list = try arrowParamsToList(self, params_idx);
 
             // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
             // visitNode에서 this → _this, arguments → _arguments로 치환된다.
