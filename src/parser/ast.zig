@@ -619,8 +619,8 @@ pub const Node = struct {
                 .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
                 // unary/update_expression: 파서에서 data.extra로 생성 — extra = [operand(0), flags]
                 .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
-                // object_property: extra = [key(0), value(1), flags]
-                .object_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // object_property: binary = { left: key, right: value, flags: prop_flags }
+                .object_property => .{ .kind = .binary },
                 // import_declaration: extra = [specs_start, specs_len, source(2)]
                 .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
                 // export_named: extra = [decl(0), specs_start, specs_len, source(3)]
