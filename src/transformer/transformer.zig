@@ -343,6 +343,11 @@ pub const Transformer = struct {
         const saved_temp_counter = self.temp_var_counter;
         var root = try self.visitNode(root_idx);
 
+        // Pass 2: ES2015 params lowering 일괄 적용
+        if (self.options.unsupported.default_params) {
+            try self.lowerAllFunctionParams();
+        }
+
         // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
         if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
             root = try self.hoistTempVars(root, saved_temp_counter, self.ast.getNode(root_idx).span);
@@ -356,6 +361,44 @@ pub const Transformer = struct {
         }
 
         return root;
+    }
+
+    /// Pass 2: 모든 function-like 노드의 params를 일괄 lowering.
+    /// Pass 1에서 생성된 모든 function_declaration, function_expression, function,
+    /// method_definition 노드를 순회하며, default/rest/destructuring params가 있으면
+    /// lowerParams를 적용하고 extra_data를 in-place 수정한다.
+    fn lowerAllFunctionParams(self: *Transformer) Error!void {
+        const node_count = self.ast.nodes.items.len;
+        var i: usize = 0;
+        while (i < node_count) : (i += 1) {
+            const node = self.ast.nodes.items[i];
+            switch (node.tag) {
+                .function_declaration, .function_expression, .function, .method_definition => {
+                    // extra layout: [name_or_key, params_start, params_len, body, ...]
+                    const e = node.data.extra;
+                    if (e + 3 >= self.ast.extra_data.items.len) continue;
+                    const params_start = self.ast.extra_data.items[e + 1];
+                    const params_len = self.ast.extra_data.items[e + 2];
+                    if (params_len == 0) continue;
+                    if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len)) continue;
+
+                    var lr = try es2015_params.ES2015Params(Transformer).lowerParams(self, params_start, params_len, node.span);
+                    defer lr.body_stmts.deinit(self.allocator);
+
+                    self.ast.extra_data.items[e + 1] = lr.new_params.start;
+                    self.ast.extra_data.items[e + 2] = lr.new_params.len;
+
+                    if (lr.body_stmts.items.len > 0) {
+                        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
+                        if (!body_idx.isNone()) {
+                            const new_body = try self.prependStatementsToBody(body_idx, lr.body_stmts.items);
+                            self.ast.extra_data.items[e + 3] = @intFromEnum(new_body);
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     // ================================================================
@@ -1643,26 +1686,7 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // ES2015: default/rest params → 파라미터 축소 + 바디 문 삽입
-        var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
-        defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
-
-        const pp = if (self.options.unsupported.default_params and
-            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
-        blk: {
-            const lower_result = try es2015_params.ES2015Params(Transformer).lowerParams(
-                self,
-                params_start,
-                params_len,
-                node.span,
-            );
-            es2015_body_stmts = lower_result.body_stmts;
-            break :blk ParamPropertyResult{
-                .new_params = lower_result.new_params,
-                .prop_names = undefined,
-                .prop_count = 0,
-            };
-        } else try self.visitParamsCollectProperties(params_start, params_len);
+        const pp = try self.visitParamsCollectProperties(params_start, params_len);
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 3);
@@ -1671,13 +1695,6 @@ pub const Transformer = struct {
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
-        }
-
-        // ES2015 default/rest 바디 문 삽입
-        if (es2015_body_stmts) |stmts| {
-            if (stmts.items.len > 0 and !new_body.isNone()) {
-                new_body = try self.prependStatementsToBody(new_body, stmts.items);
-            }
         }
 
         // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
@@ -3323,28 +3340,10 @@ pub const Transformer = struct {
         if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
-        // 파라미터 방문 — ES2015 default/rest/destructuring lowering + parameter property 감지
+        // 파라미터 방문 — parameter property 감지
         const params_start = self.readU32(e, 1);
         const params_len = self.readU32(e, 2);
-        var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
-        defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
-
-        const pp = if (self.options.unsupported.default_params and
-            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
-        blk: {
-            const lower_result = try es2015_params.ES2015Params(Transformer).lowerParams(
-                self,
-                params_start,
-                params_len,
-                node.span,
-            );
-            es2015_body_stmts = lower_result.body_stmts;
-            break :blk ParamPropertyResult{
-                .new_params = lower_result.new_params,
-                .prop_names = undefined,
-                .prop_count = 0,
-            };
-        } else try self.visitParamsCollectProperties(params_start, params_len);
+        const pp = try self.visitParamsCollectProperties(params_start, params_len);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
         const saved_arrow_depth = self.arrow_this_depth;
@@ -3361,13 +3360,6 @@ pub const Transformer = struct {
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
-        }
-
-        // ES2015 default/rest body 문 삽입
-        if (es2015_body_stmts) |stmts| {
-            if (stmts.items.len > 0 and !new_body.isNone()) {
-                new_body = try self.prependStatementsToBody(new_body, stmts.items);
-            }
         }
 
         // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
