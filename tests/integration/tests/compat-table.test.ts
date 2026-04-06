@@ -201,8 +201,13 @@ async function runTarget(target: string): Promise<Result[]> {
     if (!featureYear || year >= featureYear) continue;
 
     for (const sub of feature.subtests) {
-      // asyncTestPassed를 사용하는 비동기 테스트는 스킵 (동기 실행 불가)
+      // 동기 실행 불가능한 비동기 테스트 스킵
       if (sub.code.includes("asyncTestPassed")) continue;
+      // 트랜스파일러가 원천적으로 통과 불가능한 테스트 스킵 (네이티브 엔진 전용)
+      // - GeneratorFunction 생성자: yield 구문은 function* 밖에서 파싱 불가
+      // - __createIterableObject: compat-table 테스트 인프라 헬퍼 의존
+      if (sub.code.includes(".constructor(") && sub.code.includes("yield")) continue;
+      if (sub.code.includes("__createIterableObject")) continue;
 
       const id = `t${counter++}`;
       const inputFile = join(tmpDir, `${id}.js`);
