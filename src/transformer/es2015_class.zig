@@ -1426,16 +1426,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// static method → ClassName.method = function() {}
         fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(info.member_idx);
-            // 주의: extra_data.items를 캐시하면 안 됨.
-            // visitExtraList/visitNode가 extra_data에 append하면 ArrayList가 재할당되어
-            // 캐시된 슬라이스가 dangling pointer가 됨. 매번 직접 읽기.
             const me = member.data.extra;
+            // 모든 읽기가 mutation(visitExtraList) 이전이므로 캐시 안전.
+            const extras = self.ast.extra_data.items;
 
-            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
-            const params_start = self.ast.extra_data.items[me + 1];
-            const params_len = self.ast.extra_data.items[me + 2];
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 3]);
-            const flags = self.ast.extra_data.items[me + 4];
+            const key_idx: NodeIndex = @enumFromInt(extras[me]);
+            const params_start = extras[me + 1];
+            const params_len = extras[me + 2];
+            const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
+            const flags = extras[me + 4];
 
             // function expression 생성 — ES2015 params lowering은 Pass 2에서 일괄 처리
             const new_params = try self.visitExtraList(params_start, params_len);
@@ -1562,11 +1561,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 used[i] = true;
 
                 const member = self.ast.getNode(info.member_idx);
-                // 주의: extra_data.items를 캐시하면 안 됨 (#788).
-                // buildAccessorFunc → visitNode가 extra_data에 append하면
-                // ArrayList가 재할당되어 캐시된 슬라이스가 dangling pointer가 됨.
                 const me = member.data.extra;
-                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
+                const key_idx = self.readNodeIdx(me, 0);
 
                 const func_expr = try buildAccessorFunc(self, info.member_idx, span);
                 const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
@@ -1582,7 +1579,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (used[j]) continue;
                     const next_member = self.ast.getNode(next.member_idx);
                     const next_me = next_member.data.extra;
-                    const next_key: NodeIndex = @enumFromInt(self.ast.extra_data.items[next_me]);
+                    // buildAccessorFunc 이후 extra_data가 재할당될 수 있으므로 캐시 금지 (#788).
+                    const next_key = self.readNodeIdx(next_me, 0);
                     if (info.is_static == next.is_static and info.is_getter != next.is_getter and
                         keysMatch(self, key_idx, next_key))
                     {
