@@ -202,8 +202,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const new_key = try self.visitNode(key_idx);
-                const access = try es_helpers.makeMemberFromKey(self, ref, new_key, key_node.tag, span);
+                // makeMemberFromKeyIdx: computed_property_key를 자동 unwrap하여
+                // _ref[expr] (bracket) 또는 _ref.name (dot) 생성
+                const access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
                     const target_node = try self.ast.addNode(.{
@@ -580,6 +581,94 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
 
             return es_helpers.makeDeclarator(self, binding, call, span);
+        }
+        /// for_in_statement를 기본적으로 visit (ternary 자식 3개 재귀 방문).
+        fn visitForInDefault(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const new_a = try self.visitNode(node.data.ternary.a);
+            const new_b = try self.visitNode(node.data.ternary.b);
+            const new_c = try self.visitNode(node.data.ternary.c);
+            return self.ast.addNode(.{
+                .tag = node.tag,
+                .span = node.span,
+                .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
+            });
+        }
+
+        /// for-in 루프의 destructuring을 분해한다.
+        /// for (var [i,j,k] in obj) { body }
+        /// → for (var _ref in obj) { var i = _ref[0], j = _ref[1], k = _ref[2]; body }
+        ///
+        /// for-in은 left에 단일 변수만 허용하므로, destructuring pattern이 있으면
+        /// 임시 변수로 교체하고 body 앞에 분해된 선언문을 삽입한다.
+        pub fn lowerForInDestructuring(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const span = node.span;
+            const left = node.data.ternary.a; // variable_declaration
+            const right = node.data.ternary.b; // right-hand side expression
+            const body = node.data.ternary.c; // body
+
+            const left_node = self.ast.getNode(left);
+
+            // variable_declaration에서 첫 번째 declarator의 패턴을 추출
+            const le = left_node.data.extra;
+            const list_start = self.readU32(le, 1);
+            const list_len = self.readU32(le, 2);
+            if (list_len == 0) return visitForInDefault(self, node);
+
+            const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+            const first_decl = self.ast.getNode(first_decl_idx);
+            if (first_decl.tag != .variable_declarator) return visitForInDefault(self, node);
+
+            const binding_idx: NodeIndex = self.readNodeIdx(first_decl.data.extra, 0);
+            if (binding_idx.isNone()) return visitForInDefault(self, node);
+            const binding_node = self.ast.getNode(binding_idx);
+
+            // destructuring pattern이 아니면 일반 처리
+            if (binding_node.tag != .array_pattern and binding_node.tag != .object_pattern) {
+                return visitForInDefault(self, node);
+            }
+
+            // 1) 임시 변수 _ref 생성
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+
+            // 2) for-in의 left를 var _ref 로 교체
+            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
+            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, 0, span);
+
+            // 3) right를 visit
+            const new_right = try self.visitNode(right);
+
+            // 4) body를 visit
+            const new_body = try self.visitNode(body);
+
+            // 5) body 앞에 삽입할 destructuring 선언문들을 생성
+            //    var i = _ref[0], j = _ref[1], k = _ref[2]
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            try emitPatternDeclarators(self, binding_node, temp_span, span);
+
+            // scratch에 쌓인 declarator들로 variable_declaration 생성
+            const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const var_extra = try self.ast.addExtras(&.{ 0, decl_list.start, decl_list.len }); // 0 = var
+            const destr_decl = try self.ast.addNode(.{
+                .tag = .variable_declaration,
+                .span = span,
+                .data = .{ .extra = var_extra },
+            });
+
+            // 6) body 앞에 destructuring 선언문 삽입
+            const final_body = if (!new_body.isNone())
+                try self.prependStatementsToBody(new_body, &.{destr_decl})
+            else
+                new_body;
+
+            // 7) 새 for_in_statement 생성
+            return self.ast.addNode(.{
+                .tag = .for_in_statement,
+                .span = span,
+                .data = .{ .ternary = .{ .a = new_left, .b = new_right, .c = final_body } },
+            });
         }
     };
 }

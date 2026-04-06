@@ -368,9 +368,19 @@ pub fn ES2015Spread(comptime Transformer: type) type {
 
             const args_slice = self.scratch.items[scratch_top..];
 
-            // 최적화: spread만 1개이고 다른 인자 없으면 그대로 반환
+            // 최적화: spread만 1개이고 다른 인자 없으면 —
+            // 배열 리터럴이면 그대로 반환, 아니면 [].concat(value)로 래핑.
+            // 이유: .apply()의 2번째 인자는 array-like여야 한다.
+            // string 등 non-array iterable을 그대로 넘기면 런타임 에러 발생.
+            // 예: Math.max(..."1234") → .apply(void 0, "1234") ← 에러
+            //     Math.max(..."1234") → .apply(void 0, [].concat("1234")) ← 정상
             if (args_slice.len == 1 and spread_count == 1 and !has_non_spread) {
-                return args_slice[0];
+                const spread_node = self.ast.getNode(args_slice[0]);
+                if (spread_node.tag == .array_expression) {
+                    return args_slice[0];
+                }
+                // 배열이 아닌 경우 [].concat(value)로 감싸서 배열로 변환
+                return buildConcatCall(self, args_slice, span);
             }
 
             return buildConcatCall(self, args_slice, span);

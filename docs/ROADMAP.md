@@ -207,6 +207,22 @@ Asset 모듈은 `exports_kind = .commonjs`, `wrap_kind = .cjs`로 처리됨.
 esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 tree-shaker는 CJS wrap에 대해 아직 이 최적화를 수행하지 않음.
 (JSON 모듈은 ESM AST 변환으로 tree-shaking 가능 — PR #589)
 
+## ES 다운레벨링 커버리지 (kangax/compat-table)
+
+`bun run test:compat`으로 실행. CI에서 자동 검증.
+
+| Target | Pass | Total | Rate |
+|--------|------|-------|------|
+| ES5 | 257 | 259 | 99% |
+| ES2015 | 17 | 17 | 100% |
+| ES2016 | 14 | 14 | 100% |
+| ES2017 | 14 | 14 | 100% |
+| ES2018 | 12 | 12 | 100% |
+| ES2019 | 10 | 10 | 100% |
+| ES2020 | 9 | 9 | 100% |
+
+ES5 미통과 2건: GeneratorFunction 생성자 (polyfill 불가), yield* iterator throw (테스트 헬퍼 의존)
+
 ## 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
 |--------|------|------|

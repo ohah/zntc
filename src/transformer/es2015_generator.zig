@@ -88,7 +88,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const sm_result = try buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
 
-            const gen_call = try buildGeneratorHelperCall(self, sm_result.body, span);
+            // generator function 이름이 있으면 프로토타입 체인 설정을 위해 __generator에 전달
+            const genFn_ref: NodeIndex = if (!new_name.isNone()) blk: {
+                const name_node = self.ast.getNode(new_name);
+                break :blk try es_helpers.makeIdentifierRefFromSpan(self, name_node.span);
+            } else .none;
+            const gen_call = try buildGeneratorHelperCallWithProto(self, sm_result.body, genFn_ref, span);
 
             // return __generator(...) 문
             const ret_stmt = try self.ast.addNode(.{
@@ -241,6 +246,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             const sent_call = try buildSentCall(self, stmt.span);
                             const assign_stmt = try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                        } else if (containsYield(self, right_idx)) {
+                            // x = [yield 5, yield 6] — 우측에 중첩 yield가 있는 assignment
+                            // visitExprWithYieldExtraction으로 전체 assignment를 처리하여
+                            // 각 yield를 temp 변수로 추출하고 _state.sent()로 대체
+                            const new_expr = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
+                            const new_stmt = try es_helpers.makeExprStmt(self, new_expr, stmt.span);
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
                         } else {
                             const new_stmt = try self.visitNode(stmt_idx);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -1918,7 +1930,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// __generator(function(_state) { ... }) 호출 생성.
         /// es2017 결합 변환에서도 호출.
+        /// __generator(body) 또는 __generator(body, genFn) 호출을 생성.
+        /// genFn_idx가 .none이 아니면 프로토타입 체인 설정을 위해 두 번째 인자로 전달.
         pub fn buildGeneratorHelperCall(self: *Transformer, switch_body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return buildGeneratorHelperCallWithProto(self, switch_body, .none, span);
+        }
+
+        pub fn buildGeneratorHelperCallWithProto(self: *Transformer, switch_body: NodeIndex, genFn_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터
@@ -1950,8 +1968,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
-            // __generator(func)
+            // __generator(func) 또는 __generator(func, genFn)
             const gen_ref = try es_helpers.makeIdentifierRef(self, "__generator");
+            if (!genFn_idx.isNone()) {
+                return es_helpers.makeCallExpr(self, gen_ref, &.{ func_expr, genFn_idx }, span);
+            }
             return es_helpers.makeCallExpr(self, gen_ref, &.{func_expr}, span);
         }
     };
