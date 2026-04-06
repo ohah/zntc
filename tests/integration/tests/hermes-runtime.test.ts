@@ -102,12 +102,23 @@ describe("Hermes 런타임: for-in 클로저 캡처 버그 검증", () => {
       hermes,
       `
       var __defProp = Object.defineProperty;
+      var __getOwnPropNames = Object.getOwnPropertyNames;
+      var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
       var __hasOwn = Object.prototype.hasOwnProperty;
-      var __copyProps = (to, from) => { Object.keys(from).forEach(key => { if (!__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); }); return to; };
+      var __copyProps = function(to, from, except, desc) {
+        if (from && typeof from === "object" || typeof from === "function") {
+          for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+            key = keys[i];
+            if (!__hasOwn.call(to, key) && key !== except)
+              __defProp(to, key, { get: (function(k) { return from[k]; }).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+          }
+        }
+        return to;
+      };
 
       var exports_mod = {};
-      __defProp(exports_mod, "default", { get: () => "IMPL", enumerable: true });
-      __defProp(exports_mod, "PublicGuard", { get: () => "GUARD", enumerable: true });
+      __defProp(exports_mod, "default", { get: function() { return "IMPL"; }, enumerable: true });
+      __defProp(exports_mod, "PublicGuard", { get: function() { return "GUARD"; }, enumerable: true });
 
       var result = __copyProps({ __esModule: true }, exports_mod);
       print("default:" + result.default);
@@ -152,7 +163,7 @@ describe("Hermes 런타임: ZTS 번들 실행 검증", () => {
     expect(errorCount).toBe(0);
   }, 60_000);
 
-  test("__copyProps forEach 패턴이 번들에 포함됨", async () => {
+  test("__copyProps getOwnPropertyNames 패턴이 번들에 포함됨", async () => {
     // 이전 테스트(hermesc)에 의존하지 않고 자체 번들 생성
     const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
     const zts = Bun.spawnSync([
@@ -167,9 +178,11 @@ describe("Hermes 런타임: ZTS 번들 실행 검증", () => {
     ]);
     if (zts.exitCode !== 0) return; // 번들 실패 시 skip (bun install 미실행 등)
     const output = await Bun.file(outFile).text();
-    // forEach 방식이 사용되는지 확인
-    expect(output).toContain("Object.keys(from).forEach");
-    // 구 방식 (for-let-in)이 남아있지 않은지 확인
+    // getOwnPropertyNames + for 루프 방식 (Rolldown 호환)
+    expect(output).toContain("getOwnPropertyNames");
+    expect(output).toContain("getOwnPropertyDescriptor");
+    // 구 방식이 남아있지 않은지 확인
+    expect(output).not.toContain("Object.keys(from).forEach");
     expect(output).not.toContain("for(let key in from)");
     expect(output).not.toMatch(/for\s*\(\s*let\s+key\s+in\s+from\s*\)/);
   });
