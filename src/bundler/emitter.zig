@@ -371,24 +371,16 @@ pub fn emitWithTreeShaking(
         // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가
         if (bundle_sm) |*sm| {
             if (results[i].mappings) |maps| {
-                const module_id = makeModuleId(m.path, options.root_dir);
-                const source_idx = try sm.addSource(module_id);
-                // sourcesContent: DevTools가 원본 소스를 표시하려면 필수.
-                // sources_content 옵션이 켜져 있고 소스가 있으면 추가.
-                if (options.sources_content and m.source.len > 0) {
-                    try sm.addSourceContent(m.source);
-                }
-                // preamble/래퍼 헤더 줄 수만큼 오프셋 추가 (codegen 매핑은 code 기준)
-                const pl = results[i].preamble_lines;
-                for (maps) |mapping| {
-                    try sm.addMapping(.{
-                        .generated_line = module_line + pl + mapping.generated_line,
-                        .generated_column = mapping.generated_column,
-                        .source_index = source_idx,
-                        .original_line = mapping.original_line,
-                        .original_column = mapping.original_column,
-                    });
-                }
+                try addModuleMappings(
+                    sm,
+                    makeModuleId(m.path, options.root_dir),
+                    m.source,
+                    maps,
+                    module_line,
+                    results[i].preamble_lines,
+                    options.sources_content,
+                    false,
+                );
             }
         }
 
@@ -630,28 +622,18 @@ pub fn emitDevBundle(
         // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가
         if (bundle_sm) |*sm| {
             if (emit_result.mappings) |maps| {
-                const source_idx = try sm.addSource(module_id);
-                // sourcesContent: DevTools가 원본 소���를 표시하려면 필수
-                if (options.sources_content and m.source.len > 0) {
-                    try sm.addSourceContent(m.source);
-                }
-                // __zts_register header는 1줄 ("__zts_register(..., function(...) {\n")
-                const wrapper_header_lines: u32 = 1;
-                // preamble 줄 수: codegen 매핑은 code 기준이므로 preamble만큼 오프셋 추가
-                const pl = emit_result.preamble_lines;
-
-                for (maps) |mapping| {
-                    try sm.addMapping(.{
-                        .generated_line = bundle_line + wrapper_header_lines + pl + mapping.generated_line,
-                        .generated_column = if (mapping.generated_line == 0)
-                            mapping.generated_column
-                        else
-                            mapping.generated_column + 1, // tab 들여쓰기 오프셋
-                        .source_index = source_idx,
-                        .original_line = mapping.original_line,
-                        .original_column = mapping.original_column,
-                    });
-                }
+                // __zts_register header 1줄 + preamble 줄 수
+                const offset = 1 + emit_result.preamble_lines;
+                try addModuleMappings(
+                    sm,
+                    module_id,
+                    m.source,
+                    maps,
+                    bundle_line,
+                    offset,
+                    options.sources_content,
+                    true, // dev 모드: tab 들여쓰기 보정
+                );
             }
         }
 
@@ -837,6 +819,37 @@ pub fn emitDevModule(
 
 /// 모듈 경로를 dev bundle용 ID로 변환.
 /// root_dir이 있으면 상대 경로, 없으면 절대 경로 그대로 사용.
+/// 모듈의 소스맵 매핑을 번들 레벨 SourceMapBuilder에 추가한다.
+/// sourcesContent 등록 + preamble/wrapper 오프셋 반영을 한 곳에서 처리.
+fn addModuleMappings(
+    sm: *SourceMap.SourceMapBuilder,
+    module_id: []const u8,
+    source: []const u8,
+    maps: []const SourceMap.Mapping,
+    base_line: u32,
+    preamble_lines: u32,
+    sources_content: bool,
+    /// dev 모드에서 tab 들여쓰기 보정이 필요하면 true
+    indent_offset: bool,
+) !void {
+    const source_idx = try sm.addSource(module_id);
+    if (sources_content and source.len > 0) {
+        try sm.addSourceContent(source);
+    }
+    for (maps) |mapping| {
+        try sm.addMapping(.{
+            .generated_line = base_line + preamble_lines + mapping.generated_line,
+            .generated_column = if (indent_offset and mapping.generated_line != 0)
+                mapping.generated_column + 1
+            else
+                mapping.generated_column,
+            .source_index = source_idx,
+            .original_line = mapping.original_line,
+            .original_column = mapping.original_column,
+        });
+    }
+}
+
 pub fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
     const root = root_dir orelse return path;
     if (root.len == 0) return path;
@@ -1983,7 +1996,7 @@ pub fn emitModule(
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "}});");
-            // minify 모드: 줄바꿈 없으므로 preamble 오프셋 0
+            if (preamble_lines_out) |out| out.* = 0;
         } else {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
