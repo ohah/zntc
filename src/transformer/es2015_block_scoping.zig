@@ -157,39 +157,38 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     }
                 }
 
-                // 자식 노드를 스택에 push
-                pushChildren(self, &stack, node, fn_depth) catch return true;
+                // 자식 노드를 스택에 push (OOM 시 보수적으로 캡처 가정)
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                collectChildIndices(self, node, &children) catch return true;
+                for (children.items) |child_idx| {
+                    stack.append(self.allocator, .{ .idx = child_idx, .fn_depth = fn_depth }) catch return true;
+                }
             }
             return false;
         }
 
-        /// 노드의 자식들을 명시적 스택에 push한다.
+        /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
         /// dataKind + extraChildOffsets + extraListOffsets 기반.
-        fn pushChildren(
-            self: *Transformer,
-            stack: anytype,
-            node: Node,
-            fn_depth: u32,
-        ) !void {
+        /// 호출부에서 scratch_top을 저장/복원하고, 수집된 인덱스를 자기 entry type으로 감싼다.
+        fn collectChildIndices(self: *Transformer, node: Node, buf: *std.ArrayList(NodeIndex)) !void {
             switch (node.tag.dataKind()) {
                 .leaf => {},
-                .unary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.unary.operand, .fn_depth = fn_depth });
-                },
+                .unary => try buf.append(self.allocator, node.data.unary.operand),
                 .binary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.binary.left, .fn_depth = fn_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.binary.right, .fn_depth = fn_depth });
+                    try buf.append(self.allocator, node.data.binary.left);
+                    try buf.append(self.allocator, node.data.binary.right);
                 },
                 .ternary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.a, .fn_depth = fn_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.b, .fn_depth = fn_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.c, .fn_depth = fn_depth });
+                    try buf.append(self.allocator, node.data.ternary.a);
+                    try buf.append(self.allocator, node.data.ternary.b);
+                    try buf.append(self.allocator, node.data.ternary.c);
                 },
                 .list => {
                     const list = node.data.list;
                     if (list.start + list.len <= self.ast.extra_data.items.len) {
                         for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
+                            try buf.append(self.allocator, @enumFromInt(raw));
                         }
                     }
                 },
@@ -199,7 +198,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         if (e + offset >= self.ast.extra_data.items.len) break;
                         const raw = self.ast.extra_data.items[e + offset];
                         if (raw > 0 and raw < self.parser_node_count) {
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
+                            try buf.append(self.allocator, @enumFromInt(raw));
                         }
                     }
                     for (node.tag.extraListOffsets()) |lo| {
@@ -209,7 +208,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         if (list_start + list_len > self.ast.extra_data.items.len) continue;
                         for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
                             if (raw < self.parser_node_count) {
-                                try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .fn_depth = fn_depth });
+                                try buf.append(self.allocator, @enumFromInt(raw));
                             }
                         }
                     }
@@ -380,91 +379,35 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                             if (loop_depth == 0 and switch_depth == 0) flow.has_break = true;
                         } else {
                             flow.has_labeled_break = true;
-                            const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
-                            var found = false;
-                            for (flow.labels.items) |l| {
-                                if (std.mem.eql(u8, l, label_text)) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) flow.labels.append(self.allocator, label_text) catch {};
+                            appendUniqueLabel(flow, self.allocator, self.ast.getText(self.ast.getNode(node.data.unary.operand).span));
                         }
                         continue;
                     },
                     .continue_statement => {
                         if (!node.data.unary.operand.isNone()) {
                             flow.has_labeled_continue = true;
-                            const label_text = self.ast.getText(self.ast.getNode(node.data.unary.operand).span);
-                            var found = false;
-                            for (flow.labels.items) |l| {
-                                if (std.mem.eql(u8, l, label_text)) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) flow.labels.append(self.allocator, label_text) catch {};
+                            appendUniqueLabel(flow, self.allocator, self.ast.getText(self.ast.getNode(node.data.unary.operand).span));
                         }
                         continue;
                     },
                     else => {},
                 }
 
-                // 자식 노드를 스택에 push (fn_depth는 사용하지 않으므로 0)
-                pushFlowChildren(self, &stack, node, loop_depth, switch_depth) catch {};
+                var children: std.ArrayList(NodeIndex) = .empty;
+                defer children.deinit(self.allocator);
+                collectChildIndices(self, node, &children) catch {};
+                for (children.items) |child_idx| {
+                    stack.append(self.allocator, .{ .idx = child_idx, .loop_depth = loop_depth, .switch_depth = switch_depth }) catch {};
+                }
             }
         }
 
-        fn pushFlowChildren(
-            self: *Transformer,
-            stack: anytype,
-            node: Node,
-            loop_depth: u32,
-            switch_depth: u32,
-        ) !void {
-            switch (node.tag.dataKind()) {
-                .leaf => {},
-                .unary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.unary.operand, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                },
-                .binary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.binary.left, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.binary.right, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                },
-                .ternary => {
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.a, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.b, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                    try stack.append(self.allocator, .{ .idx = node.data.ternary.c, .loop_depth = loop_depth, .switch_depth = switch_depth });
-                },
-                .list => {
-                    const list = node.data.list;
-                    if (list.start + list.len <= self.ast.extra_data.items.len) {
-                        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
-                        }
-                    }
-                },
-                .extra => {
-                    const e = node.data.extra;
-                    for (node.tag.extraChildOffsets()) |offset| {
-                        if (e + offset >= self.ast.extra_data.items.len) break;
-                        const raw = self.ast.extra_data.items[e + offset];
-                        if (raw > 0 and raw < self.parser_node_count) {
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
-                        }
-                    }
-                    for (node.tag.extraListOffsets()) |lo| {
-                        if (e + lo[1] >= self.ast.extra_data.items.len) continue;
-                        const list_start = self.ast.extra_data.items[e + lo[0]];
-                        const list_len = self.ast.extra_data.items[e + lo[1]];
-                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
-                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                            if (raw >= self.parser_node_count) continue;
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(raw), .loop_depth = loop_depth, .switch_depth = switch_depth });
-                        }
-                    }
-                },
+        /// label 중복 없이 추가
+        fn appendUniqueLabel(flow: *FlowResult, alloc: std.mem.Allocator, label_text: []const u8) void {
+            for (flow.labels.items) |l| {
+                if (std.mem.eql(u8, l, label_text)) return;
             }
+            flow.labels.append(alloc, label_text) catch {};
         }
 
         /// body 내부의 break/continue/return을 _loop 함수에 맞게 변환한다.
