@@ -222,7 +222,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
-    // Metro/롤리팝과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
+    // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
     for (options.polyfills) |poly| {
         if (!options.minify_whitespace) {
             try output.appendSlice(allocator, "// --- polyfill: ");
@@ -2761,6 +2761,8 @@ fn emitEsmWrappedModule(
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;
         if (source_mod_idx.isNone()) continue;
+        // 자기 자신을 re-export하는 경우 skip (자기참조 init 호출 방지)
+        if (source_mod_idx == module.index) continue;
 
         const def_name = if (metadata) |md| md.default_export_name else "_default";
         const source_mod_i = @intFromEnum(source_mod_idx);
