@@ -1276,8 +1276,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
 
     // --- SWC 대비 추가 테스트: Spread ---
 
-    // TODO: spread in new에서 괄호 누락 — new Foo.bind.apply(...)() → new (Foo.bind.apply(...))()
-    test.todo("spread in new expression", async () => {
+    // #783: spread in new에서 bind.apply()를 괄호로 감싸기
+    test("spread in new expression (#783)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `

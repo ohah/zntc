@@ -212,9 +212,16 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // new (Foo.bind.apply(Foo, [null].concat(args)))()
+            // bind.apply() 호출을 괄호로 감싸야 new 연산자가 올바르게 적용됨.
+            // 괄호 없으면: new Foo.bind.apply(...)() → new (Foo.bind).apply(...)()
+            const paren_callee = try self.ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = span,
+                .data = .{ .unary = .{ .operand = bind_apply_call, .flags = 0 } },
+            });
             const empty_new_args = try self.ast.addNodeList(&.{});
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(bind_apply_call), empty_new_args.start, empty_new_args.len, 0,
+                @intFromEnum(paren_callee), empty_new_args.start, empty_new_args.len, 0,
             });
             return self.ast.addNode(.{
                 .tag = .new_expression,
