@@ -174,6 +174,16 @@ pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
     });
 }
 
+/// 문자열 리터럴 노드를 새 AST에 생성. text는 따옴표 포함 (예: "\"hello\"").
+pub fn buildStringNode(self: anytype, text: []const u8, _: Span) !NodeIndex {
+    const str_span = try self.ast.addString(text);
+    return self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = str_span,
+        .data = .{ .string_ref = str_span },
+    });
+}
+
 /// `base == null` 노드를 새 AST에 생성.
 pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
     const null_span = try self.ast.addString("null");

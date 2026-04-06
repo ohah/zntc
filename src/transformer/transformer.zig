@@ -2037,7 +2037,10 @@ pub const Transformer = struct {
         const is_substitution = blk: {
             var pos = tmpl.span.start + 1;
             while (pos < tmpl.span.end) {
-                if (source[pos] == '\\') { pos += 2; continue; }
+                if (source[pos] == '\\') {
+                    pos += 2;
+                    continue;
+                }
                 if (source[pos] == '$' and pos + 1 < tmpl.span.end and source[pos + 1] == '{') break :blk true;
                 pos += 1;
             }
@@ -2229,6 +2232,13 @@ pub const Transformer = struct {
     }
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
+    /// prefix + 카운터로 고유 이름을 생성한다. (예: _loop, _loop2, _loop3, ...)
+    pub fn buildUniqueName(self: *Transformer, prefix: []const u8) Error![]const u8 {
+        self.temp_var_counter += 1;
+        if (self.temp_var_counter == 1) return prefix;
+        return std.fmt.allocPrint(self.allocator, "{s}{d}", .{ prefix, self.temp_var_counter }) catch return Error.OutOfMemory;
+    }
+
     pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
         const name_span = try self.ast.addString(name);
         const binding = try self.ast.addNode(.{
@@ -3600,7 +3610,64 @@ pub const Transformer = struct {
     /// for_statement: extra_data = [init, test, update, body]
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const new_init = try self.visitNode(self.readNodeIdx(e, 0));
+        const init_idx = self.readNodeIdx(e, 0);
+
+        // ES2015 block scoping: let/const 변수 캡처 감지
+        if (self.options.unsupported.block_scoping) {
+            const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
+            var lexical_names = try BlockScoping.collectLexicalVarNames(self, init_idx);
+            defer lexical_names.deinit(self.allocator);
+
+            if (lexical_names.items.len > 0) {
+                // 원본 body에서 캡처/제어흐름 분석 (new AST에서는 extra 레이아웃이 변경됨)
+                const orig_body_idx = self.readNodeIdx(e, 3);
+                const has_capture = BlockScoping.hasCapturedClosure(self, orig_body_idx, lexical_names.items);
+
+                // 제어 흐름 분석도 원본에서 수행
+                var flow = BlockScoping.FlowResult{};
+                flow.labels = .empty;
+                defer flow.labels.deinit(self.allocator);
+                if (has_capture) {
+                    BlockScoping.analyzeControlFlow(self, orig_body_idx, &flow, 0, 0);
+                }
+
+                const new_init = try self.visitNode(init_idx);
+                const new_test = try self.visitNode(self.readNodeIdx(e, 1));
+                const new_update = try self.visitNode(self.readNodeIdx(e, 2));
+                const new_body = try self.visitNode(orig_body_idx);
+
+                if (has_capture) {
+                    const result = try BlockScoping.buildLoopClosureWithFlow(
+                        self,
+                        new_body,
+                        lexical_names.items,
+                        &flow,
+                        node.span,
+                    );
+
+                    // var _loop = function(...) { ... };
+                    // for (var i = 0; ...) { _loop(i); }
+                    const for_node = try self.addExtraNode(.for_statement, node.span, &.{
+                        @intFromEnum(new_init),   @intFromEnum(new_test),
+                        @intFromEnum(new_update), @intFromEnum(result.call_and_check),
+                    });
+
+                    // 두 문을 블록으로 반환 (호이스팅 불필요 — for 문 바로 앞에 삽입)
+                    const stmts = try self.ast.addNodeList(&.{ result.loop_fn, for_node });
+                    return self.ast.addNode(.{
+                        .tag = .block_statement,
+                        .span = node.span,
+                        .data = .{ .list = stmts },
+                    });
+                }
+
+                return self.addExtraNode(.for_statement, node.span, &.{
+                    @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
+                });
+            }
+        }
+
+        const new_init = try self.visitNode(init_idx);
         const new_test = try self.visitNode(self.readNodeIdx(e, 1));
         const new_update = try self.visitNode(self.readNodeIdx(e, 2));
         const new_body = try self.visitNode(self.readNodeIdx(e, 3));
