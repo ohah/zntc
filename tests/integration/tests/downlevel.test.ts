@@ -914,8 +914,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("0,1,2");
     });
 
-    // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현
-    test.todo("let in if block scope isolation", async () => {
+    // #784: block scoping 블록 단위 스코프 격리
+    test("let in if block scope isolation (#784)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -1019,8 +1019,8 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(code).toContain("var ");
     });
 
-    // TODO: block scoping은 let→var만 변환, 블록 스코프 격리 미구현 (Phase 4)
-    test.todo("let shadow in nested block", async () => {
+    // #784: 중첩 블록에서 let 쉐도잉 격리
+    test("let shadow in nested block (#784)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `

@@ -249,6 +249,17 @@ pub const Transformer = struct {
     /// ES2015 block scoping: _loop 함수명 카운터 (_loop, _loop2, ...)
     loop_counter: u32 = 0,
 
+    /// ES2015 block scoping 격리: 블록 내부 let/const 변수가 외부 스코프와
+    /// 이름 충돌 시 리네이밍 (x → x$1). 스택으로 중첩 블록 지원.
+    block_rename_stack: std.ArrayList(BlockRenameEntry) = .empty,
+
+    /// 현재 함수 스코프에서 선언된 모든 변수 이름 (var 호이스팅 범위).
+    /// 블록 진입 시 내부 let/const와 비교하여 충돌 감지에 사용.
+    scope_var_names: std.ArrayList([]const u8) = .empty,
+
+    /// block rename suffix 카운터.
+    block_rename_counter: u32 = 0,
+
     /// JSX lowering: 사용된 import 추적 (automatic 모드에서 import문 생성용)
     jsx_import_info: jsx_lowering_mod.JsxImportInfo = .{},
 
@@ -262,6 +273,13 @@ pub const Transformer = struct {
     /// React Fast Refresh: Hook 시그니처 등록 목록.
     /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
     refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
+
+    pub const BlockRenameEntry = struct {
+        old_name: []const u8,
+        new_name: []const u8,
+        /// scope_var_names에 추가한 개수 (퇴장 시 pop할 양)
+        scope_vars_added: u32 = 0,
+    };
 
     pub const GeneratorLabelEntry = struct {
         name: []const u8,
@@ -338,6 +356,9 @@ pub const Transformer = struct {
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
         self.tagged_template_fns.deinit(self.allocator);
+        for (self.block_rename_stack.items) |entry| self.allocator.free(entry.new_name);
+        self.block_rename_stack.deinit(self.allocator);
+        self.scope_var_names.deinit(self.allocator);
     }
 
     /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
@@ -926,10 +947,36 @@ pub const Transformer = struct {
                         });
                     }
                 }
+                // ES2015 block scoping 격리: 리네이밍된 변수 참조 교체
+                if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
+                    const text = self.ast.getText(node.data.string_ref);
+                    if (self.lookupBlockRename(text)) |new_name| {
+                        const new_span = try self.ast.addString(new_name);
+                        return self.ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = new_span,
+                            .data = .{ .string_ref = new_span },
+                        });
+                    }
+                }
+                return self.copyNodeDirect(node);
+            },
+            .binding_identifier => {
+                // ES2015 block scoping 격리: 리네이밍된 변수 선언 교체
+                if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
+                    const text = self.ast.getText(node.data.string_ref);
+                    if (self.lookupBlockRename(text)) |new_name| {
+                        const new_span = try self.ast.addString(new_name);
+                        return self.ast.addNode(.{
+                            .tag = .binding_identifier,
+                            .span = new_span,
+                            .data = .{ .string_ref = new_span },
+                        });
+                    }
+                }
                 return self.copyNodeDirect(node);
             },
             .private_identifier,
-            .binding_identifier,
             .empty_statement,
             .debugger_statement,
             .directive,
@@ -1206,12 +1253,71 @@ pub const Transformer = struct {
 
     /// 리스트 노드: 각 자식을 방문, .none이 아닌 것만 새 리스트로 수집.
     fn visitListNode(self: *Transformer, node: Node) Error!NodeIndex {
+        // ES2015 block scoping 격리: block_statement 진입 시 리네이밍 처리
+        if (self.options.unsupported.block_scoping and node.tag == .block_statement) {
+            return self.visitBlockWithScoping(node);
+        }
+        // program/function_body: 함수 스코프의 var 이름 수집
+        if (self.options.unsupported.block_scoping and (node.tag == .program or node.tag == .function_body)) {
+            self.collectTopLevelVarNames(node.data.list.start, node.data.list.len);
+        }
         const new_list = try self.visitExtraList(node.data.list.start, node.data.list.len);
         return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .list = new_list },
         });
+    }
+
+    /// block_statement를 방문하면서 내부 let/const 리네이밍을 적용한다.
+    fn visitBlockWithScoping(self: *Transformer, node: Node) Error!NodeIndex {
+        const list_start = node.data.list.start;
+        const list_len = node.data.list.len;
+
+        const renames_added = try self.pushBlockRenames(list_start, list_len);
+        const new_list = try self.visitExtraList(list_start, list_len);
+
+        // 리네이밍 맵 pop
+        if (renames_added > 0) {
+            self.block_rename_stack.shrinkRetainingCapacity(self.block_rename_stack.items.len - renames_added);
+        }
+
+        return self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = node.span,
+            .data = .{ .list = new_list },
+        });
+    }
+
+    /// program/function_body의 top-level 선언에서 var/let/const 이름을 scope_var_names에 수집.
+    fn collectTopLevelVarNames(self: *Transformer, list_start: u32, list_len: u32) void {
+        var i: u32 = 0;
+        while (i < list_len) : (i += 1) {
+            const raw = self.ast.extra_data.items[list_start + i];
+            const stmt = self.ast.getNode(@enumFromInt(raw));
+            if (stmt.tag != .variable_declaration) continue;
+
+            const ve = stmt.data.extra;
+            const decl_start = self.readU32(ve, 1);
+            const decl_len = self.readU32(ve, 2);
+
+            var j: u32 = 0;
+            while (j < decl_len) : (j += 1) {
+                const decl_raw = self.ast.extra_data.items[decl_start + j];
+                const decl = self.ast.getNode(@enumFromInt(decl_raw));
+                if (decl.tag != .variable_declarator) continue;
+
+                const name_idx = self.readNodeIdx(decl.data.extra, 0);
+                if (name_idx.isNone()) continue;
+                const name_node = self.ast.getNode(name_idx);
+                if (name_node.tag != .binding_identifier) continue;
+
+                const name = self.ast.getText(name_node.data.string_ref);
+                if (!self.isNameInScope(name)) {
+                    self.scope_var_names.append(self.allocator, name) catch {};
+                }
+            }
+        }
     }
 
     /// extra_data의 노드 리스트를 방문하여 새 AST에 복사.
@@ -1718,6 +1824,16 @@ pub const Transformer = struct {
         self.needs_this_var = false;
         self.needs_arguments_var = false;
         self.super_call_this_alias = false;
+
+        // ES2015 block scoping: 함수는 새 var 스코프. save/restore.
+        const saved_scope_len = self.scope_var_names.items.len;
+        const saved_rename_len = self.block_rename_stack.items.len;
+        defer {
+            self.scope_var_names.shrinkRetainingCapacity(saved_scope_len);
+            // 함수 내부에서 추가된 rename 해제
+            for (self.block_rename_stack.items[saved_rename_len..]) |entry| self.allocator.free(entry.new_name);
+            self.block_rename_stack.shrinkRetainingCapacity(saved_rename_len);
+        }
 
         // ES2015 new.target: 일반 함수 → function_named 컨텍스트
         const saved_new_target_ctx = self.new_target_ctx;
@@ -2274,6 +2390,75 @@ pub const Transformer = struct {
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
     /// prefix + 카운터로 고유 이름을 생성한다. (예: _loop, _loop2, _loop3, ...)
     /// 호출부에서 전용 카운터 포인터를 전달하여 다른 기능과 충돌 방지.
+    /// block_rename_stack에서 이름 조회. 스택 뒤(가장 안쪽 블록)부터 검색.
+    fn lookupBlockRename(self: *const Transformer, name: []const u8) ?[]const u8 {
+        var i = self.block_rename_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const entry = self.block_rename_stack.items[i];
+            if (std.mem.eql(u8, entry.old_name, name)) return entry.new_name;
+        }
+        return null;
+    }
+
+    /// 현재 함수 스코프의 var 이름 목록에 해당 이름이 있는지 확인.
+    fn isNameInScope(self: *const Transformer, name: []const u8) bool {
+        for (self.scope_var_names.items) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
+    }
+
+    /// block_statement 진입 시: 내부 let/const 선언을 스캔하여 외부 스코프와
+    /// 충돌하는 이름을 찾고 리네이밍 맵을 push한다.
+    /// 반환값: push한 rename entry 수 (퇴장 시 pop할 양).
+    fn pushBlockRenames(self: *Transformer, list_start: u32, list_len: u32) Error!u32 {
+        var renames_added: u32 = 0;
+        var vars_added: u32 = 0;
+
+        var i: u32 = 0;
+        while (i < list_len) : (i += 1) {
+            const raw = self.ast.extra_data.items[list_start + i];
+            const stmt = self.ast.getNode(@enumFromInt(raw));
+            if (stmt.tag != .variable_declaration) continue;
+
+            const ve = stmt.data.extra;
+            const kind_flags = self.readU32(ve, 0);
+            if (kind_flags != 1 and kind_flags != 2) continue; // var(0)은 무시, let(1)/const(2)만
+
+            const decl_start = self.readU32(ve, 1);
+            const decl_len = self.readU32(ve, 2);
+
+            var j: u32 = 0;
+            while (j < decl_len) : (j += 1) {
+                const decl_raw = self.ast.extra_data.items[decl_start + j];
+                const decl = self.ast.getNode(@enumFromInt(decl_raw));
+                if (decl.tag != .variable_declarator) continue;
+
+                const name_idx = self.readNodeIdx(decl.data.extra, 0);
+                if (name_idx.isNone()) continue;
+                const name_node = self.ast.getNode(name_idx);
+                if (name_node.tag != .binding_identifier) continue;
+
+                const name = self.ast.getText(name_node.data.string_ref);
+
+                if (self.isNameInScope(name)) {
+                    // 충돌 — 리네이밍
+                    self.block_rename_counter += 1;
+                    const new_name = std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, self.block_rename_counter }) catch return Error.OutOfMemory;
+                    self.block_rename_stack.append(self.allocator, .{ .old_name = name, .new_name = new_name }) catch return Error.OutOfMemory;
+                    renames_added += 1;
+                } else {
+                    // 충돌 없음 — 외부 스코프에 이름 등록 (이후 내부 블록에서 충돌 감지용)
+                    self.scope_var_names.append(self.allocator, name) catch return Error.OutOfMemory;
+                    vars_added += 1;
+                }
+            }
+        }
+
+        return renames_added;
+    }
+
     pub fn buildUniqueName(self: *Transformer, prefix: []const u8, counter: *u32) Error![]const u8 {
         counter.* += 1;
         if (counter.* == 1) return prefix;

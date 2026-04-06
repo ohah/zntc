@@ -281,6 +281,9 @@ fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8
     const root = try t.transform();
     t.scratch.deinit(allocator);
     t.pending_nodes.deinit(allocator);
+    for (t.block_rename_stack.items) |entry| allocator.free(entry.new_name);
+    t.block_rename_stack.deinit(allocator);
+    t.scope_var_names.deinit(allocator);
 
     return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
