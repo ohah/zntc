@@ -502,9 +502,7 @@ pub const Node = struct {
                 .continue_statement,
                 .import_expression,
                 .static_block,
-                // unary_expression, update_expression: 파서에서 data.extra로 생성하지만
-                // transformer에서 data.unary로 재생성. 원본 AST 스캔에서는 extra로 처리해야 함.
-                // → extra 섹션에서 처리
+                // unary_expression, update_expression → extra 섹션에서 처리
                 .assignment_target_rest,
                 .binding_rest_element,
                 .jsx_spread_attribute,
@@ -619,10 +617,7 @@ pub const Node = struct {
                 .variable_declarator => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
                 // formal_parameter: extra = [pattern(0), type_ann(1), default(2), flags, deco_start, deco_len]
                 .formal_parameter => .{ .kind = .extra, .child_offsets = &.{ 0, 2 } },
-                // unary_expression: extra = [operand(0), operator_flags]
-                // update_expression: extra = [operand(0), flags]
-                // 파서에서 data.extra로 생성. transformer는 data.unary로 재생성하지만
-                // 원본 AST 스캔(block scoping)에서는 extra로 읽어야 함.
+                // unary/update_expression: 파서에서 data.extra로 생성 — extra = [operand(0), flags]
                 .unary_expression, .update_expression => .{ .kind = .extra, .child_offsets = &.{0} },
                 // object_property: extra = [key(0), value(1), flags]
                 .object_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
