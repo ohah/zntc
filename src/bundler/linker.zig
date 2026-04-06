@@ -2100,24 +2100,36 @@ pub const Linker = struct {
             }
         }
 
+        // getter 객체 생성 (Rolldown 호환): { get prop() { return local; } }
+        // 값 복사 대신 getter를 사용하여 live binding을 보존한다.
+        // circular dep에서 init 시점에 아직 undefined인 변수도 사용 시점에 올바르게 참조.
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
         try buf.appendSlice(self.allocator, "{");
         for (exports.items, 0..) |exp, idx| {
             if (idx > 0) try buf.appendSlice(self.allocator, ", ");
-            if (std.mem.eql(u8, exp.exported, "default")) {
-                try buf.appendSlice(self.allocator, "\"default\": ");
-            } else {
-                try buf.appendSlice(self.allocator, exp.exported);
-                try buf.appendSlice(self.allocator, ": ");
-            }
-            // export * as ns 패턴이면 재귀 인라인
+            // export * as ns 패턴이면 재귀 인라인 (값으로 참조)
             if (ns_re_exports.get(exp.exported)) |src_mod| {
+                if (std.mem.eql(u8, exp.exported, "default")) {
+                    try buf.appendSlice(self.allocator, "\"default\": ");
+                } else {
+                    try buf.appendSlice(self.allocator, exp.exported);
+                    try buf.appendSlice(self.allocator, ": ");
+                }
                 const nested = try self.buildInlineObjectStr(src_mod, depth + 1, ns_inline_cache);
                 defer self.allocator.free(nested);
                 try buf.appendSlice(self.allocator, nested);
             } else {
+                // getter: get prop() { return local; }
+                try buf.appendSlice(self.allocator, "get ");
+                if (std.mem.eql(u8, exp.exported, "default")) {
+                    try buf.appendSlice(self.allocator, "\"default\"");
+                } else {
+                    try buf.appendSlice(self.allocator, exp.exported);
+                }
+                try buf.appendSlice(self.allocator, "() { return ");
                 try buf.appendSlice(self.allocator, exp.local);
+                try buf.appendSlice(self.allocator, "; }");
             }
         }
         try buf.appendSlice(self.allocator, "}");
