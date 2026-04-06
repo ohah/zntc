@@ -2108,10 +2108,13 @@ pub const Linker = struct {
         try buf.appendSlice(self.allocator, "{");
         for (exports.items, 0..) |exp, idx| {
             if (idx > 0) try buf.appendSlice(self.allocator, ", ");
+            const needs_quote = needsPropertyQuoteForExport(exp.exported);
             // export * as ns 패턴이면 재귀 인라인 (값으로 참조)
             if (ns_re_exports.get(exp.exported)) |src_mod| {
-                if (std.mem.eql(u8, exp.exported, "default")) {
-                    try buf.appendSlice(self.allocator, "\"default\": ");
+                if (needs_quote) {
+                    try buf.appendSlice(self.allocator, "\"");
+                    try buf.appendSlice(self.allocator, exp.exported);
+                    try buf.appendSlice(self.allocator, "\": ");
                 } else {
                     try buf.appendSlice(self.allocator, exp.exported);
                     try buf.appendSlice(self.allocator, ": ");
@@ -2122,8 +2125,10 @@ pub const Linker = struct {
             } else {
                 // getter: get prop() { return local; }
                 try buf.appendSlice(self.allocator, "get ");
-                if (std.mem.eql(u8, exp.exported, "default")) {
-                    try buf.appendSlice(self.allocator, "\"default\"");
+                if (needs_quote) {
+                    try buf.appendSlice(self.allocator, "\"");
+                    try buf.appendSlice(self.allocator, exp.exported);
+                    try buf.appendSlice(self.allocator, "\"");
                 } else {
                     try buf.appendSlice(self.allocator, exp.exported);
                 }
@@ -2534,4 +2539,23 @@ fn getOrCreateRequireVar(
     const name = try types.makeRequireVarName(self.allocator, target_path);
     try cache.put(mod_idx, name);
     return name;
+}
+
+/// JS 예약어인 export 이름은 프로퍼티 키에 따옴표 필요.
+fn needsPropertyQuoteForExport(name: []const u8) bool {
+    if (name.len == 0) return true;
+    const reserved = [_][]const u8{
+        "default", "class",      "function", "var",    "let",    "const",
+        "if",      "else",       "for",      "while",  "do",     "switch",
+        "case",    "break",      "continue", "return", "throw",  "try",
+        "catch",   "finally",    "new",      "delete", "typeof", "void",
+        "in",      "instanceof", "this",     "with",   "yield",  "await",
+        "import",  "export",     "extends",  "super",  "enum",
+    };
+    for (reserved) |kw| {
+        if (std.mem.eql(u8, name, kw)) return true;
+    }
+    if (name[0] >= '0' and name[0] <= '9') return true;
+    if (name[0] != '_' and name[0] != '$' and !(name[0] >= 'a' and name[0] <= 'z') and !(name[0] >= 'A' and name[0] <= 'Z')) return true;
+    return false;
 }
