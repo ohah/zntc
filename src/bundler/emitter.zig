@@ -307,7 +307,7 @@ pub fn emitWithTreeShaking(
         for (sorted.items, 0..) |m, i| {
             const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines) catch null;
         }
     }
 
@@ -373,9 +373,16 @@ pub fn emitWithTreeShaking(
             if (results[i].mappings) |maps| {
                 const module_id = makeModuleId(m.path, options.root_dir);
                 const source_idx = try sm.addSource(module_id);
+                // sourcesContent: DevTools가 원본 소스를 표시하려면 필수.
+                // sources_content 옵션이 켜져 있고 소스가 있으면 추가.
+                if (options.sources_content and m.source.len > 0) {
+                    try sm.addSourceContent(m.source);
+                }
+                // preamble/래퍼 헤더 줄 수만큼 오프셋 추가 (codegen 매핑은 code 기준)
+                const pl = results[i].preamble_lines;
                 for (maps) |mapping| {
                     try sm.addMapping(.{
-                        .generated_line = module_line + mapping.generated_line,
+                        .generated_line = module_line + pl + mapping.generated_line,
                         .generated_column = mapping.generated_column,
                         .source_index = source_idx,
                         .original_line = mapping.original_line,
@@ -624,14 +631,18 @@ pub fn emitDevBundle(
         if (bundle_sm) |*sm| {
             if (emit_result.mappings) |maps| {
                 const source_idx = try sm.addSource(module_id);
+                // sourcesContent: DevTools가 원본 소���를 표시하려면 필수
+                if (options.sources_content and m.source.len > 0) {
+                    try sm.addSourceContent(m.source);
+                }
                 // __zts_register header는 1줄 ("__zts_register(..., function(...) {\n")
                 const wrapper_header_lines: u32 = 1;
-                // preamble(__zts_require 줄)은 mapping.generated_line에 포함되어 있으므로
-                // 별도 offset 불필요 — emitDevModule이 preamble+code를 concat한 후 codegen 생성.
+                // preamble 줄 수: codegen 매핑은 code 기준이므로 preamble만큼 오프셋 추가
+                const pl = emit_result.preamble_lines;
 
                 for (maps) |mapping| {
                     try sm.addMapping(.{
-                        .generated_line = bundle_line + wrapper_header_lines + mapping.generated_line,
+                        .generated_line = bundle_line + wrapper_header_lines + pl + mapping.generated_line,
                         .generated_column = if (mapping.generated_line == 0)
                             mapping.generated_column
                         else
@@ -713,6 +724,8 @@ pub const DevModuleEmitResult = struct {
     code: []const u8,
     /// 소스맵 매핑 (소스맵 활성화 시). generated_line/col은 code 기준 (오프셋 미적용).
     mappings: ?[]const SourceMap.Mapping = null,
+    /// preamble(cjs_import_preamble 등)으로 인한 줄 오프셋.
+    preamble_lines: u32 = 0,
 };
 
 /// Dev mode용 단일 모듈 변환.
@@ -804,6 +817,7 @@ pub fn emitDevModule(
     const hot_accept_suffix: []const u8 = if (has_refresh) "\n__zts_module.hot.accept();\n" else "";
 
     const needs_concat = preamble != null or final_exports != null or has_refresh;
+    const preamble_line_count: u32 = if (preamble) |p| @intCast(std.mem.count(u8, p, "\n")) else 0;
     const final_code = if (needs_concat)
         try std.mem.concat(allocator, u8, &.{
             preamble orelse "",
@@ -817,6 +831,7 @@ pub fn emitDevModule(
     return .{
         .code = final_code,
         .mappings = mappings,
+        .preamble_lines = preamble_line_count,
     };
 }
 
@@ -1052,7 +1067,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -1630,6 +1645,8 @@ const ModuleEmitResult = struct {
     code: ?[]const u8 = null,
     helpers: RuntimeHelpers = .{},
     mappings: ?[]const SourceMap.Mapping = null,
+    /// preamble(cjs_import_preamble 등)과 래핑 헤더로 인해 codegen 매핑과 어긋나는 줄 수.
+    preamble_lines: u32 = 0,
 };
 
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
@@ -1671,7 +1688,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *ModuleEmitResult,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -1687,6 +1704,7 @@ pub fn emitModule(
     shaker: ?*const TreeShaker,
     helpers_out: ?*RuntimeHelpers,
     mappings_out: ?*?[]const SourceMap.Mapping,
+    preamble_lines_out: ?*u32,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -1965,12 +1983,19 @@ pub fn emitModule(
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
             try wrapped.appendSlice(allocator, code);
             try wrapped.appendSlice(allocator, "}});");
+            // minify 모드: 줄바꿈 없으므로 preamble 오프셋 0
         } else {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
+            // preamble_lines: 래퍼 헤더 2줄 + preamble 내 줄바꿈 수
+            if (preamble_lines_out) |out| {
+                var pl: u32 = 2; // "var ... = __commonJS({\n" + '"..."(exports, module) {\n'
+                if (preamble_code) |p| pl += @intCast(std.mem.count(u8, p, "\n"));
+                out.* = pl;
+            }
             if (preamble_code) |p| try appendIndented(&wrapped, allocator, p);
             try appendIndented(&wrapped, allocator, code);
             try wrapped.appendSlice(allocator, "\n\t}\n});\n");
@@ -2011,6 +2036,12 @@ pub fn emitModule(
     } else null;
 
     if (preamble != null or final_exports != null) {
+        // preamble_lines: preamble 내 줄바꿈 수 (코드 매핑 오프셋용)
+        if (preamble_lines_out) |out| {
+            if (preamble) |p| {
+                out.* = @intCast(std.mem.count(u8, p, "\n"));
+            }
+        }
         return try std.mem.concat(allocator, u8, &.{
             preamble orelse "",
             code,
