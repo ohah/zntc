@@ -1366,8 +1366,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("a,b,c");
     });
 
-    // TODO: for(let i) + generator 조합에서 block scoping 분석 크래시
-    test.todo("infinite generator with manual consumption", async () => {
+    test("infinite generator with manual consumption", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
