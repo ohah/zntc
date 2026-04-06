@@ -110,8 +110,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     try collectBindingNames(self, node.data.unary.operand, names);
                 },
                 .assignment_pattern => {
-                    // default value: extra = [left, right, flags]
-                    try collectBindingNames(self, self.readNodeIdx(node.data.extra, 0), names);
+                    // assignment_pattern은 binary: left = binding, right = default value
+                    try collectBindingNames(self, node.data.binary.left, names);
                 },
                 else => {},
             }
@@ -153,12 +153,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 for (lexical_names) |ln| {
                     if (std.mem.eql(u8, name, ln)) return true;
                 }
-            }
-
-            // 변수 선언: 같은 이름의 let/const/var가 있으면 shadowed → 하위 탐색 건너뜀
-            if (node.tag == .variable_declaration) {
-                // shadow 검사를 위해 declarator 이름을 확인
-                // (정확한 shadow 처리는 scope analysis가 필요하므로 보수적으��� 탐색 계속)
             }
 
             return scanChildren(self, node, lexical_names, fn_depth);
@@ -275,7 +269,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
-            const loop_name = try self.buildUniqueName("_loop");
+            const loop_prefix = "_loop";
+            const loop_name = try self.buildUniqueName(loop_prefix);
+            defer if (loop_name.ptr != loop_prefix.ptr) self.allocator.free(loop_name);
 
             const needs_ret_var = flow.has_return or flow.has_break or flow.has_labeled_break or flow.has_labeled_continue;
 
@@ -676,13 +672,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// 중첩 루프/switch 내부의 body만 변환
         fn transformFlowInLoop(
             self: *Transformer,
-            idx: NodeIndex,
+            _: NodeIndex,
             node: Node,
             flow: *const FlowResult,
             loop_depth: u32,
             switch_depth: u32,
         ) Transformer.Error!NodeIndex {
-            _ = idx;
             // for_statement의 body, while의 body 등을 재귀 변���
             // 각 노드 타입에 따라 body 위치가 다름
             switch (node.tag) {

@@ -334,6 +334,7 @@ pub const Transformer = struct {
         self.refresh_signatures.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
+        self.tagged_template_fns.deinit(self.allocator);
     }
 
     /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
@@ -2059,7 +2060,7 @@ pub const Transformer = struct {
         if (!is_substitution) {
             // 단일 element
             const text = es2015_template.getTemplateElementText(source, tmpl.span);
-            const raw_text = es2015_template.getRawTemplateElementText(source, tmpl.span);
+            const raw_text = es2015_template.getTemplateElementText(source, tmpl.span);
             try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
             try raw_items.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
             if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
@@ -2072,9 +2073,9 @@ pub const Transformer = struct {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .template_element) {
                     const text = es2015_template.getTemplateElementText(source, member.span);
-                    const raw_text = es2015_template.getRawTemplateElementText(source, member.span);
+                    const raw_text = es2015_template.getTemplateElementText(source, member.span);
                     try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
-                    try raw_items.append(self.allocator, try es2015_template.buildStringLiteral(self, raw_text));
+                    try raw_items.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
                     if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
                 } else {
                     const visited = try self.visitNode(@enumFromInt(raw_idx));
