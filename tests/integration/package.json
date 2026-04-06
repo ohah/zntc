@@ -8,9 +8,12 @@
     "test:smoke": "bun test tests/bundle-smoke.test.ts",
     "test:rn": "bun test tests/es5-rn.test.ts",
     "test:compat": "node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json && bun test tests/compat-table.test.ts --timeout 600000",
+    "test:swc": "bun test tests/swc-compare.test.ts --timeout 600000",
     "build:zts": "cd ../.. && zig build -Doptimize=ReleaseFast"
   },
   "devDependencies": {
+    "@swc/cli": "^0.8.1",
+    "@swc/core": "^1.15.24",
     "@types/bun": "latest",
     "svelte": "^5.55.1",
     "vue": "^3.5.31"
