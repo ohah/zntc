@@ -13489,3 +13489,136 @@ test "namespace inline object: default export quoted in getter" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ": default,") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, ": default}") == null);
 }
+
+// === self-require / self-re-export 테스트 ===
+
+test "Self-require: RN 플랫폼 파일 패턴 (조건부 self-require)" {
+    // ProgressBarAndroid.js 패턴: if (condition) require('./self')
+    // resolver가 같은 파일로 resolve할 때 init 재귀 호출이 발생하면 안 됨.
+    // CJS 모듈에서 자기 자신을 require하는 패턴.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Widget } from './widget';
+        \\console.log(Widget);
+    );
+    // widget.js: CJS 모듈이 조건부로 자기 자신을 require
+    try writeFile(tmp.dir, "widget.js",
+        \\let Widget;
+        \\if (typeof globalThis !== 'undefined') {
+        \\  Widget = require('./widget').default;
+        \\} else {
+        \\  Widget = 'fallback';
+        \\}
+        \\module.exports = Widget;
+        \\module.exports.default = Widget;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // self-require는 module.exports로 변환되어야 함 (require 재귀 호출 없이)
+    // 번들에 raw require('./widget')가 남아있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./widget\")") == null);
+}
+
+test "shimMissingExports: missing export에 shim 변수 생성" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { nonExistent } from './lib';
+        \\console.log(nonExistent);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const existing = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .shim_missing_exports = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // shim 변수가 생성되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "void 0") != null);
+    // console.log이 참조 에러 없이 출력 가능
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
+
+test "shimMissingExports: 플래그 꺼져있으면 shim 미생성" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { nonExistent } from './lib';
+        \\console.log(nonExistent);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const existing = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .shim_missing_exports = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // shim 없으면 void 0 선언이 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "void 0") == null);
+}
+
+test "Self-re-export: default re-export가 자기 자신을 가리킬 때 skip" {
+    // Platform.js 패턴: import X from './self'; export default X;
+    // resolve가 같은 파일을 가리키면 re-export 코드에서 init 자기호출 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import val from './proxy';
+        \\console.log(val);
+    );
+    // proxy.ts가 자기 자신을 import해서 re-export
+    try writeFile(tmp.dir, "proxy.ts",
+        \\import X from './proxy';
+        \\export default X;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 자기참조 re-export는 에러가 아닌 경고 → 번들 생성 성공
+    try std.testing.expect(!result.hasErrors());
+    // __esm init 안에서 자기 init을 호출하면 안 됨.
+    // init_proxy가 2회 이상 나타나면 자기참조가 있다는 뜻
+    // (1회는 `var init_proxy = __esm(` 선언 자체).
+    const output = result.output;
+    var init_count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, output, search_from, "init_proxy")) |pos| {
+        init_count += 1;
+        search_from = pos + "init_proxy".len;
+    }
+    // 선언 1회만 허용 — body 안에서 자기호출이 있으면 2회 이상
+    try std.testing.expect(init_count <= 1);
+}

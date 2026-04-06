@@ -79,6 +79,7 @@ const CliOptions = struct {
     /// --global-identifier=<name>: 예약 전역 식별자. scope hoisting 시 리네이밍 대상.
     global_identifier_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
+    shim_missing_exports: bool = false,
     plugin_paths: std.ArrayList([]const u8) = .empty,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
     /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
@@ -452,6 +453,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.analyze = true;
         } else if (std.mem.eql(u8, arg, "--keep-names")) {
             opts.keep_names = true;
+        } else if (std.mem.eql(u8, arg, "--shim-missing-exports")) {
+            opts.shim_missing_exports = true;
         } else if (std.mem.eql(u8, arg, "--plugin")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1045,26 +1048,27 @@ pub fn main() !void {
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
         if (opts.platform == .react_native) {
             if (opts.resolve_extensions_list.items.len == 0) {
+                // Metro/롤다운 호환: ts → tsx 순서 (sourceExtensions 기본 순서)
                 const native_and_base = &[_][]const u8{
-                    ".native.tsx", ".native.ts", ".native.jsx", ".native.js",
-                    ".tsx",        ".ts",        ".jsx",        ".js",
+                    ".native.ts", ".native.tsx", ".native.js", ".native.jsx",
+                    ".ts",        ".tsx",        ".js",        ".jsx",
                     ".json",
                 };
                 switch (opts.rn_platform) {
                     .ios => {
                         try opts.resolve_extensions_list.appendSlice(allocator, &.{
-                            ".ios.tsx", ".ios.ts", ".ios.jsx", ".ios.js",
+                            ".ios.ts", ".ios.tsx", ".ios.js", ".ios.jsx",
                         });
                         try opts.resolve_extensions_list.appendSlice(allocator, native_and_base);
                     },
                     .android => {
                         try opts.resolve_extensions_list.appendSlice(allocator, &.{
-                            ".android.tsx", ".android.ts", ".android.jsx", ".android.js",
+                            ".android.ts", ".android.tsx", ".android.js", ".android.jsx",
                         });
                         try opts.resolve_extensions_list.appendSlice(allocator, native_and_base);
                     },
                     .none => {
-                        try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".tsx", ".ts", ".jsx", ".js", ".json" });
+                        try opts.resolve_extensions_list.appendSlice(allocator, &.{ ".ts", ".tsx", ".js", ".jsx", ".json" });
                     },
                 }
             }
@@ -1147,6 +1151,7 @@ pub fn main() !void {
             .polyfills = opts.polyfill_list.items,
             .global_identifiers = opts.global_identifier_list.items,
             .keep_names = opts.keep_names,
+            .shim_missing_exports = opts.shim_missing_exports,
             .plugins = plugin_list.items,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,

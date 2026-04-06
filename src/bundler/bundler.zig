@@ -111,6 +111,9 @@ pub const BundleOptions = struct {
     /// 예약 전역 식별자 (--global-identifier). scope hoisting 시 이 이름을 모듈 변수로
     /// 사용하지 않도록 리네이밍. RN의 polyfillGlobal()로 등록되는 이름 충돌 방지.
     global_identifiers: []const []const u8 = &.{},
+    /// --shim-missing-exports: 존재하지 않는 export를 import할 때 에러 대신 undefined 제공.
+    /// 롤다운 호환 — missing export에 대해 `var xxx = void 0;` shim 변수를 생성.
+    shim_missing_exports: bool = false,
     /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존
     keep_names: bool = false,
     /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
@@ -502,6 +505,7 @@ pub const Bundler = struct {
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
+            l.shim_missing_exports = self.options.shim_missing_exports;
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();

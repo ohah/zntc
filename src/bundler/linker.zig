@@ -182,6 +182,9 @@ pub const Linker = struct {
     /// 모듈 변수로 사용하지 않도록 리네이밍.
     global_identifiers: []const []const u8 = &.{},
 
+    /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
+    shim_missing_exports: bool = false,
+
     /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
     nested_mangling_enabled: bool = false,
 
@@ -1023,6 +1026,16 @@ pub const Linker = struct {
                 // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
                 const resolved = self.getResolvedBinding(module_index, ib.local_span);
 
+                // 롤다운 shimMissingExports 호환: 소스 모듈에 해당 export가 없으면
+                // strict mode ReferenceError 대신 undefined를 반환하도록 shim 생성.
+                if (resolved == null and self.shim_missing_exports) {
+                    const shim_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
+                    try preamble.write("var ");
+                    try preamble.write(shim_name);
+                    try preamble.write(" = void 0;\n");
+                    continue;
+                }
+
                 // export * from CJS 패턴: canonical이 CJS 모듈을 가리키면
                 // rename 대신 CJS preamble을 생성한다.
                 if (resolved) |rb| {
@@ -1273,11 +1286,33 @@ pub const Linker = struct {
     /// CJS 래핑 모듈과 scope hoisted ESM+CJS 혼합 모듈 모두에서 사용.
     fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHashMapUnmanaged([]const u8) {
         var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
+        const self_idx = @intFromEnum(m.index);
         for (m.import_records) |rec| {
             if (rec.resolved.isNone()) continue;
             const target = @intFromEnum(rec.resolved);
             if (target >= self.modules.len) continue;
             const target_mod = &self.modules[target];
+
+            // 자기 자신을 require하는 경우: init 재귀 호출 없이 자신의 exports만 참조.
+            // RN 패턴: ProgressBarAndroid.js가 require('./ProgressBarAndroid')로 자신을 참조.
+            if (target == self_idx) {
+                if (m.wrap_kind == .esm) {
+                    if (require_rewrites.get(rec.specifier)) |old| {
+                        self.allocator.free(old);
+                    }
+                    const exports_name = try types.makeExportsVarName(self.allocator, m.path);
+                    defer self.allocator.free(exports_name);
+                    const call_expr = try std.fmt.allocPrint(self.allocator, "__toCommonJS({s})", .{exports_name});
+                    try require_rewrites.put(self.allocator, rec.specifier, call_expr);
+                } else if (m.wrap_kind == .cjs) {
+                    if (require_rewrites.get(rec.specifier)) |old| {
+                        self.allocator.free(old);
+                    }
+                    const call_expr = try self.allocator.dupe(u8, "module.exports");
+                    try require_rewrites.put(self.allocator, rec.specifier, call_expr);
+                }
+                continue;
+            }
 
             if (target_mod.wrap_kind == .cjs) {
                 // CJS 타겟: require("spec") → require_xxx()
