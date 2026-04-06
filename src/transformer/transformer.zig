@@ -186,6 +186,11 @@ pub const Transformer = struct {
     /// 일반 함수 진입 시 0으로 리셋 (자체 this/arguments 바인딩).
     arrow_this_depth: u32 = 0,
 
+    /// ES2015 new.target: 현재 함수의 종류 (new.target 변환에 사용).
+    /// constructor: this.constructor, method: void 0,
+    /// function_named: this instanceof Fn ? this.constructor : void 0
+    new_target_ctx: NewTargetCtx = .none,
+
     /// ES2015 class extends: 현재 클래스의 super class 이름 Span.
     /// class body 방문 중 설정되어, super() → Parent.call(this),
     /// super.method() → Parent.prototype.method.call(this) 변환에 사용.
@@ -250,6 +255,13 @@ pub const Transformer = struct {
         name: []const u8,
         break_label: u32,
         continue_label: ?u32,
+    };
+
+    pub const NewTargetCtx = union(enum) {
+        none,
+        constructor, // class constructor: new.target → this.constructor
+        method, // class method: new.target → void 0
+        function_named: Span, // function Fn: new.target → this instanceof Fn ? this.constructor : void 0
     };
 
     pub const PrivateFieldMapping = struct {
@@ -866,6 +878,15 @@ pub const Transformer = struct {
                 return self.copyNodeDirect(node);
             },
 
+            // meta_property: new.target / import.meta
+            .meta_property => {
+                // new.target (data.none == 1) 다운레벨링
+                if (node.data.none == 1 and self.options.unsupported.new_target) {
+                    return self.lowerNewTarget(node.span);
+                }
+                return self.copyNodeDirect(node);
+            },
+
             .boolean_literal,
             .null_literal,
             .numeric_literal,
@@ -896,7 +917,6 @@ pub const Transformer = struct {
             .directive,
             .hashbang,
             .super_expression,
-            .meta_property,
             .template_element,
             .elision,
             .jsx_empty_expression,
@@ -1675,6 +1695,19 @@ pub const Transformer = struct {
         self.needs_arguments_var = false;
         self.super_call_this_alias = false;
 
+        // ES2015 new.target: 일반 함수 → function_named 컨텍스트
+        const saved_new_target_ctx = self.new_target_ctx;
+        if (self.options.unsupported.new_target) {
+            const name_idx = self.readNodeIdx(e, 0);
+            if (!name_idx.isNone()) {
+                self.new_target_ctx = .{ .function_named = self.ast.getNode(name_idx).span };
+            } else {
+                // 익명 함수: new.target → void 0 (이름 없으므로 instanceof 불가)
+                self.new_target_ctx = .method;
+            }
+        }
+        defer self.new_target_ctx = saved_new_target_ctx;
+
         // 임시 변수 카운터 저장 (함수 스코프 내 사용된 임시 변수 호이스팅용)
         const saved_temp_counter = self.temp_var_counter;
 
@@ -1901,6 +1934,72 @@ pub const Transformer = struct {
             .span = body.span,
             .data = .{ .list = new_list },
         });
+    }
+
+    /// ES2015 new.target 변환.
+    /// constructor: this.constructor
+    /// method: void 0
+    /// function_named(Fn): this instanceof Fn ? this.constructor : void 0
+    fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
+        return switch (self.new_target_ctx) {
+            .constructor => {
+                // this.constructor
+                const this_node = try self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+                const ctor_ref = try es_helpers.makeIdentifierRef(self, "constructor");
+                return es_helpers.makeStaticMember(self, this_node, ctor_ref, span);
+            },
+            .method, .none => es_helpers.makeVoidZero(self, span),
+            .function_named => |fn_span| {
+                // (this instanceof Fn ? this.constructor : void 0)
+                const this1 = try self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+                const fn_ref = try es_helpers.makeIdentifierRef(self, self.ast.getText(fn_span));
+                const instanceof = try self.ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = span,
+                    .data = .{ .binary = .{
+                        .left = this1,
+                        .right = fn_ref,
+                        .flags = @intFromEnum(token_mod.Kind.kw_instanceof),
+                    } },
+                });
+
+                // this.constructor
+                const this2 = try self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+                const ctor_ref = try es_helpers.makeIdentifierRef(self, "constructor");
+                const this_ctor = try es_helpers.makeStaticMember(self, this2, ctor_ref, span);
+
+                // void 0
+                const void_zero = try es_helpers.makeVoidZero(self, span);
+
+                // conditional → parenthesized (우선순위 보호)
+                const cond = try self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = span,
+                    .data = .{ .ternary = .{
+                        .a = instanceof,
+                        .b = this_ctor,
+                        .c = void_zero,
+                    } },
+                });
+                return self.ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
+                });
+            },
+        };
     }
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
@@ -3368,6 +3467,23 @@ pub const Transformer = struct {
         self.needs_this_var = false;
         self.needs_arguments_var = false;
         self.super_call_this_alias = false;
+
+        // ES2015 new.target: method → constructor 또는 void 0
+        const saved_new_target_ctx = self.new_target_ctx;
+        if (self.options.unsupported.new_target) {
+            const is_ctor = blk: {
+                if ((flags & 0x01) != 0) break :blk false; // static
+                const key_idx = self.readNodeIdx(e, 0);
+                const key_node = self.ast.getNode(key_idx);
+                if (key_node.tag == .identifier_reference) {
+                    const name = self.ast.source[key_node.span.start..key_node.span.end];
+                    break :blk std.mem.eql(u8, name, "constructor");
+                }
+                break :blk false;
+            };
+            self.new_target_ctx = if (is_ctor) .constructor else .method;
+        }
+        defer self.new_target_ctx = saved_new_target_ctx;
 
         var new_body = try self.visitNode(self.readNodeIdx(e, 3));
 

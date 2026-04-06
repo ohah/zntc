@@ -65,6 +65,7 @@ pub const Feature = enum(u5) {
     default_params,
     block_scoping,
     generator,
+    new_target,
     // ES2016
     exponentiation,
     // ES2017
@@ -85,7 +86,7 @@ pub const Feature = enum(u5) {
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
         return switch (self) {
-            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator => .es2015,
+            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target => .es2015,
             .exponentiation => .es2016,
             .async_await => .es2017,
             .object_spread => .es2018,
@@ -112,6 +113,7 @@ pub const UnsupportedFeatures = packed struct(u32) {
     default_params: bool = false,
     block_scoping: bool = false,
     generator: bool = false,
+    new_target: bool = false,
     // ES2016
     exponentiation: bool = false,
     // ES2017
@@ -129,7 +131,7 @@ pub const UnsupportedFeatures = packed struct(u32) {
     class_static_block: bool = false,
     class_private_method: bool = false,
 
-    _: u13 = 0,
+    _: u12 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -143,7 +145,7 @@ pub const UnsupportedFeatures = packed struct(u32) {
 
     /// ES2015 feature 중 하나라도 unsupported이면 true.
     pub fn needsAnyES2015(self: UnsupportedFeatures) bool {
-        const mask: u32 = (1 << 10) - 1; // 하위 10비트 (arrow ~ generator)
+        const mask: u32 = (1 << 11) - 1; // 하위 11비트 (arrow ~ new_target)
         return (@as(u32, @bitCast(self)) & mask) != 0;
     }
 
@@ -299,6 +301,15 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .generator, .engine = .node, .major = 6 },
     .{ .feature = .generator, .engine = .deno, .major = 1 },
     .{ .feature = .generator, .engine = .ios, .major = 10 },
+
+    // ── ES2015: new.target ──
+    .{ .feature = .new_target, .engine = .chrome, .major = 46 },
+    .{ .feature = .new_target, .engine = .firefox, .major = 41 },
+    .{ .feature = .new_target, .engine = .safari, .major = 10 },
+    .{ .feature = .new_target, .engine = .edge, .major = 13 },
+    .{ .feature = .new_target, .engine = .node, .major = 5 },
+    .{ .feature = .new_target, .engine = .deno, .major = 1 },
+    .{ .feature = .new_target, .engine = .ios, .major = 10 },
 
     // ── ES2016: exponentiation (**) ──
     .{ .feature = .exponentiation, .engine = .chrome, .major = 52 },
