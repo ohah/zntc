@@ -203,10 +203,10 @@ async function runTarget(target: string): Promise<Result[]> {
     for (const sub of feature.subtests) {
       // 동기 실행 불가능한 비동기 테스트 스킵
       if (sub.code.includes("asyncTestPassed")) continue;
-      // 트랜스파일러가 원천적으로 통과 불가능한 테스트 스킵 (네이티브 엔진 전용)
-      // - GeneratorFunction 생성자: yield 구문은 function* 밖에서 파싱 불가
-      // - __createIterableObject: compat-table 테스트 인프라 헬퍼 의존
+      // 네이티브 엔진 전용 — 트랜스파일러에서 원천적으로 통과 불가능 (Babel/TS도 동일):
+      // GeneratorFunction 생성자: 변환된 코드에서 yield는 일반 function 안에서 SyntaxError
       if (sub.code.includes(".constructor(") && sub.code.includes("yield")) continue;
+      // 커스텀 iterable 프로토콜: Symbol.iterator 기반 iterable 변환은 런타임 polyfill 영역
       if (sub.code.includes("__createIterableObject")) continue;
 
       const id = `t${counter++}`;
