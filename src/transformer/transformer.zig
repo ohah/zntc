@@ -2051,22 +2051,20 @@ pub const Transformer = struct {
             break :blk false;
         };
 
-        // --- cooked/raw 배열 구축 ---
-        var cooked_items: std.ArrayList(NodeIndex) = .empty;
-        defer cooked_items.deinit(self.allocator);
-        var raw_items: std.ArrayList(NodeIndex) = .empty;
-        defer raw_items.deinit(self.allocator);
-        var expr_items: std.ArrayList(NodeIndex) = .empty;
-        defer expr_items.deinit(self.allocator);
+        // --- cooked/raw/expr 배열 구축 (scratch 사용, 힙 할당 없음) ---
+        const scratch_base = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_base);
+
+        // scratch에 순서대로: [cooked... | raw... | expr...]
+        // 각 영역의 시작 위치를 기록
+        var cooked_count: u32 = 0;
+        var raw_count: u32 = 0;
         var has_escape = false;
 
         if (!is_substitution) {
-            // 단일 element
             const text = es2015_template.getTemplateElementText(source, tmpl.span);
-            const raw_text = es2015_template.getTemplateElementText(source, tmpl.span);
-            try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
-            try raw_items.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
-            if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
+            try self.scratch.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+            cooked_count = 1;
         } else {
             const tl_start = tmpl.data.list.start;
             const tl_len = tmpl.data.list.len;
@@ -2076,16 +2074,54 @@ pub const Transformer = struct {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .template_element) {
                     const text = es2015_template.getTemplateElementText(source, member.span);
-                    const raw_text = es2015_template.getTemplateElementText(source, member.span);
-                    try cooked_items.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
-                    try raw_items.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
-                    if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
-                } else {
-                    const visited = try self.visitNode(@enumFromInt(raw_idx));
-                    try expr_items.append(self.allocator, visited);
+                    try self.scratch.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+                    cooked_count += 1;
                 }
             }
         }
+
+        // raw 배열 (cooked 뒤에 append)
+        const raw_start = self.scratch.items.len;
+        if (!is_substitution) {
+            const raw_text = es2015_template.getTemplateElementText(source, tmpl.span);
+            try self.scratch.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
+            if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
+            raw_count = 1;
+        } else {
+            const tl_start2 = tmpl.data.list.start;
+            const tl_len2 = tmpl.data.list.len;
+            var j: u32 = 0;
+            while (j < tl_len2) : (j += 1) {
+                const raw_idx2 = self.ast.extra_data.items[tl_start2 + j];
+                const member2 = self.ast.getNode(@enumFromInt(raw_idx2));
+                if (member2.tag == .template_element) {
+                    const raw_text = es2015_template.getTemplateElementText(source, member2.span);
+                    try self.scratch.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
+                    if (std.mem.indexOf(u8, raw_text, "\\") != null) has_escape = true;
+                    raw_count += 1;
+                }
+            }
+        }
+
+        // expr 배열 (raw 뒤에 append)
+        const expr_start = self.scratch.items.len;
+        if (is_substitution) {
+            const tl_start3 = tmpl.data.list.start;
+            const tl_len3 = tmpl.data.list.len;
+            var k: u32 = 0;
+            while (k < tl_len3) : (k += 1) {
+                const raw_idx3 = self.ast.extra_data.items[tl_start3 + k];
+                const member3 = self.ast.getNode(@enumFromInt(raw_idx3));
+                if (member3.tag != .template_element) {
+                    try self.scratch.append(self.allocator, try self.visitNode(@enumFromInt(raw_idx3)));
+                }
+            }
+        }
+        const expr_count = self.scratch.items.len - expr_start;
+
+        const cooked_slice = self.scratch.items[scratch_base .. scratch_base + cooked_count];
+        const raw_slice = self.scratch.items[raw_start .. raw_start + raw_count];
+        const expr_slice = self.scratch.items[expr_start .. expr_start + expr_count];
 
         // --- _templateObject 함수명 생성 ---
         self.tagged_template_counter += 1;
@@ -2097,7 +2133,7 @@ pub const Transformer = struct {
         defer if (self.tagged_template_counter > 1) self.allocator.free(fn_name);
 
         // --- cooked 배열 노드 ---
-        const cooked_list = try self.ast.addNodeList(cooked_items.items);
+        const cooked_list = try self.ast.addNodeList(cooked_slice);
         const cooked_arr = try self.ast.addNode(.{
             .tag = .array_expression,
             .span = span,
@@ -2111,7 +2147,7 @@ pub const Transformer = struct {
         call_args[0] = cooked_arr;
 
         if (has_escape) {
-            const raw_list = try self.ast.addNodeList(raw_items.items);
+            const raw_list = try self.ast.addNodeList(raw_slice);
             const raw_arr = try self.ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
@@ -2218,13 +2254,13 @@ pub const Transformer = struct {
         });
 
         // tag(_templateObject(), expr1, expr2, ...)
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        // scratch에서 최종 인자 목록 구성 (기존 cooked/raw/expr 뒤에 append)
+        const final_start = self.scratch.items.len;
         try self.scratch.append(self.allocator, tmpl_call);
-        for (expr_items.items) |expr| {
+        for (expr_slice) |expr| {
             try self.scratch.append(self.allocator, expr);
         }
-        const final_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const final_args = try self.ast.addNodeList(self.scratch.items[final_start..]);
         const final_call_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_tag), final_args.start, final_args.len, 0,
         });

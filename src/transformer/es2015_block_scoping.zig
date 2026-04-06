@@ -184,47 +184,70 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             fn_depth: u32,
             depth: u32,
         ) bool {
+            return forEachChild(self, node, .{ .scan = .{
+                .lexical_names = lexical_names,
+                .fn_depth = fn_depth,
+                .depth = depth,
+            } });
+        }
+
+        /// 범용 자식 노드 순회. dataKind()와 extraChildOffsets/extraListOffsets를 사용.
+        /// visitor에 따라 scanImpl(bool 반환) 또는 analyzeControlFlow(void) 호출.
+        const ChildVisitor = union(enum) {
+            scan: struct { lexical_names: []const []const u8, fn_depth: u32, depth: u32 },
+            flow: struct { flow: *FlowResult, loop_depth: u32, switch_depth: u32 },
+        };
+
+        fn forEachChild(self: *Transformer, node: Node, visitor: ChildVisitor) bool {
+            const visit = struct {
+                fn call(s: *Transformer, idx: NodeIndex, v: ChildVisitor) bool {
+                    switch (v) {
+                        .scan => |ctx| return scanImpl(s, idx, ctx.lexical_names, ctx.fn_depth, ctx.depth),
+                        .flow => |ctx| {
+                            analyzeControlFlow(s, idx, ctx.flow, ctx.loop_depth, ctx.switch_depth);
+                            return false;
+                        },
+                    }
+                }
+            };
+
             switch (node.tag.dataKind()) {
                 .leaf => {},
                 .unary => {
-                    if (scanImpl(self, node.data.unary.operand, lexical_names, fn_depth, depth)) return true;
+                    if (visit.call(self, node.data.unary.operand, visitor)) return true;
                 },
                 .binary => {
-                    if (scanImpl(self, node.data.binary.left, lexical_names, fn_depth, depth)) return true;
-                    if (scanImpl(self, node.data.binary.right, lexical_names, fn_depth, depth)) return true;
+                    if (visit.call(self, node.data.binary.left, visitor)) return true;
+                    if (visit.call(self, node.data.binary.right, visitor)) return true;
                 },
                 .ternary => {
-                    if (scanImpl(self, node.data.ternary.a, lexical_names, fn_depth, depth)) return true;
-                    if (scanImpl(self, node.data.ternary.b, lexical_names, fn_depth, depth)) return true;
-                    if (scanImpl(self, node.data.ternary.c, lexical_names, fn_depth, depth)) return true;
+                    if (visit.call(self, node.data.ternary.a, visitor)) return true;
+                    if (visit.call(self, node.data.ternary.b, visitor)) return true;
+                    if (visit.call(self, node.data.ternary.c, visitor)) return true;
                 },
                 .list => {
                     const list = node.data.list;
                     const items = self.ast.extra_data.items[list.start .. list.start + list.len];
                     for (items) |raw| {
-                        if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
+                        if (visit.call(self, @enumFromInt(raw), visitor)) return true;
                     }
                 },
                 .extra => {
                     const e = node.data.extra;
-                    // 직접 NodeIndex 필드
                     for (node.tag.extraChildOffsets()) |offset| {
                         if (e + offset >= self.ast.extra_data.items.len) break;
                         const raw = self.ast.extra_data.items[e + offset];
                         if (raw > 0 and raw < self.ast.nodes.items.len) {
-                            if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
+                            if (visit.call(self, @enumFromInt(raw), visitor)) return true;
                         }
                     }
-                    // 간접 NodeIndex 리스트 필드 (args, params, cases 등)
                     for (node.tag.extraListOffsets()) |lo| {
-                        const start_off = lo[0];
-                        const len_off = lo[1];
-                        if (e + len_off >= self.ast.extra_data.items.len) continue;
-                        const list_start = self.ast.extra_data.items[e + start_off];
-                        const list_len = self.ast.extra_data.items[e + len_off];
+                        if (e + lo[1] >= self.ast.extra_data.items.len) continue;
+                        const list_start = self.ast.extra_data.items[e + lo[0]];
+                        const list_len = self.ast.extra_data.items[e + lo[1]];
                         if (list_start + list_len > self.ast.extra_data.items.len) continue;
                         for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                            if (scanImpl(self, @enumFromInt(raw), lexical_names, fn_depth, depth)) return true;
+                            if (visit.call(self, @enumFromInt(raw), visitor)) return true;
                         }
                     }
                 },
@@ -428,49 +451,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             loop_depth: u32,
             switch_depth: u32,
         ) void {
-            switch (node.tag.dataKind()) {
-                .leaf => {},
-                .unary => {
-                    analyzeControlFlow(self, node.data.unary.operand, flow, loop_depth, switch_depth);
-                },
-                .binary => {
-                    analyzeControlFlow(self, node.data.binary.left, flow, loop_depth, switch_depth);
-                    analyzeControlFlow(self, node.data.binary.right, flow, loop_depth, switch_depth);
-                },
-                .ternary => {
-                    analyzeControlFlow(self, node.data.ternary.a, flow, loop_depth, switch_depth);
-                    analyzeControlFlow(self, node.data.ternary.b, flow, loop_depth, switch_depth);
-                    analyzeControlFlow(self, node.data.ternary.c, flow, loop_depth, switch_depth);
-                },
-                .list => {
-                    const list = node.data.list;
-                    const items = self.ast.extra_data.items[list.start .. list.start + list.len];
-                    for (items) |raw| {
-                        analyzeControlFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth);
-                    }
-                },
-                .extra => {
-                    const e = node.data.extra;
-                    for (node.tag.extraChildOffsets()) |offset| {
-                        if (e + offset >= self.ast.extra_data.items.len) break;
-                        const raw = self.ast.extra_data.items[e + offset];
-                        if (raw > 0 and raw < self.ast.nodes.items.len) {
-                            analyzeControlFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth);
-                        }
-                    }
-                    for (node.tag.extraListOffsets()) |lo| {
-                        const start_off = lo[0];
-                        const len_off = lo[1];
-                        if (e + len_off >= self.ast.extra_data.items.len) continue;
-                        const list_start = self.ast.extra_data.items[e + start_off];
-                        const list_len = self.ast.extra_data.items[e + len_off];
-                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
-                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                            analyzeControlFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth);
-                        }
-                    }
-                },
-            }
+            _ = forEachChild(self, node, .{ .flow = .{
+                .flow = flow,
+                .loop_depth = loop_depth,
+                .switch_depth = switch_depth,
+            } });
         }
 
         /// body 내부의 break/continue/return을 _loop 함수에 맞게 변환한다.
