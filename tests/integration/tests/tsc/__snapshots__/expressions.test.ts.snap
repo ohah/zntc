@@ -213,7 +213,7 @@ exports[`TSC: expressions asOperator2 1`] = `
 `;
 
 exports[`TSC: expressions asOperator3 1`] = `
-"var a = \`\${123 + 456 as number}\`;
+"var a = \`\${123 + 456}\`;
 var b = \`leading \${123 + 456}\`;
 var c = \`\${123 + 456} trailing\`;
 var d = \`Hello \${123} World\`;

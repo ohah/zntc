@@ -1029,13 +1029,13 @@ exports[`TSC: es6/templates templateStringInCallExpressionES6 1`] = `
 
 exports[`TSC: es6/templates templateStringInConditional 1`] = `
 "// @target: es2015
-var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${" "}def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInConditionalES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ " " }def\`  ? \`abc\${ " " }def\`  : \`abc\${" "}def\`;
+var x = \`abc\${ " " }def\`  ? \`abc\${" "}def\` : \`abc\${" "}def\`;
 "
 `;
 
@@ -1059,13 +1059,13 @@ var x = \`abc\${ 1 }def\`  / 1;
 
 exports[`TSC: es6/templates templateStringInEqualityChecks 1`] = `
 "// @target: es2015
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInEqualityChecksES6 1`] = `
 "// @target: ES6
-var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\`  && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
+var x = \`abc\${0}abc\`  === \`abc\` || \`abc\` !== \`abc\${0}abc\` && \`abc\${0}abc\` == "abc0abc" && "abc0abc" !== \`abc\${0}abc\`;
 "
 `;
 
@@ -1073,7 +1073,7 @@ exports[`TSC: es6/templates templateStringInFunctionExpression 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${ 0 }def\`;
+	return \`abc\${0}def\`;
 };
 "
 `;
@@ -1082,7 +1082,7 @@ exports[`TSC: es6/templates templateStringInFunctionExpressionES6 1`] = `
 "var x = function y() {
 	\`abc\${ 0 }def\`
     ;
-	return \`abc\${ 0 }def\`;
+	return \`abc\${0}def\`;
 };
 "
 `;
@@ -1221,13 +1221,13 @@ switch (\`abc\${0}abc\`) {
 
 exports[`TSC: es6/templates templateStringInTaggedTemplate 1`] = `
 "// @target: es2015
-\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInTaggedTemplateES6 1`] = `
 "// @target: ES6
-\`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${"AM"} THE TEMPLATE PORTION\`;
+\`I AM THE \${\`\${ \`TAG\` } \` } PORTION\`\`I \${"AM"} THE TEMPLATE PORTION\`;
 "
 `;
 
@@ -1694,25 +1694,25 @@ var x = \`abc\${{ x: 10, y: 20 }}def\`;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateString 1`] = `
 "// @target: es2015
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${ " | " } 654\` }321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTemplateStringES6 1`] = `
 "// @target: ES6
-var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${ " | " } 654\` }321\`;
+var x = \`123\${\`456 \${ " | " } 654\` }321 123\${\`456 \${" | "} 654\`}321\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAddition 1`] = `
 "// @target: es2015
-var x = \`abc\${ <any>(10 + 10) }def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringWithEmbeddedTypeAssertionOnAdditionES6 1`] = `
 "// @target: ES6
-var x = \`abc\${ <any>(10 + 10) }def\`;
+var x = \`abc\${10 + 10}def\`;
 "
 `;
 
