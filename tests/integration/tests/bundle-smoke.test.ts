@@ -1098,6 +1098,36 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.stdout).toContain("= _default");
   });
 
+  test("export default <identifier>가 mangling 시 할당문을 생성한다", async () => {
+    // export default View 패턴에서 View가 다른 모듈과 충돌하여 View$1로 mangling될 때
+    // __esm body에 View$1 = View; 할당이 생성되어야 한다.
+    // 이 할당이 없으면 __export getter가 undefined를 반환한다.
+    const result = await bundleAndRun({
+      "index.ts": `import View from "./view-a"; import View2 from "./view-b"; console.log(View + ":" + View2);`,
+      "view-a.ts": `const View = "viewA"; export default View;`,
+      "view-b.ts": `const View = "viewB"; export default View;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("viewA:viewB");
+  });
+
+  test("export default <identifier> mangling: forwardRef 패턴이 올바르게 연결된다", async () => {
+    // React.forwardRef()로 생성된 컴포넌트를 export default하고,
+    // 다른 모듈에도 같은 이름의 변수가 있어서 mangling이 발생하는 경우.
+    // RN View.js 에서 발견된 실제 버그 패턴.
+    const result = await bundleAndRun({
+      "index.ts": `import View from "./comp-a"; import { render } from "./comp-b"; console.log(typeof View + ":" + render());`,
+      "comp-a.ts": `function makeRef(fn: any) { return fn; }\nconst View = makeRef(function ViewImpl() { return "a"; });\nView.displayName = "View";\nexport default View;`,
+      "comp-b.ts": `const View = "shadow";\nexport function render() { return View; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("function:shadow");
+  });
+
   test("import Default, { named } from 동시 사용 시 default와 named 모두 정상 바인딩", async () => {
     const result = await bundleAndRun({
       "index.ts": `import Cls, { helper } from "./lib"; console.log(new Cls().name + ":" + helper());`,

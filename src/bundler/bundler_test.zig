@@ -457,6 +457,43 @@ test "Scope hoisting: three modules same variable name" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "name$") != null);
 }
 
+test "Scope hoisting: export default identifier가 mangling 시 할당문 생성" {
+    // export default View 패턴에서 View가 다른 모듈과 충돌하여 View$1 등으로 mangling될 때
+    // __esm body에 View$1 = View; 할당이 생성되어야 한다.
+    // 이 할당이 없으면 __export getter가 undefined를 반환하는 버그가 발생.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import View from './view-a';
+        \\import View2 from './view-b';
+        \\console.log(View, View2);
+    );
+    try writeFile(tmp.dir, "view-a.ts",
+        \\const View = "viewA";
+        \\export default View;
+    );
+    try writeFile(tmp.dir, "view-b.ts",
+        \\const View = "viewB";
+        \\export default View;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 모듈의 View가 충돌 → 하나 이상 View$로 리네임
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "View$") != null);
+    // 리네임된 export 변수에 대한 할당문이 존재해야 함 (예: View$1=View;)
+    // __export getter가 View$1을 참조하므로, 이 할당이 없으면 undefined
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"viewA\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"viewB\"") != null);
+}
+
 test "Scope hoisting: multiple named imports from one module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
