@@ -1397,6 +1397,22 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// export default X에서 X의 (rename된) 이름이 def_name과 같은지 확인.
+    /// 같으면 할당문(def_name = X)이 불필요한 self-reference.
+    fn isExportDefaultSelfRef(self: *Codegen, inner: NodeIndex, def_name: []const u8) bool {
+        const inner_node = self.ast.getNode(inner);
+        if (inner_node.tag != .identifier_reference) return false;
+        if (self.options.linking_metadata) |md| {
+            if (self.resolveSymbolId(inner, md)) |sid| {
+                if (md.renames.get(sid)) |renamed| {
+                    return std.mem.eql(u8, renamed, def_name);
+                }
+            }
+        }
+        const ref_text = self.ast.source[inner_node.span.start..inner_node.span.end];
+        return std.mem.eql(u8, ref_text, def_name);
+    }
+
     /// keepNames: name 노드가 rename되었으면 (original_name, new_name) 쌍을 수집.
     /// emitter가 코드젠 완료 후 __name(newName, "originalName") 호출을 append.
     fn collectKeepNameEntry(self: *Codegen, name_idx: NodeIndex) void {
@@ -2399,16 +2415,20 @@ pub const Codegen = struct {
                         try self.emitNode(inner);
                     } else {
                         const def_name = if (self.options.linking_metadata) |md| md.default_export_name else "_default";
-                        // default_export_name이 _default(합성 변수)이면 var 선언 필요.
-                        // 실제 변수명(stringifySafe 등)이면 이미 선언되어 있으므로 생성 불필요.
                         if (std.mem.startsWith(u8, def_name, "_default")) {
+                            // 합성 변수 (_default, _default$1 등): var 선언 + 할당 필요.
                             if (!self.options.esm_var_assign_only) try self.write("var ");
                             try self.write(def_name);
                             try self.writeByte('=');
                             try self.emitNode(inner);
                             try self.writeByte(';');
+                        } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
+                            // mangling으로 이름이 바뀐 경우 (View → View$44) 할당 필요.
+                            try self.write(def_name);
+                            try self.writeByte('=');
+                            try self.emitNode(inner);
+                            try self.writeByte(';');
                         }
-                        // 그 외: __export getter가 이미 선언된 변수를 직접 참조. 생략.
                     }
                 }
                 return;
@@ -2429,25 +2449,8 @@ pub const Codegen = struct {
                 if (is_named_decl) {
                     try self.emitNode(inner);
                 } else {
-                    // anonymous function/class 또는 expression → var _default = ...;
-                    // self-reference 방지: export default X에서 X가 이미 같은 이름의
-                    // const로 선언되어 있으면 var X = X; 재선언이 불필요
                     const def_name = self.options.linking_metadata.?.default_export_name;
-                    const is_self_ref = blk: {
-                        if (inner_node.tag == .identifier_reference) {
-                            const md = self.options.linking_metadata.?;
-                            // rename된 이름으로 비교 (ES5 lowering 시 원본 span과 def_name이 다를 수 있음)
-                            if (self.resolveSymbolId(inner, md)) |sid| {
-                                if (md.renames.get(sid)) |renamed| {
-                                    break :blk std.mem.eql(u8, renamed, def_name);
-                                }
-                            }
-                            const ref_text = self.ast.source[inner_node.span.start..inner_node.span.end];
-                            break :blk std.mem.eql(u8, ref_text, def_name);
-                        }
-                        break :blk false;
-                    };
-                    if (!is_self_ref) {
+                    if (!self.isExportDefaultSelfRef(inner, def_name)) {
                         try self.emitDefaultVarAssignment(def_name, inner);
                     }
                 }
