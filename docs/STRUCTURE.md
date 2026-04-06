@@ -4,8 +4,10 @@
 src/
   main.zig                  # CLI 엔트리포인트 (zts 커맨드)
   root.zig                  # 라이브러리 엔트리포인트 (모든 모듈 re-export)
+  transpile.zig             # 트랜스파일 파이프라인 통합 (파일/stdin → JS 출력)
   diagnostic.zig            # 진단 시스템 (ParseError, SemanticError 통합)
   config.zig                # 설정 구조 (CompilerOptions, ResolverOptions, BundlerOptions)
+  mimalloc.zig              # mimalloc 바인딩 (릴리즈 빌드 backing allocator)
   lexer/                    # Phase 1: 렉서 ✅
     mod.zig                 #   렉서 엔트리 + re-export
     token.zig               #   토큰 종류(Kind ~208개), Span, Token, 키워드 맵
@@ -23,6 +25,7 @@ src/
     jsx.zig                 #   JSX 파싱 (element, fragment, attributes)
     module.zig              #   import/export 파싱
     ts.zig                  #   TypeScript 타입 어노테이션 파싱
+    flow.zig                #   Flow 타입 어노테이션 파싱 (TIER 1+2+3, Metro 검증)
   semantic/                 # 의미 분석 ✅
     mod.zig                 #   의미 분석 엔트리 + re-export
     analyzer.zig            #   의미 분석기 (~3000줄, 스코프/심볼 추적)
@@ -32,6 +35,9 @@ src/
   transformer/              # Phase 3: 트랜스포머 ✅ + ES 다운레벨링 ✅
     mod.zig                 #   트랜스포머 엔트리 + re-export
     transformer.zig         #   Visitor 기반 순회 + AST 변환
+    compat.zig              #   엔진 타겟 호환성 매핑 (chrome/safari/node 등 feature-level)
+    jsx_lowering.zig        #   JSX lowering (classic/automatic/automatic-dev)
+    es2024.zig              #   ES2024 다운레벨링 (using/await using)
     es2022.zig              #   ES2022 다운레벨링 (class static block, this 치환)
     es2021.zig              #   ES2021 다운레벨링 (??=, ||=, &&=)
     es2020.zig              #   ES2020 다운레벨링 (??, ?.)
@@ -76,9 +82,17 @@ src/
     resolve_cache.zig       #   해석 결과 캐싱 (import kind별)
     import_scanner.zig      #   import/export 문 추출
     binding_scanner.zig     #   심볼 바인딩 추적
+    plugin.zig              #   Zig builtin 플러그인 (함수 포인터 기반)
+    subprocess_plugin.zig   #   JS subprocess 플러그인 (stdin/stdout JSON IPC)
+    json_to_esm.zig         #   JSON → ESM AST 변환 (export default <value>)
+    mpsc_channel.zig        #   MPSC 채널 (Producer-Consumer 파이프라인)
+    module_store.zig        #   PersistentModuleStore (증분 빌드 파싱 캐시)
+    incremental.zig         #   증분 빌드 로직 (watch/serve 리빌드)
+    runtime_helpers.zig     #   런타임 헬퍼 (__esm, __commonJS, __export 등)
   server/                   # Phase 6b: 개발 서버 + HMR ✅
     mod.zig                 #   서버 엔트리 + re-export
     dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh)
+    file_watcher.zig        #   파일 변경 감지 (watch/serve)
     mime.zig                #   MIME 타입 매핑
   regexp/                   # RegExp 검증 ✅
     mod.zig                 #   RegExp 엔트리 + re-export

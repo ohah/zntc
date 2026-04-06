@@ -335,6 +335,9 @@ pub fn emitWithTreeShaking(
                             types.makeInitVarName(allocator, rbm.path) catch null;
                         if (call_name) |name| {
                             defer allocator.free(name);
+                            if (rbm.wrap_kind != .cjs and rbm.uses_top_level_await) {
+                                try module_output.appendSlice(allocator, "await ");
+                            }
                             try module_output.appendSlice(allocator, name);
                             try module_output.appendSlice(allocator, "();\n");
                             module_line += 1;
@@ -2716,7 +2719,11 @@ fn emitEsmWrappedModule(
                         defer allocator.free(iv);
                         const ev = try types.makeExportsVarName(allocator, source_mod.path);
                         defer allocator.free(ev);
-                        try reexport_buf.appendSlice(allocator, "(");
+                        if (source_mod.uses_top_level_await) {
+                            try reexport_buf.appendSlice(allocator, "(await ");
+                        } else {
+                            try reexport_buf.appendSlice(allocator, "(");
+                        }
                         try reexport_buf.appendSlice(allocator, iv);
                         try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
                         try reexport_buf.appendSlice(allocator, ev);
@@ -2753,6 +2760,7 @@ fn emitEsmWrappedModule(
             const src_mod = &l.modules[src_i];
             switch (src_mod.wrap_kind) {
                 .esm => {
+                    if (src_mod.uses_top_level_await) try star_init_buf.appendSlice(allocator, "await ");
                     const iv = try types.makeInitVarName(allocator, src_mod.path);
                     defer allocator.free(iv);
                     try star_init_buf.appendSlice(allocator, iv);
@@ -2773,10 +2781,14 @@ fn emitEsmWrappedModule(
     //    호이스팅된 함수가 호출되기 전에 의존 모듈이 초기화되도록 보장한다.
     const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
+    const is_async = module.uses_top_level_await;
+
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
-        try wrapped.appendSlice(allocator, "=__esm({\"");
+        try wrapped.appendSlice(allocator, "=__esm({");
+        if (is_async) try wrapped.appendSlice(allocator, "async ");
+        try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
@@ -2787,7 +2799,9 @@ fn emitEsmWrappedModule(
     } else {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
-        try wrapped.appendSlice(allocator, " = __esm({\n\t\"");
+        try wrapped.appendSlice(allocator, " = __esm({\n\t");
+        if (is_async) try wrapped.appendSlice(allocator, "async ");
+        try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"() {\n");
         if (preamble_code) |p| {
