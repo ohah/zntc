@@ -571,8 +571,10 @@ pub const Codegen = struct {
 
         const node = self.ast.getNode(idx);
 
-        // 이 노드 이전에 위치한 주석들을 출력
-        if (node.span.start != node.span.end) {
+        // 이 노드 이전에 위치한 주석들을 출력.
+        // STRING_TABLE_BIT가 설정된 span은 합성 노드(string_table 참조)이므로
+        // 원본 소스 위치가 아님 → 주석 위치 비교를 건너뛴다.
+        if (node.span.start != node.span.end and node.span.start & 0x80000000 == 0) {
             try self.emitComments(node.span.start);
         }
 
