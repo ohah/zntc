@@ -124,13 +124,6 @@ pub fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
     return source[start..end];
 }
 
-/// template_element span에서 raw 텍스트 부분을 반환한다.
-/// getTemplateElementText와 동일 (구분자 제거).
-/// tagged template의 .raw 배열에 사용. buildRawStringLiteral로 이스케이프 처리.
-pub fn getRawTemplateElementText(source: []const u8, span: Span) []const u8 {
-    return getTemplateElementText(source, span);
-}
-
 /// raw template 텍스트를 string_literal 노드로 변환한다.
 /// backslash를 이중 이스케이프하여 JS 문자열에서 원본 그대로 보이도록 한다.
 /// `hello\nworld` → `"hello\\nworld"` (JS에서 실행 시 "hello\nworld" 문자열)
