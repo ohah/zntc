@@ -4108,11 +4108,15 @@ pub const Transformer = struct {
         }
         // non-computed key(identifier, string, numeric)는 property 이름이므로
         // block scoping rename 등 변수 치환을 적용하면 안 됨. copyNodeDirect 사용.
+        // symbol_id는 항상 전파: shorthand({ x })에서 codegen이 rename을
+        // 감지하여 { x: x$1 }로 확장하는 데 필요. non-shorthand/literal key는
+        // codegen이 writeSpan으로 출력하므로 symbol_id가 있어도 무시됨.
         const key_idx = node.data.binary.left;
         const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag != .computed_property_key)
             try self.copyNodeDirect(self.ast.getNode(key_idx))
         else
             try self.visitNode(key_idx);
+        self.propagateSymbolId(key_idx, new_key);
         const new_value = try self.visitNode(node.data.binary.right);
         return self.ast.addNode(.{
             .tag = .object_property,
