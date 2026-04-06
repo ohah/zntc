@@ -14,8 +14,8 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const es_helpers = @import("es_helpers.zig");
+const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_generator = @import("es2015_generator.zig");
-const es2015_params_mod = @import("es2015_params.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
@@ -47,17 +47,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitNode(body_idx);
 
-            // ES2015 params lowering
-            var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
-            defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
-
-            const new_params = if (self.options.unsupported.default_params and
-                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
-            blk: {
-                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, node.span);
-                es2015_body_stmts = lr.body_stmts;
-                break :blk lr.new_params;
-            } else try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(params_start, params_len);
 
             const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
@@ -68,14 +58,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
             });
 
-            // ES2015 params body stmts + return __async(...)
-            const body_list = if (es2015_body_stmts) |stmts| blk: {
-                const scratch_top = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
-                try self.scratch.append(self.allocator, return_stmt);
-                break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            } else try self.ast.addNodeList(&.{return_stmt});
+            const body_list = try self.ast.addNodeList(&.{return_stmt});
 
             const wrapper_body = try self.ast.addNode(.{
                 .tag = .block_statement,
@@ -158,17 +141,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
 
-            // ES2015 params lowering
-            var es2015_body_stmts2: ?std.ArrayList(NodeIndex) = null;
-            defer if (es2015_body_stmts2) |*s| s.deinit(self.allocator);
-
-            const new_params = if (self.options.unsupported.default_params and
-                es2015_params_mod.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
-            blk: {
-                const lr = try es2015_params_mod.ES2015Params(Transformer).lowerParams(self, params_start, params_len, span);
-                es2015_body_stmts2 = lr.body_stmts;
-                break :blk lr.new_params;
-            } else try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(params_start, params_len);
 
             const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
@@ -185,12 +158,11 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
             });
 
-            // hoisted var + ES2015 params stmts + return __async(...)
+            // hoisted var + return __async(...)
             const body_list = blk: {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
-                if (es2015_body_stmts2) |stmts| for (stmts.items) |stmt| try self.scratch.append(self.allocator, stmt);
                 try self.scratch.append(self.allocator, return_stmt);
                 break :blk try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             };
@@ -217,8 +189,10 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
-        /// async arrow → () => __async(__generator(function(_state) { switch... }).call(this))
+        /// async arrow → function() { return __async(__generator(function(_state) { switch... }).call(this)) }
         /// async_await + generator 둘 다 unsupported일 때 호출.
+        /// arrow도 unsupported이므로 function_expression으로 출력한다.
+        /// params lowering은 Pass 2에서 자동 적용된다.
         pub fn lowerAsyncArrowToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const GenMod = es2015_generator.ES2015Generator(Transformer);
             const e = node.data.extra;
@@ -226,9 +200,9 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const flags = self.readU32(e, 2);
 
-            const new_params = try self.visitNode(params_idx);
+            // arrow params → function params list로 변환
+            const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
 
             const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
@@ -237,30 +211,38 @@ pub fn ES2017(comptime Transformer: type) type {
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen_call, span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper_func, span);
 
-            // hoisted vars가 있으면 block body, 없으면 expression body
-            const final_body = if (sm_result.var_decl.isNone()) async_call else blk: {
-                const return_stmt = try self.ast.addNode(.{
-                    .tag = .return_statement,
-                    .span = span,
-                    .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
-                });
-                const body_list = try self.ast.addNodeList(&.{ sm_result.var_decl, return_stmt });
-                break :blk try self.ast.addNode(.{
-                    .tag = .block_statement,
-                    .span = span,
-                    .data = .{ .list = body_list },
-                });
-            };
-            const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
-            const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_params),
-                @intFromEnum(final_body),
-                new_flags,
+            // function body 구성: return __async(...)
+            const return_stmt = try self.ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
+            });
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
+            try self.scratch.append(self.allocator, return_stmt);
+            const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const func_body = try self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+
+            // function_expression: extra = [name, params_start, params_len, body, flags, return_type]
+            const none = @intFromEnum(NodeIndex.none);
+            const func_extra = try self.ast.addExtras(&.{
+                none, // anonymous
+                params_list.start,
+                params_list.len,
+                @intFromEnum(func_body),
+                0, // flags (not async, not generator)
+                none, // return_type
             });
             return self.ast.addNode(.{
-                .tag = .arrow_function_expression,
+                .tag = .function_expression,
                 .span = span,
-                .data = .{ .extra = new_extra },
+                .data = .{ .extra = func_extra },
             });
         }
     };

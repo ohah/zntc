@@ -2028,7 +2028,7 @@ test "ES2015: arrow simple params — no unnecessary lowering" {
 test "ES2015: class method destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method({x,...rest}:any) { return rest; } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
@@ -2036,7 +2036,7 @@ test "ES2015: class method destructuring params lowered" {
 test "ES2015: class setter destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Bar { set val({x,...rest}:any) {} }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
@@ -2050,7 +2050,7 @@ test "ES2015: class method default param lowered" {
 test "ES2015: class constructor destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { constructor({x,...rest}:any) { console.log(rest); } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(_c)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
@@ -2058,7 +2058,7 @@ test "ES2015: class constructor destructuring params lowered" {
 test "ES2015: async function destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "async function f({a,...r}:any) { return r; }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function f(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function f(_b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...r") == null);
 }
@@ -2066,7 +2066,7 @@ test "ES2015: async function destructuring params lowered" {
 test "ES2015: generator function destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "function* g({x,...rest}:any) { yield rest; }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(_a)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function g(_b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
