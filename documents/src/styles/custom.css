@@ -38,23 +38,27 @@ main,
 }
 
 /* Monaco Editor: Starlight CSS 충돌 방지
-   Starlight의 .sl-markdown-content 규칙이 Monaco 내부 DOM 요소에
-   margin-top을 주입하여 커서/블록 위치가 어긋나는 문제 차단 */
+   Starlight의 .sl-markdown-content :not()+:not() 셀렉터가
+   Monaco 내부 DOM에 margin-top을 주입하여 커서/드래그가 어긋나는 문제.
+   not-content 클래스로 Starlight 예외를 활성화하고,
+   혹시 누수될 경우를 대비해 !important로 이중 차단. */
+.sl-markdown-content .not-content * {
+  margin-top: 0 !important;
+}
+
 .monaco-editor,
 .monaco-editor *,
 .monaco-editor .view-lines,
-.monaco-editor .view-line {
+.monaco-editor .view-line,
+.monaco-editor .lines-content,
+.monaco-editor .cursor {
   line-height: normal !important;
   font-feature-settings: normal !important;
   margin-top: 0 !important;
 }
 
-.sl-markdown-content .monaco-editor *,
-.sl-markdown-content .monaco-editor {
-  margin-top: 0 !important;
-}
-
-/* Playground not-content: Starlight markdown 스타일 간섭 최소화 */
+/* Playground not-content: --sl-content-gap-y를 0으로 설정하여
+   Starlight 셀렉터의 margin-top 값 자체를 제거 */
 .playground-root {
   --sl-content-gap-y: 0;
 }
