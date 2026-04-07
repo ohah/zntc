@@ -13,7 +13,7 @@
   --sl-color-accent-high: #052e16;
 }
 
-/* 모든 페이지: Starlight의 content 폭 제한 전부 해제 */
+/* 모든 페이지: content 폭 제한 해제 */
 .sl-container {
   max-width: 100% !important;
   margin-inline: 0 !important;
@@ -28,52 +28,6 @@ main,
   width: 100% !important;
 }
 
-/* TOC(오른쪽 목차) 패널의 max-width 제한도 해제 */
 .right-sidebar-panel .sl-container {
   max-width: 100% !important;
-}
-
-/* Monaco Editor: Starlight CSS 충돌 방지 */
-.monaco-editor,
-.monaco-editor *,
-.monaco-editor .view-lines,
-.monaco-editor .view-line {
-  line-height: normal !important;
-  font-feature-settings: normal !important;
-  margin-top: 0 !important;
-}
-
-.sl-markdown-content .monaco-editor *,
-.sl-markdown-content .monaco-editor {
-  margin-top: 0 !important;
-}
-
-/* Playground 페이지: content-panel/타이틀/패딩/TOC 전부 제거 — 풀스크린 에디터 */
-.playground-page .content-panel {
-  padding: 0 !important;
-  margin: 0 !important;
-  border: none !important;
-  background: transparent !important;
-}
-.playground-page .content-panel h1,
-.playground-page .content-panel .sl-markdown-content > :first-child {
-  display: none !important;
-}
-.playground-page .sl-markdown-content {
-  padding: 0 !important;
-  margin: 0 !important;
-  --sl-content-gap-y: 0;
-}
-.playground-page .right-sidebar-panel,
-.playground-page .right-sidebar,
-.playground-page .right-sidebar-container {
-  display: none !important;
-}
-/* Starlight의 main-frame 하단 pagination 숨김 */
-.playground-page .pagination-links {
-  display: none !important;
-}
-
-.playground-root {
-  --sl-content-gap-y: 0;
 }
