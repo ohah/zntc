@@ -1095,7 +1095,8 @@ test "CodeSplitting: content hash deterministic — same code same hash" {
 
 test "Bundler: dev mode includes polyfills and banner" {
     // dev mode에서 --polyfill, --banner:js가 번들에 포함되는지 확인.
-    // error-guard.js 등 폴리필이 누락되면 global.ErrorUtils가 undefined.
+    // Phase 2: 프로덕션 파이프라인(emitWithTreeShaking)을 사용하므로
+    // HMR 런타임 없이 polyfill/banner/모듈 코드가 올바른 순서로 출력.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "console.log('hello');");
@@ -1123,16 +1124,16 @@ test "Bundler: dev mode includes polyfills and banner" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(function(){") != null);
     // banner가 번들에 포함됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__TEST_BANNER__") != null);
-    // polyfill/banner가 HMR 런타임보다 앞에 위치
+    // banner < polyfill < 모듈 코드 순서
     const polyfill_pos = std.mem.indexOf(u8, result.output, "MyPolyfill").?;
-    const hmr_pos = std.mem.indexOf(u8, result.output, "__zts_modules").?;
-    try std.testing.expect(polyfill_pos < hmr_pos);
     const banner_pos = std.mem.indexOf(u8, result.output, "__TEST_BANNER__").?;
+    const code_pos = std.mem.indexOf(u8, result.output, "console.log").?;
     try std.testing.expect(banner_pos < polyfill_pos);
+    try std.testing.expect(polyfill_pos < code_pos);
 }
 
 test "Bundler: dev mode single file" {
-    // dev mode에서 단일 파일이 __zts_register로 래핑되는지 확인
+    // Phase 2: dev mode에서 단일 파일이 프로덕션 파이프라인으로 scope-hoisted 출력
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "const x = 42;\nexport default x;");
@@ -1150,18 +1151,14 @@ test "Bundler: dev mode single file" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // HMR 런타임이 주입되었는지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_make_hot") != null);
-    // 모듈이 register로 래핑되었는지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register(\"") != null);
-    // export가 __zts_exports로 변환되었는지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.default") != null);
+    // 프로덕션 파이프라인: __zts_register 없음, scope-hoisted 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register") == null);
+    // 모듈 코드가 번들에 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42") != null);
 }
 
 test "Bundler: dev mode two files with import" {
-    // dev mode에서 두 파일 간 import가 __zts_require로 변환되는지 확인
+    // Phase 2: dev mode에서 두 파일이 scope-hoisted로 번들됨
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
@@ -1180,18 +1177,16 @@ test "Bundler: dev mode two files with import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 두 모듈이 각각 __zts_register로 래핑
     const output = result.output;
-    const first = std.mem.indexOf(u8, output, "__zts_register(\"") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, output[first + 1 ..], "__zts_register(\"") != null);
-    // __zts_require 호출이 있는지
-    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_require(\"") != null);
-    // utils.ts의 export가 exports.add로 변환
-    try std.testing.expect(std.mem.indexOf(u8, output, "exports.add") != null);
+    // 프로덕션 파이프라인: scope-hoisted, __zts_register 없음
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_register") == null);
+    // 두 모듈의 코드가 모두 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "const add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
 test "Bundler: dev mode default import" {
-    // dev mode에서 default import가 __zts_require(...).default로 변환되는지 확인
+    // Phase 2: dev mode에서 default import가 scope-hoisted로 직접 참조됨
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "greet.ts", "export default function greet() { return 'hi'; }");
@@ -1210,14 +1205,13 @@ test "Bundler: dev mode default import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // default import → .default
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".default") != null);
-    // greet.ts의 default export
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.default") != null);
+    // scope-hoisted: greet 함수가 번들에 포함되고 직접 호출됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function greet()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(greet())") != null);
 }
 
-test "Bundler: dev mode module_dev_codes" {
-    // dev mode에서 module_dev_codes가 생성되는지 확인
+test "Bundler: dev mode module_dev_codes (Phase 2: null)" {
+    // Phase 2: module_dev_codes는 null (HMR per-module codes는 Phase 3-4에서 재구현)
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
@@ -1237,14 +1231,10 @@ test "Bundler: dev mode module_dev_codes" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // module_dev_codes가 존재하고 2개 모듈 (utils + index)
-    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), codes.len);
-    // 각 code에 __zts_register 래핑이 있는지
-    for (codes) |c| {
-        try std.testing.expect(c.id.len > 0);
-        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zts_register(\"") != null);
-    }
+    // Phase 2: module_dev_codes는 null — HMR은 Phase 3-4에서 재구현
+    try std.testing.expect(result.module_dev_codes == null);
+    // 번들 출력은 정상 생성됨
+    try std.testing.expect(result.output.len > 0);
 }
 
 test "Bundler: dev mode sourcemap" {
@@ -1354,7 +1344,8 @@ test "Bundler: dev mode sourcemap — mappings point to correct bundle lines" {
 }
 
 test "Bundler: dev mode react fast refresh" {
-    // React Fast Refresh가 컴포넌트에 $RefreshReg$ 주입하는지 확인
+    // Phase 2: React Fast Refresh가 컴포넌트에 $RefreshReg$ 주입 (프로덕션 파이프라인)
+    // HMR 런타임(__REACT_REFRESH_RUNTIME__, module.hot.accept)은 Phase 3-4에서 추가.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "App.ts", "export default function App() { return 'hello'; }\nfunction Helper() { return 'helper'; }");
@@ -1380,12 +1371,9 @@ test "Bundler: dev mode react fast refresh" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Helper\"") != null);
     // _c 핸들 변수 선언
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_c") != null);
-    // react-refresh 런타임 바인딩
+    // React Refresh 스텁이 번들 prologue에 주입됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshSig$") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__REACT_REFRESH_RUNTIME__") != null);
-    // hot.accept() 자동 삽입
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.hot.accept()") != null);
 }
 
 test "Bundler: dev mode refresh registration" {
@@ -1426,7 +1414,7 @@ test "Bundler: dev mode refresh registration" {
 }
 
 test "Bundler: dev mode ES5 runtime helpers injected globally" {
-    // ES5 타겟 dev mode에서 __classCallCheck 등 헬퍼가 글로벌 스코프에 주입되는지 확인
+    // Phase 2: ES5 타겟 dev mode에서 __classCallCheck 등 헬퍼가 모듈 코드 앞에 주입
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "App.ts", "class App { constructor() { this.x = 1; } };\nexport default App;");
@@ -1448,16 +1436,21 @@ test "Bundler: dev mode ES5 runtime helpers injected globally" {
     const output = result.output;
     // ES5 런타임 헬퍼가 번들에 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "__classCallCheck") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "__callSuper") != null);
-    // 헬퍼가 __zts_register 밖 (글로벌 스코프)에 정의되어야 함
-    // → __classCallCheck 정의가 첫 번째 __zts_register 호출보다 앞에 있는지
+    // 헬퍼가 모듈 코드보다 앞에 위치
     const helper_pos = std.mem.indexOf(u8, output, "var __classCallCheck") orelse return error.TestUnexpectedResult;
-    const register_pos = std.mem.indexOf(u8, output, "__zts_register(\"") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(helper_pos < register_pos);
+    const code_pos = std.mem.indexOf(u8, output, "App") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(helper_pos < code_pos);
 }
 
-test "Bundler: dev mode factory receives module/exports/require" {
-    // factory 파라미터가 (module, exports, require)인지 확인
+// NOTE: "dev mode factory receives module/exports/require" 테스트 삭제 (Phase 2).
+// __zts_register factory 래핑은 프로덕션 __commonJS/__esm 래핑으로 대체됨.
+
+// NOTE: "dev mode dependency map for CJS require resolve" 테스트 삭제 (Phase 2).
+// 프로덕션 linker가 import binding을 직접 해결하므로 dep_map 불필요.
+
+test "Bundler: dev mode collect_module_codes (Phase 2: null)" {
+    // Phase 2: collect_module_codes 플래그와 무관하게 module_dev_codes는 null.
+    // HMR per-module codes는 Phase 3-4에서 재구현 예정.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "export const x = 1;");
@@ -1465,56 +1458,7 @@ test "Bundler: dev mode factory receives module/exports/require" {
     const entry = try absPath(&tmp, "index.ts");
     defer std.testing.allocator.free(entry);
 
-    var b = Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .dev_mode = true,
-    });
-    defer b.deinit();
-
-    const result = try b.bundle();
-    defer result.deinit(std.testing.allocator);
-
-    try std.testing.expect(!result.hasErrors());
-    // factory 시그니처에 module, exports, require 파라미터
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "function(module, exports, require)") != null);
-}
-
-test "Bundler: dev mode dependency map for CJS require resolve" {
-    // CJS require()가 dependency map으로 resolved 경로를 찾을 수 있는지 확인
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "util.ts", "export const add = (a, b) => a + b;");
-    try writeFile(tmp.dir, "index.ts", "import { add } from './util';\nconsole.log(add(1, 2));");
-
-    const entry = try absPath(&tmp, "index.ts");
-    defer std.testing.allocator.free(entry);
-
-    var b = Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .dev_mode = true,
-    });
-    defer b.deinit();
-
-    const result = try b.bundle();
-    defer result.deinit(std.testing.allocator);
-
-    try std.testing.expect(!result.hasErrors());
-    // __zts_register("...", {...dep_map...}, function(...)) 형식
-    // dep_map에 "./util" → resolved path 매핑이 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./util\"") != null);
-}
-
-test "Bundler: dev mode collect_module_codes opt-in" {
-    // collect_module_codes=false(기본값)이면 module_dev_codes가 비어있고
-    // true면 수집됨
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
-
-    const entry = try absPath(&tmp, "index.ts");
-    defer std.testing.allocator.free(entry);
-
-    // 기본값: collect 안 함
+    // 기본값: null
     {
         var b = Bundler.init(std.testing.allocator, .{
             .entry_points = &.{entry},
@@ -1524,13 +1468,10 @@ test "Bundler: dev mode collect_module_codes opt-in" {
         const result = try b.bundle();
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
-        // module_dev_codes가 비어있거나 null
-        if (result.module_dev_codes) |codes| {
-            try std.testing.expectEqual(@as(usize, 0), codes.len);
-        }
+        try std.testing.expect(result.module_dev_codes == null);
     }
 
-    // collect_module_codes=true
+    // collect_module_codes=true여도 Phase 2에서는 null
     {
         var b = Bundler.init(std.testing.allocator, .{
             .entry_points = &.{entry},
@@ -1541,14 +1482,12 @@ test "Bundler: dev mode collect_module_codes opt-in" {
         const result = try b.bundle();
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
-        const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
-        try std.testing.expect(codes.len > 0);
+        try std.testing.expect(result.module_dev_codes == null);
     }
 }
 
 test "Bundler: dev mode named imports from multiple modules are not mixed" {
-    // 여러 모듈에서 named import할 때 각 모듈의 binding이 섞이지 않는지 확인
-    // 이전 버그: prefix sum에서 named_count를 증가시키지 않아 모든 binding이 첫 모듈에 할당됨
+    // Phase 2: 여러 모듈에서 named import → scope-hoisted 직접 참조
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "math.ts", "export const add = (a, b) => a + b;\nexport const sub = (a, b) => a - b;");
@@ -1573,12 +1512,13 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // math.ts에서 add, sub가 정확히 destructuring
-    try std.testing.expect(std.mem.indexOf(u8, output, "{ add, sub }") != null);
-    // str.ts에서 upper, lower가 정확히 destructuring
-    try std.testing.expect(std.mem.indexOf(u8, output, "{ upper, lower }") != null);
-    // math binding이 str 모듈에 들어가면 안 됨
-    // (이전 버그에서는 모든 binding이 첫 모듈의 destructuring에 들어갔음)
+    // scope-hoisted: 모든 export가 직접 참조로 번들에 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "const add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "const sub") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "const upper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "const lower") != null);
+    // 호출이 정상적으로 포함됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
 test "Profile: pipeline stage timing (dev only, not for CI)" {

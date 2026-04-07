@@ -1,5 +1,10 @@
-//! Dev mode 번들링 — emitDevBundle, wrapWithRegister, emitDevModule
-//! HMR 런타임 + __zts_register() 팩토리 래핑.
+//! Dev mode 번들링 유틸리티.
+//!
+//! DEPRECATED (Phase 2): emitDevBundle/emitDevModule/wrapWithRegister는 더 이상 호출되지 않음.
+//! dev mode는 프로덕션 파이프라인(emitWithTreeShaking)을 재사용.
+//! Phase 3-4 HMR 재구현 참고용으로 보존.
+//!
+//! 활성 함수: addModuleMappings, makeModuleId — 프로덕션 경로에서도 사용.
 
 const std = @import("std");
 const types = @import("../types.zig");

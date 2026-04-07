@@ -445,6 +445,12 @@ pub const HMR_RUNTIME_LINES = blk: {
     break :blk @as(u32, std.mem.count(u8, HMR_RUNTIME, "\n"));
 };
 
+/// React Refresh 스텁: HMR 런타임 없이도 $RefreshReg$/$RefreshSig$ ReferenceError 방지.
+/// dev mode + react_refresh에서 번들 prologue에 주입.
+pub const REFRESH_STUB =
+    "var $RefreshReg$ = function() {};\n" ++
+    "var $RefreshSig$ = function() { return function(type) { return type; }; };\n";
+
 // ============================================================
 // Using (Explicit Resource Management, ES2025)
 // ============================================================
