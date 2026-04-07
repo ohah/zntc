@@ -225,6 +225,17 @@ pub fn emitDevBundle(
         }
     }
 
+    // entry point 실행: lazy evaluation이므로 명시적으로 require해야 모듈 체인 시작
+    // sorted의 마지막 모듈이 entry (exec_index 순 정렬, entry가 가장 마지막)
+    if (sorted.items.len > 0) {
+        const entry = sorted.items[sorted.items.len - 1];
+        const entry_id = makeModuleId(entry.path, options.root_dir);
+        try output.appendSlice(allocator, "__zts_require(\"");
+        try output.appendSlice(allocator, entry_id);
+        try output.appendSlice(allocator, "\");\n");
+        bundle_line += 1;
+    }
+
     // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;
     const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
