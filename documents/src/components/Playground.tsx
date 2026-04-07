@@ -24,18 +24,59 @@ interface WasmModule {
   transpile: TranspileFn;
 }
 
+interface Options {
+  filename: string;
+  jsx: "classic" | "automatic" | "automatic-dev";
+  format: "esm" | "cjs";
+  minify: boolean;
+  minifyWhitespace: boolean;
+  minifyIdentifiers: boolean;
+  minifySyntax: boolean;
+  sourcemap: boolean;
+  dropConsole: boolean;
+  dropDebugger: boolean;
+  asciiOnly: boolean;
+  experimentalDecorators: boolean;
+  flow: boolean;
+  quotes: "double" | "single" | "preserve";
+}
+
+const DEFAULT_OPTIONS: Options = {
+  filename: "input.tsx",
+  jsx: "classic",
+  format: "esm",
+  minify: false,
+  minifyWhitespace: false,
+  minifyIdentifiers: false,
+  minifySyntax: false,
+  sourcemap: false,
+  dropConsole: false,
+  dropDebugger: false,
+  asciiOnly: false,
+  experimentalDecorators: false,
+  flow: false,
+  quotes: "double",
+};
+
 export default function Playground() {
-  const [input, setInput] = useState(DEFAULT_CODE);
+  const [input, setInput] = useState(() => {
+    if (typeof window !== "undefined") {
+      const hash = window.location.hash.slice(1);
+      if (hash) {
+        try {
+          const decoded = atob(hash);
+          return decoded;
+        } catch {}
+      }
+    }
+    return DEFAULT_CODE;
+  });
   const [output, setOutput] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [options, setOptions] = useState({
-    jsx: "classic" as "classic" | "automatic" | "automatic-dev",
-    sourcemap: false,
-    minify: false,
-    format: "esm" as "esm" | "cjs",
-    filename: "input.tsx",
-  });
+  const [options, setOptions] = useState<Options>(DEFAULT_OPTIONS);
+  const [showConfig, setShowConfig] = useState(true);
+  const [outputTab, setOutputTab] = useState<"code" | "sourcemap">("code");
   const wasmRef = useRef<WasmModule | null>(null);
   const [sourcemapOutput, setSourcemapOutput] = useState("");
 
@@ -51,15 +92,15 @@ export default function Playground() {
       await mod.init(wasmUrl);
       wasmRef.current = mod;
       setLoading(false);
-      doTranspile(DEFAULT_CODE, options, mod.transpile);
+      doTranspile(input, options, mod.transpile);
     } catch (err) {
-      setError(`WASM 로드 실패: ${err}`);
+      setError(`WASM load failed: ${err}`);
       setLoading(false);
     }
   }
 
   const doTranspile = useCallback(
-    (code: string, opts: typeof options, transpileFn?: TranspileFn) => {
+    (code: string, opts: Options, transpileFn?: TranspileFn) => {
       const fn = transpileFn || wasmRef.current?.transpile;
       if (!fn) return;
       try {
@@ -68,7 +109,16 @@ export default function Playground() {
           jsx: opts.jsx,
           sourcemap: opts.sourcemap,
           minify: opts.minify,
+          minifyWhitespace: opts.minifyWhitespace,
+          minifyIdentifiers: opts.minifyIdentifiers,
+          minifySyntax: opts.minifySyntax,
           format: opts.format,
+          dropConsole: opts.dropConsole,
+          dropDebugger: opts.dropDebugger,
+          asciiOnly: opts.asciiOnly,
+          experimentalDecorators: opts.experimentalDecorators,
+          flow: opts.flow,
+          quotes: opts.quotes,
         });
         setOutput(result.code);
         setSourcemapOutput(result.map || "");
@@ -91,16 +141,28 @@ export default function Playground() {
     [options, doTranspile],
   );
 
-  const handleOptionChange = useCallback(
-    (key: string, value: string | boolean) => {
+  const updateOption = useCallback(
+    <K extends keyof Options>(key: K, value: Options[K]) => {
       const newOpts = { ...options, [key]: value };
+      // minify 전체 토글 시 개별 옵션도 동기화
+      if (key === "minify") {
+        newOpts.minifyWhitespace = value as boolean;
+        newOpts.minifyIdentifiers = value as boolean;
+        newOpts.minifySyntax = value as boolean;
+      }
       setOptions(newOpts);
       doTranspile(input, newOpts);
     },
     [input, options, doTranspile],
   );
 
-  // filename → Monaco language 매핑
+  const handleShare = useCallback(() => {
+    const encoded = btoa(input);
+    const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
+    navigator.clipboard.writeText(url);
+    alert("URL copied to clipboard!");
+  }, [input]);
+
   const inputLang =
     options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
       ? "typescript"
@@ -108,217 +170,323 @@ export default function Playground() {
         ? "typescript"
         : "javascript";
 
+  const editorOpts = {
+    minimap: { enabled: false },
+    fontSize: 13,
+    lineNumbers: "on" as const,
+    scrollBeyondLastLine: false,
+    wordWrap: "on" as const,
+    tabSize: 2,
+    automaticLayout: true,
+    padding: { top: 8, bottom: 8 },
+    renderLineHighlight: "none" as const,
+    overviewRulerLanes: 0,
+    hideCursorInOverviewRuler: true,
+    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+  };
+
   return (
-    <div style={{ padding: "1rem 0", maxWidth: "100%" }}>
-      {/* 옵션 바 */}
-      <div style={toolbarStyle}>
-        <label>
-          JSX:{" "}
-          <select
-            value={options.jsx}
-            onChange={(e) => handleOptionChange("jsx", e.target.value)}
-            style={selectStyle}
-          >
-            <option value="classic">Classic</option>
-            <option value="automatic">Automatic</option>
-            <option value="automatic-dev">Automatic (Dev)</option>
-          </select>
-        </label>
-        <label>
-          Format:{" "}
-          <select
-            value={options.format}
-            onChange={(e) => handleOptionChange("format", e.target.value)}
-            style={selectStyle}
-          >
-            <option value="esm">ESM</option>
-            <option value="cjs">CJS</option>
-          </select>
-        </label>
-        <label>
-          File:{" "}
-          <select
-            value={options.filename}
-            onChange={(e) => handleOptionChange("filename", e.target.value)}
-            style={selectStyle}
-          >
-            <option value="input.tsx">input.tsx</option>
-            <option value="input.ts">input.ts</option>
-            <option value="input.jsx">input.jsx</option>
-            <option value="input.js">input.js</option>
-          </select>
-        </label>
-        <label style={checkboxLabel}>
-          <input
-            type="checkbox"
-            checked={options.minify}
-            onChange={(e) => handleOptionChange("minify", e.target.checked)}
-          />
-          Minify
-        </label>
-        <label style={checkboxLabel}>
-          <input
-            type="checkbox"
-            checked={options.sourcemap}
-            onChange={(e) => handleOptionChange("sourcemap", e.target.checked)}
-          />
-          Sourcemap
-        </label>
-        {loading && <span style={{ opacity: 0.6, fontSize: "0.75rem" }}>Loading WASM...</span>}
-      </div>
-
-      {/* 에디터 영역 */}
-      <div style={editorGrid}>
-        {/* 입력 */}
-        <div style={panelStyle}>
-          <div style={headerStyle}>Input (TypeScript)</div>
-          <div style={editorContainer}>
-            <Editor
-              height="500px"
-              language={inputLang}
-              theme="vs-dark"
-              value={input}
-              onChange={handleInputChange}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 14,
-                lineNumbers: "on",
-                scrollBeyondLastLine: false,
-                wordWrap: "on",
-                tabSize: 2,
-                automaticLayout: true,
-                padding: { top: 8 },
-              }}
-            />
-          </div>
+    <div style={containerStyle}>
+      {/* 상단 툴바 */}
+      <div style={topBarStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button onClick={() => setShowConfig(!showConfig)} style={iconBtnStyle} title="Toggle config">
+            <span style={{ fontSize: "1.1rem" }}>{showConfig ? "◀" : "▶"}</span>
+          </button>
+          <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>ZTS Playground</span>
+          {loading && <span style={badgeStyle}>Loading WASM...</span>}
+          {!loading && !error && <span style={{ ...badgeStyle, background: "#065f46", color: "#6ee7b7" }}>Ready</span>}
         </div>
-
-        {/* 출력 */}
-        <div style={panelStyle}>
-          <div style={headerStyle}>
-            Output (JavaScript)
-            {error && (
-              <span style={{ color: "#f87171", marginLeft: "0.5rem", fontWeight: 400 }}>
-                Error
-              </span>
-            )}
-          </div>
-          <div style={editorContainer}>
-            {error ? (
-              <Editor
-                height="500px"
-                language="plaintext"
-                theme="vs-dark"
-                value={error}
-                options={{
-                  readOnly: true,
-                  minimap: { enabled: false },
-                  fontSize: 14,
-                  lineNumbers: "off",
-                  scrollBeyondLastLine: false,
-                  wordWrap: "on",
-                  automaticLayout: true,
-                  padding: { top: 8 },
-                }}
-              />
-            ) : (
-              <Editor
-                height="500px"
-                language="javascript"
-                theme="vs-dark"
-                value={output}
-                options={{
-                  readOnly: true,
-                  minimap: { enabled: false },
-                  fontSize: 14,
-                  lineNumbers: "on",
-                  scrollBeyondLastLine: false,
-                  wordWrap: "on",
-                  automaticLayout: true,
-                  padding: { top: 8 },
-                }}
-              />
-            )}
-          </div>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <button onClick={handleShare} style={btnStyle}>Share</button>
+          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={btnStyle}>
+            GitHub
+          </a>
         </div>
       </div>
 
-      {/* 소스맵 출력 */}
-      {options.sourcemap && sourcemapOutput && !error && (
-        <details style={{ marginTop: "0.5rem" }}>
-          <summary style={{ cursor: "pointer", fontSize: "0.875rem" }}>Sourcemap</summary>
-          <div style={{ marginTop: "0.25rem" }}>
-            <Editor
-              height="200px"
-              language="json"
-              theme="vs-dark"
-              value={sourcemapOutput}
-              options={{
-                readOnly: true,
-                minimap: { enabled: false },
-                fontSize: 12,
-                lineNumbers: "off",
-                scrollBeyondLastLine: false,
-                wordWrap: "on",
-                automaticLayout: true,
-              }}
-            />
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* 왼쪽 설정 패널 */}
+        {showConfig && (
+          <div style={configPanelStyle}>
+            <ConfigSection title="Parser">
+              <SelectOption label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)}
+                options={[
+                  ["input.tsx", "TypeScript + JSX"],
+                  ["input.ts", "TypeScript"],
+                  ["input.jsx", "JavaScript + JSX"],
+                  ["input.js", "JavaScript"],
+                ]}
+              />
+              <CheckOption label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
+              <CheckOption label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
+            </ConfigSection>
+
+            <ConfigSection title="Transform">
+              <SelectOption label="JSX Runtime" value={options.jsx} onChange={(v) => updateOption("jsx", v as Options["jsx"])}
+                options={[
+                  ["classic", "Classic (createElement)"],
+                  ["automatic", "Automatic (jsx-runtime)"],
+                  ["automatic-dev", "Automatic (Dev)"],
+                ]}
+              />
+              <SelectOption label="Module" value={options.format} onChange={(v) => updateOption("format", v as Options["format"])}
+                options={[["esm", "ESM"], ["cjs", "CommonJS"]]}
+              />
+            </ConfigSection>
+
+            <ConfigSection title="Output">
+              <CheckOption label="Minify (all)" checked={options.minify} onChange={(v) => updateOption("minify", v)} />
+              <CheckOption label="Minify Whitespace" checked={options.minifyWhitespace} onChange={(v) => updateOption("minifyWhitespace", v)} />
+              <CheckOption label="Minify Identifiers" checked={options.minifyIdentifiers} onChange={(v) => updateOption("minifyIdentifiers", v)} />
+              <CheckOption label="Minify Syntax" checked={options.minifySyntax} onChange={(v) => updateOption("minifySyntax", v)} />
+              <CheckOption label="Sourcemap" checked={options.sourcemap} onChange={(v) => updateOption("sourcemap", v)} />
+              <CheckOption label="ASCII Only" checked={options.asciiOnly} onChange={(v) => updateOption("asciiOnly", v)} />
+              <SelectOption label="Quotes" value={options.quotes} onChange={(v) => updateOption("quotes", v as Options["quotes"])}
+                options={[["double", "Double"], ["single", "Single"], ["preserve", "Preserve"]]}
+              />
+            </ConfigSection>
+
+            <ConfigSection title="Drop">
+              <CheckOption label="console.*" checked={options.dropConsole} onChange={(v) => updateOption("dropConsole", v)} />
+              <CheckOption label="debugger" checked={options.dropDebugger} onChange={(v) => updateOption("dropDebugger", v)} />
+            </ConfigSection>
           </div>
-        </details>
-      )}
+        )}
+
+        {/* 에디터 영역 */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+          {/* 입력 에디터 */}
+          <div style={editorPanelStyle}>
+            <div style={editorHeaderStyle}>
+              <span>Input</span>
+              <span style={{ opacity: 0.5, fontSize: "0.7rem" }}>{options.filename}</span>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Editor
+                height="100%"
+                language={inputLang}
+                theme="vs-dark"
+                value={input}
+                onChange={handleInputChange}
+                options={editorOpts}
+              />
+            </div>
+          </div>
+
+          {/* 구분선 */}
+          <div style={dividerStyle} />
+
+          {/* 출력 에디터 */}
+          <div style={editorPanelStyle}>
+            <div style={editorHeaderStyle}>
+              <div style={{ display: "flex", gap: "0" }}>
+                <button
+                  onClick={() => setOutputTab("code")}
+                  style={tabStyle(outputTab === "code")}
+                >
+                  Output
+                </button>
+                {options.sourcemap && (
+                  <button
+                    onClick={() => setOutputTab("sourcemap")}
+                    style={tabStyle(outputTab === "sourcemap")}
+                  >
+                    Sourcemap
+                  </button>
+                )}
+              </div>
+              {error && <span style={{ color: "#f87171", fontSize: "0.7rem" }}>Error</span>}
+            </div>
+            <div style={{ flex: 1 }}>
+              {outputTab === "code" ? (
+                <Editor
+                  height="100%"
+                  language={error ? "plaintext" : "javascript"}
+                  theme="vs-dark"
+                  value={error || output}
+                  options={{ ...editorOpts, readOnly: true }}
+                />
+              ) : (
+                <Editor
+                  height="100%"
+                  language="json"
+                  theme="vs-dark"
+                  value={sourcemapOutput}
+                  options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-const toolbarStyle: React.CSSProperties = {
-  display: "flex",
-  gap: "1rem",
-  flexWrap: "wrap",
-  marginBottom: "0.75rem",
-  alignItems: "center",
-  fontSize: "0.875rem",
-};
+// ─── Sub-components ───
 
-const editorGrid: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: "0.5rem",
-};
+function ConfigSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: "0.75rem" }}>
+      <div style={sectionTitleStyle}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>{children}</div>
+    </div>
+  );
+}
 
-const panelStyle: React.CSSProperties = {
+function CheckOption({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={optionRowStyle}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function SelectOption({ label, value, onChange, options }: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: [string, string][];
+}) {
+  return (
+    <div style={optionRowStyle}>
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={cfgSelectStyle}>
+        {options.map(([val, text]) => (
+          <option key={val} value={val}>{text}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ─── Styles ───
+
+const containerStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
+  height: "calc(100vh - 64px)",
+  margin: "-1rem -1.5rem",
   overflow: "hidden",
-  borderRadius: "0.375rem",
-  border: "1px solid var(--sl-color-gray-5, #374151)",
+  backgroundColor: "#1a1a2e",
 };
 
-const editorContainer: React.CSSProperties = {
-  flex: 1,
-  overflow: "hidden",
+const topBarStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "0.5rem 1rem",
+  backgroundColor: "#16162a",
+  borderBottom: "1px solid #2d2d4a",
+  flexShrink: 0,
 };
 
-const headerStyle: React.CSSProperties = {
-  padding: "0.5rem 0.75rem",
-  fontSize: "0.75rem",
+const badgeStyle: React.CSSProperties = {
+  padding: "0.125rem 0.5rem",
+  borderRadius: "9999px",
+  fontSize: "0.65rem",
   fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  backgroundColor: "var(--sl-color-gray-6, #1f2937)",
-  borderBottom: "1px solid var(--sl-color-gray-5, #374151)",
+  background: "#1e3a5f",
+  color: "#93c5fd",
 };
 
-const selectStyle: React.CSSProperties = {
-  padding: "0.25rem 0.5rem",
+const btnStyle: React.CSSProperties = {
+  padding: "0.25rem 0.75rem",
   borderRadius: "0.25rem",
-  border: "1px solid var(--sl-color-gray-5, #374151)",
-  backgroundColor: "var(--sl-color-gray-6, #1f2937)",
-  color: "inherit",
-  fontSize: "0.875rem",
+  border: "1px solid #2d2d4a",
+  backgroundColor: "transparent",
+  color: "#e2e8f0",
+  fontSize: "0.8rem",
+  cursor: "pointer",
+  textDecoration: "none",
 };
 
-const checkboxLabel: React.CSSProperties = {
+const iconBtnStyle: React.CSSProperties = {
+  ...btnStyle,
+  padding: "0.25rem 0.5rem",
+  lineHeight: 1,
+};
+
+const configPanelStyle: React.CSSProperties = {
+  width: "240px",
+  minWidth: "240px",
+  backgroundColor: "#16162a",
+  borderRight: "1px solid #2d2d4a",
+  overflowY: "auto",
+  padding: "0.75rem",
+  flexShrink: 0,
+  fontSize: "0.8rem",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  fontSize: "0.7rem",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  color: "#94a3b8",
+  marginBottom: "0.375rem",
+  paddingBottom: "0.25rem",
+  borderBottom: "1px solid #2d2d4a",
+};
+
+const optionRowStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: "0.25rem",
+  justifyContent: "space-between",
+  gap: "0.5rem",
+  color: "#cbd5e1",
+  fontSize: "0.8rem",
+  cursor: "pointer",
 };
+
+const cfgSelectStyle: React.CSSProperties = {
+  padding: "0.125rem 0.25rem",
+  borderRadius: "0.25rem",
+  border: "1px solid #2d2d4a",
+  backgroundColor: "#1a1a2e",
+  color: "#e2e8f0",
+  fontSize: "0.75rem",
+  maxWidth: "130px",
+};
+
+const editorPanelStyle: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  minWidth: 0,
+  overflow: "hidden",
+};
+
+const editorHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "0.375rem 0.75rem",
+  backgroundColor: "#16162a",
+  borderBottom: "1px solid #2d2d4a",
+  fontSize: "0.75rem",
+  fontWeight: 600,
+  color: "#94a3b8",
+  flexShrink: 0,
+};
+
+const dividerStyle: React.CSSProperties = {
+  width: "2px",
+  backgroundColor: "#2d2d4a",
+  flexShrink: 0,
+};
+
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "0.25rem 0.75rem",
+    border: "none",
+    backgroundColor: "transparent",
+    color: active ? "#e2e8f0" : "#64748b",
+    fontWeight: active ? 600 : 400,
+    fontSize: "0.75rem",
+    cursor: "pointer",
+    borderBottom: active ? "2px solid #4ade80" : "2px solid transparent",
+  };
+}
