@@ -112,16 +112,22 @@ pub fn emitDevBundle(
     // 헬퍼를 글로벌 스코프(모듈 밖)에 미리 정의해야 한다.
     // unsupported.arrow == true면 ES5 타겟 → 모든 ES5 헬퍼를 무조건 주입.
     if (options.unsupported.arrow or options.unsupported.class) {
+        // 모든 헬퍼를 무조건 주입 — dev mode에서는 어떤 모듈이 어떤 헬퍼를 쓸지 모름
         const all_helpers: RuntimeHelpers = .{
-            .class_call_check = true,
-            .call_super = true,
-            .extends = true,
             .async_helper = true,
+            .extends = true,
+            .spread_array = true,
             .generator = true,
             .rest = true,
-            .spread_array = true,
             .values = true,
+            .to_binary = true,
+            .keep_names = true,
+            .class_private_method_init = true,
+            .class_private_method_get = true,
+            .class_call_check = true,
+            .call_super = true,
             .tagged_template_literal = true,
+            .using_ctx = true,
         };
         const before_len = output.items.len;
         try rt.appendRuntimeHelpers(&output, allocator, all_helpers, options.minify_whitespace, options.unsupported.arrow);
