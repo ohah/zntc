@@ -84,8 +84,13 @@ pub fn checkDuplicateConstructors(
         // key가 "constructor" 문자열인지 확인
         if (!matchKeyName(ast, key_idx, "constructor")) continue;
 
+        // TypeScript constructor overloads: body가 없는 시그니처는 허용.
+        // body(extra[3])가 .none이면 overload 시그니처이므로 스킵.
+        const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + 3]);
+        if (body_idx.isNone()) continue;
+
         if (first_constructor_span) |_| {
-            // 두 번째 constructor → 에러
+            // body가 있는 constructor가 2개 이상 → 에러
             try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}));
             return; // 첫 중복만 보고
         } else {

@@ -12,7 +12,18 @@ exports[`TSC: es6/classDeclaration classWithSemicolonClassElementES62 1`] = `
 "
 `;
 
-exports[`TSC: es6/classDeclaration emitClassDeclarationOverloadInES6 1`] = `""`;
+exports[`TSC: es6/classDeclaration emitClassDeclarationOverloadInES6 1`] = `
+"// @target: es6
+class C {
+	constructor(x) {
+	}
+}
+class D {
+	constructor(x,z="hello") {
+	}
+}
+"
+`;
 
 exports[`TSC: es6/classDeclaration emitClassDeclarationWithConstructorInES6 1`] = `
 "// @strict: false
@@ -37,7 +48,21 @@ class B {
 "
 `;
 
-exports[`TSC: es6/classDeclaration emitClassDeclarationWithExtensionAndTypeArgumentInES6 1`] = `""`;
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithExtensionAndTypeArgumentInES6 1`] = `
+"// @target: es6
+class B {
+	constructor(a) {
+	}
+}
+class C extends B {
+}
+class D extends B {
+	constructor(b) {
+		super(b);
+	}
+}
+"
+`;
 
 exports[`TSC: es6/classDeclaration emitClassDeclarationWithExtensionInES6 1`] = `
 "// @target: es6
@@ -246,7 +271,26 @@ class B {
 "
 `;
 
-exports[`TSC: es6/classDeclaration emitClassDeclarationWithTypeArgumentAndOverloadInES6 1`] = `""`;
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithTypeArgumentAndOverloadInES6 1`] = `
+"// @strict: false
+class B {
+	x;
+	B;
+	constructor(a) {
+		this.B = a;
+	}
+	foo() {
+		return this.x;
+	}
+	get BB() {
+		return this.B;
+	}
+	set BBWith(c) {
+		this.B = c;
+	}
+}
+"
+`;
 
 exports[`TSC: es6/classDeclaration emitClassDeclarationWithTypeArgumentInES6 1`] = `
 "// @target: es6

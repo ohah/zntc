@@ -1222,9 +1222,45 @@ extractIndexer({ ["" || 0]: "" });
 "
 `;
 
-exports[`TSC: es6/computedProperties computedPropertyNames49_ES5 1`] = `""`;
+exports[`TSC: es6/computedProperties computedPropertyNames49_ES5 1`] = `
+"var x = { p1: 10, get [1 + 1]() {
+	throw 10;
+}, get [1 + 1]() {
+	return 10;
+}, set [1 + 1]() {
+	// just throw
+throw 10;
+}, get foo() {
+	if (1 == 1) {
+		return 10;
+	}
+}, get foo() {
+	if (2 == 2) {
+		return 20;
+	}
+}, p2: 20 };
+"
+`;
 
-exports[`TSC: es6/computedProperties computedPropertyNames49_ES6 1`] = `""`;
+exports[`TSC: es6/computedProperties computedPropertyNames49_ES6 1`] = `
+"var x = { p1: 10, get [1 + 1]() {
+	throw 10;
+}, get [1 + 1]() {
+	return 10;
+}, set [1 + 1]() {
+	// just throw
+throw 10;
+}, get foo() {
+	if (1 == 1) {
+		return 10;
+	}
+}, get foo() {
+	if (2 == 2) {
+		return 20;
+	}
+}, p2: 20 };
+"
+`;
 
 exports[`TSC: es6/computedProperties computedPropertyNames5_ES5 1`] = `
 "var v = { [b]: 0, [true]: 1, [[]]: 0, [{}]: 0, [undefined]: undefined, [null]: null };
@@ -1236,9 +1272,45 @@ exports[`TSC: es6/computedProperties computedPropertyNames5_ES6 1`] = `
 "
 `;
 
-exports[`TSC: es6/computedProperties computedPropertyNames50_ES5 1`] = `""`;
+exports[`TSC: es6/computedProperties computedPropertyNames50_ES5 1`] = `
+"var x = { p1: 10, get foo() {
+	if (1 == 1) {
+		return 10;
+	}
+}, get [1 + 1]() {
+	throw 10;
+}, set [1 + 1]() {
+	// just throw
+throw 10;
+}, get [1 + 1]() {
+	return 10;
+}, get foo() {
+	if (2 == 2) {
+		return 20;
+	}
+}, p2: 20 };
+"
+`;
 
-exports[`TSC: es6/computedProperties computedPropertyNames50_ES6 1`] = `""`;
+exports[`TSC: es6/computedProperties computedPropertyNames50_ES6 1`] = `
+"var x = { p1: 10, get foo() {
+	if (1 == 1) {
+		return 10;
+	}
+}, get [1 + 1]() {
+	throw 10;
+}, set [1 + 1]() {
+	// just throw
+throw 10;
+}, get [1 + 1]() {
+	return 10;
+}, get foo() {
+	if (2 == 2) {
+		return 20;
+	}
+}, p2: 20 };
+"
+`;
 
 exports[`TSC: es6/computedProperties computedPropertyNames51_ES5 1`] = `
 "function f() {
