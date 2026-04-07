@@ -2,12 +2,30 @@
   --sl-color-accent-low: #1a3a2a;
   --sl-color-accent: #4ade80;
   --sl-color-accent-high: #bbf7d0;
+  /* 모든 페이지에서 content 영역 풀사이즈 */
+  --sl-content-width: 100%;
+  --sl-content-margin-inline: 0;
+  --sl-content-pad-x: 1rem;
 }
 
 :root[data-theme="light"] {
   --sl-color-accent-low: #dcfce7;
   --sl-color-accent: #16a34a;
   --sl-color-accent-high: #052e16;
+}
+
+/* 모든 페이지: content 영역 max-width 제한 해제 */
+.sl-container {
+  max-width: 100% !important;
+  margin-inline: 0 !important;
+}
+
+.content-panel {
+  max-width: 100% !important;
+}
+
+main {
+  max-width: 100% !important;
 }
 
 /* Monaco Editor: Starlight CSS 충돌 방지 */
@@ -20,23 +38,11 @@
   margin-top: 0 !important;
 }
 
-/* Starlight markdown 스타일이 Monaco 내부 요소에 margin-top을 주입하는 문제 차단 */
 .sl-markdown-content .monaco-editor *,
 .sl-markdown-content .monaco-editor {
   margin-top: 0 !important;
 }
 
-/* Playground 컨테이너를 not-content로 마킹하여 Starlight 간섭 최소화 */
 .playground-root {
   --sl-content-gap-y: 0;
-}
-
-/* Playground 페이지: content 영역 최대 폭 해제 + 패딩 제거 */
-.playground-page .sl-markdown-content,
-.playground-page .content-panel {
-  max-width: 100% !important;
-  padding: 0 !important;
-}
-.playground-page main {
-  max-width: 100% !important;
 }
