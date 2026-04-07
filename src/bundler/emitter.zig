@@ -60,6 +60,10 @@ pub const EmitOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// dev mode에서 per-module codes 수집 여부.
+    /// false면 output만 생성하고 module_dev_codes를 건너뛴다 (초기 빌드용, 메모리 절감).
+    /// true면 HMR 업데이트용 module_dev_codes를 수집한다 (rebuild용).
+    collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환

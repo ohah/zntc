@@ -408,10 +408,8 @@ pub const Transformer = struct {
             root = try self.prependStatementsToBody(root, self.tagged_template_fns.items);
         }
 
-        // React Fast Refresh: 컴포넌트 등록 + Hook 시그니처 코드를 프로그램 끝에 추가
-        if (self.options.react_refresh and
-            (self.refresh_registrations.items.len > 0 or self.refresh_signatures.items.len > 0))
-        {
+        // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거)
+        if (self.options.react_refresh and self.refresh_registrations.items.len > 0) {
             return try self.appendRefreshRegistrations(root);
         }
 
@@ -2001,17 +1999,8 @@ pub const Transformer = struct {
         self.needs_arguments_var = saved_needs_args;
         self.super_call_this_alias = saved_super_alias;
 
-        // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
-        // 함수 이름을 ast에서 추출 (new_name은 아직 extra에 추가 전이므로)
-        const old_name_idx = self.readNodeIdx(e, 0);
-        const func_name_for_sig: ?[]const u8 = if (!old_name_idx.isNone()) blk: {
-            const old_name_node = self.ast.getNode(old_name_idx);
-            if (old_name_node.tag == .binding_identifier or old_name_node.tag == .identifier_reference) {
-                break :blk self.ast.getText(old_name_node.data.string_ref);
-            }
-            break :blk null;
-        } else null;
-        try self.maybeRegisterRefreshSignature(func_name_for_sig, old_body_idx, &new_body);
+        // $RefreshSig$ (hook signature) 스캔은 제거 — transform 후 stale AST 인덱스로 OOM 유발.
+        // Metro/롤리팝도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
 
         const none = @intFromEnum(NodeIndex.none);
         const result = try self.addExtraNode(node.tag, node.span, &.{
@@ -3179,6 +3168,7 @@ pub const Transformer = struct {
     pub const isHookCall = refresh.isHookCall;
     pub const scanHookSignature = refresh.scanHookSignature;
     pub const findHookCallsInNode = refresh.findHookCallsInNode;
+    pub const findHookCallsInNodeDepth = refresh.findHookCallsInNodeDepth;
     pub const makeSigHandle = refresh.makeSigHandle;
     pub const maybeRegisterRefreshSignature = refresh.maybeRegisterRefreshSignature;
     pub const insertSigCallAtBodyStart = refresh.insertSigCallAtBodyStart;

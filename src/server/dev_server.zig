@@ -443,6 +443,7 @@ pub const DevServer = struct {
             .platform = .browser,
             .dev_mode = true,
             .react_refresh = true,
+            .collect_module_codes = true,
             .plugins = self.plugins,
         });
         defer inc_bundler.deinit();

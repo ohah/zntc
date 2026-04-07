@@ -1229,6 +1229,7 @@ test "Bundler: dev mode module_dev_codes" {
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .dev_mode = true,
+        .collect_module_codes = true,
     });
     defer b.deinit();
 
@@ -1387,8 +1388,8 @@ test "Bundler: dev mode react fast refresh" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_module.hot.accept()") != null);
 }
 
-test "Bundler: dev mode refresh signature" {
-    // Hook 시그니처($RefreshSig$)가 주입되는지 확인
+test "Bundler: dev mode refresh registration" {
+    // $RefreshReg$ 컴포넌트 등록이 주입되는지 확인 ($RefreshSig$ 제거 후)
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "App.ts",
@@ -1414,17 +1415,14 @@ test "Bundler: dev mode refresh signature" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // var _s = $RefreshSig$(); 선언
-    try std.testing.expect(std.mem.indexOf(u8, output, "$RefreshSig$") != null);
-    // _s(); boundary marker 호출 (함수 body 시작)
-    try std.testing.expect(std.mem.indexOf(u8, output, "_s()") != null);
-    // _s(App, "signature"); 시그니처 연결
-    try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") != null);
-    // 시그니처에 useState, useEffect 포함
-    try std.testing.expect(std.mem.indexOf(u8, output, "useState") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "useEffect") != null);
-    // 바인딩 정보: useState{x(0)} — LHS 바인딩 + 초기값
-    try std.testing.expect(std.mem.indexOf(u8, output, "useState{x(0)}") != null);
+    // $RefreshReg$(_c, "App"); 컴포넌트 등록
+    try std.testing.expect(std.mem.indexOf(u8, output, "$RefreshReg$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"App\"") != null);
+    // var _c; 핸들 변수 선언
+    try std.testing.expect(std.mem.indexOf(u8, output, "_c") != null);
+    // _s() hook signature 호출은 더 이상 주입하지 않음 (Metro/롤리팝 방식)
+    // (HMR 런타임의 $RefreshSig$ 글로벌 등록은 있지만, 모듈 코드 내 _s() 호출은 없어야 함)
+    try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") == null);
 }
 
 test "Profile: pipeline stage timing (dev only, not for CI)" {

@@ -1659,7 +1659,9 @@ pub fn main() !void {
                 }
 
                 // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
+                // dev mode rebuild에서만 module_codes 수집 (HMR용). 초기 빌드는 false (메모리 절감).
                 var incremental_opts = bundle_opts;
+                incremental_opts.collect_module_codes = opts.dev;
                 incremental_opts.module_store = &persistent_store;
                 var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
                 defer rebundler.deinit(); // resolve_cache는 외부 소유이므로 해제 안 됨
