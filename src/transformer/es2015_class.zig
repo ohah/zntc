@@ -1049,11 +1049,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             .data = .{ .none = 0 },
                         });
                         // field init의 arrow function이 this를 캡처하려면 _this 필요.
-                        // super class 있으면 _this = __callSuper(...)로 이미 존재.
-                        // super class 없어도 arrow → function 변환 시 _this 캡처 필요.
+                        // super class 있으면 _this = __callSuper(...)로 이미 존재하므로
+                        // super_call_this_alias로 모든 this → _this 치환.
+                        // super class 없는 경우 arrow body의 this 캡처는
+                        // arrow_this_depth > 0 체크(transformer.zig)에서 별도 처리.
                         const saved_field_alias = self.super_call_this_alias;
                         const saved_needs_this = self.needs_this_var;
-                        if (self.current_super_class != null or self.options.unsupported.arrow) {
+                        if (self.current_super_class != null) {
                             self.super_call_this_alias = true;
                         }
                         defer self.super_call_this_alias = saved_field_alias;

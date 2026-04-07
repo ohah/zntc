@@ -15,6 +15,7 @@
     "@swc/cli": "^0.8.1",
     "@swc/core": "^1.15.24",
     "@types/bun": "latest",
+    "compat-table": "kangax/compat-table",
     "svelte": "^5.55.1",
     "vue": "^3.5.31"
   }
