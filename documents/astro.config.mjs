@@ -65,11 +65,9 @@ export default defineConfig({
         {
           label: "레퍼런스",
           translations: { en: "Reference" },
-          items: [
-            { label: "CLI", slug: "reference/cli", translations: { en: "CLI Reference" } },
-            typeDocSidebarGroup,
-          ],
+          autogenerate: { directory: "reference" },
         },
+        typeDocSidebarGroup,
         {
           label: "Playground",
           items: [{ label: "Playground", link: "/playground/" }],
