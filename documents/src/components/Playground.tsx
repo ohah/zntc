@@ -46,8 +46,8 @@ export default function Playground() {
   async function loadWasm() {
     try {
       const mod = await import("../../../packages/wasm/index.ts");
-      const base = import.meta.env?.BASE_URL || "/zts/";
-      const wasmUrl = new URL(`${base}zts.wasm`, window.location.origin);
+      const base = (import.meta.env?.BASE_URL || "/zts/").replace(/\/?$/, "/");
+      const wasmUrl = new URL(`${base}zts-core.wasm`, window.location.origin);
       await mod.init(wasmUrl);
       wasmRef.current = mod;
       setLoading(false);
