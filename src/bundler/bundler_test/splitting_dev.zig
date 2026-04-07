@@ -1157,7 +1157,7 @@ test "Bundler: dev mode single file" {
     // 모듈이 register로 래핑되었는지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register(\"") != null);
     // export가 __zts_exports로 변환되었는지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_exports.default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.default") != null);
 }
 
 test "Bundler: dev mode two files with import" {
@@ -1186,8 +1186,8 @@ test "Bundler: dev mode two files with import" {
     try std.testing.expect(std.mem.indexOf(u8, output[first + 1 ..], "__zts_register(\"") != null);
     // __zts_require 호출이 있는지
     try std.testing.expect(std.mem.indexOf(u8, output, "__zts_require(\"") != null);
-    // utils.ts의 export가 __zts_exports.add로 변환
-    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_exports.add") != null);
+    // utils.ts의 export가 exports.add로 변환
+    try std.testing.expect(std.mem.indexOf(u8, output, "exports.add") != null);
 }
 
 test "Bundler: dev mode default import" {
@@ -1213,7 +1213,7 @@ test "Bundler: dev mode default import" {
     // default import → .default
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".default") != null);
     // greet.ts의 default export
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_exports.default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.default") != null);
 }
 
 test "Bundler: dev mode module_dev_codes" {
@@ -1385,7 +1385,7 @@ test "Bundler: dev mode react fast refresh" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshSig$") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__REACT_REFRESH_RUNTIME__") != null);
     // hot.accept() 자동 삽입
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_module.hot.accept()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.hot.accept()") != null);
 }
 
 test "Bundler: dev mode refresh registration" {

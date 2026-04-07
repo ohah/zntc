@@ -697,7 +697,7 @@ pub fn finalizeNamespaceData(
 /// 프로덕션 buildMetadataForAst와의 차이:
 ///   - renames 없음 (스코프 호이스팅 안 함, 각 모듈이 자체 스코프 유지)
 ///   - cjs_import_preamble: `const { x } = __zts_require("./path")` 형태
-///   - final_exports: 모든 모듈에 `__zts_exports.x = x;` 형태 (entry만이 아닌 전체)
+///   - final_exports: 모든 모듈에 `exports.x = x;` 형태 (entry만이 아닌 전체)
 pub fn buildDevMetadataForAst(
     self: *const Linker,
     ast: *const Ast,
@@ -810,8 +810,8 @@ pub fn buildDevMetadataForAst(
             if (eb.kind == .re_export_all) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
-            // __zts_exports.name = local_name;
-            // re-export의 경우: __zts_exports.name = __zts_require("./dep").name;
+            // exports.name = local_name;
+            // re-export의 경우: exports.name = __zts_require("./dep").name;
             if (eb.kind == .re_export) {
                 if (eb.import_record_index) |iri| {
                     if (iri < m.import_records.len) {
@@ -819,7 +819,7 @@ pub fn buildDevMetadataForAst(
                         if (!irec.resolved.isNone()) {
                             const re_mod = @intFromEnum(irec.resolved);
                             const re_path = if (re_mod < self.modules.len) self.modules[re_mod].path else irec.specifier;
-                            try buf.appendSlice(self.allocator, "__zts_exports.");
+                            try buf.appendSlice(self.allocator, "exports.");
                             try buf.appendSlice(self.allocator, eb.exported_name);
                             try buf.appendSlice(self.allocator, " = __zts_require(\"");
                             try buf.appendSlice(self.allocator, re_path);
@@ -832,7 +832,7 @@ pub fn buildDevMetadataForAst(
                 }
             }
 
-            try buf.appendSlice(self.allocator, "__zts_exports.");
+            try buf.appendSlice(self.allocator, "exports.");
             try buf.appendSlice(self.allocator, eb.exported_name);
             try buf.appendSlice(self.allocator, " = ");
             try buf.appendSlice(self.allocator, eb.local_name);
