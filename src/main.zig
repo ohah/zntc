@@ -1100,33 +1100,33 @@ pub fn main() !void {
     if (opts.is_bundle) {
         const entry_file = opts.input_file orelse {
             try stderr.print("Error: --bundle requires an entry file path\n", .{});
-            return;
+            std.process.exit(1);
         };
-        const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch |err| {
-            try stderr.print("zts: cannot resolve '{s}': {}\n", .{ entry_file, err });
-            return;
+        const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch {
+            try stderr.print("Error: cannot resolve entry file '{s}'\n", .{entry_file});
+            std.process.exit(1);
         };
         defer allocator.free(abs_entry);
 
         // --splitting은 --outdir 필수
         if (opts.splitting and opts.output_dir == null) {
             try stderr.print("Error: --splitting requires --outdir\n", .{});
-            return;
+            std.process.exit(1);
         }
 
         // --preserve-modules는 --outdir 필수
         if (opts.preserve_modules and opts.output_dir == null) {
             try stderr.print("Error: --preserve-modules requires --outdir\n", .{});
-            return;
+            std.process.exit(1);
         }
 
         // --preserve-modules-root를 절대 경로로 resolve (symlink 해결)
         var resolved_pm_root: ?[]const u8 = null;
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
-            resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch |err| {
-                try stderr.print("zts: cannot resolve preserve-modules-root '{s}': {}\n", .{ pmr, err });
-                return;
+            resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch {
+                try stderr.print("Error: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
+                std.process.exit(1);
             };
             opts.preserve_modules_root = resolved_pm_root;
         }
@@ -1141,9 +1141,9 @@ pub fn main() !void {
         defer plugin_list.deinit(allocator);
 
         for (opts.plugin_paths.items) |config_path| {
-            const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
-                try stderr.print("zts: plugin '{s}' spawn failed: {}\n", .{ config_path, err });
-                return;
+            const sp = SubprocessPlugin.spawn(allocator, config_path) catch {
+                try stderr.print("Error: failed to load plugin '{s}'\n", .{config_path});
+                std.process.exit(1);
             };
             try subprocess_list.append(allocator, sp);
             try plugin_list.append(allocator, sp.toPlugin());
@@ -1292,24 +1292,136 @@ pub fn main() !void {
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
         if (subprocess_list.items.len > 0) {
             const sp = subprocess_list.items[0];
+            // loader
             if (opts.loader_list.items.len == 0) {
                 const config_loaders = sp.getLoaderOverrides(allocator) catch &.{};
                 if (config_loaders.len > 0) bundle_opts.loader_overrides = config_loaders;
             }
+            // external
             if (opts.external_list.items.len == 0) {
                 const config_ext = sp.getExternals();
                 if (config_ext.len > 0) bundle_opts.external = config_ext;
             }
+            // define: config의 define을 CLI/자동 define에 병합 (중복 키는 CLI 우선)
+            {
+                const config_defines = sp.getDefines(allocator) catch &.{};
+                for (config_defines) |cd| {
+                    var exists = false;
+                    for (opts.define_list.items) |d| {
+                        if (std.mem.eql(u8, d.key, cd.key)) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) try opts.define_list.append(allocator, cd);
+                }
+                bundle_opts.define = opts.define_list.items;
+            }
+            // alias (기존 미적용 → 수정)
+            if (opts.alias_list.items.len == 0) {
+                const config_aliases = sp.getAliases(allocator) catch &.{};
+                if (config_aliases.len > 0) bundle_opts.alias = config_aliases;
+            }
+            // sourcemap
             if (!opts.sourcemap) {
                 if (sp.config.sourcemap) |sm| if (sm) {
                     opts.sourcemap = true;
                 };
             }
+            // minify
             if (!opts.minify_whitespace and !opts.minify_syntax) {
                 if (sp.config.minify) |m| if (m) {
                     bundle_opts.minify_whitespace = true;
                     bundle_opts.minify_syntax = true;
                 };
+            }
+            // format
+            if (!opts.bundle_format_explicit) {
+                if (sp.config.format) |fmt| {
+                    if (std.mem.eql(u8, fmt, "esm")) {
+                        bundle_opts.format = .esm;
+                    } else if (std.mem.eql(u8, fmt, "cjs")) {
+                        bundle_opts.format = .cjs;
+                    } else if (std.mem.eql(u8, fmt, "iife")) {
+                        bundle_opts.format = .iife;
+                    }
+                }
+            }
+            // platform
+            if (sp.config.platform) |plat| {
+                if (opts.platform == .browser) { // CLI 기본값이면 config 적용
+                    if (std.mem.eql(u8, plat, "node")) {
+                        bundle_opts.platform = .node;
+                    } else if (std.mem.eql(u8, plat, "neutral")) {
+                        bundle_opts.platform = .neutral;
+                    }
+                }
+            }
+            // splitting
+            if (!opts.splitting) {
+                if (sp.config.splitting) |s| if (s) {
+                    bundle_opts.code_splitting = true;
+                };
+            }
+            // preserveModules
+            if (!opts.preserve_modules) {
+                if (sp.config.preserveModules) |pm| if (pm) {
+                    bundle_opts.preserve_modules = true;
+                };
+                if (sp.config.preserveModulesRoot) |pmr| {
+                    bundle_opts.preserve_modules_root = pmr;
+                }
+            }
+            // jsx
+            if (opts.jsx_runtime == null) {
+                if (sp.config.jsx) |jsx_mode| {
+                    if (std.mem.eql(u8, jsx_mode, "automatic")) {
+                        bundle_opts.jsx_runtime = .automatic;
+                    } else if (std.mem.eql(u8, jsx_mode, "automatic-dev")) {
+                        bundle_opts.jsx_runtime = .automatic_dev;
+                    } else if (std.mem.eql(u8, jsx_mode, "classic")) {
+                        bundle_opts.jsx_runtime = .classic;
+                    }
+                }
+            }
+            if (sp.config.jsxFactory) |f| bundle_opts.jsx_factory = f;
+            if (sp.config.jsxFragment) |f| bundle_opts.jsx_fragment = f;
+            if (sp.config.jsxImportSource) |s| bundle_opts.jsx_import_source = s;
+            // banner/footer
+            if (opts.banner_js == null) {
+                if (sp.getBannerJs()) |b| bundle_opts.banner_js = b;
+            }
+            if (opts.footer_js == null) {
+                if (sp.getFooterJs()) |f| bundle_opts.footer_js = f;
+            }
+            // publicPath
+            if (opts.public_path == null) {
+                if (sp.config.publicPath) |pp| bundle_opts.public_path = pp;
+            }
+            // inject
+            if (opts.inject_list.items.len == 0) {
+                const config_inject = sp.getInject();
+                if (config_inject.len > 0) bundle_opts.inject = config_inject;
+            }
+            // globalName
+            if (opts.global_name == null) {
+                if (sp.config.globalName) |gn| bundle_opts.global_name = gn;
+            }
+            // keepNames
+            if (!opts.keep_names) {
+                if (sp.config.keepNames) |kn| if (kn) {
+                    bundle_opts.keep_names = true;
+                };
+            }
+            // legalComments
+            if (sp.config.legalComments) |lc| {
+                if (std.mem.eql(u8, lc, "none")) {
+                    bundle_opts.legal_comments = .none;
+                } else if (std.mem.eql(u8, lc, "inline")) {
+                    bundle_opts.legal_comments = .@"inline";
+                } else if (std.mem.eql(u8, lc, "eof")) {
+                    bundle_opts.legal_comments = .eof;
+                }
             }
         }
 
@@ -1317,8 +1429,8 @@ pub fn main() !void {
         defer bundler.deinit();
 
         const result = bundler.bundle() catch |err| {
-            try stderr.print("zts: bundle failed: {}\n", .{err});
-            return;
+            try stderr.print("Error: bundle failed — {}\n", .{err});
+            std.process.exit(1);
         };
         defer result.deinit(allocator);
 
