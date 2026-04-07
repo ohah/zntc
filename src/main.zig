@@ -1440,7 +1440,10 @@ pub fn main() !void {
             }
         }
 
-        var bundler = Bundler.init(allocator, bundle_opts);
+        // watch + dev: 초기 빌드에서도 module_codes 수집 (HMR 캐시 초기화용)
+        var initial_opts = bundle_opts;
+        if (opts.watch and opts.dev) initial_opts.collect_module_codes = true;
+        var bundler = Bundler.init(allocator, initial_opts);
         defer bundler.deinit();
 
         const result = bundler.bundle() catch |err| {
@@ -1556,9 +1559,7 @@ pub fn main() !void {
             defer persistent_store.deinit();
 
             // dev mode: per-module code 캐시 (HMR diff용)
-            // 첫 rebuild에서는 캐시가 비어있으므로 diff 스킵 → 캐시만 채움.
             var module_code_cache = std.StringHashMap([]const u8).init(allocator);
-            var is_first_rebuild = true;
             defer {
                 var it = module_code_cache.iterator();
                 while (it.next()) |entry| {
@@ -1566,6 +1567,21 @@ pub fn main() !void {
                     allocator.free(entry.value_ptr.*);
                 }
                 module_code_cache.deinit();
+            }
+
+            // 초기 빌드의 module_dev_codes로 캐시 초기화 (첫 rebuild부터 HMR diff 가능)
+            if (result.module_dev_codes) |codes| {
+                for (codes) |c| {
+                    const id_copy = allocator.dupe(u8, c.id) catch continue;
+                    const code_copy = allocator.dupe(u8, c.code) catch {
+                        allocator.free(id_copy);
+                        continue;
+                    };
+                    module_code_cache.put(id_copy, code_copy) catch {
+                        allocator.free(id_copy);
+                        allocator.free(code_copy);
+                    };
+                }
             }
             var persistent_resolve_cache = ResolveCache.init(allocator, .{
                 .platform = bundle_opts.platform,
@@ -1727,10 +1743,7 @@ pub fn main() !void {
 
                     // --dev 모드: 캐시 대비 diff → 변경된 모듈만 updates로 출력
                     if (rebuild_result.module_dev_codes) |dev_codes| {
-                        if (is_first_rebuild) {
-                            // 첫 rebuild: 캐시 없으므로 diff 불가. 캐시만 채우고 full reload.
-                            try stdout.print(",\"graph_changed\":true", .{});
-                        } else if (dev_codes.len != module_code_cache.count()) {
+                        if (dev_codes.len != module_code_cache.count()) {
                             // 모듈 수 변경 (새 import 추가/삭제) → full reload
                             try stdout.print(",\"graph_changed\":true", .{});
                         } else {
@@ -1762,7 +1775,6 @@ pub fn main() !void {
                             }
                             // changed_count == 0: 코드 변경 없음 → 이벤트 미발송 (무시)
                         }
-                        is_first_rebuild = false;
 
                         // 캐시 업데이트
                         {
