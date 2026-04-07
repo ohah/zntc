@@ -19,11 +19,6 @@ type TranspileFn = (
   options?: Record<string, unknown>,
 ) => { code: string; map?: string };
 
-interface WasmModule {
-  init: (url: URL | string) => Promise<void>;
-  transpile: TranspileFn;
-}
-
 interface Options {
   filename: string;
   jsx: "classic" | "automatic" | "automatic-dev";
@@ -58,15 +53,41 @@ const DEFAULT_OPTIONS: Options = {
   quotes: "double",
 };
 
+function doTranspile(
+  transpileFn: TranspileFn | undefined,
+  code: string,
+  opts: Options,
+): { output: string; sourcemap: string; error: string } {
+  if (!transpileFn) return { output: "", sourcemap: "", error: "" };
+  try {
+    const result = transpileFn(code, {
+      filename: opts.filename,
+      jsx: opts.jsx,
+      sourcemap: opts.sourcemap,
+      minify: opts.minify,
+      minifyWhitespace: opts.minifyWhitespace,
+      minifyIdentifiers: opts.minifyIdentifiers,
+      minifySyntax: opts.minifySyntax,
+      format: opts.format,
+      dropConsole: opts.dropConsole,
+      dropDebugger: opts.dropDebugger,
+      asciiOnly: opts.asciiOnly,
+      experimentalDecorators: opts.experimentalDecorators,
+      flow: opts.flow,
+      quotes: opts.quotes,
+    });
+    return { output: result.code, sourcemap: result.map || "", error: "" };
+  } catch (err) {
+    return { output: "", sourcemap: "", error: String(err) };
+  }
+}
+
 export default function Playground() {
   const [input, setInput] = useState(() => {
     if (typeof window !== "undefined") {
       const hash = window.location.hash.slice(1);
       if (hash) {
-        try {
-          const decoded = atob(hash);
-          return decoded;
-        } catch {}
+        try { return atob(hash); } catch {}
       }
     }
     return DEFAULT_CODE;
@@ -77,91 +98,62 @@ export default function Playground() {
   const [options, setOptions] = useState<Options>(DEFAULT_OPTIONS);
   const [showConfig, setShowConfig] = useState(true);
   const [outputTab, setOutputTab] = useState<"code" | "sourcemap">("code");
-  const wasmRef = useRef<WasmModule | null>(null);
+  const transpileFnRef = useRef<TranspileFn | undefined>(undefined);
   const [sourcemapOutput, setSourcemapOutput] = useState("");
 
-  useEffect(() => {
-    loadWasm();
+  const runTranspile = useCallback((code: string, opts: Options) => {
+    const result = doTranspile(transpileFnRef.current, code, opts);
+    setOutput(result.output);
+    setSourcemapOutput(result.sourcemap);
+    setError(result.error);
   }, []);
 
-  async function loadWasm() {
-    try {
-      const mod = await import("../../../packages/wasm/index.ts");
-      const base = (import.meta.env?.BASE_URL || "/zts/").replace(/\/?$/, "/");
-      const wasmUrl = new URL(`${base}zts-core.wasm`, window.location.origin);
-      await mod.init(wasmUrl);
-      wasmRef.current = mod;
-      setLoading(false);
-      doTranspile(input, options, mod.transpile);
-    } catch (err) {
-      setError(`WASM load failed: ${err}`);
-      setLoading(false);
-    }
+  useEffect(() => {
+    (async () => {
+      try {
+        const mod = await import("../../../packages/wasm/index.ts");
+        const base = (import.meta.env?.BASE_URL || "/zts/").replace(/\/?$/, "/");
+        const wasmUrl = new URL(`${base}zts-core.wasm`, window.location.origin);
+        await mod.init(wasmUrl);
+        transpileFnRef.current = mod.transpile;
+        setLoading(false);
+        const result = doTranspile(mod.transpile, input, options);
+        setOutput(result.output);
+        setSourcemapOutput(result.sourcemap);
+        setError(result.error);
+      } catch (err) {
+        setError(`WASM load failed: ${err}`);
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  function handleInputChange(value: string | undefined) {
+    const code = value ?? "";
+    setInput(code);
+    runTranspile(code, options);
   }
 
-  const doTranspile = useCallback(
-    (code: string, opts: Options, transpileFn?: TranspileFn) => {
-      const fn = transpileFn || wasmRef.current?.transpile;
-      if (!fn) return;
-      try {
-        const result = fn(code, {
-          filename: opts.filename,
-          jsx: opts.jsx,
-          sourcemap: opts.sourcemap,
-          minify: opts.minify,
-          minifyWhitespace: opts.minifyWhitespace,
-          minifyIdentifiers: opts.minifyIdentifiers,
-          minifySyntax: opts.minifySyntax,
-          format: opts.format,
-          dropConsole: opts.dropConsole,
-          dropDebugger: opts.dropDebugger,
-          asciiOnly: opts.asciiOnly,
-          experimentalDecorators: opts.experimentalDecorators,
-          flow: opts.flow,
-          quotes: opts.quotes,
-        });
-        setOutput(result.code);
-        setSourcemapOutput(result.map || "");
-        setError("");
-      } catch (err) {
-        setError(String(err));
-        setOutput("");
-        setSourcemapOutput("");
-      }
-    },
-    [],
-  );
-
-  const handleInputChange = useCallback(
-    (value: string | undefined) => {
-      const code = value ?? "";
-      setInput(code);
-      doTranspile(code, options);
-    },
-    [options, doTranspile],
-  );
-
-  const updateOption = useCallback(
-    <K extends keyof Options>(key: K, value: Options[K]) => {
-      const newOpts = { ...options, [key]: value };
-      // minify 전체 토글 시 개별 옵션도 동기화
+  function updateOption<K extends keyof Options>(key: K, value: Options[K]) {
+    setOptions((prev) => {
+      const newOpts = { ...prev, [key]: value };
       if (key === "minify") {
         newOpts.minifyWhitespace = value as boolean;
         newOpts.minifyIdentifiers = value as boolean;
         newOpts.minifySyntax = value as boolean;
       }
-      setOptions(newOpts);
-      doTranspile(input, newOpts);
-    },
-    [input, options, doTranspile],
-  );
+      // 다음 렌더 전에 트랜스파일 — ref 기반이라 stale 없음
+      setTimeout(() => runTranspile(input, newOpts), 0);
+      return newOpts;
+    });
+  }
 
-  const handleShare = useCallback(() => {
-    const encoded = btoa(input);
+  function handleShare() {
+    const encoded = btoa(unescape(encodeURIComponent(input)));
     const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
     navigator.clipboard.writeText(url);
     alert("URL copied to clipboard!");
-  }, [input]);
+  }
 
   const inputLang =
     options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
@@ -199,7 +191,7 @@ export default function Playground() {
         </div>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <button onClick={handleShare} style={btnStyle}>Share</button>
-          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={btnStyle}>
+          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={{ ...btnStyle, textDecoration: "none" }}>
             GitHub
           </a>
         </div>
@@ -281,17 +273,11 @@ export default function Playground() {
           <div style={editorPanelStyle}>
             <div style={editorHeaderStyle}>
               <div style={{ display: "flex", gap: "0" }}>
-                <button
-                  onClick={() => setOutputTab("code")}
-                  style={tabStyle(outputTab === "code")}
-                >
+                <button onClick={() => setOutputTab("code")} style={tabStyle(outputTab === "code")}>
                   Output
                 </button>
                 {options.sourcemap && (
-                  <button
-                    onClick={() => setOutputTab("sourcemap")}
-                    style={tabStyle(outputTab === "sourcemap")}
-                  >
+                  <button onClick={() => setOutputTab("sourcemap")} style={tabStyle(outputTab === "sourcemap")}>
                     Sourcemap
                   </button>
                 )}
@@ -345,18 +331,13 @@ function CheckOption({ label, checked, onChange }: { label: string; checked: boo
 }
 
 function SelectOption({ label, value, onChange, options }: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: [string, string][];
+  label: string; value: string; onChange: (v: string) => void; options: [string, string][];
 }) {
   return (
     <div style={optionRowStyle}>
       <span>{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} style={cfgSelectStyle}>
-        {options.map(([val, text]) => (
-          <option key={val} value={val}>{text}</option>
-        ))}
+        {options.map(([val, text]) => <option key={val} value={val}>{text}</option>)}
       </select>
     </div>
   );
@@ -400,7 +381,6 @@ const btnStyle: React.CSSProperties = {
   color: "#e2e8f0",
   fontSize: "0.8rem",
   cursor: "pointer",
-  textDecoration: "none",
 };
 
 const iconBtnStyle: React.CSSProperties = {
