@@ -103,6 +103,46 @@ describe("@zts/wasm", () => {
     expect(result.code).not.toContain("<div");
   });
 
+  test("JSX 트랜스파일 (automatic-dev)", () => {
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      jsx: "automatic-dev",
+    });
+    expect(result.code).toContain("jsxDEV");
+  });
+
+  test("minify 단축 옵션 (whitespace + identifiers + syntax)", () => {
+    const result = transpile("const   longVariableName: number   =   1;", {
+      minify: true,
+    });
+    expect(result.code.length).toBeLessThan("const longVariableName = 1;".length);
+  });
+
+  test("drop debugger", () => {
+    const result = transpile("debugger; const x = 1;", {
+      dropDebugger: true,
+    });
+    expect(result.code).not.toContain("debugger");
+    expect(result.code).toContain("const x = 1;");
+  });
+
+  test("quotes: single", () => {
+    const result = transpile('const x = "hello";', { quotes: "single" });
+    expect(result.code).toContain("'hello'");
+  });
+
+  test("ascii only", () => {
+    const result = transpile('const x = "한글";');
+    const asciiResult = transpile('const x = "한글";', { asciiOnly: true });
+    expect(asciiResult.code).toContain("\\u");
+    expect(result.code).toContain("한글");
+  });
+
+  test("initSync 중복 호출은 무시", () => {
+    // 이미 초기화됨 — 에러 없이 무시되어야 함
+    expect(() => initSync(new ArrayBuffer(0))).not.toThrow();
+  });
+
   test("여러 번 호출해도 메모리 누수 없이 동작", () => {
     for (let i = 0; i < 100; i++) {
       const result = transpile(`const x${i}: number = ${i};`);

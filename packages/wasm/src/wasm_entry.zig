@@ -12,7 +12,6 @@
 const std = @import("std");
 const transpile_mod = @import("zts_lib").transpile;
 const TranspileOptions = transpile_mod.TranspileOptions;
-const Codegen = @import("zts_lib").codegen.codegen;
 
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;
@@ -151,13 +150,7 @@ export fn transpile(
         @memcpy(combined[result.code.len + 1 ..], sm);
         result.deinit(wasm_alloc);
         break :blk combined;
-    } else blk: {
-        // 소스맵 없으면 코드만 반환 (이미 wasm_alloc 소유)
-        const code = result.code;
-        // sourcemap만 free (null이면 noop)
-        if (result.sourcemap) |sm| wasm_alloc.free(sm);
-        break :blk code;
-    };
+    } else result.code;
 
     const ptr: u32 = @intFromPtr(output.ptr);
     const len: u32 = @intCast(output.len);

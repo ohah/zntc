@@ -136,7 +136,7 @@ function encodeFlags(opts: TranspileOptions = {}): number {
   if (opts.minifyIdentifiers || opts.minify) flags |= 1 << 2;
   if (opts.minifySyntax || opts.minify) flags |= 1 << 3;
   if (opts.jsx === "automatic") flags |= 1 << 4;
-  if (opts.jsx === "automatic-dev") flags |= (1 << 4) | (1 << 5);
+  if (opts.jsx === "automatic-dev") flags |= 1 << 5;
   if (opts.dropConsole) flags |= 1 << 6;
   if (opts.dropDebugger) flags |= 1 << 7;
   if (opts.asciiOnly) flags |= 1 << 8;
@@ -232,7 +232,9 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
   const mod =
     input instanceof WebAssembly.Module
       ? input
-      : new WebAssembly.Module(input instanceof ArrayBuffer ? input : (input as Uint8Array).buffer);
+      : new WebAssembly.Module(
+          input instanceof ArrayBuffer ? input : (input as ArrayBufferView).buffer,
+        );
 
   const instance = new WebAssembly.Instance(mod, imports);
   memory = instance.exports.memory as WebAssembly.Memory;
@@ -254,8 +256,11 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   let filePtr = 0;
   let fileLen = 0;
 
-  const filename = options.filename ?? "input.ts";
-  [filePtr, fileLen] = writeString(filename);
+  // Zig 측에서 file_ptr==0이면 "input.ts" 기본값을 사용하므로
+  // 커스텀 filename이 있을 때만 할당
+  if (options.filename) {
+    [filePtr, fileLen] = writeString(options.filename);
+  }
 
   const flags = encodeFlags(options);
 
