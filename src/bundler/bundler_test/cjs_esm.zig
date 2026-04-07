@@ -1430,4 +1430,3 @@ test "TLA: for_await_of_statement detected via AST tag" {
     // codegen이 for await of를 올바르게 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for await") != null);
 }
-

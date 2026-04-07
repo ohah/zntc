@@ -710,4 +710,3 @@ test "Stress: multiple entry points with deep shared graph" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"e1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"e2\"") != null);
 }
-

@@ -835,4 +835,3 @@ test "Integration: mixed default/named import from same module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"1.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "debug") != null);
 }
-

@@ -654,4 +654,3 @@ test "Circular: diamond with shared leaf" {
     const entry_pos = std.mem.indexOf(u8, result.output, "\"entry\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(shared_pos < entry_pos);
 }
-

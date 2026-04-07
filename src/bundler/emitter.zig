@@ -483,7 +483,6 @@ pub const emitDevModule = dev.emitDevModule;
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
 
-
 // --- Chunks functions (emitter/chunks.zig) ---
 const chunks = @import("emitter/chunks.zig");
 pub const emitChunks = chunks.emitChunks;
@@ -1245,4 +1244,3 @@ pub fn collectImportBindingNames(
 // --- ESM wrap functions (emitter/esm_wrap.zig) ---
 const esm_wrap = @import("emitter/esm_wrap.zig");
 const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
-

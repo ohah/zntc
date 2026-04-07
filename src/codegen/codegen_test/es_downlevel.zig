@@ -244,8 +244,6 @@ test "ES2017: non-async function unchanged" {
 
 // --- ES5: async → state machine (async_await + generator 둘 다 unsupported) ---
 
-
-
 test "ES5: async function → __async + __generator state machine" {
     var r = try e2eTarget(std.testing.allocator, "async function foo() { return await bar(); }", .es5);
     defer r.deinit();
@@ -1820,4 +1818,3 @@ test "useDefineForClassFields=false: no-init fields removed" {
     // class body에 y, w가 없어야 함 (method만 있음)
     try std.testing.expect(std.mem.indexOf(u8, r.output, ";y") == null);
 }
-

@@ -1503,4 +1503,3 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
         });
     }
 }
-

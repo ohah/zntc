@@ -961,4 +961,3 @@ test "Complex: destructuring imports used in complex expressions" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "width * height") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "width + height") != null);
 }
-

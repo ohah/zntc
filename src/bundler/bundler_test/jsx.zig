@@ -752,4 +752,3 @@ test "Stress: MVC 7-module framework" {
         try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
     }
 }
-
