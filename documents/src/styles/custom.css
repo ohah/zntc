@@ -12,14 +12,31 @@
 
 /* Monaco Editor: Starlight CSS 충돌 방지 */
 .monaco-editor,
-.monaco-editor * {
+.monaco-editor *,
+.monaco-editor .view-lines,
+.monaco-editor .view-line {
   line-height: normal !important;
-}
-.monaco-editor .view-lines {
   font-feature-settings: normal !important;
+  margin-top: 0 !important;
 }
-/* Playground 페이지에서 Starlight content 패딩 제거 */
-[data-page-route="playground"] .main-pane,
-[data-page-route="en/playground"] .main-pane {
-  padding: 0;
+
+/* Starlight markdown 스타일이 Monaco 내부 요소에 margin-top을 주입하는 문제 차단 */
+.sl-markdown-content .monaco-editor *,
+.sl-markdown-content .monaco-editor {
+  margin-top: 0 !important;
+}
+
+/* Playground 컨테이너를 not-content로 마킹하여 Starlight 간섭 최소화 */
+.playground-root {
+  --sl-content-gap-y: 0;
+}
+
+/* Playground 페이지: content 영역 최대 폭 해제 + 패딩 제거 */
+.playground-page .sl-markdown-content,
+.playground-page .content-panel {
+  max-width: 100% !important;
+  padding: 0 !important;
+}
+.playground-page main {
+  max-width: 100% !important;
 }
