@@ -163,7 +163,7 @@ pub const BundleOptions = struct {
     /// --line-limit: 줄 길이 제한 (0=무제한)
     line_limit: u32 = 0,
     /// --preserve-modules: 모듈 1개 = 출력 파일 1개 (라이브러리 빌드용).
-    /// code_splitting을 자동으로 활성화한다.
+    /// code_splitting과 동일한 다중 파일 출력 경로를 사용한다.
     preserve_modules: bool = false,
     /// --preserve-modules-root: 출력 디렉토리 구조의 기준 경로.
     /// 이 경로를 기준으로 상대 경로를 계산하여 출력 파일 구조를 결정한다.

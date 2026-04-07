@@ -124,17 +124,13 @@ pub fn emitChunks(
             const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
             const dep_ci = @intFromEnum(dep_chunk_idx);
 
-            // preserve-modules: 상대 경로 계산 (서로 다른 디렉토리에 있을 수 있음)
-            // 일반 code splitting: 모든 청크가 같은 outdir에 있으므로 "./"
-            const import_prefix = if (options.preserve_modules) blk: {
+            // import 경로 결정: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
+            const resolved_path = if (options.preserve_modules) blk: {
                 const src_path = chunk.rel_dir orelse "./";
                 const dep_path = dep_chunk.rel_dir orelse "./";
-                break :blk try computeRelativeImportPath(allocator, src_path, dep_path, dep_stem, ext, options.preserve_modules_root);
-            } else null;
-            defer if (import_prefix) |p| allocator.free(p);
-
-            // import 경로: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
-            const import_path = if (import_prefix) |p| p else null;
+                break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
+            } else try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+            defer allocator.free(resolved_path);
 
             // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
             const symbols = chunk.imports_from.get(dep_ci);
@@ -156,11 +152,10 @@ pub fn emitChunks(
                     const seen = seen_gop.value_ptr.*;
 
                     if (total > 1 and seen > 1) {
-                        // 중복 이름 → alias 부여: import { x as x$2 }
                         const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ name, seen });
                         try alias_strs.append(allocator, alias);
                         try chunk_output.appendSlice(allocator, name);
-                        try chunk_output.appendSlice(allocator, " as "); // `as`는 키워드이므로 공백 필수
+                        try chunk_output.appendSlice(allocator, " as ");
                         try chunk_output.appendSlice(allocator, alias);
                     } else {
                         try chunk_output.appendSlice(allocator, name);
@@ -173,53 +168,25 @@ pub fn emitChunks(
                         }
                     }
                 }
-                if (import_path) |ip| {
-                    if (!options.minify_whitespace) {
-                        try chunk_output.appendSlice(allocator, " } from \"");
-                        try chunk_output.appendSlice(allocator, ip);
-                        try chunk_output.appendSlice(allocator, "\";\n");
-                    } else {
-                        try chunk_output.appendSlice(allocator, "}from\"");
-                        try chunk_output.appendSlice(allocator, ip);
-                        try chunk_output.appendSlice(allocator, "\";");
-                    }
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, " } from \"");
+                    try chunk_output.appendSlice(allocator, resolved_path);
+                    try chunk_output.appendSlice(allocator, "\";\n");
                 } else {
-                    if (!options.minify_whitespace) {
-                        try chunk_output.appendSlice(allocator, " } from \"./");
-                        try chunk_output.appendSlice(allocator, dep_stem);
-                        try chunk_output.appendSlice(allocator, ext);
-                        try chunk_output.appendSlice(allocator, "\";\n");
-                    } else {
-                        try chunk_output.appendSlice(allocator, "}from\"./");
-                        try chunk_output.appendSlice(allocator, dep_stem);
-                        try chunk_output.appendSlice(allocator, ext);
-                        try chunk_output.appendSlice(allocator, "\";");
-                    }
+                    try chunk_output.appendSlice(allocator, "}from\"");
+                    try chunk_output.appendSlice(allocator, resolved_path);
+                    try chunk_output.appendSlice(allocator, "\";");
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
-                if (import_path) |ip| {
-                    if (!options.minify_whitespace) {
-                        try chunk_output.appendSlice(allocator, "import \"");
-                        try chunk_output.appendSlice(allocator, ip);
-                        try chunk_output.appendSlice(allocator, "\";\n");
-                    } else {
-                        try chunk_output.appendSlice(allocator, "import\"");
-                        try chunk_output.appendSlice(allocator, ip);
-                        try chunk_output.appendSlice(allocator, "\";");
-                    }
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, "import \"");
+                    try chunk_output.appendSlice(allocator, resolved_path);
+                    try chunk_output.appendSlice(allocator, "\";\n");
                 } else {
-                    if (!options.minify_whitespace) {
-                        try chunk_output.appendSlice(allocator, "import \"./");
-                        try chunk_output.appendSlice(allocator, dep_stem);
-                        try chunk_output.appendSlice(allocator, ext);
-                        try chunk_output.appendSlice(allocator, "\";\n");
-                    } else {
-                        try chunk_output.appendSlice(allocator, "import\"./");
-                        try chunk_output.appendSlice(allocator, dep_stem);
-                        try chunk_output.appendSlice(allocator, ext);
-                        try chunk_output.appendSlice(allocator, "\";");
-                    }
+                    try chunk_output.appendSlice(allocator, "import\"");
+                    try chunk_output.appendSlice(allocator, resolved_path);
+                    try chunk_output.appendSlice(allocator, "\";");
                 }
             }
         }
@@ -902,7 +869,6 @@ fn computeRelativeImportPath(
     allocator: std.mem.Allocator,
     src_abs: []const u8,
     dep_abs: []const u8,
-    dep_stem: []const u8,
     ext: []const u8,
     root: ?[]const u8,
 ) ![]const u8 {
@@ -922,64 +888,10 @@ fn computeRelativeImportPath(
         }
     }
 
-    // root 없거나 매칭 실패 → 절대 경로의 디렉토리 기준으로 계산
+    // root 없거나 매칭 실패 → 절대 경로 기준으로 computeRelativePath에 위임
     const src_dir = std.fs.path.dirname(src_abs) orelse "";
-    const dep_dir = std.fs.path.dirname(dep_abs) orelse "";
-
-    if (std.mem.eql(u8, src_dir, dep_dir)) {
-        // 같은 디렉토리
-        return std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
-    }
-
-    // 다른 디렉토리: dep의 상대 경로 계산
-    const dep_basename_no_ext = std.fs.path.stem(std.fs.path.basename(dep_abs));
-    const dep_full_rel = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
-    _ = dep_full_rel;
-
-    // 공통 prefix 찾기
-    var common_len: usize = 0;
-    const min_len = @min(src_dir.len, dep_dir.len);
-    for (0..min_len) |i| {
-        if (src_dir[i] == dep_dir[i]) {
-            if (src_dir[i] == '/') common_len = i + 1;
-        } else break;
-    }
-    if (common_len == 0 and min_len > 0 and src_dir[0] != '/') {
-        common_len = 0;
-    }
-
-    // src_dir에서 common 이후의 깊이만큼 "../"
-    const src_remaining = src_dir[common_len..];
-    var depth: usize = 0;
-    if (src_remaining.len > 0) {
-        depth = 1;
-        for (src_remaining) |c| {
-            if (c == '/') depth += 1;
-        }
-    }
-
-    // dep_dir에서 common 이후 + dep 파일명
-    const dep_remaining = if (dep_dir.len > common_len) dep_dir[common_len..] else "";
-
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    if (depth == 0) {
-        try result.appendSlice(allocator, "./");
-    } else {
-        for (0..depth) |_| {
-            try result.appendSlice(allocator, "../");
-        }
-    }
-
-    if (dep_remaining.len > 0) {
-        try result.appendSlice(allocator, dep_remaining);
-        try result.append(allocator, '/');
-    }
-    try result.appendSlice(allocator, dep_basename_no_ext);
-    try result.appendSlice(allocator, ext);
-
-    return result.toOwnedSlice(allocator);
+    const dep_no_ext = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
+    return computeRelativePath(allocator, src_dir, dep_no_ext, ext);
 }
 
 /// 절대 경로에서 root prefix를 제거한다.
