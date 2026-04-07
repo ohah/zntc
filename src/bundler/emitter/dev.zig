@@ -128,8 +128,28 @@ pub fn emitDevBundle(
         defer allocator.free(emit_result.code);
         defer if (emit_result.mappings) |maps| allocator.free(maps);
 
+        // dependency map 빌드: CJS require("../foo") → resolved module ID
+        var dep_entries: std.ArrayList(DepMapEntry) = .empty;
+        defer dep_entries.deinit(allocator);
+        for (m.import_records) |rec| {
+            if (rec.is_external) continue;
+            if (rec.resolved.isNone()) continue;
+            const resolved_idx = @intFromEnum(rec.resolved);
+            if (resolved_idx >= graph.modules.items.len) continue;
+            const resolved_mod = graph.modules.items[resolved_idx];
+            const resolved_id = makeModuleId(resolved_mod.path, options.root_dir);
+            // specifier가 이미 resolved_id와 같으면 맵에 추가할 필요 없음
+            if (!std.mem.eql(u8, rec.specifier, resolved_id)) {
+                try dep_entries.append(allocator, .{
+                    .specifier = rec.specifier,
+                    .resolved_id = resolved_id,
+                });
+            }
+        }
+
         // __zts_register 래핑 코드 생성
-        const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, options.minify_whitespace);
+        const dep_map: ?[]const DepMapEntry = if (dep_entries.items.len > 0) dep_entries.items else null;
+        const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, dep_map, options.minify_whitespace);
         errdefer allocator.free(wrapped);
 
         // per-module code 저장 (collect_module_codes=true일 때만, 메모리 절감)
@@ -212,12 +232,14 @@ pub fn emitDevBundle(
     };
 }
 
-/// __zts_register("id", function(...) { code }) 래핑 코드를 생성한다.
+/// __zts_register("id", {depMap}, function(...) { code }) 래핑 코드를 생성한다.
+/// depMap: import specifier → resolved module ID 맵 (CJS require() resolve용).
 /// emitDevBundle과 외부에서 공용으로 사용.
 pub fn wrapWithRegister(
     allocator: std.mem.Allocator,
     module_id: []const u8,
     code: []const u8,
+    dep_map: ?[]const DepMapEntry,
     minify: bool,
 ) ![]const u8 {
     var wrapped: std.ArrayList(u8) = .empty;
@@ -226,12 +248,29 @@ pub fn wrapWithRegister(
     try wrapped.appendSlice(allocator, "__zts_register(\"");
     try wrapped.appendSlice(allocator, module_id);
 
+    // dependency map: {"../foo": "resolved/foo.js", ...}
+    try wrapped.appendSlice(allocator, if (minify) "\"," else "\", ");
+    if (dep_map) |deps| {
+        try wrapped.append(allocator, '{');
+        for (deps, 0..) |dep, i| {
+            if (i > 0) try wrapped.append(allocator, ',');
+            try wrapped.append(allocator, '"');
+            try wrapped.appendSlice(allocator, dep.specifier);
+            try wrapped.appendSlice(allocator, if (minify) "\":\"" else "\": \"");
+            try wrapped.appendSlice(allocator, dep.resolved_id);
+            try wrapped.append(allocator, '"');
+        }
+        try wrapped.append(allocator, '}');
+    } else {
+        try wrapped.appendSlice(allocator, "null");
+    }
+
     if (minify) {
-        try wrapped.appendSlice(allocator, "\",function(module,exports,require){");
+        try wrapped.appendSlice(allocator, ",function(module,exports,require){");
         try wrapped.appendSlice(allocator, code);
         try wrapped.appendSlice(allocator, "});");
     } else {
-        try wrapped.appendSlice(allocator, "\", function(module, exports, require) {\n");
+        try wrapped.appendSlice(allocator, ", function(module, exports, require) {\n");
         // 모듈 코드 들여쓰기
         var rest: []const u8 = code;
         while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
@@ -245,6 +284,11 @@ pub fn wrapWithRegister(
 
     return wrapped.toOwnedSlice(allocator);
 }
+
+pub const DepMapEntry = struct {
+    specifier: []const u8,
+    resolved_id: []const u8,
+};
 
 /// Dev mode 단일 모듈 emit 결과.
 pub const DevModuleEmitResult = struct {
