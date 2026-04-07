@@ -1278,7 +1278,7 @@ pub fn main() !void {
             .plugins = plugin_list.items,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
-            .configurable_exports = opts.configurable_exports,
+            .configurable_exports = opts.configurable_exports or opts.dev, // HMR: export 재정의 필요
             .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,
