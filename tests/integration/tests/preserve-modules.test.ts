@@ -174,11 +174,7 @@ describe("preserve-modules", () => {
     });
     cleanup = c;
 
-    const result = await runZts([
-      "--bundle",
-      join(dir, "index.ts"),
-      "--preserve-modules",
-    ]);
+    const result = await runZts(["--bundle", join(dir, "index.ts"), "--preserve-modules"]);
 
     expect(result.stderr).toContain("--preserve-modules requires --outdir");
   });
