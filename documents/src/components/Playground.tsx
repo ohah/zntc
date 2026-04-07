@@ -193,7 +193,7 @@ export default function Playground() {
   };
 
   return (
-    <div style={containerStyle}>
+    <div className="not-content playground-root" style={containerStyle}>
       {/* 상단 툴바 */}
       <div style={topBarStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
