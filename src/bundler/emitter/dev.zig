@@ -258,7 +258,7 @@ pub const DevModuleEmitResult = struct {
 /// Dev mode용 단일 모듈 변환.
 /// 프로덕션 emitModule과의 차이:
 ///   - buildDevMetadataForAst 사용 (rename 없음, __zts_require preamble)
-///   - final_exports → __zts_exports.x = x; 형태
+///   - final_exports → exports.x = x; 형태
 pub fn emitDevModule(
     allocator: std.mem.Allocator,
     module: *const Module,
@@ -292,7 +292,7 @@ pub fn emitDevModule(
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
 
-    // Dev mode 메타데이터: rename 없음, __zts_require preamble, __zts_exports epilogue
+    // Dev mode 메타데이터: rename 없음, __zts_require preamble, exports epilogue
     var metadata: ?LinkingMetadata = null;
     defer if (metadata) |*md| md.deinit();
 
@@ -335,7 +335,7 @@ pub fn emitDevModule(
         }
     }
 
-    // preamble (__zts_require) + code + epilogue (__zts_exports)
+    // preamble (__zts_require) + code + epilogue (exports)
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
     const final_exports = if (metadata) |md| md.final_exports else null;
 
