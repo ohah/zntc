@@ -880,8 +880,7 @@ pub fn emitModule(
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
-        // dev mode: HMR 모듈 ID로 사용하기 위해 dev_id 우선
-        const basename = if (module.dev_id.len > 0) module.dev_id else std.fs.path.basename(module.path);
+        const basename = module.wrapperId();
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
         const var_name = try types.makeRequireVarName(allocator, module.path);

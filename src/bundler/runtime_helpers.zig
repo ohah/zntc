@@ -346,14 +346,13 @@ pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var __classPrivateMethodGet=function
 // HMR (Dev Server)
 // ============================================================
 
-/// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
+/// HMR 런타임: __commonJS/__esm 래핑 + import.meta.hot API.
 /// dev mode 번들 상단에 주��된다.
 ///
 /// 구조:
-///   __zts_modules[id] = { factory, exports, hot }
-///   __zts_require(id) → 모듈의 exports 반환
+///   __commonJS/__esm → __zts_modules[id]에 자동 등록 (reset 기능 포함)
 ///   __zts_make_hot(id) → import.meta.hot 호환 API 객체
-///   __zts_apply_update(id, code) → 모듈 재실행 (WS에서 호출)
+///   __zts_apply_update([{id, code}]) → eval + reset + re-execute (WS에서 호출)
 pub const HMR_RUNTIME =
     \\var __zts_modules = {};
     \\var __zts_hot_cbs = {};

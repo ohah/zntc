@@ -1474,14 +1474,11 @@ pub const Codegen = struct {
             }
         }
 
-        // import.meta.hot → __zts_make_hot("dev_id") (dev mode HMR)
-        if (self.options.dev_module_id) |dev_id| {
-            const obj_node = self.ast.getNode(object);
-            if (obj_node.tag == .meta_property) {
-                const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
-                if (std.mem.eql(u8, obj_text, "import.meta")) {
-                    const prop_node = self.ast.getNode(property);
-                    const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+        // import.meta.* 프로퍼티 감지: hot (HMR) + polyfill (CJS/non-ESM)
+        if (self.options.dev_module_id != null or self.options.module_format == .cjs or self.options.replace_import_meta) {
+            if (self.resolveImportMetaProp(object, property)) |prop_text| {
+                // import.meta.hot → __zts_make_hot("dev_id") (dev mode HMR)
+                if (self.options.dev_module_id) |dev_id| {
                     if (std.mem.eql(u8, prop_text, "hot")) {
                         try self.write("__zts_make_hot(\"");
                         try self.write(dev_id);
@@ -1489,17 +1486,8 @@ pub const Codegen = struct {
                         return;
                     }
                 }
-            }
-        }
-
-        // import.meta.* polyfill: CJS/non-ESM에서 import.meta 프로퍼티 접근을 플랫폼별로 치환
-        if (self.options.module_format == .cjs or self.options.replace_import_meta) {
-            const obj_node = self.ast.getNode(object);
-            if (obj_node.tag == .meta_property) {
-                const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
-                if (std.mem.eql(u8, obj_text, "import.meta")) {
-                    const prop_node = self.ast.getNode(property);
-                    const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+                // import.meta.* polyfill (CJS/non-ESM)
+                if (self.options.module_format == .cjs or self.options.replace_import_meta) {
                     if (self.options.platform == .node) {
                         // Node.js CJS polyfill
                         if (std.mem.eql(u8, prop_text, "url")) {
@@ -1684,6 +1672,16 @@ pub const Codegen = struct {
     /// - CJS/번들 non-ESM + node: {url:require("url").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename}
     /// - CJS/번들 non-ESM + browser/neutral: {}
     /// Node.js는 import.meta를 보면 ESM으로 재파싱하므로 제거 필요
+    /// import.meta.X 접근인지 확인하고 프로퍼티 이름을 반환. 아니면 null.
+    fn resolveImportMetaProp(self: *const Codegen, object: NodeIndex, property: NodeIndex) ?[]const u8 {
+        const obj_node = self.ast.getNode(object);
+        if (obj_node.tag != .meta_property) return null;
+        const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
+        if (!std.mem.eql(u8, obj_text, "import.meta")) return null;
+        const prop_node = self.ast.getNode(property);
+        return self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+    }
+
     fn emitMetaProperty(self: *Codegen, node: Node) !void {
         const text = self.ast.source[node.span.start..node.span.end];
         if (std.mem.eql(u8, text, "import.meta")) {
