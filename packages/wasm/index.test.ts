@@ -24,7 +24,7 @@ describe("@zts/wasm", () => {
 
   test("타입 어노테이션 제거", () => {
     const result = transpile("function add(a: number, b: number): number { return a + b; }");
-    expect(result.code).toContain("function add(a");
+    expect(result.code).toContain("function add(a,b)");
     expect(result.code).not.toContain(": number");
   });
 
