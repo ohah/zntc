@@ -6,6 +6,21 @@
 const std = @import("std");
 const Span = @import("../lexer/token.zig").Span;
 
+/// dev mode에서 모듈별 HMR 업데이트 코드 (per-module code).
+/// emitter, bundler, incremental 모듈에서 공유.
+pub const ModuleDevCode = struct {
+    id: []const u8,
+    code: []const u8,
+
+    pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
+        for (codes) |c| {
+            allocator.free(c.id);
+            allocator.free(c.code);
+        }
+        allocator.free(codes);
+    }
+};
+
 // ============================================================
 // 모듈 ID (D070)
 // ============================================================

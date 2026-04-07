@@ -146,10 +146,13 @@ pub const EmitResult = struct {
     output: []const u8,
     /// 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
     sourcemap: ?[]const u8 = null,
+    /// dev mode per-module codes (HMR용). null이면 미수집. allocator 소유.
+    module_codes: ?[]const types.ModuleDevCode = null,
 
     pub fn deinit(self: *const EmitResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
         if (self.sourcemap) |sm| allocator.free(sm);
+        if (self.module_codes) |codes| types.ModuleDevCode.freeAll(codes, allocator);
     }
 };
 
@@ -328,6 +331,19 @@ pub fn emitWithTreeShaking(
     var module_output: std.ArrayList(u8) = .empty;
     defer module_output.deinit(allocator);
 
+    // dev mode per-module code 수집 (HMR용)
+    var dev_module_codes: std.ArrayList(types.ModuleDevCode) = .empty;
+    if (options.dev_mode and options.collect_module_codes) {
+        try dev_module_codes.ensureTotalCapacity(allocator, sorted.items.len);
+    }
+    errdefer {
+        for (dev_module_codes.items) |c| {
+            allocator.free(c.id);
+            allocator.free(c.code);
+        }
+        dev_module_codes.deinit(allocator);
+    }
+
     // 소스맵 빌더 (소스맵 활성화 시)
     var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap) blk: {
         var sm = SourceMap.SourceMapBuilder.init(allocator);
@@ -386,6 +402,14 @@ pub fn emitWithTreeShaking(
         if (!options.minify_whitespace) {
             try module_output.append(allocator, '\n');
             module_line += 1;
+        }
+
+        // dev mode: per-module code 수집 (HMR 증분 업데이트용)
+        if (options.dev_mode and options.collect_module_codes) {
+            try dev_module_codes.append(allocator, .{
+                .id = try allocator.dupe(u8, makeModuleId(m.path, options.root_dir)),
+                .code = try allocator.dupe(u8, code),
+            });
         }
     }
 
@@ -481,6 +505,7 @@ pub fn emitWithTreeShaking(
     return .{
         .output = try output.toOwnedSlice(allocator),
         .sourcemap = sourcemap_json,
+        .module_codes = if (dev_module_codes.items.len > 0) try dev_module_codes.toOwnedSlice(allocator) else null,
     };
 }
 
@@ -1122,8 +1147,12 @@ fn emitBundleRuntimeHelpers(
     if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
     }
-    // dev mode + React Refresh: $RefreshReg$/$RefreshSig$ 스텁 주입 (ReferenceError 방지).
-    if (options.dev_mode and options.react_refresh) {
+    // dev mode: HMR 런타임 주입 (__zts_modules, __zts_require, __zts_apply_update 등).
+    // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
+    if (options.dev_mode) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME);
+    } else if (options.react_refresh) {
+        // 비-dev 모드에서 react_refresh만 활성화된 경우 스텁 주입
         try output.appendSlice(allocator, rt.REFRESH_STUB);
     }
 }
