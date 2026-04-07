@@ -117,13 +117,62 @@ export default function Playground() {
   const [showConfig, setShowConfig] = useState(true);
   const [outputTab, setOutputTab] = useState<"code" | "sourcemap">("code");
   const transpileFnRef = useRef<TranspileFn | undefined>(undefined);
+  const inputEditorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
   const [sourcemapOutput, setSourcemapOutput] = useState("");
+
+  function parseErrors(errorStr: string) {
+    const markers: any[] = [];
+    const regex = /(?:\S+):(\d+):(\d+):\s*error(?:\[[^\]]*\])?:\s*(.+)/g;
+    let match;
+    while ((match = regex.exec(errorStr)) !== null) {
+      const line = parseInt(match[1], 10);
+      const col = parseInt(match[2], 10);
+      markers.push({
+        severity: 8, // MarkerSeverity.Error
+        startLineNumber: line,
+        startColumn: col,
+        endLineNumber: line,
+        endColumn: col + 1,
+        message: match[3].trim(),
+        source: 'ZTS',
+      });
+    }
+    if (markers.length === 0 && errorStr) {
+      markers.push({
+        severity: 8,
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: 1,
+        endColumn: 1000,
+        message: errorStr,
+        source: 'ZTS',
+      });
+    }
+    return markers;
+  }
+
+  function updateMarkers(errorStr: string) {
+    const monaco = monacoRef.current;
+    if (!monaco || !inputEditorRef.current) return;
+    const model = inputEditorRef.current.getModel();
+    if (!model) return;
+
+    if (!errorStr) {
+      monaco.editor.setModelMarkers(model, 'zts', []);
+      return;
+    }
+
+    const markers = parseErrors(errorStr);
+    monaco.editor.setModelMarkers(model, 'zts', markers);
+  }
 
   const runTranspile = useCallback((code: string, opts: Options) => {
     const result = doTranspile(transpileFnRef.current, code, opts);
     setOutput(result.output);
     setSourcemapOutput(result.sourcemap);
     setError(result.error);
+    updateMarkers(result.error);
   }, []);
 
   useEffect(() => {
@@ -139,6 +188,7 @@ export default function Playground() {
         setOutput(result.output);
         setSourcemapOutput(result.sourcemap);
         setError(result.error);
+        updateMarkers(result.error);
       } catch (err) {
         setError(`WASM load failed: ${err}`);
         setLoading(false);
@@ -171,7 +221,35 @@ export default function Playground() {
     navigator.clipboard.writeText(url);
   }
 
-  function handleEditorMount(editor: any) {
+  function handleInputMount(editor: any, monaco: any) {
+    inputEditorRef.current = editor;
+    monacoRef.current = monaco;
+
+    // TypeScript compiler options for JSX support and autocompletion
+    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+      target: monaco.languages.typescript.ScriptTarget.ESNext,
+      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+      jsx: monaco.languages.typescript.JsxEmit.React,
+      allowJs: true,
+      strict: true,
+      esModuleInterop: true,
+      allowNonTsExtensions: true,
+    });
+
+    // Disable TS diagnostics (ZTS provides its own error markers)
+    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: true,
+    });
+
+    setTimeout(() => {
+      editor.layout();
+      if (monaco?.editor?.remeasureFonts) monaco.editor.remeasureFonts();
+    }, 100);
+  }
+
+  function handleOutputMount(editor: any) {
     setTimeout(() => {
       editor.layout();
       const m = (window as any).monaco;
@@ -252,7 +330,7 @@ export default function Playground() {
         {/* 에디터 */}
         <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
           <EditorPanel header={<span>Input <span style={{ opacity: 0.5, fontSize: 11 }}>{options.filename}</span></span>}>
-            <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleEditorMount} options={editorOpts} />
+            <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleInputMount} options={editorOpts} />
           </EditorPanel>
           <div style={{ width: 2, background: "#2d2d4a", flexShrink: 0 }} />
           <EditorPanel header={
@@ -265,9 +343,9 @@ export default function Playground() {
             </div>
           }>
             {outputTab === "code" ? (
-              <Editor height="100%" language={error ? "plaintext" : "javascript"} theme="vs-dark" value={error || output} onMount={handleEditorMount} options={{ ...editorOpts, readOnly: true }} />
+              <Editor height="100%" language={error ? "plaintext" : "javascript"} theme="vs-dark" value={error || output} onMount={handleOutputMount} options={{ ...editorOpts, readOnly: true }} />
             ) : (
-              <Editor height="100%" language="json" theme="vs-dark" value={sourcemapOutput} onMount={handleEditorMount} options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }} />
+              <Editor height="100%" language="json" theme="vs-dark" value={sourcemapOutput} onMount={handleOutputMount} options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }} />
             )}
           </EditorPanel>
         </div>
