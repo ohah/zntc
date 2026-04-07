@@ -142,6 +142,24 @@ pub const BundleOptions = struct {
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
+    /// --outbase: 엔트리 포인트 공통 기준 경로
+    outbase: ?[]const u8 = null,
+    /// --packages=external: 모든 bare import를 external 처리
+    packages_external: bool = false,
+    /// --ignore-annotations: @__PURE__, sideEffects 등 어노테이션 무시
+    ignore_annotations: bool = false,
+    /// --jsx-side-effects: 미사용 JSX를 tree-shake하지 않음
+    jsx_side_effects: bool = false,
+    /// --drop-labels: 제거할 labeled statement의 라벨 이름 목록
+    drop_labels: []const []const u8 = &.{},
+    /// --pure:NAME: 순수 함수로 마킹할 글로벌 함수명 목록
+    pure: []const []const u8 = &.{},
+    /// --tsconfig-raw: tsconfig.json 인라인 오버라이드 JSON
+    tsconfig_raw: ?[]const u8 = null,
+    /// --node-paths: NODE_PATH 추가 탐색 경로
+    node_paths: []const []const u8 = &.{},
+    /// --line-limit: 줄 길이 제한 (0=무제한)
+    line_limit: u32 = 0,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -261,6 +279,8 @@ pub const Bundler = struct {
                 .alias = options.alias,
                 .resolve_extensions = options.resolve_extensions,
                 .main_fields = options.main_fields,
+                .packages_external = options.packages_external,
+                .node_paths = options.node_paths,
             }),
         };
     }
