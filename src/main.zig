@@ -1554,6 +1554,17 @@ pub fn main() !void {
             const ResolveCache = @import("zts_lib").bundler.ResolveCache;
             var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
             defer persistent_store.deinit();
+
+            // dev mode: per-module code 캐시 (HMR diff용)
+            var module_code_cache = std.StringHashMap([]const u8).init(allocator);
+            defer {
+                var it = module_code_cache.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    allocator.free(entry.value_ptr.*);
+                }
+                module_code_cache.deinit();
+            }
             var persistent_resolve_cache = ResolveCache.init(allocator, .{
                 .platform = bundle_opts.platform,
                 .external_patterns = bundle_opts.external,
@@ -1712,22 +1723,57 @@ pub fn main() !void {
                     }
                     try stdout.print("]", .{});
 
-                    // --dev 모드: module_dev_codes를 updates 필드로 출력 (HMR용)
+                    // --dev 모드: 캐시 대비 diff → 변경된 모듈만 updates로 출력
                     if (rebuild_result.module_dev_codes) |dev_codes| {
-                        if (dev_codes.len > 0) {
+                        // diff: 캐시와 비교하여 변경된 모듈만 수집
+                        var changed_count: usize = 0;
+                        for (dev_codes) |dc| {
+                            const cached = module_code_cache.get(dc.id);
+                            if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                                changed_count += 1;
+                            }
+                        }
+
+                        if (changed_count > 0) {
                             try stdout.print(",\"updates\":[", .{});
-                            for (dev_codes, 0..) |dc, i| {
-                                if (i > 0) try stdout.print(",", .{});
-                                try stdout.print("{{\"id\":", .{});
-                                try writeJsonString(stdout, dc.id);
-                                try stdout.print(",\"code\":", .{});
-                                try writeJsonString(stdout, dc.code);
-                                try stdout.print("}}", .{});
+                            var first = true;
+                            for (dev_codes) |dc| {
+                                const cached = module_code_cache.get(dc.id);
+                                if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                                    if (!first) try stdout.print(",", .{});
+                                    first = false;
+                                    try stdout.print("{{\"id\":", .{});
+                                    try writeJsonString(stdout, dc.id);
+                                    try stdout.print(",\"code\":", .{});
+                                    try writeJsonString(stdout, dc.code);
+                                    try stdout.print("}}", .{});
+                                }
                             }
                             try stdout.print("]", .{});
                         } else {
-                            // dev_mode인데 변경 모듈이 없음 → 그래프 변경 (새 import 추가 등)
+                            // 코드 변경 없음 → 그래프 변경 (새 import 추가 등)
                             try stdout.print(",\"graph_changed\":true", .{});
+                        }
+
+                        // 캐시 업데이트
+                        {
+                            var it = module_code_cache.iterator();
+                            while (it.next()) |entry| {
+                                allocator.free(entry.key_ptr.*);
+                                allocator.free(entry.value_ptr.*);
+                            }
+                            module_code_cache.clearRetainingCapacity();
+                        }
+                        for (dev_codes) |dc| {
+                            const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                            const code_copy = allocator.dupe(u8, dc.code) catch {
+                                allocator.free(id_copy);
+                                continue;
+                            };
+                            module_code_cache.put(id_copy, code_copy) catch {
+                                allocator.free(id_copy);
+                                allocator.free(code_copy);
+                            };
                         }
                     } else {
                         // dev_mode가 아닌 경우 기존 modules 필드 유지 (하위 호환)
