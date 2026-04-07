@@ -1194,7 +1194,7 @@ test "preamble: dev mode — __zts_require named destructuring" {
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
-    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0, null);
     defer md.deinit();
 
     try std.testing.expect(md.cjs_import_preamble != null);
@@ -1217,7 +1217,7 @@ test "preamble: dev mode — default import uses .default" {
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
-    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0, null);
     defer md.deinit();
 
     try std.testing.expect(md.cjs_import_preamble != null);
@@ -1238,7 +1238,7 @@ test "preamble: dev mode — namespace import without .default" {
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
-    var md = try r.linker.buildDevMetadataForAst(ast, 0);
+    var md = try r.linker.buildDevMetadataForAst(ast, 0, null);
     defer md.deinit();
 
     try std.testing.expect(md.cjs_import_preamble != null);
