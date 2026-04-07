@@ -1842,6 +1842,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             new_key,
                             is_static,
                             1,
+                            0,
+                            0,
                         );
                     }
                 } else if (member.tag == .property_definition) {
@@ -1863,6 +1865,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             new_key,
                             is_static,
                             2,
+                            0,
+                            0,
                         );
                     }
                 }
@@ -1888,6 +1892,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     old_deco_start,
                     old_deco_len,
                     ctor_param_decos.items,
+                    0,
+                    0,
                 );
                 try self.pending_nodes.append(self.allocator, class_deco_stmt);
             }

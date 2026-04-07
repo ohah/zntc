@@ -53,6 +53,8 @@ pub const BundleOptions = struct {
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환 (--experimental-decorators / tsconfig)
     experimental_decorators: bool = false,
+    /// emitDecoratorMetadata: __metadata 호출 주입 (NestJS/Angular DI)
+    emit_decorator_metadata: bool = false,
     /// useDefineForClassFields=false (tsconfig)
     use_define_for_class_fields: bool = true,
     /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
@@ -316,6 +318,7 @@ pub const Bundler = struct {
             .define = self.options.define,
             .platform = self.options.platform,
             .experimental_decorators = self.options.experimental_decorators,
+            .emit_decorator_metadata = self.options.emit_decorator_metadata,
             .use_define_for_class_fields = self.options.use_define_for_class_fields,
             .unsupported = self.options.unsupported,
             .public_path = self.options.public_path,

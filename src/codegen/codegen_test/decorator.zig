@@ -2,6 +2,7 @@ const std = @import("std");
 const helpers = @import("helpers.zig");
 const e2eDecorator = helpers.e2eDecorator;
 const e2eDecoratorES5 = helpers.e2eDecoratorES5;
+const e2eDecoratorMetadata = helpers.e2eDecoratorMetadata;
 const e2eFull = helpers.e2eFull;
 const TransformOptions = helpers.TransformOptions;
 const TestResult = helpers.TestResult;
@@ -182,4 +183,74 @@ test "decorator + es5: constructor param decorator" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__decorateParam") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "class ") == null);
+}
+
+// ============================================================
+// emitDecoratorMetadata — __metadata 출력 검증
+// ============================================================
+
+test "metadata: class decorator → __metadata(design:paramtypes)" {
+    // 일반 파라미터 (parameter property 아닌)
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\@Injectable()
+        \\class UserService {
+        \\  constructor(repo: UserRepository, logger: Logger) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "UserRepository") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Logger") != null);
+}
+
+test "metadata: method decorator → design:type + design:paramtypes + design:returntype" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Ctrl {
+        \\  @Get("/")
+        \\  index(@Query q: string) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:returntype") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Function") != null);
+}
+
+test "metadata: primitive types → Number, String, Boolean" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @log
+        \\  method(a: number, b: string, c: boolean) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "String") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Boolean") != null);
+}
+
+test "metadata: no decorators → no __metadata" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  method(a: number) {}
+        \\}
+    );
+    defer r.deinit();
+    // decorator가 없으면 __metadata도 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") == null);
+}
+
+test "metadata: emitDecoratorMetadata=false → no __metadata" {
+    var r = try e2eDecorator(std.testing.allocator,
+        \\@Injectable()
+        \\class Foo {
+        \\  constructor(private svc: Service) {}
+        \\}
+    );
+    defer r.deinit();
+    // emitDecoratorMetadata가 꺼져있으면 __metadata 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") == null);
 }

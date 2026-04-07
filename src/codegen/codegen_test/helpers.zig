@@ -240,6 +240,13 @@ pub fn e2eDecorator(allocator: std.mem.Allocator, source: []const u8) !TestResul
     }, .{ .minify_whitespace = true }, ".ts");
 }
 
+pub fn e2eDecoratorMetadata(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{
+        .experimental_decorators = true,
+        .emit_decorator_metadata = true,
+    }, .{ .minify_whitespace = true }, ".ts");
+}
+
 pub fn e2eDecoratorES5(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eFull(allocator, source, .{
         .experimental_decorators = true,
