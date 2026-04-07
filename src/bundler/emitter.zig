@@ -839,6 +839,8 @@ pub fn emitModule(
         .keep_names = options.keep_names,
         // JSX: Transformer가 이미 call_expression으로 lowering 완료.
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
+        // dev mode: import.meta.hot → __zts_make_hot("dev_id")
+        .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -878,7 +880,8 @@ pub fn emitModule(
 
     // CJS 래핑: __commonJS 팩토리 함수로 감싸기
     if (module.wrap_kind == .cjs) {
-        const basename = std.fs.path.basename(module.path);
+        // dev mode: HMR 모듈 ID로 사용하기 위해 dev_id 우선
+        const basename = if (module.dev_id.len > 0) module.dev_id else std.fs.path.basename(module.path);
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
         const var_name = try types.makeRequireVarName(allocator, module.path);

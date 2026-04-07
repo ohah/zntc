@@ -108,6 +108,8 @@ pub const CodegenOptions = struct {
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
     /// emitter가 var 선언을 래퍼 밖에 별도 배치.
     esm_var_assign_only: bool = false,
+    /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zts_make_hot("id") 변환.
+    dev_module_id: ?[]const u8 = null,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -1467,6 +1469,24 @@ pub const Codegen = struct {
                                 return;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // import.meta.hot → __zts_make_hot("dev_id") (dev mode HMR)
+        if (self.options.dev_module_id) |dev_id| {
+            const obj_node = self.ast.getNode(object);
+            if (obj_node.tag == .meta_property) {
+                const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
+                if (std.mem.eql(u8, obj_text, "import.meta")) {
+                    const prop_node = self.ast.getNode(property);
+                    const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+                    if (std.mem.eql(u8, prop_text, "hot")) {
+                        try self.write("__zts_make_hot(\"");
+                        try self.write(dev_id);
+                        try self.write("\")");
+                        return;
                     }
                 }
             }
