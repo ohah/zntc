@@ -227,11 +227,11 @@ pub fn wrapWithRegister(
     try wrapped.appendSlice(allocator, module_id);
 
     if (minify) {
-        try wrapped.appendSlice(allocator, "\",function(module,exports){");
+        try wrapped.appendSlice(allocator, "\",function(module,exports,require){");
         try wrapped.appendSlice(allocator, code);
         try wrapped.appendSlice(allocator, "});");
     } else {
-        try wrapped.appendSlice(allocator, "\", function(module, exports) {\n");
+        try wrapped.appendSlice(allocator, "\", function(module, exports, require) {\n");
         // 모듈 코드 들여쓰기
         var rest: []const u8 = code;
         while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
