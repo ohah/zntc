@@ -48,7 +48,7 @@ main,
   margin-top: 0 !important;
 }
 
-/* Playground 페이지: 타이틀/패딩 숨김 — 풀스크린 에디터 */
+/* Playground 페이지: 타이틀/패딩/오른쪽 TOC 숨김 — 풀스크린 에디터 */
 .playground-page .content-panel h1,
 .playground-page .content-panel .sl-markdown-content > :first-child {
   display: none !important;
@@ -56,6 +56,10 @@ main,
 .playground-page .sl-markdown-content {
   padding: 0 !important;
   --sl-content-gap-y: 0;
+}
+.playground-page .right-sidebar-panel,
+.playground-page .right-sidebar {
+  display: none !important;
 }
 
 .playground-root {
