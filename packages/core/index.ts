@@ -442,6 +442,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       // outfile이 있으면 해당 파일 읽기
       if (options.outfile) {
         try {
+          const { readFile } = await import("node:fs/promises");
           const contents = await readFile(options.outfile, "utf-8");
           res({ outputFiles: [{ path: options.outfile, contents }], errors: [] });
         } catch (err) {
