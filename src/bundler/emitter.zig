@@ -849,6 +849,19 @@ pub fn emitModule(
     }
     var code = try cg.generate(root);
 
+    // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입.
+    // accept() 없으면 __zts_apply_update가 full reload로 fallback.
+    if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
+        if (std.mem.indexOf(u8, code, "$RefreshReg$") != null) {
+            code = try std.mem.concat(arena_alloc, u8, &.{
+                code,
+                "\n__zts_make_hot(\"",
+                module.dev_id,
+                "\").accept();\n",
+            });
+        }
+    }
+
     // 소스맵 매핑 복사 (arena 해제 전에)
     if (mappings_out) |mout| {
         if (cg.sm_builder) |*sm| {
