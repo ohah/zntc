@@ -525,11 +525,28 @@ for (const [k, v] of map) {
 "
 `;
 
-exports[`TSC: es6/for-ofStatements for-of52 1`] = `""`;
+exports[`TSC: es6/for-ofStatements for-of52 1`] = `
+"//@target: ES6
+for (let [v, v] of [[]]) {
+}
+"
+`;
 
-exports[`TSC: es6/for-ofStatements for-of53 1`] = `""`;
+exports[`TSC: es6/for-ofStatements for-of53 1`] = `
+"//@target: ES6
+for (let v of []) {
+	var v;
+}
+"
+`;
 
-exports[`TSC: es6/for-ofStatements for-of54 1`] = `""`;
+exports[`TSC: es6/for-ofStatements for-of54 1`] = `
+"//@target: ES6
+for (let v of []) {
+	var v = 0;
+}
+"
+`;
 
 exports[`TSC: es6/for-ofStatements for-of55 1`] = `
 "//@target: ES6

@@ -82,6 +82,8 @@ pub const TranspileResult = struct {
     sourcemap: ?[]const u8 = null,
     /// 런타임 헬퍼 포함 여부
     has_helpers: bool = false,
+    /// 시맨틱 에러 여부 (tsc 호환: 에러가 있어도 output 생성)
+    has_errors: bool = false,
 
     pub fn deinit(self: *TranspileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
@@ -142,6 +144,8 @@ pub fn transpileWithCallback(
     }
 
     // 2. Semantic analysis
+    // tsc 호환: 시맨틱 에러가 있어도 codegen을 진행한다.
+    // 에러는 콜백으로 stderr에 출력하되, 변환 결과도 함께 반환한다.
     var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.is_module = parser.is_module;
@@ -150,7 +154,7 @@ pub fn transpileWithCallback(
     analyzer.analyze() catch return error.SemanticError;
     if (analyzer.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
-        return error.SemanticError;
+        // tsc처럼 에러와 함께 output도 생성 — 중단하지 않음
     }
 
     // 3. Identifier mangling (--minify-identifiers)
@@ -289,5 +293,10 @@ pub fn transpileWithCallback(
     // Arena 밖으로 복제
     const result_code = allocator.dupe(u8, final_output) catch return error.OutOfMemory;
     arena.deinit();
-    return .{ .code = result_code, .sourcemap = sourcemap_json, .has_helpers = has_helpers };
+    return .{
+        .code = result_code,
+        .sourcemap = sourcemap_json,
+        .has_helpers = has_helpers,
+        .has_errors = analyzer.errors.items.len > 0,
+    };
 }

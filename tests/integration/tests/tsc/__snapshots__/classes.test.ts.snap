@@ -253,7 +253,35 @@ class H {
 "
 `;
 
-exports[`TSC: classes classAbstractMergedDeclaration 1`] = `""`;
+exports[`TSC: classes classAbstractMergedDeclaration 1`] = `
+"class CM {
+}
+class MC {
+}
+class CI {
+}
+class IC {
+}
+class CC1 {
+}
+class CC1 {
+}
+class CC2 {
+}
+class CC2 {
+}
+new CM();
+new MC();
+new CI();
+new IC();
+new CC1();
+new CC2();
+new DCI();
+new DIC();
+new DCC1();
+new DCC2();
+"
+`;
 
 exports[`TSC: classes classAbstractMethodInNonAbstractClass 1`] = `
 "class A {
@@ -426,7 +454,20 @@ var M;((M) => {class D {
 "
 `;
 
-exports[`TSC: classes classAndVariableWithSameName 1`] = `""`;
+exports[`TSC: classes classAndVariableWithSameName 1`] = `
+"class C {
+	foo;
+}
+// error
+var C = "";
+// error
+var M;((M) => {class D {
+	// error
+bar;
+}var D = 1;})(M || (M = {}));
+// error
+"
+`;
 
 exports[`TSC: classes classWithEmptyBody 1`] = `
 "class C {
@@ -1246,7 +1287,34 @@ console.log(_C__1);
 "
 `;
 
-exports[`TSC: classes classStaticBlock16 1`] = `""`;
+exports[`TSC: classes classStaticBlock16 1`] = `
+"let getX;
+class C {
+	#x = 1;
+	constructor(x) {
+		this.#x = x;
+	}
+	static {
+    // getX has privileged access to #x
+    getX = (obj: C) => obj.#x;
+    getY = (obj: D) => obj.#y;
+  }
+
+}
+// getX has privileged access to #x
+let getY;
+class D {
+	#y = 1;
+	static {
+    // getY has privileged access to y
+    getX = (obj: C) => obj.#x;
+    getY = (obj: D) => obj.#y;
+  }
+
+}
+// getY has privileged access to y
+"
+`;
 
 exports[`TSC: classes classStaticBlock17 1`] = `
 "let friendA;
@@ -1663,7 +1731,40 @@ var d2 = new D(new Date());
 "
 `;
 
-exports[`TSC: classes derivedClassWithoutExplicitConstructor2 1`] = `""`;
+exports[`TSC: classes derivedClassWithoutExplicitConstructor2 1`] = `
+"class Base {
+	a = 1;
+	constructor(x) {
+		this.a = x;
+	}
+}
+class Derived extends Base {
+	x = 1;
+	y = "hello";
+}
+var r = new Derived();
+// error
+var r2 = new Derived(1);
+var r3 = new Derived(1, 2);
+var r4 = new Derived(1, 2, 3);
+class Base2 {
+	a;
+	constructor(x) {
+		this.a = x;
+	}
+}
+class D extends Base2 {
+	x = 2;
+	y = null;
+}
+var d = new D();
+// error
+var d2 = new D(new Date());
+// ok
+var d3 = new D(new Date(), new Date());
+var d4 = new D(new Date(), new Date(), new Date());
+"
+`;
 
 exports[`TSC: classes derivedClassWithoutExplicitConstructor3 1`] = `
 "// automatic constructors with a class hieararchy of depth > 2
@@ -1939,7 +2040,28 @@ class Unrelated {
 "
 `;
 
-exports[`TSC: classes classConstructorOverloadsAccessibility 1`] = `""`;
+exports[`TSC: classes classConstructorOverloadsAccessibility 1`] = `
+"class A {
+	// error
+// error
+constructor() {
+	}
+}
+class B {
+	// error
+constructor() {
+	}
+}
+class C {
+	constructor() {
+	}
+}
+class D {
+	constructor() {
+	}
+}
+"
+`;
 
 exports[`TSC: classes classConstructorParametersAccessibility 1`] = `
 "class C1 {
@@ -2025,7 +2147,25 @@ d.p;
 "
 `;
 
-exports[`TSC: classes classWithTwoConstructorDefinitions 1`] = `""`;
+exports[`TSC: classes classWithTwoConstructorDefinitions 1`] = `
+"class C {
+	constructor() {
+	}
+	// error
+constructor(x) {
+	}
+}
+// error
+class D {
+	constructor(x) {
+	}
+	// error
+constructor(x,y) {
+	}
+}
+// error
+"
+`;
 
 exports[`TSC: classes constructorDefaultValuesReferencingThis 1`] = `
 "class C {
@@ -2050,13 +2190,78 @@ class F extends C {
 "
 `;
 
-exports[`TSC: classes constructorImplementationWithDefaultValues 1`] = `""`;
+exports[`TSC: classes constructorImplementationWithDefaultValues 1`] = `
+"class C {
+	constructor(x=1) {
+		var y = x;
+	}
+}
+class D {
+	constructor(x=null) {
+		var y = x;
+	}
+}
+class E {
+	constructor(x=null) {
+		var y = x;
+	}
+}
+"
+`;
 
-exports[`TSC: classes constructorImplementationWithDefaultValues2 1`] = `""`;
+exports[`TSC: classes constructorImplementationWithDefaultValues2 1`] = `
+"class C {
+	constructor(x=1) {
+		this.x=1 = x=1;
+		// error
+var y = x;
+	}
+}
+class D {
+	constructor(x=1,y=x) {
+		this.y=x = y=x;
+		// error
+var z = x;
+	}
+}
+class E {
+	constructor(x=new Date()) {
+		// error
+var y = x;
+	}
+}
+"
+`;
 
-exports[`TSC: classes constructorOverloadsWithDefaultValues 1`] = `""`;
+exports[`TSC: classes constructorOverloadsWithDefaultValues 1`] = `
+"class C {
+	foo;
+	// error
+constructor() {
+	}
+}
+class D {
+	foo;
+	// error
+constructor() {
+	}
+}
+"
+`;
 
-exports[`TSC: classes constructorOverloadsWithOptionalParameters 1`] = `""`;
+exports[`TSC: classes constructorOverloadsWithOptionalParameters 1`] = `
+"class C {
+	foo;
+	constructor() {
+	}
+}
+class D {
+	foo;
+	constructor() {
+	}
+}
+"
+`;
 
 exports[`TSC: classes constructorParameterProperties 1`] = `
 "class C {
@@ -5395,7 +5600,35 @@ console.log(this.#prop);
 "
 `;
 
-exports[`TSC: classes privateNameAccessorsAccess 1`] = `""`;
+exports[`TSC: classes privateNameAccessorsAccess 1`] = `
+"class A2 {
+	get #prop() {
+		return "";
+	}
+	set #prop(param) {
+	}
+	constructor() {
+		console.log(this.#prop);
+		let a = this;
+		a.#prop;
+		function foo() {
+			a.#prop;
+		}
+	}
+}
+new A2().#prop;
+// Error
+function foo() {
+	new A2().#prop;
+}
+// Error
+class B2 {
+	m() {
+		new A2().#prop;
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameAccessorsCallExpression 1`] = `
 "class A {
@@ -5427,7 +5660,22 @@ exports[`TSC: classes privateNameAccessorsCallExpression 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameAccessorssDerivedClasses 1`] = `""`;
+exports[`TSC: classes privateNameAccessorssDerivedClasses 1`] = `
+"class Base {
+	get #prop() {
+		return 123;
+	}
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+class Derived extends Base {
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameAmbientNoImplicitAny 1`] = `
 "class B {
@@ -5436,9 +5684,54 @@ exports[`TSC: classes privateNameAmbientNoImplicitAny 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameAndAny 1`] = `""`;
+exports[`TSC: classes privateNameAndAny 1`] = `
+"class A {
+	#foo = true;
+	static #baz = 10;
+	static #m() {
+	}
+	method(thing) {
+		thing.#foo;
+		// OK
+thing.#m();
+		thing.#baz;
+		thing.#bar;
+		// Error
+thing.#foo();
+	}
+	methodU(thing) {
+		thing.#foo;
+		thing.#m();
+		thing.#baz;
+		thing.#bar;
+		thing.#foo();
+	}
+	methodN(thing) {
+		thing.#foo;
+		thing.#m();
+		thing.#baz;
+		thing.#bar;
+		thing.#foo();
+	}
+}
+;
+"
+`;
 
-exports[`TSC: classes privateNameAndIndexSignature 1`] = `""`;
+exports[`TSC: classes privateNameAndIndexSignature 1`] = `
+"class A {
+	#foo = 3;
+	["#bar"] = this["#bar"];
+	// Error (private identifiers should not prevent circularity checking for computeds)
+constructor(message) {
+		this.#f = 3;
+		// Error (index signatures do not implicitly declare private names)
+this["#foo"] = 3;
+	}
+}
+// Okay (type has index signature and "#foo" does not collide with private identifier #foo)
+"
+`;
 
 exports[`TSC: classes privateNameAndObjectRestSpread 1`] = `
 "class C {
@@ -5469,7 +5762,28 @@ exports[`TSC: classes privateNameAndStaticInitializer 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameBadAssignment 1`] = `""`;
+exports[`TSC: classes privateNameBadAssignment 1`] = `
+"exports.#nope = 1;
+// Error (outside class body)
+function A() {
+}
+A.prototype.#no = 2;
+// Error (outside class body)
+class B {
+}
+B.#foo = 3;
+// Error (outside class body)
+class C {
+	#bar = 6;
+	constructor() {
+		exports.#bar = 6;
+		// Error
+this.#foo = 3;
+	}
+}
+// Error (undeclared)
+"
+`;
 
 exports[`TSC: classes privateNameBadSuper 1`] = `
 "class B {
@@ -5647,7 +5961,475 @@ const d = new C();
 "
 `;
 
-exports[`TSC: classes privateNameDuplicateField 1`] = `""`;
+exports[`TSC: classes privateNameDuplicateField 1`] = `
+"function Field() {
+	// Error
+class A_Field_Field {
+		#foo = "foo";
+		#foo = "foo";
+	}
+	// Error
+class A_Field_Method {
+		#foo = "foo";
+		#foo() {
+		}
+	}
+	// Error
+class A_Field_Getter {
+		#foo = "foo";
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Field_Setter {
+		#foo = "foo";
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_Field_StaticField {
+		#foo = "foo";
+		static #foo = "foo";
+	}
+	// Error
+class A_Field_StaticMethod {
+		#foo = "foo";
+		static #foo() {
+		}
+	}
+	// Error
+class A_Field_StaticGetter {
+		#foo = "foo";
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Field_StaticSetter {
+		#foo = "foo";
+		static set #foo(value) {
+		}
+	}
+}
+function Method() {
+	// Error
+class A_Method_Field {
+		#foo() {
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_Method_Method {
+		#foo() {
+		}
+		#foo() {
+		}
+	}
+	// Error
+class A_Method_Getter {
+		#foo() {
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Method_Setter {
+		#foo() {
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_Method_StaticField {
+		#foo() {
+		}
+		static #foo = "foo";
+	}
+	// Error
+class A_Method_StaticMethod {
+		#foo() {
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_Method_StaticGetter {
+		#foo() {
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Method_StaticSetter {
+		#foo() {
+		}
+		static set #foo(value) {
+		}
+	}
+}
+function Getter() {
+	// Error
+class A_Getter_Field {
+		get #foo() {
+			return "";
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_Getter_Method {
+		get #foo() {
+			return "";
+		}
+		#foo() {
+		}
+	}
+	// Error
+class A_Getter_Getter {
+		get #foo() {
+			return "";
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	//OK
+class A_Getter_Setter {
+		get #foo() {
+			return "";
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_Getter_StaticField {
+		get #foo() {
+			return "";
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_Getter_StaticMethod {
+		get #foo() {
+			return "";
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_Getter_StaticGetter {
+		get #foo() {
+			return "";
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Getter_StaticSetter {
+		get #foo() {
+			return "";
+		}
+		static set #foo(value) {
+		}
+	}
+}
+function Setter() {
+	// Error
+class A_Setter_Field {
+		set #foo(value) {
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_Setter_Method {
+		set #foo(value) {
+		}
+		#foo() {
+		}
+	}
+	// OK
+class A_Setter_Getter {
+		set #foo(value) {
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Setter_Setter {
+		set #foo(value) {
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_Setter_StaticField {
+		set #foo(value) {
+		}
+		static #foo = "foo";
+	}
+	// Error
+class A_Setter_StaticMethod {
+		set #foo(value) {
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_Setter_StaticGetter {
+		set #foo(value) {
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_Setter_StaticSetter {
+		set #foo(value) {
+		}
+		static set #foo(value) {
+		}
+	}
+}
+function StaticField() {
+	// Error
+class A_StaticField_Field {
+		static #foo = "foo";
+		#foo = "foo";
+	}
+	// Error
+class A_StaticField_Method {
+		static #foo = "foo";
+		#foo() {
+		}
+	}
+	// Error
+class A_StaticField_Getter {
+		static #foo = "foo";
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticField_Setter {
+		static #foo = "foo";
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_StaticField_StaticField {
+		static #foo = "foo";
+		static #foo = "foo";
+	}
+	// Error
+class A_StaticField_StaticMethod {
+		static #foo = "foo";
+		static #foo() {
+		}
+	}
+	// Error
+class A_StaticField_StaticGetter {
+		static #foo = "foo";
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticField_StaticSetter {
+		static #foo = "foo";
+		static set #foo(value) {
+		}
+	}
+}
+function StaticMethod() {
+	// Error
+class A_StaticMethod_Field {
+		static #foo() {
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_StaticMethod_Method {
+		static #foo() {
+		}
+		#foo() {
+		}
+	}
+	// Error
+class A_StaticMethod_Getter {
+		static #foo() {
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticMethod_Setter {
+		static #foo() {
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_StaticMethod_StaticField {
+		static #foo() {
+		}
+		static #foo = "foo";
+	}
+	// Error
+class A_StaticMethod_StaticMethod {
+		static #foo() {
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_StaticMethod_StaticGetter {
+		static #foo() {
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticMethod_StaticSetter {
+		static #foo() {
+		}
+		static set #foo(value) {
+		}
+	}
+}
+function StaticGetter() {
+	// Error
+class A_StaticGetter_Field {
+		static get #foo() {
+			return "";
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_StaticGetter_Method {
+		static get #foo() {
+			return "";
+		}
+		#foo() {
+		}
+	}
+	// Error
+class A_StaticGetter_Getter {
+		static get #foo() {
+			return "";
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticGetter_Setter {
+		static get #foo() {
+			return "";
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_StaticGetter_StaticField {
+		static get #foo() {
+			return "";
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_StaticGetter_StaticMethod {
+		static get #foo() {
+			return "";
+		}
+		static #foo() {
+		}
+	}
+	// Error
+class A_StaticGetter_StaticGetter {
+		static get #foo() {
+			return "";
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// OK
+class A_StaticGetter_StaticSetter {
+		static get #foo() {
+			return "";
+		}
+		static set #foo(value) {
+		}
+	}
+}
+function StaticSetter() {
+	// Error
+class A_StaticSetter_Field {
+		static set #foo(value) {
+		}
+		#foo = "foo";
+	}
+	// Error
+class A_StaticSetter_Method {
+		static set #foo(value) {
+		}
+		#foo() {
+		}
+	}
+	// Error
+class A_StaticSetter_Getter {
+		static set #foo(value) {
+		}
+		get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticSetter_Setter {
+		static set #foo(value) {
+		}
+		set #foo(value) {
+		}
+	}
+	// Error
+class A_StaticSetter_StaticField {
+		static set #foo(value) {
+		}
+		static #foo = "foo";
+	}
+	// Error
+class A_StaticSetter_StaticMethod {
+		static set #foo(value) {
+		}
+		static #foo() {
+		}
+	}
+	// OK
+class A_StaticSetter_StaticGetter {
+		static set #foo(value) {
+		}
+		static get #foo() {
+			return "";
+		}
+	}
+	// Error
+class A_StaticSetter_StaticSetter {
+		static set #foo(value) {
+		}
+		static set #foo(value) {
+		}
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameEmitHelpers 1`] = `
 "export class C {
@@ -5792,7 +6574,20 @@ exports[`TSC: classes privateNameFieldClassExpression 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameFieldDerivedClasses 1`] = `""`;
+exports[`TSC: classes privateNameFieldDerivedClasses 1`] = `
+"class Base {
+	#prop = 123;
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+class Derived extends Base {
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameFieldDestructuredBinding 1`] = `
 "class A {
@@ -5935,7 +6730,15 @@ exports[`TSC: classes privateNameFieldUnaryMutation 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameImplicitDeclaration 1`] = `""`;
+exports[`TSC: classes privateNameImplicitDeclaration 1`] = `
+"class C {
+	constructor() {
+		/** @type {string} */
+this.#x;
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameInInExpressionUnused 1`] = `
 "class Foo {
@@ -5968,9 +6771,33 @@ exports[`TSC: classes privateNameInLhsReceiverExpression 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameInObjectLiteral-3 1`] = `""`;
+exports[`TSC: classes privateNameInObjectLiteral-3 1`] = `
+"const obj = { get #foo() {
+	return "";
+} };
+"
+`;
 
-exports[`TSC: classes privateNameJsBadAssignment 1`] = `""`;
+exports[`TSC: classes privateNameJsBadAssignment 1`] = `
+"exports.#nope = 1;
+// Error (outside class body)
+function A() {
+}
+A.prototype.#no = 2;
+// Error (outside class body)
+class B {
+}
+B.#foo = 3;
+// Error (outside class body)
+class C {
+	#bar = 6;
+	constructor() {
+		this.#foo = 3;
+	}
+}
+// Error (undeclared)
+"
+`;
 
 exports[`TSC: classes privateNameLateSuper 1`] = `
 "class B {
@@ -6014,7 +6841,33 @@ this.#method();
 "
 `;
 
-exports[`TSC: classes privateNameMethodAccess 1`] = `""`;
+exports[`TSC: classes privateNameMethodAccess 1`] = `
+"class A2 {
+	#method() {
+		return "";
+	}
+	constructor() {
+		console.log(this.#method);
+		let a = this;
+		a.#method();
+		function foo() {
+			a.#method();
+		}
+	}
+}
+new A2().#method();
+// Error
+function foo() {
+	new A2().#method();
+}
+// Error
+class B2 {
+	m() {
+		new A2().#method();
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameMethodAssignment 1`] = `
 "class A3 {
@@ -6092,7 +6945,26 @@ const str2 = this.getInstance().#method2\`head\${1}middle\${2}tail\`;
 "
 `;
 
-exports[`TSC: classes privateNameMethodClassExpression 1`] = `""`;
+exports[`TSC: classes privateNameMethodClassExpression 1`] = `
+"const C = class {
+	#field = this.#method();
+	#method() {
+		return 42;
+	}
+	static getInstance() {
+		return new C();
+	}
+	getField() {
+		return this.#field;
+	}
+};
+console.log(C.getInstance().getField());
+C.getInstance().#method;
+// Error
+C.getInstance().#field;
+// Error
+"
+`;
 
 exports[`TSC: classes privateNameMethodInStaticFieldInit 1`] = `
 "class C {
@@ -6105,7 +6977,22 @@ console.log(C.s);
 "
 `;
 
-exports[`TSC: classes privateNameMethodsDerivedClasses 1`] = `""`;
+exports[`TSC: classes privateNameMethodsDerivedClasses 1`] = `
+"class Base {
+	#prop() {
+		return 123;
+	}
+	static method(x) {
+		console.log(x.#prop());
+	}
+}
+class Derived extends Base {
+	static method(x) {
+		console.log(x.#prop());
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameNestedClassAccessorsShadowing 1`] = `
 "class Base {
@@ -6179,9 +7066,46 @@ exports[`TSC: classes privateNameNestedClassNameConflict 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameNestedMethodAccess 1`] = `""`;
+exports[`TSC: classes privateNameNestedMethodAccess 1`] = `
+"class C {
+	#foo = 42;
+	#bar() {
+		new C().#baz;
+	}
+	get #baz() {
+		return 42;
+	}
+	m() {
+		return class D {
+			#bar() {
+			}
+			constructor() {
+				new C().#foo;
+				new C().#bar;
+				// Error
+new C().#baz;
+				new D().#bar;
+			}
+			n(x) {
+				x.#foo;
+				x.#bar;
+				x.#unknown;
+			}
+		};
+	}
+}
+// Error
+"
+`;
 
-exports[`TSC: classes privateNameNotAccessibleOutsideDefiningClass 1`] = `""`;
+exports[`TSC: classes privateNameNotAccessibleOutsideDefiningClass 1`] = `
+"class A {
+	#foo = 3;
+}
+new A().#foo = 4;
+// Error
+"
+`;
 
 exports[`TSC: classes privateNameReadonly 1`] = `
 "const C = class {
@@ -6225,7 +7149,37 @@ class B extends A {
 "
 `;
 
-exports[`TSC: classes privateNamesAndGenericClasses-2 1`] = `""`;
+exports[`TSC: classes privateNamesAndGenericClasses-2 1`] = `
+"class C {
+	#foo;
+	#bar() {
+		return this.#foo;
+	}
+	constructor(t) {
+		this.#foo = t;
+		t = this.#bar();
+	}
+	set baz(t) {
+		this.#foo = t;
+	}
+	get baz() {
+		return this.#foo;
+	}
+}
+let a = new C(3);
+let b = new C("hello");
+a.baz = 5;
+// OK
+const x = a.baz;
+// OK
+a.#foo;
+// Error
+a = b;
+// Error
+b = a;
+// Error
+"
+`;
 
 exports[`TSC: classes privateNamesAndkeyof 1`] = `
 "class A {
@@ -6494,7 +7448,67 @@ set #cProp(value) {
 "
 `;
 
-exports[`TSC: classes privateNamesInGenericClasses 1`] = `""`;
+exports[`TSC: classes privateNamesInGenericClasses 1`] = `
+"class C {
+	#foo;
+	#method() {
+		return this.#foo;
+	}
+	get #prop() {
+		return this.#foo;
+	}
+	set #prop(value) {
+		this.#foo = value;
+	}
+	bar(x) {
+		return x.#foo;
+	}
+	// OK
+bar2(x) {
+		return x.#method();
+	}
+	// OK
+bar3(x) {
+		return x.#prop;
+	}
+	// OK
+baz(x) {
+		return x.#foo;
+	}
+	// OK
+baz2(x) {
+		return x.#method;
+	}
+	// OK
+baz3(x) {
+		return x.#prop;
+	}
+	// OK
+quux(x) {
+		return x.#foo;
+	}
+	// OK
+quux2(x) {
+		return x.#method;
+	}
+	// OK
+quux3(x) {
+		return x.#prop;
+	}
+}
+// OK
+a.#foo;
+// Error
+a.#method;
+// Error
+a.#prop;
+// Error
+a = b;
+// Error
+b = a;
+// Error
+"
+`;
 
 exports[`TSC: classes privateNamesInNestedClasses-1 1`] = `
 "class A {
@@ -6547,7 +7561,18 @@ exports[`TSC: classes privateNamesInNestedClasses-2 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNamesInterfaceExtendingClass 1`] = `""`;
+exports[`TSC: classes privateNamesInterfaceExtendingClass 1`] = `
+"class C {
+	#prop;
+	func(x) {
+		x.#prop = 123;
+	}
+}
+function func(x) {
+	x.#prop = 123;
+}
+"
+`;
 
 exports[`TSC: classes privateNameStaticAccessors 1`] = `
 "class A1 {
@@ -6570,7 +7595,35 @@ console.log(A1.#prop);
 "
 `;
 
-exports[`TSC: classes privateNameStaticAccessorsAccess 1`] = `""`;
+exports[`TSC: classes privateNameStaticAccessorsAccess 1`] = `
+"class A2 {
+	static get #prop() {
+		return "";
+	}
+	static set #prop(param) {
+	}
+	constructor() {
+		console.log(A2.#prop);
+		let a = A2;
+		a.#prop;
+		function foo() {
+			a.#prop;
+		}
+	}
+}
+A2.#prop;
+// Error
+function foo() {
+	A2.#prop;
+}
+// Error
+class B2 {
+	m() {
+		A2.#prop;
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameStaticAccessorsCallExpression 1`] = `
 "class A {
@@ -6602,7 +7655,22 @@ exports[`TSC: classes privateNameStaticAccessorsCallExpression 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameStaticAccessorssDerivedClasses 1`] = `""`;
+exports[`TSC: classes privateNameStaticAccessorssDerivedClasses 1`] = `
+"class Base {
+	static get #prop() {
+		return 123;
+	}
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+class Derived extends Base {
+	static method(x) {
+		console.log(x.#prop);
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameStaticAndStaticInitializer 1`] = `
 "class A {
@@ -6726,7 +7794,25 @@ exports[`TSC: classes privateNameStaticFieldClassExpression 1`] = `
 "
 `;
 
-exports[`TSC: classes privateNameStaticFieldDerivedClasses 1`] = `""`;
+exports[`TSC: classes privateNameStaticFieldDerivedClasses 1`] = `
+"class Base {
+	static #prop = 123;
+	static method(x) {
+		Derived.#derivedProp;
+		// error
+Base.#prop = 10;
+	}
+}
+class Derived extends Base {
+	static #derivedProp = 10;
+	static method(x) {
+		Derived.#derivedProp;
+		Base.#prop = 10;
+	}
+}
+// error
+"
+`;
 
 exports[`TSC: classes privateNameStaticFieldDestructuredBinding 1`] = `
 "class A {
@@ -6883,7 +7969,26 @@ const str2 = AA.getClass().#method2\`head\${1}middle\${2}tail\`;
 "
 `;
 
-exports[`TSC: classes privateNameStaticMethodClassExpression 1`] = `""`;
+exports[`TSC: classes privateNameStaticMethodClassExpression 1`] = `
+"const C = class D {
+	static #field = D.#method();
+	static #method() {
+		return 42;
+	}
+	static getClass() {
+		return D;
+	}
+	static getField() {
+		return C.#field;
+	}
+};
+console.log(C.getClass().getField());
+C.getClass().#method;
+// Error
+C.getClass().#field;
+// Error
+"
+`;
 
 exports[`TSC: classes privateNameStaticMethodInStaticFieldInit 1`] = `
 "class C {
@@ -6943,7 +8048,24 @@ const b = new B();
 "
 `;
 
-exports[`TSC: classes privateNamesUnique-3 1`] = `""`;
+exports[`TSC: classes privateNamesUnique-3 1`] = `
+"class A {
+	#foo = 1;
+	static #foo = true;
+}
+// error (duplicate)
+// because static and instance private names
+// share the same lexical scope
+// https://tc39.es/proposal-class-fields/#prod-ClassBody
+class B {
+	static #foo = true;
+	test(x) {
+		x.#foo;
+	}
+}
+// error (#foo is a static property on B, not an instance property)
+"
+`;
 
 exports[`TSC: classes privateNamesUnique-4 1`] = `
 "class A1 {
@@ -6995,7 +8117,16 @@ class B {
 "
 `;
 
-exports[`TSC: classes privateNameUncheckedJsOptionalChain 1`] = `""`;
+exports[`TSC: classes privateNameUncheckedJsOptionalChain 1`] = `
+"class C {
+	#bar;
+	constructor() {
+		this?.#foo;
+		this?.#bar;
+	}
+}
+"
+`;
 
 exports[`TSC: classes privateNameUnused 1`] = `
 "export class A {
@@ -8332,7 +9463,34 @@ class C2 extends C1 {
 "
 `;
 
-exports[`TSC: classes autoAccessorNoUseDefineForClassFields 1`] = `""`;
+exports[`TSC: classes autoAccessorNoUseDefineForClassFields 1`] = `
+"// https://github.com/microsoft/TypeScript/issues/51528
+class C1 {
+	static accessor x = 0;
+}
+class C2 {
+	static accessor #x = 0;
+}
+class C3 {
+	static accessor #x = 0;
+	accessor #y = 0;
+}
+class C3 {
+	accessor x = 0;
+}
+class C4 {
+	accessor #x = 0;
+}
+class C5 {
+	x = 0;
+	accessor #x = 1;
+}
+class C6 {
+	accessor #x = 0;
+	x = 1;
+}
+"
+`;
 
 exports[`TSC: classes constructorParameterShadowsOuterScopes 1`] = `
 "// Initializer expressions for instance member variables are evaluated in the scope of the class constructor 
