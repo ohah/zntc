@@ -34,9 +34,13 @@ src/
     symbol.zig              #   심볼 테이블 (이름, 종류, 플래그, 참조 수)
   transformer/              # Phase 3: 트랜스포머 ✅ + ES 다운레벨링 ✅
     mod.zig                 #   트랜스포머 엔트리 + re-export
-    transformer.zig         #   Visitor 기반 순회 + AST 변환
+    transformer.zig         #   Visitor 기반 순회 + AST 변환 (core dispatch)
+    transformer/            #   transformer 서브 모듈 (delegation 패턴)
+      refresh.zig           #     React Fast Refresh ($RefreshReg$/$RefreshSig$)
+      class_decorator.zig   #     class 변환 + experimental decorators
     compat.zig              #   엔진 타겟 호환성 매핑 (chrome/safari/node 등 feature-level)
     jsx_lowering.zig        #   JSX lowering (classic/automatic/automatic-dev)
+    es2025_using.zig        #   ES2025 다운레벨링 (using/await using)
     es2024.zig              #   ES2024 다운레벨링 (using/await using)
     es2022.zig              #   ES2022 다운레벨링 (class static block, this 치환)
     es2021.zig              #   ES2021 다운레벨링 (??=, ||=, &&=)
@@ -64,6 +68,16 @@ src/
     codegen.zig             #   코드 생성 (formatting, minify, indentation)
     sourcemap.zig           #   V3 소스맵 생성 (VLQ 인코딩)
     mangler.zig             #   식별자 축약 (번들러 심볼 데이터 활용)
+    codegen_test/           #   코드젠 테스트 (9개 파일로 분리)
+      helpers.zig           #     공용 헬퍼 (TestResult, e2e*, SourceMapTestResult)
+      basic.zig             #     기본 codegen 출력
+      features.zig          #     E2E 기능 (class, arrow, async, destructuring 등)
+      cjs_importmeta.zig    #     CJS 포맷 + import.meta
+      es_downlevel.zig      #     ES 버전별 다운레벨링
+      minify_sourcemap.zig  #     minify + source map
+      flow.zig              #     Flow 타입 스트리핑
+      engine_jsx.zig        #     엔진 타겟 + JSX 런타임
+      private_jsx_advanced.zig #  private method, JSX auto, ES2025
   bundler/                  # Phase 6a: 번들러 ✅
     mod.zig                 #   번들러 엔트리 + 오케스트레이션
     bundler.zig             #   번들러 메인 로직
@@ -71,12 +85,18 @@ src/
     graph.zig               #   모듈 그래프 (DFS, exec_index, 순환 감지)
     module.zig              #   모듈 데이터 (AST, import/export, 심볼, def_format, interop)
     linker.zig              #   스코프 호이스팅 + 이름 충돌 해결 + CJS→ESM Interop
+    linker/                 #   linker 서브 모듈
+      metadata.zig          #     per-module LinkingMetadata 빌드
     tree_shaker.zig         #   Tree-shaking (export 추적, @__PURE__, sideEffects, 도달성)
     stmt_info.zig           #   StmtInfo (rolldown 방식 심볼 기반 statement 도달성 분석)
     statement_shaker.zig    #   Statement-level DCE (span 기반 폴백)
     purity.zig              #   순수성 분석 (expression/statement/varDecl/class 공유)
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
+    emitter/                #   emitter 서브 모듈
+      dev.zig               #     dev mode 번들링 (HMR, __zts_register)
+      chunks.zig            #     code splitting + hash/naming
+      esm_wrap.zig          #     __esm 래퍼 + export getter
     types.zig               #   번들러 자료 구조 (Interop, ModuleDefFormat, ExportsKind 등)
     package_json.zig        #   package.json 읽기 (exports, browser, sideEffects)
     resolve_cache.zig       #   해석 결과 캐싱 (import kind별)
@@ -89,6 +109,20 @@ src/
     module_store.zig        #   PersistentModuleStore (증분 빌드 파싱 캐시)
     incremental.zig         #   증분 빌드 로직 (watch/serve 리빌드)
     runtime_helpers.zig     #   런타임 헬퍼 (__esm, __commonJS, __export 등)
+    bundler_test/           #   번들러 통합 테스트 (13개 파일로 분리)
+      basic.zig             #     기본 번들링, 링커, re-export, scope hoist
+      typescript_format.zig #     TypeScript, format, edge, complex
+      compat.zig            #     Rollup/esbuild/Bun/Rolldown/Webpack 호환
+      default_deconflict.zig #    default export, deconflict, assignment
+      patterns.zig          #     real-world 패턴, error, mixed
+      expressions.zig       #     expression, class, control flow, async
+      jsx.zig               #     JSX 컴포넌트, deconflict
+      resolution.zig        #     package.json, extension, dynamic import
+      tree_shake.zig        #     tree shaking, pure, sideEffects
+      cjs_esm.zig           #     CJS interop, ESM wrap, TLA
+      splitting_dev.zig     #     code splitting, dev mode
+      minify_loader.zig     #     minify, asset loader
+      plugin_misc.zig       #     plugin, worker, JSX auto, RN
   server/                   # Phase 6b: 개발 서버 + HMR ✅
     mod.zig                 #   서버 엔트리 + re-export
     dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh)
