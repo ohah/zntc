@@ -411,7 +411,7 @@ const containerStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   height: "calc(100vh - 64px)",
-  margin: "-1rem -1.5rem",
+  margin: 0,
   overflow: "hidden",
   backgroundColor: "#1a1a2e",
 };
