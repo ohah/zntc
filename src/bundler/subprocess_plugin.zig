@@ -175,6 +175,45 @@ pub const SubprocessPlugin = struct {
         return self.config.external orelse &.{};
     }
 
+    /// config에서 alias 옵션을 AliasEntry 배열로 변환
+    pub fn getAliases(self: *SubprocessPlugin, allocator: std.mem.Allocator) ![]const @import("types.zig").AliasEntry {
+        const AliasEntry = @import("types.zig").AliasEntry;
+        const alias_val = self.config.alias orelse return &.{};
+        if (alias_val != .object) return &.{};
+
+        var result: std.ArrayList(AliasEntry) = .empty;
+        var it = alias_val.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                try result.append(allocator, .{ .from = entry.key_ptr.*, .to = entry.value_ptr.string });
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// config에서 inject 배열 반환
+    pub fn getInject(self: *SubprocessPlugin) []const []const u8 {
+        return self.config.inject orelse &.{};
+    }
+
+    /// config에서 banner.js 반환
+    pub fn getBannerJs(self: *SubprocessPlugin) ?[]const u8 {
+        const banner_val = self.config.banner orelse return null;
+        if (banner_val != .object) return null;
+        const js_val = banner_val.object.get("js") orelse return null;
+        if (js_val == .string) return js_val.string;
+        return null;
+    }
+
+    /// config에서 footer.js 반환
+    pub fn getFooterJs(self: *SubprocessPlugin) ?[]const u8 {
+        const footer_val = self.config.footer orelse return null;
+        if (footer_val != .object) return null;
+        const js_val = footer_val.object.get("js") orelse return null;
+        if (js_val == .string) return js_val.string;
+        return null;
+    }
+
     /// 플러그인 에러를 stderr에 출력
     fn reportError(self: *SubprocessPlugin, hook_name: []const u8, target: []const u8, err_msg: ?[]const u8) void {
         const w = std.fs.File.stderr().deprecatedWriter();
@@ -504,6 +543,24 @@ const InitResponse = struct {
         sourcemap: ?bool = null,
         minify: ?bool = null,
         server: ?ServerOptions = null,
+        // 새 옵션
+        format: ?[]const u8 = null,
+        platform: ?[]const u8 = null,
+        target: ?std.json.Value = null,
+        splitting: ?bool = null,
+        preserveModules: ?bool = null,
+        preserveModulesRoot: ?[]const u8 = null,
+        jsx: ?[]const u8 = null,
+        jsxFactory: ?[]const u8 = null,
+        jsxFragment: ?[]const u8 = null,
+        jsxImportSource: ?[]const u8 = null,
+        banner: ?std.json.Value = null,
+        footer: ?std.json.Value = null,
+        publicPath: ?[]const u8 = null,
+        inject: ?[]const []const u8 = null,
+        globalName: ?[]const u8 = null,
+        legalComments: ?[]const u8 = null,
+        keepNames: ?bool = null,
 
         const ServerOptions = struct {
             port: ?u16 = null,
