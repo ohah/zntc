@@ -1,0 +1,35 @@
+---
+title: ZTS
+description: A TypeScript Transpiler & Bundler written in Zig
+hero:
+  tagline: Fast and lightweight TypeScript Transpiler & Bundler
+  actions:
+    - text: Get Started
+      link: /zts/en/guides/introduction/
+      icon: right-arrow
+    - text: Playground
+      link: /zts/en/playground/
+      variant: minimal
+      icon: external
+    - text: GitHub
+      link: https://github.com/ohah/zts
+      variant: minimal
+      icon: github
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid>
+  <Card title="TypeScript/JSX Transpile" icon="seti:typescript">
+    Strip type annotations, interfaces, enums, and decorators at blazing speed.
+  </Card>
+  <Card title="Bundling" icon="seti:javascript">
+    Production bundler with tree-shaking, code splitting, and preserve-modules.
+  </Card>
+  <Card title="React Native" icon="seti:react">
+    Metro-compatible bundling, Flow stripping, and Hermes bytecode compatibility.
+  </Card>
+  <Card title="Plugins" icon="puzzle">
+    Rollup/Vite-compatible plugin system. Extensible with JS/TS.
+  </Card>
+</CardGrid>
