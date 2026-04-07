@@ -386,6 +386,7 @@ pub fn emitDevModule(
         var md = try l.buildDevMetadataForAst(
             &transformer.ast,
             @intFromEnum(module.index),
+            options.root_dir,
         );
         if (transformer.symbol_ids.items.len > 0) {
             md.symbol_ids = transformer.symbol_ids.items;
