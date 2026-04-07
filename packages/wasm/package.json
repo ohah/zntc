@@ -1,0 +1,26 @@
+{
+  "name": "@zts/wasm",
+  "version": "0.1.0",
+  "description": "ZTS TypeScript transpiler — WASM build",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./zts.wasm": "./zts.wasm"
+  },
+  "files": [
+    "dist/",
+    "zts.wasm"
+  ],
+  "scripts": {
+    "build:wasm": "cd ../.. && zig build wasm",
+    "build:js": "bun build index.ts --outdir dist --format esm --target browser",
+    "build": "bun run build:wasm && cp ../../zig-out/bin/zts.wasm . && bun run build:js",
+    "test": "bun test"
+  }
+}

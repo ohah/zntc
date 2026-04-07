@@ -192,7 +192,7 @@ pub fn transpileWithCallback(
     const root = transformer.transform() catch return error.TransformError;
 
     if (options.minify_syntax) {
-        @import("root.zig").transformer.minify.minify(&transformer.ast);
+        @import("transformer/minify.zig").minify(&transformer.ast);
     }
 
     // 5. Mangling 메타데이터 구성

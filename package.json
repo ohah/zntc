@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "workspaces": [
     "./packages/core",
+    "./packages/wasm",
     "./tests/integration",
     "./tests/e2e",
     "./tests/benchmark"
