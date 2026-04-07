@@ -2,10 +2,9 @@
   --sl-color-accent-low: #1a3a2a;
   --sl-color-accent: #4ade80;
   --sl-color-accent-high: #bbf7d0;
-  /* 모든 페이지에서 content 영역 풀사이즈 */
   --sl-content-width: 100%;
   --sl-content-margin-inline: 0;
-  --sl-content-pad-x: 1rem;
+  --sl-content-pad-x: 1.5rem;
 }
 
 :root[data-theme="light"] {
@@ -14,17 +13,23 @@
   --sl-color-accent-high: #052e16;
 }
 
-/* 모든 페이지: content 영역 max-width 제한 해제 */
+/* 모든 페이지: Starlight의 content 폭 제한 전부 해제 */
 .sl-container {
   max-width: 100% !important;
   margin-inline: 0 !important;
+  width: 100% !important;
 }
 
-.content-panel {
+.content-panel,
+.content-panel > *,
+main,
+.main-pane {
   max-width: 100% !important;
+  width: 100% !important;
 }
 
-main {
+/* TOC(오른쪽 목차) 패널의 max-width 제한도 해제 */
+.right-sidebar-panel .sl-container {
   max-width: 100% !important;
 }
 
