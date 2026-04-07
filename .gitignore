@@ -33,3 +33,4 @@ check_inferred
 *.dll
 *.wasm
 references/
+.claude/
