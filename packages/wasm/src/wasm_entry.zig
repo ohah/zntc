@@ -6,12 +6,13 @@
 //! JS 래퍼가 다음 순서로 호출:
 //!   1. alloc(len) → 메모리 확보, 포인터 반환
 //!   2. WASM memory에 소스 문자열 복사
-//!   3. transpile(src_ptr, src_len, file_ptr, file_len, flags) → 결과 (packed u64)
+//!   3. transpile(...) → 결과 (packed u64)
 //!   4. 결과 읽기 후 dealloc()으로 해제
 
 const std = @import("std");
 const transpile_mod = @import("zts_lib").transpile;
 const TranspileOptions = transpile_mod.TranspileOptions;
+const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
 
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;
@@ -29,10 +30,14 @@ fn clearError() void {
     last_error_buf = null;
 }
 
+fn readStr(ptr: u32, len: u32) []const u8 {
+    if (ptr == 0 or len == 0) return "";
+    return @as([*]const u8, @ptrFromInt(ptr))[0..len];
+}
+
 // ─── Export 함수 ───
 
 /// WASM linear memory에 len 바이트를 할당하고 포인터를 반환한다.
-/// JS 래퍼가 소스 문자열을 WASM 메모리에 쓸 때 사용.
 export fn alloc(len: u32) u32 {
     const slice = wasm_alloc.alloc(u8, len) catch return 0;
     return @intFromPtr(slice.ptr);
@@ -47,12 +52,11 @@ export fn dealloc(ptr: u32, len: u32) void {
 
 /// 트랜스파일 옵션 플래그 (비트마스크)
 ///
-/// JS 래퍼에서 옵션을 u32 비트마스크로 인코딩:
 ///   bit 0:  sourcemap
 ///   bit 1:  minify_whitespace
 ///   bit 2:  minify_identifiers
 ///   bit 3:  minify_syntax
-///   bit 4:  jsx_runtime (0=classic, 1=automatic)
+///   bit 4:  jsx_runtime (automatic)
 ///   bit 5:  jsx_dev (automatic-dev)
 ///   bit 6:  drop_console
 ///   bit 7:  drop_debugger
@@ -62,7 +66,13 @@ export fn dealloc(ptr: u32, len: u32) void {
 ///   bit 11: emit_decorator_metadata
 ///   bit 12-13: module_format (00=esm, 01=cjs)
 ///   bit 14-15: quote_style (00=double, 01=single, 10=preserve)
-fn decodeOptions(flags: u32) TranspileOptions {
+///   bit 16: use_define_for_class_fields (1=true, 기본값 true)
+///   bit 17: charset_utf8
+///   bit 18-19: platform (00=browser, 01=node, 10=neutral, 11=react-native)
+///   bit 20: jsx_in_js
+///   bit 21: sourcemap_debug_ids
+///   bit 22: sources_content (1=true, 기본값 true)
+fn decodeFlags(flags: u32) TranspileOptions {
     return .{
         .sourcemap = flags & (1 << 0) != 0,
         .minify_whitespace = flags & (1 << 1) != 0,
@@ -91,23 +101,41 @@ fn decodeOptions(flags: u32) TranspileOptions {
             2 => .preserve,
             else => .double,
         },
+        .use_define_for_class_fields = flags & (1 << 16) != 0,
+        .charset_utf8 = flags & (1 << 17) != 0,
+        .platform = switch ((flags >> 18) & 0x3) {
+            0 => .browser,
+            1 => .node,
+            2 => .neutral,
+            3 => .react_native,
+            else => .browser,
+        },
+        .jsx_in_js = flags & (1 << 20) != 0,
+        .sourcemap_debug_ids = flags & (1 << 21) != 0,
+        .sources_content = flags & (1 << 22) != 0,
     };
 }
 
 /// 소스 코드를 트랜스파일한다.
 ///
-/// 반환값: packed u64
-///   - 상위 32비트: 출력 문자열 포인터
-///   - 하위 32비트: 출력 문자열 길이
-///   - 0이면 에러 (get_error_ptr/get_error_len으로 에러 메시지 조회)
+/// flags: 비트마스크 옵션 (decodeFlags 참고)
+/// unsupported: UnsupportedFeatures packed u32 (ES 다운레벨링 타겟)
+/// 문자열 옵션: jsx_factory, jsx_fragment, jsx_import_source (ptr+len 쌍)
 ///
-/// 호출 후 반환된 포인터는 dealloc()으로 해제해야 한다.
+/// 반환값: packed u64 (상위 32비트: 포인터, 하위 32비트: 길이, 0=에러)
 export fn transpile(
     src_ptr: u32,
     src_len: u32,
     file_ptr: u32,
     file_len: u32,
     flags: u32,
+    unsupported: u32,
+    jsx_factory_ptr: u32,
+    jsx_factory_len: u32,
+    jsx_fragment_ptr: u32,
+    jsx_fragment_len: u32,
+    jsx_import_source_ptr: u32,
+    jsx_import_source_len: u32,
 ) u64 {
     clearError();
 
@@ -122,7 +150,18 @@ export fn transpile(
     else
         "input.ts";
 
-    const options = decodeOptions(flags);
+    var options = decodeFlags(flags);
+
+    // UnsupportedFeatures는 packed struct(u32) — 직접 bitcast
+    options.unsupported = @bitCast(unsupported);
+
+    // 문자열 옵션 (빈 문자열이면 기본값 유지)
+    const factory = readStr(jsx_factory_ptr, jsx_factory_len);
+    if (factory.len > 0) options.jsx_factory = factory;
+    const fragment = readStr(jsx_fragment_ptr, jsx_fragment_len);
+    if (fragment.len > 0) options.jsx_fragment = fragment;
+    const import_source = readStr(jsx_import_source_ptr, jsx_import_source_len);
+    if (import_source.len > 0) options.jsx_import_source = import_source;
 
     var result = transpile_mod.transpile(wasm_alloc, source, file_path, options) catch |err| {
         const msg: []const u8 = switch (err) {
@@ -137,7 +176,6 @@ export fn transpile(
     };
 
     // 소스맵이 있으면 코드 뒤에 구분자(\0)와 소스맵을 붙여서 반환
-    // JS 래퍼에서 \0으로 split
     const output = if (result.sourcemap) |sm| blk: {
         const total = result.code.len + 1 + sm.len;
         const combined = wasm_alloc.alloc(u8, total) catch {
@@ -146,7 +184,7 @@ export fn transpile(
             return 0;
         };
         @memcpy(combined[0..result.code.len], result.code);
-        combined[result.code.len] = 0; // null separator
+        combined[result.code.len] = 0;
         @memcpy(combined[result.code.len + 1 ..], sm);
         result.deinit(wasm_alloc);
         break :blk combined;

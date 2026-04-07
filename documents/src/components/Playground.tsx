@@ -34,6 +34,12 @@ interface Options {
   experimentalDecorators: boolean;
   flow: boolean;
   quotes: "double" | "single" | "preserve";
+  target: "esnext" | "es2022" | "es2021" | "es2020" | "es2019" | "es2018" | "es2017" | "es2016" | "es2015" | "es5";
+  platform: "browser" | "node" | "neutral" | "react-native";
+  useDefineForClassFields: boolean;
+  jsxFactory: string;
+  jsxFragment: string;
+  jsxImportSource: string;
 }
 
 const DEFAULT_OPTIONS: Options = {
@@ -51,6 +57,12 @@ const DEFAULT_OPTIONS: Options = {
   experimentalDecorators: false,
   flow: false,
   quotes: "double",
+  target: "esnext",
+  platform: "browser",
+  useDefineForClassFields: true,
+  jsxFactory: "",
+  jsxFragment: "",
+  jsxImportSource: "",
 };
 
 function doTranspile(
@@ -75,6 +87,12 @@ function doTranspile(
       experimentalDecorators: opts.experimentalDecorators,
       flow: opts.flow,
       quotes: opts.quotes,
+      target: opts.target === "esnext" ? undefined : opts.target,
+      platform: opts.platform,
+      useDefineForClassFields: opts.useDefineForClassFields,
+      jsxFactory: opts.jsxFactory || undefined,
+      jsxFragment: opts.jsxFragment || undefined,
+      jsxImportSource: opts.jsxImportSource || undefined,
     });
     return { output: result.code, sourcemap: result.map || "", error: "" };
   } catch (err) {
@@ -229,6 +247,31 @@ export default function Playground() {
               <CheckOption label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
             </ConfigSection>
 
+            <ConfigSection title="Target">
+              <SelectOption label="Target" value={options.target} onChange={(v) => updateOption("target", v as Options["target"])}
+                options={[
+                  ["esnext", "ESNext"],
+                  ["es2022", "ES2022"],
+                  ["es2021", "ES2021"],
+                  ["es2020", "ES2020"],
+                  ["es2019", "ES2019"],
+                  ["es2018", "ES2018"],
+                  ["es2017", "ES2017"],
+                  ["es2016", "ES2016"],
+                  ["es2015", "ES2015"],
+                  ["es5", "ES5"],
+                ]}
+              />
+              <SelectOption label="Platform" value={options.platform} onChange={(v) => updateOption("platform", v as Options["platform"])}
+                options={[
+                  ["browser", "Browser"],
+                  ["node", "Node"],
+                  ["neutral", "Neutral"],
+                  ["react-native", "React Native"],
+                ]}
+              />
+            </ConfigSection>
+
             <ConfigSection title="Transform">
               <SelectOption label="JSX Runtime" value={options.jsx} onChange={(v) => updateOption("jsx", v as Options["jsx"])}
                 options={[
@@ -240,6 +283,7 @@ export default function Playground() {
               <SelectOption label="Module" value={options.format} onChange={(v) => updateOption("format", v as Options["format"])}
                 options={[["esm", "ESM"], ["cjs", "CommonJS"]]}
               />
+              <CheckOption label="useDefineForClassFields" checked={options.useDefineForClassFields} onChange={(v) => updateOption("useDefineForClassFields", v)} />
             </ConfigSection>
 
             <ConfigSection title="Output">

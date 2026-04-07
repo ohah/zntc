@@ -1,24 +1,40 @@
 /**
  * @zts/wasm — ZTS TypeScript 트랜스파일러 WASM 바인딩
  *
- * 브라우저와 Node.js 양쪽에서 TypeScript → JavaScript 트랜스파일을 수행한다.
- *
  * @example
  * ```ts
  * import { init, transpile } from "@zts/wasm";
  * await init();
- * const result = transpile("const x: number = 1;");
- * console.log(result.code); // "const x = 1;"
+ * const result = transpile("const x: number = 1;", { target: "es5" });
+ * console.log(result.code);
  * ```
  */
 
 // ─── Types ───
+
+export type Target =
+  | "es5"
+  | "es2015"
+  | "es2016"
+  | "es2017"
+  | "es2018"
+  | "es2019"
+  | "es2020"
+  | "es2021"
+  | "es2022"
+  | "esnext";
+
+export type Platform = "browser" | "node" | "neutral" | "react-native";
 
 export interface TranspileOptions {
   /** 파일 경로 (확장자 감지용, 기본: "input.ts") */
   filename?: string;
   /** 소스맵 생성 */
   sourcemap?: boolean;
+  /** 소스맵 Debug ID (Sentry 호환) */
+  sourcemapDebugIds?: boolean;
+  /** 소스맵에 원본 소스 포함 (기본: true) */
+  sourcesContent?: boolean;
   /** 공백 축소 */
   minifyWhitespace?: boolean;
   /** 식별자 축소 */
@@ -27,24 +43,40 @@ export interface TranspileOptions {
   minifySyntax?: boolean;
   /** 전체 축소 (whitespace + identifiers + syntax) */
   minify?: boolean;
-  /** JSX 런타임 ("classic" | "automatic" | "automatic-dev") */
+  /** JSX 런타임 */
   jsx?: "classic" | "automatic" | "automatic-dev";
+  /** classic 모드 JSX factory (기본: "React.createElement") */
+  jsxFactory?: string;
+  /** classic 모드 Fragment factory (기본: "React.Fragment") */
+  jsxFragment?: string;
+  /** automatic 모드 import source (기본: "react") */
+  jsxImportSource?: string;
+  /** JS 파일에서도 JSX 허용 */
+  jsxInJs?: boolean;
   /** console.* 호출 제거 */
   dropConsole?: boolean;
   /** debugger 문 제거 */
   dropDebugger?: boolean;
   /** non-ASCII를 \uXXXX로 이스케이프 */
   asciiOnly?: boolean;
+  /** non-ASCII를 이스케이프하지 않음 */
+  charsetUtf8?: boolean;
   /** Flow 타입 스트리핑 */
   flow?: boolean;
   /** legacy decorator 변환 */
   experimentalDecorators?: boolean;
   /** decorator metadata emit */
   emitDecoratorMetadata?: boolean;
-  /** 모듈 포맷 ("esm" | "cjs") */
+  /** class field → constructor this.x = v 변환 (기본: true) */
+  useDefineForClassFields?: boolean;
+  /** 모듈 포맷 */
   format?: "esm" | "cjs";
   /** 문자열 따옴표 스타일 */
   quotes?: "double" | "single" | "preserve";
+  /** 타겟 플랫폼 */
+  platform?: Platform;
+  /** ES 다운레벨 타겟 */
+  target?: Target;
 }
 
 export interface TranspileResult {
@@ -66,6 +98,13 @@ interface WasmExports {
     filePtr: number,
     fileLen: number,
     flags: number,
+    unsupported: number,
+    jsxFactoryPtr: number,
+    jsxFactoryLen: number,
+    jsxFragmentPtr: number,
+    jsxFragmentLen: number,
+    jsxImportSourcePtr: number,
+    jsxImportSourceLen: number,
   ): bigint;
   get_error_ptr(): number;
   get_error_len(): number;
@@ -76,13 +115,10 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 // ─── 최소 WASI shim ───
-// fd_write (stderr 출력)만 지원하는 최소 구현.
-// WASI reactor 모드에서 std.debug.print 등이 동작하도록 한다.
 
 function createWasiImports(memory: () => WebAssembly.Memory) {
   return {
     wasi_snapshot_preview1: {
-      // fd_write: stderr 출력 지원
       fd_write(fd: number, iovs_ptr: number, iovs_len: number, nwritten_ptr: number): number {
         const mem = new DataView(memory().buffer);
         const bytes = new Uint8Array(memory().buffer);
@@ -97,23 +133,18 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
         mem.setUint32(nwritten_ptr, written, true);
         return 0;
       },
-      // fd_read: no-op
       fd_read(): number {
-        return 8; // __WASI_ERRNO_BADF
+        return 8;
       },
-      // fd_seek: no-op
       fd_seek(): number {
         return 8;
       },
-      // fd_pwrite: no-op
       fd_pwrite(): number {
         return 8;
       },
-      // fd_filestat_get: no-op
       fd_filestat_get(): number {
         return 8;
       },
-      // random_get: 랜덤 바이트 (crypto.getRandomValues)
       random_get(buf_ptr: number, buf_len: number): number {
         const bytes = new Uint8Array(memory().buffer, buf_ptr, buf_len);
         if (typeof globalThis.crypto !== "undefined") {
@@ -125,6 +156,29 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       },
     },
   };
+}
+
+// ─── ES Target → UnsupportedFeatures bitmask ───
+// compat.zig의 Feature enum/ESTarget과 동일한 비트 레이아웃
+
+const ES_TARGET_BITS: Record<string, number> = {
+  // ES5: 모든 ES2015+ feature가 unsupported
+  es5: 0x3ffff, // bit 0-17 전부
+  // ES2015: ES2016+ feature가 unsupported
+  es2015: 0x3f800, // bit 11-17
+  es2016: 0x3f000, // bit 12-17
+  es2017: 0x3e000, // bit 13-17
+  es2018: 0x3c000, // bit 14-17
+  es2019: 0x38000, // bit 15-17
+  es2020: 0x30000, // bit 16-17
+  es2021: 0x20000, // bit 17
+  es2022: 0x0,
+  esnext: 0x0,
+};
+
+function targetToUnsupported(target?: Target): number {
+  if (!target) return 0;
+  return ES_TARGET_BITS[target] ?? 0;
 }
 
 // ─── 옵션 인코딩 ───
@@ -146,6 +200,17 @@ function encodeFlags(opts: TranspileOptions = {}): number {
   if (opts.format === "cjs") flags |= 1 << 12;
   if (opts.quotes === "single") flags |= 1 << 14;
   if (opts.quotes === "preserve") flags |= 2 << 14;
+  // useDefineForClassFields: 기본값 true, false일 때만 비트 0
+  if (opts.useDefineForClassFields !== false) flags |= 1 << 16;
+  if (opts.charsetUtf8) flags |= 1 << 17;
+  // platform
+  if (opts.platform === "node") flags |= 1 << 18;
+  if (opts.platform === "neutral") flags |= 2 << 18;
+  if (opts.platform === "react-native") flags |= 3 << 18;
+  if (opts.jsxInJs) flags |= 1 << 20;
+  if (opts.sourcemapDebugIds) flags |= 1 << 21;
+  // sourcesContent: 기본값 true
+  if (opts.sourcesContent !== false) flags |= 1 << 22;
   return flags;
 }
 
@@ -163,17 +228,13 @@ function readString(ptr: number, len: number): string {
   return decoder.decode(new Uint8Array(wasm!.memory.buffer, ptr, len));
 }
 
+function writeOptionalString(s?: string): [number, number] {
+  if (!s) return [0, 0];
+  return writeString(s);
+}
+
 // ─── Public API ───
 
-/**
- * WASM 모듈을 비동기로 초기화한다 (브라우저용).
- * URL, fetch Response, 또는 ArrayBuffer를 받는다.
- *
- * @example
- * ```ts
- * await init(new URL("./zts.wasm", import.meta.url));
- * ```
- */
 export async function init(
   input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
 ): Promise<void> {
@@ -182,7 +243,6 @@ export async function init(
   let source: BufferSource | WebAssembly.Module | Response;
 
   if (input === undefined) {
-    // Node.js: 같은 디렉토리의 zts.wasm을 읽는다
     const fs = await import("fs");
     const path = await import("path");
     const url = await import("url");
@@ -195,14 +255,11 @@ export async function init(
   } else if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
     source = input as BufferSource;
   } else {
-    // URL or string — fetch
     source = await fetch(input as string | URL | Request);
   }
 
   let instance: WebAssembly.Instance;
   let memory: WebAssembly.Memory;
-
-  // memory는 인스턴스 생성 후에야 접근 가능하므로 lazy getter 사용
   const imports = createWasiImports(() => memory);
 
   if (source instanceof WebAssembly.Module) {
@@ -219,10 +276,6 @@ export async function init(
   wasm = instance.exports as unknown as WasmExports;
 }
 
-/**
- * WASM 모듈을 동기적으로 초기화한다.
- * 미리 컴파일된 WebAssembly.Module 또는 ArrayBuffer를 받는다.
- */
 export function initSync(input: WebAssembly.Module | BufferSource): void {
   if (wasm) return;
 
@@ -241,38 +294,40 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
   wasm = instance.exports as unknown as WasmExports;
 }
 
-/**
- * TypeScript/JSX 소스를 JavaScript로 트랜스파일한다.
- *
- * @throws init()이 호출되지 않았으면 에러
- * @throws 파싱/변환 에러 시 에러
- */
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   if (!wasm) {
     throw new Error("zts-wasm: not initialized. Call init() or initSync() first.");
   }
 
   const [srcPtr, srcLen] = writeString(source);
-  let filePtr = 0;
-  let fileLen = 0;
-
-  // Zig 측에서 file_ptr==0이면 "input.ts" 기본값을 사용하므로
-  // 커스텀 filename이 있을 때만 할당
-  if (options.filename) {
-    [filePtr, fileLen] = writeString(options.filename);
-  }
+  const [filePtr, fileLen] = options.filename ? writeString(options.filename) : [0, 0];
+  const [factoryPtr, factoryLen] = writeOptionalString(options.jsxFactory);
+  const [fragmentPtr, fragmentLen] = writeOptionalString(options.jsxFragment);
+  const [importSourcePtr, importSourceLen] = writeOptionalString(options.jsxImportSource);
 
   const flags = encodeFlags(options);
+  const unsupported = targetToUnsupported(options.target);
 
   try {
-    const packed = wasm.transpile(srcPtr, srcLen, filePtr, fileLen, flags);
+    const packed = wasm.transpile(
+      srcPtr,
+      srcLen,
+      filePtr,
+      fileLen,
+      flags,
+      unsupported,
+      factoryPtr,
+      factoryLen,
+      fragmentPtr,
+      fragmentLen,
+      importSourcePtr,
+      importSourceLen,
+    );
 
-    // packed u64: 상위 32비트 = 포인터, 하위 32비트 = 길이
     const outPtr = Number(packed >> 32n);
     const outLen = Number(packed & 0xffffffffn);
 
     if (outPtr === 0) {
-      // 에러 발생
       const errPtr = wasm.get_error_ptr();
       const errLen = wasm.get_error_len();
       const errMsg = errPtr ? readString(errPtr, errLen) : "unknown error";
@@ -282,18 +337,17 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     const raw = readString(outPtr, outLen);
     wasm.dealloc(outPtr, outLen);
 
-    // 소스맵이 있으면 \0으로 구분되어 있음
     const nullIdx = options.sourcemap ? raw.indexOf("\0") : -1;
     if (nullIdx !== -1) {
-      return {
-        code: raw.slice(0, nullIdx),
-        map: raw.slice(nullIdx + 1),
-      };
+      return { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) };
     }
 
     return { code: raw };
   } finally {
     wasm.dealloc(srcPtr, srcLen);
     if (filePtr) wasm.dealloc(filePtr, fileLen);
+    if (factoryPtr) wasm.dealloc(factoryPtr, factoryLen);
+    if (fragmentPtr) wasm.dealloc(fragmentPtr, fragmentLen);
+    if (importSourcePtr) wasm.dealloc(importSourcePtr, importSourceLen);
   }
 }
