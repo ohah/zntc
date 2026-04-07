@@ -45,7 +45,7 @@ jobs:
         run: bun install
 
       - name: Copy WASM to public
-        run: cp zig-out/bin/zts.wasm documents/public/zts.wasm
+        run: cp zig-out/bin/zts.wasm documents/public/zts-core.wasm
 
       - name: Build docs
         run: cd documents && bun run build

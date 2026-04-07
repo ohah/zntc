@@ -18,7 +18,7 @@ pnpm-debug.log*
 .env.production
 
 # WASM (빌드 시 복사됨)
-public/zts.wasm
+public/zts-core.wasm
 
 # macOS-specific files
 .DS_Store
