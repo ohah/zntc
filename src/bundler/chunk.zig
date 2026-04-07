@@ -562,31 +562,18 @@ pub fn generatePreserveModulesChunks(
         var bits = try BitSet.init(allocator, 1);
         errdefer bits.deinit(allocator);
 
-        const is_entry = entry_set.contains(@intCast(mi));
         const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
-
-        // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
         const name = std.fs.path.stem(std.fs.path.basename(modules[mi].path));
 
-        var chunk = if (is_entry) blk: {
-            bits.setBit(0);
-            var c = Chunk.init(.none, .{ .entry_point = .{
-                .bit = 0,
-                .module = mod_idx,
-                .is_dynamic = false,
-            } }, bits);
-            c.name = name;
-            break :blk c;
-        } else blk: {
-            // 비엔트리 모듈도 name을 설정해야 출력 파일명이 생성됨
-            var c = Chunk.init(.none, .{ .entry_point = .{
-                .bit = 0,
-                .module = mod_idx,
-                .is_dynamic = false,
-            } }, bits);
-            c.name = name;
-            break :blk c;
-        };
+        // 엔트리 모듈이면 bit 설정 (출력 시 엔트리 청크로 인식)
+        if (entry_set.contains(@intCast(mi))) bits.setBit(0);
+
+        var chunk = Chunk.init(.none, .{ .entry_point = .{
+            .bit = 0,
+            .module = mod_idx,
+            .is_dynamic = false,
+        } }, bits);
+        chunk.name = name;
 
         chunk.exec_order = modules[mi].exec_index;
         // preserve-modules에서 chunk.rel_dir을 설정하여 디렉토리 구조 유지
