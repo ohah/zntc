@@ -264,7 +264,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 });
             } else {
                 try stderr.print("zts: --define requires KEY=VALUE format: {s}\n", .{arg});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--ascii-only")) {
             opts.ascii_only = true;
@@ -278,7 +278,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 opts.quote_style = .preserve;
             } else {
                 try stderr.print("zts: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             opts.sourcemap = true;
@@ -338,7 +338,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 i += 1;
                 opts.serve_port = std.fmt.parseInt(u16, args[i], 10) catch {
                     try stderr.print("zts: invalid port number: {s}\n", .{args[i]});
-                    return null;
+                    std.process.exit(1);
                 };
             }
         } else if (std.mem.eql(u8, arg, "--host")) {
@@ -374,11 +374,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     });
                 } else {
                     try stderr.print("zts: --proxy requires PATH=TARGET format (e.g. /api=http://localhost:8080)\n", .{});
-                    return null;
+                    std.process.exit(1);
                 }
             } else {
                 try stderr.print("zts: --proxy requires a PATH=TARGET argument\n", .{});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             opts.splitting = true;
@@ -417,7 +417,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--rn-platform=".len..];
             opts.rn_platform = std.meta.stringToEnum(CliOptions.RnPlatform, val) orelse {
                 try stderr.print("zts: unknown --rn-platform '{s}' (expected: ios, android)\n", .{val});
-                return null;
+                std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
@@ -438,7 +438,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 // 엔진 버전 파싱 (chrome80,safari14,node16)
                 opts.unsupported = parseEngineTargets(val) orelse {
                     try stderr.print("zts: unknown target '{s}'\n", .{val});
-                    return null;
+                    std.process.exit(1);
                 };
             }
         } else if (std.mem.eql(u8, arg, "--preserve-symlinks")) {
@@ -453,7 +453,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 });
             } else {
                 try stderr.print("zts: --alias requires FROM=TO format: {s}\n", .{arg});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "--public-path=")) {
             opts.public_path = arg["--public-path=".len..];
@@ -477,7 +477,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--log-level=".len..];
             opts.log_level = std.meta.stringToEnum(CliOptions.LogLevel, val) orelse {
                 try stderr.print("zts: unknown log-level '{s}' (expected: silent, error, warning, info, debug, verbose)\n", .{val});
-                return null;
+                std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--charset=utf8")) {
             opts.charset_utf8 = true;
@@ -507,13 +507,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--log-limit=".len..];
             opts.log_limit = std.fmt.parseInt(u32, val, 10) catch {
                 try stderr.print("zts: --log-limit requires a number: {s}\n", .{val});
-                return null;
+                std.process.exit(1);
             };
         } else if (std.mem.startsWith(u8, arg, "--line-limit=")) {
             const val = arg["--line-limit=".len..];
             opts.line_limit = std.fmt.parseInt(u32, val, 10) catch {
                 try stderr.print("zts: --line-limit requires a number: {s}\n", .{val});
-                return null;
+                std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--jsx-side-effects")) {
             opts.jsx_side_effects = true;
@@ -540,7 +540,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--watch-delay=".len..];
             opts.watch_delay_ms = std.fmt.parseInt(u32, val, 10) catch {
                 try stderr.print("zts: --watch-delay requires a number (ms): {s}\n", .{val});
-                return null;
+                std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--clean")) {
             opts.clean = true;
@@ -550,7 +550,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try opts.plugin_paths.append(allocator, args[i]);
             } else {
                 try stderr.print("zts: --plugin requires a file path\n", .{});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "--inject:") or
             std.mem.startsWith(u8, arg, "--run-before-main=") or
@@ -562,7 +562,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const raw_path = arg[sep_pos + 1 ..];
             const abs = std.fs.cwd().realpathAlloc(allocator, raw_path) catch {
                 try stderr.print("zts: cannot resolve {s} path: {s}\n", .{ option_name, raw_path });
-                return null;
+                std.process.exit(1);
             };
             const target_list = if (std.mem.startsWith(u8, arg, "--inject:"))
                 &opts.inject_list
@@ -580,7 +580,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--legal-comments=".len..];
             opts.legal_comments = CliOptions.LegalCommentsEnum.fromString(val) orelse {
                 try stderr.print("zts: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
-                return null;
+                std.process.exit(1);
             };
             if (opts.legal_comments == .linked or opts.legal_comments == .external) {
                 try stderr.print("zts: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
@@ -598,11 +598,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     });
                 } else {
                     try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, text, binary, copy, json, css, empty, js)\n", .{loader_str});
-                    return null;
+                    std.process.exit(1);
                 }
             } else {
                 try stderr.print("zts: --loader requires .EXT=TYPE format: {s}\n", .{arg});
-                return null;
+                std.process.exit(1);
             }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
@@ -611,7 +611,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.input_file = arg;
         } else {
             try stderr.print("zts: unknown option: {s}\n", .{arg});
-            return null;
+            std.process.exit(1);
         }
     }
 
@@ -709,7 +709,7 @@ fn transpileFile(
     const source = source_override orelse blk: {
         break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
-            return;
+            return error.TranspileFailed;
         };
     };
     if (timer) |*t| {
@@ -747,7 +747,7 @@ fn transpileFile(
                 try stderr.print("zts: {s}: {}\n", .{ file_path, err });
             },
         }
-        return;
+        return error.TranspileFailed;
     };
     defer result.deinit(allocator);
 
@@ -761,12 +761,12 @@ fn transpileFile(
         if (std.fs.path.dirname(out_path)) |dir| {
             std.fs.cwd().makePath(dir) catch |err| {
                 try stderr.print("zts: cannot create directory '{s}': {}\n", .{ dir, err });
-                return;
+                return error.TranspileFailed;
             };
         }
         std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = result.code }) catch |err| {
             try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
-            return;
+            return error.TranspileFailed;
         };
         if (result.sourcemap) |sm_json| {
             const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
@@ -833,22 +833,23 @@ fn walkAndTranspile(
     // 입력 디렉토리 열기
     var dir = std.fs.cwd().openDir(input_dir, .{ .iterate = true }) catch |err| {
         try stderr.print("zts: cannot open directory '{s}': {}\n", .{ input_dir, err });
-        return;
+        return error.WalkFailed;
     };
     defer dir.close();
 
     // 재귀적으로 파일 순회
     var walker = dir.walk(allocator) catch |err| {
         try stderr.print("zts: cannot walk directory '{s}': {}\n", .{ input_dir, err });
-        return;
+        return error.WalkFailed;
     };
     defer walker.deinit();
 
     var file_count: usize = 0;
+    var had_errors = false;
 
     while (walker.next() catch |err| {
         try stderr.print("zts: error walking directory: {}\n", .{err});
-        return;
+        return error.WalkFailed;
     }) |entry| {
         // 디렉토리는 건너뛰되, node_modules는 순회 자체를 차단할 수 없으므로
         // 파일 경로에 node_modules가 포함되면 건너뛴다
@@ -886,15 +887,20 @@ fn walkAndTranspile(
         try stdout.print("{s} → {s}\n", .{ input_path, output_path });
 
         // 트랜스파일 실행
-        try transpileFile(allocator, input_path, null, output_path, options);
+        transpileFile(allocator, input_path, null, output_path, options) catch {
+            had_errors = true;
+            continue;
+        };
         file_count += 1;
     }
 
-    if (file_count == 0) {
+    if (file_count == 0 and !had_errors) {
         try stderr.print("zts: no .ts/.tsx files found in '{s}'\n", .{input_dir});
     } else {
         try stdout.print("\nDone: {d} file(s) transpiled.\n", .{file_count});
     }
+
+    if (had_errors) return error.WalkFailed;
 }
 
 pub fn main() !void {
@@ -935,8 +941,8 @@ pub fn main() !void {
     // --test262
     if (opts.is_test262) {
         const dir_path = opts.test262_dir orelse {
-            try stderr.print("Error: --test262 requires a directory path\n", .{});
-            return;
+            try stderr.print("zts: --test262 requires a directory path\n", .{});
+            std.process.exit(1);
         };
         const abs_path = try std.fs.cwd().realpathAlloc(allocator, dir_path);
         defer allocator.free(abs_path);
@@ -949,8 +955,8 @@ pub fn main() !void {
     // --tokenize
     if (opts.is_tokenize) {
         const file_path = opts.input_file orelse {
-            try stderr.print("Error: --tokenize requires a file path\n", .{});
-            return;
+            try stderr.print("zts: --tokenize requires a file path\n", .{});
+            std.process.exit(1);
         };
         const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024);
         defer allocator.free(source);
@@ -981,8 +987,8 @@ pub fn main() !void {
 
         const entry: ?[]const u8 = if (opts.is_bundle) blk: {
             break :blk opts.input_file orelse {
-                try stderr.print("Error: --serve --bundle requires an entry file path\n", .{});
-                return;
+                try stderr.print("zts: --serve --bundle requires an entry file path\n", .{});
+                std.process.exit(1);
             };
         } else null;
 
@@ -998,7 +1004,7 @@ pub fn main() !void {
         for (opts.plugin_paths.items) |config_path| {
             const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
                 try stderr.print("zts: plugin '{s}' spawn failed: {}\n", .{ config_path, err });
-                return;
+                std.process.exit(1);
             };
             try serve_subprocess_list.append(allocator, sp);
             try serve_plugin_list.append(allocator, sp.toPlugin());
@@ -1029,13 +1035,13 @@ pub fn main() !void {
             .plugins = serve_plugin_list.items,
             .proxy = opts.proxy_list.items,
         }) catch |err| {
-            try stderr.print("Error: failed to start dev server: {}\n", .{err});
-            return;
+            try stderr.print("zts: failed to start dev server: {}\n", .{err});
+            std.process.exit(1);
         };
         defer dev_server.deinit();
         dev_server.start() catch |err| {
-            try stderr.print("Error: dev server failed: {}\n", .{err});
-            return;
+            try stderr.print("zts: dev server failed: {}\n", .{err});
+            std.process.exit(1);
         };
         return;
     }
@@ -1099,24 +1105,24 @@ pub fn main() !void {
     // --bundle
     if (opts.is_bundle) {
         const entry_file = opts.input_file orelse {
-            try stderr.print("Error: --bundle requires an entry file path\n", .{});
+            try stderr.print("zts: --bundle requires an entry file path\n", .{});
             std.process.exit(1);
         };
         const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch {
-            try stderr.print("Error: cannot resolve entry file '{s}'\n", .{entry_file});
+            try stderr.print("zts: cannot resolve entry file '{s}'\n", .{entry_file});
             std.process.exit(1);
         };
         defer allocator.free(abs_entry);
 
         // --splitting은 --outdir 필수
         if (opts.splitting and opts.output_dir == null) {
-            try stderr.print("Error: --splitting requires --outdir\n", .{});
+            try stderr.print("zts: --splitting requires --outdir\n", .{});
             std.process.exit(1);
         }
 
         // --preserve-modules는 --outdir 필수
         if (opts.preserve_modules and opts.output_dir == null) {
-            try stderr.print("Error: --preserve-modules requires --outdir\n", .{});
+            try stderr.print("zts: --preserve-modules requires --outdir\n", .{});
             std.process.exit(1);
         }
 
@@ -1125,7 +1131,7 @@ pub fn main() !void {
         defer if (resolved_pm_root) |r| allocator.free(r);
         if (opts.preserve_modules_root) |pmr| {
             resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch {
-                try stderr.print("Error: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
+                try stderr.print("zts: cannot resolve preserve-modules-root '{s}'\n", .{pmr});
                 std.process.exit(1);
             };
             opts.preserve_modules_root = resolved_pm_root;
@@ -1142,7 +1148,7 @@ pub fn main() !void {
 
         for (opts.plugin_paths.items) |config_path| {
             const sp = SubprocessPlugin.spawn(allocator, config_path) catch {
-                try stderr.print("Error: failed to load plugin '{s}'\n", .{config_path});
+                try stderr.print("zts: failed to load plugin '{s}'\n", .{config_path});
                 std.process.exit(1);
             };
             try subprocess_list.append(allocator, sp);
@@ -1152,7 +1158,7 @@ pub fn main() !void {
         // --rn-platform은 --platform=react-native와 함께 사용해야 한다
         if (opts.rn_platform != .none and opts.platform != .react_native) {
             try stderr.print("zts: --rn-platform requires --platform=react-native\n", .{});
-            return;
+            std.process.exit(1);
         }
 
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
@@ -1429,7 +1435,7 @@ pub fn main() !void {
         defer bundler.deinit();
 
         const result = bundler.bundle() catch |err| {
-            try stderr.print("Error: bundle failed — {}\n", .{err});
+            try stderr.print("zts: bundle failed: {}\n", .{err});
             std.process.exit(1);
         };
         defer result.deinit(allocator);
@@ -1782,15 +1788,15 @@ pub fn main() !void {
             var dir = std.fs.cwd().openDir(input_path_str, .{}) catch {
                 // 파일도 디렉토리도 아닌 경우
                 try stderr.print("zts: cannot access '{s}': {}\n", .{ input_path_str, err });
-                return;
+                std.process.exit(1);
             };
             dir.close();
             // 디렉토리 확인됨 — 아래 디렉토리 처리로 이동
             const out_dir = opts.output_dir orelse {
                 try stderr.print("zts: --outdir is required when input is a directory\n", .{});
-                return;
+                std.process.exit(1);
             };
-            try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
                 try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
             }
@@ -1800,9 +1806,9 @@ pub fn main() !void {
         if (stat.kind == .directory) {
             const out_dir = opts.output_dir orelse {
                 try stderr.print("zts: --outdir is required when input is a directory\n", .{});
-                return;
+                std.process.exit(1);
             };
-            try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            walkAndTranspile(allocator, input_path_str, out_dir, options) catch std.process.exit(1);
             if (opts.watch) {
                 try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
             }
@@ -1816,14 +1822,14 @@ pub fn main() !void {
     if (is_stdin) {
         const source = std.fs.File.stdin().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read stdin: {}\n", .{err});
-            return;
+            std.process.exit(1);
         };
         defer allocator.free(source);
-        try transpileFile(allocator, file_path, source, opts.output_file, options);
+        transpileFile(allocator, file_path, source, opts.output_file, options) catch std.process.exit(1);
     } else {
-        try transpileFile(allocator, file_path, null, opts.output_file, options);
+        transpileFile(allocator, file_path, null, opts.output_file, options) catch std.process.exit(1);
         if (opts.watch) {
-            try watchFile(allocator, file_path, opts.output_file, options, stderr);
+            watchFile(allocator, file_path, opts.output_file, options, stderr) catch std.process.exit(1);
         }
     }
 }
@@ -1843,7 +1849,7 @@ fn watchFile(
     // 초기 mtime 저장
     var last_mtime = getFileMtime(file_path) catch |err| {
         try stderr.print("zts: cannot stat '{s}': {}\n", .{ file_path, err });
-        return;
+        return error.WatchFailed;
     };
 
     try stdout.print("[watch] Watching for file changes...\n", .{});
