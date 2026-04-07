@@ -100,6 +100,14 @@ pub fn emitDevBundle(
         try output.appendSlice(allocator, rt.HMR_RUNTIME);
     }
 
+    // CJS/ESM interop 헬퍼 주입: __toESM (CJS default import 호환)
+    // ES5 호환 여부에 따라 configurable 버전 선택 (React Native/Hermes는 configurable 필요)
+    {
+        const before_len = output.items.len;
+        try rt.appendCjsRuntime(&output, allocator, options.minify_whitespace, options.unsupported.arrow);
+        bundle_line += @intCast(std.mem.count(u8, output.items[before_len..], "\n"));
+    }
+
     // ES5 런타임 헬퍼 주입: dev mode에서는 모듈이 factory 스코프 안에서 실행되므로
     // 헬퍼를 글로벌 스코프(모듈 밖)에 미리 정의해야 한다.
     // unsupported.arrow == true면 ES5 타겟 → 모든 ES5 헬퍼를 무조건 주입.

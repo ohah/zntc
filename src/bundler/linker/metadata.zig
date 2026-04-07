@@ -786,11 +786,18 @@ pub fn buildDevMetadataForAst(
         const resolved_mod = @intFromEnum(rec.resolved);
         const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].path else rec.specifier;
 
+        // CJS 타겟이면 __toESM 래핑 (default/namespace import에서 CJS interop 필요)
+        const is_cjs_target = resolved_mod < self.modules.len and self.modules[resolved_mod].wrap_kind == .cjs;
+
         if (info.namespace_local) |ns_local| {
-            try dev_preamble.writeDevRequire(ns_local, resolved_path, null);
+            // CJS: var ns = __toESM(__zts_require("path"));
+            // ESM: var ns = __zts_require("path");
+            try dev_preamble.writeDevRequireInterop(ns_local, resolved_path, null, is_cjs_target);
         }
         if (info.default_local) |def_local| {
-            try dev_preamble.writeDevRequire(def_local, resolved_path, ".default");
+            // CJS: var def = __toESM(__zts_require("path")).default;
+            // ESM: var def = __zts_require("path").default;
+            try dev_preamble.writeDevRequireInterop(def_local, resolved_path, ".default", is_cjs_target);
         }
         if (info.named_count > 0) {
             const start = info.named_start;
