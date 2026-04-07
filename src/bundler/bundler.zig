@@ -616,6 +616,7 @@ pub const Bundler = struct {
             dev_emit_opts.react_refresh = self.options.react_refresh;
             dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.polyfills = polyfill_entries.items;
+            dev_emit_opts.run_before_main = self.options.run_before_main;
 
             // dev mode: 모든 모듈에 dev_id를 한 번 계산 (ID 일원화)
             for (graph.modules.items) |*m| {

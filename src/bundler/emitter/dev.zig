@@ -225,6 +225,19 @@ pub fn emitDevBundle(
         }
     }
 
+    // run-before-main 실행: InitializeCore 등 entry 전에 실행되어야 하는 모듈
+    for (options.run_before_main) |rbm_path| {
+        for (graph.modules.items) |rbm| {
+            if (std.mem.eql(u8, rbm.path, rbm_path)) {
+                try output.appendSlice(allocator, "__zts_require(\"");
+                try output.appendSlice(allocator, rbm.dev_id);
+                try output.appendSlice(allocator, "\");\n");
+                bundle_line += 1;
+                break;
+            }
+        }
+    }
+
     // entry point 실행: lazy evaluation이므로 명시적으로 require해야 모듈 체인 시작
     for (sorted.items) |m| {
         if (m.is_entry_point) {
