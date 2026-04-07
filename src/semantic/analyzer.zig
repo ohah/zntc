@@ -129,9 +129,12 @@ pub const SemanticAnalyzer = struct {
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
 
+    const PrivateUsage = enum { read, write };
+
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
+        usage: PrivateUsage = .read,
     };
 
     /// private name의 종류 (중복 검사에서 getter+setter 쌍을 허용하기 위해 구분).
@@ -140,6 +143,7 @@ pub const SemanticAnalyzer = struct {
         method,
         getter,
         setter,
+        accessor_pair, // getter+setter 쌍 — read/write 모두 허용
     };
 
     /// private name 선언 정보 (span + kind).
@@ -312,9 +316,10 @@ pub const SemanticAnalyzer = struct {
         var refs = self.class_private_refs.pop() orelse return;
         defer refs.deinit(self.allocator);
 
-        // 참조된 private name이 선언되었는지 확인
+        // 참조된 private name이 선언되었는지 + 사용 컨텍스트가 유효한지 확인
         for (refs.items) |ref| {
-            if (!declared.contains(ref.name)) {
+            const info = declared.get(ref.name);
+            if (info == null) {
                 // 외부 class에 선언되어 있는지 확인 (중첩 class)
                 var found = false;
                 for (self.class_private_declared.items) |outer| {
@@ -326,6 +331,33 @@ pub const SemanticAnalyzer = struct {
                 if (!found) {
                     try self.addPrivateNameError(ref.span, ref.name);
                 }
+                continue;
+            }
+
+            const kind = info.?.kind;
+            switch (kind) {
+                .method => if (ref.usage == .write) {
+                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                        self.allocator,
+                        "Cannot assign to private method '{s}'. A method is not writable.",
+                        .{ref.name},
+                    ));
+                },
+                .getter => if (ref.usage == .write) {
+                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                        self.allocator,
+                        "Cannot set private member '{s}'. It only has a getter.",
+                        .{ref.name},
+                    ));
+                },
+                .setter => if (ref.usage == .read) {
+                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                        self.allocator,
+                        "Cannot read private member '{s}'. It only has a setter.",
+                        .{ref.name},
+                    ));
+                },
+                .field, .accessor_pair => {},
             }
         }
     }
@@ -336,7 +368,7 @@ pub const SemanticAnalyzer = struct {
         var current = &self.class_private_declared.items[self.class_private_declared.items.len - 1];
 
         if (current.get(name)) |existing| {
-            // getter+setter 쌍은 허용 (순서 무관)
+            // getter+setter 쌍은 허용 (순서 무관) — accessor_pair로 업그레이드
             const is_accessor_pair = (existing.kind == .getter and kind == .setter) or
                 (existing.kind == .setter and kind == .getter);
             if (!is_accessor_pair) {
@@ -347,6 +379,9 @@ pub const SemanticAnalyzer = struct {
                 ));
                 return;
             }
+            // getter+setter 쌍 확인됨 → accessor_pair로 업데이트
+            try current.put(name, .{ .span = span, .kind = .accessor_pair });
+            return;
         }
         try current.put(name, .{ .span = span, .kind = kind });
     }
@@ -406,19 +441,42 @@ pub const SemanticAnalyzer = struct {
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
     fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
+        return self.usePrivateNameWithUsage(name, span, .read);
+    }
+
+    /// private name 참조를 usage 정보와 함께 기록한다.
+    fn usePrivateNameWithUsage(self: *SemanticAnalyzer, name: []const u8, span: Span, usage: PrivateUsage) AllocError!void {
         if (self.class_private_refs.items.len == 0) {
             // class 밖에서 private name 참조 → 즉시 에러
             try self.addPrivateNameError(span, name);
             return;
         }
         var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
-        try current.append(self.allocator, .{ .name = name, .span = span });
+        try current.append(self.allocator, .{ .name = name, .span = span, .usage = usage });
     }
 
     /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
     fn inClassScope(self: *const SemanticAnalyzer) bool {
         return self.class_private_declared.items.len > 0;
     }
+
+    /// private_field_expression 노드에서 private name을 추출하고 usage와 함께 기록한다.
+    /// read (.private_field_expression 핸들러), write (assignment LHS, update_expression)에서 공유.
+    fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32, usage: PrivateUsage) AllocError!void {
+        if (self.ast.hasExtra(extra, 1)) {
+            const prop_idx = self.ast.readExtraNode(extra, 1);
+            if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+                const prop_node = self.ast.getNode(prop_idx);
+                if (prop_node.tag == .private_identifier) {
+                    const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
+                    const name = try self.resolvePrivateName(raw);
+                    try self.usePrivateNameWithUsage(name, prop_node.span, usage);
+                }
+            }
+        }
+        try self.visitNode(self.ast.readExtraNode(extra, 0));
+    }
+
 
     // ================================================================
     // 심볼 등록 + 재선언 검증
@@ -903,20 +961,7 @@ pub const SemanticAnalyzer = struct {
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
-                // extra: [object, property, flags]
-                const e = node.data.extra;
-                if (self.ast.hasExtra(e, 1)) {
-                    const prop_idx = self.ast.readExtraNode(e, 1);
-                    if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
-                        const prop_node = self.ast.getNode(prop_idx);
-                        if (prop_node.tag == .private_identifier) {
-                            const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
-                            const name = try self.resolvePrivateName(raw);
-                            try self.usePrivateName(name, prop_node.span);
-                        }
-                    }
-                }
-                try self.visitNode(self.ast.readExtraNode(e, 0));
+                try self.visitPrivateFieldExpr(node.data.extra, .read);
             },
             .computed_member_expression => {
                 // extra: [object, property, flags]
@@ -931,14 +976,16 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 3 < extras.len) {
-                    // key 순회 — computed property ([expr])와 private name (#name) 검출에 필요.
+                    // key 순회 — computed property ([expr])만 순회한다.
                     // non-computed key는 단순한 이름이므로 순회하지 않는다.
                     // 순회하면 identifier_reference로 방문되어 namespace import 이름이
                     // 잘못 resolve되는 버그가 발생한다 (예: fiberRefs 메서드 이름이
                     // `import * as fiberRefs`의 namespace 객체로 치환됨).
+                    // private_identifier key는 collectPrivateNames에서 이미 선언 등록했으므로
+                    // 여기서 방문하면 usePrivateName(.read)가 잘못 호출된다.
                     const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
                     const key_node = self.ast.getNode(key_idx);
-                    if (key_node.tag == .computed_property_key or key_node.tag == .private_identifier) {
+                    if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
                     }
 
@@ -959,14 +1006,16 @@ pub const SemanticAnalyzer = struct {
             },
             .property_definition, .accessor_property => {
                 // extra: [key, init_val, flags, deco_start, deco_len]
-                // key는 computed property([expr])나 private name(#name)일 때만 순회.
+                // key는 computed property([expr])일 때만 순회.
+                // private_identifier key는 collectPrivateNames에서 이미 선언 등록했으므로
+                // 여기서 방문하면 usePrivateName(.read)가 잘못 호출된다.
                 // non-computed key는 단순 이름이므로 순회하면 namespace import가
                 // 잘못 resolve되는 버그가 발생한다.
                 const e = node.data.extra;
                 if (e + 1 < self.ast.extra_data.items.len) {
                     const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                     const key_node = self.ast.getNode(key_idx);
-                    if (key_node.tag == .computed_property_key or key_node.tag == .private_identifier) {
+                    if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
                     }
                     try self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
@@ -999,13 +1048,17 @@ pub const SemanticAnalyzer = struct {
 
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
-                // LHS가 식별자이면 reference count 증가
                 const lhs_idx = node.data.binary.left;
                 if (!self.tryResolveNodeAsRef(lhs_idx)) {
-                    // LHS가 멤버 표현식 등 — 일반 순회
-                    try self.visitNode(lhs_idx);
+                    // LHS가 private_field_expression이면 write usage로 기록
+                    if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len and
+                        self.ast.getNode(lhs_idx).tag == .private_field_expression)
+                    {
+                        try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra, .write);
+                    } else {
+                        try self.visitNode(lhs_idx);
+                    }
                 }
-                // RHS는 항상 순회 (내부에 식별자 참조 등이 있을 수 있음)
                 try self.visitNode(node.data.binary.right);
             },
             .binary_expression,
@@ -1021,13 +1074,20 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(node.data.ternary.c);
             },
             .update_expression => {
-                // ++x, x++ — extra: [operand, operator_and_flags]
+                // ++x, x++ — read+write. extra: [operand, operator_and_flags]
                 const e = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (e < extras.len) {
                     const operand_idx: NodeIndex = @enumFromInt(extras[e]);
                     if (!self.tryResolveNodeAsRef(operand_idx)) {
-                        try self.visitNode(operand_idx);
+                        // ++this.#x는 read+write — write로 기록하여 method/getter-only 에러 감지
+                        if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
+                            self.ast.getNode(operand_idx).tag == .private_field_expression)
+                        {
+                            try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra, .write);
+                        } else {
+                            try self.visitNode(operand_idx);
+                        }
                     }
                 }
             },

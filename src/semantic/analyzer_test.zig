@@ -918,3 +918,135 @@ test "Enum: used in expression after declaration" {
 test "Enum: undefined export still errors" {
     try analyzeHasError("export { Nonexistent };", "not defined");
 }
+
+// ====================================================================
+// Private Name 시맨틱 체크
+// ====================================================================
+
+test "Private: field read/write is allowed" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  #x = 1;
+        \\  test() {
+        \\    console.log(this.#x);
+        \\    this.#x = 2;
+        \\  }
+        \\}
+    );
+}
+
+test "Private: method assignment is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  #method() { return 1; }
+        \\  test() {
+        \\    this.#method = 5;
+        \\  }
+        \\}
+    , "Cannot assign to private method");
+}
+
+test "Private: method read is allowed" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  #method() { return 1; }
+        \\  test() {
+        \\    this.#method();
+        \\  }
+        \\}
+    );
+}
+
+test "Private: getter-only assignment is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  get #x() { return 1; }
+        \\  test() {
+        \\    this.#x = 5;
+        \\  }
+        \\}
+    , "It only has a getter");
+}
+
+test "Private: getter-only read is allowed" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  get #x() { return 1; }
+        \\  test() {
+        \\    console.log(this.#x);
+        \\  }
+        \\}
+    );
+}
+
+test "Private: setter-only read is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  set #x(v) {}
+        \\  test() {
+        \\    console.log(this.#x);
+        \\  }
+        \\}
+    , "It only has a setter");
+}
+
+test "Private: setter-only assignment is allowed" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  set #x(v) {}
+        \\  test() {
+        \\    this.#x = 5;
+        \\  }
+        \\}
+    );
+}
+
+test "Private: getter+setter pair allows read and write" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  get #x() { return 1; }
+        \\  set #x(v) {}
+        \\  test() {
+        \\    console.log(this.#x);
+        \\    this.#x = 5;
+        \\  }
+        \\}
+    );
+}
+
+test "Private: undeclared private name is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  test() {
+        \\    this.#unknown;
+        \\  }
+        \\}
+    , "must be declared");
+}
+
+test "Private: duplicate private field is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  #x = 1;
+        \\  #x = 2;
+        \\}
+    , "has already been declared");
+}
+
+test "Private: update expression on method is error" {
+    try analyzeHasError(
+        \\class C {
+        \\  #method() {}
+        \\  test() { this.#method++; }
+        \\}
+    , "Cannot assign to private method");
+}
+
+test "Private: update expression on field is allowed" {
+    try analyzeNoErrors(
+        \\class C {
+        \\  #x = 1;
+        \\  test() { this.#x++; }
+        \\}
+    );
+}
