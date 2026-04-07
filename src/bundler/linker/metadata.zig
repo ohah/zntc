@@ -800,7 +800,7 @@ pub fn buildDevMetadataForAst(
 
     const cjs_import_preamble = try dev_preamble.toOwned();
 
-    // 3. __zts_exports 할당 생성 (모든 모듈, entry 여부 무관)
+    // 3. exports 할당 생성 (모든 모듈, entry 여부 무관)
     var final_exports: ?[]const u8 = null;
     if (m.export_bindings.len > 0) {
         var buf: std.ArrayList(u8) = .empty;
