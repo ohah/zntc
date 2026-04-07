@@ -118,6 +118,10 @@ pub const EmitOptions = struct {
     run_before_main: []const []const u8 = &.{},
     /// Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환).
     configurable_exports: bool = false,
+    /// preserve-modules: 모듈 1개 = 출력 파일 1개
+    preserve_modules: bool = false,
+    /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
+    preserve_modules_root: ?[]const u8 = null,
 
     pub const PolyfillEntry = struct {
         name: []const u8,

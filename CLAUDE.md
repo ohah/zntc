@@ -55,6 +55,7 @@ zts - < input.ts                # stdin 입력
 zts --bundle <entry.ts>                          # 번들 → stdout
 zts --bundle <entry.ts> -o out.js                # 번들 → 파일
 zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
+zts --bundle <entry.ts> --preserve-modules --outdir dist  # 모듈별 출력 (라이브러리 빌드)
 zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 ```
 
@@ -83,6 +84,8 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --log-level=<level>          로그 레벨 (silent|error|warning|info)
 --charset=utf8               non-ASCII를 이스케이프하지 않음
 --preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
+--preserve-modules           모듈별 개별 파일 출력 (라이브러리 빌드, --outdir 필수)
+--preserve-modules-root=<dir> 출력 디렉토리 구조 기준 경로
 --entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
 --chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
 --asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], [dir]/[name]/[hash]/[ext] 지원)
