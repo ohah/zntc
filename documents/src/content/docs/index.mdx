@@ -1,0 +1,36 @@
+---
+title: ZTS
+description: Zig로 작성한 TypeScript 트랜스파일러 & 번들러
+template: splash
+hero:
+  tagline: 빠르고 가벼운 TypeScript 트랜스파일러 & 번들러
+  actions:
+    - text: 시작하기
+      link: /zts/guides/introduction/
+      icon: right-arrow
+    - text: Playground
+      link: /zts/playground/
+      variant: minimal
+      icon: external
+    - text: GitHub
+      link: https://github.com/ohah/zts
+      variant: minimal
+      icon: github
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid>
+  <Card title="TypeScript/JSX 트랜스파일" icon="seti:typescript">
+    타입 어노테이션, 인터페이스, enum, decorator를 빠르게 스트리핑합니다.
+  </Card>
+  <Card title="번들링" icon="seti:javascript">
+    Tree-shaking, 코드 스플리팅, preserve-modules를 지원하는 프로덕션 번들러.
+  </Card>
+  <Card title="React Native" icon="seti:react">
+    Metro 호환 RN 번들링, Flow 스트리핑, Hermes 바이트코드 호환.
+  </Card>
+  <Card title="플러그인" icon="puzzle">
+    Rollup/Vite 호환 플러그인 시스템. JS/TS로 확장 가능.
+  </Card>
+</CardGrid>
