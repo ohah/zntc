@@ -588,7 +588,6 @@ pub const Bundler = struct {
         // react-refresh/runtime을 resolve → 번들 앞에 주입 → __REACT_REFRESH_RUNTIME__ 전역 등록.
         if (self.options.dev_mode and self.options.react_refresh) blk: {
             const resolve_cache = self.getResolveCache();
-            // 엔트리 파일의 디렉토리를 기준으로 resolve
             const entry_dir = if (self.options.entry_points.len > 0)
                 std.fs.path.dirname(self.options.entry_points[0]) orelse "."
             else
@@ -597,8 +596,14 @@ pub const Bundler = struct {
                 entry_dir,
                 "react-refresh/cjs/react-refresh-runtime.development.js",
                 .require,
-            ) catch break :blk;
-            const resolved_path = resolve_result orelse break :blk;
+            ) catch {
+                std.log.warn("zts: react-refresh not found — HMR will not work. Run: npm install -D react-refresh", .{});
+                break :blk;
+            };
+            const resolved_path = resolve_result orelse {
+                std.log.warn("zts: react-refresh not found — HMR will not work. Run: npm install -D react-refresh", .{});
+                break :blk;
+            };
             const raw = std.fs.cwd().readFileAlloc(self.allocator, resolved_path.path, 1024 * 1024) catch break :blk;
             const wrapped = std.fmt.allocPrint(self.allocator,
                 \\(function(){{
