@@ -22,6 +22,8 @@ export type Target =
   | "es2020"
   | "es2021"
   | "es2022"
+  | "es2024"
+  | "es2025"
   | "esnext";
 
 export type Platform = "browser" | "node" | "neutral" | "react-native";
@@ -162,17 +164,17 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
 // compat.zig의 Feature enum/ESTarget과 동일한 비트 레이아웃
 
 const ES_TARGET_BITS: Record<string, number> = {
-  // ES5: 모든 ES2015+ feature가 unsupported
-  es5: 0x3ffff, // bit 0-17 전부
-  // ES2015: ES2016+ feature가 unsupported
-  es2015: 0x3f800, // bit 11-17
-  es2016: 0x3f000, // bit 12-17
-  es2017: 0x3e000, // bit 13-17
-  es2018: 0x3c000, // bit 14-17
-  es2019: 0x38000, // bit 15-17
-  es2020: 0x30000, // bit 16-17
-  es2021: 0x20000, // bit 17
-  es2022: 0x0,
+  es5: 0x1fffff, // bit 0-20: 모든 feature unsupported
+  es2015: 0x1ff800, // bit 11-20
+  es2016: 0x1ff000, // bit 12-20
+  es2017: 0x1fe000, // bit 13-20
+  es2018: 0x1fc000, // bit 14-20
+  es2019: 0x1f8000, // bit 15-20
+  es2020: 0x1e0000, // bit 17-20
+  es2021: 0x1c0000, // bit 18-20
+  es2022: 0x100000, // bit 20 (using)
+  es2024: 0x100000, // bit 20 (using) — es2022와 동일
+  es2025: 0x0,
   esnext: 0x0,
 };
 
