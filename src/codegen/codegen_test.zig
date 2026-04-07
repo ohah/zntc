@@ -21,4 +21,5 @@ comptime {
     _ = @import("codegen_test/flow.zig");
     _ = @import("codegen_test/engine_jsx.zig");
     _ = @import("codegen_test/private_jsx_advanced.zig");
+    _ = @import("codegen_test/decorator.zig");
 }

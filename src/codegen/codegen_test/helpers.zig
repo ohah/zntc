@@ -234,6 +234,19 @@ pub fn e2eJSXAutomaticTarget(allocator: std.mem.Allocator, source: []const u8, t
     }, .{ .minify_whitespace = true }, ".tsx");
 }
 
+pub fn e2eDecorator(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{
+        .experimental_decorators = true,
+    }, .{ .minify_whitespace = true }, ".ts");
+}
+
+pub fn e2eDecoratorES5(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{
+        .experimental_decorators = true,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    }, .{ .minify_whitespace = true }, ".ts");
+}
+
 pub fn e2eJSXClassicTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
     return e2eFull(allocator, source, .{
         .jsx_transform = true,
