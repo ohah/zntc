@@ -36,3 +36,25 @@ main,
 .right-sidebar-panel {
   padding-inline: 1rem;
 }
+
+/* Monaco Editor: Starlight CSS 충돌 방지
+   Starlight의 .sl-markdown-content 규칙이 Monaco 내부 DOM 요소에
+   margin-top을 주입하여 커서/블록 위치가 어긋나는 문제 차단 */
+.monaco-editor,
+.monaco-editor *,
+.monaco-editor .view-lines,
+.monaco-editor .view-line {
+  line-height: normal !important;
+  font-feature-settings: normal !important;
+  margin-top: 0 !important;
+}
+
+.sl-markdown-content .monaco-editor *,
+.sl-markdown-content .monaco-editor {
+  margin-top: 0 !important;
+}
+
+/* Playground not-content: Starlight markdown 스타일 간섭 최소화 */
+.playground-root {
+  --sl-content-gap-y: 0;
+}

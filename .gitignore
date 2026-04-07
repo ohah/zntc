@@ -21,6 +21,10 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Documents (starlight-typedoc 자동 생성)
+documents/src/content/docs/reference/api/
+documents/dist/
+
 # Build artifacts
 *.o
 check_inferred
