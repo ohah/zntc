@@ -118,10 +118,52 @@ export interface OutputFile {
   path: string;
 }
 
+// ===== Plugin Context API =====
+
+/** Options for {@link PluginContext.emitFile}. */
+export interface EmitFileOptions {
+  /** Output file name (relative to outdir). */
+  fileName: string;
+  /** File contents as a string. */
+  source: string;
+}
+
+/** Module metadata returned by {@link PluginContext.getModuleInfo}. */
+export interface ModuleInfo {
+  /** Resolved module ID (absolute path). */
+  id: string;
+  /** Whether this module is an entry point. */
+  isEntry: boolean;
+  /** List of imported module specifiers. */
+  importedIds: string[];
+}
+
+/** Context object passed to plugin hooks for accessing build utilities. */
+export interface PluginContext {
+  /**
+   * Emit an additional file to the output directory.
+   * Can be called during `generateBundle` or `renderChunk` hooks.
+   */
+  emitFile(options: EmitFileOptions): string;
+
+  /**
+   * Resolve a module specifier using the plugin chain.
+   * Calls other plugins' `resolveId` hooks (skipping the calling plugin to avoid infinite recursion).
+   */
+  resolve(specifier: string, importer?: string): Promise<ResolveResult | null>;
+
+  /**
+   * Get metadata about a module by its resolved ID.
+   * Returns null if the module is not in the graph.
+   */
+  getModuleInfo(id: string): ModuleInfo | null;
+}
+
 /**
  * Plugin interface — compatible with Vite/Rollup plugin conventions.
  *
  * Hooks are called via JSON IPC between the ZTS binary and the Node.js/Bun subprocess.
+ * Each hook receives a {@link PluginContext} as `this`, providing access to build utilities.
  *
  * @example
  * ```ts
@@ -146,6 +188,7 @@ export interface Plugin {
    * Return `null` to defer to the next plugin or default resolution.
    */
   resolveId?(
+    this: PluginContext,
     source: string,
     importer: string,
   ): Promise<ResolveResult | string | null> | ResolveResult | string | null;
@@ -153,12 +196,16 @@ export interface Plugin {
    * Load the contents of a module by its resolved path.
    * Return `null` to defer to the next plugin or default loading.
    */
-  load?(id: string): Promise<LoadResult | string | null> | LoadResult | string | null;
+  load?(
+    this: PluginContext,
+    id: string,
+  ): Promise<LoadResult | string | null> | LoadResult | string | null;
   /**
    * Transform the source code of a module after loading.
    * Plugins are chained: each plugin receives the previous plugin's output.
    */
   transform?(
+    this: PluginContext,
     code: string,
     id: string,
   ): Promise<LoadResult | string | null> | LoadResult | string | null;
@@ -167,11 +214,12 @@ export interface Plugin {
    * Plugins are chained like `transform`.
    */
   renderChunk?(
+    this: PluginContext,
     code: string,
     chunkName: string,
   ): Promise<LoadResult | string | null> | LoadResult | string | null;
   /** Called after all chunks have been generated. Use for side effects like writing extra files. */
-  generateBundle?(outputs: OutputFile[]): Promise<void> | void;
+  generateBundle?(this: PluginContext, outputs: OutputFile[]): Promise<void> | void;
 }
 
 /** Dev server configuration. */
@@ -305,10 +353,49 @@ interface IpcResponse {
 class PluginHost {
   private plugins: Plugin[];
   private config: ZtsConfig;
+  /** Files emitted by plugins via emitFile(). Written after generateBundle. */
+  emittedFiles: EmitFileOptions[] = [];
+  /** Module info cache populated during build. */
+  moduleInfoMap: Map<string, ModuleInfo> = new Map();
 
   constructor(config: ZtsConfig) {
     this.plugins = config.plugins || [];
     this.config = config;
+  }
+
+  /**
+   * Create a PluginContext for a specific plugin.
+   * The context skips the current plugin in resolve() to prevent infinite recursion.
+   */
+  private createContext(currentPluginIndex: number): PluginContext {
+    return {
+      emitFile: (options: EmitFileOptions): string => {
+        this.emittedFiles.push(options);
+        return options.fileName;
+      },
+
+      resolve: async (specifier: string, importer?: string): Promise<ResolveResult | null> => {
+        // Call other plugins' resolveId hooks (skip current plugin to avoid infinite recursion)
+        for (let i = 0; i < this.plugins.length; i++) {
+          if (i === currentPluginIndex) continue;
+          const plugin = this.plugins[i];
+          if (!plugin.resolveId) continue;
+          try {
+            const ctx = this.createContext(i);
+            const result = await plugin.resolveId.call(ctx, specifier, importer || "");
+            if (result == null) continue;
+            return typeof result === "string" ? { path: result } : result;
+          } catch {
+            continue;
+          }
+        }
+        return null;
+      },
+
+      getModuleInfo: (id: string): ModuleInfo | null => {
+        return this.moduleInfoMap.get(id) || null;
+      },
+    };
   }
 
   getFilters(): Record<string, string[]> {
@@ -360,10 +447,12 @@ class PluginHost {
   }
 
   private async runResolveId(msg: IpcMessage): Promise<IpcResponse> {
-    for (const plugin of this.plugins) {
+    for (let i = 0; i < this.plugins.length; i++) {
+      const plugin = this.plugins[i];
       if (!plugin.resolveId) continue;
       try {
-        const result = await plugin.resolveId(msg.specifier!, msg.importer!);
+        const ctx = this.createContext(i);
+        const result = await plugin.resolveId.call(ctx, msg.specifier!, msg.importer!);
         if (result == null) continue;
         const resolved = typeof result === "string" ? { path: result } : result;
         return { id: msg.id, result: resolved, error: null };
@@ -375,10 +464,12 @@ class PluginHost {
   }
 
   private async runLoad(msg: IpcMessage): Promise<IpcResponse> {
-    for (const plugin of this.plugins) {
+    for (let i = 0; i < this.plugins.length; i++) {
+      const plugin = this.plugins[i];
       if (!plugin.load) continue;
       try {
-        const result = await plugin.load(msg.path!);
+        const ctx = this.createContext(i);
+        const result = await plugin.load.call(ctx, msg.path!);
         if (result == null) continue;
         const loaded = typeof result === "string" ? { contents: result } : result;
         return { id: msg.id, result: loaded, error: null };
@@ -406,11 +497,13 @@ class PluginHost {
     let currentCode = initialCode;
     let changed = false;
 
-    for (const plugin of this.plugins) {
+    for (let i = 0; i < this.plugins.length; i++) {
+      const plugin = this.plugins[i];
       const hookFn = plugin[hookName];
       if (!hookFn) continue;
       try {
-        const result = await hookFn.call(plugin, currentCode, key);
+        const ctx = this.createContext(i);
+        const result = await hookFn.call(ctx, currentCode, key);
         if (result == null) continue;
         const code = typeof result === "string" ? result : result.contents;
         if (code != null) {
@@ -428,15 +521,34 @@ class PluginHost {
   }
 
   private async runGenerateBundle(msg: IpcMessage): Promise<IpcResponse> {
-    for (const plugin of this.plugins) {
+    // Populate module info cache from outputs
+    if (msg.outputs) {
+      for (const output of msg.outputs) {
+        this.moduleInfoMap.set(output.path, {
+          id: output.path,
+          isEntry: false,
+          importedIds: [],
+        });
+      }
+    }
+
+    // Reset emitted files for this generateBundle run
+    this.emittedFiles = [];
+
+    for (let i = 0; i < this.plugins.length; i++) {
+      const plugin = this.plugins[i];
       if (!plugin.generateBundle) continue;
       try {
-        await plugin.generateBundle(msg.outputs || []);
+        const ctx = this.createContext(i);
+        await plugin.generateBundle.call(ctx, msg.outputs || []);
       } catch (err) {
         return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
       }
     }
-    return { id: msg.id, result: null, error: null };
+
+    // Include emitted files in the response so Zig can write them
+    const result = this.emittedFiles.length > 0 ? { emittedFiles: this.emittedFiles } : null;
+    return { id: msg.id, result, error: null };
   }
 }
 

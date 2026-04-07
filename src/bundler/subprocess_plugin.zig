@@ -482,7 +482,58 @@ pub const SubprocessPlugin = struct {
         }
         fields_buf.append(self.allocator, ']') catch return;
 
-        _ = self.sendAndReceive(self.allocator, "generateBundle", fields_buf.items) catch return;
+        const response = self.sendAndReceive(self.allocator, "generateBundle", fields_buf.items) catch return;
+        defer self.allocator.free(response);
+
+        // Parse response to check for emitted files from plugins
+        const parsed = std.json.parseFromSlice(GenerateBundleResponse, self.allocator, response, .{
+            .ignore_unknown_fields = true,
+        }) catch return;
+        defer parsed.deinit();
+
+        if (parsed.value.@"error") |err_msg| {
+            self.reportError("generateBundle", "bundle", err_msg);
+            return;
+        }
+
+        // Write emitted files to disk (relative to outdir of the first output file)
+        if (parsed.value.result) |result| {
+            const emitted = result.emittedFiles orelse return;
+            if (emitted.len == 0) return;
+
+            // Determine outdir from the first output file's parent directory
+            const outdir: ?[]const u8 = if (output_files.len > 0) blk: {
+                if (std.fs.path.dirname(output_files[0].path)) |dir| break :blk dir;
+                break :blk null;
+            } else null;
+
+            for (emitted) |file| {
+                const file_name = file.fileName orelse continue;
+                const source = file.source orelse continue;
+
+                // Build the full output path
+                const full_path = if (outdir) |dir|
+                    std.fs.path.join(self.allocator, &.{ dir, file_name }) catch continue
+                else
+                    self.allocator.dupe(u8, file_name) catch continue;
+                defer self.allocator.free(full_path);
+
+                // Ensure parent directory exists
+                if (std.fs.path.dirname(full_path)) |parent| {
+                    std.fs.cwd().makePath(parent) catch {};
+                }
+
+                // Write the file
+                const file_handle = std.fs.cwd().createFile(full_path, .{}) catch {
+                    self.reportError("emitFile", file_name, "failed to create file");
+                    continue;
+                };
+                defer file_handle.close();
+                file_handle.writeAll(source) catch {
+                    self.reportError("emitFile", file_name, "failed to write file");
+                };
+            }
+        }
     }
 
     inline fn getSelf(ctx: ?*anyopaque) *SubprocessPlugin {
@@ -580,6 +631,22 @@ const HookResponse = struct {
         path: ?[]const u8 = null,
         contents: ?[]const u8 = null,
         loader: ?[]const u8 = null,
+    };
+};
+
+/// generateBundle 훅 응답 — emittedFiles 포함 가능
+const GenerateBundleResponse = struct {
+    id: u32 = 0,
+    result: ?GenerateBundleResult = null,
+    @"error": ?[]const u8 = null,
+
+    const GenerateBundleResult = struct {
+        emittedFiles: ?[]const EmittedFile = null,
+    };
+
+    const EmittedFile = struct {
+        fileName: ?[]const u8 = null,
+        source: ?[]const u8 = null,
     };
 };
 
