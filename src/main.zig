@@ -106,6 +106,32 @@ const CliOptions = struct {
     main_fields_list: std.ArrayList([]const u8) = .empty,
     /// React Native 서브 플랫폼 (--rn-platform=ios|android)
     rn_platform: RnPlatform = .none,
+    /// --outbase: 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정)
+    outbase: ?[]const u8 = null,
+    /// --packages=external: 모든 bare import를 external 처리
+    packages_external: bool = false,
+    /// --allow-overwrite: 출력 파일이 입력 파일을 덮어쓰는 것을 허용
+    allow_overwrite: bool = false,
+    /// --log-limit=N: 최대 에러/경고 출력 수 (0=무제한, 기본 0)
+    log_limit: u32 = 0,
+    /// --line-limit=N: 줄 길이 제한 (0=무제한)
+    line_limit: u32 = 0,
+    /// --jsx-side-effects: 미사용 JSX 표현식을 tree-shake하지 않음
+    jsx_side_effects: bool = false,
+    /// --ignore-annotations: @__PURE__, sideEffects 등 어노테이션 무시
+    ignore_annotations: bool = false,
+    /// --drop-labels=LABEL,...: 지정한 라벨의 labeled statement 제거
+    drop_labels_list: std.ArrayList([]const u8) = .empty,
+    /// --pure:NAME: 지정한 함수 호출을 순수(pure)로 마킹 (tree-shake 가능)
+    pure_list: std.ArrayList([]const u8) = .empty,
+    /// --tsconfig-raw=JSON: tsconfig.json을 인라인 JSON으로 오버라이드
+    tsconfig_raw: ?[]const u8 = null,
+    /// --node-paths=PATH,...: NODE_PATH 추가 탐색 경로
+    node_paths_list: std.ArrayList([]const u8) = .empty,
+    /// --watch-delay=MS: watch 리빌드 디바운스 지연 (밀리초)
+    watch_delay_ms: u32 = 100,
+    /// --clean: 빌드 전 출력 디렉토리 정리
+    clean: bool = false,
 
     const RnPlatform = enum {
         none,
@@ -144,6 +170,9 @@ const CliOptions = struct {
         self.proxy_list.deinit(alloc);
         self.resolve_extensions_list.deinit(alloc);
         self.main_fields_list.deinit(alloc);
+        self.drop_labels_list.deinit(alloc);
+        self.pure_list.deinit(alloc);
+        self.node_paths_list.deinit(alloc);
     }
 };
 
@@ -459,6 +488,53 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.keep_names = true;
         } else if (std.mem.eql(u8, arg, "--shim-missing-exports")) {
             opts.shim_missing_exports = true;
+        } else if (std.mem.startsWith(u8, arg, "--outbase=")) {
+            opts.outbase = arg["--outbase=".len..];
+        } else if (std.mem.eql(u8, arg, "--packages=external")) {
+            opts.packages_external = true;
+        } else if (std.mem.eql(u8, arg, "--allow-overwrite")) {
+            opts.allow_overwrite = true;
+        } else if (std.mem.startsWith(u8, arg, "--log-limit=")) {
+            const val = arg["--log-limit=".len..];
+            opts.log_limit = std.fmt.parseInt(u32, val, 10) catch {
+                try stderr.print("zts: --log-limit requires a number: {s}\n", .{val});
+                return null;
+            };
+        } else if (std.mem.startsWith(u8, arg, "--line-limit=")) {
+            const val = arg["--line-limit=".len..];
+            opts.line_limit = std.fmt.parseInt(u32, val, 10) catch {
+                try stderr.print("zts: --line-limit requires a number: {s}\n", .{val});
+                return null;
+            };
+        } else if (std.mem.eql(u8, arg, "--jsx-side-effects")) {
+            opts.jsx_side_effects = true;
+        } else if (std.mem.eql(u8, arg, "--ignore-annotations")) {
+            opts.ignore_annotations = true;
+        } else if (std.mem.startsWith(u8, arg, "--drop-labels=")) {
+            const val = arg["--drop-labels=".len..];
+            var label_iter = std.mem.splitScalar(u8, val, ',');
+            while (label_iter.next()) |label| {
+                if (label.len > 0) try opts.drop_labels_list.append(allocator, label);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--pure:")) {
+            const name = arg["--pure:".len..];
+            if (name.len > 0) try opts.pure_list.append(allocator, name);
+        } else if (std.mem.startsWith(u8, arg, "--tsconfig-raw=")) {
+            opts.tsconfig_raw = arg["--tsconfig-raw=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--node-paths=")) {
+            const val = arg["--node-paths=".len..];
+            var path_iter = std.mem.splitScalar(u8, val, ',');
+            while (path_iter.next()) |p| {
+                if (p.len > 0) try opts.node_paths_list.append(allocator, p);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--watch-delay=")) {
+            const val = arg["--watch-delay=".len..];
+            opts.watch_delay_ms = std.fmt.parseInt(u32, val, 10) catch {
+                try stderr.print("zts: --watch-delay requires a number (ms): {s}\n", .{val});
+                return null;
+            };
+        } else if (std.mem.eql(u8, arg, "--clean")) {
+            opts.clean = true;
         } else if (std.mem.eql(u8, arg, "--plugin")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1169,6 +1245,15 @@ pub fn main() !void {
             .sourcemap = opts.sourcemap,
             .sourcemap_debug_ids = opts.sourcemap_debug_ids,
             .output_filename = if (opts.output_file) |of| std.fs.path.basename(of) else "bundle.js",
+            .outbase = opts.outbase,
+            .packages_external = opts.packages_external,
+            .ignore_annotations = opts.ignore_annotations,
+            .jsx_side_effects = opts.jsx_side_effects,
+            .drop_labels = opts.drop_labels_list.items,
+            .pure = opts.pure_list.items,
+            .tsconfig_raw = opts.tsconfig_raw,
+            .node_paths = opts.node_paths_list.items,
+            .line_limit = opts.line_limit,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -1317,6 +1402,8 @@ pub fn main() !void {
                 .alias = bundle_opts.alias,
                 .resolve_extensions = bundle_opts.resolve_extensions,
                 .main_fields = bundle_opts.main_fields,
+                .packages_external = bundle_opts.packages_external,
+                .node_paths = bundle_opts.node_paths,
             });
             defer persistent_resolve_cache.deinit();
 

@@ -46,6 +46,7 @@ pub const ResolveCache = struct {
     cache: std.StringHashMap(CachedResult),
     external_patterns: []const []const u8,
     platform: Platform,
+    packages_external: bool = false,
     /// 병렬 resolve 시 캐시 접근 보호용 mutex.
     cache_mutex: std.Thread.Mutex = .{},
 
@@ -118,6 +119,10 @@ pub const ResolveCache = struct {
         alias: []const resolver_mod.AliasEntry = &.{},
         resolve_extensions: []const []const u8 = &.{},
         main_fields: []const []const u8 = &.{},
+        /// --packages=external: 모든 bare import를 external 처리
+        packages_external: bool = false,
+        /// --node-paths: NODE_PATH 추가 탐색 경로
+        node_paths: []const []const u8 = &.{},
     };
 
     pub fn init(
@@ -150,6 +155,7 @@ pub const ResolveCache = struct {
             .cache = std.StringHashMap(CachedResult).init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
+            .packages_external = options.packages_external,
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
             .browser_disabled_cache = std.StringHashMap(?BrowserDisabledSet).init(allocator),
             .conditions_import = cond_import,
@@ -427,6 +433,9 @@ pub const ResolveCache = struct {
 
         // node: 프리픽스는 platform과 무관하게 항상 external
         if (std.mem.startsWith(u8, specifier, "node:")) return true;
+
+        // --packages=external: 모든 bare import를 external 처리
+        if (self.packages_external and !resolver_mod.isRelativeOrAbsolute(specifier)) return true;
 
         // 사용자 지정 external 패턴
         for (self.external_patterns) |pattern| {
