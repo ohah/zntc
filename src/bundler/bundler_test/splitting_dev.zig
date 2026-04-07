@@ -1425,6 +1425,127 @@ test "Bundler: dev mode refresh registration" {
     try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") == null);
 }
 
+test "Bundler: dev mode ES5 runtime helpers injected globally" {
+    // ES5 타겟 dev mode에서 __classCallCheck 등 헬퍼가 글로벌 스코프에 주입되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "App.ts", "class App { constructor() { this.x = 1; } };\nexport default App;");
+
+    const entry = try absPath(&tmp, "App.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .unsupported = .{ .class = true, .arrow = true },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // ES5 런타임 헬퍼가 번들에 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "__classCallCheck") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__callSuper") != null);
+    // 헬퍼가 __zts_register 밖 (글로벌 스코프)에 정의되어야 함
+    // → __classCallCheck 정의가 첫 번째 __zts_register 호출보다 앞에 있는지
+    const helper_pos = std.mem.indexOf(u8, output, "var __classCallCheck") orelse return error.TestUnexpectedResult;
+    const register_pos = std.mem.indexOf(u8, output, "__zts_register(\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(helper_pos < register_pos);
+}
+
+test "Bundler: dev mode factory receives module/exports/require" {
+    // factory 파라미터가 (module, exports, require)인지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // factory 시그니처에 module, exports, require 파라미터
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function(module, exports, require)") != null);
+}
+
+test "Bundler: dev mode dependency map for CJS require resolve" {
+    // CJS require()가 dependency map으로 resolved 경로를 찾을 수 있는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const add = (a, b) => a + b;");
+    try writeFile(tmp.dir, "index.ts", "import { add } from './util';\nconsole.log(add(1, 2));");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __zts_register("...", {...dep_map...}, function(...)) 형식
+    // dep_map에 "./util" → resolved path 매핑이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./util\"") != null);
+}
+
+test "Bundler: dev mode collect_module_codes opt-in" {
+    // collect_module_codes=false(기본값)이면 module_dev_codes가 비어있고
+    // true면 수집됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    // 기본값: collect 안 함
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .dev_mode = true,
+        });
+        defer b.deinit();
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        // module_dev_codes가 비어있거나 null
+        if (result.module_dev_codes) |codes| {
+            try std.testing.expectEqual(@as(usize, 0), codes.len);
+        }
+    }
+
+    // collect_module_codes=true
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .dev_mode = true,
+            .collect_module_codes = true,
+        });
+        defer b.deinit();
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+        const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+        try std.testing.expect(codes.len > 0);
+    }
+}
+
 test "Profile: pipeline stage timing (dev only, not for CI)" {
     // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
     const alloc = std.testing.allocator;

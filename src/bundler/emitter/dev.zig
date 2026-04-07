@@ -13,6 +13,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
+const RuntimeHelpers = @import("../../transformer/transformer.zig").RuntimeHelpers;
 const Codegen = @import("../../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
@@ -97,6 +98,26 @@ pub fn emitDevBundle(
         try output.appendSlice(allocator, rt.HMR_RUNTIME_MIN);
     } else {
         try output.appendSlice(allocator, rt.HMR_RUNTIME);
+    }
+
+    // ES5 런타임 헬퍼 주입: dev mode에서는 모듈이 factory 스코프 안에서 실행되므로
+    // 헬퍼를 글로벌 스코프(모듈 밖)에 미리 정의해야 한다.
+    // unsupported.arrow == true면 ES5 타겟 → 모든 ES5 헬퍼를 무조건 주입.
+    if (options.unsupported.arrow or options.unsupported.class) {
+        const all_helpers: RuntimeHelpers = .{
+            .class_call_check = true,
+            .call_super = true,
+            .extends = true,
+            .async_helper = true,
+            .generator = true,
+            .rest = true,
+            .spread_array = true,
+            .values = true,
+            .tagged_template_literal = true,
+        };
+        const before_len = output.items.len;
+        try rt.appendRuntimeHelpers(&output, allocator, all_helpers, options.minify_whitespace, options.unsupported.arrow);
+        bundle_line += @intCast(std.mem.count(u8, output.items[before_len..], "\n"));
     }
 
     // per-module codes 수집 (한 번의 transform 패스에서 동시 생성)
@@ -297,6 +318,8 @@ pub const DevModuleEmitResult = struct {
     mappings: ?[]const SourceMap.Mapping = null,
     /// preamble(cjs_import_preamble 등)으로 인한 줄 오프셋.
     preamble_lines: u32 = 0,
+    /// 이 모듈이 사용하는 런타임 헬퍼 플래그 (ES5 등)
+    helpers: RuntimeHelpers = .{},
 };
 
 /// Dev mode용 단일 모듈 변환.
@@ -403,6 +426,7 @@ pub fn emitDevModule(
         .code = final_code,
         .mappings = mappings,
         .preamble_lines = preamble_line_count,
+        .helpers = transformer.runtime_helpers,
     };
 }
 
