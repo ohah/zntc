@@ -1556,7 +1556,9 @@ pub fn main() !void {
             defer persistent_store.deinit();
 
             // dev mode: per-module code 캐시 (HMR diff용)
+            // 첫 rebuild에서는 캐시가 비어있으므로 diff 스킵 → 캐시만 채움.
             var module_code_cache = std.StringHashMap([]const u8).init(allocator);
+            var is_first_rebuild = true;
             defer {
                 var it = module_code_cache.iterator();
                 while (it.next()) |entry| {
@@ -1725,34 +1727,61 @@ pub fn main() !void {
 
                     // --dev 모드: 캐시 대비 diff → 변경된 모듈만 updates로 출력
                     if (rebuild_result.module_dev_codes) |dev_codes| {
-                        // diff: 캐시와 비교하여 변경된 모듈만 수집
-                        var changed_count: usize = 0;
-                        for (dev_codes) |dc| {
-                            const cached = module_code_cache.get(dc.id);
-                            if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
-                                changed_count += 1;
-                            }
-                        }
-
-                        if (changed_count > 0) {
-                            try stdout.print(",\"updates\":[", .{});
-                            var first = true;
+                        if (is_first_rebuild) {
+                            // 첫 rebuild: 캐시 없으므로 diff 불가. 캐시만 채우고 full reload.
+                            try stdout.print(",\"graph_changed\":true", .{});
+                        } else {
+                            // diff: 캐시와 비교하여 변경된 모듈만 수집
+                            var changed_count: usize = 0;
                             for (dev_codes) |dc| {
                                 const cached = module_code_cache.get(dc.id);
                                 if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
-                                    if (!first) try stdout.print(",", .{});
-                                    first = false;
-                                    try stdout.print("{{\"id\":", .{});
-                                    try writeJsonString(stdout, dc.id);
-                                    try stdout.print(",\"code\":", .{});
-                                    try writeJsonString(stdout, dc.code);
-                                    try stdout.print("}}", .{});
+                                    changed_count += 1;
                                 }
                             }
-                            try stdout.print("]", .{});
-                        } else {
-                            // 코드 변경 없음 → 그래프 변경 (새 import 추가 등)
-                            try stdout.print(",\"graph_changed\":true", .{});
+
+                            if (changed_count > 0) {
+                                try stdout.print(",\"updates\":[", .{});
+                                var first = true;
+                                for (dev_codes) |dc| {
+                                    const cached = module_code_cache.get(dc.id);
+                                    if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                                        if (!first) try stdout.print(",", .{});
+                                        first = false;
+                                        try stdout.print("{{\"id\":", .{});
+                                        try writeJsonString(stdout, dc.id);
+                                        try stdout.print(",\"code\":", .{});
+                                        try writeJsonString(stdout, dc.code);
+                                        try stdout.print("}}", .{});
+                                    }
+                                }
+                                try stdout.print("]", .{});
+                            } else {
+                                // 코드 변경 없음 → 그래프 변경 (새 import 추가 등)
+                                try stdout.print(",\"graph_changed\":true", .{});
+                            }
+                        }
+                        is_first_rebuild = false;
+
+                        // 캐시 업데이트
+                        {
+                            var it = module_code_cache.iterator();
+                            while (it.next()) |entry| {
+                                allocator.free(entry.key_ptr.*);
+                                allocator.free(entry.value_ptr.*);
+                            }
+                            module_code_cache.clearRetainingCapacity();
+                        }
+                        for (dev_codes) |dc| {
+                            const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                            const code_copy = allocator.dupe(u8, dc.code) catch {
+                                allocator.free(id_copy);
+                                continue;
+                            };
+                            module_code_cache.put(id_copy, code_copy) catch {
+                                allocator.free(id_copy);
+                                allocator.free(code_copy);
+                            };
                         }
 
                         // 캐시 업데이트
