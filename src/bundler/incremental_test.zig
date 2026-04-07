@@ -81,6 +81,7 @@ test "IncrementalBundler: detects code change in modified file" {
     var ib = IncrementalBundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .dev_mode = true,
+        .collect_module_codes = true,
     });
     defer ib.deinit();
 
