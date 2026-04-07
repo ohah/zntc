@@ -95,18 +95,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
     const var_decl = try self.buildRefreshVarDeclaration();
     try self.scratch.append(self.allocator, var_decl);
 
-    // var _s = $RefreshSig$(); 선언들
-    const refresh_sig_span = try self.ast.addString("$RefreshSig$");
-    for (self.refresh_signatures.items) |sig| {
-        const sig_decl = try self.buildRefreshSigDeclaration(sig, refresh_sig_span);
-        try self.scratch.append(self.allocator, sig_decl);
-    }
-
-    // _s(Component, "signature"); 호출들
-    for (self.refresh_signatures.items) |sig| {
-        const sig_call = try self.buildRefreshSigCall(sig);
-        try self.scratch.append(self.allocator, sig_call);
-    }
+    // $RefreshSig$ 스캔 제거 — Metro/롤리팝 방식. hook signature 없이 $RefreshReg$만 주입.
 
     // $RefreshReg$(_c, "ComponentName"); 호출들
     const refresh_reg_span = try self.ast.addString("$RefreshReg$");
@@ -345,9 +334,22 @@ pub fn scanHookSignature(self: *Transformer, func_body_idx: NodeIndex) Error!?[]
 /// Hook 호출을 찾아 시그니처 버퍼에 추가한다 (파서 노드 영역 기준).
 /// binding_ctx: 부모 variable_declarator의 LHS 바인딩 텍스트 (null이면 없음).
 pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8), binding_ctx: ?[]const u8) Error!void {
+    // 깊이 제한 버전으로 위임 (transform 후 stale AST 인덱스 방어)
+    return self.findHookCallsInNodeDepth(idx, sig_buf, binding_ctx, 0);
+}
+
+pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8), binding_ctx: ?[]const u8, depth: u32) Error!void {
     if (idx.isNone()) return;
     if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    // 깊이 제한: 함수 body는 보통 수십 단계. 50 이상이면 stale 인덱스 순환.
+    if (depth > 50) return;
     const node = self.ast.getNode(idx);
+    // 알려진 탐색 대상만 처리 — 그 외 노드는 즉시 반환 (stale 인덱스 방어)
+    switch (node.tag) {
+        .call_expression, .expression_statement, .variable_declaration, .variable_declarator, .block_statement => {},
+        .function_declaration, .function_expression, .arrow_function_expression => return,
+        else => return,
+    }
 
     // call_expression에서 Hook 호출 감지
     if (node.tag == .call_expression) {
@@ -407,15 +409,9 @@ pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.Arr
         return;
     }
 
-    // 중첩 함수는 스킵
-    switch (node.tag) {
-        .function_declaration, .function_expression, .arrow_function_expression => return,
-        else => {},
-    }
-
     // expression_statement → 내부 expression 탐색
     if (node.tag == .expression_statement) {
-        try self.findHookCallsInNode(node.data.unary.operand, sig_buf, null);
+        try self.findHookCallsInNodeDepth(node.data.unary.operand, sig_buf, null, depth + 1);
         return;
     }
 
@@ -428,7 +424,7 @@ pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.Arr
             if (list_start + list_len <= self.ast.extra_data.items.len) {
                 const items = self.ast.extra_data.items[list_start .. list_start + list_len];
                 for (items) |raw| {
-                    try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
+                    try self.findHookCallsInNodeDepth(@enumFromInt(raw), sig_buf, null, depth + 1);
                 }
             }
         }
@@ -450,7 +446,7 @@ pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.Arr
             }
 
             const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-            try self.findHookCallsInNode(init_idx, sig_buf, lhs_text);
+            try self.findHookCallsInNodeDepth(init_idx, sig_buf, lhs_text, depth + 1);
         }
         return;
     }
@@ -461,7 +457,7 @@ pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.Arr
         if (l.len > 0 and l.start + l.len <= self.ast.extra_data.items.len) {
             const items = self.ast.extra_data.items[l.start .. l.start + l.len];
             for (items) |raw| {
-                try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
+                try self.findHookCallsInNodeDepth(@enumFromInt(raw), sig_buf, null, depth + 1);
             }
         }
     }

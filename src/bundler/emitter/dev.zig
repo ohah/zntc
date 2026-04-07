@@ -132,11 +132,13 @@ pub fn emitDevBundle(
         const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, options.minify_whitespace);
         errdefer allocator.free(wrapped);
 
-        // per-module code 저장
-        try module_codes.append(allocator, .{
-            .id = try allocator.dupe(u8, module_id),
-            .code = try allocator.dupe(u8, wrapped),
-        });
+        // per-module code 저장 (collect_module_codes=true일 때만, 메모리 절감)
+        if (options.collect_module_codes) {
+            try module_codes.append(allocator, .{
+                .id = try allocator.dupe(u8, module_id),
+                .code = try allocator.dupe(u8, wrapped),
+            });
+        }
 
         // 번들에 추가
         if (!options.minify_whitespace) {
@@ -205,7 +207,7 @@ pub fn emitDevBundle(
 
     return .{
         .output = try output.toOwnedSlice(allocator),
-        .module_codes = try module_codes.toOwnedSlice(allocator),
+        .module_codes = if (options.collect_module_codes) try module_codes.toOwnedSlice(allocator) else &.{},
         .sourcemap = sourcemap_json,
     };
 }

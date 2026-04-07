@@ -49,6 +49,8 @@ pub const BundleOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
+    collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환 (--experimental-decorators / tsconfig)
@@ -612,6 +614,7 @@ pub const Bundler = struct {
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.root_dir = self.options.root_dir;
             dev_emit_opts.react_refresh = self.options.react_refresh;
+            dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.polyfills = polyfill_entries.items;
             const dev_result = try emitter.emitDevBundle(
                 self.allocator,
