@@ -131,6 +131,42 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 
+    // ─── WASM 빌드 ───
+    // `zig build wasm` — wasm32-wasi 타겟으로 트랜스파일 전용 WASM 모듈을 빌드한다.
+    // packages/wasm/src/wasm_entry.zig가 진입점이며, transpile 함수만 export한다.
+    {
+        const wasm_target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .wasi,
+        });
+
+        const wasm_lib_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        });
+
+        const wasm_mod = b.createModule(.{
+            .root_source_file = b.path("packages/wasm/src/wasm_entry.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        });
+        wasm_mod.addImport("zts_lib", wasm_lib_mod);
+
+        const wasm_exe = b.addExecutable(.{
+            .name = "zts",
+            .root_module = wasm_mod,
+        });
+        // export fn 심볼을 동적 심볼 테이블에 노출
+        wasm_exe.rdynamic = true;
+        // 라이브러리 모드: 엔트리포인트 없이 export 함수만 노출
+        wasm_exe.entry = .disabled;
+
+        const wasm_install = b.addInstallArtifact(wasm_exe, .{});
+        const wasm_step = b.step("wasm", "Build WASM module (wasm32-wasi)");
+        wasm_step.dependOn(&wasm_install.step);
+    }
+
     // Test262 러너 테스트 (유닛 테스트)
     // lib_mod에 이미 test262가 포함되어 있으므로 같은 모듈로 테스트.
     const test262_step = b.step("test262", "Run Test262 runner unit tests");
