@@ -534,15 +534,13 @@ pub const Bundler = struct {
         }
 
         // 2. 링킹 (scope hoisting)
-        // dev_mode: link()만 실행 (import→export 바인딩 해석), rename은 스킵.
-        //           dev mode는 모듈별 스코프 유지이므로 변수 이름 충돌 해결 불필요.
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
             try l.link();
-            if (!self.options.dev_mode and !self.options.code_splitting) {
+            if (!self.options.code_splitting) {
                 try l.computeRenames();
                 if (self.options.minify_identifiers) {
                     try l.computeMangling();
@@ -603,35 +601,35 @@ pub const Bundler = struct {
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
 
-        // dev mode용 per-module codes + sourcemap (emitDevBundle에서 한 번의 패스로 생성)
-        var module_dev_codes_from_emit: ?[]const emitter.DevBundleResult.ModuleDevCode = null;
+        // dev mode용 per-module codes + sourcemap
+        // TODO(HMR): module_dev_codes 수집은 HMR 재구현 시 추가
+        const module_dev_codes_from_emit: ?[]const emitter.DevBundleResult.ModuleDevCode = null;
         var dev_sourcemap: ?[]const u8 = null;
 
         if (self.options.dev_mode) {
-            // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes + 소스맵 동시 생성
+            // Dev mode: 프로덕션 파이프라인 재사용 (scope-hoisted, __commonJS/__esm 래핑).
             var dev_emit_opts = self.makeEmitOptions();
-            dev_emit_opts.sourcemap = true; // dev mode에서는 항상 소스맵 생성
+            dev_emit_opts.sourcemap = true;
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.root_dir = self.options.root_dir;
             dev_emit_opts.react_refresh = self.options.react_refresh;
-            dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.polyfills = polyfill_entries.items;
             dev_emit_opts.run_before_main = self.options.run_before_main;
 
-            // dev mode: 모든 모듈에 dev_id를 한 번 계산 (ID 일원화)
+            // TODO(HMR): dev_id는 HMR per-module 식별용. 현재는 미사용.
             for (graph.modules.items) |*m| {
                 m.dev_id = emitter.makeModuleId(m.path, self.options.root_dir);
             }
 
-            const dev_result = try emitter.emitDevBundle(
+            const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
                 dev_emit_opts,
                 if (linker) |*l| l else null,
+                null, // dev mode: tree-shaking 비활성
             );
-            output = dev_result.output;
-            module_dev_codes_from_emit = dev_result.module_codes;
-            dev_sourcemap = dev_result.sourcemap;
+            output = emit_result.output;
+            dev_sourcemap = emit_result.sourcemap;
         } else if (self.options.code_splitting or self.options.preserve_modules) {
             // Code splitting / preserve-modules 경로: 청크 그래프 생성 → 다중 파일 출력
             var chunk_graph = if (self.options.preserve_modules)
@@ -784,10 +782,9 @@ pub const Bundler = struct {
             break :blk outs;
         };
 
-        // 6. Dev mode: emitDevBundle에서 이미 생성된 per-module codes를 BundleResult 타입으로 변환
+        // 6. Dev mode: per-module codes를 BundleResult 타입으로 변환
+        // TODO(HMR): 현재 module_dev_codes_from_emit은 항상 null. HMR 재구현 시 활성화.
         const module_dev_codes: ?[]const BundleResult.ModuleDevCode = if (module_dev_codes_from_emit) |emit_codes| blk: {
-            // emitter.DevBundleResult.ModuleDevCode → BundleResult.ModuleDevCode
-            // 필드가 동일하므로 메모리 레이아웃이 같지만 타입이 다르므로 변환
             const result_codes = try self.allocator.alloc(BundleResult.ModuleDevCode, emit_codes.len);
             for (emit_codes, 0..) |ec, i| {
                 result_codes[i] = .{ .id = ec.id, .code = ec.code };

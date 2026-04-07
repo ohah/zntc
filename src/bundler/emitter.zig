@@ -466,6 +466,7 @@ pub fn emitWithTreeShaking(
     // 소스맵 참조 추가
     if (sourcemap_json != null) {
         try output.appendSlice(allocator, "//# sourceMappingURL=");
+        if (options.dev_mode) try output.append(allocator, '/'); // dev 서버용 절대 경로
         try output.appendSlice(allocator, options.output_filename);
         try output.appendSlice(allocator, ".map\n");
     }
@@ -483,13 +484,9 @@ pub fn emitWithTreeShaking(
     };
 }
 
-// --- Dev mode functions (emitter/dev.zig) ---
+// --- Dev mode utilities (emitter/dev.zig) ---
 const dev = @import("emitter/dev.zig");
 pub const DevBundleResult = dev.DevBundleResult;
-pub const DevModuleEmitResult = dev.DevModuleEmitResult;
-pub const emitDevBundle = dev.emitDevBundle;
-pub const wrapWithRegister = dev.wrapWithRegister;
-pub const emitDevModule = dev.emitDevModule;
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
 
@@ -620,7 +617,10 @@ pub fn emitModule(
     // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
     // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
     const jsx_active = ast.has_jsx;
+    const apply_refresh = options.react_refresh and
+        std.mem.indexOf(u8, module.path, "/node_modules/") == null;
     var transformer = try Transformer.init(arena_alloc, ast, .{
+        .react_refresh = apply_refresh,
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .emit_decorator_metadata = options.emit_decorator_metadata,
@@ -1121,6 +1121,10 @@ fn emitBundleRuntimeHelpers(
     }
     if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
+    }
+    // dev mode + React Refresh: $RefreshReg$/$RefreshSig$ 스텁 주입 (ReferenceError 방지).
+    if (options.dev_mode and options.react_refresh) {
+        try output.appendSlice(allocator, rt.REFRESH_STUB);
     }
 }
 
