@@ -1,0 +1,23 @@
+---
+// Starlight 밖의 커스텀 페이지 — 자체 레이아웃으로 Playground 풀스크린 렌더
+---
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Playground | ZTS</title>
+  <link rel="icon" type="image/svg+xml" href="/zts/favicon.svg" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; background: #1a1a2e; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="playground-root" style="height: 100vh; display: flex; flex-direction: column;">
+    <!-- React island -->
+  </div>
+  <script>
+    import('../components/playground-mount.ts');
+  </script>
+</body>
+</html>

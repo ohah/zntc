@@ -2,6 +2,8 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import react from "@astrojs/react";
+import tailwindcss from "@tailwindcss/vite";
+import starlightLinksValidator from "starlight-links-validator";
 
 // https://astro.build/config
 export default defineConfig({
@@ -11,6 +13,7 @@ export default defineConfig({
     starlight({
       title: "ZTS",
       description: "Zig TypeScript Transpiler & Bundler",
+      plugins: [starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] })],
       defaultLocale: "root",
       locales: {
         root: { label: "한국어", lang: "ko" },
@@ -50,7 +53,7 @@ export default defineConfig({
         },
         {
           label: "Playground",
-          items: [{ label: "Playground", slug: "playground" }],
+          items: [{ label: "Playground", link: "/playground/" }],
         },
       ],
       customCss: ["./src/styles/custom.css"],
@@ -58,6 +61,7 @@ export default defineConfig({
     react(),
   ],
   vite: {
+    plugins: [tailwindcss()],
     ssr: {
       noExternal: ["@monaco-editor/react"],
     },

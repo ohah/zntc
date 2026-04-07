@@ -34,8 +34,8 @@ interface Options {
   experimentalDecorators: boolean;
   flow: boolean;
   quotes: "double" | "single" | "preserve";
-  target: "esnext" | "es2022" | "es2021" | "es2020" | "es2019" | "es2018" | "es2017" | "es2016" | "es2015" | "es5";
-  platform: "browser" | "node" | "neutral" | "react-native";
+  target: string;
+  platform: string;
   useDefineForClassFields: boolean;
   jsxFactory: string;
   jsxFragment: string;
@@ -105,7 +105,7 @@ export default function Playground() {
     if (typeof window !== "undefined") {
       const hash = window.location.hash.slice(1);
       if (hash) {
-        try { return atob(hash); } catch {}
+        try { return decodeURIComponent(escape(atob(hash))); } catch { /* ignore */ }
       }
     }
     return DEFAULT_CODE;
@@ -130,7 +130,7 @@ export default function Playground() {
     (async () => {
       try {
         const mod = await import("../../../packages/wasm/index.ts");
-        const base = (import.meta.env?.BASE_URL || "/zts/").replace(/\/?$/, "/");
+        const base = "/zts/";
         const wasmUrl = new URL(`${base}zts-core.wasm`, window.location.origin);
         await mod.init(wasmUrl);
         transpileFnRef.current = mod.transpile;
@@ -160,7 +160,6 @@ export default function Playground() {
         newOpts.minifyIdentifiers = value as boolean;
         newOpts.minifySyntax = value as boolean;
       }
-      // 다음 렌더 전에 트랜스파일 — ref 기반이라 stale 없음
       setTimeout(() => runTranspile(input, newOpts), 0);
       return newOpts;
     });
@@ -170,28 +169,18 @@ export default function Playground() {
     const encoded = btoa(unescape(encodeURIComponent(input)));
     const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
     navigator.clipboard.writeText(url);
-    alert("URL copied to clipboard!");
   }
 
-  const inputLang =
-    options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
-      ? "typescript"
-      : options.filename.endsWith(".ts")
-        ? "typescript"
-        : "javascript";
-
-  // Monaco가 마운트되면 폰트 메트릭스 재측정 + 레이아웃 재계산
   function handleEditorMount(editor: any) {
-    // Starlight CSS 간섭으로 인한 폰트 메트릭스 오차를 보정
     setTimeout(() => {
       editor.layout();
-      // remeasureFonts: 폰트 로딩 후 문자 폭 재계산
-      const monacoModule = (window as any).monaco;
-      if (monacoModule?.editor?.remeasureFonts) {
-        monacoModule.editor.remeasureFonts();
-      }
+      const m = (window as any).monaco;
+      if (m?.editor?.remeasureFonts) m.editor.remeasureFonts();
     }, 100);
   }
+
+  const inputLang = options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
+    ? "typescript" : options.filename.endsWith(".ts") ? "typescript" : "javascript";
 
   const editorOpts = {
     minimap: { enabled: false },
@@ -211,161 +200,76 @@ export default function Playground() {
   };
 
   return (
-    <div className="not-content playground-root" style={containerStyle}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: "#1a1a2e" }}>
       {/* 상단 툴바 */}
-      <div style={topBarStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button onClick={() => setShowConfig(!showConfig)} style={iconBtnStyle} title="Toggle config">
-            <span style={{ fontSize: "1.1rem" }}>{showConfig ? "◀" : "▶"}</span>
-          </button>
-          <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>ZTS Playground</span>
-          {loading && <span style={badgeStyle}>Loading WASM...</span>}
-          {!loading && !error && <span style={{ ...badgeStyle, background: "#065f46", color: "#6ee7b7" }}>Ready</span>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", background: "#16162a", borderBottom: "1px solid #2d2d4a", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={() => setShowConfig(!showConfig)} style={btnStyle}>{showConfig ? "◀" : "▶"}</button>
+          <a href="/zts/" style={{ fontWeight: 700, fontSize: 14, color: "#e2e8f0", textDecoration: "none" }}>ZTS Playground</a>
+          {loading && <Badge color="#1e3a5f" text="Loading WASM..." />}
+          {!loading && !error && <Badge color="#065f46" text="Ready" textColor="#6ee7b7" />}
         </div>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8 }}>
           <button onClick={handleShare} style={btnStyle}>Share</button>
-          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={{ ...btnStyle, textDecoration: "none" }}>
-            GitHub
-          </a>
+          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={{ ...btnStyle, textDecoration: "none" }}>GitHub</a>
         </div>
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* 왼쪽 설정 패널 */}
         {showConfig && (
-          <div style={configPanelStyle}>
-            <ConfigSection title="Parser">
-              <SelectOption label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)}
-                options={[
-                  ["input.tsx", "TypeScript + JSX"],
-                  ["input.ts", "TypeScript"],
-                  ["input.jsx", "JavaScript + JSX"],
-                  ["input.js", "JavaScript"],
-                ]}
-              />
-              <CheckOption label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
-              <CheckOption label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
-            </ConfigSection>
-
-            <ConfigSection title="Target">
-              <SelectOption label="Target" value={options.target} onChange={(v) => updateOption("target", v as Options["target"])}
-                options={[
-                  ["esnext", "ESNext"],
-                  ["es2022", "ES2022"],
-                  ["es2021", "ES2021"],
-                  ["es2020", "ES2020"],
-                  ["es2019", "ES2019"],
-                  ["es2018", "ES2018"],
-                  ["es2017", "ES2017"],
-                  ["es2016", "ES2016"],
-                  ["es2015", "ES2015"],
-                  ["es5", "ES5"],
-                ]}
-              />
-              <SelectOption label="Platform" value={options.platform} onChange={(v) => updateOption("platform", v as Options["platform"])}
-                options={[
-                  ["browser", "Browser"],
-                  ["node", "Node"],
-                  ["neutral", "Neutral"],
-                  ["react-native", "React Native"],
-                ]}
-              />
-            </ConfigSection>
-
-            <ConfigSection title="Transform">
-              <SelectOption label="JSX Runtime" value={options.jsx} onChange={(v) => updateOption("jsx", v as Options["jsx"])}
-                options={[
-                  ["classic", "Classic (createElement)"],
-                  ["automatic", "Automatic (jsx-runtime)"],
-                  ["automatic-dev", "Automatic (Dev)"],
-                ]}
-              />
-              <SelectOption label="Module" value={options.format} onChange={(v) => updateOption("format", v as Options["format"])}
-                options={[["esm", "ESM"], ["cjs", "CommonJS"]]}
-              />
-              <CheckOption label="useDefineForClassFields" checked={options.useDefineForClassFields} onChange={(v) => updateOption("useDefineForClassFields", v)} />
-            </ConfigSection>
-
-            <ConfigSection title="Output">
-              <CheckOption label="Minify (all)" checked={options.minify} onChange={(v) => updateOption("minify", v)} />
-              <CheckOption label="Minify Whitespace" checked={options.minifyWhitespace} onChange={(v) => updateOption("minifyWhitespace", v)} />
-              <CheckOption label="Minify Identifiers" checked={options.minifyIdentifiers} onChange={(v) => updateOption("minifyIdentifiers", v)} />
-              <CheckOption label="Minify Syntax" checked={options.minifySyntax} onChange={(v) => updateOption("minifySyntax", v)} />
-              <CheckOption label="Sourcemap" checked={options.sourcemap} onChange={(v) => updateOption("sourcemap", v)} />
-              <CheckOption label="ASCII Only" checked={options.asciiOnly} onChange={(v) => updateOption("asciiOnly", v)} />
-              <SelectOption label="Quotes" value={options.quotes} onChange={(v) => updateOption("quotes", v as Options["quotes"])}
-                options={[["double", "Double"], ["single", "Single"], ["preserve", "Preserve"]]}
-              />
-            </ConfigSection>
-
-            <ConfigSection title="Drop">
-              <CheckOption label="console.*" checked={options.dropConsole} onChange={(v) => updateOption("dropConsole", v)} />
-              <CheckOption label="debugger" checked={options.dropDebugger} onChange={(v) => updateOption("dropDebugger", v)} />
-            </ConfigSection>
+          <div style={{ width: 240, minWidth: 240, background: "#16162a", borderRight: "1px solid #2d2d4a", overflowY: "auto", padding: 12, flexShrink: 0, fontSize: 13 }}>
+            <Section title="Parser">
+              <Sel label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)} options={[["input.tsx","TypeScript+JSX"],["input.ts","TypeScript"],["input.jsx","JavaScript+JSX"],["input.js","JavaScript"]]} />
+              <Chk label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
+              <Chk label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
+            </Section>
+            <Section title="Target">
+              <Sel label="Target" value={options.target} onChange={(v) => updateOption("target", v)} options={[["esnext","ESNext"],["es2022","ES2022"],["es2021","ES2021"],["es2020","ES2020"],["es2019","ES2019"],["es2018","ES2018"],["es2017","ES2017"],["es2016","ES2016"],["es2015","ES2015"],["es5","ES5"]]} />
+              <Sel label="Platform" value={options.platform} onChange={(v) => updateOption("platform", v)} options={[["browser","Browser"],["node","Node"],["neutral","Neutral"],["react-native","React Native"]]} />
+            </Section>
+            <Section title="Transform">
+              <Sel label="JSX" value={options.jsx} onChange={(v) => updateOption("jsx", v as Options["jsx"])} options={[["classic","Classic"],["automatic","Automatic"],["automatic-dev","Automatic (Dev)"]]} />
+              <Sel label="Module" value={options.format} onChange={(v) => updateOption("format", v as Options["format"])} options={[["esm","ESM"],["cjs","CJS"]]} />
+              <Chk label="useDefineForClassFields" checked={options.useDefineForClassFields} onChange={(v) => updateOption("useDefineForClassFields", v)} />
+            </Section>
+            <Section title="Output">
+              <Chk label="Minify (all)" checked={options.minify} onChange={(v) => updateOption("minify", v)} />
+              <Chk label="Whitespace" checked={options.minifyWhitespace} onChange={(v) => updateOption("minifyWhitespace", v)} />
+              <Chk label="Identifiers" checked={options.minifyIdentifiers} onChange={(v) => updateOption("minifyIdentifiers", v)} />
+              <Chk label="Syntax" checked={options.minifySyntax} onChange={(v) => updateOption("minifySyntax", v)} />
+              <Chk label="Sourcemap" checked={options.sourcemap} onChange={(v) => updateOption("sourcemap", v)} />
+              <Chk label="ASCII Only" checked={options.asciiOnly} onChange={(v) => updateOption("asciiOnly", v)} />
+              <Sel label="Quotes" value={options.quotes} onChange={(v) => updateOption("quotes", v as Options["quotes"])} options={[["double","Double"],["single","Single"],["preserve","Preserve"]]} />
+            </Section>
+            <Section title="Drop">
+              <Chk label="console.*" checked={options.dropConsole} onChange={(v) => updateOption("dropConsole", v)} />
+              <Chk label="debugger" checked={options.dropDebugger} onChange={(v) => updateOption("dropDebugger", v)} />
+            </Section>
           </div>
         )}
 
-        {/* 에디터 영역 */}
+        {/* 에디터 */}
         <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-          {/* 입력 에디터 */}
-          <div style={editorPanelStyle}>
-            <div style={editorHeaderStyle}>
-              <span>Input</span>
-              <span style={{ opacity: 0.5, fontSize: "0.7rem" }}>{options.filename}</span>
-            </div>
-            <div style={{ flex: 1 }}>
-              <Editor
-                height="100%"
-                language={inputLang}
-                theme="vs-dark"
-                value={input}
-                onChange={handleInputChange}
-                onMount={handleEditorMount}
-                options={editorOpts}
-              />
-            </div>
-          </div>
-
-          {/* 구분선 */}
-          <div style={dividerStyle} />
-
-          {/* 출력 에디터 */}
-          <div style={editorPanelStyle}>
-            <div style={editorHeaderStyle}>
-              <div style={{ display: "flex", gap: "0" }}>
-                <button onClick={() => setOutputTab("code")} style={tabStyle(outputTab === "code")}>
-                  Output
-                </button>
-                {options.sourcemap && (
-                  <button onClick={() => setOutputTab("sourcemap")} style={tabStyle(outputTab === "sourcemap")}>
-                    Sourcemap
-                  </button>
-                )}
+          <EditorPanel header={<span>Input <span style={{ opacity: 0.5, fontSize: 11 }}>{options.filename}</span></span>}>
+            <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleEditorMount} options={editorOpts} />
+          </EditorPanel>
+          <div style={{ width: 2, background: "#2d2d4a", flexShrink: 0 }} />
+          <EditorPanel header={
+            <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+              <div style={{ display: "flex" }}>
+                <Tab active={outputTab === "code"} onClick={() => setOutputTab("code")}>Output</Tab>
+                {options.sourcemap && <Tab active={outputTab === "sourcemap"} onClick={() => setOutputTab("sourcemap")}>Sourcemap</Tab>}
               </div>
-              {error && <span style={{ color: "#f87171", fontSize: "0.7rem" }}>Error</span>}
+              {error && <span style={{ color: "#f87171", fontSize: 11 }}>Error</span>}
             </div>
-            <div style={{ flex: 1 }}>
-              {outputTab === "code" ? (
-                <Editor
-                  height="100%"
-                  language={error ? "plaintext" : "javascript"}
-                  theme="vs-dark"
-                  value={error || output}
-                  onMount={handleEditorMount}
-                  options={{ ...editorOpts, readOnly: true }}
-                />
-              ) : (
-                <Editor
-                  height="100%"
-                  language="json"
-                  theme="vs-dark"
-                  value={sourcemapOutput}
-                  onMount={handleEditorMount}
-                  options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }}
-                />
-              )}
-            </div>
-          </div>
+          }>
+            {outputTab === "code" ? (
+              <Editor height="100%" language={error ? "plaintext" : "javascript"} theme="vs-dark" value={error || output} onMount={handleEditorMount} options={{ ...editorOpts, readOnly: true }} />
+            ) : (
+              <Editor height="100%" language="json" theme="vs-dark" value={sourcemapOutput} onMount={handleEditorMount} options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }} />
+            )}
+          </EditorPanel>
         </div>
       </div>
     </div>
@@ -374,161 +278,59 @@ export default function Playground() {
 
 // ─── Sub-components ───
 
-function ConfigSection({ title, children }: { title: string; children: React.ReactNode }) {
+function Badge({ color, text, textColor = "#93c5fd" }: { color: string; text: string; textColor?: string }) {
+  return <span style={{ padding: "2px 8px", borderRadius: 9999, fontSize: 10, fontWeight: 600, background: color, color: textColor }}>{text}</span>;
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: "0.75rem" }}>
-      <div style={sectionTitleStyle}>{title}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>{children}</div>
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#94a3b8", marginBottom: 6, paddingBottom: 4, borderBottom: "1px solid #2d2d4a" }}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{children}</div>
     </div>
   );
 }
 
-function CheckOption({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Chk({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label style={optionRowStyle}>
+    <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#cbd5e1", fontSize: 13, cursor: "pointer" }}>
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span>{label}</span>
+      {label}
     </label>
   );
 }
 
-function SelectOption({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: [string, string][];
-}) {
+function Sel({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
   return (
-    <div style={optionRowStyle}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "#cbd5e1", fontSize: 13 }}>
       <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} style={cfgSelectStyle}>
-        {options.map(([val, text]) => <option key={val} value={val}>{text}</option>)}
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        style={{ padding: "2px 4px", borderRadius: 4, border: "1px solid #2d2d4a", background: "#1a1a2e", color: "#e2e8f0", fontSize: 12, maxWidth: 130 }}>
+        {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
       </select>
     </div>
   );
 }
 
-// ─── Styles ───
+function EditorPanel({ header, children }: { header: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "6px 12px", background: "#16162a", borderBottom: "1px solid #2d2d4a", fontSize: 12, fontWeight: 600, color: "#94a3b8", flexShrink: 0 }}>
+        {header}
+      </div>
+      <div style={{ flex: 1 }}>{children}</div>
+    </div>
+  );
+}
 
-const containerStyle: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  height: "calc(100vh - 64px)",
-  margin: 0,
-  overflow: "hidden",
-  backgroundColor: "#1a1a2e",
-};
-
-const topBarStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  padding: "0.5rem 1rem",
-  backgroundColor: "#16162a",
-  borderBottom: "1px solid #2d2d4a",
-  flexShrink: 0,
-};
-
-const badgeStyle: React.CSSProperties = {
-  padding: "0.125rem 0.5rem",
-  borderRadius: "9999px",
-  fontSize: "0.65rem",
-  fontWeight: 600,
-  background: "#1e3a5f",
-  color: "#93c5fd",
-};
+function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} style={{ padding: "4px 12px", border: "none", background: "transparent", color: active ? "#e2e8f0" : "#64748b", fontWeight: active ? 600 : 400, fontSize: 12, cursor: "pointer", borderBottom: active ? "2px solid #4ade80" : "2px solid transparent" }}>
+      {children}
+    </button>
+  );
+}
 
 const btnStyle: React.CSSProperties = {
-  padding: "0.25rem 0.75rem",
-  borderRadius: "0.25rem",
-  border: "1px solid #2d2d4a",
-  backgroundColor: "transparent",
-  color: "#e2e8f0",
-  fontSize: "0.8rem",
-  cursor: "pointer",
+  padding: "4px 12px", borderRadius: 4, border: "1px solid #2d2d4a", background: "transparent", color: "#e2e8f0", fontSize: 13, cursor: "pointer",
 };
-
-const iconBtnStyle: React.CSSProperties = {
-  ...btnStyle,
-  padding: "0.25rem 0.5rem",
-  lineHeight: 1,
-};
-
-const configPanelStyle: React.CSSProperties = {
-  width: "240px",
-  minWidth: "240px",
-  backgroundColor: "#16162a",
-  borderRight: "1px solid #2d2d4a",
-  overflowY: "auto",
-  padding: "0.75rem",
-  flexShrink: 0,
-  fontSize: "0.8rem",
-};
-
-const sectionTitleStyle: React.CSSProperties = {
-  fontSize: "0.7rem",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  color: "#94a3b8",
-  marginBottom: "0.375rem",
-  paddingBottom: "0.25rem",
-  borderBottom: "1px solid #2d2d4a",
-};
-
-const optionRowStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "0.5rem",
-  color: "#cbd5e1",
-  fontSize: "0.8rem",
-  cursor: "pointer",
-};
-
-const cfgSelectStyle: React.CSSProperties = {
-  padding: "0.125rem 0.25rem",
-  borderRadius: "0.25rem",
-  border: "1px solid #2d2d4a",
-  backgroundColor: "#1a1a2e",
-  color: "#e2e8f0",
-  fontSize: "0.75rem",
-  maxWidth: "130px",
-};
-
-const editorPanelStyle: React.CSSProperties = {
-  flex: 1,
-  display: "flex",
-  flexDirection: "column",
-  minWidth: 0,
-  overflow: "hidden",
-};
-
-const editorHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  padding: "0.375rem 0.75rem",
-  backgroundColor: "#16162a",
-  borderBottom: "1px solid #2d2d4a",
-  fontSize: "0.75rem",
-  fontWeight: 600,
-  color: "#94a3b8",
-  flexShrink: 0,
-};
-
-const dividerStyle: React.CSSProperties = {
-  width: "2px",
-  backgroundColor: "#2d2d4a",
-  flexShrink: 0,
-};
-
-function tabStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: "0.25rem 0.75rem",
-    border: "none",
-    backgroundColor: "transparent",
-    color: active ? "#e2e8f0" : "#64748b",
-    fontWeight: active ? 600 : 400,
-    fontSize: "0.75rem",
-    cursor: "pointer",
-    borderBottom: active ? "2px solid #4ade80" : "2px solid transparent",
-  };
-}
