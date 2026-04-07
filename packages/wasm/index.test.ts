@@ -138,6 +138,51 @@ describe("@zts/wasm", () => {
     expect(result.code).toContain("한글");
   });
 
+  test("ES5 다운레벨링", () => {
+    const result = transpile("const x = () => 1;", { target: "es5" });
+    expect(result.code).not.toContain("=>");
+    expect(result.code).toContain("function");
+  });
+
+  test("ES2015 다운레벨링 (template literal)", () => {
+    const result = transpile("const s = `hello ${name}`;", { target: "es5" });
+    expect(result.code).not.toContain("`");
+  });
+
+  test("target esnext (변환 없음)", () => {
+    const result = transpile("const x = () => 1;", { target: "esnext" });
+    expect(result.code).toContain("=>");
+  });
+
+  test("platform node", () => {
+    const result = transpile("const x: number = 1;", { platform: "node" });
+    expect(result.code).toContain("const x = 1;");
+  });
+
+  test("jsxFactory 커스텀", () => {
+    const result = transpile("<div />", {
+      filename: "app.tsx",
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(result.code).toContain("h(");
+    expect(result.code).not.toContain("React.createElement");
+  });
+
+  test("jsxImportSource 커스텀", () => {
+    const result = transpile("<div />", {
+      filename: "app.tsx",
+      jsx: "automatic",
+      jsxImportSource: "preact",
+    });
+    expect(result.code).toContain("preact");
+  });
+
+  test("useDefineForClassFields false", () => {
+    const result = transpile("class A { x = 1; }", { useDefineForClassFields: false });
+    expect(result.code).toContain("this.x");
+  });
+
   test("initSync 중복 호출은 무시", () => {
     // 이미 초기화됨 — 에러 없이 무시되어야 함
     expect(() => initSync(new ArrayBuffer(0))).not.toThrow();
