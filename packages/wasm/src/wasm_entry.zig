@@ -35,11 +35,11 @@ fn clearError() void {
 /// 파서/시맨틱 에러를 SWC/tsc 스타일로 포맷하여 last_error_buf에 저장.
 /// 형식: "<file>:<line>:<col>: error: <message>\n  <line_num> | <source_line>\n    | <caret>"
 fn formatErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const Diagnostic) void {
+    if (errors.len == 0) return;
     var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(wasm_alloc);
-    for (errors) |err| {
-        formatSingleError(writer, source, file_path, scanner, err) catch break;
-    }
+    // 첫 번째 에러만 표시 — 후속 에러는 복구 과정의 노이즈인 경우가 많음
+    formatSingleError(writer, source, file_path, scanner, errors[0]) catch return;
     if (buf.items.len > 0) {
         if (last_error_buf) |old| wasm_alloc.free(old);
         last_error_buf = buf.toOwnedSlice(wasm_alloc) catch null;
