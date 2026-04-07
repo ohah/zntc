@@ -200,7 +200,7 @@ export default function Playground() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: "#1a1a2e" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)", overflow: "hidden", background: "#1a1a2e" }}>
       {/* 상단 툴바 */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", background: "#16162a", borderBottom: "1px solid #2d2d4a", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -225,7 +225,7 @@ export default function Playground() {
               <Chk label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
             </Section>
             <Section title="Target">
-              <Sel label="Target" value={options.target} onChange={(v) => updateOption("target", v)} options={[["esnext","ESNext"],["es2022","ES2022"],["es2021","ES2021"],["es2020","ES2020"],["es2019","ES2019"],["es2018","ES2018"],["es2017","ES2017"],["es2016","ES2016"],["es2015","ES2015"],["es5","ES5"]]} />
+              <Sel label="Target" value={options.target} onChange={(v) => updateOption("target", v)} options={[["esnext","ESNext"],["es2025","ES2025"],["es2024","ES2024"],["es2022","ES2022"],["es2021","ES2021"],["es2020","ES2020"],["es2019","ES2019"],["es2018","ES2018"],["es2017","ES2017"],["es2016","ES2016"],["es2015","ES2015"],["es5","ES5"]]} />
               <Sel label="Platform" value={options.platform} onChange={(v) => updateOption("platform", v)} options={[["browser","Browser"],["node","Node"],["neutral","Neutral"],["react-native","React Native"]]} />
             </Section>
             <Section title="Transform">
