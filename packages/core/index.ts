@@ -1,35 +1,53 @@
 /**
- * @zts/core — ZTS Plugin API
+ * @zts/core — ZTS Plugin & Build API
  *
- * Vite/Rollup 호환 플러그인 인터페이스.
- * ZTS 바이너리가 config 파일을 실행하고 stdin/stdout JSON으로 통신한다.
+ * Vite/Rollup-compatible plugin interface for ZTS.
+ * The ZTS binary spawns the config file and communicates via stdin/stdout JSON IPC.
  *
- * 사용법:
- *   import { defineConfig } from '@zts/core';
- *   import fs from 'node:fs';
+ * @example
+ * ```ts
+ * import { defineConfig } from '@zts/core';
+ * import fs from 'node:fs';
  *
- *   export default defineConfig({
- *     plugins: [
- *       {
- *         name: 'css-loader',
- *         load(id) {
- *           if (!id.endsWith('.css')) return null;
- *           const css = fs.readFileSync(id, 'utf8');
- *           return { contents: css, loader: 'text' };
- *         }
+ * export default defineConfig({
+ *   plugins: [
+ *     {
+ *       name: 'css-loader',
+ *       load(id) {
+ *         if (!id.endsWith('.css')) return null;
+ *         const css = fs.readFileSync(id, 'utf8');
+ *         return { contents: css, loader: 'text' };
  *       }
- *     ]
- *   });
+ *     }
+ *   ]
+ * });
+ * ```
+ *
+ * @packageDocumentation
  */
 
 import { createInterface } from "node:readline";
 
-// ===== 타입 정의 =====
+// ===== Type Definitions =====
 
+/** Result of a plugin's `resolveId` hook. */
 export interface ResolveResult {
+  /** Resolved absolute file path. */
   path: string;
 }
 
+/**
+ * File loader type. Determines how a file extension is processed during bundling.
+ *
+ * - `"js"` / `"ts"` — Parse as JavaScript/TypeScript
+ * - `"json"` — Parse as JSON module
+ * - `"text"` — Import as a string
+ * - `"file"` — Copy to output and export the URL
+ * - `"dataurl"` — Inline as a `data:` URL
+ * - `"binary"` — Import as a `Uint8Array`
+ * - `"copy"` — Copy to output preserving directory structure
+ * - `"empty"` — Replace with an empty module
+ */
 export type Loader =
   | "js"
   | "ts"
@@ -42,14 +60,29 @@ export type Loader =
   | "copy"
   | "empty";
 
+/** Output module format. */
 export type Format = "esm" | "cjs" | "iife";
 
+/** Target platform. Affects module resolution, built-in polyfills, and default format. */
 export type Platform = "browser" | "node" | "neutral" | "react-native";
 
+/** JSX transform mode. */
 export type JsxMode = "classic" | "automatic" | "automatic-dev";
 
+/** How to handle legal comments (license headers) in the output. */
 export type LegalComments = "none" | "inline" | "eof";
 
+/**
+ * Transpilation target. Can be an ES version, a browser/engine with version number,
+ * or an array of targets for multi-target builds.
+ *
+ * @example
+ * ```ts
+ * target: "es2020"
+ * target: ["chrome90", "firefox88"]
+ * target: "hermes0.12"
+ * ```
+ */
 export type Target =
   | "es5"
   | "es2015"
@@ -71,107 +104,175 @@ export type Target =
   | `hermes${number}`
   | (string & {});
 
+/** Result returned by a plugin's `load` or `transform` hook. */
 export interface LoadResult {
+  /** The transformed source code. */
   contents: string;
+  /** Optional loader override for this file. */
   loader?: Loader;
 }
 
+/** Represents an output file from the bundle. */
 export interface OutputFile {
+  /** Absolute path of the output file. */
   path: string;
 }
 
+/**
+ * Plugin interface — compatible with Vite/Rollup plugin conventions.
+ *
+ * Hooks are called via JSON IPC between the ZTS binary and the Node.js/Bun subprocess.
+ *
+ * @example
+ * ```ts
+ * const myPlugin: Plugin = {
+ *   name: 'virtual-module',
+ *   resolveId(source) {
+ *     if (source === 'virtual:config') return { path: '\0virtual:config' };
+ *     return null;
+ *   },
+ *   load(id) {
+ *     if (id === '\0virtual:config') return 'export default { debug: true }';
+ *     return null;
+ *   }
+ * };
+ * ```
+ */
 export interface Plugin {
+  /** Plugin name, shown in debug logs and error messages. */
   name: string;
+  /**
+   * Resolve a module specifier to an absolute path.
+   * Return `null` to defer to the next plugin or default resolution.
+   */
   resolveId?(
     source: string,
     importer: string,
   ): Promise<ResolveResult | string | null> | ResolveResult | string | null;
+  /**
+   * Load the contents of a module by its resolved path.
+   * Return `null` to defer to the next plugin or default loading.
+   */
   load?(id: string): Promise<LoadResult | string | null> | LoadResult | string | null;
+  /**
+   * Transform the source code of a module after loading.
+   * Plugins are chained: each plugin receives the previous plugin's output.
+   */
   transform?(
     code: string,
     id: string,
   ): Promise<LoadResult | string | null> | LoadResult | string | null;
+  /**
+   * Post-process a generated chunk's code before writing to disk.
+   * Plugins are chained like `transform`.
+   */
   renderChunk?(
     code: string,
     chunkName: string,
   ): Promise<LoadResult | string | null> | LoadResult | string | null;
+  /** Called after all chunks have been generated. Use for side effects like writing extra files. */
   generateBundle?(outputs: OutputFile[]): Promise<void> | void;
 }
 
+/** Dev server configuration. */
 export interface ServerConfig {
+  /** Server port (default: 12300). */
   port?: number;
+  /** Bind address (default: "localhost", use "0.0.0.0" for all interfaces). */
   host?: string;
+  /** Automatically open the browser on start. */
   open?: boolean;
+  /** API proxy mapping. Example: `{ "/api": "http://localhost:3000" }` */
   proxy?: Record<string, string>;
 }
 
+/**
+ * ZTS configuration object. Passed to {@link defineConfig} to configure
+ * plugins, bundling options, and the dev server.
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from '@zts/core';
+ *
+ * export default defineConfig({
+ *   entryPoints: ['src/index.ts'],
+ *   outdir: 'dist',
+ *   bundle: true,
+ *   format: 'esm',
+ *   platform: 'browser',
+ *   minify: true,
+ *   plugins: [myPlugin],
+ * });
+ * ```
+ */
 export interface ZtsConfig {
+  /** List of plugins to apply. */
   plugins?: Plugin[];
 
-  // === 입출력 ===
-  /** 엔트리 포인트 목록 */
+  // === Input / Output ===
+  /** Entry point file paths. */
   entryPoints?: string[];
-  /** 출력 디렉토리 (다중 파일 출력 시) */
+  /** Output directory (for multi-file output). */
   outdir?: string;
-  /** 출력 파일 (단일 파일 출력 시) */
+  /** Output file path (for single-file output). */
   outfile?: string;
 
-  // === 번들 옵션 ===
-  /** 번들 모드 활성화 */
+  // === Bundle Options ===
+  /** Enable bundle mode. */
   bundle?: boolean;
-  /** 모듈 포맷 */
+  /** Output module format. */
   format?: Format;
-  /** 타겟 플랫폼 */
+  /** Target platform. */
   platform?: Platform;
-  /** ES/엔진 타겟 (예: "es2015", "chrome80", ["es2020", "node16"]) */
+  /** ES/engine target. Example: `"es2020"`, `"chrome90"`, `["es2020", "node16"]` */
   target?: Target | Target[];
-  /** 코드 스플리팅 활성화 */
+  /** Enable code splitting. */
   splitting?: boolean;
-  /** 모듈별 개별 파일 출력 (라이브러리 빌드) */
+  /** Output each module as a separate file (library builds). */
   preserveModules?: boolean;
-  /** preserveModules 출력 기준 디렉토리 */
+  /** Root directory for `preserveModules` output structure. */
   preserveModulesRoot?: string;
 
-  // === 변환 ===
-  /** 확장자별 로더. 예: { '.png': 'file', '.svg': 'dataurl' } */
+  // === Transform ===
+  /** Loader overrides by file extension. Example: `{ '.png': 'file' }` */
   loader?: Record<string, Loader>;
-  /** 글로벌 define. 예: { 'process.env.NODE_ENV': '"production"' } */
+  /** Global define replacements. Example: `{ 'process.env.NODE_ENV': '"production"' }` */
   define?: Record<string, string>;
-  /** import 경로 별칭. 예: { '@': './src' } */
+  /** Import path aliases. Example: `{ '@': './src' }` */
   alias?: Record<string, string>;
-  /** 외부 모듈 (번들 제외) */
+  /** Packages to exclude from the bundle. */
   external?: string[];
-  /** 소스맵 생성 */
+  /** Generate source maps. */
   sourcemap?: boolean;
-  /** 코드 압축 */
+  /** Minify the output. */
   minify?: boolean;
-  /** JSX 런타임 모드 */
+  /** JSX transform mode. */
   jsx?: JsxMode;
-  /** classic 모드 JSX factory (기본: React.createElement) */
+  /** JSX factory function for classic mode (default: `"React.createElement"`). */
   jsxFactory?: string;
-  /** classic 모드 Fragment factory (기본: React.Fragment) */
+  /** JSX fragment factory for classic mode (default: `"React.Fragment"`). */
   jsxFragment?: string;
-  /** automatic 모드 import source (기본: react) */
+  /** Import source for automatic JSX mode (default: `"react"`). */
   jsxImportSource?: string;
 
-  // === 출력 ===
-  /** 출력 파일 앞에 삽입할 텍스트 */
+  // === Output ===
+  /** Text to prepend to each output file. */
   banner?: { js?: string };
-  /** 출력 파일 뒤에 삽입할 텍스트 */
+  /** Text to append to each output file. */
   footer?: { js?: string };
-  /** 에셋/청크 URL prefix */
+  /** URL prefix for assets and chunks (CDN deployments). */
   publicPath?: string;
-  /** 모든 엔트리에 자동 import */
+  /** Files to auto-import in every entry point. */
   inject?: string[];
-  /** IIFE 포맷의 글로벌 변수명 */
+  /** Global variable name for IIFE format. */
   globalName?: string;
-  /** 라이센스 주석 처리 */
+  /** How to handle legal/license comments. */
   legalComments?: LegalComments;
-  /** minify 시 함수/클래스 .name 보존 */
+  /** Preserve `.name` property on functions/classes when minifying. */
   keepNames?: boolean;
 
-  // === dev server ===
-  /** dev server 설정 */
+  // === Dev Server ===
+  /** Dev server configuration. */
   server?: ServerConfig;
 }
 
@@ -341,12 +442,46 @@ class PluginHost {
 
 // ===== Public API =====
 
+/**
+ * Define a ZTS configuration with plugins.
+ * Initializes the plugin host and starts JSON IPC communication with the ZTS binary.
+ *
+ * @example
+ * ```ts
+ * // zts.config.ts
+ * import { defineConfig } from '@zts/core';
+ *
+ * export default defineConfig({
+ *   plugins: [myPlugin],
+ *   bundle: true,
+ *   outdir: 'dist',
+ * });
+ * ```
+ */
 export function defineConfig(config: ZtsConfig): ZtsConfig {
   const host = new PluginHost(config);
   startIPC(host);
   return config;
 }
 
+/**
+ * Define a single ZTS plugin.
+ * Convenience wrapper that creates a plugin host with a single plugin.
+ *
+ * @example
+ * ```ts
+ * // my-plugin.ts
+ * import { definePlugin } from '@zts/core';
+ *
+ * export default definePlugin({
+ *   name: 'my-plugin',
+ *   transform(code, id) {
+ *     if (!id.endsWith('.graphql')) return null;
+ *     return `export default \`${code}\``;
+ *   }
+ * });
+ * ```
+ */
 export function definePlugin(plugin: Plugin): Plugin {
   const host = new PluginHost({ plugins: [plugin] });
   startIPC(host);
@@ -355,34 +490,50 @@ export function definePlugin(plugin: Plugin): Plugin {
 
 // ===== Build API =====
 
+/**
+ * Options for the programmatic {@link build} API.
+ * Extends {@link ZtsConfig} without `plugins` and `server`.
+ */
 export interface BuildOptions extends Omit<ZtsConfig, "plugins" | "server"> {
-  /** write=false면 디스크에 쓰지 않고 메모리에서 결과 반환 */
+  /** If `false`, return output in memory instead of writing to disk. */
   write?: boolean;
 }
 
+/** Result of a programmatic {@link build} call. */
 export interface BuildResult {
-  /** 출력 파일 목록 (write=false일 때 contents 포함) */
+  /** Generated output files. When `write: false`, `contents` contains the file data. */
   outputFiles: BuildOutputFile[];
-  /** 에러 메시지 (빌드 실패 시) */
+  /** Error messages if the build failed. Empty array on success. */
   errors: string[];
 }
 
+/** A single output file from a {@link build} call. */
 export interface BuildOutputFile {
+  /** Absolute path of the output file. */
   path: string;
+  /** File contents as a UTF-8 string. */
   contents: string;
 }
 
 /**
- * ZTS CLI를 subprocess로 실행하여 번들을 빌드한다.
+ * Programmatically run the ZTS bundler.
+ * Spawns the ZTS CLI binary as a subprocess and returns the build result.
  *
- * 사용법:
- *   import { build } from '@zts/core';
- *   const result = await build({
- *     entryPoints: ['src/index.ts'],
- *     outdir: 'dist',
- *     bundle: true,
- *     minify: true,
- *   });
+ * @example
+ * ```ts
+ * import { build } from '@zts/core';
+ *
+ * const result = await build({
+ *   entryPoints: ['src/index.ts'],
+ *   outdir: 'dist',
+ *   bundle: true,
+ *   minify: true,
+ * });
+ *
+ * if (result.errors.length > 0) {
+ *   console.error('Build failed:', result.errors);
+ * }
+ * ```
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   const args = buildArgsFromOptions(options);
