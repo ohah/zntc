@@ -1,0 +1,23 @@
+---
+title: 성능 벤치마크
+description: ZTS와 다른 도구들의 성능 비교
+---
+
+import BenchmarkCharts from '../../../components/BenchmarkCharts.tsx';
+
+ZTS의 트랜스파일/번들 성능을 esbuild, SWC, Bun 등과 비교합니다.
+
+## 측정 환경
+- **Platform**: macOS Apple Silicon (M-series)
+- **반복 횟수**: 5회 평균
+- **방법**: CLI 바이너리 직접 실행 (npx 오버헤드 제거)
+
+<BenchmarkCharts client:only="react" />
+
+## 측정 방법
+
+벤치마크 스크립트: `tests/benchmark/bench.ts`
+
+```bash
+cd tests/benchmark && bun run bench.ts
+```

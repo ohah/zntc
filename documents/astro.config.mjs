@@ -4,6 +4,7 @@ import starlight from "@astrojs/starlight";
 import react from "@astrojs/react";
 import tailwindcss from "@tailwindcss/vite";
 import starlightLinksValidator from "starlight-links-validator";
+import starlightTypeDoc, { typeDocSidebarGroup } from "starlight-typedoc";
 
 // https://astro.build/config
 export default defineConfig({
@@ -13,7 +14,22 @@ export default defineConfig({
     starlight({
       title: "ZTS",
       description: "Zig TypeScript Transpiler & Bundler",
-      plugins: [starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] })],
+      plugins: [
+        starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] }),
+        starlightTypeDoc({
+          entryPoints: ["../packages/core/index.ts"],
+          tsconfig: "../packages/core/tsconfig.json",
+          output: "reference/api",
+          sidebar: {
+            label: "API Reference",
+            collapsed: false,
+          },
+          typeDoc: {
+            excludePrivate: true,
+            excludeInternal: true,
+          },
+        }),
+      ],
       defaultLocale: "root",
       locales: {
         root: { label: "한국어", lang: "ko" },
@@ -49,7 +65,10 @@ export default defineConfig({
         {
           label: "레퍼런스",
           translations: { en: "Reference" },
-          autogenerate: { directory: "reference" },
+          items: [
+            { label: "CLI", slug: "reference/cli", translations: { en: "CLI Reference" } },
+            typeDocSidebarGroup,
+          ],
         },
         {
           label: "Playground",
@@ -63,7 +82,7 @@ export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
     ssr: {
-      noExternal: ["@monaco-editor/react"],
+      noExternal: ["@monaco-editor/react", "echarts-for-react"],
     },
   },
 });

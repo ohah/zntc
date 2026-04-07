@@ -200,7 +200,7 @@ export default function Playground() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)", overflow: "hidden", background: "#1a1a2e" }}>
+    <div className="not-content playground-root" style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)", overflow: "hidden", background: "#1a1a2e" }}>
       {/* 상단 툴바 */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", background: "#16162a", borderBottom: "1px solid #2d2d4a", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
