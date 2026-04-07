@@ -753,7 +753,10 @@ pub fn buildDevMetadataForAst(
         switch (ib.kind) {
             .default => info.default_local = ib.local_name,
             .namespace => info.namespace_local = ib.local_name,
-            .named => total_named += 1,
+            .named => {
+                info.named_count += 1;
+                total_named += 1;
+            },
         }
     }
 
