@@ -32,6 +32,7 @@ pub const TranspileOptions = struct {
     unsupported: TransformOptions.compat.UnsupportedFeatures = .{},
     use_define_for_class_fields: bool = true,
     experimental_decorators: bool = false,
+    emit_decorator_metadata: bool = false,
     drop_console: bool = false,
     drop_debugger: bool = false,
 
@@ -175,6 +176,7 @@ pub fn transpileWithCallback(
         .define = options.define,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
+        .emit_decorator_metadata = options.emit_decorator_metadata,
         .unsupported = options.unsupported,
         // JSX lowering: JSX가 있는 모듈에서만 활성화
         .jsx_transform = parser.ast.has_jsx,

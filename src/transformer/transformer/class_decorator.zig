@@ -1369,38 +1369,40 @@ pub fn buildDecorateClassCall(
 // emitDecoratorMetadata — __metadata("design:paramtypes", [...]) 생성
 // ================================================================
 
-/// TS 타입 어노테이션 AST 태그를 런타임 값 식별자로 직렬화한다.
-/// 텍스트 비교 없이 AST 태그로 분기 — ts_number_keyword → Number 등.
+/// TS 타입 어노테이션 AST 태그를 런타임 값으로 직렬화한다 (SWC 호환).
+/// - 기본 타입: Number, String, Boolean
+/// - void/null/undefined/never: void 0
+/// - symbol/bigint: typeof 런타임 체크
+/// - 클래스 참조: typeof X === "undefined" ? Object : X
 pub fn serializeTypeAnnotation(self: *Transformer, type_ann_idx: NodeIndex) Error!NodeIndex {
     if (type_ann_idx.isNone()) return makeIdentifier(self, "Object");
 
     const type_node = self.ast.getNode(type_ann_idx);
 
     return switch (type_node.tag) {
-        // 기본 타입 키워드 → 런타임 생성자
+        // 기본 타입 키워드 → 런타임 생성자 (런타임에 항상 존재)
         .ts_number_keyword => makeIdentifier(self, "Number"),
         .ts_string_keyword => makeIdentifier(self, "String"),
         .ts_boolean_keyword => makeIdentifier(self, "Boolean"),
-        .ts_symbol_keyword => makeIdentifier(self, "Symbol"),
-        .ts_bigint_keyword => makeIdentifier(self, "BigInt"),
         .ts_any_keyword, .ts_object_keyword, .ts_unknown_keyword => makeIdentifier(self, "Object"),
-        .ts_void_keyword, .ts_undefined_keyword, .ts_null_keyword, .ts_never_keyword => makeIdentifier(self, "Object"),
 
-        // 타입 참조 (MyClass, Promise 등) → 소스 span에서 이름 추출
+        // void/null/undefined/never → void 0 (SWC 호환)
+        .ts_void_keyword, .ts_undefined_keyword, .ts_null_keyword, .ts_never_keyword => makeIdentifier(self, "void 0"),
+
+        // symbol/bigint → typeof 런타임 체크 (ES5 환경에서 없을 수 있음, SWC 호환)
+        .ts_symbol_keyword => makeTypeofGuard(self, "Symbol"),
+        .ts_bigint_keyword => makeTypeofGuard(self, "BigInt"),
+
+        // 타입 참조 (MyClass, Promise 등) → typeof 런타임 체크 (SWC 호환)
         .ts_type_reference => blk: {
-            // ts_type_reference의 span은 소스 텍스트 범위 (제네릭 포함 가능)
-            // 소스에서 이름만 추출 (< 이전까지)
             const src_text = self.ast.source[type_node.span.start..type_node.span.end];
             const name_end = std.mem.indexOfScalar(u8, src_text, '<') orelse src_text.len;
             const name_only = src_text[0..name_end];
-            break :blk makeIdentifier(self, name_only);
+            break :blk makeTypeofGuard(self, name_only);
         },
         .identifier_reference, .binding_identifier => blk: {
-            break :blk self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = type_node.data.string_ref,
-                .data = .{ .string_ref = type_node.data.string_ref },
-            });
+            const name = self.ast.getText(type_node.data.string_ref);
+            break :blk makeTypeofGuard(self, name);
         },
 
         // 배열/튜플 → Array
@@ -1435,24 +1437,62 @@ pub fn extractTypeFromSource(self: *Transformer, param: Node) Error!NodeIndex {
     if (pos == type_start) return makeIdentifier(self, "Object");
 
     const type_name = source[type_start..pos];
-    // 기본 타입 매핑 (AST 태그 없이 텍스트 기반)
+    // SWC 호환 타입 직렬화 (텍스트 기반 폴백)
     if (std.mem.eql(u8, type_name, "number")) return makeIdentifier(self, "Number");
     if (std.mem.eql(u8, type_name, "string")) return makeIdentifier(self, "String");
     if (std.mem.eql(u8, type_name, "boolean")) return makeIdentifier(self, "Boolean");
-    if (std.mem.eql(u8, type_name, "symbol")) return makeIdentifier(self, "Symbol");
-    if (std.mem.eql(u8, type_name, "bigint")) return makeIdentifier(self, "BigInt");
+    if (std.mem.eql(u8, type_name, "symbol")) return makeTypeofGuard(self, "Symbol");
+    if (std.mem.eql(u8, type_name, "bigint")) return makeTypeofGuard(self, "BigInt");
     if (std.mem.eql(u8, type_name, "any") or std.mem.eql(u8, type_name, "object") or
-        std.mem.eql(u8, type_name, "unknown") or std.mem.eql(u8, type_name, "void") or
-        std.mem.eql(u8, type_name, "undefined") or std.mem.eql(u8, type_name, "null") or
-        std.mem.eql(u8, type_name, "never")) return makeIdentifier(self, "Object");
-    // 클래스/인터페이스 참조 → 그대로 식별자
-    return makeIdentifier(self, type_name);
+        std.mem.eql(u8, type_name, "unknown")) return makeIdentifier(self, "Object");
+    if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
+        std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
+        return makeIdentifier(self, "void 0");
+    // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
+    return makeTypeofGuard(self, type_name);
 }
 
 /// 이름으로 identifier_reference 노드를 생성하는 헬퍼
 fn makeIdentifier(self: *Transformer, name: []const u8) Error!NodeIndex {
     const span = try self.ast.addString(name);
     return self.ast.addNode(.{ .tag = .identifier_reference, .span = span, .data = .{ .string_ref = span } });
+}
+
+/// typeof X === "undefined" ? Object : X 조건 표현식 생성 (SWC 호환).
+/// 런타임에 타입이 없을 수 있는 참조(class/interface, Symbol, BigInt)에 사용.
+fn makeTypeofGuard(self: *Transformer, name: []const u8) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const Kind = @import("../../lexer/token.zig").Kind;
+
+    // typeof X
+    const name_ref = try makeIdentifier(self, name);
+    const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
+        @intFromEnum(name_ref), @intFromEnum(Kind.kw_typeof),
+    });
+
+    // "undefined"
+    const undef_span = try self.ast.addString("\"undefined\"");
+    const undef_str = try self.ast.addNode(.{ .tag = .string_literal, .span = undef_span, .data = .{ .string_ref = undef_span } });
+
+    // typeof X === "undefined"
+    const eq_check = try self.ast.addNode(.{
+        .tag = .binary_expression,
+        .span = zero_span,
+        .data = .{ .binary = .{ .left = typeof_expr, .right = undef_str, .flags = @intFromEnum(Kind.eq3) } },
+    });
+
+    // Object
+    const object_ref = try makeIdentifier(self, "Object");
+
+    // X (consequent)
+    const name_ref2 = try makeIdentifier(self, name);
+
+    // typeof X === "undefined" ? Object : X
+    return self.ast.addNode(.{
+        .tag = .conditional_expression,
+        .span = zero_span,
+        .data = .{ .ternary = .{ .a = eq_check, .b = object_ref, .c = name_ref2 } },
+    });
 }
 
 /// __metadata(key, value) 호출 노드를 생성한다.

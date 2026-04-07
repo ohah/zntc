@@ -200,8 +200,10 @@ test "metadata: class decorator → __metadata(design:paramtypes)" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    // SWC 호환: typeof X === "undefined" ? Object : X
     try std.testing.expect(std.mem.indexOf(u8, r.output, "UserRepository") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Logger") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof") != null);
 }
 
 test "metadata: method decorator → design:type + design:paramtypes + design:returntype" {
