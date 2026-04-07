@@ -162,9 +162,24 @@ export default function Playground() {
         ? "typescript"
         : "javascript";
 
+  // Monaco가 마운트되면 폰트 메트릭스 재측정 + 레이아웃 재계산
+  function handleEditorMount(editor: any) {
+    // Starlight CSS 간섭으로 인한 폰트 메트릭스 오차를 보정
+    setTimeout(() => {
+      editor.layout();
+      // remeasureFonts: 폰트 로딩 후 문자 폭 재계산
+      const monacoModule = (window as any).monaco;
+      if (monacoModule?.editor?.remeasureFonts) {
+        monacoModule.editor.remeasureFonts();
+      }
+    }, 100);
+  }
+
   const editorOpts = {
     minimap: { enabled: false },
     fontSize: 13,
+    fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+    fontLigatures: false,
     lineNumbers: "on" as const,
     scrollBeyondLastLine: false,
     wordWrap: "on" as const,
@@ -261,6 +276,7 @@ export default function Playground() {
                 theme="vs-dark"
                 value={input}
                 onChange={handleInputChange}
+                onMount={handleEditorMount}
                 options={editorOpts}
               />
             </div>
@@ -291,6 +307,7 @@ export default function Playground() {
                   language={error ? "plaintext" : "javascript"}
                   theme="vs-dark"
                   value={error || output}
+                  onMount={handleEditorMount}
                   options={{ ...editorOpts, readOnly: true }}
                 />
               ) : (
@@ -299,6 +316,7 @@ export default function Playground() {
                   language="json"
                   theme="vs-dark"
                   value={sourcemapOutput}
+                  onMount={handleEditorMount}
                   options={{ ...editorOpts, readOnly: true, lineNumbers: "off" }}
                 />
               )}
