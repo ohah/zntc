@@ -227,11 +227,11 @@ pub fn wrapWithRegister(
     try wrapped.appendSlice(allocator, module_id);
 
     if (minify) {
-        try wrapped.appendSlice(allocator, "\",function(__zts_module,__zts_exports){");
+        try wrapped.appendSlice(allocator, "\",function(module,exports){");
         try wrapped.appendSlice(allocator, code);
         try wrapped.appendSlice(allocator, "});");
     } else {
-        try wrapped.appendSlice(allocator, "\", function(__zts_module, __zts_exports) {\n");
+        try wrapped.appendSlice(allocator, "\", function(module, exports) {\n");
         // 모듈 코드 들여쓰기
         var rest: []const u8 = code;
         while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
@@ -341,7 +341,7 @@ pub fn emitDevModule(
 
     // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입
     const has_refresh = options.react_refresh and std.mem.indexOf(u8, code, "$RefreshReg$") != null;
-    const hot_accept_suffix: []const u8 = if (has_refresh) "\n__zts_module.hot.accept();\n" else "";
+    const hot_accept_suffix: []const u8 = if (has_refresh) "\nmodule.hot.accept();\n" else "";
 
     const needs_concat = preamble != null or final_exports != null or has_refresh;
     const preamble_line_count: u32 = if (preamble) |p| @intCast(std.mem.count(u8, p, "\n")) else 0;
