@@ -31,3 +31,8 @@ main,
 .right-sidebar-panel .sl-container {
   max-width: 100% !important;
 }
+
+/* 오른쪽 TOC 패딩 */
+.right-sidebar-panel {
+  padding-inline: 1rem;
+}
