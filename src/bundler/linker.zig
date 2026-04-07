@@ -1534,11 +1534,19 @@ pub const PreambleWriter = struct {
     }
 
     pub fn writeDevRequire(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8) !void {
+        return self.writeDevRequireInterop(local_name, path, suffix, false);
+    }
+
+    /// CJS interop 포함: var x = __toESM(__zts_require("path")).default;
+    pub fn writeDevRequireInterop(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8, to_esm: bool) !void {
         try self.write("var ");
         try self.write(local_name);
-        try self.write(" = __zts_require(\"");
+        try self.write(" = ");
+        if (to_esm) try self.write("__toESM(");
+        try self.write("__zts_require(\"");
         try self.write(path);
         try self.write("\")");
+        if (to_esm) try self.write(")");
         if (suffix) |s| try self.write(s);
         try self.write(";\n");
     }
