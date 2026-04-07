@@ -537,6 +537,14 @@ pub fn emitEsmWrappedModule(
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
+        // React Fast Refresh: hot.accept() (minified)
+        if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
+            if (std.mem.indexOf(u8, wrapped.items, "$RefreshReg$") != null) {
+                try wrapped.appendSlice(allocator, "__zts_make_hot(\"");
+                try wrapped.appendSlice(allocator, module.dev_id);
+                try wrapped.appendSlice(allocator, "\").accept();");
+            }
+        }
         try wrapped.appendSlice(allocator, "}});");
     } else {
         try wrapped.appendSlice(allocator, "var ");
@@ -565,6 +573,14 @@ pub fn emitEsmWrappedModule(
         if (reexport_buf.items.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, reexport_buf.items);
+        }
+        // React Fast Refresh: hot.accept() 자동 삽입 (full reload 방지)
+        if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
+            if (std.mem.indexOf(u8, wrapped.items, "$RefreshReg$") != null) {
+                try wrapped.appendSlice(allocator, "\t__zts_make_hot(\"");
+                try wrapped.appendSlice(allocator, module.dev_id);
+                try wrapped.appendSlice(allocator, "\").accept();\n");
+            }
         }
         try wrapped.appendSlice(allocator, "\n\t}\n});\n");
     }
