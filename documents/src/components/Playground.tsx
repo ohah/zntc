@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import Editor from "@monaco-editor/react";
 
 const DEFAULT_CODE = `interface User {
   name: string;
@@ -36,6 +37,7 @@ export default function Playground() {
     filename: "input.tsx",
   });
   const wasmRef = useRef<WasmModule | null>(null);
+  const [sourcemapOutput, setSourcemapOutput] = useState("");
 
   useEffect(() => {
     loadWasm();
@@ -49,7 +51,6 @@ export default function Playground() {
       await mod.init(wasmUrl);
       wasmRef.current = mod;
       setLoading(false);
-      // 초기 트랜스파일
       doTranspile(DEFAULT_CODE, options, mod.transpile);
     } catch (err) {
       setError(`WASM 로드 실패: ${err}`);
@@ -58,11 +59,7 @@ export default function Playground() {
   }
 
   const doTranspile = useCallback(
-    (
-      code: string,
-      opts: typeof options,
-      transpileFn?: TranspileFn,
-    ) => {
+    (code: string, opts: typeof options, transpileFn?: TranspileFn) => {
       const fn = transpileFn || wasmRef.current?.transpile;
       if (!fn) return;
       try {
@@ -74,20 +71,22 @@ export default function Playground() {
           format: opts.format,
         });
         setOutput(result.code);
+        setSourcemapOutput(result.map || "");
         setError("");
       } catch (err) {
         setError(String(err));
         setOutput("");
+        setSourcemapOutput("");
       }
     },
     [],
   );
 
   const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
-      setInput(value);
-      doTranspile(value, options);
+    (value: string | undefined) => {
+      const code = value ?? "";
+      setInput(code);
+      doTranspile(code, options);
     },
     [options, doTranspile],
   );
@@ -101,19 +100,18 @@ export default function Playground() {
     [input, options, doTranspile],
   );
 
+  // filename → Monaco language 매핑
+  const inputLang =
+    options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
+      ? "typescript"
+      : options.filename.endsWith(".ts")
+        ? "typescript"
+        : "javascript";
+
   return (
     <div style={{ padding: "1rem 0", maxWidth: "100%" }}>
       {/* 옵션 바 */}
-      <div
-        style={{
-          display: "flex",
-          gap: "1rem",
-          flexWrap: "wrap",
-          marginBottom: "0.75rem",
-          alignItems: "center",
-          fontSize: "0.875rem",
-        }}
-      >
+      <div style={toolbarStyle}>
         <label>
           JSX:{" "}
           <select
@@ -150,7 +148,7 @@ export default function Playground() {
             <option value="input.js">input.js</option>
           </select>
         </label>
-        <label style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+        <label style={checkboxLabel}>
           <input
             type="checkbox"
             checked={options.minify}
@@ -158,7 +156,7 @@ export default function Playground() {
           />
           Minify
         </label>
-        <label style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+        <label style={checkboxLabel}>
           <input
             type="checkbox"
             checked={options.sourcemap}
@@ -166,91 +164,138 @@ export default function Playground() {
           />
           Sourcemap
         </label>
+        {loading && <span style={{ opacity: 0.6, fontSize: "0.75rem" }}>Loading WASM...</span>}
       </div>
 
       {/* 에디터 영역 */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "0.5rem",
-          minHeight: "400px",
-        }}
-      >
+      <div style={editorGrid}>
         {/* 입력 */}
-        <div style={{ display: "flex", flexDirection: "column" }}>
+        <div style={panelStyle}>
           <div style={headerStyle}>Input (TypeScript)</div>
-          <textarea
-            value={input}
-            onChange={handleInputChange}
-            style={editorStyle}
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-          />
+          <div style={editorContainer}>
+            <Editor
+              height="500px"
+              language={inputLang}
+              theme="vs-dark"
+              value={input}
+              onChange={handleInputChange}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 14,
+                lineNumbers: "on",
+                scrollBeyondLastLine: false,
+                wordWrap: "on",
+                tabSize: 2,
+                automaticLayout: true,
+                padding: { top: 8 },
+              }}
+            />
+          </div>
         </div>
 
         {/* 출력 */}
-        <div style={{ display: "flex", flexDirection: "column" }}>
+        <div style={panelStyle}>
           <div style={headerStyle}>
             Output (JavaScript)
-            {loading && <span style={{ marginLeft: "0.5rem", opacity: 0.6 }}>Loading WASM...</span>}
+            {error && (
+              <span style={{ color: "#f87171", marginLeft: "0.5rem", fontWeight: 400 }}>
+                Error
+              </span>
+            )}
           </div>
-          {error ? (
-            <pre style={{ ...editorStyle, color: "#f87171", whiteSpace: "pre-wrap" }}>
-              {error}
-            </pre>
-          ) : (
-            <textarea
-              value={output}
-              readOnly
-              style={{ ...editorStyle, opacity: loading ? 0.5 : 1 }}
-            />
-          )}
+          <div style={editorContainer}>
+            {error ? (
+              <Editor
+                height="500px"
+                language="plaintext"
+                theme="vs-dark"
+                value={error}
+                options={{
+                  readOnly: true,
+                  minimap: { enabled: false },
+                  fontSize: 14,
+                  lineNumbers: "off",
+                  scrollBeyondLastLine: false,
+                  wordWrap: "on",
+                  automaticLayout: true,
+                  padding: { top: 8 },
+                }}
+              />
+            ) : (
+              <Editor
+                height="500px"
+                language="javascript"
+                theme="vs-dark"
+                value={output}
+                options={{
+                  readOnly: true,
+                  minimap: { enabled: false },
+                  fontSize: 14,
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  wordWrap: "on",
+                  automaticLayout: true,
+                  padding: { top: 8 },
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {/* 소스맵 출력 */}
-      {options.sourcemap && output && !error && (
+      {options.sourcemap && sourcemapOutput && !error && (
         <details style={{ marginTop: "0.5rem" }}>
           <summary style={{ cursor: "pointer", fontSize: "0.875rem" }}>Sourcemap</summary>
-          <pre
-            style={{
-              ...editorStyle,
-              height: "150px",
-              marginTop: "0.25rem",
-              fontSize: "0.75rem",
-            }}
-          >
-            {(() => {
-              try {
-                const r = wasmRef.current?.transpile(input, { ...options });
-                return r?.map || "No sourcemap";
-              } catch {
-                return "Error generating sourcemap";
-              }
-            })()}
-          </pre>
+          <div style={{ marginTop: "0.25rem" }}>
+            <Editor
+              height="200px"
+              language="json"
+              theme="vs-dark"
+              value={sourcemapOutput}
+              options={{
+                readOnly: true,
+                minimap: { enabled: false },
+                fontSize: 12,
+                lineNumbers: "off",
+                scrollBeyondLastLine: false,
+                wordWrap: "on",
+                automaticLayout: true,
+              }}
+            />
+          </div>
         </details>
       )}
     </div>
   );
 }
 
-const editorStyle: React.CSSProperties = {
-  flex: 1,
-  fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+const toolbarStyle: React.CSSProperties = {
+  display: "flex",
+  gap: "1rem",
+  flexWrap: "wrap",
+  marginBottom: "0.75rem",
+  alignItems: "center",
   fontSize: "0.875rem",
-  lineHeight: 1.5,
-  padding: "0.75rem",
+};
+
+const editorGrid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: "0.5rem",
+};
+
+const panelStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+  borderRadius: "0.375rem",
   border: "1px solid var(--sl-color-gray-5, #374151)",
-  borderRadius: "0 0 0.375rem 0.375rem",
-  backgroundColor: "var(--sl-color-gray-7, #111827)",
-  color: "var(--sl-color-white, #f9fafb)",
-  resize: "vertical",
-  outline: "none",
-  minHeight: "400px",
-  tabSize: 2,
+};
+
+const editorContainer: React.CSSProperties = {
+  flex: 1,
+  overflow: "hidden",
 };
 
 const headerStyle: React.CSSProperties = {
@@ -260,9 +305,7 @@ const headerStyle: React.CSSProperties = {
   textTransform: "uppercase",
   letterSpacing: "0.05em",
   backgroundColor: "var(--sl-color-gray-6, #1f2937)",
-  borderRadius: "0.375rem 0.375rem 0 0",
-  border: "1px solid var(--sl-color-gray-5, #374151)",
-  borderBottom: "none",
+  borderBottom: "1px solid var(--sl-color-gray-5, #374151)",
 };
 
 const selectStyle: React.CSSProperties = {
@@ -272,4 +315,10 @@ const selectStyle: React.CSSProperties = {
   backgroundColor: "var(--sl-color-gray-6, #1f2937)",
   color: "inherit",
   fontSize: "0.875rem",
+};
+
+const checkboxLabel: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "0.25rem",
 };
