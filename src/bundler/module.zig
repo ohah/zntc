@@ -44,7 +44,7 @@ pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
-    /// dev mode 모듈 ID. emitDevBundle에서 한 번 계산 (path의 서브슬라이스, 할당 없음).
+    /// dev mode 모듈 ID. bundler에서 한 번 계산 (path의 서브슬라이스, 할당 없음).
     dev_id: []const u8 = "",
     /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
     source: []const u8,
@@ -191,6 +191,11 @@ pub const Module = struct {
         dep_index: ModuleIndex,
     ) !void {
         try self.dynamic_imports.append(allocator, dep_index);
+    }
+
+    /// 래퍼 키: dev_id가 있으면 사용, 없으면 basename.
+    pub fn wrapperId(self: *const Module) []const u8 {
+        return if (self.dev_id.len > 0) self.dev_id else std.fs.path.basename(self.path);
     }
 
     pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {

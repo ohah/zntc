@@ -41,8 +41,7 @@ pub fn emitEsmWrappedModule(
     linker: ?*const Linker,
     options: anytype,
 ) ![]const u8 {
-    // dev mode: HMR 모듈 ID로 사용하기 위해 dev_id 우선, 없으면 basename
-    const basename = if (module.dev_id.len > 0) module.dev_id else std.fs.path.basename(module.path);
+    const basename = module.wrapperId();
 
     const init_name = try types.makeInitVarName(allocator, module.path);
     defer allocator.free(init_name);
