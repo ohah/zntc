@@ -9,3 +9,17 @@
   --sl-color-accent: #16a34a;
   --sl-color-accent-high: #052e16;
 }
+
+/* Monaco Editor: Starlight CSS 충돌 방지 */
+.monaco-editor,
+.monaco-editor * {
+  line-height: normal !important;
+}
+.monaco-editor .view-lines {
+  font-feature-settings: normal !important;
+}
+/* Playground 페이지에서 Starlight content 패딩 제거 */
+[data-page-route="playground"] .main-pane,
+[data-page-route="en/playground"] .main-pane {
+  padding: 0;
+}
