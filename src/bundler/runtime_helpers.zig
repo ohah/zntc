@@ -358,6 +358,11 @@ pub const HMR_RUNTIME =
     \\var __zts_modules = {};
     \\var __zts_hot_cbs = {};
     \\var __zts_hot_data = {};
+    \\var __zts_g = typeof globalThis !== "undefined" ? globalThis : typeof global !== "undefined" ? global : typeof window !== "undefined" ? window : this;
+    \\var __zts_reload = function() {
+    \\  if (typeof location !== "undefined") location.reload();
+    \\  else if (__zts_g.nativeModuleProxy && __zts_g.nativeModuleProxy.DevSettings) __zts_g.nativeModuleProxy.DevSettings.reload();
+    \\};
     \\function __zts_require(id) {
     \\  var m = __zts_modules[id];
     \\  if (!m) throw new Error("[zts] Module not found: " + id);
@@ -374,14 +379,14 @@ pub const HMR_RUNTIME =
     \\    },
     \\    dispose: function(cb) { __zts_hot_cbs[id].dispose = cb; },
     \\    prune: function(cb) { __zts_hot_cbs[id].prune = cb; },
-    \\    invalidate: function() { location.reload(); }
+    \\    invalidate: function() { __zts_reload(); }
     \\  };
     \\}
     \\function __zts_register(id, factory) {
     \\  var prev = __zts_modules[id];
     \\  var mod = { exports: {}, hot: __zts_make_hot(id), factory: factory };
     \\  __zts_modules[id] = mod;
-    \\  window.__zts_currentModuleId = id;
+    \\  __zts_g.__zts_currentModuleId = id;
     \\  factory(mod, mod.exports);
     \\  if (prev) {
     \\    var cbs = __zts_hot_cbs[id];
@@ -395,20 +400,27 @@ pub const HMR_RUNTIME =
     \\  for (var i = 0; i < updates.length; i++) {
     \\    var id = updates[i].id;
     \\    var cbs = __zts_hot_cbs[id];
-    \\    if (!cbs || !cbs.accept) { location.reload(); return; }
+    \\    if (!cbs || !cbs.accept) { __zts_reload(); return; }
     \\    try {
-    \\      var fn = new Function("__zts_register", "__zts_require", "__zts_make_hot", updates[i].code);
-    \\      fn(__zts_register, __zts_require, __zts_make_hot);
+    \\      // globalEvalWithSourceUrl (RN/Hermes): code runs in global scope, so
+    \\      // __zts_register etc. must be global vars (which they are).
+    \\      // new Function (browser): code receives them as function params.
+    \\      if (typeof __zts_g.globalEvalWithSourceUrl === "function") {
+    \\        __zts_g.globalEvalWithSourceUrl(updates[i].code, "zts-hmr://" + id);
+    \\      } else {
+    \\        var fn = new Function("__zts_register", "__zts_require", "__zts_make_hot", updates[i].code);
+    \\        fn(__zts_register, __zts_require, __zts_make_hot);
+    \\      }
     \\      if (typeof cbs.accept === "function") cbs.accept();
-    \\    } catch(e) { console.error("[zts] HMR update failed:", e); location.reload(); }
+    \\    } catch(e) { console.error("[zts] HMR update failed:", e); __zts_reload(); }
     \\  }
     \\  if (typeof __zts_RefreshRuntime !== "undefined") __zts_RefreshRuntime.performReactRefresh();
     \\}
-    \\var __zts_RefreshRuntime = window.__REACT_REFRESH_RUNTIME__;
-    \\window.$RefreshReg$ = function(type, id) {
-    \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, window.__zts_currentModuleId + " " + id);
+    \\var __zts_RefreshRuntime = __zts_g.__REACT_REFRESH_RUNTIME__;
+    \\__zts_g.$RefreshReg$ = function(type, id) {
+    \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, __zts_g.__zts_currentModuleId + " " + id);
     \\};
-    \\window.$RefreshSig$ = function() {
+    \\__zts_g.$RefreshSig$ = function() {
     \\  if (__zts_RefreshRuntime) return __zts_RefreshRuntime.createSignatureFunctionForTransform();
     \\  return function(type) { return type; };
     \\};
@@ -416,7 +428,7 @@ pub const HMR_RUNTIME =
 ;
 
 pub const HMR_RUNTIME_MIN =
-    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={};function __zts_require(id){var m=__zts_modules[id];if(!m)throw new Error("[zts] Module not found: "+id);return m.exports}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){location.reload()}}}function __zts_register(id,f){var p=__zts_modules[id];var m={exports:{},hot:__zts_make_hot(id),factory:f};__zts_modules[id]=m;f(m,m.exports);if(p){var c=__zts_hot_cbs[id];if(c&&c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}}}function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){location.reload();return}try{var fn=new Function("__zts_register","__zts_require","__zts_make_hot",u[i].code);fn(__zts_register,__zts_require,__zts_make_hot);if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);location.reload()}}}
+    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_require(id){var m=__zts_modules[id];if(!m)throw new Error("[zts] Module not found: "+id);return m.exports}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()}}}function __zts_register(id,f){var p=__zts_modules[id];var m={exports:{},hot:__zts_make_hot(id),factory:f};__zts_modules[id]=m;__zts_g.__zts_currentModuleId=id;f(m,m.exports);if(p){var c=__zts_hot_cbs[id];if(c&&c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}}}function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(typeof __zts_g.globalEvalWithSourceUrl==="function"){__zts_g.globalEvalWithSourceUrl(u[i].code,"zts-hmr://"+id)}else{var fn=new Function("__zts_register","__zts_require","__zts_make_hot",u[i].code);fn(__zts_register,__zts_require,__zts_make_hot)}if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}if(typeof __zts_RefreshRuntime!=="undefined")__zts_RefreshRuntime.performReactRefresh()}var __zts_RefreshRuntime=__zts_g.__REACT_REFRESH_RUNTIME__;__zts_g.$RefreshReg$=function(t,id){if(__zts_RefreshRuntime)__zts_RefreshRuntime.register(t,__zts_g.__zts_currentModuleId+" "+id)};__zts_g.$RefreshSig$=function(){if(__zts_RefreshRuntime)return __zts_RefreshRuntime.createSignatureFunctionForTransform();return function(t){return t}}
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산���, comptime)

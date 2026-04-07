@@ -33,6 +33,7 @@ const CliOptions = struct {
     quote_style: lib.codegen.QuoteStyle = .double,
     watch: bool = false,
     watch_json: bool = false,
+    dev: bool = false,
     is_test262: bool = false,
     is_tokenize: bool = false,
     is_bundle: bool = false,
@@ -292,6 +293,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--watch-json")) {
             opts.watch = true;
             opts.watch_json = true;
+        } else if (std.mem.eql(u8, arg, "--dev")) {
+            opts.dev = true;
         } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
             opts.watch = true;
         } else if (std.mem.eql(u8, arg, "--flow")) {
@@ -1296,6 +1299,9 @@ pub fn main() !void {
             .line_limit = opts.line_limit,
             .preserve_modules = opts.preserve_modules,
             .preserve_modules_root = opts.preserve_modules_root,
+            .dev_mode = opts.dev,
+            .react_refresh = opts.dev,
+            .root_dir = if (opts.dev) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -1702,14 +1708,38 @@ pub fn main() !void {
                         if (i > 0) try stdout.print(",", .{});
                         try writeJsonString(stdout, path);
                     }
-                    try stdout.print("],\"modules\":[", .{});
-                    if (rebuild_result.module_paths) |paths| {
-                        for (paths, 0..) |p, i| {
-                            if (i > 0) try stdout.print(",", .{});
-                            try writeJsonString(stdout, p);
+                    try stdout.print("]", .{});
+
+                    // --dev 모드: module_dev_codes를 updates 필드로 출력 (HMR용)
+                    if (rebuild_result.module_dev_codes) |dev_codes| {
+                        if (dev_codes.len > 0) {
+                            try stdout.print(",\"updates\":[", .{});
+                            for (dev_codes, 0..) |dc, i| {
+                                if (i > 0) try stdout.print(",", .{});
+                                try stdout.print("{{\"id\":", .{});
+                                try writeJsonString(stdout, dc.id);
+                                try stdout.print(",\"code\":", .{});
+                                try writeJsonString(stdout, dc.code);
+                                try stdout.print("}}", .{});
+                            }
+                            try stdout.print("]", .{});
+                        } else {
+                            // dev_mode인데 변경 모듈이 없음 → 그래프 변경 (새 import 추가 등)
+                            try stdout.print(",\"graph_changed\":true", .{});
                         }
+                    } else {
+                        // dev_mode가 아닌 경우 기존 modules 필드 유지 (하위 호환)
+                        try stdout.print(",\"modules\":[", .{});
+                        if (rebuild_result.module_paths) |paths| {
+                            for (paths, 0..) |p, i| {
+                                if (i > 0) try stdout.print(",", .{});
+                                try writeJsonString(stdout, p);
+                            }
+                        }
+                        try stdout.print("]", .{});
                     }
-                    try stdout.print("],\"bytes\":{d}}}\n", .{output_bytes});
+
+                    try stdout.print(",\"bytes\":{d}}}\n", .{output_bytes});
                 }
 
                 // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
