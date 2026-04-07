@@ -133,6 +133,10 @@ const CliOptions = struct {
     watch_delay_ms: u32 = 100,
     /// --clean: 빌드 전 출력 디렉토리 정리
     clean: bool = false,
+    /// --preserve-modules: 모듈 1개 = 출력 파일 1개 (라이브러리 빌드용)
+    preserve_modules: bool = false,
+    /// --preserve-modules-root=<dir>: 출력 디렉토리 구조의 기준 경로
+    preserve_modules_root: ?[]const u8 = null,
 
     const RnPlatform = enum {
         none,
@@ -378,6 +382,10 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             opts.splitting = true;
+        } else if (std.mem.eql(u8, arg, "--preserve-modules")) {
+            opts.preserve_modules = true;
+        } else if (std.mem.startsWith(u8, arg, "--preserve-modules-root=")) {
+            opts.preserve_modules_root = arg["--preserve-modules-root=".len..];
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -612,7 +620,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
     // react-native는 IIFE 불필요 — Metro/Rollipop도 IIFE 없이 글로벌 스코프에서 실행.
     // preamble과 __esm 래핑이 스코프 격리를 담당.
-    if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit) {
+    if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit and !opts.preserve_modules) {
         opts.bundle_format = .iife;
     }
 
@@ -1106,6 +1114,23 @@ pub fn main() !void {
             return;
         }
 
+        // --preserve-modules는 --outdir 필수
+        if (opts.preserve_modules and opts.output_dir == null) {
+            try stderr.print("Error: --preserve-modules requires --outdir\n", .{});
+            return;
+        }
+
+        // --preserve-modules-root를 절대 경로로 resolve (symlink 해결)
+        var resolved_pm_root: ?[]const u8 = null;
+        defer if (resolved_pm_root) |r| allocator.free(r);
+        if (opts.preserve_modules_root) |pmr| {
+            resolved_pm_root = std.fs.cwd().realpathAlloc(allocator, pmr) catch |err| {
+                try stderr.print("zts: cannot resolve preserve-modules-root '{s}': {}\n", .{ pmr, err });
+                return;
+            };
+            opts.preserve_modules_root = resolved_pm_root;
+        }
+
         // Subprocess 플러그인 spawn (--plugin 옵션이 있을 때)
         var subprocess_list: std.ArrayList(*SubprocessPlugin) = .empty;
         defer {
@@ -1260,6 +1285,8 @@ pub fn main() !void {
             .tsconfig_raw = opts.tsconfig_raw,
             .node_paths = opts.node_paths_list.items,
             .line_limit = opts.line_limit,
+            .preserve_modules = opts.preserve_modules,
+            .preserve_modules_root = opts.preserve_modules_root,
         };
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
@@ -2001,6 +2028,8 @@ fn printUsage(writer: anytype) !void {
         \\Bundle options:
         \\  --bundle                         Enable bundle mode
         \\  --splitting                      Enable code splitting (requires --outdir)
+        \\  --preserve-modules               One file per module (library builds, requires --outdir)
+        \\  --preserve-modules-root=<dir>    Root directory for output structure
         \\  --external <pkg>                 Exclude package (repeatable)
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)

@@ -124,6 +124,18 @@ pub fn emitChunks(
             const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
             const dep_ci = @intFromEnum(dep_chunk_idx);
 
+            // preserve-modules: 상대 경로 계산 (서로 다른 디렉토리에 있을 수 있음)
+            // 일반 code splitting: 모든 청크가 같은 outdir에 있으므로 "./"
+            const import_prefix = if (options.preserve_modules) blk: {
+                const src_path = chunk.rel_dir orelse "./";
+                const dep_path = dep_chunk.rel_dir orelse "./";
+                break :blk try computeRelativeImportPath(allocator, src_path, dep_path, dep_stem, ext, options.preserve_modules_root);
+            } else null;
+            defer if (import_prefix) |p| allocator.free(p);
+
+            // import 경로: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
+            const import_path = if (import_prefix) |p| p else null;
+
             // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
             const symbols = chunk.imports_from.get(dep_ci);
 
@@ -161,29 +173,53 @@ pub fn emitChunks(
                         }
                     }
                 }
-                if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, " } from \"./");
-                    try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ext);
-                    try chunk_output.appendSlice(allocator, "\";\n");
+                if (import_path) |ip| {
+                    if (!options.minify_whitespace) {
+                        try chunk_output.appendSlice(allocator, " } from \"");
+                        try chunk_output.appendSlice(allocator, ip);
+                        try chunk_output.appendSlice(allocator, "\";\n");
+                    } else {
+                        try chunk_output.appendSlice(allocator, "}from\"");
+                        try chunk_output.appendSlice(allocator, ip);
+                        try chunk_output.appendSlice(allocator, "\";");
+                    }
                 } else {
-                    try chunk_output.appendSlice(allocator, "}from\"./");
-                    try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ext);
-                    try chunk_output.appendSlice(allocator, "\";");
+                    if (!options.minify_whitespace) {
+                        try chunk_output.appendSlice(allocator, " } from \"./");
+                        try chunk_output.appendSlice(allocator, dep_stem);
+                        try chunk_output.appendSlice(allocator, ext);
+                        try chunk_output.appendSlice(allocator, "\";\n");
+                    } else {
+                        try chunk_output.appendSlice(allocator, "}from\"./");
+                        try chunk_output.appendSlice(allocator, dep_stem);
+                        try chunk_output.appendSlice(allocator, ext);
+                        try chunk_output.appendSlice(allocator, "\";");
+                    }
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
-                if (!options.minify_whitespace) {
-                    try chunk_output.appendSlice(allocator, "import \"./");
-                    try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ext);
-                    try chunk_output.appendSlice(allocator, "\";\n");
+                if (import_path) |ip| {
+                    if (!options.minify_whitespace) {
+                        try chunk_output.appendSlice(allocator, "import \"");
+                        try chunk_output.appendSlice(allocator, ip);
+                        try chunk_output.appendSlice(allocator, "\";\n");
+                    } else {
+                        try chunk_output.appendSlice(allocator, "import\"");
+                        try chunk_output.appendSlice(allocator, ip);
+                        try chunk_output.appendSlice(allocator, "\";");
+                    }
                 } else {
-                    try chunk_output.appendSlice(allocator, "import\"./");
-                    try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ext);
-                    try chunk_output.appendSlice(allocator, "\";");
+                    if (!options.minify_whitespace) {
+                        try chunk_output.appendSlice(allocator, "import \"./");
+                        try chunk_output.appendSlice(allocator, dep_stem);
+                        try chunk_output.appendSlice(allocator, ext);
+                        try chunk_output.appendSlice(allocator, "\";\n");
+                    } else {
+                        try chunk_output.appendSlice(allocator, "import\"./");
+                        try chunk_output.appendSlice(allocator, dep_stem);
+                        try chunk_output.appendSlice(allocator, ext);
+                        try chunk_output.appendSlice(allocator, "\";");
+                    }
                 }
             }
         }
@@ -260,8 +296,9 @@ pub fn emitChunks(
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
+        // preserve-modules에서는 모듈 자체의 export가 유지되므로 cross-chunk export 불필요.
         // linker가 심볼을 rename한 경우 export { local_name as export_name } 형태로 출력.
-        if (chunk.exports_to.count() > 0) {
+        if (chunk.exports_to.count() > 0 and !options.preserve_modules) {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
@@ -345,10 +382,16 @@ pub fn emitChunks(
             try chunk_output.append(allocator, '\n');
         }
 
-        // 출력 파일명 생성: "{stem}{ext}" (placeholder hash 포함, 나중에 치환)
-        var stem_buf: [128]u8 = undefined;
-        const stem = chunkPlaceholderStem(chunk, &stem_buf, options);
-        const filename = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext });
+        // 출력 파일명 생성
+        const filename = if (options.preserve_modules and chunk.rel_dir != null)
+            // preserve-modules: 원본 경로에서 root를 제거한 상대 경로 사용
+            try computePreserveModulesPath(allocator, chunk.rel_dir.?, ext, options.preserve_modules_root)
+        else blk: {
+            // 일반 code splitting: "{stem}{ext}" (placeholder hash 포함, 나중에 치환)
+            var stem_buf: [128]u8 = undefined;
+            const stem = chunkPlaceholderStem(chunk, &stem_buf, options);
+            break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext });
+        };
         errdefer allocator.free(filename);
 
         try outputs.append(allocator, .{
@@ -811,4 +854,193 @@ pub fn computeAllUsedNames(
     }
 
     return list;
+}
+
+// ============================================================
+// preserve-modules 경로 유틸리티
+// ============================================================
+
+/// preserve-modules: 모듈의 절대 경로에서 root를 제거하고 출력 상대 경로를 생성한다.
+/// 예: abs_path="/Users/me/project/src/utils.ts", root="/Users/me/project/src"
+///     → "utils.js"
+/// root가 null이면 파일명만 사용 (stem + ext).
+fn computePreserveModulesPath(
+    allocator: std.mem.Allocator,
+    abs_path: []const u8,
+    out_ext: []const u8,
+    root: ?[]const u8,
+) ![]const u8 {
+    const stem = std.fs.path.stem(std.fs.path.basename(abs_path));
+
+    if (root) |r| {
+        // root 경로를 기준으로 상대 경로 계산
+        // abs_path가 root로 시작하면 그 뒷부분을 사용
+        const normalized_root = if (r.len > 0 and r[r.len - 1] == '/') r[0 .. r.len - 1] else r;
+        if (std.mem.startsWith(u8, abs_path, normalized_root)) {
+            var rel = abs_path[normalized_root.len..];
+            // 선행 '/' 제거
+            if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+            // 확장자를 교체
+            const rel_stem = rel[0 .. rel.len - (std.fs.path.extension(rel).len)];
+            return std.fmt.allocPrint(allocator, "{s}{s}", .{ rel_stem, out_ext });
+        }
+    }
+
+    // root가 없거나 매칭 실패 → 공통 부모를 자동 감지하지 않고 파일명만 사용
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, out_ext });
+}
+
+/// preserve-modules: 두 모듈 간의 상대 import 경로를 계산한다.
+/// src_abs: import하는 모듈의 절대 경로
+/// dep_abs: import 대상 모듈의 절대 경로
+/// dep_stem: 대상 청크의 stem 이름 (fallback용)
+/// ext: 출력 확장자
+/// root: preserve-modules-root (null 가능)
+///
+/// 반환값: "./utils.js" 또는 "../lib/helper.js" 형태의 상대 경로 (allocator 소유)
+fn computeRelativeImportPath(
+    allocator: std.mem.Allocator,
+    src_abs: []const u8,
+    dep_abs: []const u8,
+    dep_stem: []const u8,
+    ext: []const u8,
+    root: ?[]const u8,
+) ![]const u8 {
+    // root가 있으면 root 기준 상대 경로에서 계산
+    if (root) |r| {
+        const normalized_root = if (r.len > 0 and r[r.len - 1] == '/') r[0 .. r.len - 1] else r;
+
+        const src_rel = stripRoot(src_abs, normalized_root);
+        const dep_rel = stripRoot(dep_abs, normalized_root);
+
+        if (src_rel != null and dep_rel != null) {
+            // 둘 다 root 아래 → 상대 경로 계산
+            const src_dir = std.fs.path.dirname(src_rel.?) orelse "";
+            const dep_rel_no_ext = dep_rel.?[0 .. dep_rel.?.len - std.fs.path.extension(dep_rel.?).len];
+            const rel = try computeRelativePath(allocator, src_dir, dep_rel_no_ext, ext);
+            return rel;
+        }
+    }
+
+    // root 없거나 매칭 실패 → 절대 경로의 디렉토리 기준으로 계산
+    const src_dir = std.fs.path.dirname(src_abs) orelse "";
+    const dep_dir = std.fs.path.dirname(dep_abs) orelse "";
+
+    if (std.mem.eql(u8, src_dir, dep_dir)) {
+        // 같은 디렉토리
+        return std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+    }
+
+    // 다른 디렉토리: dep의 상대 경로 계산
+    const dep_basename_no_ext = std.fs.path.stem(std.fs.path.basename(dep_abs));
+    const dep_full_rel = dep_abs[0 .. dep_abs.len - std.fs.path.extension(dep_abs).len];
+    _ = dep_full_rel;
+
+    // 공통 prefix 찾기
+    var common_len: usize = 0;
+    const min_len = @min(src_dir.len, dep_dir.len);
+    for (0..min_len) |i| {
+        if (src_dir[i] == dep_dir[i]) {
+            if (src_dir[i] == '/') common_len = i + 1;
+        } else break;
+    }
+    if (common_len == 0 and min_len > 0 and src_dir[0] != '/') {
+        common_len = 0;
+    }
+
+    // src_dir에서 common 이후의 깊이만큼 "../"
+    const src_remaining = src_dir[common_len..];
+    var depth: usize = 0;
+    if (src_remaining.len > 0) {
+        depth = 1;
+        for (src_remaining) |c| {
+            if (c == '/') depth += 1;
+        }
+    }
+
+    // dep_dir에서 common 이후 + dep 파일명
+    const dep_remaining = if (dep_dir.len > common_len) dep_dir[common_len..] else "";
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    if (depth == 0) {
+        try result.appendSlice(allocator, "./");
+    } else {
+        for (0..depth) |_| {
+            try result.appendSlice(allocator, "../");
+        }
+    }
+
+    if (dep_remaining.len > 0) {
+        try result.appendSlice(allocator, dep_remaining);
+        try result.append(allocator, '/');
+    }
+    try result.appendSlice(allocator, dep_basename_no_ext);
+    try result.appendSlice(allocator, ext);
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// 절대 경로에서 root prefix를 제거한다.
+/// 예: stripRoot("/a/b/c.ts", "/a/b") → "c.ts"
+fn stripRoot(abs_path: []const u8, root: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, abs_path, root)) {
+        var rel = abs_path[root.len..];
+        if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+        return rel;
+    }
+    return null;
+}
+
+/// src_dir에서 dep_path로의 상대 경로를 계산한다.
+/// 두 경로 모두 root 기준의 상대 경로여야 한다.
+fn computeRelativePath(
+    allocator: std.mem.Allocator,
+    src_dir: []const u8,
+    dep_path_no_ext: []const u8,
+    ext: []const u8,
+) ![]const u8 {
+    // 공통 prefix 찾기
+    var common_len: usize = 0;
+    const min_len = @min(src_dir.len, dep_path_no_ext.len);
+    for (0..min_len) |i| {
+        if (src_dir.len > i and dep_path_no_ext.len > i and src_dir[i] == dep_path_no_ext[i]) {
+            if (src_dir[i] == '/') common_len = i + 1;
+        } else break;
+    }
+    // 전체가 일치하면 (src_dir가 dep_path_no_ext의 prefix이거나 같을 때)
+    if (min_len == src_dir.len and (dep_path_no_ext.len == src_dir.len or
+        (dep_path_no_ext.len > src_dir.len and dep_path_no_ext[src_dir.len] == '/')))
+    {
+        common_len = src_dir.len;
+        if (dep_path_no_ext.len > src_dir.len) common_len += 1; // '/' 건너뛰기
+    }
+
+    // src_dir에서 common 이후의 깊이
+    const src_remaining = if (common_len <= src_dir.len) src_dir[common_len..] else "";
+    var depth: usize = 0;
+    if (src_remaining.len > 0) {
+        depth = 1;
+        for (src_remaining) |c| {
+            if (c == '/') depth += 1;
+        }
+    }
+
+    const dep_remaining = if (common_len <= dep_path_no_ext.len) dep_path_no_ext[common_len..] else dep_path_no_ext;
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    if (depth == 0) {
+        try result.appendSlice(allocator, "./");
+    } else {
+        for (0..depth) |_| {
+            try result.appendSlice(allocator, "../");
+        }
+    }
+    try result.appendSlice(allocator, dep_remaining);
+    try result.appendSlice(allocator, ext);
+
+    return result.toOwnedSlice(allocator);
 }

@@ -162,6 +162,13 @@ pub const BundleOptions = struct {
     node_paths: []const []const u8 = &.{},
     /// --line-limit: 줄 길이 제한 (0=무제한)
     line_limit: u32 = 0,
+    /// --preserve-modules: 모듈 1개 = 출력 파일 1개 (라이브러리 빌드용).
+    /// code_splitting을 자동으로 활성화한다.
+    preserve_modules: bool = false,
+    /// --preserve-modules-root: 출력 디렉토리 구조의 기준 경로.
+    /// 이 경로를 기준으로 상대 경로를 계산하여 출력 파일 구조를 결정한다.
+    /// null이면 엔트리 포인트들의 공통 부모 디렉토리를 자동 계산.
+    preserve_modules_root: ?[]const u8 = null,
 
     pub const AliasEntry = types.AliasEntry;
 };
@@ -615,23 +622,34 @@ pub const Bundler = struct {
             output = dev_result.output;
             module_dev_codes_from_emit = dev_result.module_codes;
             dev_sourcemap = dev_result.sourcemap;
-        } else if (self.options.code_splitting) {
-            // Code splitting 경로: 청크 그래프 생성 → 다중 파일 출력
-            var chunk_graph = try chunk_mod.generateChunks(
-                self.allocator,
-                graph.modules.items,
-                self.options.entry_points,
-                if (shaker) |*s| s else null,
-            );
+        } else if (self.options.code_splitting or self.options.preserve_modules) {
+            // Code splitting / preserve-modules 경로: 청크 그래프 생성 → 다중 파일 출력
+            var chunk_graph = if (self.options.preserve_modules)
+                try chunk_mod.generatePreserveModulesChunks(
+                    self.allocator,
+                    graph.modules.items,
+                    self.options.entry_points,
+                    if (shaker) |*s| s else null,
+                )
+            else
+                try chunk_mod.generateChunks(
+                    self.allocator,
+                    graph.modules.items,
+                    self.options.entry_points,
+                    if (shaker) |*s| s else null,
+                );
             defer chunk_graph.deinit();
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph.modules.items, self.allocator, if (linker) |*l| l else null);
 
+            var emit_opts = self.makeEmitOptions();
+            emit_opts.preserve_modules = self.options.preserve_modules;
+            emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             outputs = try emitter.emitChunks(
                 self.allocator,
                 graph.modules.items,
                 &chunk_graph,
-                self.makeEmitOptions(),
+                emit_opts,
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {

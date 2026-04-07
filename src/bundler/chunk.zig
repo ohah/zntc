@@ -159,6 +159,9 @@ pub const Chunk = struct {
     filename: ?[]const u8,
     /// 실행 순서 (exec_index 기준 정렬에 사용)
     exec_order: u32,
+    /// preserve-modules: 원본 모듈의 절대 경로 (출력 디렉토리 구조 결정용).
+    /// null이면 일반 청크 (preserve-modules 아님).
+    rel_dir: ?[]const u8 = null,
 
     // Cross-chunk linking
     /// 이 청크가 import하는 다른 청크 목록
@@ -506,6 +509,92 @@ pub fn generateChunks(
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         }
+    }
+
+    return chunk_graph;
+}
+
+/// preserve-modules 모드: 모듈 1개 = 청크 1개.
+/// 라이브러리 빌드에서 원본 디렉토리 구조를 유지하기 위해 사용한다.
+/// 각 모듈이 개별 출력 파일이 되며, cross-chunk import로 서로 연결된다.
+pub fn generatePreserveModulesChunks(
+    allocator: std.mem.Allocator,
+    modules: []const Module,
+    entry_points: []const []const u8,
+    shaker: ?*const TreeShaker,
+) !ChunkGraph {
+    var chunk_graph = try ChunkGraph.init(allocator, modules.len);
+    errdefer chunk_graph.deinit();
+
+    // 엔트리 모듈 인덱스를 미리 수집 (entry_point 청크 판별용)
+    var entry_set: std.AutoHashMap(u32, void) = .init(allocator);
+    defer entry_set.deinit();
+    for (modules, 0..) |m, i| {
+        for (entry_points) |ep| {
+            if (std.mem.eql(u8, m.path, ep)) {
+                try entry_set.put(@intCast(i), {});
+                break;
+            }
+        }
+    }
+
+    // exec_index 순으로 정렬하여 결정론적 청크 순서 보장
+    const sorted_indices = try allocator.alloc(usize, modules.len);
+    defer allocator.free(sorted_indices);
+    for (sorted_indices, 0..) |*idx, i| idx.* = i;
+    std.mem.sort(usize, sorted_indices, modules, struct {
+        fn lessThan(mods: []const Module, a: usize, b: usize) bool {
+            return mods[a].exec_index < mods[b].exec_index;
+        }
+    }.lessThan);
+
+    for (sorted_indices) |mi| {
+        // tree-shaking: 미포함 모듈 스킵
+        if (shaker) |s| {
+            if (!s.isIncluded(@intCast(mi))) continue;
+        }
+
+        // JS 모듈만 청크에 할당
+        if (modules[mi].module_type != .javascript) continue;
+
+        // 모듈 1개 = 청크 1개
+        // BitSet은 비어있는 상태로 생성 (preserve-modules에서는 reachability 불필요)
+        var bits = try BitSet.init(allocator, 1);
+        errdefer bits.deinit(allocator);
+
+        const is_entry = entry_set.contains(@intCast(mi));
+        const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
+
+        // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
+        const name = std.fs.path.stem(std.fs.path.basename(modules[mi].path));
+
+        var chunk = if (is_entry) blk: {
+            bits.setBit(0);
+            var c = Chunk.init(.none, .{ .entry_point = .{
+                .bit = 0,
+                .module = mod_idx,
+                .is_dynamic = false,
+            } }, bits);
+            c.name = name;
+            break :blk c;
+        } else blk: {
+            // 비엔트리 모듈도 name을 설정해야 출력 파일명이 생성됨
+            var c = Chunk.init(.none, .{ .entry_point = .{
+                .bit = 0,
+                .module = mod_idx,
+                .is_dynamic = false,
+            } }, bits);
+            c.name = name;
+            break :blk c;
+        };
+
+        chunk.exec_order = modules[mi].exec_index;
+        // preserve-modules에서 chunk.rel_dir을 설정하여 디렉토리 구조 유지
+        chunk.rel_dir = modules[mi].path;
+
+        const ci = try chunk_graph.addChunk(chunk);
+        chunk_graph.assignModuleToChunk(mod_idx, ci);
+        try chunk_graph.getChunkMut(ci).addModule(allocator, mod_idx);
     }
 
     return chunk_graph;
