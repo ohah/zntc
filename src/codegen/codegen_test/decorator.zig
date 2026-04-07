@@ -256,3 +256,142 @@ test "metadata: emitDecoratorMetadata=false → no __metadata" {
     // emitDecoratorMetadata가 꺼져있으면 __metadata 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") == null);
 }
+
+// ============================================================
+// SWC 호환: 타입 직렬화 상세 테스트
+// ============================================================
+
+test "metadata: void/null/undefined/never → void 0 (SWC 호환)" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(a: void, b: null, c: undefined, d: never) {}
+        \\}
+    );
+    defer r.deinit();
+    // void/null/undefined/never는 모두 void 0으로 직렬화
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+test "metadata: symbol → typeof Symbol guard (SWC 호환)" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(a: symbol) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof Symbol") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object") != null);
+}
+
+test "metadata: bigint → typeof BigInt guard (SWC 호환)" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(a: bigint) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof BigInt") != null);
+}
+
+test "metadata: class reference → typeof guard (SWC 호환)" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(a: MyService) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "typeof MyService") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"undefined\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "?") != null);
+}
+
+test "metadata: any/object/unknown → Object" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(a: any, b: object, c: unknown) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object") != null);
+}
+
+test "metadata: Function type → Function" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method(callback: Function) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Function") != null);
+}
+
+test "metadata: multiple decorators on method preserve metadata" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Ctrl {
+        \\  @Get("/")
+        \\  @Auth("admin")
+        \\  index(q: string) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "String") != null);
+}
+
+test "metadata: NestJS pattern — constructor DI" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\@Controller()
+        \\class AppController {
+        \\  constructor(appService: AppService, logger: Logger) {}
+        \\  @Get()
+        \\  getHello(): string { return "hello"; }
+        \\}
+    );
+    defer r.deinit();
+    // class decorator에 constructor paramtypes
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "AppService") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Logger") != null);
+    // method decorator에도 metadata
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:returntype") != null);
+}
+
+test "metadata: static method decorator" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @log
+        \\  static create(name: string): Foo { return new Foo(); }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "String") != null);
+}
+
+test "metadata: method with no params → empty array" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @log
+        \\  run() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "design:paramtypes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[]") != null);
+}
+
+test "metadata: mixed primitive + class params" {
+    var r = try e2eDecoratorMetadata(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  method(id: number, name: string, svc: MyService) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "String") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "MyService") != null);
+}
