@@ -702,7 +702,6 @@ pub fn buildDevMetadataForAst(
     self: *const Linker,
     ast: *const Ast,
     module_index: u32,
-    root_dir: ?[]const u8,
 ) !LinkingMetadata {
     if (module_index >= self.modules.len) {
         return .{
@@ -785,16 +784,8 @@ pub fn buildDevMetadataForAst(
         if (info.default_local == null and info.namespace_local == null and info.named_count == 0) continue;
 
         const resolved_mod = @intFromEnum(rec.resolved);
-        const raw_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].path else rec.specifier;
-        // makeModuleId: root_dir가 있으면 상대 경로로 변환 (__zts_register의 ID와 일치시킴)
-        const resolved_path = if (root_dir) |rd| blk: {
-            if (rd.len > 0 and std.mem.startsWith(u8, raw_path, rd)) {
-                var rel = raw_path[rd.len..];
-                if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
-                if (rel.len > 0) break :blk rel;
-            }
-            break :blk raw_path;
-        } else raw_path;
+        // dev_id: emitDevBundle 진입 시 한 번 계산된 모듈 ID (ID 일원화)
+        const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].dev_id else rec.specifier;
 
         // CJS 타겟이면 __toESM 래핑 (default/namespace import에서 CJS interop 필요)
         const is_cjs_target = resolved_mod < self.modules.len and self.modules[resolved_mod].wrap_kind == .cjs;
@@ -835,15 +826,7 @@ pub fn buildDevMetadataForAst(
                         const irec = m.import_records[iri];
                         if (!irec.resolved.isNone()) {
                             const re_mod = @intFromEnum(irec.resolved);
-                            const raw_re_path = if (re_mod < self.modules.len) self.modules[re_mod].path else irec.specifier;
-                            const re_path = if (root_dir) |rd| blk2: {
-                                if (rd.len > 0 and std.mem.startsWith(u8, raw_re_path, rd)) {
-                                    var rel2 = raw_re_path[rd.len..];
-                                    if (rel2.len > 0 and rel2[0] == '/') rel2 = rel2[1..];
-                                    if (rel2.len > 0) break :blk2 rel2;
-                                }
-                                break :blk2 raw_re_path;
-                            } else raw_re_path;
+                            const re_path = if (re_mod < self.modules.len) self.modules[re_mod].dev_id else irec.specifier;
                             try buf.appendSlice(self.allocator, "exports.");
                             try buf.appendSlice(self.allocator, eb.exported_name);
                             try buf.appendSlice(self.allocator, " = __zts_require(\"");

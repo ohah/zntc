@@ -152,7 +152,7 @@ pub fn emitDevBundle(
 
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
-        const module_id = makeModuleId(m.path, options.root_dir);
+        const module_id = m.dev_id;
         const emit_result = try emitDevModule(allocator, m, options, linker) orelse continue;
         defer allocator.free(emit_result.code);
         defer if (emit_result.mappings) |maps| allocator.free(maps);
@@ -166,7 +166,7 @@ pub fn emitDevBundle(
             const resolved_idx = @intFromEnum(rec.resolved);
             if (resolved_idx >= graph.modules.items.len) continue;
             const resolved_mod = graph.modules.items[resolved_idx];
-            const resolved_id = makeModuleId(resolved_mod.path, options.root_dir);
+            const resolved_id = resolved_mod.dev_id;
             // specifier가 이미 resolved_id와 같으면 맵에 추가할 필요 없음
             if (!std.mem.eql(u8, rec.specifier, resolved_id)) {
                 try dep_entries.append(allocator, .{
@@ -228,7 +228,7 @@ pub fn emitDevBundle(
     // entry point 실행: lazy evaluation이므로 명시적으로 require해야 모듈 체인 시작
     for (sorted.items) |m| {
         if (m.is_entry_point) {
-            const entry_id = makeModuleId(m.path, options.root_dir);
+            const entry_id = m.dev_id;
             try output.appendSlice(allocator, "__zts_require(\"");
             try output.appendSlice(allocator, entry_id);
             try output.appendSlice(allocator, "\");\n");
@@ -386,7 +386,6 @@ pub fn emitDevModule(
         var md = try l.buildDevMetadataForAst(
             &transformer.ast,
             @intFromEnum(module.index),
-            options.root_dir,
         );
         if (transformer.symbol_ids.items.len > 0) {
             md.symbol_ids = transformer.symbol_ids.items;
@@ -410,7 +409,7 @@ pub fn emitDevModule(
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
         cg.line_offsets = module.line_offsets;
-        try cg.addSourceFile(makeModuleId(module.path, options.root_dir));
+        try cg.addSourceFile(module.dev_id);
     }
     const code = try cg.generate(root);
 

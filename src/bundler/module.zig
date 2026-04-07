@@ -44,6 +44,8 @@ pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
+    /// dev mode 모듈 ID. emitDevBundle에서 한 번 계산 (path의 서브슬라이스, 할당 없음).
+    dev_id: []const u8 = "",
     /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
     source: []const u8,
     /// 파싱된 AST. parse_arena에서 할당 (Module.arena가 소유).
