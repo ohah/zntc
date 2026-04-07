@@ -370,7 +370,10 @@ pub const HMR_RUNTIME =
     \\    m.initialized = true;
     \\    __zts_g.__zts_currentModuleId = id;
     \\    var require = function(spec) { return __zts_require(m.deps && m.deps[spec] || spec); };
-    \\    m.factory(m, m.exports, require);
+    \\    try { m.factory(m, m.exports, require); } catch(e) {
+    \\      m.initialized = false;
+    \\      throw new Error("[zts] Error in module " + id + ": " + e.message);
+    \\    }
     \\  }
     \\  return m.exports;
     \\}
