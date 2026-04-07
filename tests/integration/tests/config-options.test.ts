@@ -1,7 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createFixture, runZts, runZtsInDir } from "./helpers";
+import { createFixture, runZtsInDir } from "./helpers";
 import { spawn } from "bun";
 
 const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.ts");
@@ -127,11 +126,7 @@ describe("config 옵션 확장", () => {
     cleanup = c;
 
     // CLI에서 define 지정 → config 무시
-    const result = await runZtsInDir(dir, [
-      "--bundle",
-      "entry.ts",
-      "--define:MY_VAR=\"from-cli\"",
-    ]);
+    const result = await runZtsInDir(dir, ["--bundle", "entry.ts", '--define:MY_VAR="from-cli"']);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("from-cli");
     expect(result.stdout).not.toContain("from-config");
@@ -169,7 +164,6 @@ describe("build() API", () => {
         env: { ...process.env, ZTS_BIN: resolve(import.meta.dir, "../../../zig-out/bin/zts") },
       });
       const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
       const exitCode = await proc.exited;
 
       expect(exitCode).toBe(0);

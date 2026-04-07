@@ -387,8 +387,6 @@ export interface BuildOutputFile {
 export async function build(options: BuildOptions): Promise<BuildResult> {
   const args = buildArgsFromOptions(options);
   const { spawn } = await import("node:child_process");
-  const { resolve, dirname } = await import("node:path");
-  const { readFile, readdir } = await import("node:fs/promises");
 
   // ZTS 바이너리 경로: @zts/core 패키지 기준으로 탐색
   const ztsBin = await findZtsBin();
@@ -515,7 +513,8 @@ function buildArgsFromOptions(options: BuildOptions): string[] {
   // 번들 옵션
   if (options.splitting) args.push("--splitting");
   if (options.preserveModules) args.push("--preserve-modules");
-  if (options.preserveModulesRoot) args.push(`--preserve-modules-root=${options.preserveModulesRoot}`);
+  if (options.preserveModulesRoot)
+    args.push(`--preserve-modules-root=${options.preserveModulesRoot}`);
   if (options.sourcemap) args.push("--sourcemap");
   if (options.minify) args.push("--minify");
   if (options.keepNames) args.push("--keep-names");
@@ -572,7 +571,7 @@ function buildArgsFromOptions(options: BuildOptions): string[] {
 }
 
 async function collectOutputFiles(dir: string): Promise<BuildOutputFile[]> {
-  const { readFile, readdir, stat } = await import("node:fs/promises");
+  const { readFile, readdir } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
   const files: BuildOutputFile[] = [];
 
