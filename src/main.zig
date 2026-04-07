@@ -1730,6 +1730,9 @@ pub fn main() !void {
                         if (is_first_rebuild) {
                             // 첫 rebuild: 캐시 없으므로 diff 불가. 캐시만 채우고 full reload.
                             try stdout.print(",\"graph_changed\":true", .{});
+                        } else if (dev_codes.len != module_code_cache.count()) {
+                            // 모듈 수 변경 (새 import 추가/삭제) → full reload
+                            try stdout.print(",\"graph_changed\":true", .{});
                         } else {
                             // diff: 캐시와 비교하여 변경된 모듈만 수집
                             var changed_count: usize = 0;
@@ -1756,10 +1759,8 @@ pub fn main() !void {
                                     }
                                 }
                                 try stdout.print("]", .{});
-                            } else {
-                                // 코드 변경 없음 → 그래프 변경 (새 import 추가 등)
-                                try stdout.print(",\"graph_changed\":true", .{});
                             }
+                            // changed_count == 0: 코드 변경 없음 → 이벤트 미발송 (무시)
                         }
                         is_first_rebuild = false;
 
