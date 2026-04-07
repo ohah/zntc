@@ -584,6 +584,43 @@ pub const Bundler = struct {
             });
         }
 
+        // 2.8. React Refresh 런타임 주입 (dev mode)
+        // react-refresh/runtime을 resolve → 번들 앞에 주입 → __REACT_REFRESH_RUNTIME__ 전역 등록.
+        if (self.options.dev_mode and self.options.react_refresh) blk: {
+            const resolve_cache = self.getResolveCache();
+            // 엔트리 파일의 디렉토리를 기준으로 resolve
+            const entry_dir = if (self.options.entry_points.len > 0)
+                std.fs.path.dirname(self.options.entry_points[0]) orelse "."
+            else
+                ".";
+            const resolve_result = resolve_cache.resolve(
+                entry_dir,
+                "react-refresh/cjs/react-refresh-runtime.development.js",
+                .require,
+            ) catch break :blk;
+            const resolved_path = resolve_result orelse break :blk;
+            const raw = std.fs.cwd().readFileAlloc(self.allocator, resolved_path.path, 1024 * 1024) catch break :blk;
+            const wrapped = std.fmt.allocPrint(self.allocator,
+                \\(function(){{
+                \\var exports = {{}};
+                \\var module = {{ exports: exports }};
+                \\var process = {{ env: {{ NODE_ENV: "development" }} }};
+                \\{s}
+                \\var __zts_rr = module.exports;
+                \\if (typeof globalThis !== "undefined") globalThis.__REACT_REFRESH_RUNTIME__ = __zts_rr;
+                \\else if (typeof window !== "undefined") window.__REACT_REFRESH_RUNTIME__ = __zts_rr;
+                \\else if (typeof global !== "undefined") global.__REACT_REFRESH_RUNTIME__ = __zts_rr;
+                \\if (__zts_rr.injectIntoGlobalHook) __zts_rr.injectIntoGlobalHook(typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : global);
+                \\}})();
+                \\
+            , .{raw}) catch break :blk;
+            self.allocator.free(raw);
+            try polyfill_entries.append(self.allocator, .{
+                .name = "react-refresh-runtime",
+                .content = wrapped,
+            });
+        }
+
         // 3. 번들 출력 생성
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
