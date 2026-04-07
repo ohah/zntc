@@ -129,6 +129,17 @@ pub const DECORATOR_RUNTIME =
 ;
 pub const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __decorateClass=(decorators,target,key,kind)=>{var result=kind>1?void 0:kind?__getOwnPropDesc(target,key):target;for(var i=decorators.length-1,decorator;i>=0;i--)if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;if(kind&&result)__defProp2(target,key,result);return result};var __decorateParam=(index,decorator)=>(target,key)=>decorator(target,key,index);";
 
+/// __metadata: emitDecoratorMetadata 시 Reflect.metadata 호출 (TypeScript 호환).
+/// design:type, design:paramtypes, design:returntype 메타데이터를 클래스/멤버에 부착.
+pub const METADATA_RUNTIME =
+    \\var __metadata = (key, value) => {
+    \\  if (typeof Reflect !== "undefined" && typeof Reflect.metadata === "function")
+    \\    return Reflect.metadata(key, value);
+    \\};
+    \\
+;
+pub const METADATA_RUNTIME_MIN = "var __metadata=(key,value)=>{if(typeof Reflect!==\"undefined\"&&typeof Reflect.metadata===\"function\")return Reflect.metadata(key,value)};";
+
 // ============================================================
 // ES2015+ Downlevel
 // ============================================================

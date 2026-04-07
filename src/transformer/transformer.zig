@@ -72,6 +72,9 @@ pub const TransformOptions = struct {
     /// false(기본값)이면 decorator를 TC39 Stage 3 형태로 그대로 출력.
     /// true이면 class/method/property decorator를 esbuild 호환 __decorateClass 호출로 변환.
     experimental_decorators: bool = false,
+    /// emitDecoratorMetadata: __metadata("design:paramtypes", [...]) 호출 주입.
+    /// NestJS, Angular, TypeORM 등 reflect-metadata 기반 DI에 필요.
+    emit_decorator_metadata: bool = false,
     /// Unsupported features bitmask. feature별로 다운레벨링 여부를 결정.
     /// ESTarget(es2020) 또는 엔진 버전(chrome80,safari14)에서 변환됨.
     unsupported: compat.UnsupportedFeatures = .{},
@@ -2648,6 +2651,12 @@ pub const Transformer = struct {
     pub const transformExperimentalDecorators = class_deco.transformExperimentalDecorators;
     pub const buildDecorateClassMemberCall = class_deco.buildDecorateClassMemberCall;
     pub const buildDecorateClassCall = class_deco.buildDecorateClassCall;
+    pub const serializeTypeAnnotation = class_deco.serializeTypeAnnotation;
+    pub const buildMetadataCall = class_deco.buildMetadataCall;
+    pub const buildParamTypesArray = class_deco.buildParamTypesArray;
+    pub const appendMemberMetadata = class_deco.appendMemberMetadata;
+    pub const appendClassMetadata = class_deco.appendClassMetadata;
+    pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;

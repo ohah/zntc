@@ -50,6 +50,7 @@ const CliOptions = struct {
     project_path: ?[]const u8 = null,
     use_define_for_class_fields: ?bool = null,
     experimental_decorators: ?bool = null,
+    emit_decorator_metadata: bool = false,
     unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
@@ -1061,6 +1062,10 @@ pub fn main() !void {
     if (opts.experimental_decorators == null and tsconfig.experimental_decorators) {
         opts.experimental_decorators = true;
     }
+    // emitDecoratorMetadata는 experimentalDecorators가 활성화된 경우에만 유효
+    if (tsconfig.emit_decorator_metadata and (opts.experimental_decorators orelse false)) {
+        opts.emit_decorator_metadata = true;
+    }
     // JSX: CLI/플랫폼 프리셋이 미지정이면 tsconfig에서 가져옴
     if (opts.jsx_runtime == null) {
         if (tsconfig.jsx) |jsx_mode| {
@@ -1205,6 +1210,7 @@ pub fn main() !void {
             .code_splitting = opts.splitting,
             .define = opts.define_list.items,
             .experimental_decorators = opts.experimental_decorators orelse false,
+            .emit_decorator_metadata = opts.emit_decorator_metadata,
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
             .unsupported = opts.unsupported,
             .conditions = opts.conditions_list.items,
@@ -1612,6 +1618,7 @@ pub fn main() !void {
             .platform = opts.platform,
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
             .experimental_decorators = opts.experimental_decorators orelse false,
+            .emit_decorator_metadata = opts.emit_decorator_metadata,
             .unsupported = opts.unsupported,
             .source_root = opts.source_root orelse "",
             .sources_content = opts.sources_content,
