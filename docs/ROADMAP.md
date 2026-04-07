@@ -51,9 +51,7 @@ ZTS 136ms vs esbuild 110ms (**1.24배**).
 
 ## 🔜 다음 우선순위
 
-**배치 E (S급 일괄)** — 반나절~1일
-- esbuild/rolldown 호환 CLI 옵션 ~20개 일괄 추가
-- `--outbase`, `--packages=external`, `--drop-labels`, `--pure:fn`, `--line-limit` 등
+~~**배치 E (S급 일괄)**~~ — ✅ 완료 (CLI 옵션 13개: outbase, packages=external, drop-labels, pure, line-limit 등)
 
 **CSS 번들링** — XL (1주+)
 - 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
