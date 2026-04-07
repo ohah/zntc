@@ -1546,6 +1546,41 @@ test "Bundler: dev mode collect_module_codes opt-in" {
     }
 }
 
+test "Bundler: dev mode named imports from multiple modules are not mixed" {
+    // 여러 모듈에서 named import할 때 각 모듈의 binding이 섞이지 않는지 확인
+    // 이전 버그: prefix sum에서 named_count를 증가시키지 않아 모든 binding이 첫 모듈에 할당됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "math.ts", "export const add = (a, b) => a + b;\nexport const sub = (a, b) => a - b;");
+    try writeFile(tmp.dir, "str.ts", "export const upper = (s) => s.toUpperCase();\nexport const lower = (s) => s.toLowerCase();");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { add, sub } from './math';
+        \\import { upper, lower } from './str';
+        \\console.log(add(1,2), sub(3,1), upper("a"), lower("B"));
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // math.ts에서 add, sub가 정확히 destructuring
+    try std.testing.expect(std.mem.indexOf(u8, output, "{ add, sub }") != null);
+    // str.ts에서 upper, lower가 정확히 destructuring
+    try std.testing.expect(std.mem.indexOf(u8, output, "{ upper, lower }") != null);
+    // math binding이 str 모듈에 들어가면 안 됨
+    // (이전 버그에서는 모든 binding이 첫 모듈의 destructuring에 들어갔음)
+}
+
 test "Profile: pipeline stage timing (dev only, not for CI)" {
     // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
     const alloc = std.testing.allocator;
