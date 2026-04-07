@@ -535,4 +535,3 @@ test "Circular: entry depends on circular pair" {
     const a_pos = std.mem.indexOf(u8, result.output, "\"a\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_pos < entry_pos);
 }
-

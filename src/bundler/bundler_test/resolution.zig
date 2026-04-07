@@ -774,4 +774,3 @@ test "TypeScript: import type fully stripped in bundle" {
     // greet 함수는 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function greet") != null);
 }
-

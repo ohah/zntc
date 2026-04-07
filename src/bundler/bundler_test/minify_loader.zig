@@ -1431,4 +1431,3 @@ test "Plugin load hook overrides asset loader" {
     // registerAsset는 없어야 함 (플러그인이 없으므로)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "registerAsset") == null);
 }
-

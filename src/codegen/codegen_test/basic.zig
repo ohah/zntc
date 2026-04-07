@@ -166,4 +166,3 @@ test "Codegen: string enum re-export" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"DELETE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "export") != null);
 }
-

@@ -1216,4 +1216,3 @@ test "Builtins: Proxy across modules" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "new Proxy") != null);
 }
-
