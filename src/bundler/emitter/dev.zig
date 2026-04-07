@@ -359,8 +359,11 @@ pub fn emitDevModule(
 
     // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환
     const jsx_active_dev = ast.has_jsx;
+    // node_modules에는 React Refresh를 적용하지 않음 (Metro 동일)
+    // IIFE 안에 정의된 컴포넌트를 모듈 스코프에서 등록하면 ReferenceError 발생
+    const is_node_modules = std.mem.indexOf(u8, module.path, "node_modules") != null;
     var transformer = try Transformer.init(arena_alloc, ast, .{
-        .react_refresh = options.react_refresh,
+        .react_refresh = options.react_refresh and !is_node_modules,
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
