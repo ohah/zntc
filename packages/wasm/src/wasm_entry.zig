@@ -12,6 +12,8 @@
 const std = @import("std");
 const transpile_mod = @import("zts_lib").transpile;
 const TranspileOptions = transpile_mod.TranspileOptions;
+const Scanner = @import("zts_lib").lexer.Scanner;
+const Diagnostic = @import("zts_lib").diagnostic.Diagnostic;
 const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
 
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
@@ -28,6 +30,72 @@ fn setError(msg: []const u8) void {
 fn clearError() void {
     if (last_error_buf) |old| wasm_alloc.free(old);
     last_error_buf = null;
+}
+
+/// 파서/시맨틱 에러를 SWC/tsc 스타일로 포맷하여 last_error_buf에 저장.
+/// 형식: "<file>:<line>:<col>: error: <message>\n  <line_num> | <source_line>\n    | <caret>"
+fn formatErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const Diagnostic) void {
+    var buf: std.ArrayList(u8) = .empty;
+    const writer = buf.writer(wasm_alloc);
+    for (errors) |err| {
+        formatSingleError(writer, source, file_path, scanner, err) catch break;
+    }
+    if (buf.items.len > 0) {
+        if (last_error_buf) |old| wasm_alloc.free(old);
+        last_error_buf = buf.toOwnedSlice(wasm_alloc) catch null;
+    }
+}
+
+fn formatSingleError(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: Diagnostic) !void {
+    const lc = scanner.getLineColumn(err.span.start);
+    const line_num = lc.line + 1;
+    const col_num = lc.column + 1;
+
+    // 에러 헤더: "file:line:col: error: message"
+    const kind_label: []const u8 = switch (err.kind) {
+        .parse => "error",
+        .semantic => "error[semantic]",
+    };
+    if (err.found) |found| {
+        try writer.print("{s}:{d}:{d}: {s}: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, kind_label, err.message, found });
+    } else {
+        try writer.print("{s}:{d}:{d}: {s}: {s}\n", .{ file_path, line_num, col_num, kind_label, err.message });
+    }
+
+    // 해당 줄 텍스트 추출
+    const line_start = if (lc.line < scanner.line_offsets.items.len) scanner.line_offsets.items[lc.line] else 0;
+    var line_end = line_start;
+    while (line_end < source.len and source[line_end] != '\n' and source[line_end] != '\r') {
+        line_end += 1;
+    }
+    const line_text = source[line_start..line_end];
+
+    // 소스 줄 출력
+    try writer.print("  {d} | {s}\n", .{ line_num, line_text });
+
+    // 캐럿 위치 출력
+    var num_width: usize = 0;
+    var n = line_num;
+    while (n > 0) : (n /= 10) {
+        num_width += 1;
+    }
+    var i: usize = 0;
+    while (i < num_width + 2) : (i += 1) try writer.writeByte(' ');
+    try writer.writeAll("| ");
+    i = 0;
+    while (i < lc.column) : (i += 1) {
+        if (line_start + i < source.len and source[line_start + i] == '\t')
+            try writer.writeByte('\t')
+        else
+            try writer.writeByte(' ');
+    }
+    const err_len = if (err.span.end > err.span.start)
+        @min(err.span.end - err.span.start, line_end - (line_start + lc.column))
+    else
+        1;
+    i = 0;
+    while (i < err_len) : (i += 1) try writer.writeByte('^');
+    try writer.writeByte('\n');
 }
 
 fn readStr(ptr: u32, len: u32) []const u8 {
@@ -163,15 +231,19 @@ export fn transpile(
     const import_source = readStr(jsx_import_source_ptr, jsx_import_source_len);
     if (import_source.len > 0) options.jsx_import_source = import_source;
 
-    var result = transpile_mod.transpile(wasm_alloc, source, file_path, options) catch |err| {
-        const msg: []const u8 = switch (err) {
-            error.ParseError => "ParseError",
-            error.SemanticError => "SemanticError",
-            error.TransformError => "TransformError",
-            error.CodegenError => "CodegenError",
-            error.OutOfMemory => "OutOfMemory",
-        };
-        setError(msg);
+    var result = transpile_mod.transpileWithCallback(wasm_alloc, source, file_path, options, &formatErrors) catch |err| {
+        // formatErrors 콜백이 이미 상세 메시지를 last_error_buf에 저장했을 수 있음.
+        // 콜백이 호출되지 않았거나 메시지가 비어있으면 에러 종류만 표시.
+        if (last_error_buf == null) {
+            const msg: []const u8 = switch (err) {
+                error.ParseError => "ParseError",
+                error.SemanticError => "SemanticError",
+                error.TransformError => "TransformError",
+                error.CodegenError => "CodegenError",
+                error.OutOfMemory => "OutOfMemory",
+            };
+            setError(msg);
+        }
         return 0;
     };
 
