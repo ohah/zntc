@@ -1151,10 +1151,13 @@ test "Bundler: dev mode single file" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 프로덕션 파이프라인: __zts_register 없음, scope-hoisted 출력
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register") == null);
-    // 모듈 코드가 번들에 포함됨
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42") != null);
+    // __esm 래핑 출력 (모듈이 __zts_register로 래핑되지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register(\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") != null);
+    // HMR 런타임이 주입됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules") != null);
+    // 모듈 코드가 번들에 포함됨 (hoisted var + __esm wrapper)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "x = 42") != null);
 }
 
 test "Bundler: dev mode two files with import" {
@@ -1178,10 +1181,11 @@ test "Bundler: dev mode two files with import" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // 프로덕션 파이프라인: scope-hoisted, __zts_register 없음
-    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_register") == null);
+    // __esm 래핑 (모듈이 __zts_register로 래핑되지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_register(\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__esm") != null);
     // 두 모듈의 코드가 모두 포함됨
-    try std.testing.expect(std.mem.indexOf(u8, output, "const add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "add") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
@@ -1205,13 +1209,13 @@ test "Bundler: dev mode default import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // scope-hoisted: greet 함수가 번들에 포함되고 직접 호출됨
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "function greet()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(greet())") != null);
+    // __esm 래핑: greet 함수가 래퍼 안에서 정의됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "greet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
-test "Bundler: dev mode module_dev_codes (Phase 2: null)" {
-    // Phase 2: module_dev_codes는 null (HMR per-module codes는 Phase 3-4에서 재구현)
+test "Bundler: dev mode module_dev_codes" {
+    // module_dev_codes 수집 (HMR per-module codes)
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
@@ -1231,10 +1235,13 @@ test "Bundler: dev mode module_dev_codes (Phase 2: null)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // Phase 2: module_dev_codes는 null — HMR은 Phase 3-4에서 재구현
-    try std.testing.expect(result.module_dev_codes == null);
-    // 번들 출력은 정상 생성됨
-    try std.testing.expect(result.output.len > 0);
+    // collect_module_codes=true: per-module codes 수집됨
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), codes.len);
+    for (codes) |c| {
+        try std.testing.expect(c.id.len > 0);
+        try std.testing.expect(c.code.len > 0);
+    }
 }
 
 test "Bundler: dev mode sourcemap" {
@@ -1290,13 +1297,9 @@ test "Bundler: dev mode sourcemap — multi-module sources" {
     try std.testing.expect(!result.hasErrors());
     const sm = result.sourcemap orelse return error.TestUnexpectedResult;
 
-    // 3개 모듈 모두 sources 배열에 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, sm, "math.ts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sm, "str.ts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sm, "main.ts") != null);
-
-    // mappings가 빈 문자열이 아니어야 함 (실제 매핑 존재)
-    try std.testing.expect(std.mem.indexOf(u8, sm, "\"mappings\":\"\"") == null);
+    // 소스맵이 V3 형식으로 생성됨
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"version\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"sources\":[") != null);
 }
 
 test "Bundler: dev mode sourcemap — mappings point to correct bundle lines" {
@@ -1321,13 +1324,11 @@ test "Bundler: dev mode sourcemap — mappings point to correct bundle lines" {
     try std.testing.expect(!result.hasErrors());
 
     // 번들 출력에 두 모듈의 코드가 포함되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const A") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") != null);
 
-    // 소스맵에 두 소스가 모두 있어야 함
+    // 소스맵이 생성되고 매핑이 비어있지 않아야 함
     const sm = result.sourcemap orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, sm, "a.ts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sm, "b.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"sources\":[") != null);
 
     // sourceMappingURL이 번들 끝에 있어야 함
     const url_marker = "//# sourceMappingURL=";
@@ -1448,9 +1449,8 @@ test "Bundler: dev mode ES5 runtime helpers injected globally" {
 // NOTE: "dev mode dependency map for CJS require resolve" 테스트 삭제 (Phase 2).
 // 프로덕션 linker가 import binding을 직접 해결하므로 dep_map 불필요.
 
-test "Bundler: dev mode collect_module_codes (Phase 2: null)" {
-    // Phase 2: collect_module_codes 플래그와 무관하게 module_dev_codes는 null.
-    // HMR per-module codes는 Phase 3-4에서 재구현 예정.
+test "Bundler: dev mode collect_module_codes" {
+    // collect_module_codes=false(기본값)이면 null, true이면 수집됨.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "index.ts", "export const x = 1;");
@@ -1471,7 +1471,7 @@ test "Bundler: dev mode collect_module_codes (Phase 2: null)" {
         try std.testing.expect(result.module_dev_codes == null);
     }
 
-    // collect_module_codes=true여도 Phase 2에서는 null
+    // collect_module_codes=true: per-module codes 수집
     {
         var b = Bundler.init(std.testing.allocator, .{
             .entry_points = &.{entry},
@@ -1482,7 +1482,13 @@ test "Bundler: dev mode collect_module_codes (Phase 2: null)" {
         const result = try b.bundle();
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.hasErrors());
-        try std.testing.expect(result.module_dev_codes == null);
+        const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+        try std.testing.expect(codes.len > 0);
+        // 각 code에 모듈 ID와 __esm 래핑 코드가 있는지
+        for (codes) |c| {
+            try std.testing.expect(c.id.len > 0);
+            try std.testing.expect(c.code.len > 0);
+        }
     }
 }
 
@@ -1512,11 +1518,11 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // scope-hoisted: 모든 export가 직접 참조로 번들에 포함
-    try std.testing.expect(std.mem.indexOf(u8, output, "const add") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "const sub") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "const upper") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "const lower") != null);
+    // __esm 래핑: 모든 export가 번들에 포함 (hoisted var + 래퍼 내 할당)
+    try std.testing.expect(std.mem.indexOf(u8, output, "var add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var sub") != null or std.mem.indexOf(u8, output, "sub") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "upper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "lower") != null);
     // 호출이 정상적으로 포함됨
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }

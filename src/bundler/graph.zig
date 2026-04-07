@@ -58,6 +58,8 @@ pub const ModuleGraph = struct {
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
 
+    /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
+    dev_mode: bool = false,
     /// 파이프라인 단계별 타이밍 출력 (--timing)
     timing: bool = false,
     /// 확장자별 로더 오버라이드 (--loader:.png=file). bundler에서 전달.
@@ -1207,15 +1209,11 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // Pass 3: React Native — Rolldown 호환 lazy loading.
-        // 모든 ESM 모듈(엔트리 포함)을 __esm 래핑하여 init 체인으로 초기화 순서를 보장한다.
-        // 엔트리도 래핑하면 번들 끝에서 init_entry()를 호출하여 실행을 시작한다.
-        //
-        // 이유: scope-hoisted 엔트리의 top-level import(var View = require_rn().View)가
-        // 즉시 평가되면서 circular dep 체인의 모듈이 아직 초기화되지 않은 상태에서 접근,
-        // RN Fabric 렌더링 실패(스타일 미적용, 컴포넌트 미등록 등)를 유발.
-        // Rolldown은 엔트리도 __esmMin으로 래핑하여 이 문제를 회피한다.
-        if (self.resolve_cache.platform == .react_native) {
+        // Pass 3: 모든 ESM 모듈을 __esm 래핑 (RN + dev mode).
+        // - RN: circular dep 체인에서 초기화 순서 보장 (Rolldown 호환 lazy loading)
+        // - dev mode: HMR을 위해 모든 모듈이 개별 팩토리 함수로 래핑되어야 함
+        //   (scope-hoisted flat 모듈은 개별 교체 불가)
+        if (self.resolve_cache.platform == .react_native or self.dev_mode) {
             for (self.modules.items) |*m| {
                 if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
                     m.wrap_kind = .esm;

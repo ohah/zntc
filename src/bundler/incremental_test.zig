@@ -68,8 +68,6 @@ test "IncrementalBundler: second build without changes has no changed modules" {
 }
 
 test "IncrementalBundler: detects code change in modified file" {
-    // TODO(HMR): module_dev_codes 기반 changed_modules 감지는 Phase 3에서 재구현.
-    // 현재는 증분 빌드가 에러 없이 성공하는지만 검증.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "util.ts", "export const x = 1;");
@@ -81,6 +79,7 @@ test "IncrementalBundler: detects code change in modified file" {
     var ib = IncrementalBundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .dev_mode = true,
+        .collect_module_codes = true,
     });
     defer ib.deinit();
 
@@ -97,12 +96,12 @@ test "IncrementalBundler: detects code change in modified file" {
     // util.ts 수정
     try writeFile(tmp.dir, "util.ts", "export const x = 42;");
 
-    // 증분 빌드: 성공하고 출력이 변경됨을 확인
+    // 증분 빌드: util.ts 변경 감지
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
             defer std.testing.allocator.free(r.changed_modules);
-            // 빌드 성공 확인 (changed_modules는 Phase 3에서 재구현)
+            try std.testing.expect(r.changed_modules.len > 0);
         },
         .build_error => return error.TestUnexpectedResult,
         .fatal => return error.TestUnexpectedResult,

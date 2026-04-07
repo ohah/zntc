@@ -196,22 +196,8 @@ pub const BundleResult = struct {
     /// metafile JSON (--metafile). allocator 소유.
     metafile_json: ?[]const u8 = null,
 
-    /// dev mode에서 모듈별 HMR 업데이트 코드.
-    pub const ModuleDevCode = struct {
-        /// 모듈 ID (dev bundle에서 사용하는 경로)
-        id: []const u8,
-        /// __zts_register("id", function(...) { ... }); 코드
-        code: []const u8,
-
-        /// ModuleDevCode 배열을 해제한다.
-        pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
-            for (codes) |c| {
-                allocator.free(c.id);
-                allocator.free(c.code);
-            }
-            allocator.free(codes);
-        }
-    };
+    /// dev mode에서 모듈별 HMR 업데이트 코드. types.ModuleDevCode의 별칭.
+    pub const ModuleDevCode = types.ModuleDevCode;
 
     /// 문자열 필드를 소유하는 diagnostic (graph 해제 후에도 유효).
     pub const OwnedDiagnostic = struct {
@@ -478,6 +464,7 @@ pub const Bundler = struct {
 
         // 1. 모듈 그래프 구축
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
+        graph.dev_mode = self.options.dev_mode;
         graph.timing = timing;
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
@@ -602,21 +589,20 @@ pub const Bundler = struct {
         var outputs: ?[]OutputFile = null;
 
         // dev mode용 per-module codes + sourcemap
-        // TODO(HMR): module_dev_codes 수집은 HMR 재구현 시 추가
-        const module_dev_codes_from_emit: ?[]const emitter.DevBundleResult.ModuleDevCode = null;
+        var module_dev_codes_from_emit: ?[]const types.ModuleDevCode = null;
         var dev_sourcemap: ?[]const u8 = null;
 
         if (self.options.dev_mode) {
-            // Dev mode: 프로덕션 파이프라인 재사용 (scope-hoisted, __commonJS/__esm 래핑).
+            // Dev mode: 프로덕션 파이프라인 재사용 (__commonJS/__esm 래핑 + HMR 런타임).
             var dev_emit_opts = self.makeEmitOptions();
             dev_emit_opts.sourcemap = true;
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.root_dir = self.options.root_dir;
             dev_emit_opts.react_refresh = self.options.react_refresh;
+            dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.polyfills = polyfill_entries.items;
             dev_emit_opts.run_before_main = self.options.run_before_main;
 
-            // TODO(HMR): dev_id는 HMR per-module 식별용. 현재는 미사용.
             for (graph.modules.items) |*m| {
                 m.dev_id = emitter.makeModuleId(m.path, self.options.root_dir);
             }
@@ -629,6 +615,7 @@ pub const Bundler = struct {
                 null, // dev mode: tree-shaking 비활성
             );
             output = emit_result.output;
+            module_dev_codes_from_emit = emit_result.module_codes;
             dev_sourcemap = emit_result.sourcemap;
         } else if (self.options.code_splitting or self.options.preserve_modules) {
             // Code splitting / preserve-modules 경로: 청크 그래프 생성 → 다중 파일 출력
@@ -782,17 +769,8 @@ pub const Bundler = struct {
             break :blk outs;
         };
 
-        // 6. Dev mode: per-module codes를 BundleResult 타입으로 변환
-        // TODO(HMR): 현재 module_dev_codes_from_emit은 항상 null. HMR 재구현 시 활성화.
-        const module_dev_codes: ?[]const BundleResult.ModuleDevCode = if (module_dev_codes_from_emit) |emit_codes| blk: {
-            const result_codes = try self.allocator.alloc(BundleResult.ModuleDevCode, emit_codes.len);
-            for (emit_codes, 0..) |ec, i| {
-                result_codes[i] = .{ .id = ec.id, .code = ec.code };
-            }
-            // emit_codes 배열 자체만 해제 (내부 문자열은 result_codes로 소유권 이전)
-            self.allocator.free(emit_codes);
-            break :blk result_codes;
-        } else null;
+        // 6. Dev mode: per-module codes (동일 타입이므로 변환 불필요)
+        const module_dev_codes = module_dev_codes_from_emit;
 
         // 7. Metafile JSON 생성 (--metafile / --analyze)
         const metafile_json: ?[]const u8 = if (self.options.metafile or self.options.analyze)
