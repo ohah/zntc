@@ -83,12 +83,7 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
   return {
     wasi_snapshot_preview1: {
       // fd_write: stderr 출력 지원
-      fd_write(
-        fd: number,
-        iovs_ptr: number,
-        iovs_len: number,
-        nwritten_ptr: number,
-      ): number {
+      fd_write(fd: number, iovs_ptr: number, iovs_len: number, nwritten_ptr: number): number {
         const mem = new DataView(memory().buffer);
         const bytes = new Uint8Array(memory().buffer);
         let written = 0;
@@ -237,9 +232,7 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
   const mod =
     input instanceof WebAssembly.Module
       ? input
-      : new WebAssembly.Module(
-          input instanceof ArrayBuffer ? input : (input as Uint8Array).buffer,
-        );
+      : new WebAssembly.Module(input instanceof ArrayBuffer ? input : (input as Uint8Array).buffer);
 
   const instance = new WebAssembly.Instance(mod, imports);
   memory = instance.exports.memory as WebAssembly.Memory;
@@ -252,10 +245,7 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
  * @throws init()이 호출되지 않았으면 에러
  * @throws 파싱/변환 에러 시 에러
  */
-export function transpile(
-  source: string,
-  options: TranspileOptions = {},
-): TranspileResult {
+export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   if (!wasm) {
     throw new Error("zts-wasm: not initialized. Call init() or initSync() first.");
   }

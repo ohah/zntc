@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "ZTS TypeScript transpiler — WASM build",
   "license": "MIT",
+  "files": [
+    "dist/",
+    "zts.wasm"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,10 +17,6 @@
     },
     "./zts.wasm": "./zts.wasm"
   },
-  "files": [
-    "dist/",
-    "zts.wasm"
-  ],
   "scripts": {
     "build:wasm": "cd ../.. && zig build wasm",
     "build:js": "bun build index.ts --outdir dist --format esm --target browser",
