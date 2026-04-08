@@ -2,8 +2,6 @@
   --sl-color-accent-low: #1a3a2a;
   --sl-color-accent: #4ade80;
   --sl-color-accent-high: #bbf7d0;
-  --sl-content-width: 100%;
-  --sl-content-margin-inline: 0;
   --sl-content-pad-x: 1.5rem;
 }
 
@@ -13,37 +11,33 @@
   --sl-color-accent-high: #052e16;
 }
 
-/* 모든 페이지: content 폭 제한 해제 */
-.sl-container {
-  max-width: 100% !important;
-  margin-inline: 0 !important;
-  width: 100% !important;
-}
+/* 본문 넓히기: Starlight calc 레이아웃을 flex로 교체하여 TOC 공간 유지 */
+@media (min-width: 72rem) {
+  [data-has-sidebar][data-has-toc] .lg\:sl-flex {
+    display: flex !important;
+  }
 
-.content-panel,
-.content-panel > *,
-main,
-.main-pane {
-  max-width: 100% !important;
-  width: 100% !important;
-}
+  [data-has-sidebar][data-has-toc] .main-pane {
+    flex: 1 !important;
+    width: auto !important;
+    min-width: 0;
+  }
 
-/* 오른쪽 TOC: 텍스트 길이에 맞게 폭 자동 확장 */
-.right-sidebar-panel {
-  width: auto !important;
-  min-width: 15rem;
-  max-width: 25rem;
-  padding-inline: 1rem;
-}
-
-.right-sidebar-panel .sl-container {
-  max-width: 100% !important;
+  [data-has-sidebar][data-has-toc] .right-sidebar-container {
+    width: var(--sl-sidebar-width) !important;
+    flex-shrink: 0;
+  }
 }
 
 /* TOC 링크 텍스트가 잘리지 않도록 */
 starlight-toc a {
   white-space: normal;
   word-break: break-word;
+}
+
+/* 오른쪽 TOC 패딩 */
+.right-sidebar-panel {
+  padding-inline: 1rem;
 }
 
 /* 표 스타일 개선 */
