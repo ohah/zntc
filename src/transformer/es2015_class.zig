@@ -94,30 +94,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
-            // private field 매핑 설정 (method body 방문 시 this.#x → _x.get(this) 변환에 사용)
             const saved_private_fields = self.current_private_fields;
-            if (cm.private_fields.items.len > 0) {
-                var mappings = try self.allocator.alloc(Transformer.PrivateFieldMapping, cm.private_fields.items.len);
-                for (cm.private_fields.items, 0..) |pf, i| {
-                    mappings[i] = .{ .original_name = pf.original_name, .var_name = pf.name };
-                }
-                self.current_private_fields = mappings;
-            }
+            const total_private = try setupPrivateFieldMappings(self, &cm, name_span);
             defer {
-                if (cm.private_fields.items.len > 0) {
-                    self.allocator.free(self.current_private_fields);
-                }
+                if (total_private > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
 
-            // private method 매핑 설정 (method body 방문 시 this.#method() → _fn.call(this) 변환)
             const saved_private_methods = self.current_private_methods;
             if (cm.private_methods.items.len > 0) {
                 self.current_private_methods = cm.private_methods.items;
             }
             defer self.current_private_methods = saved_private_methods;
 
-            // --- IIFE 패턴 (SWC 호환) ---
+            // --- IIFE 패턴 ---
             // class X extends P { ... }
             // → var X = (function(_super) { __extends(X, _super); function X() {...} return X; })(P)
             // IIFE 내부의 모든 참조는 symbol 연결 없는 fresh identifier (linker 리네이밍 영향 없음).
@@ -131,8 +121,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            // instance private field → WeakMap 선언
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
+            }
+            // static private field → descriptor 객체 선언: var _x = { writable: true, value: initValue }
+            for (cm.static_private_fields.items) |pf| {
+                try self.scratch.append(self.allocator, try buildStaticPrivateFieldDescriptorDecl(self, pf.name, pf.init, span));
+                self.runtime_helpers.class_static_private_field = true;
             }
             for (cm.private_methods.items) |pm| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
@@ -316,19 +312,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
-            // private field 매핑 설정
             const saved_private_fields = self.current_private_fields;
-            if (cm.private_fields.items.len > 0) {
-                var mappings = try self.allocator.alloc(Transformer.PrivateFieldMapping, cm.private_fields.items.len);
-                for (cm.private_fields.items, 0..) |pf, i| {
-                    mappings[i] = .{ .original_name = pf.original_name, .var_name = pf.name };
-                }
-                self.current_private_fields = mappings;
-            }
+            const total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span);
             defer {
-                if (cm.private_fields.items.len > 0) {
-                    self.allocator.free(self.current_private_fields);
-                }
+                if (total_private_ce > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
 
@@ -354,7 +341,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // has_extra를 먼저 계산하여 func_node를 올바른 이름으로 한 번만 빌드
             const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
-                cm.private_methods.items.len > 0 or
+                cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
                 cm.static_block_stmts.items.len > 0 or (has_super and super_span != null);
 
             // IIFE 경로면 fresh identifier (symbol 없음), 단순 경로면 원본 name_node
@@ -398,7 +385,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 });
             }
 
-            // SWC 호환 IIFE (lowerClassDeclaration과 동일 패턴)
+            // IIFE (lowerClassDeclaration과 동일 패턴)
             const expr_name_text = self.ast.getText(name_span);
             const expr_fresh_span = try self.ast.addString(expr_name_text);
             const expr_fresh_name = try es_helpers.makeBindingIdentifier(self, expr_fresh_span);
@@ -430,6 +417,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
+            }
+            // static private field → descriptor 객체 선언
+            for (cm.static_private_fields.items) |pf| {
+                try self.scratch.append(self.allocator, try buildStaticPrivateFieldDescriptorDecl(self, pf.name, pf.init, span));
+                self.runtime_helpers.class_static_private_field = true;
             }
             for (cm.private_methods.items) |pm| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
@@ -763,23 +755,29 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// this.#x → _x.get(this).
+        /// this.#x → instance: _x.get(this), static: __classStaticPrivateFieldSpecGet(receiver, ClassName, _x)
         pub fn lowerPrivateFieldGet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const e = node.data.extra;
             if (e >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const var_name = findPrivateFieldVarName(self, self.readNodeIdx(e, 1)) orelse return null;
-            return buildWeakMapCall(self, var_name, "get", obj_idx, &.{}, node.span);
+            const mapping = findPrivateFieldMapping(self, self.readNodeIdx(e, 1)) orelse return null;
+            if (mapping.is_static) {
+                return buildStaticPrivateFieldGet(self, mapping, obj_idx, node.span);
+            }
+            return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, node.span);
         }
 
-        /// this.#x = v → _x.set(this, v).
+        /// this.#x = v → instance: _x.set(this, v), static: __classStaticPrivateFieldSpecSet(receiver, ClassName, _x, v)
         pub fn lowerPrivateFieldSet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const left_node = self.ast.getNode(node.data.binary.left);
             const le = left_node.data.extra;
             if (le >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
-            const var_name = findPrivateFieldVarName(self, self.readNodeIdx(le, 1)) orelse return null;
-            return buildWeakMapCall(self, var_name, "set", obj_idx, &.{node.data.binary.right}, node.span);
+            const mapping = findPrivateFieldMapping(self, self.readNodeIdx(le, 1)) orelse return null;
+            if (mapping.is_static) {
+                return buildStaticPrivateFieldSet(self, mapping, obj_idx, node.data.binary.right, node.span);
+            }
+            return buildWeakMapCall(self, mapping.var_name, "set", obj_idx, &.{node.data.binary.right}, node.span);
         }
 
         /// this.#x++ → _x.set(this, _x.get(this) + 1)
@@ -832,16 +830,88 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return es_helpers.makeCallExpr(self, callee, args_buf[0..args_len], span);
         }
 
-        /// private field property에서 매핑된 WeakMap 변수 이름을 찾음.
-        fn findPrivateFieldVarName(self: *const Transformer, prop_idx: NodeIndex) ?[]const u8 {
+        /// private field property에서 전체 매핑 정보를 찾음 (static 여부 포함).
+        fn findPrivateFieldMapping(self: *const Transformer, prop_idx: NodeIndex) ?Transformer.PrivateFieldMapping {
             if (prop_idx.isNone()) return null;
             const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
             const orig = self.ast.source[prop_node.span.start..prop_node.span.end];
             for (self.current_private_fields) |pf| {
-                if (std.mem.eql(u8, pf.original_name, orig)) return pf.var_name;
+                if (std.mem.eql(u8, pf.original_name, orig)) return pf;
             }
             return null;
+        }
+
+        /// private field property에서 매핑된 변수 이름만 찾음 (기존 코드 호환).
+        fn findPrivateFieldVarName(self: *const Transformer, prop_idx: NodeIndex) ?[]const u8 {
+            const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
+            return mapping.var_name;
+        }
+
+        /// static private field get: __classStaticPrivateFieldSpecGet(receiver, ClassName, _descriptor)
+        fn buildStaticPrivateFieldGet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecGet");
+            const new_obj = try self.visitNode(obj_idx);
+            const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+            const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            self.runtime_helpers.class_static_private_field = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
+        }
+
+        /// static private field set: __classStaticPrivateFieldSpecSet(receiver, ClassName, _descriptor, value)
+        fn buildStaticPrivateFieldSet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, value_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");
+            const new_obj = try self.visitNode(obj_idx);
+            const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+            const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const new_value = try self.visitNode(value_idx);
+            self.runtime_helpers.class_static_private_field = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
+        }
+
+        /// static private field descriptor 선언: var _x = { writable: true, value: initValue }
+        fn buildStaticPrivateFieldDescriptorDecl(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // { writable: true, value: initValue }
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // writable: true
+            const writable_key = try es_helpers.makeIdentifierRef(self, "writable");
+            const true_span = try self.ast.addString("true");
+            const true_val = try self.ast.addNode(.{
+                .tag = .boolean_literal,
+                .span = true_span,
+                .data = .{ .none = 1 },
+            });
+            const writable_node = try self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, writable_node);
+
+            // value: initValue (or void 0)
+            const value_key = try es_helpers.makeIdentifierRef(self, "value");
+            const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
+            const value_node = try self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = value_key, .right = value_init, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, value_node);
+
+            // object_expression
+            const props_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const obj = try self.ast.addNode(.{
+                .tag = .object_expression,
+                .span = span,
+                .data = .{ .list = props_list },
+            });
+
+            // var _x = { writable: true, value: ... }
+            const binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(var_name));
+            const declarator = try es_helpers.makeDeclarator(self, binding, obj, span);
+            return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
         }
 
         /// accessor method_definition에서 function expression 생성.
@@ -918,7 +988,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex, // 초기값 (none이면 undefined)
         };
 
-        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors, private_fields, private_methods.
+        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors, private_fields, static_private_fields, private_methods.
         const ClassifiedMembers = struct {
             constructor_idx: ?NodeIndex,
             methods: std.ArrayList(MethodInfo),
@@ -926,6 +996,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             static_fields: std.ArrayList(FieldInfo),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
+            /// static private fields: descriptor 객체 패턴.
+            /// instance private fields와 달리 WeakMap이 아닌 { writable: true, value: init } 객체로 변환.
+            static_private_fields: std.ArrayList(PrivateFieldInfo),
             private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
             static_block_stmts: std.ArrayList(NodeIndex),
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
@@ -934,6 +1007,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
+                    allocator.free(pf.name);
+                }
+                for (cm.static_private_fields.items) |pf| {
                     allocator.free(pf.name);
                 }
                 for (cm.private_methods.items) |pm| {
@@ -945,10 +1021,34 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.static_fields.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
+                cm.static_private_fields.deinit(allocator);
                 cm.private_methods.deinit(allocator);
                 cm.static_block_stmts.deinit(allocator);
             }
         };
+
+        /// instance + static private field 매핑을 빌드하여 current_private_fields에 설정.
+        /// 반환값: 매핑 총 개수 (defer에서 free 판단용).
+        fn setupPrivateFieldMappings(self: *Transformer, cm: *ClassifiedMembers, name_span: Span) Transformer.Error!usize {
+            const total = cm.private_fields.items.len + cm.static_private_fields.items.len;
+            if (total == 0) return 0;
+
+            var mappings = try self.allocator.alloc(Transformer.PrivateFieldMapping, total);
+            for (cm.private_fields.items, 0..) |pf, i| {
+                mappings[i] = .{ .original_name = pf.original_name, .var_name = pf.name };
+            }
+            const class_name = self.ast.getText(name_span);
+            for (cm.static_private_fields.items, 0..) |pf, i| {
+                mappings[cm.private_fields.items.len + i] = .{
+                    .original_name = pf.original_name,
+                    .var_name = pf.name,
+                    .is_static = true,
+                    .class_name = class_name,
+                };
+            }
+            self.current_private_fields = mappings;
+            return total;
+        }
 
         fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
             const body_node = self.ast.getNode(body_idx);
@@ -962,6 +1062,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .static_fields = .empty,
                 .accessors = .empty,
                 .private_fields = .empty,
+                .static_private_fields = .empty,
                 .private_methods = .empty,
                 .static_block_stmts = .empty,
             };
@@ -1021,7 +1122,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const flags = self.readU32(pe, 2);
                     const is_static = (flags & 0x01) != 0;
 
-                    // private field (#x) → WeakMap 기반 변환
+                    // private field (#x) → instance: WeakMap, static: descriptor 객체
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
                         const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#x"
@@ -1032,11 +1133,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         @memcpy(name_buf[1 .. 1 + name_rest.len], name_rest);
                         const var_name = name_buf[0 .. 1 + name_rest.len];
 
-                        try cm.private_fields.append(self.allocator, .{
+                        const field_info = PrivateFieldInfo{
                             .name = try self.allocator.dupe(u8, var_name),
                             .original_name = orig_name,
                             .init = init_val,
-                        });
+                        };
+                        if (is_static) {
+                            try cm.static_private_fields.append(self.allocator, field_info);
+                        } else {
+                            try cm.private_fields.append(self.allocator, field_info);
+                        }
                         continue;
                     }
 

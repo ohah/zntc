@@ -128,7 +128,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     tagged_template_literal: bool = false,
     /// __using/__callDispose: using/await using 변환 (ES2025)
     using_ctx: bool = false,
-    _padding: u2 = 0,
+    /// __classStaticPrivateFieldSpecGet/Set: static private field accessor
+    class_static_private_field: bool = false,
+    _padding: u1 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -301,6 +303,8 @@ pub const Transformer = struct {
     pub const PrivateFieldMapping = struct {
         original_name: []const u8, // "#x"
         var_name: []const u8, // "_x"
+        is_static: bool = false, // static private field → descriptor 객체 패턴
+        class_name: ?[]const u8 = null, // static일 때 클래스명 (brand check용)
     };
 
     pub const PrivateMethodMapping = struct {
