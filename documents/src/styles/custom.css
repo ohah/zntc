@@ -37,6 +37,52 @@ main,
   padding-inline: 1rem;
 }
 
+/* 표 스타일 개선 */
+.sl-markdown-content table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.375rem;
+  overflow: hidden;
+  font-size: 0.875rem;
+}
+
+.sl-markdown-content table thead th {
+  background: var(--sl-color-gray-6);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.625rem 1rem;
+  border-bottom: 2px solid var(--sl-color-gray-5);
+}
+
+.sl-markdown-content table tbody tr {
+  transition: background 0.15s;
+}
+
+.sl-markdown-content table tbody tr:hover {
+  background: var(--sl-color-gray-7, rgba(255, 255, 255, 0.03));
+}
+
+.sl-markdown-content table tbody td {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--sl-color-gray-6);
+}
+
+.sl-markdown-content table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* 인라인 코드 스타일 */
+.sl-markdown-content :not(pre) > code {
+  background: var(--sl-color-gray-6);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+  border: 1px solid var(--sl-color-gray-5);
+}
+
 /* Monaco Editor: Starlight CSS 충돌 방지
    Starlight의 .sl-markdown-content :not()+:not() 셀렉터가
    Monaco 내부 DOM에 margin-top을 주입하여 커서/드래그가 어긋나는 문제.
