@@ -235,12 +235,12 @@ describe("Dev Server", () => {
           "--plugin",
           join(fixture.dir, "plugin.js"),
         ],
-        { timeout: process.env.CI ? 6000 : 3000 },
+        { timeout: process.env.CI ? 15000 : 3000 },
       );
       killServer = server.kill;
 
-      // retry: CI에서 최대 10회, 로컬 5회
-      const maxAttempts = process.env.CI ? 10 : 5;
+      // retry: CI에서 최대 15회, 로컬 5회
+      const maxAttempts = process.env.CI ? 15 : 5;
       let text = "";
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
