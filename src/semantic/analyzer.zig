@@ -311,11 +311,13 @@ pub const SemanticAnalyzer = struct {
         if (@intFromEnum(target) >= @intFromEnum(compat.ESTarget.es2022)) return; // es2022 이상이면 OK
 
         // deinit에서 message/hint를 free하므로 allocPrint로 할당
-        const msg = try std.fmt.allocPrint(self.allocator,
+        const msg = try std.fmt.allocPrint(
+            self.allocator,
             "Top-level await is not available in the configured target environment ({s})",
             .{@tagName(target)},
         );
-        const hint = try self.allocator.dupe(u8,
+        const hint = try self.allocator.dupe(
+            u8,
             "Set target to 'es2022' or higher to use top-level await",
         );
 
