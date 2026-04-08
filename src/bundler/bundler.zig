@@ -585,10 +585,8 @@ pub const Bundler = struct {
         }
 
         // 2.8. React Refresh 런타임 주입 (dev mode)
-        // react-refresh/runtime을 resolve → 번들 앞(polyfill)에 주입.
-        // React 로드 전에 injectIntoGlobalHook 실행 필수 (DevTools + Fast Refresh).
-        // RN의 InitializeCore(setUpReactRefresh)는 run-before-main으로 entry 직전 실행되어
-        // React보다 늦으므로, ZTS가 직접 polyfill로 주입.
+        // react-refresh/runtime을 polyfill(번들 맨 앞)로 주입하여
+        // React reconciler 로드 전에 injectIntoGlobalHook 실행.
         if (self.options.dev_mode and self.options.react_refresh) blk: {
             const resolve_cache = self.getResolveCache();
             const entry_dir = if (self.options.entry_points.len > 0)
