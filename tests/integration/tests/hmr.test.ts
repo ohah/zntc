@@ -128,11 +128,12 @@ describe("HMR 통합 테스트", () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events[0].type).toBe("ready");
 
-    // 첫 rebuild: graph_changed (캐시 초기화)
+    // 첫 rebuild: 변경된 모듈만 updates (캐시가 초기 빌드에서 채워짐)
     if (events.length >= 2) {
       expect(events[1].type).toBe("rebuild");
       expect(events[1].success).toBe(true);
-      expect(events[1].graph_changed).toBe(true);
+      // updates가 있거나 graph_changed가 있어야 함
+      expect(events[1].updates != null || events[1].graph_changed === true).toBe(true);
     }
 
     // 두 번째 rebuild: updates에 변경된 모듈만 (타이밍에 따라 수신 못할 수 있음)
