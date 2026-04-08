@@ -462,6 +462,57 @@ pub const Bundler = struct {
 
         var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
 
+        // 0. RN dev mode: InitializeCore prelude 자동 주입 (롤리팝 방식).
+        // RN에서 react-refresh는 InitializeCore → setUpReactRefresh에서 설정된다.
+        // InitializeCore를 run_before_main에 추가하면 모듈 그래프 안에서 엔트리 전에 실행되어
+        // __ReactRefresh가 컴포넌트 모듈보다 먼저 초기화된다.
+        // (polyfill 단계에서 injectIntoGlobalHook을 호출하면 RN 네이티브 런타임 충돌)
+        const original_rbm = self.options.run_before_main;
+        defer {
+            if (self.options.run_before_main.ptr != original_rbm.ptr) {
+                self.allocator.free(self.options.run_before_main);
+                self.options.run_before_main = original_rbm;
+            }
+        }
+        var auto_init_core_path: ?[]const u8 = null;
+        defer if (auto_init_core_path) |p| self.allocator.free(p);
+
+        if (self.options.dev_mode and self.options.react_refresh and
+            self.options.platform == .react_native)
+        {
+            const entry_dir = if (self.options.entry_points.len > 0)
+                std.fs.path.dirname(self.options.entry_points[0]) orelse "."
+            else
+                ".";
+            const init_core_rel = "node_modules/react-native/Libraries/Core/InitializeCore.js";
+
+            auto_init_core_path = blk: {
+                // entry_dir 기준 탐색
+                const full = std.fs.path.join(self.allocator, &.{ entry_dir, init_core_rel }) catch break :blk null;
+                defer self.allocator.free(full);
+                if (std.fs.cwd().realpathAlloc(self.allocator, full)) |real| break :blk real else |_| {}
+                // CWD 기준 탐색
+                break :blk std.fs.cwd().realpathAlloc(self.allocator, init_core_rel) catch null;
+            };
+
+            if (auto_init_core_path) |init_path| {
+                var already_present = false;
+                for (self.options.run_before_main) |rbm| {
+                    if (std.mem.eql(u8, rbm, init_path)) {
+                        already_present = true;
+                        break;
+                    }
+                }
+                if (!already_present) {
+                    const new_rbm = try self.allocator.alloc([]const u8, self.options.run_before_main.len + 1);
+                    // InitializeCore를 맨 앞에 배치 (다른 run_before_main보다 먼저 실행)
+                    new_rbm[0] = init_path;
+                    @memcpy(new_rbm[1..], self.options.run_before_main);
+                    self.options.run_before_main = new_rbm;
+                }
+            }
+        }
+
         // 1. 모듈 그래프 구축
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
@@ -585,9 +636,9 @@ pub const Bundler = struct {
         }
 
         // 2.8. React Refresh 런타임 주입 (dev mode, 비-RN만)
-        // RN: InitializeCore(setUpReactRefresh)가 번들 내 react-refresh/runtime을
-        //      require하여 같은 인스턴스로 injectIntoGlobalHook 호출.
-        //      별도 polyfill은 두 인스턴스 충돌 유발.
+        // RN: InitializeCore가 prelude(run_before_main)로 엔트리 전에 실행되어
+        //      setUpReactRefresh → require('react-refresh/runtime') → __ReactRefresh 설정.
+        //      별도 polyfill은 RN 네이티브 런타임 충돌 유발 (injectIntoGlobalHook 시점 문제).
         // 브라우저: react-refresh/runtime을 polyfill로 직접 주입.
         if (self.options.dev_mode and self.options.react_refresh and
             self.options.platform != .react_native)
