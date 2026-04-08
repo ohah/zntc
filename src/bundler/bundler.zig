@@ -584,12 +584,12 @@ pub const Bundler = struct {
             });
         }
 
-        // 2.8. React Refresh 런타임 주입 (dev mode, 비-RN만)
-        // RN: InitializeCore → setUpReactRefresh.js가 global.__ReactRefresh를 등록.
-        // 브라우저: react-refresh/runtime을 resolve → 번들 앞에 주입.
-        if (self.options.dev_mode and self.options.react_refresh and
-            self.options.platform != .react_native)
-        blk: {
+        // 2.8. React Refresh 런타임 주입 (dev mode)
+        // react-refresh/runtime을 resolve → 번들 앞(polyfill)에 주입.
+        // React 로드 전에 injectIntoGlobalHook 실행 필수 (DevTools + Fast Refresh).
+        // RN의 InitializeCore(setUpReactRefresh)는 run-before-main으로 entry 직전 실행되어
+        // React보다 늦으므로, ZTS가 직접 polyfill로 주입.
+        if (self.options.dev_mode and self.options.react_refresh) blk: {
             const resolve_cache = self.getResolveCache();
             const entry_dir = if (self.options.entry_points.len > 0)
                 std.fs.path.dirname(self.options.entry_points[0]) orelse "."
