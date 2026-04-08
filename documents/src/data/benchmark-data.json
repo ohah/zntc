@@ -1,32 +1,46 @@
 {
-  "date": "2026-03-31",
+  "date": "2026-04-08",
   "platform": "darwin arm64",
   "iterations": 5,
   "results": {
     "transpile": [
-      { "tool": "ZTS", "scale": "small (100 lines)", "avgMs": 3, "minMs": 3, "maxMs": 4 },
-      { "tool": "esbuild", "scale": "small (100 lines)", "avgMs": 4, "minMs": 4, "maxMs": 5 },
-      { "tool": "SWC", "scale": "small (100 lines)", "avgMs": 12, "minMs": 11, "maxMs": 14 },
-      { "tool": "Bun", "scale": "small (100 lines)", "avgMs": 15, "minMs": 14, "maxMs": 17 },
-      { "tool": "ZTS", "scale": "medium (1K lines)", "avgMs": 5, "minMs": 5, "maxMs": 6 },
-      { "tool": "esbuild", "scale": "medium (1K lines)", "avgMs": 5, "minMs": 5, "maxMs": 6 },
-      { "tool": "SWC", "scale": "medium (1K lines)", "avgMs": 14, "minMs": 13, "maxMs": 16 },
-      { "tool": "Bun", "scale": "medium (1K lines)", "avgMs": 18, "minMs": 17, "maxMs": 20 },
-      { "tool": "ZTS", "scale": "large (5K lines)", "avgMs": 15, "minMs": 14, "maxMs": 16 },
-      { "tool": "esbuild", "scale": "large (5K lines)", "avgMs": 11, "minMs": 10, "maxMs": 12 },
-      { "tool": "SWC", "scale": "large (5K lines)", "avgMs": 22, "minMs": 21, "maxMs": 24 },
-      { "tool": "Bun", "scale": "large (5K lines)", "avgMs": 24, "minMs": 23, "maxMs": 26 }
+      { "tool": "ZTS", "scale": "small (100 lines)", "avgMs": 6, "minMs": 3, "maxMs": 7 },
+      { "tool": "esbuild", "scale": "small (100 lines)", "avgMs": 6, "minMs": 4, "maxMs": 9 },
+      { "tool": "Bun", "scale": "small (100 lines)", "avgMs": 4, "minMs": 4, "maxMs": 4 },
+      { "tool": "oxc", "scale": "small (100 lines)", "avgMs": 20, "minMs": 20, "maxMs": 21 },
+      { "tool": "SWC", "scale": "small (100 lines)", "avgMs": 53, "minMs": 52, "maxMs": 54 },
+
+      { "tool": "ZTS", "scale": "medium (1K lines)", "avgMs": 8, "minMs": 8, "maxMs": 8 },
+      { "tool": "esbuild", "scale": "medium (1K lines)", "avgMs": 4, "minMs": 4, "maxMs": 4 },
+      { "tool": "Bun", "scale": "medium (1K lines)", "avgMs": 5, "minMs": 4, "maxMs": 5 },
+      { "tool": "oxc", "scale": "medium (1K lines)", "avgMs": 21, "minMs": 20, "maxMs": 21 },
+      { "tool": "SWC", "scale": "medium (1K lines)", "avgMs": 57, "minMs": 56, "maxMs": 58 },
+
+      { "tool": "ZTS", "scale": "large (5K lines)", "avgMs": 31, "minMs": 31, "maxMs": 32 },
+      { "tool": "esbuild", "scale": "large (5K lines)", "avgMs": 4, "minMs": 4, "maxMs": 4 },
+      { "tool": "Bun", "scale": "large (5K lines)", "avgMs": 7, "minMs": 7, "maxMs": 7 },
+      { "tool": "oxc", "scale": "large (5K lines)", "avgMs": 20, "minMs": 20, "maxMs": 21 },
+      { "tool": "SWC", "scale": "large (5K lines)", "avgMs": 63, "minMs": 62, "maxMs": 65 }
     ],
     "bundle": [
-      { "tool": "ZTS", "scale": "small (10 modules)", "avgMs": 8, "minMs": 7, "maxMs": 9 },
-      { "tool": "esbuild", "scale": "small (10 modules)", "avgMs": 7, "minMs": 6, "maxMs": 8 },
-      { "tool": "Bun", "scale": "small (10 modules)", "avgMs": 22, "minMs": 20, "maxMs": 25 },
-      { "tool": "ZTS", "scale": "medium (50 modules)", "avgMs": 25, "minMs": 24, "maxMs": 27 },
-      { "tool": "esbuild", "scale": "medium (50 modules)", "avgMs": 18, "minMs": 17, "maxMs": 20 },
-      { "tool": "Bun", "scale": "medium (50 modules)", "avgMs": 55, "minMs": 52, "maxMs": 60 },
-      { "tool": "ZTS", "scale": "large (200 modules)", "avgMs": 85, "minMs": 82, "maxMs": 90 },
-      { "tool": "esbuild", "scale": "large (200 modules)", "avgMs": 60, "minMs": 58, "maxMs": 63 },
-      { "tool": "Bun", "scale": "large (200 modules)", "avgMs": 180, "minMs": 175, "maxMs": 190 }
+      { "tool": "ZTS", "scale": "small (10 modules)", "avgMs": 8, "minMs": 8, "maxMs": 8 },
+      { "tool": "esbuild", "scale": "small (10 modules)", "avgMs": 7, "minMs": 7, "maxMs": 8 },
+      { "tool": "Bun", "scale": "small (10 modules)", "avgMs": 6, "minMs": 6, "maxMs": 6 },
+      { "tool": "rolldown", "scale": "small (10 modules)", "avgMs": 54, "minMs": 54, "maxMs": 55 },
+      { "tool": "rspack", "scale": "small (10 modules)", "avgMs": 57, "minMs": 56, "maxMs": 57 },
+      { "tool": "webpack", "scale": "small (10 modules)", "avgMs": 210, "minMs": 208, "maxMs": 212 },
+
+      { "tool": "ZTS", "scale": "medium (50 modules)", "avgMs": 26, "minMs": 26, "maxMs": 27 },
+      { "tool": "esbuild", "scale": "medium (50 modules)", "avgMs": 8, "minMs": 8, "maxMs": 9 },
+      { "tool": "Bun", "scale": "medium (50 modules)", "avgMs": 6, "minMs": 6, "maxMs": 7 },
+      { "tool": "rolldown", "scale": "medium (50 modules)", "avgMs": 55, "minMs": 54, "maxMs": 55 },
+      { "tool": "rspack", "scale": "medium (50 modules)", "avgMs": 60, "minMs": 59, "maxMs": 61 },
+      { "tool": "webpack", "scale": "medium (50 modules)", "avgMs": 208, "minMs": 206, "maxMs": 209 },
+
+      { "tool": "ZTS", "scale": "large (200 modules)", "avgMs": 99, "minMs": 97, "maxMs": 101 },
+      { "tool": "esbuild", "scale": "large (200 modules)", "avgMs": 12, "minMs": 12, "maxMs": 12 },
+      { "tool": "Bun", "scale": "large (200 modules)", "avgMs": 9, "minMs": 9, "maxMs": 10 },
+      { "tool": "rolldown", "scale": "large (200 modules)", "avgMs": 60, "minMs": 59, "maxMs": 62 }
     ],
     "pipeline": {
       "labels": ["Scanner", "Parser", "Semantic", "Transformer", "Codegen"],

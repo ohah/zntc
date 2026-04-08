@@ -21,10 +21,14 @@ echarts.use([
 
 // Tool colors
 const TOOL_COLORS: Record<string, string> = {
-  ZTS: "#3b82f6",     // blue
-  esbuild: "#eab308", // yellow
-  SWC: "#ef4444",     // red
-  Bun: "#a855f7",     // purple
+  ZTS: "#3b82f6",       // blue
+  esbuild: "#eab308",   // yellow
+  SWC: "#ef4444",       // red
+  Bun: "#a855f7",       // purple
+  oxc: "#f97316",       // orange
+  rolldown: "#14b8a6",  // teal
+  rspack: "#f59e0b",    // amber
+  webpack: "#06b6d4",   // cyan
 };
 
 // Pipeline stage colors
