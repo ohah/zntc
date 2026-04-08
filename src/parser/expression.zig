@@ -23,6 +23,7 @@ const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const flow = @import("flow.zig");
 const scan_results_mod = @import("scan_results.zig");
+const import_scanner = @import("../bundler/import_scanner.zig");
 
 /// TypeScript의 canFollowTypeArgumentsInExpression 대응 (esbuild tsCanFollowTypeArgumentsInExpression).
 /// `f<Type>` 다음에 올 수 있는 토큰인지 판별한다.
@@ -2164,7 +2165,7 @@ fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
     if (arg_node.tag != .string_literal) return;
 
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
-    const specifier = stripRequireQuotes(raw);
+    const specifier = import_scanner.stripQuotes(raw) orelse raw;
 
     self.scan_import_records.append(self.allocator, .{
         .specifier = specifier,
@@ -2211,11 +2212,7 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
 }
 
 /// 문자열 리터럴에서 따옴표를 제거한다.
+/// import_scanner.stripQuotes에 위임한다.
 fn stripRequireQuotes(text: []const u8) []const u8 {
-    if (text.len < 2) return text;
-    const first = text[0];
-    if (first == '\'' or first == '"') {
-        return text[1 .. text.len - 1];
-    }
-    return text;
+    return import_scanner.stripQuotes(text) orelse text;
 }

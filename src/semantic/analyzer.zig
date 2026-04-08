@@ -145,6 +145,8 @@ pub const SemanticAnalyzer = struct {
     stmt_declared: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
     /// Per-statement 참조 심볼 (declared에 없는 identifier_reference만)
     stmt_referenced: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+    /// stmt_referenced 중복 체크용 비트셋 (statement별 clear 후 재사용)
+    stmt_ref_seen: std.DynamicBitSetUnmanaged = .{},
 
     const PrivateUsage = enum { read, write };
 
@@ -219,6 +221,7 @@ pub const SemanticAnalyzer = struct {
         self.stmt_declared.deinit(self.allocator);
         for (self.stmt_referenced.items) |*b| b.deinit(self.allocator);
         self.stmt_referenced.deinit(self.allocator);
+        self.stmt_ref_seen.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -786,7 +789,13 @@ pub const SemanticAnalyzer = struct {
                         const sym_u32: u32 = @intCast(sym_idx);
                         // declared에 없는 경우에만 referenced로 기록
                         if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
-                            if (std.mem.indexOfScalar(u32, self.stmt_referenced.items[si].items, sym_u32) == null) {
+                            // 비트셋으로 O(1) 중복 체크 (stmt_referenced는 항목이 많을 수 있음)
+                            if (sym_u32 < self.stmt_ref_seen.bit_length and self.stmt_ref_seen.isSet(sym_u32)) {
+                                // 이미 기록됨 — skip
+                            } else {
+                                if (sym_u32 < self.stmt_ref_seen.bit_length) {
+                                    self.stmt_ref_seen.set(sym_u32);
+                                }
                                 self.stmt_referenced.items[si].append(self.allocator, sym_u32) catch {};
                             }
                         }
@@ -1356,6 +1365,11 @@ pub const SemanticAnalyzer = struct {
                 for (indices, 0..) |raw_idx, i| {
                     if (self.enable_stmt_info) {
                         self.current_top_stmt_idx = @intCast(i);
+                        // 비트셋이 현재 심볼 수보다 작으면 리사이즈 후 클리어, 아니면 클리어만
+                        if (self.stmt_ref_seen.bit_length < self.symbols.items.len) {
+                            self.stmt_ref_seen.resize(self.allocator, self.symbols.items.len, false) catch {};
+                        }
+                        self.stmt_ref_seen.unsetAll();
                     }
                     const idx: NodeIndex = @enumFromInt(raw_idx);
                     try self.visitNode(idx);

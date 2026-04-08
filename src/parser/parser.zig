@@ -65,6 +65,9 @@ pub const Parser = struct {
     scan_import_records: std.ArrayListUnmanaged(scan_results_mod.ScanImportRecord) = .empty,
     scan_import_bindings: std.ArrayListUnmanaged(scan_results_mod.ScanImportBinding) = .empty,
     scan_export_bindings: std.ArrayListUnmanaged(scan_results_mod.ScanExportBinding) = .empty,
+    /// checkBarrelReExport용 O(1) 조회 맵: local_name → scan_import_bindings 인덱스.
+    /// 첫 조회 시 lazy 구축.
+    scan_import_binding_map: std.StringHashMapUnmanaged(u32) = .{},
     scan_result: scan_results_mod.ScanResult = .{},
     /// Enable inline scanning. Set to true by bundler before parsing.
     enable_scan: bool = false,
@@ -333,6 +336,7 @@ pub const Parser = struct {
         self.scan_import_records.deinit(self.allocator);
         self.scan_import_bindings.deinit(self.allocator);
         self.scan_export_bindings.deinit(self.allocator);
+        self.scan_import_binding_map.deinit(self.allocator);
         self.param_name_spans.deinit(self.allocator);
         self.bracket_stack.deinit(self.allocator);
     }

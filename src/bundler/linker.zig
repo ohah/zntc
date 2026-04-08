@@ -514,10 +514,9 @@ pub const Linker = struct {
             try self.collectModuleNames(m, @intCast(i), &name_to_owners);
         }
 
-        // 1.5. 모듈별 중첩 스코프 바인딩 이름 집합을 lazy 구축.
-        // 충돌이 있을 때만 (이름 소유자 2명 이상 or 예약어) hasNestedBinding이 호출되므로,
-        // 충돌이 없으면 구축 비용 0. 충돌이 있으면 on-demand로 구축.
-        // (buildNestedNameSets는 나중에 hasNestedBinding 첫 호출 시 실행)
+        // 1.5. 모듈별 중첩 스코프 바인딩 이름 집합을 구축.
+        // calculateRenames/resolveNestedShadowConflicts에서 hasNestedBinding이 O(1)로 동작하도록 미리 구축.
+        try self.buildNestedNameSets();
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
@@ -756,13 +755,6 @@ pub const Linker = struct {
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
     /// 첫 호출 시 해당 모듈의 nested name set을 lazy 구축하여 이후 O(1) 조회.
     fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
-        // lazy 구축: nested_name_sets가 비어 있으면 첫 호출 시 전체 구축
-        if (self.nested_name_sets.len == 0 and self.modules.len > 0) {
-            // const를 우회하여 lazy init (computeRenames 안에서만 호출되므로 안전)
-            const mutable_self: *Linker = @constCast(self);
-            mutable_self.buildNestedNameSets() catch {};
-        }
-
         if (module_index < self.nested_name_sets.len) {
             return self.nested_name_sets[module_index].contains(name);
         }
