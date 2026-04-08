@@ -423,14 +423,12 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // export function f() {} 형태에서 주석은 export 토큰에 붙지만,
     // function 파서에서 확인해야 하므로 여기서 미리 저장한다.
     const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
-    // Unambiguous 모드: top-level ESM export → module 확정
-    // export = (TS CJS) 제외, namespace 내부 제외
-    if (self.is_unambiguous and !self.in_namespace) {
-        const next_kind = try self.peekNextKind();
-        if (next_kind != .eq) {
-            self.has_module_syntax = true;
-        }
-    }
+    // Unambiguous 모드: has_module_syntax 설정은 type-only 감지 후로 지연
+    // export = (TS CJS), export type (type-only)는 제외해야 하므로
+    const is_export_equals = if (self.is_unambiguous and !self.in_namespace)
+        (try self.peekNextKind()) == .eq
+    else
+        true; // not unambiguous → skip setting has_module_syntax
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
     // namespace body 안에서도 export 허용 (in_namespace)
     if (!self.is_module and !self.in_namespace) {
@@ -446,6 +444,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // export default
     if (try self.eat(.kw_default)) {
+        // export default는 항상 runtime export → module syntax 확정
+        if (!is_export_equals) self.has_module_syntax = true;
         // export default function: default 소비 후 다시 function 토큰에 전파
         if (had_no_side_effects) {
             self.scanner.token.has_no_side_effects_comment = true;
@@ -593,6 +593,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             }
         }
 
+        if (!is_export_equals) self.has_module_syntax = true;
         return try self.ast.addNode(.{
             .tag = .export_all_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -711,6 +712,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             @intFromEnum(source_node),
         });
 
+        if (!is_export_equals) self.has_module_syntax = true;
         return try self.ast.addNode(.{
             .tag = .export_named_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -752,6 +754,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         self.scan_result.has_esm_syntax = true;
         collectDeclExportBindings(self, decl);
     }
+
+    if (!is_export_equals) self.has_module_syntax = true;
 
     // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
     const extra_start = try self.ast.addExtras(&.{
