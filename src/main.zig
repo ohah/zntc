@@ -637,7 +637,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) has_node_env = true;
             if (std.mem.eql(u8, d.key, "__DEV__")) has_dev = true;
         }
-        const is_dev = opts.is_serve or opts.watch;
+        const is_dev = opts.dev or opts.is_serve or opts.watch;
         if (!has_node_env) {
             try opts.define_list.append(allocator, .{
                 .key = "process.env.NODE_ENV",
