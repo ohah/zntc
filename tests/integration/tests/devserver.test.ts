@@ -255,7 +255,8 @@ describe("Dev Server", () => {
       }
 
       expect(text).toContain("style.css");
-      expect(text).toContain("__zts_register");
+      // Phase 2+: __esm 래핑 (이전: __zts_register)
+      expect(text).toContain("__esm");
     },
     30000,
   );

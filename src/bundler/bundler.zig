@@ -584,10 +584,14 @@ pub const Bundler = struct {
             });
         }
 
-        // 2.8. React Refresh 런타임 주입 (dev mode)
-        // react-refresh/runtime을 polyfill(번들 맨 앞)로 주입하여
-        // React reconciler 로드 전에 injectIntoGlobalHook 실행.
-        if (self.options.dev_mode and self.options.react_refresh) blk: {
+        // 2.8. React Refresh 런타임 주입 (dev mode, 비-RN만)
+        // RN: InitializeCore(setUpReactRefresh)가 번들 내 react-refresh/runtime을
+        //      require하여 같은 인스턴스로 injectIntoGlobalHook 호출.
+        //      별도 polyfill은 두 인스턴스 충돌 유발.
+        // 브라우저: react-refresh/runtime을 polyfill로 직접 주입.
+        if (self.options.dev_mode and self.options.react_refresh and
+            self.options.platform != .react_native)
+        blk: {
             // entry 디렉토리에서 node_modules/react-refresh를 직접 탐색
             const entry_dir = if (self.options.entry_points.len > 0)
                 std.fs.path.dirname(self.options.entry_points[0]) orelse "."
