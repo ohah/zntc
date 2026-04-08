@@ -261,3 +261,46 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | StmtInfo semantic 사전 구축 | ✅ 완료 | tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%) (#920) |
 | resolveExportChain 메모이제이션 | ✅ 완료 | re-export chain 조건부 캐시 (#918) |
 | SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
+
+## 프로덕션 로드맵
+
+기능은 대부분 갖춰졌으나, 실제 프로젝트에서 esbuild/Vite를 대체하려면 아래 항목이 필요.
+
+### 1단계: 안정성 (현재 가장 중요)
+
+| 항목 | 난이도 | 현재 상태 | 설명 |
+|------|--------|----------|------|
+| **통합 테스트 확대** | L | 143 패키지 스모크만 | 실제 프로젝트(Next.js, Remix, Vite 앱)로 E2E 번들링 검증 |
+| **watch/serve 장시간 안정성** | M | 기본 동작 | 8시간+ watch 시 메모리 릭, 파일 잠금, OS 이벤트 누락 검증 |
+| **에러 메시지 품질** | M | 기본 수준 | esbuild 수준 친절한 에러 + "did you mean?" 제안 + 컬러 출력 |
+| **source map 품질 검증** | S | V3 생성됨 | Chrome DevTools에서 원본 소스 정확 매핑 실제 검증 |
+| **Node.js 호환성 edge case** | M | 대부분 동작 | `__dirname`/`__filename` CJS 폴백, `import.meta.url` 정확성 |
+
+### 2단계: CSS + 배포
+
+| 항목 | 난이도 | 현재 상태 | 설명 |
+|------|--------|----------|------|
+| **CSS 번들링** | XL (1주+) | 플러그인 위임 | 자체 CSS 파서, `@import` 해석, CSS Modules. 없으면 웹 프로젝트 사용 불가 |
+| **npm 배포** | L | 로컬 빌드만 | `npm install zts`로 설치. cross-platform prebuilt binary (macOS/Linux/Windows arm64/x64) |
+| **CI 크로스 플랫폼** | M | 없음 | GitHub Actions: Linux/macOS/Windows × arm64/x64 빌드+테스트 |
+| **릴리즈 자동화** | M | 없음 | 태그 push → 바이너리 빌드 → npm publish → GitHub Release |
+
+### 3단계: 생태계
+
+| 항목 | 난이도 | 현재 상태 | 설명 |
+|------|--------|----------|------|
+| **플러그인 예제** | S~M | 없음 | PostCSS, Tailwind, SVG, YAML 등 커뮤니티 플러그인 레퍼런스 |
+| **import.meta.glob** | M | 미구현 | Vite 사용자 마이그레이션 핵심 기능 |
+| **마이그레이션 가이드** | S | 없음 | esbuild → ZTS, Vite → ZTS 설정 대응표 |
+| **프레임워크 통합** | XL | 없음 | Next.js/Remix/SvelteKit 플러그인 또는 어댑터 |
+| **Vite 호환 모드** | XL | 없음 | `vite.config.js` 읽어서 마이그레이션 비용 제로 (장기 목표) |
+
+### 우선순위 흐름
+
+```
+안정성 ──→ CSS + npm 배포 ──→ 생태계
+  │             │                │
+  │             │                └─ 프레임워크 통합, Vite 호환
+  │             └─ 없으면 웹 프로젝트에서 사용 불가
+  └─ 없으면 프로덕션 신뢰 불가
+```
