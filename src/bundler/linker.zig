@@ -192,6 +192,17 @@ pub const Linker = struct {
     /// computeRenames에서 한 번 구축, hasNestedBinding에서 O(1) 조회.
     nested_name_sets: []std.StringHashMapUnmanaged(void) = &.{},
 
+    /// resolveExportChain 메모이제이션 캐시.
+    /// 키: makeModuleKeyBuf 형식 (4바이트 module_index + 0x00 + name).
+    /// Phase 1(fixpoint) + Phase 2(BFS) 간 중복 resolve를 제거.
+    /// re-export chain이 있을 때만 활성화 (단순 그래프에서는 오버헤드).
+    chain_cache: std.StringHashMapUnmanaged(ChainCacheEntry) = .{},
+    chain_cache_enabled: bool = false,
+
+    const ChainCacheEntry = struct {
+        result: ?SymbolRef,
+    };
+
     const ExportEntry = struct {
         binding: ExportBinding,
         module_index: ModuleIndex,
@@ -255,12 +266,29 @@ pub const Linker = struct {
         if (self.nested_name_sets.len > 0) {
             self.allocator.free(self.nested_name_sets);
         }
+        // chain_cache: 키는 allocator로 dupe됨
+        var cc_it = self.chain_cache.keyIterator();
+        while (cc_it.next()) |key| self.allocator.free(key.*);
+        self.chain_cache.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
     }
 
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
     pub fn link(self: *Linker) !void {
         try self.buildExportMap();
+
+        // re-export chain이 있으면 resolveExportChain 캐시 활성화.
+        // 단순 그래프(re-export 없음)에서는 캐시 오버헤드가 이득보다 크므로 비활성.
+        for (self.modules) |m| {
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export or eb.kind == .re_export_all) {
+                    self.chain_cache_enabled = true;
+                    break;
+                }
+            }
+            if (self.chain_cache_enabled) break;
+        }
+
         try self.resolveImports();
     }
 
@@ -914,6 +942,41 @@ pub const Linker = struct {
         const mod_i = @intFromEnum(module_idx);
         if (mod_i >= self.modules.len) return null;
 
+        // 메모이제이션: chain_cache가 활성화된 경우에만 캐시 조회/저장.
+        // re-export chain이 없는 단순 그래프에서는 캐시 오버헤드가 이득보다 큼.
+        // depth=0에서만 캐시 (재귀 호출은 chain 내부라 캐시 불필요).
+        if (depth == 0 and self.chain_cache_enabled) {
+            var cache_key_buf: [4096]u8 = undefined;
+            const cache_key = types.makeModuleKeyBuf(&cache_key_buf, @intCast(mod_i), name);
+            if (self.chain_cache.get(cache_key)) |entry| {
+                return entry.result;
+            }
+
+            const result = self.resolveExportChainInner(module_idx, name, depth);
+
+            const owned_key = self.allocator.dupe(u8, cache_key) catch return result;
+            const mutable_self: *Linker = @constCast(self);
+            mutable_self.chain_cache.put(self.allocator, owned_key, .{ .result = result }) catch {
+                self.allocator.free(owned_key);
+            };
+            return result;
+        }
+
+        return self.resolveExportChainInner(module_idx, name, depth);
+    }
+
+    /// resolveExportChain 내부 구현 (캐시 없이).
+    fn resolveExportChainInner(
+        self: *const Linker,
+        module_idx: ModuleIndex,
+        name: []const u8,
+        depth: u32,
+    ) ?SymbolRef {
+        if (depth > max_chain_depth) return null;
+
+        const mod_i = @intFromEnum(module_idx);
+        if (mod_i >= self.modules.len) return null;
+
         // 1. 직접 export 확인
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, @intCast(mod_i), name);
@@ -958,7 +1021,7 @@ pub const Linker = struct {
                     if (ib.import_record_index < m_local.import_records.len) {
                         const source_mod = m_local.import_records[ib.import_record_index].resolved;
                         if (!source_mod.isNone()) {
-                            return self.resolveExportChain(source_mod, ib.imported_name, depth + 1);
+                            return self.resolveExportChainInner(source_mod, ib.imported_name, depth + 1);
                         }
                     }
                     break;
@@ -992,7 +1055,7 @@ pub const Linker = struct {
     /// resolveExportChain + CJS fallback. CJS 모듈은 정적 export가 없으므로
     /// resolve 실패 시 CJS 모듈 자체를 반환하여 소비자가 require_xxx()로 접근.
     fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32) ?SymbolRef {
-        if (self.resolveExportChain(source_mod, name, depth)) |result| return result;
+        if (self.resolveExportChainInner(source_mod, name, depth)) |result| return result;
         const src_idx = @intFromEnum(source_mod);
         if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
             return .{ .module_index = source_mod, .export_name = name };
