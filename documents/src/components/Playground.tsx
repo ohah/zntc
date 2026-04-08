@@ -296,7 +296,7 @@ export default function Playground() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* 왼쪽 설정 패널 */}
         {showConfig && (
-          <div style={{ width: 240, minWidth: 240, background: "#16162a", borderRight: "1px solid #2d2d4a", overflowY: "auto", padding: 12, flexShrink: 0, fontSize: 13 }}>
+          <div className="pg-config" style={{ width: 240, minWidth: 240, background: "#16162a", borderRight: "1px solid #2d2d4a", overflowY: "auto", padding: 12, flexShrink: 0, fontSize: 13 }}>
             <Section title="Parser">
               <Sel label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)} options={[["input.tsx","TypeScript+JSX"],["input.ts","TypeScript"],["input.jsx","JavaScript+JSX"],["input.js","JavaScript"]]} />
               <Chk label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
@@ -328,11 +328,11 @@ export default function Playground() {
         )}
 
         {/* 에디터 */}
-        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        <div className="pg-editors" style={{ flex: 1, display: "flex", overflow: "hidden" }}>
           <EditorPanel header={<span>Input <span style={{ opacity: 0.5, fontSize: 11 }}>{options.filename}</span></span>}>
             <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleInputMount} options={editorOpts} />
           </EditorPanel>
-          <div style={{ width: 2, background: "#2d2d4a", flexShrink: 0 }} />
+          <div className="pg-divider" style={{ width: 2, background: "#2d2d4a", flexShrink: 0 }} />
           <EditorPanel header={
             <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
               <div style={{ display: "flex" }}>
