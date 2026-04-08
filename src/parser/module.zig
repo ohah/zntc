@@ -983,14 +983,9 @@ fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
 // ============================================================
 
 /// 문자열 리터럴 텍스트에서 따옴표를 제거한다.
-/// import_scanner.stripQuotes와 동일한 로직.
+/// import_scanner.stripQuotes에 위임한다.
 fn stripImportQuotes(text: []const u8) []const u8 {
-    if (text.len < 2) return text;
-    const first = text[0];
-    if (first == '\'' or first == '"') {
-        return text[1 .. text.len - 1];
-    }
-    return text;
+    return import_scanner.stripQuotes(text) orelse text;
 }
 
 /// import 선언에서 수집한 specifier들의 바인딩을 scan_import_bindings에 추가한다.
@@ -1105,21 +1100,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
                 }
             }
         },
-        .function_declaration => {
-            const e = decl_node.data.extra;
-            if (e >= self.ast.extra_data.items.len) return;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (name_idx.isNone()) return;
-            const name_node = self.ast.getNode(name_idx);
-            const name = self.ast.source[name_node.span.start..name_node.span.end];
-            self.scan_export_bindings.append(self.allocator, .{
-                .exported_name = name,
-                .local_name = name,
-                .local_span = name_node.span,
-                .kind = .local,
-            }) catch {};
-        },
-        .class_declaration => {
+        .function_declaration, .class_declaration => {
             const e = decl_node.data.extra;
             if (e >= self.ast.extra_data.items.len) return;
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -1167,14 +1148,22 @@ fn checkBarrelReExport(self: *Parser, local_name: []const u8) struct {
     import_record_index: ?u32,
     local_name: []const u8,
 } {
-    for (self.scan_import_bindings.items) |ib| {
-        if (std.mem.eql(u8, ib.local_name, local_name) and ib.kind != .namespace) {
-            return .{
-                .kind = .re_export,
-                .import_record_index = ib.import_record_index,
-                .local_name = ib.imported_name,
-            };
+    // lazy 구축: 첫 호출 시 local_name → 인덱스 맵 생성 (O(n) → O(1) 조회)
+    if (self.scan_import_binding_map.count() == 0 and self.scan_import_bindings.items.len > 0) {
+        for (self.scan_import_bindings.items, 0..) |ib, i| {
+            if (ib.kind != .namespace) {
+                self.scan_import_binding_map.put(self.allocator, ib.local_name, @intCast(i)) catch {};
+            }
         }
+    }
+
+    if (self.scan_import_binding_map.get(local_name)) |idx| {
+        const ib = self.scan_import_bindings.items[idx];
+        return .{
+            .kind = .re_export,
+            .import_record_index = ib.import_record_index,
+            .local_name = ib.imported_name,
+        };
     }
     return .{
         .kind = .local,
