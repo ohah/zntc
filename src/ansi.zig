@@ -80,10 +80,9 @@ pub fn isTty(file: std.fs.File) bool {
 test "Style.code returns valid ANSI sequences" {
     // 모든 스타일이 \x1b[ 로 시작하는지 확인
     const styles = [_]Style{
-        .reset, .bold, .dim, .red, .bold_red,
-        .yellow, .bold_yellow, .cyan, .bold_cyan,
-        .green, .bold_green, .magenta, .bold_magenta,
-        .blue, .bold_blue,
+        .reset,      .bold,        .dim,          .red,       .bold_red,
+        .yellow,     .bold_yellow, .cyan,         .bold_cyan, .green,
+        .bold_green, .magenta,     .bold_magenta, .blue,      .bold_blue,
     };
     for (styles) |s| {
         const c = s.code();
