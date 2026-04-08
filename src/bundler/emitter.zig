@@ -445,6 +445,39 @@ pub fn emitWithTreeShaking(
         }
     }
 
+    // dev mode + RN: react-refresh/runtime을 entry init 전에 실행하여 injectIntoGlobalHook 호출.
+    // 모든 __commonJS 모듈이 정의된 시점이므로 require_xxx() 호출 가능.
+    // 번들 내 동일 인스턴스를 사용하여 InitializeCore와 충돌 방지.
+    if (options.dev_mode and options.react_refresh and options.platform == .react_native) {
+        // react-refresh/runtime __commonJS 래퍼 함수 찾기
+        for (sorted.items) |m| {
+            if (std.mem.indexOf(u8, m.path, "react-refresh") != null and
+                std.mem.endsWith(u8, m.path, "runtime.js"))
+            {
+                const var_name = try types.makeRequireVarName(allocator, m.path);
+                defer allocator.free(var_name);
+                // react-refresh/runtime을 미리 require하여 injectIntoGlobalHook 호출.
+                // __REACT_DEVTOOLS_GLOBAL_HOOK__가 없으면 자동 생성.
+                // hook.renderers가 Map이 아니면 안전하게 스킵.
+                if (!options.minify_whitespace) {
+                    try output.appendSlice(allocator, "// --- react-refresh early init ---\n");
+                }
+                try output.appendSlice(allocator, "(function(){");
+                try output.appendSlice(allocator, "var r=");
+                try output.appendSlice(allocator, var_name);
+                try output.appendSlice(allocator, "();");
+                try output.appendSlice(allocator, "var g=typeof globalThis!==\"undefined\"?globalThis:global;");
+                // hook이 없거나 renderers가 Map이 아니면 hook을 초기화
+                try output.appendSlice(allocator, "if(!g.__REACT_DEVTOOLS_GLOBAL_HOOK__||!(g.__REACT_DEVTOOLS_GLOBAL_HOOK__.renderers instanceof Map)){");
+                try output.appendSlice(allocator, "g.__REACT_DEVTOOLS_GLOBAL_HOOK__={renderers:new Map(),supportsFiber:true,inject:function(){return 0},onScheduleFiberRoot:function(){},onCommitFiberRoot:function(){},onCommitFiberUnmount:function(){}};");
+                try output.appendSlice(allocator, "}");
+                try output.appendSlice(allocator, "r.injectIntoGlobalHook(g);");
+                try output.appendSlice(allocator, "})();\n");
+                break;
+            }
+        }
+    }
+
     // 래핑된 엔트리 자동 호출: __commonJS → require_xxx(), __esm → init_xxx().
     // RN 플랫폼에서는 엔트리도 __esm 래핑되므로 init_xxx() 호출이 필요.
     if (entry_idx) |ei| {
