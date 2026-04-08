@@ -27,6 +27,13 @@
     width: var(--sl-sidebar-width) !important;
     flex-shrink: 0;
   }
+
+  /* .sl-container가 max-width: 45rem으로 본문을 좁히고
+     margin-inline: auto 0으로 오른쪽 정렬하는 것을 해제 */
+  .main-pane .sl-container {
+    max-width: 100% !important;
+    margin-inline: 0 !important;
+  }
 }
 
 /* TOC 링크 텍스트가 잘리지 않도록 */
