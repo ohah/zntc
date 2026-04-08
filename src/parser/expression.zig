@@ -22,6 +22,7 @@ const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const flow = @import("flow.zig");
+const scan_results_mod = @import("scan_results.zig");
 
 /// TypeScript의 canFollowTypeArgumentsInExpression 대응 (esbuild tsCanFollowTypeArgumentsInExpression).
 /// `f<Type>` 다음에 올 수 있는 토큰인지 판별한다.
@@ -454,6 +455,12 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         const flags: u16 = @intFromEnum(self.current());
         try self.advance();
         const right = try parseAssignmentExpression(self);
+
+        // Inline scan: CJS pattern detection (module.exports = ..., exports.x = ...)
+        if (self.enable_scan) {
+            scanAssignmentCjs(self, left);
+        }
+
         return try self.ast.addNode(.{
             .tag = .assignment_expression,
             .span = .{ .start = left_start, .end = self.currentSpan().start },
@@ -859,6 +866,12 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 const call_extra = try self.ast.addExtras(&.{
                     @intFromEnum(expr), arg_list.start, arg_list.len, call_flags,
                 });
+
+                // Inline scan: require("specifier") → CJS import record
+                if (self.enable_scan) {
+                    scanRequireCall(self, expr, arg_list);
+                }
+
                 expr = try self.ast.addNode(.{
                     .tag = .call_expression,
                     .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -2121,4 +2134,88 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = ae },
     });
+}
+
+// ============================================================
+// Inline scan helpers — enable_scan=true일 때 CJS 패턴 감지
+// ============================================================
+
+/// require("specifier") 호출을 감지하여 CJS import record를 추가한다.
+/// call_expression이 생성되기 직전, callee(expr)와 arg_list가 확정된 시점에서 호출.
+/// import_scanner.tryExtractRequire와 동일한 패턴을 인라인으로 검사한다.
+fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
+    // callee가 identifier_reference "require"인지 확인
+    if (callee.isNone()) return;
+    if (@intFromEnum(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (callee_node.tag != .identifier_reference) return;
+    const callee_text = self.ast.source[callee_node.span.start..callee_node.span.end];
+    if (!std.mem.eql(u8, callee_text, "require")) return;
+
+    // 인수가 정확히 1개인지 확인
+    if (arg_list.len != 1) return;
+
+    // 인수가 string_literal인지 확인
+    if (arg_list.start >= self.ast.extra_data.items.len) return;
+    const arg_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
+    if (arg_idx.isNone()) return;
+    if (@intFromEnum(arg_idx) >= self.ast.nodes.items.len) return;
+    const arg_node = self.ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg_node.tag != .string_literal) return;
+
+    const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
+    const specifier = stripRequireQuotes(raw);
+
+    self.scan_import_records.append(self.allocator, .{
+        .specifier = specifier,
+        .kind = .require,
+        .span = arg_node.span,
+    }) catch {};
+    self.scan_result.has_cjs_require = true;
+}
+
+/// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.
+/// import_scanner.isModuleExportsAssign / isExportsDotAssign와 동일한 로직.
+fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
+    if (left.isNone()) return;
+    if (@intFromEnum(left) >= self.ast.nodes.items.len) return;
+    const left_node = self.ast.nodes.items[@intFromEnum(left)];
+    if (left_node.tag != .static_member_expression) return;
+
+    const me = left_node.data.extra;
+    if (me + 1 >= self.ast.extra_data.items.len) return;
+
+    // object: extra[0], property: extra[1]
+    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+    if (obj_idx.isNone()) return;
+    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len) return;
+    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    if (obj.tag != .identifier_reference) return;
+
+    const obj_text = self.ast.source[obj.span.start..obj.span.end];
+
+    if (std.mem.eql(u8, obj_text, "module")) {
+        // module.exports = ...
+        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+        if (prop_idx.isNone()) return;
+        if (@intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
+        const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_text = self.ast.source[prop.span.start..prop.span.end];
+        if (std.mem.eql(u8, prop_text, "exports")) {
+            self.scan_result.has_module_exports = true;
+        }
+    } else if (std.mem.eql(u8, obj_text, "exports")) {
+        // exports.x = ...
+        self.scan_result.has_exports_dot = true;
+    }
+}
+
+/// 문자열 리터럴에서 따옴표를 제거한다.
+fn stripRequireQuotes(text: []const u8) []const u8 {
+    if (text.len < 2) return text;
+    const first = text[0];
+    if (first == '\'' or first == '"') {
+        return text[1 .. text.len - 1];
+    }
+    return text;
 }

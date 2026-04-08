@@ -19,6 +19,8 @@ const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const binding_mod = @import("binding.zig");
+const scan_results_mod = @import("scan_results.zig");
+const import_scanner = @import("../bundler/import_scanner.zig");
 
 /// import() / import.source() / import.defer() 호출의 인자를 파싱한다.
 /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
@@ -36,6 +38,17 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
         }
     }
     try self.expect(.r_paren);
+
+    // Inline scan: dynamic import — 인자가 string_literal이면 레코드 추가
+    if (self.enable_scan and !arg.isNone() and @intFromEnum(arg) < self.ast.nodes.items.len) {
+        const arg_node = self.ast.getNode(arg);
+        if (arg_node.tag == .string_literal) {
+            const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
+            const spec = stripImportQuotes(raw);
+            _ = appendImportRecord(self, spec, .dynamic_import, arg_node.span);
+        }
+    }
+
     return try self.ast.addNode(.{
         .tag = .import_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
@@ -125,6 +138,16 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         }
         const source_node = try parseModuleSource(self);
         _ = try self.eat(.semicolon);
+
+        // Inline scan: side-effect import (no bindings)
+        if (self.enable_scan and !is_type_only and !source_node.isNone()) {
+            const src_node = self.ast.getNode(source_node);
+            const raw = self.ast.source[src_node.span.start..src_node.span.end];
+            const spec = stripImportQuotes(raw);
+            _ = appendImportRecord(self, spec, .side_effect, src_node.span);
+            self.scan_result.has_esm_syntax = true;
+        }
+
         const extra_start = try self.ast.addExtra(0); // specs_start (unused)
         _ = try self.ast.addExtra(0); // specs_len = 0 (side-effect)
         _ = try self.ast.addExtra(@intFromEnum(source_node));
@@ -221,6 +244,17 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     self.restoreScratch(scratch_top);
                     return NodeIndex.none;
                 }
+
+                // Inline scan: default-only import
+                if (self.enable_scan and !source_node.isNone()) {
+                    const src_node = self.ast.getNode(source_node);
+                    const raw = self.ast.source[src_node.span.start..src_node.span.end];
+                    const specifier = stripImportQuotes(raw);
+                    const rec_idx = appendImportRecord(self, specifier, .static_import, src_node.span);
+                    collectImportBindings(self, scratch_top, rec_idx);
+                    self.scan_result.has_esm_syntax = true;
+                }
+
                 const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
                 const extra_start = try self.ast.addExtra(specifiers.start);
@@ -276,6 +310,17 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         self.restoreScratch(scratch_top);
         return NodeIndex.none;
     }
+
+    // Inline scan: full import (namespace/named/mixed)
+    if (self.enable_scan and !source_node.isNone()) {
+        const src_node = self.ast.getNode(source_node);
+        const raw = self.ast.source[src_node.span.start..src_node.span.end];
+        const spec = stripImportQuotes(raw);
+        const rec_idx = appendImportRecord(self, spec, .static_import, src_node.span);
+        collectImportBindings(self, scratch_top, rec_idx);
+        self.scan_result.has_esm_syntax = true;
+    }
+
     const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
 
@@ -450,6 +495,39 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         };
         // TS type-only default export (interface) → 전체 제거
         if (decl.isNone()) return NodeIndex.none;
+
+        // Inline scan: export default
+        if (self.enable_scan) {
+            self.scan_result.has_esm_syntax = true;
+            var local_name: []const u8 = "_default";
+            if (!decl.isNone()) {
+                const inner = self.ast.getNode(decl);
+                if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
+                    const e = inner.data.extra;
+                    if (e < self.ast.extra_data.items.len) {
+                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                            const name_node = self.ast.getNode(name_idx);
+                            const n = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                            if (n.len > 0) local_name = n;
+                        }
+                    }
+                } else if (inner.tag == .identifier_reference) {
+                    const n = self.ast.getText(inner.span);
+                    if (n.len > 0) local_name = n;
+                }
+            }
+            // barrel re-export check
+            const re = checkBarrelReExport(self, local_name);
+            self.scan_export_bindings.append(self.allocator, .{
+                .exported_name = "default",
+                .local_name = re.local_name,
+                .local_span = .{ .start = start, .end = self.currentSpan().start },
+                .kind = re.kind,
+                .import_record_index = re.import_record_index,
+            }) catch {};
+        }
+
         return try self.ast.addNode(.{
             .tag = .export_default_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -482,6 +560,38 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         try self.expectSemicolon();
 
         if (is_type_only_export) return NodeIndex.none;
+
+        // Inline scan: export * from "module" / export * as ns from "module"
+        if (self.enable_scan and !source_node.isNone()) {
+            self.scan_result.has_esm_syntax = true;
+            const src_node = self.ast.getNode(source_node);
+            const raw = self.ast.source[src_node.span.start..src_node.span.end];
+            const spec = stripImportQuotes(raw);
+            const rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
+
+            if (!exported_name.isNone() and @intFromEnum(exported_name) < self.ast.nodes.items.len) {
+                // export * as ns from "module"
+                const name_node = self.ast.getNode(exported_name);
+                const name_text = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                self.scan_export_bindings.append(self.allocator, .{
+                    .exported_name = name_text,
+                    .local_name = name_text,
+                    .local_span = .{ .start = start, .end = self.currentSpan().start },
+                    .kind = .re_export_all,
+                    .import_record_index = rec_idx,
+                }) catch {};
+            } else {
+                // export * from "module"
+                self.scan_export_bindings.append(self.allocator, .{
+                    .exported_name = "*",
+                    .local_name = "*",
+                    .local_span = .{ .start = start, .end = self.currentSpan().start },
+                    .kind = .re_export_all,
+                    .import_record_index = rec_idx,
+                }) catch {};
+            }
+        }
+
         return try self.ast.addNode(.{
             .tag = .export_all_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -527,6 +637,62 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                             try self.addError(local_node.span, "String literal cannot be used as local binding in export");
                         }
                     }
+                }
+            }
+        }
+
+        // Inline scan: export { a, b } / export { a } from "module"
+        if (self.enable_scan and !is_type_only_export) {
+            self.scan_result.has_esm_syntax = true;
+            const has_source = !source_node.isNone();
+            var rec_idx: ?u32 = null;
+            if (has_source) {
+                const src_node = self.ast.getNode(source_node);
+                const raw = self.ast.source[src_node.span.start..src_node.span.end];
+                const spec = stripImportQuotes(raw);
+                rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
+            }
+
+            for (self.scratch.items[scratch_top..]) |spec_idx| {
+                if (spec_idx.isNone()) continue;
+                if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                const spec_node = self.ast.getNode(spec_idx);
+                if (spec_node.tag != .export_specifier) continue;
+                // skip type-only specifiers
+                if (spec_node.data.binary.flags & 1 != 0) continue;
+
+                const local_idx = spec_node.data.binary.left;
+                const exported_idx = spec_node.data.binary.right;
+                if (local_idx.isNone()) continue;
+
+                const local_node = self.ast.getNode(local_idx);
+                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+
+                const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
+                    self.ast.getNode(exported_idx)
+                else
+                    local_node;
+                const exported_name = self.ast.source[exported_node.span.start..exported_node.span.end];
+
+                if (has_source) {
+                    // export { a } from "module" → re-export
+                    self.scan_export_bindings.append(self.allocator, .{
+                        .exported_name = exported_name,
+                        .local_name = local_name,
+                        .local_span = local_node.span,
+                        .kind = .re_export,
+                        .import_record_index = rec_idx,
+                    }) catch {};
+                } else {
+                    // export { a } — local or barrel re-export
+                    const re = checkBarrelReExport(self, local_name);
+                    self.scan_export_bindings.append(self.allocator, .{
+                        .exported_name = exported_name,
+                        .local_name = re.local_name,
+                        .local_span = local_node.span,
+                        .kind = re.kind,
+                        .import_record_index = re.import_record_index,
+                    }) catch {};
                 }
             }
         }
@@ -579,6 +745,13 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // CJS 모듈이 __esm으로 래핑됨.
     if (decl.isNone()) return NodeIndex.none;
     if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return NodeIndex.none;
+
+    // Inline scan: export var/let/const/function/class
+    if (self.enable_scan) {
+        self.scan_result.has_esm_syntax = true;
+        collectDeclExportBindings(self, decl);
+    }
+
     // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
     const extra_start = try self.ast.addExtras(&.{
         @intFromEnum(decl),
@@ -803,4 +976,209 @@ fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
         }
     }
     return buf[0..out];
+}
+
+// ============================================================
+// Inline scan helpers — enable_scan=true일 때 파서가 호출
+// ============================================================
+
+/// 문자열 리터럴 텍스트에서 따옴표를 제거한다.
+/// import_scanner.stripQuotes와 동일한 로직.
+fn stripImportQuotes(text: []const u8) []const u8 {
+    if (text.len < 2) return text;
+    const first = text[0];
+    if (first == '\'' or first == '"') {
+        return text[1 .. text.len - 1];
+    }
+    return text;
+}
+
+/// import 선언에서 수집한 specifier들의 바인딩을 scan_import_bindings에 추가한다.
+/// scratch_top..scratch.items.len 범위의 specifier 노드를 순회한다.
+fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
+    for (self.scratch.items[scratch_top..]) |spec_idx| {
+        if (spec_idx.isNone()) continue;
+        if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+        const spec_node = self.ast.getNode(spec_idx);
+        switch (spec_node.tag) {
+            .import_default_specifier => {
+                self.scan_import_bindings.append(self.allocator, .{
+                    .kind = .default,
+                    .local_name = self.ast.source[spec_node.span.start..spec_node.span.end],
+                    .imported_name = "default",
+                    .local_span = spec_node.span,
+                    .import_record_index = rec_idx,
+                }) catch {};
+            },
+            .import_namespace_specifier => {
+                self.scan_import_bindings.append(self.allocator, .{
+                    .kind = .namespace,
+                    .local_name = self.ast.source[spec_node.span.start..spec_node.span.end],
+                    .imported_name = "*",
+                    .local_span = spec_node.span,
+                    .import_record_index = rec_idx,
+                }) catch {};
+            },
+            .import_specifier => {
+                // binary: left=imported, right=local, flags (flags&1 = type-only)
+                if (spec_node.data.binary.flags & 1 != 0) continue; // skip type-only
+                const imported_idx = spec_node.data.binary.left;
+                const local_idx = spec_node.data.binary.right;
+                if (imported_idx.isNone()) continue;
+
+                const imported_node = self.ast.getNode(imported_idx);
+                const imported_name = self.ast.source[imported_node.span.start..imported_node.span.end];
+
+                const local_node = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
+                    self.ast.getNode(local_idx)
+                else
+                    imported_node;
+                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+
+                self.scan_import_bindings.append(self.allocator, .{
+                    .kind = .named,
+                    .local_name = local_name,
+                    .imported_name = imported_name,
+                    .local_span = local_node.span,
+                    .import_record_index = rec_idx,
+                }) catch {};
+            },
+            else => {},
+        }
+    }
+}
+
+/// import 레코드를 추가하고 인덱스를 반환한다.
+fn appendImportRecord(self: *Parser, specifier: []const u8, kind: scan_results_mod.ImportKind, span: Span) u32 {
+    const rec_idx: u32 = @intCast(self.scan_import_records.items.len);
+    self.scan_import_records.append(self.allocator, .{
+        .specifier = specifier,
+        .kind = kind,
+        .span = span,
+    }) catch {};
+    return rec_idx;
+}
+
+/// export 선언 내부의 declaration 노드에서 export binding을 추출한다.
+/// variable_declaration, function_declaration, class_declaration을 처리한다.
+fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
+    if (decl_idx.isNone()) return;
+    if (@intFromEnum(decl_idx) >= self.ast.nodes.items.len) return;
+    const decl_node = self.ast.getNode(decl_idx);
+
+    switch (decl_node.tag) {
+        .variable_declaration => {
+            // extra [kind_flags, list.start, list.len]
+            const e = decl_node.data.extra;
+            if (e + 2 >= self.ast.extra_data.items.len) return;
+            const list_start = self.ast.extra_data.items[e + 1];
+            const list_len = self.ast.extra_data.items[e + 2];
+            if (list_len == 0) return;
+
+            var i: u32 = 0;
+            while (i < list_len) : (i += 1) {
+                const idx = list_start + i;
+                if (idx >= self.ast.extra_data.items.len) break;
+                const d_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[idx]);
+                if (d_idx.isNone()) continue;
+                if (@intFromEnum(d_idx) >= self.ast.nodes.items.len) continue;
+                const d_node = self.ast.getNode(d_idx);
+                if (d_node.tag != .variable_declarator) continue;
+                // variable_declarator: extra [name, type_ann, init_expr]
+                const de = d_node.data.extra;
+                if (de >= self.ast.extra_data.items.len) continue;
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+                if (name_idx.isNone()) continue;
+                if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
+                const name_node = self.ast.getNode(name_idx);
+
+                if (name_node.tag == .object_pattern) {
+                    collectObjectPatternExportBindings(self, name_node);
+                } else {
+                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    self.scan_export_bindings.append(self.allocator, .{
+                        .exported_name = name,
+                        .local_name = name,
+                        .local_span = name_node.span,
+                        .kind = .local,
+                    }) catch {};
+                }
+            }
+        },
+        .function_declaration => {
+            const e = decl_node.data.extra;
+            if (e >= self.ast.extra_data.items.len) return;
+            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            if (name_idx.isNone()) return;
+            const name_node = self.ast.getNode(name_idx);
+            const name = self.ast.source[name_node.span.start..name_node.span.end];
+            self.scan_export_bindings.append(self.allocator, .{
+                .exported_name = name,
+                .local_name = name,
+                .local_span = name_node.span,
+                .kind = .local,
+            }) catch {};
+        },
+        .class_declaration => {
+            const e = decl_node.data.extra;
+            if (e >= self.ast.extra_data.items.len) return;
+            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            if (name_idx.isNone()) return;
+            const name_node = self.ast.getNode(name_idx);
+            const name = self.ast.source[name_node.span.start..name_node.span.end];
+            self.scan_export_bindings.append(self.allocator, .{
+                .exported_name = name,
+                .local_name = name,
+                .local_span = name_node.span,
+                .kind = .local,
+            }) catch {};
+        },
+        else => {},
+    }
+}
+
+/// object_pattern에서 export binding name을 추출한다.
+fn collectObjectPatternExportBindings(self: *Parser, pattern: Node) void {
+    const list = pattern.data.list;
+    if (list.len == 0) return;
+    if (list.start + list.len > self.ast.extra_data.items.len) return;
+    const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw_idx| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) continue;
+        const prop = self.ast.getNode(prop_idx);
+        if (prop.tag == .binding_property) {
+            const key = self.ast.getNode(prop.data.binary.left);
+            const name = self.ast.source[key.span.start..key.span.end];
+            self.scan_export_bindings.append(self.allocator, .{
+                .exported_name = name,
+                .local_name = name,
+                .local_span = key.span,
+                .kind = .local,
+            }) catch {};
+        }
+    }
+}
+
+/// local_name이 import binding에 존재하면 barrel re-export로 분류한다.
+/// 반환: { kind, import_record_index, local_name } — re-export이면 imported_name으로 교체.
+fn checkBarrelReExport(self: *Parser, local_name: []const u8) struct {
+    kind: scan_results_mod.ExportBindingKind,
+    import_record_index: ?u32,
+    local_name: []const u8,
+} {
+    for (self.scan_import_bindings.items) |ib| {
+        if (std.mem.eql(u8, ib.local_name, local_name) and ib.kind != .namespace) {
+            return .{
+                .kind = .re_export,
+                .import_record_index = ib.import_record_index,
+                .local_name = ib.imported_name,
+            };
+        }
+    }
+    return .{
+        .kind = .local,
+        .import_record_index = null,
+        .local_name = local_name,
+    };
 }

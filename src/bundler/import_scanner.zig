@@ -386,6 +386,21 @@ fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
     return true;
 }
 
+/// AST를 순회하여 Worker 패턴만 추출한다.
+/// inline scan 모드에서 Worker 감지를 보완하기 위해 사용.
+/// new Worker(new URL('./worker.ts', import.meta.url)) 패턴만 감지.
+pub fn extractWorkerRecords(allocator: std.mem.Allocator, ast: *const Ast) ![]ImportRecord {
+    var records = std.ArrayListUnmanaged(ImportRecord).empty;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .new_expression) {
+            if (tryExtractWorkerNew(ast, node)) |record| {
+                try records.append(allocator, record);
+            }
+        }
+    }
+    return records.toOwnedSlice(allocator);
+}
+
 /// 따옴표(`'`, `"`)를 벗긴다. 최소 2글자 이상이어야 함.
 pub fn stripQuotes(text: []const u8) ?[]const u8 {
     if (text.len < 2) return null;
