@@ -14,6 +14,23 @@ export default defineConfig({
     starlight({
       title: "ZTS",
       description: "Zig TypeScript Transpiler & Bundler",
+      expressiveCode: {
+        themes: ["github-dark", "github-light"],
+        styleOverrides: {
+          borderRadius: "0.375rem",
+          codePaddingBlock: "0.875rem",
+          codePaddingInline: "1.125rem",
+          codeFontSize: "0.875rem",
+          codeLineHeight: "1.7",
+          frames: {
+            shadowColor: "rgba(0, 0, 0, 0.12)",
+          },
+        },
+        defaultProps: {
+          showLineNumbers: false,
+          wrap: false,
+        },
+      },
       plugins: [
         starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] }),
         starlightTypeDoc({
