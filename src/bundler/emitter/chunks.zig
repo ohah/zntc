@@ -694,6 +694,72 @@ pub fn computeAllUsedNames(
 
     const s = shaker orelse return list;
 
+    // ── 역방향 룩업 맵 사전 구축 ──
+    // target_module_index → 해당 모듈을 import하는 바인딩 목록
+    // 기존: 매 모듈의 export마다 모든 importer × 모든 binding을 순회 (O(n × e × i × b))
+    // 최적화: 맵을 한 번 구축하여 O(1) 룩업 (O(n × relevant_bindings))
+    const RevKind = enum { import_binding_named, import_binding_other, re_export, re_export_all };
+    const RevEntry = struct {
+        importer_module_index: u32,
+        /// import_binding: imported_name / re_export: local_name (= 소스 모듈의 exported_name)
+        imported_name: []const u8,
+        /// import_binding: local_name (importer 내 바인딩 이름)
+        local_name: []const u8,
+        /// re_export_all인 경우 importer의 exported_name ("*"이면 unnamed re_export_all)
+        exported_name: []const u8,
+        kind: RevKind,
+    };
+
+    var reverse_map = std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(RevEntry)).empty;
+    defer {
+        var it = reverse_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        reverse_map.deinit(allocator);
+    }
+
+    // 모든 모듈의 import_bindings + export_bindings(re-export)를 순회하여 역방향 맵 구축
+    for (graph.modules.items) |*importer| {
+        const imp_i: u32 = @intFromEnum(importer.index);
+
+        // export_bindings 중 re_export / re_export_all → 타겟 모듈로 역매핑
+        for (importer.export_bindings) |ieb| {
+            if (ieb.kind != .re_export_all and ieb.kind != .re_export) continue;
+            const rec_idx = ieb.import_record_index orelse continue;
+            if (rec_idx >= importer.import_records.len) continue;
+            const target = importer.import_records[rec_idx].resolved;
+            if (target == .none) continue;
+            const target_i: u32 = @intFromEnum(target);
+            const gop = try reverse_map.getOrPut(allocator, target_i);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(allocator, .{
+                .importer_module_index = imp_i,
+                .imported_name = ieb.local_name,
+                .local_name = ieb.local_name,
+                .exported_name = ieb.exported_name,
+                .kind = if (ieb.kind == .re_export_all) .re_export_all else .re_export,
+            });
+        }
+
+        // import_bindings → 타겟 모듈로 역매핑
+        for (importer.import_bindings) |ib| {
+            if (ib.import_record_index >= importer.import_records.len) continue;
+            const target = importer.import_records[ib.import_record_index].resolved;
+            if (target == .none) continue;
+            const target_i: u32 = @intFromEnum(target);
+            const gop = try reverse_map.getOrPut(allocator, target_i);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(allocator, .{
+                .importer_module_index = imp_i,
+                .imported_name = ib.imported_name,
+                .local_name = ib.local_name,
+                .exported_name = "",
+                .kind = if (ib.kind == .named) .import_binding_named else .import_binding_other,
+            });
+        }
+    }
+
     for (sorted, 0..) |m, idx| {
         const mod_idx: u32 = @intFromEnum(m.index);
         // "*" 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
@@ -704,6 +770,12 @@ pub fn computeAllUsedNames(
 
         var names_buf: std.ArrayListUnmanaged([]const u8) = .empty;
         var all_used = false;
+
+        // 현재 모듈을 타겟으로 하는 역방향 엔트리 (없으면 빈 슬라이스)
+        const rev_entries: []const RevEntry = if (reverse_map.getPtr(mod_idx)) |entries_list|
+            entries_list.items
+        else
+            &.{};
 
         for (m.export_bindings) |eb| {
             if (eb.kind == .re_export_all) continue;
@@ -723,36 +795,26 @@ pub fn computeAllUsedNames(
             }
 
             // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외
+            // 역방향 맵으로 O(relevant_bindings) 탐색
             if (eb.kind == .local and m.importers.items.len > 0) {
                 const is_dead = is_dead: {
                     var found_any = false;
-                    for (m.importers.items) |importer_idx| {
-                        const imp_i = @intFromEnum(importer_idx);
-                        if (imp_i >= graph.modules.items.len) break :is_dead false;
-                        const importer = &graph.modules.items[imp_i];
-                        for (importer.export_bindings) |ieb| {
-                            if (ieb.kind == .re_export_all or ieb.kind == .re_export) {
-                                if (ieb.import_record_index) |rec_idx| {
-                                    if (rec_idx < importer.import_records.len and
-                                        importer.import_records[rec_idx].resolved == m.index)
-                                    {
-                                        if (ieb.kind == .re_export) {
-                                            if (std.mem.eql(u8, ieb.local_name, eb.exported_name))
-                                                break :is_dead false;
-                                        } else {
-                                            break :is_dead false;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        for (importer.import_bindings) |ib| {
-                            if (ib.import_record_index >= importer.import_records.len) continue;
-                            if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
-                            if (!std.mem.eql(u8, ib.imported_name, eb.exported_name)) continue;
-                            found_any = true;
-                            if (s.isImportLiveInModule(@intCast(imp_i), ib.local_name))
-                                break :is_dead false;
+                    for (rev_entries) |re| {
+                        switch (re.kind) {
+                            // re_export_all: 이 모듈 전체를 re-export → dead 아님
+                            .re_export_all => break :is_dead false,
+                            // re_export: imported_name이 이 export의 exported_name과 같으면 dead 아님
+                            .re_export => {
+                                if (std.mem.eql(u8, re.imported_name, eb.exported_name))
+                                    break :is_dead false;
+                            },
+                            // import_binding: imported_name이 이 export의 exported_name과 매칭
+                            .import_binding_named, .import_binding_other => {
+                                if (!std.mem.eql(u8, re.imported_name, eb.exported_name)) continue;
+                                found_any = true;
+                                if (s.isImportLiveInModule(re.importer_module_index, re.local_name))
+                                    break :is_dead false;
+                            },
                         }
                     }
                     break :is_dead found_any;
@@ -773,35 +835,26 @@ pub fn computeAllUsedNames(
         }
 
         if (!all_used) {
-            // cross-module: importer의 named binding도 포함
-            for (m.importers.items) |importer_idx| {
-                const imp_i = @intFromEnum(importer_idx);
-                if (imp_i >= graph.modules.items.len) continue;
-                const importer = &graph.modules.items[imp_i];
-                for (importer.export_bindings) |eb| {
-                    if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
-                        if (eb.import_record_index) |rec_idx| {
-                            if (rec_idx < importer.import_records.len and
-                                importer.import_records[rec_idx].resolved == m.index)
-                            {
-                                all_used = true;
-                                break;
-                            }
+            // cross-module: importer의 named binding도 포함 (역방향 맵 활용)
+            for (rev_entries) |re| {
+                if (all_used) break;
+                switch (re.kind) {
+                    .re_export_all => {
+                        // re_export_all with exported_name != "*" → all_used
+                        if (!std.mem.eql(u8, re.exported_name, "*")) {
+                            all_used = true;
                         }
-                    }
+                    },
+                    .re_export => {},
+                    .import_binding_named => {
+                        if (!s.isImportLiveInModule(re.importer_module_index, re.local_name)) continue;
+                        names_buf.append(allocator, re.imported_name) catch {
+                            all_used = true;
+                            break;
+                        };
+                    },
+                    .import_binding_other => {},
                 }
-                if (all_used) break;
-                for (importer.import_bindings) |ib| {
-                    if (ib.kind != .named) continue;
-                    if (ib.import_record_index >= importer.import_records.len) continue;
-                    if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
-                    if (!s.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
-                    names_buf.append(allocator, ib.imported_name) catch {
-                        all_used = true;
-                        break;
-                    };
-                }
-                if (all_used) break;
             }
         }
 

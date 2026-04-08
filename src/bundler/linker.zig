@@ -188,6 +188,10 @@ pub const Linker = struct {
     /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
     nested_mangling_enabled: bool = false,
 
+    /// 모듈별 중첩 스코프 바인딩 이름 집합 (사전 구축).
+    /// computeRenames에서 한 번 구축, hasNestedBinding에서 O(1) 조회.
+    nested_name_sets: []std.StringHashMapUnmanaged(void) = &.{},
+
     const ExportEntry = struct {
         binding: ExportBinding,
         module_index: ModuleIndex,
@@ -245,6 +249,12 @@ pub const Linker = struct {
         self.canonical_names.deinit();
         self.canonical_names_used.deinit();
         self.reserved_globals.deinit();
+        for (self.nested_name_sets) |*set| {
+            set.deinit(self.allocator);
+        }
+        if (self.nested_name_sets.len > 0) {
+            self.allocator.free(self.nested_name_sets);
+        }
         self.diagnostics.deinit(self.allocator);
     }
 
@@ -475,6 +485,11 @@ pub const Linker = struct {
         for (self.modules, 0..) |m, i| {
             try self.collectModuleNames(m, @intCast(i), &name_to_owners);
         }
+
+        // 1.5. 모듈별 중첩 스코프 바인딩 이름 집합을 lazy 구축.
+        // 충돌이 있을 때만 (이름 소유자 2명 이상 or 예약어) hasNestedBinding이 호출되므로,
+        // 충돌이 없으면 구축 비용 0. 충돌이 있으면 on-demand로 구축.
+        // (buildNestedNameSets는 나중에 hasNestedBinding 첫 호출 시 실행)
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
@@ -711,17 +726,47 @@ pub const Linker = struct {
     }
 
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
+    /// 첫 호출 시 해당 모듈의 nested name set을 lazy 구축하여 이후 O(1) 조회.
     fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
+        // lazy 구축: nested_name_sets가 비어 있으면 첫 호출 시 전체 구축
+        if (self.nested_name_sets.len == 0 and self.modules.len > 0) {
+            // const를 우회하여 lazy init (computeRenames 안에서만 호출되므로 안전)
+            const mutable_self: *Linker = @constCast(self);
+            mutable_self.buildNestedNameSets() catch {};
+        }
+
+        if (module_index < self.nested_name_sets.len) {
+            return self.nested_name_sets[module_index].contains(name);
+        }
+
+        // fallback
         if (module_index >= self.modules.len) return false;
         const m = self.modules[module_index];
         const sem = m.semantic orelse return false;
-
-        // scope_maps[0]은 보통 모듈 스코프. 나머지가 중첩 스코프.
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
-            if (scope_idx == 0) continue; // 모듈 스코프는 스킵
+            if (scope_idx == 0) continue;
             if (scope_map.get(name) != null) return true;
         }
         return false;
+    }
+
+    /// 모듈별 중첩 스코프 바인딩 이름을 하나의 HashSet으로 병합.
+    /// computeRenames에서 한 번 호출하면, 이후 hasNestedBinding이 O(1)로 동작.
+    fn buildNestedNameSets(self: *Linker) !void {
+        const sets = try self.allocator.alloc(std.StringHashMapUnmanaged(void), self.modules.len);
+        for (sets) |*s| s.* = .{};
+
+        for (self.modules, 0..) |m, i| {
+            const sem = m.semantic orelse continue;
+            for (sem.scope_maps, 0..) |scope_map, scope_idx| {
+                if (scope_idx == 0) continue; // 모듈 스코프는 스킵
+                var it = scope_map.iterator();
+                while (it.next()) |entry| {
+                    try sets[i].put(self.allocator, entry.key_ptr.*, {});
+                }
+            }
+        }
+        self.nested_name_sets = sets;
     }
 
     /// ECMAScript 예약어 + CJS 런타임 + 브라우저/Node 주요 글로벌인지 확인.

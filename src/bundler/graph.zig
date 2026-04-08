@@ -1159,27 +1159,25 @@ pub const ModuleGraph = struct {
     /// - .none 모듈 + import 소비 → .esm 승격 (래핑된 모듈은 변경하지 않음)
     fn promoteExportsKinds(self: *ModuleGraph) void {
         // Pass 1: require() 소비 처리 (래핑 결정)
+        // 모든 모듈의 require를 먼저 처리해야 함 — 다른 모듈의 import가
+        // 같은 타겟을 ESM으로 승격시키기 전에 wrap_kind가 결정되어야 한다.
         for (self.modules.items) |m| {
             for (m.import_records) |rec| {
+                if (rec.kind != .require) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_idx = @intFromEnum(rec.resolved);
                 if (target_idx >= self.modules.items.len) continue;
 
                 var target = &self.modules.items[target_idx];
 
-                if (rec.kind == .require) {
-                    // require()로 소비 → 래핑 필요 (esbuild WrapKind 결정 로직)
-                    // JSON 모듈은 항상 __commonJS 래핑 (esbuild 동작: module.exports = {...})
-                    // __esm + __toCommonJS는 { __esModule, default } 래퍼를 만들어 CJS 소비자가 깨짐
-                    if (target.module_type == .json) {
-                        target.exports_kind = .commonjs;
-                        target.wrap_kind = .cjs;
-                    } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
-                        target.wrap_kind = .esm;
-                    } else {
-                        target.exports_kind = .commonjs;
-                        target.wrap_kind = .cjs;
-                    }
+                if (target.module_type == .json) {
+                    target.exports_kind = .commonjs;
+                    target.wrap_kind = .cjs;
+                } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                    target.wrap_kind = .esm;
+                } else {
+                    target.exports_kind = .commonjs;
+                    target.wrap_kind = .cjs;
                 }
             }
         }
@@ -1187,23 +1185,22 @@ pub const ModuleGraph = struct {
         // Pass 2: import 소비 처리 (래핑 안 된 .none 모듈만 승격)
         for (self.modules.items) |m| {
             for (m.import_records) |rec| {
+                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
                 if (rec.resolved.isNone()) continue;
                 const target_idx = @intFromEnum(rec.resolved);
                 if (target_idx >= self.modules.items.len) continue;
 
                 var target = &self.modules.items[target_idx];
 
-                if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                    // 이미 래핑된 모듈은 건드리지 않음
-                    if (target.wrap_kind != .none) continue;
+                // 이미 래핑된 모듈은 건드리지 않음
+                if (target.wrap_kind != .none) continue;
 
-                    if (target.exports_kind == .none) {
-                        if (self.isImplicitCjs(target)) {
-                            target.exports_kind = .commonjs;
-                            target.wrap_kind = .cjs;
-                        } else {
-                            target.exports_kind = .esm;
-                        }
+                if (target.exports_kind == .none) {
+                    if (self.isImplicitCjs(target)) {
+                        target.exports_kind = .commonjs;
+                        target.wrap_kind = .cjs;
+                    } else {
+                        target.exports_kind = .esm;
                     }
                 }
             }
@@ -1250,25 +1247,63 @@ pub const ModuleGraph = struct {
     /// await가 포함된 모듈의 실행이 완료되기 전에 이를 import하는 모듈이
     /// 실행될 수 없으므로, import하는 쪽도 TLA로 간주해야 한다.
     /// 동적 import는 비동기이므로 전파하지 않는다.
+    ///
+    /// 역방향 BFS O(n + edges): 역의존성 맵을 빌드한 뒤,
+    /// TLA 모듈에서 시작하여 importers를 따라 전파한다.
     fn propagateTopLevelAwait(self: *ModuleGraph) void {
-        var changed = true;
-        var iteration: u32 = 0;
-        while (changed and iteration < 100) : (iteration += 1) {
-            changed = false;
-            for (self.modules.items) |*m| {
-                if (m.uses_top_level_await) continue;
-                for (m.import_records) |rec| {
-                    if (rec.resolved.isNone()) continue;
-                    // 동적 import는 비동기 → TLA 전파 불필요
-                    if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
-                    const target_idx = @intFromEnum(rec.resolved);
-                    if (target_idx >= self.modules.items.len) continue;
-                    if (self.modules.items[target_idx].uses_top_level_await) {
-                        m.uses_top_level_await = true;
-                        changed = true;
-                        break;
-                    }
-                }
+        const count = self.modules.items.len;
+        if (count == 0) return;
+
+        // Fast path: TLA 모듈이 없으면 전파할 것도 없다.
+        var has_tla = false;
+        for (self.modules.items) |m| {
+            if (m.uses_top_level_await) {
+                has_tla = true;
+                break;
+            }
+        }
+        if (!has_tla) return;
+
+        // 역의존성 맵 빌드: reverse_deps[target] = [importers...]
+        var reverse_deps = self.allocator.alloc(std.ArrayListUnmanaged(u32), count) catch return;
+        defer {
+            for (reverse_deps) |*list| list.deinit(self.allocator);
+            self.allocator.free(reverse_deps);
+        }
+        for (reverse_deps) |*list| list.* = .empty;
+
+        for (self.modules.items, 0..) |m, src_idx| {
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                const target_idx = @intFromEnum(rec.resolved);
+                if (target_idx >= count) continue;
+                reverse_deps[target_idx].append(self.allocator, @intCast(src_idx)) catch return;
+            }
+        }
+
+        // BFS: TLA 모듈 → importers 전파
+        var visited = std.DynamicBitSet.initEmpty(self.allocator, count) catch return;
+        defer visited.deinit();
+        var queue: std.ArrayListUnmanaged(u32) = .empty;
+        defer queue.deinit(self.allocator);
+
+        for (self.modules.items, 0..) |m, idx| {
+            if (m.uses_top_level_await) {
+                visited.set(idx);
+                queue.append(self.allocator, @intCast(idx)) catch return;
+            }
+        }
+
+        var head: usize = 0;
+        while (head < queue.items.len) {
+            const tla_idx = queue.items[head];
+            head += 1;
+            for (reverse_deps[tla_idx].items) |importer_idx| {
+                if (visited.isSet(importer_idx)) continue;
+                visited.set(importer_idx);
+                self.modules.items[importer_idx].uses_top_level_await = true;
+                queue.append(self.allocator, importer_idx) catch return;
             }
         }
     }

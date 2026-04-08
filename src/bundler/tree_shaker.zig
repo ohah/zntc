@@ -46,6 +46,8 @@ pub const TreeShaker = struct {
     sym_to_ib: []?[]?u32 = &.{},
     /// seedOpaqueModule 재진입 방지용 visited bitset. crossModuleBFS에서 초기화.
     opaque_visited: ?std.DynamicBitSet = null,
+    /// 모듈별 used export 존재 여부 (hasAnyUsedExportDirect 최적화: O(1) 조회).
+    has_direct_used_export: []bool = &.{},
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -88,6 +90,9 @@ pub const TreeShaker = struct {
                 if (s) |arr| self.allocator.free(arr);
             }
             self.allocator.free(self.sym_to_ib);
+        }
+        if (self.has_direct_used_export.len > 0) {
+            self.allocator.free(self.has_direct_used_export);
         }
     }
 
@@ -154,26 +159,35 @@ pub const TreeShaker = struct {
         }
         self.re_export_sets = re_export_sets;
 
+        // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
+        const has_due = try self.allocator.alloc(bool, self.modules.len);
+        @memset(has_due, false);
+        self.has_direct_used_export = has_due;
+
+        // --- Incremental fixpoint ---
+        // used_exports는 단조 증가 (한번 marked → 유지). clearUsedExports 불필요.
+        // included_snapshot: 직전 상태. 새로 included된 모듈만 추적.
+
+        // 1단계: entry 모듈의 모든 export를 사용으로 마킹
+        for (self.modules, 0..) |_, i| {
+            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+        }
+
+        // 2단계: included 변화가 없을 때까지 반복
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
-            self.clearUsedExports();
-
-            for (self.modules, 0..) |_, i| {
-                if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
-            }
-
             var changed = false;
 
+            // (a) 포함된 모듈의 import → export 마킹 + canonical 모듈 포함
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 if (try self.processModuleImports(m)) changed = true;
             }
 
+            // (b) re-export 소스 포함
             if (try self.includeReExportSources(true)) changed = true;
 
-            // 포함된 모듈이 import하는 모듈 전파:
-            // - side_effects=true 모듈: 항상 포함
-            // - CJS require() 타겟: ESM import binding으로 추적 불가하므로 무조건 포함
+            // (c) 포함된 모듈이 import하는 side_effects/require/wrapped 모듈 전파
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 for (m.import_records) |rec| {
@@ -855,12 +869,6 @@ pub const TreeShaker = struct {
         return false;
     }
 
-    fn clearUsedExports(self: *TreeShaker) void {
-        var kit = self.used_exports.keyIterator();
-        while (kit.next()) |key| self.allocator.free(key.*);
-        self.used_exports.clearRetainingCapacity();
-    }
-
     fn markExportUsed(self: *TreeShaker, module_index: u32, export_name: []const u8) !void {
         var key_buf: [4096]u8 = undefined;
         const lookup_key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
@@ -868,6 +876,11 @@ pub const TreeShaker = struct {
 
         const key = try types.makeModuleKey(self.allocator, module_index, export_name);
         try self.used_exports.put(key, {});
+
+        // O(1) per-module used export 플래그 갱신
+        if (module_index < self.has_direct_used_export.len) {
+            self.has_direct_used_export[module_index] = true;
+        }
     }
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
@@ -921,16 +934,12 @@ pub const TreeShaker = struct {
         return false;
     }
 
-    /// used_exports 맵에서 이 모듈의 엔트리가 하나라도 있는지 확인.
-    /// hasAnyUsedExport와 달리 export_bindings를 순회하지 않고 맵 키 prefix로 직접 검사.
+    /// 이 모듈에 used export가 하나라도 있는지 O(1)로 확인.
+    /// markExportUsed에서 설정한 per-module boolean 배열을 조회한다.
     /// re_export_all만 있는 barrel 모듈도 canonical resolution으로 마킹된 경우 보호한다.
     fn hasAnyUsedExportDirect(self: *const TreeShaker, module_index: u32) bool {
-        // used_exports 키 형식: 4바이트 module_index (LE) + 0x00 + name (makeModuleKeyBuf)
-        const idx_bytes = std.mem.asBytes(&module_index);
-        var kit = self.used_exports.keyIterator();
-        while (kit.next()) |key| {
-            if (key.len >= 5 and std.mem.eql(u8, key.*[0..4], idx_bytes) and key.*[4] == 0)
-                return true;
+        if (module_index < self.has_direct_used_export.len) {
+            return self.has_direct_used_export[module_index];
         }
         return false;
     }
