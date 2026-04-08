@@ -227,9 +227,26 @@ pub const ResolveCache = struct {
     ) ResolveError!?ResolveResult {
         if (self.isExternal(specifier)) return null;
 
-        const cache_key = self.makeCacheKey(source_dir, specifier, kind) catch
+        // 스택 버퍼로 캐시 키 생성 (alloc/free 제거)
+        var key_buf: [8192]u8 = undefined;
+        const kind_str = @tagName(kind);
+        const key_len = source_dir.len + 1 + specifier.len + 1 + kind_str.len;
+        const cache_key = if (key_len <= key_buf.len) blk: {
+            var pos: usize = 0;
+            @memcpy(key_buf[pos .. pos + source_dir.len], source_dir);
+            pos += source_dir.len;
+            key_buf[pos] = 0;
+            pos += 1;
+            @memcpy(key_buf[pos .. pos + specifier.len], specifier);
+            pos += specifier.len;
+            key_buf[pos] = 0;
+            pos += 1;
+            @memcpy(key_buf[pos .. pos + kind_str.len], kind_str);
+            pos += kind_str.len;
+            break :blk key_buf[0..pos];
+        } else self.makeCacheKey(source_dir, specifier, kind) catch
             return error.OutOfMemory;
-        defer self.allocator.free(cache_key);
+        defer if (key_len > key_buf.len) self.allocator.free(cache_key);
 
         // 캐시 조회
         {
