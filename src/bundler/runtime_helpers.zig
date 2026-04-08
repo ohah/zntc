@@ -343,6 +343,45 @@ pub const PRIVATE_METHOD_GET_RUNTIME =
 pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var __classPrivateMethodGet=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn}";
 
 // ============================================================
+// Static Private Field (ES2022 downlevel)
+// ============================================================
+
+/// __classCheckPrivateStaticAccess: receiver가 classConstructor와 동일한지 확인.
+/// static private field 접근 시 brand check.
+///
+/// __classCheckPrivateStaticFieldDescriptor: descriptor가 정의되었는지 확인.
+/// 선언 전 접근 방지 (TDZ).
+///
+/// __classStaticPrivateFieldSpecGet: static private field 읽기.
+/// descriptor.get이 있으면 getter 호출, 없으면 descriptor.value 반환.
+///
+/// __classStaticPrivateFieldSpecSet: static private field 쓰기.
+/// descriptor.set이 있으면 setter 호출, 없으면 descriptor.value에 직접 대입.
+pub const STATIC_PRIVATE_FIELD_RUNTIME =
+    \\var __classCheckPrivateStaticAccess = function(receiver, classConstructor) {
+    \\  if (receiver !== classConstructor)
+    \\    throw new TypeError("Private static access of wrong provenance");
+    \\};
+    \\var __classCheckPrivateStaticFieldDescriptor = function(descriptor, action) {
+    \\  if (descriptor === undefined)
+    \\    throw new TypeError("attempted to " + action + " private static field before its declaration");
+    \\};
+    \\var __classStaticPrivateFieldSpecGet = function(receiver, classConstructor, descriptor) {
+    \\  __classCheckPrivateStaticAccess(receiver, classConstructor);
+    \\  __classCheckPrivateStaticFieldDescriptor(descriptor, "get");
+    \\  return descriptor.get ? descriptor.get.call(receiver) : descriptor.value;
+    \\};
+    \\var __classStaticPrivateFieldSpecSet = function(receiver, classConstructor, descriptor, value) {
+    \\  __classCheckPrivateStaticAccess(receiver, classConstructor);
+    \\  __classCheckPrivateStaticFieldDescriptor(descriptor, "set");
+    \\  if (descriptor.set) descriptor.set.call(receiver, value);
+    \\  else descriptor.value = value;
+    \\};
+    \\
+;
+pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAccess=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};var __classCheckPrivateStaticFieldDescriptor=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};var __classStaticPrivateFieldSpecGet=function(receiver,classConstructor,descriptor){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"get\");return descriptor.get?descriptor.get.call(receiver):descriptor.value};var __classStaticPrivateFieldSpecSet=function(receiver,classConstructor,descriptor,value){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"set\");if(descriptor.set)descriptor.set.call(receiver,value);else descriptor.value=value};";
+
+// ============================================================
 // HMR (Dev Server)
 // ============================================================
 
@@ -596,6 +635,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.class_call_check) {
         try buf.appendSlice(allocator, if (minify) CLASS_CALL_CHECK_RUNTIME_MIN else CLASS_CALL_CHECK_RUNTIME);
+    }
+    if (helpers.class_static_private_field) {
+        try buf.appendSlice(allocator, if (minify) STATIC_PRIVATE_FIELD_RUNTIME_MIN else STATIC_PRIVATE_FIELD_RUNTIME);
     }
     if (helpers.call_super) {
         try buf.appendSlice(allocator, if (minify) CALL_SUPER_RUNTIME_MIN else CALL_SUPER_RUNTIME);
