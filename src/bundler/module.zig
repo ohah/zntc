@@ -21,6 +21,7 @@ const Scope = @import("../semantic/scope.zig").Scope;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
 pub const ExportBinding = binding_scanner.ExportBinding;
+const stmt_info_mod = @import("stmt_info.zig");
 
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
@@ -56,6 +57,9 @@ pub const Module = struct {
     parse_arena: ?std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
     semantic: ?ModuleSemanticData,
+    /// Semantic Analyzer에서 사전 구축한 StmtInfo. parse_arena가 소유.
+    /// tree_shaker가 AST를 다시 순회하지 않고 이 데이터를 사용한다.
+    prebuilt_stmt_info: ?stmt_info_mod.ModuleStmtInfos = null,
     /// Scanner의 line offset 테이블. parse_arena가 소유. 소스맵 생성에 사용.
     /// line_offsets[i] = i번째 줄의 시작 byte offset.
     line_offsets: []const u32 = &.{},

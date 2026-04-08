@@ -34,6 +34,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
+const stmt_info_mod = @import("stmt_info.zig");
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
@@ -714,6 +715,7 @@ pub const ModuleGraph = struct {
             // semantic analysis — export default가 제대로 추적되도록
             var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
             analyzer.is_module = true;
+            analyzer.enable_stmt_info = true;
             if (analyzer.analyze()) |_| {
                 module.semantic = .{
                     .symbols = analyzer.symbols.items,
@@ -724,6 +726,15 @@ pub const ModuleGraph = struct {
                     .unresolved_references = analyzer.unresolved_references,
                     .ref_scope_pairs = analyzer.ref_scope_pairs.items,
                 };
+                if (analyzer.stmt_declared.items.len > 0) {
+                    module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
+                        arena_alloc,
+                        &(module.ast.?),
+                        analyzer.symbols.items,
+                        analyzer.stmt_declared.items,
+                        analyzer.stmt_referenced.items,
+                    ) catch null;
+                }
             } else |_| {}
 
             // import/export 스캔 — JSON에는 import가 없지만 export default가 있음
@@ -870,6 +881,7 @@ pub const ModuleGraph = struct {
         analyzer.is_module = parser.is_module;
         analyzer.is_ts = parser.is_ts;
         analyzer.is_flow = parser.is_flow;
+        analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
         // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
@@ -885,6 +897,18 @@ pub const ModuleGraph = struct {
             };
             // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
             module.uses_top_level_await = analyzer.has_top_level_await;
+
+            // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
+            // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).
+            if (analyzer.stmt_declared.items.len > 0) {
+                module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
+                    arena_alloc,
+                    &parser.ast,
+                    analyzer.symbols.items,
+                    analyzer.stmt_declared.items,
+                    analyzer.stmt_referenced.items,
+                ) catch null;
+            }
         }
 
         module.ast = parser.ast;

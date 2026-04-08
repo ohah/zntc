@@ -129,6 +129,23 @@ pub const SemanticAnalyzer = struct {
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
 
+    // ================================================================
+    // StmtInfo 사전 수집 (번들러 최적화)
+    // ================================================================
+    // tree_shaker가 AST를 다시 순회하지 않도록, semantic analysis 중에
+    // top-level statement별 declared/referenced 심볼을 수집한다.
+
+    /// StmtInfo 사전 수집 활성화 여부. 번들러 모드에서만 true.
+    enable_stmt_info: bool = false,
+    /// 현재 순회 중인 top-level statement 인덱스. visitProgram 2nd pass에서 설정.
+    current_top_stmt_idx: ?u32 = null,
+    /// top-level statement 개수 (초기화 완료 후 유효)
+    stmt_info_count: u32 = 0,
+    /// Per-statement 선언 심볼 (top-level scope에 선언된 것만)
+    stmt_declared: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+    /// Per-statement 참조 심볼 (declared에 없는 identifier_reference만)
+    stmt_referenced: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+
     const PrivateUsage = enum { read, write };
 
     const PrivateRef = struct {
@@ -197,6 +214,11 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.ref_scope_pairs.deinit(self.allocator);
+        // StmtInfo 사전 수집 데이터 해제
+        for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
+        self.stmt_declared.deinit(self.allocator);
+        for (self.stmt_referenced.items) |*b| b.deinit(self.allocator);
+        self.stmt_referenced.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -564,6 +586,17 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
             try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
+
+        // StmtInfo 사전 수집: top-level scope(scope_id==0)의 선언을 현재 statement에 기록
+        if (self.enable_stmt_info and self.current_top_stmt_idx != null and @intFromEnum(target_scope) == 0) {
+            const si = self.current_top_stmt_idx.?;
+            if (si < self.stmt_declared.items.len) {
+                const sym_u32: u32 = @intCast(sym_index);
+                if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
+                    try self.stmt_declared.items[si].append(self.allocator, sym_u32);
+                }
+            }
+        }
     }
 
     /// 가장 가까운 var scope(function/global/module)를 찾는다.
@@ -744,6 +777,22 @@ pub const SemanticAnalyzer = struct {
                         self.symbol_ids.items[ni] = @intCast(sym_idx);
                     }
                 }
+
+                // StmtInfo 사전 수집: 현재 top-level statement가 참조하는 심볼 기록
+                // (declared에 포함된 심볼은 제외 — 자기 자신 선언은 참조가 아님)
+                if (self.enable_stmt_info and self.current_top_stmt_idx != null) {
+                    const si = self.current_top_stmt_idx.?;
+                    if (si < self.stmt_referenced.items.len) {
+                        const sym_u32: u32 = @intCast(sym_idx);
+                        // declared에 없는 경우에만 referenced로 기록
+                        if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
+                            if (std.mem.indexOfScalar(u32, self.stmt_referenced.items[si].items, sym_u32) == null) {
+                                self.stmt_referenced.items[si].append(self.allocator, sym_u32) catch {};
+                            }
+                        }
+                    }
+                }
+
                 return;
             }
 
@@ -782,6 +831,19 @@ pub const SemanticAnalyzer = struct {
         const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
+        }
+        // StmtInfo 사전 수집: predeclared 심볼도 declared로 기록.
+        // declareSymbolWithNode가 skip되므로 여기서 보충한다.
+        if (self.enable_stmt_info and self.current_top_stmt_idx != null) {
+            if (sym_idx < self.symbols.items.len and @intFromEnum(self.symbols.items[sym_idx].scope_id) == 0) {
+                const si = self.current_top_stmt_idx.?;
+                if (si < self.stmt_declared.items.len) {
+                    const sym_u32: u32 = @intCast(sym_idx);
+                    if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
+                        self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
+                    }
+                }
+            }
         }
     }
 
@@ -1269,7 +1331,41 @@ pub const SemanticAnalyzer = struct {
         // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
         try self.predeclareTopLevelBindings(node.data.list);
         self.predeclared_scope = self.current_scope;
-        try self.visitNodeList(node.data.list);
+
+        // StmtInfo 사전 수집: per-statement 버퍼 초기화
+        if (self.enable_stmt_info) {
+            const list = node.data.list;
+            if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
+                const count = list.len;
+                self.stmt_info_count = count;
+                try self.stmt_declared.ensureTotalCapacity(self.allocator, count);
+                try self.stmt_referenced.ensureTotalCapacity(self.allocator, count);
+                for (0..count) |_| {
+                    try self.stmt_declared.append(self.allocator, .empty);
+                    try self.stmt_referenced.append(self.allocator, .empty);
+                }
+            }
+        }
+
+        // 2nd pass: top-level statement를 순회하면서 current_top_stmt_idx 추적.
+        // enable_stmt_info일 때만 인덱스를 설정하여 declareSymbol/resolveIdentifier에서 수집.
+        {
+            const list = node.data.list;
+            if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices, 0..) |raw_idx, i| {
+                    if (self.enable_stmt_info) {
+                        self.current_top_stmt_idx = @intCast(i);
+                    }
+                    const idx: NodeIndex = @enumFromInt(raw_idx);
+                    try self.visitNode(idx);
+                }
+                if (self.enable_stmt_info) {
+                    self.current_top_stmt_idx = null;
+                }
+            }
+        }
+
         self.predeclared_scope = .none;
 
         self.exitScope(saved);
@@ -2318,6 +2414,16 @@ pub const SemanticAnalyzer = struct {
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
+                // StmtInfo 사전 수집: facade 심볼을 declared로 기록
+                if (self.enable_stmt_info and self.current_top_stmt_idx != null and @intFromEnum(module_scope) == 0) {
+                    const si = self.current_top_stmt_idx.?;
+                    if (si < self.stmt_declared.items.len) {
+                        const sym_u32: u32 = @intCast(sym_index);
+                        if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
+                            self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
+                        }
+                    }
+                }
                 // export default <literal> → facade 심볼에 const_value 설정
                 if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
                     const cv = self.extractConstValue(self.ast.getNode(inner_idx));

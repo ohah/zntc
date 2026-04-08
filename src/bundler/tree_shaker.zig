@@ -48,6 +48,9 @@ pub const TreeShaker = struct {
     opaque_visited: ?std.DynamicBitSet = null,
     /// 모듈별 used export 존재 여부 (hasAnyUsedExportDirect 최적화: O(1) 조회).
     has_direct_used_export: []bool = &.{},
+    /// prebuilt StmtInfo를 사용하는 모듈 마스크.
+    /// prebuilt는 parse_arena가 소유하므로 deinit에서 해제하지 않는다.
+    prebuilt_mask: ?std.DynamicBitSet = null,
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -74,11 +77,18 @@ pub const TreeShaker = struct {
         self.included.deinit();
         self.entry_set.deinit();
         if (self.module_stmt_infos.len > 0) {
-            for (self.module_stmt_infos) |*si| {
-                if (si.*) |*infos| infos.deinit();
+            for (self.module_stmt_infos, 0..) |*si, i| {
+                if (si.*) |*infos| {
+                    // prebuilt는 parse_arena가 소유하므로 여기서 해제하지 않는다.
+                    if (self.prebuilt_mask) |mask| {
+                        if (mask.isSet(i)) continue;
+                    }
+                    infos.deinit();
+                }
             }
             self.allocator.free(self.module_stmt_infos);
         }
+        if (self.prebuilt_mask) |*mask| mask.deinit();
         if (self.reachable_stmts.len > 0) {
             for (self.reachable_stmts) |*rs| {
                 if (rs.*) |*bs| bs.deinit();
@@ -228,9 +238,21 @@ pub const TreeShaker = struct {
         self.reachable_stmts = reachable_stmts;
 
         // StmtInfo 구축 (entry, CJS 제외)
+        // semantic analyzer에서 사전 구축한 prebuilt가 있으면 AST 재순회 없이 사용.
+        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        self.prebuilt_mask = prebuilt_mask;
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped()) continue;
+
+            // prebuilt StmtInfo 사용 (semantic analyzer에서 구축, parse_arena 소유)
+            if (m.prebuilt_stmt_info) |prebuilt| {
+                module_stmt_infos[i] = prebuilt;
+                prebuilt_mask.set(i);
+                continue;
+            }
+
+            // fallback: AST 순회로 구축 (prebuilt가 없는 모듈 — JSON 등)
             const sem = m.semantic orelse continue;
             const ast = &(m.ast orelse continue);
             module_stmt_infos[i] = stmt_info_mod.build(

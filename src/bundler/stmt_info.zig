@@ -203,6 +203,95 @@ fn buildReverseIndex(allocator: std.mem.Allocator, stmts: []const StmtInfo, sym_
     };
 }
 
+/// Semantic Analyzer에서 사전 수집한 데이터로 ModuleStmtInfos를 구축한다.
+/// AST 재순회 없이 O(S) (S = statement 수)로 완료. tree_shaker Phase 2 최적화.
+pub fn buildFromSemantic(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    symbols: []const Symbol,
+    stmt_declared: []const std.ArrayListUnmanaged(u32),
+    stmt_referenced: []const std.ArrayListUnmanaged(u32),
+) !?ModuleStmtInfos {
+    // program 노드 (마지막 노드)에서 top-level statement 인덱스 추출
+    if (ast.nodes.items.len == 0) return null;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return null;
+
+    const list = root.data.list;
+    if (list.len == 0) return null;
+    if (list.start + list.len > ast.extra_data.items.len) return null;
+    const stmt_raw_indices = ast.extra_data.items[list.start .. list.start + list.len];
+
+    const stmt_count = stmt_raw_indices.len;
+    if (stmt_count != stmt_declared.len or stmt_count != stmt_referenced.len) return null;
+
+    var stmts = try allocator.alloc(StmtInfo, stmt_count);
+    errdefer {
+        for (stmts) |s| {
+            allocator.free(s.declared_symbols);
+            allocator.free(s.referenced_symbols);
+        }
+        allocator.free(stmts);
+    }
+
+    var sym_to_stmt = try allocator.alloc(?u32, symbols.len);
+    errdefer allocator.free(sym_to_stmt);
+    for (sym_to_stmt) |*s| s.* = null;
+
+    for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
+        const idx: NodeIndex = @enumFromInt(raw_idx);
+        const ni = @intFromEnum(idx);
+
+        // declared/referenced 복사
+        const declared = if (stmt_declared[stmt_i].items.len > 0)
+            try allocator.dupe(u32, stmt_declared[stmt_i].items)
+        else
+            &[_]u32{};
+        const referenced = if (stmt_referenced[stmt_i].items.len > 0)
+            try allocator.dupe(u32, stmt_referenced[stmt_i].items)
+        else
+            &[_]u32{};
+
+        if (ni >= ast.nodes.items.len) {
+            stmts[stmt_i] = .{
+                .node_idx = @intCast(ni),
+                .span = .{ .start = 0, .end = 0 },
+                .has_side_effects = true,
+                .declared_symbols = declared,
+                .referenced_symbols = referenced,
+            };
+        } else {
+            const node = ast.nodes.items[ni];
+            const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
+            stmts[stmt_i] = .{
+                .node_idx = @intCast(ni),
+                .span = node.span,
+                .has_side_effects = side_effects,
+                .declared_symbols = declared,
+                .referenced_symbols = referenced,
+            };
+        }
+
+        // symbol_to_stmt 역매핑
+        for (declared) |sym_idx| {
+            if (sym_idx < sym_to_stmt.len) {
+                sym_to_stmt[sym_idx] = @intCast(stmt_i);
+            }
+        }
+    }
+
+    // 역인덱스 구축 (buildReverseIndex 재사용)
+    const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
+
+    return .{
+        .stmts = stmts,
+        .symbol_to_stmt = sym_to_stmt,
+        .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
+        .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
+        .allocator = allocator,
+    };
+}
+
 /// AST + semantic data로부터 ModuleStmtInfos를 구축한다.
 pub fn build(
     allocator: std.mem.Allocator,
