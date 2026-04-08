@@ -21,6 +21,7 @@ const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 
 const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const ErrorCode = @import("../error_codes.zig").Code;
 
 const AllocError = std.mem.Allocator.Error;
 
@@ -91,7 +92,7 @@ pub fn checkDuplicateConstructors(
 
         if (first_constructor_span) |_| {
             // body가 있는 constructor가 2개 이상 → 에러
-            try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}));
+            try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}), .duplicate_constructor);
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -125,6 +126,10 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 /// 에러를 errors 목록에 추가한다.
 fn addError(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8) AllocError!void {
     try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic });
+}
+
+fn addErrorCode(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8, code: ErrorCode) AllocError!void {
+    try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic, .code = code });
 }
 
 // ====================================================================
@@ -207,11 +212,11 @@ fn checkPrivateKeyStaticConflict(
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
         if (existing.is_static != is_static) {
-            try addError(errors, allocator, key_node.span, try std.fmt.allocPrint(
+            try addErrorCode(errors, allocator, key_node.span, try std.fmt.allocPrint(
                 allocator,
                 "Private field '{s}' has already been declared",
                 .{name},
-            ));
+            ), .checker_private_redeclared);
         }
     } else {
         try declared.put(name, .{ .is_static = is_static, .span = key_node.span });
@@ -262,7 +267,7 @@ pub fn checkObjectDuplicateProto(
         if (!matchKeyName(ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
-            try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}));
+            try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}), .proto_duplicate);
             return; // 첫 중복만 보고
         } else {
             first_proto_span = node.span;
@@ -298,11 +303,11 @@ pub fn checkGetterSetterParams(
     const params_len = ast.extra_data.items[extra_start + 2];
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
-        try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}));
+        try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}), .getter_no_params);
     }
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
-        try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}));
+        try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}), .setter_one_param);
     }
 }
 
@@ -350,11 +355,11 @@ fn recordSeenName(
     allocator: std.mem.Allocator,
 ) AllocError!void {
     if (seen.get(name)) |_| {
-        try addError(errors, allocator, span, try std.fmt.allocPrint(
+        try addErrorCode(errors, allocator, span, try std.fmt.allocPrint(
             allocator,
             "Duplicate parameter name '{s}'",
             .{name},
-        ));
+        ), .checker_duplicate_param);
     } else {
         try seen.put(name, span);
     }

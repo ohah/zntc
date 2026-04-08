@@ -249,7 +249,7 @@ fn parseJSXTagName(self: *Parser) ParseError2!NodeIndex {
         }
         return result;
     }
-    try self.addError(span, "JSX tag name expected");
+    try self.addErrorCode(span, "JSX tag name expected", .jsx_tag_expected);
     return NodeIndex.none;
 }
 
@@ -277,7 +277,7 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
         }
-        try self.addError(self.currentSpan(), "Spread expected");
+        try self.addErrorCode(self.currentSpan(), "Spread expected", .jsx_spread_expected);
         return NodeIndex.none;
     }
 

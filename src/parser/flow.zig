@@ -430,7 +430,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             if (self.current().isKeyword()) {
                 return parseTypeReference(self);
             }
-            try self.addError(span, "Type expected");
+            try self.addErrorCode(span, "Type expected", .ts_type_expected);
             try self.advance();
             return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
         },
@@ -863,7 +863,7 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'opaque'
     // 'type' 키워드가 와야 함
     if (!self.isContextual("type")) {
-        try self.addError(self.currentSpan(), "Expected 'type' after 'opaque'");
+        try self.addErrorCode(self.currentSpan(), "Expected 'type' after 'opaque'", .flow_opaque_type);
         return try self.ast.addNode(.{ .tag = .invalid, .span = self.currentSpan(), .data = .{ .none = 0 } });
     }
     try self.advance(); // skip 'type'

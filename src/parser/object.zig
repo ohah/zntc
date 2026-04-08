@@ -100,7 +100,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // object literal에서 private identifier는 키로 사용 불가
     if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        try self.addError(self.ast.getNode(key).span, "Private identifier is not allowed as object property key");
+        try self.addErrorCode(self.ast.getNode(key).span, "Private identifier is not allowed as object property key", .private_object_key);
     }
 
     // 메서드 shorthand: { foo() {} } 또는 { foo<T>() {} }
@@ -134,19 +134,19 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
                         else
                             kw.isReservedKeyword() or kw.isLiteralKeyword();
                         if (is_context_reserved) {
-                            try self.addError(key_node.span, "Reserved word cannot be used as shorthand property");
+                            try self.addErrorCode(key_node.span, "Reserved word cannot be used as shorthand property", .reserved_shorthand);
                         } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
-                            try self.addError(key_node.span, "Reserved word in strict mode cannot be used as shorthand property");
+                            try self.addErrorCode(key_node.span, "Reserved word in strict mode cannot be used as shorthand property", .reserved_shorthand_strict);
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
-                            try self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
+                            try self.addErrorCode(key_node.span, "'yield' cannot be used as shorthand property in generator", .yield_shorthand_generator);
                         } else if (kw == .kw_await and (self.ctx.in_async or (self.is_module and !self.in_namespace))) {
-                            try self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
+                            try self.addErrorCode(key_node.span, "'await' cannot be used as shorthand property in async/module", .await_shorthand_async);
                         }
                     }
                 },
                 // non-identifier keys (numeric, bigint, string, computed) 는 shorthand 불가
                 .numeric_literal, .bigint_literal, .string_literal, .computed_property_key => {
-                    try self.addError(key_node.span, "Expected ':' after property key");
+                    try self.addErrorCode(key_node.span, "Expected ':' after property key", .property_colon_expected);
                 },
                 else => {},
             }

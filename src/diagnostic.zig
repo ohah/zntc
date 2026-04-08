@@ -10,6 +10,7 @@
 //!   - CLI에서 동일한 코드 프레임 포맷으로 출력 가능
 
 const Span = @import("lexer/token.zig").Span;
+const ErrorCode = @import("error_codes.zig").Code;
 
 /// 통합 진단 정보.
 /// 파서와 시맨틱 분석기 모두 이 타입으로 에러를 보고한다.
@@ -18,6 +19,8 @@ pub const Diagnostic = struct {
     span: Span,
     /// 에러 메시지 (예: "Expected ';'", "Identifier 'x' has already been declared")
     message: []const u8,
+    /// 에러 코드 (예: .import_in_script → ZTS0300). null이면 kind 기반 기본 코드 사용.
+    code: ?ErrorCode = null,
     /// 실제로 발견된 토큰 (예: "'}'"). null이면 표시하지 않음.
     found: ?[]const u8 = null,
     /// 관련 위치 (예: 여는 괄호 위치). null이면 표시하지 않음.
