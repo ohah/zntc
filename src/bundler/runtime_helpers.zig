@@ -426,8 +426,13 @@ pub const HMR_RUNTIME =
     \\  var rt = __zts_g.__ReactRefresh || __zts_g.__REACT_REFRESH_RUNTIME__;
     \\  console.log("[zts:hmr] __ReactRefresh:", typeof __zts_g.__ReactRefresh, "__REACT_REFRESH_RUNTIME__:", typeof __zts_g.__REACT_REFRESH_RUNTIME__);
     \\  console.log("[zts:hmr] __zts_modules keys:", Object.keys(__zts_modules).length);
-    \\  if (rt) { console.log("[zts:hmr] calling performReactRefresh"); rt.performReactRefresh(); }
-    \\  else { console.log("[zts:hmr] no React Refresh runtime — skip"); }
+    \\  if (rt) {
+    \\    var pendingUpdates = rt._dirtyRoots || rt._pendingUpdates;
+    \\    console.log("[zts:hmr] performReactRefresh — pending:", pendingUpdates);
+    \\    console.log("[zts:hmr] registered families:", rt._families ? rt._families.size : "N/A");
+    \\    var result = rt.performReactRefresh();
+    \\    console.log("[zts:hmr] performReactRefresh result:", result);
+    \\  } else { console.log("[zts:hmr] no React Refresh runtime — skip"); }
     \\}
     \\// $RefreshReg$/$RefreshSig$: 호출 시점에 런타임 조회 (로드 시점에는 아직 미설정)
     \\__zts_g.$RefreshReg$ = function(type, id) {
