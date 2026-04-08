@@ -63,9 +63,9 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
     // namespace body 안에서도 import 허용 (in_namespace)
     if (!self.is_module and !self.in_namespace) {
-        try self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
+        try self.addErrorCode(self.currentSpan(), "'import' declaration is only allowed in module code", .import_in_script);
     } else if (!self.ctx.is_top_level) {
-        try self.addError(self.currentSpan(), "'import' declaration must be at the top level");
+        try self.addErrorCode(self.currentSpan(), "'import' declaration must be at the top level", .import_not_top_level);
     }
     try self.advance(); // skip 'import'
 
@@ -134,7 +134,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // codegen에서 .unary.flags를 읽을 때 플랫폼별 UB 발생 (Linux에서 실패).
     if (self.current() == .string_literal) {
         if (has_phase_modifier) {
-            try self.addError(self.currentSpan(), "'import defer/source' requires a binding");
+            try self.addErrorCode(self.currentSpan(), "'import defer/source' requires a binding", .import_defer_requires_binding);
         }
         const source_node = try parseModuleSource(self);
         _ = try self.eat(.semicolon);
@@ -407,7 +407,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
         self.ast.getNode(imported).tag == .string_literal)
     {
         // string literal without `as` — binding 이름이 없으므로 에러
-        try self.addError(self.ast.getNode(imported).span, "String literal in import specifier requires 'as' binding");
+        try self.addErrorCode(self.ast.getNode(imported).span, "String literal in import specifier requires 'as' binding", .import_string_requires_as);
     }
 
     return try self.ast.addNode(.{
@@ -432,9 +432,9 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
     // namespace body 안에서도 export 허용 (in_namespace)
     if (!self.is_module and !self.in_namespace) {
-        try self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
+        try self.addErrorCode(self.currentSpan(), "'export' declaration is only allowed in module code", .export_in_script);
     } else if (!self.ctx.is_top_level) {
-        try self.addError(self.currentSpan(), "'export' declaration must be at the top level");
+        try self.addErrorCode(self.currentSpan(), "'export' declaration must be at the top level", .export_not_top_level);
     }
     try self.advance(); // skip 'export'
     // export 토큰의 @__NO_SIDE_EFFECTS__를 다음 토큰(function)에 전파
@@ -457,7 +457,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 // anonymous function declaration은 호출 불가 (IIFE가 아님)
                 // export default function() {}() → SyntaxError
                 if (self.current() == .l_paren) {
-                    try self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
+                    try self.addErrorCode(self.currentSpan(), "Anonymous function declaration cannot be invoked", .anon_function_invoked);
                 }
                 break :blk fn_decl;
             },
@@ -484,7 +484,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     if (peek.kind == .kw_function and !peek.has_newline_before) {
                         const fn_decl = try self.parseAsyncFunctionDeclarationDefaultExport();
                         if (self.current() == .l_paren) {
-                            try self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
+                            try self.addErrorCode(self.currentSpan(), "Anonymous function declaration cannot be invoked", .anon_function_invoked);
                         }
                         break :blk fn_decl;
                     }
@@ -636,7 +636,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         if (local_node.tag == .string_literal) {
-                            try self.addError(local_node.span, "String literal cannot be used as local binding in export");
+                            try self.addErrorCode(local_node.span, "String literal cannot be used as local binding in export", .export_string_local_binding);
                         }
                     }
                 }
@@ -861,7 +861,7 @@ fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
             .data = .{ .string_ref = span },
         });
     }
-    try self.addError(span, "Module source string expected");
+    try self.addErrorCode(span, "Module source string expected", .module_source_expected);
     return NodeIndex.none;
 }
 
@@ -902,7 +902,7 @@ fn skipImportAttributes(self: *Parser) !void {
 
                 for (0..key_count) |i| {
                     if (std.mem.eql(u8, keys[i], effective_key)) {
-                        try self.addError(key_span, "Duplicate import attribute key");
+                        try self.addErrorCode(key_span, "Duplicate import attribute key", .duplicate_import_attribute);
                         break;
                     }
                 }

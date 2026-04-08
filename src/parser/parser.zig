@@ -492,10 +492,18 @@ pub const Parser = struct {
     }
 
     /// 에러를 추가한다. 기존 호출부 하위 호환 — found/hint 등은 null.
+    const ErrorCode = @import("../error_codes.zig").Code;
+
     pub fn addError(self: *Parser, span: Span, expected: []const u8) !void {
+        try self.addErrorCode(span, expected, null);
+    }
+
+    /// 에러 코드를 지정하여 에러를 추가한다.
+    pub fn addErrorCode(self: *Parser, span: Span, expected: []const u8, code: ?ErrorCode) !void {
         try self.errors.append(self.allocator, .{
             .span = span,
             .message = expected,
+            .code = code,
         });
     }
 
@@ -503,13 +511,18 @@ pub const Parser = struct {
     /// module에서만 에러인 항목 (top-level return, await in module 등)에 사용.
     /// 파싱 후 resolveModuleKind()에서 모듈 확정 시 병합, 스크립트 확정 시 폐기.
     pub fn addModuleError(self: *Parser, span: Span, message: []const u8) !void {
+        try self.addModuleErrorCode(span, message, null);
+    }
+
+    pub fn addModuleErrorCode(self: *Parser, span: Span, message: []const u8, code: ?ErrorCode) !void {
         if (self.is_unambiguous) {
             try self.deferred_module_errors.append(self.allocator, .{
                 .span = span,
                 .message = message,
+                .code = code,
             });
         } else {
-            try self.addError(span, message);
+            try self.addErrorCode(span, message, code);
         }
     }
 
@@ -518,13 +531,18 @@ pub const Parser = struct {
     /// module 자동 strict이면 지연 (script 확정 시 폐기).
     /// with문, yield/reserved word as identifier 등 strict-mode 에러에 사용.
     pub fn addStrictModuleError(self: *Parser, span: Span, message: []const u8) !void {
+        try self.addStrictModuleErrorCode(span, message, null);
+    }
+
+    pub fn addStrictModuleErrorCode(self: *Parser, span: Span, message: []const u8, code: ?ErrorCode) !void {
         if (self.is_unambiguous and !self.strict_from_directive) {
             try self.deferred_module_errors.append(self.allocator, .{
                 .span = span,
                 .message = message,
+                .code = code,
             });
         } else {
-            try self.addError(span, message);
+            try self.addErrorCode(span, message, code);
         }
     }
 
@@ -593,7 +611,7 @@ pub const Parser = struct {
                 const next = try self.peekNextKind();
                 if (next == .r_paren) return;
             }
-            try self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
+            try self.addErrorCode(self.currentSpan(), "Rest parameter must be last formal parameter", .rest_must_be_last);
         }
     }
 
@@ -641,7 +659,7 @@ pub const Parser = struct {
         if (!self.is_strict_mode) return;
         const text = self.resolveIdentifierText(span);
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
-            try self.addError(span, "Assignment to 'eval' or 'arguments' is not allowed in strict mode");
+            try self.addErrorCode(span, "Assignment to 'eval' or 'arguments' is not allowed in strict mode", .assignment_eval_arguments_strict);
         }
     }
 
@@ -680,7 +698,7 @@ pub const Parser = struct {
             if (kw.isReservedKeyword() or kw.isLiteralKeyword() or
                 (self.is_strict_mode and kw.isStrictModeReserved()))
             {
-                try self.addError(span, "Keywords cannot contain escape characters");
+                try self.addErrorCode(span, "Keywords cannot contain escape characters", .keywords_escape);
             }
         }
     }
@@ -742,7 +760,7 @@ pub const Parser = struct {
             .static_member_expression, .computed_member_expression => {
                 if (self.ast.readExtra(node.data.extra, 2) == 0) return true; // normal (not optional chain)
                 // optional chaining (a?.b, a?.[b])은 assignment target이 아님
-                if (is_top) try self.addError(node.span, "Invalid assignment target");
+                if (is_top) try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
                 return false;
             },
 
@@ -766,13 +784,13 @@ pub const Parser = struct {
             .parenthesized_expression => {
                 const inner = node.data.unary.operand;
                 if (inner.isNone()) {
-                    if (is_top) try self.addError(node.span, "Invalid assignment target");
+                    if (is_top) try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
                     return false;
                 }
                 const inner_tag = self.ast.getNode(inner).tag;
                 // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
                 if (inner_tag == .array_expression or inner_tag == .object_expression) {
-                    try self.addError(node.span, "Invalid assignment target");
+                    try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
                     return false;
                 }
                 // (x) = 1 → 내부가 simple target이면 OK
@@ -796,12 +814,12 @@ pub const Parser = struct {
             //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
             //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.
             .meta_property => {
-                try self.addError(node.span, "Invalid assignment target");
+                try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
                 return false;
             },
 
             else => {
-                if (is_top) try self.addError(node.span, "Invalid assignment target");
+                if (is_top) try self.addErrorCode(node.span, "Invalid assignment target", .invalid_assignment_target);
                 return false;
             },
         };
@@ -834,12 +852,12 @@ pub const Parser = struct {
                 .spread_element => {
                     // rest는 마지막 요소여야 함: [...x, y] → SyntaxError
                     if (i + 1 < list.len) {
-                        try self.addError(elem.span, "Rest element must be last element");
+                        try self.addErrorCode(elem.span, "Rest element must be last element", .rest_must_be_last);
                     }
                     // rest 뒤 trailing comma 금지: [...x,] → SyntaxError
                     // parseArrayExpression에서 spread_trailing_comma로 마킹됨
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        try self.addError(elem.span, "Rest element may not have a trailing comma");
+                        try self.addErrorCode(elem.span, "Rest element may not have a trailing comma", .rest_trailing_comma);
                     }
                     try self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
                 },
@@ -909,13 +927,13 @@ pub const Parser = struct {
             } else if (elem.tag == .spread_element) {
                 // rest는 마지막 요소여야 함: {...x, y} → SyntaxError
                 if (i + 1 < list.len) {
-                    try self.addError(elem.span, "Rest element must be last element");
+                    try self.addErrorCode(elem.span, "Rest element must be last element", .rest_must_be_last);
                 }
                 // object rest: {...x} = obj
                 try self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
             } else if (elem.tag == .method_definition) {
                 // method/getter/setter/async/generator는 destructuring target이 아님
-                try self.addError(elem.span, "Invalid assignment target");
+                try self.addErrorCode(elem.span, "Invalid assignment target", .invalid_assignment_target);
             }
         }
     }
@@ -933,7 +951,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        try self.addError(node.span, "Duplicate parameter name");
+                        try self.addErrorCode(node.span, "Duplicate parameter name", .duplicate_parameter);
                         return;
                     }
                 }
@@ -1023,7 +1041,7 @@ pub const Parser = struct {
             .identifier_reference, .binding_identifier, .assignment_target_identifier => {
                 const name = self.ast.source[node.span.start..node.span.end];
                 if (std.mem.eql(u8, name, "await")) {
-                    try self.addError(node.span, "'await' is not allowed in async arrow function parameters");
+                    try self.addErrorCode(node.span, "'await' is not allowed in async arrow function parameters", .await_in_async_arrow_params);
                 }
             },
             .parenthesized_expression, .spread_element, .assignment_target_rest => {
@@ -1069,10 +1087,10 @@ pub const Parser = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .yield_expression => {
-                try self.addError(node.span, "'yield' is not allowed in arrow function parameters");
+                try self.addErrorCode(node.span, "'yield' is not allowed in arrow function parameters", .yield_in_arrow_params);
             },
             .await_expression => {
-                try self.addError(node.span, "'await' is not allowed in arrow function parameters");
+                try self.addErrorCode(node.span, "'await' is not allowed in arrow function parameters", .await_in_arrow_params);
             },
             // unary node — operand만 검사
             .parenthesized_expression,
@@ -1141,10 +1159,10 @@ pub const Parser = struct {
                 if (elem.tag == .spread_element) {
                     // rest 파라미터: 마지막 요소여야 하고 initializer 금지, trailing comma 금지
                     if (i + 1 < list.len) {
-                        try self.addError(elem.span, "Rest element must be last element");
+                        try self.addErrorCode(elem.span, "Rest element must be last element", .rest_must_be_last);
                     }
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        try self.addError(elem.span, "Rest element may not have a trailing comma");
+                        try self.addErrorCode(elem.span, "Rest element may not have a trailing comma", .rest_trailing_comma);
                     }
                     try self.checkBindingRestInit(elem.data.unary.operand);
                     // rest의 operand도 valid assignment target이어야 함
@@ -1156,7 +1174,7 @@ pub const Parser = struct {
         } else if (node.tag == .spread_element) {
             // 단일 rest 파라미터: (...x) → initializer 금지 + trailing comma 금지
             if ((node.data.unary.flags & spread_trailing_comma) != 0) {
-                try self.addError(node.span, "Rest element may not have a trailing comma");
+                try self.addErrorCode(node.span, "Rest element may not have a trailing comma", .rest_trailing_comma);
             }
             try self.checkBindingRestInit(node.data.unary.operand);
             _ = try self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
@@ -1180,28 +1198,28 @@ pub const Parser = struct {
         if (self.current() == .kw_await or self.current() == .kw_yield) {
             _ = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
-            try self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
+            try self.addErrorCode(self.currentSpan(), "Reserved word cannot be used as identifier", .reserved_word_identifier);
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            try self.addStrictModuleError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
+            try self.addStrictModuleErrorCode(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier", .reserved_word_identifier_strict);
         } else if (self.current() == .escaped_keyword) {
             // escaped reserved keyword는 식별자로 사용 불가 (예: \u0061wait in script)
             // 단, escaped await는 script mode의 non-async에서는 허용
             const is_escaped_await = self.isEscapedKeyword("await");
             if (is_escaped_await) {
                 if (self.ctx.in_async) {
-                    try self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
+                    try self.addErrorCode(self.currentSpan(), "'await' cannot be used as identifier in this context", .await_identifier);
                 } else if (self.is_module and !self.in_namespace) {
-                    try self.addModuleError(self.currentSpan(), "'await' cannot be used as identifier in this context");
+                    try self.addModuleErrorCode(self.currentSpan(), "'await' cannot be used as identifier in this context", .await_identifier);
                 }
             } else {
-                try self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
+                try self.addErrorCode(self.currentSpan(), "Keywords cannot contain escape characters", .keywords_escape);
             }
         } else if (self.current() == .escaped_strict_reserved) {
             // escaped strict reserved는 strict mode에서 금지
             // yield/await 컨텍스트 에러가 우선
             const had_error = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             if (!had_error and self.is_strict_mode) {
-                try self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
+                try self.addErrorCode(self.currentSpan(), "Keywords cannot contain escape characters", .keywords_escape);
             }
         }
     }
@@ -1217,7 +1235,7 @@ pub const Parser = struct {
         if (self.current() == .kw_yield or self.current() == .kw_await) {
             _ = try self.checkYieldAwaitUse(span, "identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            try self.addStrictModuleError(span, "Reserved word in strict mode cannot be used as identifier");
+            try self.addStrictModuleErrorCode(span, "Reserved word in strict mode cannot be used as identifier", .reserved_word_identifier_strict);
         }
     }
 
@@ -1367,7 +1385,7 @@ pub const Parser = struct {
             const inner = node.data.binary.right;
             const inner_node = self.ast.getNode(inner);
             if (inner_node.tag == .function_declaration) {
-                try self.addError(inner_node.span, "Labelled function declaration is not allowed in loop body");
+                try self.addErrorCode(inner_node.span, "Labelled function declaration is not allowed in loop body", .labelled_function_in_loop);
             } else if (inner_node.tag == .labeled_statement) {
                 // 중첩 label: label1: label2: function f() {}
                 try self.checkLabelledFunction(inner);
@@ -1448,7 +1466,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items[0..j]) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        try self.addError(name_span, "Duplicate parameter name");
+                        try self.addErrorCode(name_span, "Duplicate parameter name", .duplicate_parameter);
                         break;
                     }
                 }
@@ -1598,12 +1616,12 @@ pub const Parser = struct {
                     // ECMAScript 14.1.2: function with non-simple parameter list
                     // shall not contain a Use Strict Directive
                     if (!self.has_simple_params) {
-                        try self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
+                        try self.addErrorCode(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters", .use_strict_non_simple);
                     }
                     self.is_strict_mode = true;
                     // "use strict" 이전에 octal escape가 있었으면 retroactive 에러
                     if (has_prologue_octal) {
-                        try self.addError(prologue_octal_span, "Octal escape sequences are not allowed in strict mode");
+                        try self.addErrorCode(prologue_octal_span, "Octal escape sequences are not allowed in strict mode", .octal_escape_strict);
                     }
                 } else if (self.current() == .string_literal) {
                     // directive prologue의 문자열 — octal escape 추적

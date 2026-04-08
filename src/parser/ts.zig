@@ -333,7 +333,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
         // @dec declare class Foo {} — declare는 스트리핑되므로 NodeIndex.none 반환
         return self.parseTsDeclareStatement();
     } else {
-        try self.addError(self.currentSpan(), "Class or export expected after decorator");
+        try self.addErrorCode(self.currentSpan(), "Class or export expected after decorator", .class_or_export_after_decorator);
         return self.parseExpressionStatement();
     }
 }
@@ -943,7 +943,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             if (self.current().isKeyword()) {
                 return parseTypeReference(self);
             }
-            try self.addError(span, "Type expected");
+            try self.addErrorCode(span, "Type expected", .ts_type_expected);
             try self.advance();
             return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
         },
@@ -1808,7 +1808,7 @@ fn parseMappedType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .kw_in) {
         try self.advance();
     } else {
-        try self.addError(self.currentSpan(), "Expected 'in' in mapped type");
+        try self.addErrorCode(self.currentSpan(), "Expected 'in' in mapped type", .ts_mapped_type_in);
     }
     const constraint = try parseType(self);
     // 선택적 as 절: [K in T as NewKey]

@@ -722,20 +722,20 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             else
                 @as([]const u8, "");
             if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
-                try self.addError(mk.span, "Static class method cannot be named 'prototype'");
+                try self.addErrorCode(mk.span, "Static class method cannot be named 'prototype'", .static_method_prototype);
             }
             // constructor는 일반 method만 가능 — getter/setter/generator/async 금지
             if ((flags & 0x01) == 0 and std.mem.eql(u8, method_name, "constructor")) {
                 // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
                 if ((flags & 0x1E) != 0) {
-                    try self.addError(mk.span, "Class constructor cannot be a getter, setter, generator, or async");
+                    try self.addErrorCode(mk.span, "Class constructor cannot be a getter, setter, generator, or async", .class_constructor_invalid);
                 }
             }
             // private name '#constructor' 금지
             if (mk.tag == .private_identifier) {
                 const pn = self.ast.source[mk.span.start..mk.span.end];
                 if (std.mem.eql(u8, pn, "#constructor")) {
-                    try self.addError(mk.span, "Class member cannot be named '#constructor'");
+                    try self.addErrorCode(mk.span, "Class member cannot be named '#constructor'", .class_member_hash_constructor);
                 }
             }
         }
@@ -814,17 +814,17 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         if (key_text.len > 0) {
             // class field 이름 'constructor' 금지 — static/non-static 모두 (ECMAScript 15.7.1)
             if (std.mem.eql(u8, key_text, "constructor")) {
-                try self.addError(key_node.span, "Class field cannot be named 'constructor'");
+                try self.addErrorCode(key_node.span, "Class field cannot be named 'constructor'", .class_field_constructor);
             }
             if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
-                try self.addError(key_node.span, "Static class field cannot be named 'prototype'");
+                try self.addErrorCode(key_node.span, "Static class field cannot be named 'prototype'", .static_field_prototype);
             }
         }
         // private field '#constructor' 금지
         if (key_node.tag == .private_identifier) {
             const pn = self.ast.source[key_node.span.start..key_node.span.end];
             if (std.mem.eql(u8, pn, "#constructor")) {
-                try self.addError(key_node.span, "Class member cannot be named '#constructor'");
+                try self.addErrorCode(key_node.span, "Class member cannot be named '#constructor'", .class_member_hash_constructor);
             }
         }
     }

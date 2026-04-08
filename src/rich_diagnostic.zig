@@ -130,9 +130,9 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
 
     return .{
         .severity = .@"error",
-        .code = switch (d.kind) {
-            .parse => error_codes.Code.parse_error.format(),
-            .semantic => error_codes.Code.semantic_error.format(),
+        .code = if (d.code) |c| c.format() else switch (d.kind) {
+            .parse => error_codes.Code.import_in_script.format(), // fallback
+            .semantic => error_codes.Code.identifier_redeclared.format(), // fallback
         },
         .message = d.message,
         .span = d.span,

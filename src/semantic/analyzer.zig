@@ -27,6 +27,7 @@ const SymbolKind = symbol_mod.SymbolKind;
 const Symbol = symbol_mod.Symbol;
 const checker = @import("checker.zig");
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const ErrorCode = @import("../error_codes.zig").Code;
 
 const AllocError = std.mem.Allocator.Error;
 
@@ -325,6 +326,7 @@ pub const SemanticAnalyzer = struct {
             .span = span,
             .message = msg,
             .kind = .semantic,
+            .code = .top_level_await_target,
             .hint = hint,
         });
     }
@@ -393,25 +395,25 @@ pub const SemanticAnalyzer = struct {
             const kind = info.?.kind;
             switch (kind) {
                 .method => if (ref.usage == .write) {
-                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
                         self.allocator,
                         "Cannot assign to private method '{s}'. A method is not writable.",
                         .{ref.name},
-                    ));
+                    ), .private_method_assign);
                 },
                 .getter => if (ref.usage == .write) {
-                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
                         self.allocator,
                         "Cannot set private member '{s}'. It only has a getter.",
                         .{ref.name},
-                    ));
+                    ), .private_getter_only);
                 },
                 .setter => if (ref.usage == .read) {
-                    try self.addErrorMsg(ref.span, try std.fmt.allocPrint(
+                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
                         self.allocator,
                         "Cannot read private member '{s}'. It only has a setter.",
                         .{ref.name},
-                    ));
+                    ), .private_setter_only);
                 },
                 .field, .accessor_pair => {},
             }
@@ -428,11 +430,11 @@ pub const SemanticAnalyzer = struct {
             const is_accessor_pair = (existing.kind == .getter and kind == .setter) or
                 (existing.kind == .setter and kind == .getter);
             if (!is_accessor_pair) {
-                try self.addErrorMsg(span, try std.fmt.allocPrint(
+                try self.addErrorMsgCode(span, try std.fmt.allocPrint(
                     self.allocator,
                     "Private field '{s}' has already been declared",
                     .{name},
-                ));
+                ), .private_redeclared);
                 return;
             }
             // getter+setter 쌍 확인됨 → accessor_pair로 업데이트
@@ -974,11 +976,11 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
-        try self.addErrorMsg(span, try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}));
+        try self.addErrorMsgCode(span, try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}), .identifier_redeclared);
     }
 
     fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
-        try self.addErrorMsg(span, try std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}));
+        try self.addErrorMsgCode(span, try std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}), .private_undeclared);
     }
 
     fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) AllocError!void {
@@ -986,6 +988,15 @@ pub const SemanticAnalyzer = struct {
             .span = span,
             .message = msg,
             .kind = .semantic,
+        });
+    }
+
+    fn addErrorMsgCode(self: *SemanticAnalyzer, span: Span, msg: []const u8, code: ErrorCode) AllocError!void {
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = msg,
+            .kind = .semantic,
+            .code = code,
         });
     }
 
@@ -2039,7 +2050,7 @@ pub const SemanticAnalyzer = struct {
 
             // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
             if (self.findLabel(name) != null) {
-                try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}));
+                try self.addErrorMsgCode(label_node.span, try std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}), .label_redeclared);
             }
 
             // body가 loop인지 판별 (continue label에 필요)
@@ -2070,11 +2081,11 @@ pub const SemanticAnalyzer = struct {
         if (self.findLabel(name)) |entry| {
             // continue는 loop label만 가능
             if (node.tag == .continue_statement and !entry.is_loop) {
-                try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}));
+                try self.addErrorMsgCode(label_node.span, try std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}), .continue_non_loop_label);
             }
         } else {
             // label이 존재하지 않음
-            try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}));
+            try self.addErrorMsgCode(label_node.span, try std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}), .undefined_label);
         }
     }
 
@@ -2353,11 +2364,11 @@ pub const SemanticAnalyzer = struct {
         if (!self.isCurrentStrict()) return;
         const name = self.ast.source[span.start..span.end];
         if (std.mem.eql(u8, name, "eval") or std.mem.eql(u8, name, "arguments")) {
-            try self.addErrorMsg(span, try std.fmt.allocPrint(
+            try self.addErrorMsgCode(span, try std.fmt.allocPrint(
                 self.allocator,
                 "'{s}' cannot be used as a binding identifier in strict mode",
                 .{name},
-            ));
+            ), .binding_strict_mode);
         }
     }
 
@@ -2563,11 +2574,11 @@ pub const SemanticAnalyzer = struct {
             // TS 모드: duplicate export 체크 스킵 (oxc: !is_typescript() 조건)
             // JS 모드에서만 에러
             if (!self.is_ts) {
-                try self.addErrorMsg(span, try std.fmt.allocPrint(
+                try self.addErrorMsgCode(span, try std.fmt.allocPrint(
                     self.allocator,
                     "Duplicate export name '{s}'",
                     .{name},
-                ));
+                ), .duplicate_export);
             }
         } else {
             try self.exported_names.put(name, span);
@@ -2583,11 +2594,11 @@ pub const SemanticAnalyzer = struct {
             if (std.mem.eql(u8, sym_name, name)) return; // 존재
         }
         // 찾지 못함 → 에러
-        try self.addErrorMsg(span, try std.fmt.allocPrint(
+        try self.addErrorMsgCode(span, try std.fmt.allocPrint(
             self.allocator,
             "Export '{s}' is not defined",
             .{name},
-        ));
+        ), .export_not_defined);
     }
 
     // ================================================================
