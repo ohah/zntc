@@ -38,16 +38,18 @@
 | 25. ES5 다운레벨 | let→var void 0 초기화, spread string, for-in destructuring, computed destr, super computed | ✅ |
 | 26. compat-table | kangax ES5~ES2022 100% + SWC 비교 29 cases × 9 targets CI | ✅ |
 
-## 번들러 성능 현황 (2592모듈, 2026-03-31 실측)
-ZTS 136ms vs esbuild 110ms (**1.24배**).
+## 번들러 성능 현황 (200모듈, 2026-04-08 실측)
+ZTS 56.9ms vs rolldown 60ms (**0.95배, ZTS가 빠름**).
 
-| 단계 | ZTS | esbuild | 배율 | 비고 |
-|------|-----|---------|------|------|
-| scan (resolve+parse) | 101ms | ~80ms | 1.3x | 파이프라인화 완료 |
-| tree-shake | 15ms | 1ms | 15x | fixpoint 2회 + stmtinfo + crossBFS |
-| link | 16ms | 54ms | 0.3x | ZTS가 빠름 |
-| emit | 15ms | 32ms | 0.5x | ZTS가 빠름 |
-| **총합** | **134ms** | **107ms** | **1.25x** | |
+| 단계 | ZTS | 비고 |
+|------|-----|------|
+| graph (resolve+parse) | 21.5ms | 파이프라인 + inline scan |
+| link | 7.0ms | scope hoisting + rename |
+| tree-shake | 5.6ms | StmtInfo semantic 사전 구축 |
+| emit | 22.2ms | 모듈별 transform + codegen |
+| **총합** | **56.9ms** | |
+
+최근 최적화 (PR #917~#921): tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%)
 
 ## 🔜 다음 우선순위
 
@@ -61,13 +63,13 @@ ZTS 136ms vs esbuild 110ms (**1.24배**).
 - 현재 subprocess IPC만 (매 모듈마다 JSON 왕복 — 느림)
 - N-API .node addon으로 in-process 플러그인 실행
 
-**HMR 고도화** — L (3~5일)
-- 현재: React Fast Refresh + full-reload 기반
-- 필요: 일반 모듈의 `import.meta.hot.accept()` 세밀한 갱신
-- rolldown DevEngine / Vite HMR 수준 module-level HMR
+~~**HMR 고도화**~~ — ✅ 완료
+- `import.meta.hot.accept()` / `dispose()` / `decline()` 구현
+- WebSocket HMR 채널 + 파일 감시 + React Fast Refresh
 
-**설정 파일 + JS Build API** — L (3~5일)
-- `zts.config.js`로 빌드 옵션 정의 + 프로그래밍 `build()` 호출
+~~**설정 파일 + JS Build API**~~ — ✅ 완료
+- `packages/core`에서 `defineConfig()` + `build()` 내보냄
+- CLI `--plugin <path>`로 JS 설정 파일 로드
 
 **import.meta.glob** — M (1~2일)
 - Vite 호환 기능, DX 개선
@@ -136,8 +138,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
 - ~~**preserveModules**~~ — ✅ 완료. `--preserve-modules` + `--preserve-modules-root` (Rollup/Rolldown 호환)
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
-- **설정 파일 (zts.config.js)** — `L` | 복잡한 프로젝트에서 CLI 한계
-- **JS Build API** — `L` | 프로그래밍 연동 (`build()`, `rebuild()`, `cancel()`)
+- ~~**설정 파일 (zts.config.js)**~~ — ✅ 완료. `packages/core`에서 `defineConfig()` 내보냄.
+- ~~**JS Build API**~~ — ✅ 완료. `packages/core`에서 `build()` 함수 내보냄 (subprocess 기반).
 - **HTTPS dev server** — `M` | `--certfile`/`--keyfile` TLS 지원
 
 ### Nice to Have
@@ -149,7 +151,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
 - **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
 - **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
-- **realContentHash** — `M` | 최종 콘텐츠 기반 정확한 해시
+- ~~**realContentHash**~~ — ✅ 완료. SHA-256 기반 `[hash]` 패턴 (emitter/chunks.zig)
 - ~~**sourcemapDebugIds**~~ — ✅ 완료. `--sourcemap-debug-ids` UUID v4, 번들+소스맵 매칭
 - ~~**shimMissingExports**~~ — ✅ 완료. `--shim-missing-exports` 롤다운 호환
 
@@ -159,9 +161,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 |------|--------|---------|----------|--------|------|
 | **CSS 번들링** | XL | ✅ | ✅ | ✅ | 자체 CSS 파서, @import, CSS Modules |
 | **플러그인 N-API** | XL | ✅ (Go) | ✅ (Rust) | ✅ | in-process 플러그인 (현재 subprocess IPC만) |
-| **HMR module-level** | L | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 세밀한 갱신 |
-| **설정 파일** | L | ❌ | ✅ | ✅ | `zts.config.js` |
-| **JS Build API** | L | ✅ | ✅ | ✅ | `build()`, `rebuild()`, `cancel()` |
+| ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 구현 완료 |
+| ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/core |
+| ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/core |
 | **HTTPS dev server** | M | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
 
 ### 배치 그룹 & 구현 순서
@@ -253,5 +255,9 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | fixpoint oscillation 수정 | ✅ 완료 | 100회 → 2회 수렴, tree-shake 238ms → 51ms |
 | scan 파이프라인화 | ✅ 완료 | 배치→파이프라인→Producer-Consumer, pre-allocation 제거, 포인터 안전 |
 | 증분 빌드 (파싱 캐시) | ✅ 완료 | PersistentModuleStore + ResolveCache 보존, watch/serve 리빌드 시 변경 모듈만 재파싱 |
-| tree-shake 병렬화 | 후순위 | 현재 15ms, StmtInfo 병렬화로 ~5ms 절감 가능하나 ROI 낮음 |
+| tree-shake 알고리즘 최적화 | ✅ 완료 | clearUsedExports 제거, has_direct_used_export O(1) 배열 (#917) |
+| resolve 캐시 스택 버퍼 | ✅ 완료 | 캐시 키 alloc/free 제거, graph -7% (#918) |
+| 파서 inline scan | ✅ 완료 | import/binding scanner AST 재순회 제거 (#919) |
+| StmtInfo semantic 사전 구축 | ✅ 완료 | tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%) (#920) |
+| resolveExportChain 메모이제이션 | ✅ 완료 | re-export chain 조건부 캐시 (#918) |
 | SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
