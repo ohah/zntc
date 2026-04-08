@@ -404,11 +404,23 @@ pub fn emitWithTreeShaking(
             module_line += 1;
         }
 
-        // dev mode: per-module code 수집 (HMR 증분 업데이트용)
+        // dev mode: per-module code를 HMR eval 가능한 형태로 수집.
+        // IIFE로 래핑하여 변수 격리 + __esm factory 실행으로 $RefreshReg$ 호출.
         if (options.dev_mode and options.collect_module_codes) {
+            const mod_id = makeModuleId(m.path, options.root_dir);
+            const hmr_code = try std.mem.concat(allocator, u8, &.{
+                "(function(){\n",
+                code,
+                "\n})();\n",
+                "if(typeof __zts_modules!==\"undefined\"&&__zts_modules[\"",
+                mod_id,
+                "\"])__zts_modules[\"",
+                mod_id,
+                "\"].fn();\n",
+            });
             try dev_module_codes.append(allocator, .{
-                .id = try allocator.dupe(u8, makeModuleId(m.path, options.root_dir)),
-                .code = try allocator.dupe(u8, code),
+                .id = try allocator.dupe(u8, mod_id),
+                .code = hmr_code,
             });
         }
     }
