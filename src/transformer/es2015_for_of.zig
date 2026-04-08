@@ -338,13 +338,14 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = outer_finally_block } },
             });
 
-            // 결과: pending_nodes에 4개 statement 추가, 원래 노드 제거
-            try self.pending_nodes.append(self.allocator, inc_decl);
-            try self.pending_nodes.append(self.allocator, die_decl);
-            try self.pending_nodes.append(self.allocator, ie_decl);
-            try self.pending_nodes.append(self.allocator, try_catch_finally);
-
-            return .none;
+            // 4개 statement를 block으로 래핑하여 단일 노드로 반환.
+            // pending_nodes를 쓰면 중첩 for-of에서 inner가 outer body 밖으로 빠져나감.
+            const wrapper_list = try self.ast.addNodeList(&.{ inc_decl, die_decl, ie_decl, try_catch_finally });
+            return self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = wrapper_list },
+            });
         }
 
         // ================================================================

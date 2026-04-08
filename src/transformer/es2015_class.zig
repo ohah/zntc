@@ -135,9 +135,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span));
             }
 
-            for (cm.private_fields.items) |pf| {
-                try cm.instance_fields.append(self.allocator, try buildPrivateFieldInit(self, pf.name, pf.init, span));
-            }
+            try appendPrivateFieldInits(self, &cm, span);
             for (cm.private_methods.items) |pm| {
                 try cm.instance_fields.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
             }
@@ -326,11 +324,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             defer self.current_private_methods = saved_private_methods;
 
-            // private field 초기화 → constructor body에 삽입
-            for (cm.private_fields.items) |pf| {
-                const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
-                try cm.instance_fields.append(self.allocator, init_stmt);
-            }
+            try appendPrivateFieldInits(self, &cm, span);
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
@@ -1026,6 +1020,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.static_block_stmts.deinit(allocator);
             }
         };
+
+        /// private field init을 빌드하여 instance_fields에 추가.
+        /// arrow function의 this 캡처를 감지하여 fields_need_this_alias 설정.
+        fn appendPrivateFieldInits(self: *Transformer, cm: *ClassifiedMembers, span: Span) Transformer.Error!void {
+            const saved_needs_this = self.needs_this_var;
+            for (cm.private_fields.items) |pf| {
+                const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                if (self.needs_this_var and !saved_needs_this) {
+                    cm.fields_need_this_alias = true;
+                }
+                self.needs_this_var = saved_needs_this;
+                try cm.instance_fields.append(self.allocator, init_stmt);
+            }
+        }
 
         /// instance + static private field 매핑을 빌드하여 current_private_fields에 설정.
         /// 반환값: 매핑 총 개수 (defer에서 free 판단용).
