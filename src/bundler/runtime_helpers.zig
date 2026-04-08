@@ -411,13 +411,11 @@ pub const HMR_RUNTIME =
     \\        cbs.dispose(__zts_hot_data[id]);
     \\      }
     \\      __zts_g.__zts_currentModuleId = id;
-    \\      // direct eval: IIFE 스코프 내에서 실행되므로 __esm/__export 등 접근 가능.
-    \\      // indirect eval (0,eval)은 전역 스코프 실행 → IIFE 변수 접근 불가 → ReferenceError.
-    \\      if (typeof __zts_g.globalEvalWithSourceUrl === "function") {
-    \\        __zts_g.globalEvalWithSourceUrl(updates[i].code, "zts-hmr://" + id);
-    \\      } else {
-    \\        eval(updates[i].code);
-    \\      }
+    \\      // new Function으로 런타임 헬퍼를 파라미터로 전달.
+    \\      // 번들이 모듈 스코프에서 실행되므로 eval/globalEvalWithSourceUrl로는
+    \\      // __esm/__export 등 런타임 헬퍼에 접근 불가.
+    \\      var fn = new Function("__esm", "__export", "__commonJS", "__defProp", "__toESM", "__toCommonJS", "__zts_modules", "__zts_make_hot", "$RefreshReg$", "$RefreshSig$", updates[i].code);
+    \\      fn(typeof __esm!=="undefined"?__esm:__zts_g.__esm, typeof __export!=="undefined"?__export:__zts_g.__export, typeof __commonJS!=="undefined"?__commonJS:__zts_g.__commonJS, typeof __defProp!=="undefined"?__defProp:__zts_g.__defProp, typeof __toESM!=="undefined"?__toESM:__zts_g.__toESM, typeof __toCommonJS!=="undefined"?__toCommonJS:__zts_g.__toCommonJS, __zts_modules, __zts_make_hot, __zts_g.$RefreshReg$, __zts_g.$RefreshSig$);
     \\      if (typeof cbs.accept === "function") cbs.accept();
     \\    } catch(e) { console.error("[zts] HMR update failed:", e); __zts_reload(); }
     \\  }
@@ -434,16 +432,22 @@ pub const HMR_RUNTIME =
     \\  if (rt) return rt.createSignatureFunctionForTransform();
     \\  return function(type) { return type; };
     \\};
-    \\// HMR API를 전역에 노출 (IIFE 안에서 정의되므로 외부 접근용)
+    \\// HMR API + 런타임 헬퍼를 전역에 노출 (모듈 스코프에서 eval 접근용)
     \\__zts_g.__zts_apply_update = __zts_apply_update;
     \\__zts_g.__zts_reload = __zts_reload;
     \\__zts_g.__zts_make_hot = __zts_make_hot;
     \\__zts_g.__zts_modules = __zts_modules;
+    \\if (typeof __esm !== "undefined") __zts_g.__esm = __esm;
+    \\if (typeof __export !== "undefined") __zts_g.__export = __export;
+    \\if (typeof __commonJS !== "undefined") __zts_g.__commonJS = __commonJS;
+    \\if (typeof __defProp !== "undefined") __zts_g.__defProp = __defProp;
+    \\if (typeof __toESM !== "undefined") __zts_g.__toESM = __toESM;
+    \\if (typeof __toCommonJS !== "undefined") __zts_g.__toCommonJS = __toCommonJS;
     \\
 ;
 
 pub const HMR_RUNTIME_MIN =
-    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zts_oc(cb,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(cb);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res){var id=Object.keys(fn)[0];var orig=fn[id];var init=__zts_oe(fn,res);__zts_modules[id]={type:"esm",fn:init,reset:function(){var nf={};nf[id]=orig;init=__zts_oe(nf);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}__zts_g.__zts_currentModuleId=id;if(typeof __zts_g.globalEvalWithSourceUrl==="function"){__zts_g.globalEvalWithSourceUrl(u[i].code,"zts-hmr://"+id)}else{eval(u[i].code)}if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)rt.performReactRefresh()}__zts_g.$RefreshReg$=function(t,id){var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)rt.register(t,__zts_g.__zts_currentModuleId+" "+id)};__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};__zts_g.__zts_apply_update=__zts_apply_update;__zts_g.__zts_reload=__zts_reload;__zts_g.__zts_make_hot=__zts_make_hot;__zts_g.__zts_modules=__zts_modules
+    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zts_oc(cb,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(cb);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res){var id=Object.keys(fn)[0];var orig=fn[id];var init=__zts_oe(fn,res);__zts_modules[id]={type:"esm",fn:init,reset:function(){var nf={};nf[id]=orig;init=__zts_oe(nf);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}__zts_g.__zts_currentModuleId=id;var fn=new Function("__esm","__export","__commonJS","__defProp","__toESM","__toCommonJS","__zts_modules","__zts_make_hot","$RefreshReg$","$RefreshSig$",u[i].code);fn(typeof __esm!=="undefined"?__esm:__zts_g.__esm,typeof __export!=="undefined"?__export:__zts_g.__export,typeof __commonJS!=="undefined"?__commonJS:__zts_g.__commonJS,typeof __defProp!=="undefined"?__defProp:__zts_g.__defProp,typeof __toESM!=="undefined"?__toESM:__zts_g.__toESM,typeof __toCommonJS!=="undefined"?__toCommonJS:__zts_g.__toCommonJS,__zts_modules,__zts_make_hot,__zts_g.$RefreshReg$,__zts_g.$RefreshSig$);if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)rt.performReactRefresh()}__zts_g.$RefreshReg$=function(t,id){var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)rt.register(t,__zts_g.__zts_currentModuleId+" "+id)};__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};__zts_g.__zts_apply_update=__zts_apply_update;__zts_g.__zts_reload=__zts_reload;__zts_g.__zts_make_hot=__zts_make_hot;__zts_g.__zts_modules=__zts_modules;if(typeof __esm!=="undefined")__zts_g.__esm=__esm;if(typeof __export!=="undefined")__zts_g.__export=__export;if(typeof __commonJS!=="undefined")__zts_g.__commonJS=__commonJS;if(typeof __defProp!=="undefined")__zts_g.__defProp=__defProp;if(typeof __toESM!=="undefined")__zts_g.__toESM=__toESM;if(typeof __toCommonJS!=="undefined")__zts_g.__toCommonJS=__toCommonJS
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산용, comptime)
