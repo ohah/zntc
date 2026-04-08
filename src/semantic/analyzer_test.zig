@@ -1050,3 +1050,92 @@ test "Private: update expression on field is allowed" {
         \\}
     );
 }
+
+// ============================================================
+// Top-Level Await + target 검증
+// ============================================================
+
+/// es_target을 지정하여 분석하는 헬퍼.
+fn analyzeModuleWithTarget(source: []const u8, target: @import("../transformer/compat.zig").ESTarget) !AnalyzeResult {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    errdefer scanner.deinit();
+    scanner.is_module = true;
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    errdefer parser.deinit();
+    parser.is_ts = true;
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    ana.is_module = true;
+    ana.es_target = target;
+    errdefer ana.deinit();
+    try ana.analyze();
+    return .{ .scanner = scanner, .parser = parser, .analyzer = ana };
+}
+
+test "TLA: await at top-level emits error when target < es2022" {
+    var r = try analyzeModuleWithTarget(
+        \\const x = await fetch('/');
+    , .es2021);
+    defer r.deinit();
+
+    // 에러가 1개 발생해야 함
+    try std.testing.expect(r.analyzer.errors.items.len > 0);
+    const err = r.analyzer.errors.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, err.message, "Top-level await") != null);
+    try std.testing.expectEqual(Diagnostic.Kind.semantic, err.kind);
+    try std.testing.expect(err.hint != null);
+}
+
+test "TLA: await at top-level no error when target >= es2022" {
+    var r = try analyzeModuleWithTarget(
+        \\const x = await fetch('/');
+    , .es2022);
+    defer r.deinit();
+
+    // 시맨틱 에러 없어야 함
+    try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+}
+
+test "TLA: await at top-level no error when target is null (unspecified)" {
+    // analyzeModule()은 es_target = null (기본값)
+    var r = try analyzeModule(
+        \\const x = await fetch('/');
+    );
+    defer r.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+}
+
+test "TLA: await inside async function no error regardless of target" {
+    var r = try analyzeModuleWithTarget(
+        \\async function load() {
+        \\  const x = await fetch('/');
+        \\  return x;
+        \\}
+    , .es2021);
+    defer r.deinit();
+
+    // async 함수 내부의 await는 TLA가 아니므로 에러 없음
+    try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+}
+
+test "TLA: for-await-of at top-level emits error when target < es2022" {
+    var r = try analyzeModuleWithTarget(
+        \\for await (const x of stream) { console.log(x); }
+    , .es2020);
+    defer r.deinit();
+
+    try std.testing.expect(r.analyzer.errors.items.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, r.analyzer.errors.items[0].message, "Top-level await") != null);
+}
+
+test "TLA: for-await-of at top-level no error when target >= es2022" {
+    var r = try analyzeModuleWithTarget(
+        \\for await (const x of stream) { console.log(x); }
+    , .es2022);
+    defer r.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
+}

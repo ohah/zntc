@@ -332,7 +332,7 @@ pub const DevServer = struct {
                 getLog().print("zts: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
-            const thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, handleConnection, .{ self, connection }) catch {
+            const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, handleConnection, .{ self, connection }) catch {
                 connection.stream.close();
                 continue;
             };
@@ -728,6 +728,7 @@ pub const DevServer = struct {
             .dev_mode = true,
             .root_dir = self.root_path,
             .react_refresh = true,
+            .plugins = self.plugins,
         });
         defer bundler.deinit();
 
