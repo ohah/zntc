@@ -1731,6 +1731,14 @@ pub fn main() !void {
                     const file = std.fs.cwd().createFile(out_path, .{}) catch continue;
                     defer file.close();
                     file.writeAll(rebuild_result.output) catch continue;
+                    // rebuild 시에도 소스맵 갱신
+                    if (rebuild_result.sourcemap) |sm_json| {
+                        const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
+                        defer allocator.free(map_path);
+                        std.fs.cwd().writeFile(.{ .sub_path = map_path, .data = sm_json }) catch |err| {
+                            try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                        };
+                    }
                     if (!opts.watch_json) {
                         try stderr.print("[watch] Rebuilt → {s} ({d} bytes)\n", .{ out_path, rebuild_result.output.len });
                     }
