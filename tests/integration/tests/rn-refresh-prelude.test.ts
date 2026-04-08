@@ -11,9 +11,9 @@
  * - HMR update 시 performReactRefresh가 호출되는지
  */
 import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, runZts, runZtsInDir } from "./helpers";
+import { createFixture, runZtsInDir } from "./helpers";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "bun";
 
 describe("RN react-refresh prelude", () => {
@@ -120,7 +120,8 @@ describe("RN react-refresh prelude", () => {
     // run_before_main 호출은 엔트리 init 호출 직전에 삽입됨
     const lines = bundle.split("\n");
     const initCallLine = lines.findIndex(
-      (l) => /(?:require|init)_.*InitializeCore/.test(l) || /(?:require|init)_.*initialize_core/.test(l),
+      (l) =>
+        /(?:require|init)_.*InitializeCore/.test(l) || /(?:require|init)_.*initialize_core/.test(l),
     );
     // 번들 끝부분의 엔트리 호출 직전에 InitializeCore 호출이 있어야 함
     // (또는 __esm body 안에서 호출)
@@ -317,9 +318,7 @@ describe("RN react-refresh prelude", () => {
 
     const bundle = readFileSync(outFile, "utf-8");
 
-    // InitializeCore 코드가 한 번만 포함되어야 함
-    const matches = bundle.match(/InitializeCore/g) || [];
-    // 코멘트나 모듈 ID에서 여러 번 나올 수 있지만, 실제 코드(injectIntoGlobalHook)는 1번만
+    // 실제 코드(injectIntoGlobalHook)는 1번만 포함되어야 함 (정의 + 호출)
     const injectMatches = bundle.match(/injectIntoGlobalHook/g) || [];
     // mock InitializeCore에 injectIntoGlobalHook이 1번, react-refresh/runtime에 정의가 1번
     // = 총 2번 (정의 + 호출). 중복 주입 시 4번이 됨.
