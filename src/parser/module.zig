@@ -209,7 +209,8 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // import-equals가 아니면 ESM import → module syntax 확정
-    if (self.is_unambiguous and !self.in_namespace) {
+    // type-only import (import type / import typeof)는 트랜스파일 시 제거되므로 제외
+    if (self.is_unambiguous and !self.in_namespace and !is_type_only) {
         self.has_module_syntax = true;
     }
 
