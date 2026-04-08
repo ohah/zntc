@@ -24,6 +24,8 @@ const jsx = @import("jsx.zig");
 const ts = @import("ts.zig");
 const flow = @import("flow.zig");
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const scan_results_mod = @import("scan_results.zig");
+pub const scan_results = scan_results_mod;
 
 /// 재귀 함수용 명시적 에러 타입.
 /// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
@@ -56,6 +58,16 @@ pub const Parser = struct {
 
     /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
     scratch: std.ArrayList(NodeIndex),
+
+    /// Inline import/export scanning (bundler mode). Populated when enable_scan=true.
+    /// 파서가 AST를 구축하면서 동시에 import/export 레코드와 바인딩을 수집한다.
+    /// .empty (allocator 미지정) 상태이므로 append 시 반드시 self.allocator를 전달해야 한다.
+    scan_import_records: std.ArrayListUnmanaged(scan_results_mod.ScanImportRecord) = .empty,
+    scan_import_bindings: std.ArrayListUnmanaged(scan_results_mod.ScanImportBinding) = .empty,
+    scan_export_bindings: std.ArrayListUnmanaged(scan_results_mod.ScanExportBinding) = .empty,
+    scan_result: scan_results_mod.ScanResult = .{},
+    /// Enable inline scanning. Set to true by bundler before parsing.
+    enable_scan: bool = false,
 
     /// arrow 파라미터 중복 검사용 임시 이름 수집 버퍼.
     param_name_spans: std.ArrayList(Span),
@@ -318,6 +330,9 @@ pub const Parser = struct {
         self.errors.deinit(self.allocator);
         self.deferred_module_errors.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
+        self.scan_import_records.deinit(self.allocator);
+        self.scan_import_bindings.deinit(self.allocator);
+        self.scan_export_bindings.deinit(self.allocator);
         self.param_name_spans.deinit(self.allocator);
         self.bracket_stack.deinit(self.allocator);
     }

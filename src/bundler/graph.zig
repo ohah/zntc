@@ -822,6 +822,8 @@ pub const ModuleGraph = struct {
                 parser.is_unambiguous = true;
             }
         }
+        // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
+        parser.enable_scan = true;
         _ = parser.parse() catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
             module.state = .ready;
@@ -888,54 +890,162 @@ pub const ModuleGraph = struct {
         module.ast = parser.ast;
         module.line_offsets = scanner.line_offsets.items;
 
-        // import/export 추출 (parse_arena — 스레드 안전, graph allocator 불필요)
-        const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &parser.ast) catch {
-            module.state = .ready;
-            return;
-        };
-        module.import_records = scan_result.records;
+        // import/export 추출: inline scan 결과를 bundler 타입으로 변환
+        if (parser.enable_scan) {
+            // Parser scan records → bundler ImportRecord
+            const scan_records = parser.scan_import_records.items;
+            const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
+                module.state = .ready;
+                return;
+            };
+            for (scan_records, 0..) |sr, i| {
+                const ik: ImportKind = @enumFromInt(@intFromEnum(sr.kind));
+                records[i] = .{
+                    .specifier = sr.specifier,
+                    .kind = ik,
+                    .span = sr.span,
+                    .url_span = sr.url_span,
+                };
+            }
+            module.import_records = records;
 
-        // JSX automatic: AST에 JSX가 있으면 synthetic import를 추가한다.
-        // esbuild는 파서에서 주입하지만, 여기서는 파싱 후 graph 단계에서 주입한다.
-        var jsx_injected = false;
-        if (self.jsx_runtime != .classic) {
-            if (parser.ast.has_jsx) {
-                // specifier 캐시: 모든 모듈에서 동일하므로 한 번만 할당
-                if (self.jsx_specifier_cache == null) {
-                    const is_dev = self.jsx_runtime == .automatic_dev;
-                    self.jsx_specifier_cache = std.fmt.allocPrint(
-                        self.allocator,
-                        "{s}/{s}",
-                        .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-                    ) catch null;
+            // Parser scan import bindings → bundler ImportBinding
+            const scan_ibindings = parser.scan_import_bindings.items;
+            if (arena_alloc.alloc(binding_scanner_mod.ImportBinding, scan_ibindings.len)) |ibindings| {
+                for (scan_ibindings, 0..) |sb, i| {
+                    const ib_kind: binding_scanner_mod.ImportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                    ibindings[i] = .{
+                        .kind = ib_kind,
+                        .local_name = sb.local_name,
+                        .imported_name = sb.imported_name,
+                        .local_span = sb.local_span,
+                        .import_record_index = sb.import_record_index,
+                    };
                 }
-                if (self.jsx_specifier_cache) |specifier| {
-                    module.import_records = injectJsxRuntimeImport(
-                        specifier,
-                        arena_alloc,
-                        scan_result.records,
-                    ) catch scan_result.records;
-                    jsx_injected = (module.import_records.len > scan_result.records.len);
+                module.import_bindings = ibindings;
+            } else |_| {}
+
+            // Parser scan export bindings → bundler ExportBinding
+            const scan_ebindings = parser.scan_export_bindings.items;
+            if (arena_alloc.alloc(binding_scanner_mod.ExportBinding, scan_ebindings.len)) |ebindings| {
+                for (scan_ebindings, 0..) |sb, i| {
+                    const eb_kind: binding_scanner_mod.ExportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                    ebindings[i] = .{
+                        .exported_name = sb.exported_name,
+                        .local_name = sb.local_name,
+                        .local_span = sb.local_span,
+                        .kind = eb_kind,
+                        .import_record_index = sb.import_record_index,
+                    };
+                }
+                module.export_bindings = ebindings;
+            } else |_| {}
+
+            // Worker 패턴 보완: new Worker(new URL(...)) 는 inline scan에서 감지하지 않으므로
+            // 별도의 AST walk로 worker records를 추출하여 병합한다.
+            const worker_records = import_scanner.extractWorkerRecords(arena_alloc, &parser.ast) catch &[_]ImportRecord{};
+            if (worker_records.len > 0) {
+                if (arena_alloc.alloc(ImportRecord, records.len + worker_records.len)) |merged| {
+                    @memcpy(merged[0..records.len], records);
+                    @memcpy(merged[records.len..], worker_records);
+                    module.import_records = merged;
+                } else |_| {}
+            }
+
+            // namespace access 수집은 별도 AST walk 필요
+            binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+
+            // CJS/ESM 감지 — inline scan 결과로 ScanResult 생성
+            const scan_result = import_scanner.ScanResult{
+                .records = module.import_records,
+                .has_esm_syntax = parser.scan_result.has_esm_syntax or parser.has_module_syntax,
+                .has_cjs_require = parser.scan_result.has_cjs_require,
+                .has_module_exports = parser.scan_result.has_module_exports,
+                .has_exports_dot = parser.scan_result.has_exports_dot,
+            };
+
+            // JSX automatic: AST에 JSX가 있으면 synthetic import를 추가한다.
+            var jsx_injected = false;
+            if (self.jsx_runtime != .classic) {
+                if (parser.ast.has_jsx) {
+                    if (self.jsx_specifier_cache == null) {
+                        const is_dev = self.jsx_runtime == .automatic_dev;
+                        self.jsx_specifier_cache = std.fmt.allocPrint(
+                            self.allocator,
+                            "{s}/{s}",
+                            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
+                        ) catch null;
+                    }
+                    if (self.jsx_specifier_cache) |specifier| {
+                        module.import_records = injectJsxRuntimeImport(
+                            specifier,
+                            arena_alloc,
+                            records,
+                        ) catch records;
+                        jsx_injected = (module.import_records.len > records.len);
+                    }
                 }
             }
-        }
 
-        module.exports_kind = determineExportsKind(scan_result, module.path);
-        module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+            module.exports_kind = determineExportsKind(scan_result, module.path);
+            module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
-        module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, module.import_records) catch &.{};
-        binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, module.import_records, module.import_bindings) catch &.{};
+            // JSX synthetic import bindings 추가
+            if (jsx_injected) {
+                const jsx_record_idx: u32 = @intCast(records.len);
+                module.import_bindings = createJsxImportBindings(
+                    self.jsx_runtime,
+                    arena_alloc,
+                    module.import_bindings,
+                    jsx_record_idx,
+                ) catch module.import_bindings;
+            }
+        } else {
+            // Fallback: post-hoc scanners (inline scan 비활성 경로)
+            const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &parser.ast) catch {
+                module.state = .ready;
+                return;
+            };
+            module.import_records = scan_result.records;
 
-        // JSX synthetic import bindings 추가 (binding_scanner는 AST 노드만 인식하므로 수동 추가)
-        if (jsx_injected) {
-            const jsx_record_idx: u32 = @intCast(scan_result.records.len); // 마지막에 추가된 record
-            module.import_bindings = createJsxImportBindings(
-                self.jsx_runtime,
-                arena_alloc,
-                module.import_bindings,
-                jsx_record_idx,
-            ) catch module.import_bindings;
+            var jsx_injected = false;
+            if (self.jsx_runtime != .classic) {
+                if (parser.ast.has_jsx) {
+                    if (self.jsx_specifier_cache == null) {
+                        const is_dev = self.jsx_runtime == .automatic_dev;
+                        self.jsx_specifier_cache = std.fmt.allocPrint(
+                            self.allocator,
+                            "{s}/{s}",
+                            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
+                        ) catch null;
+                    }
+                    if (self.jsx_specifier_cache) |specifier| {
+                        module.import_records = injectJsxRuntimeImport(
+                            specifier,
+                            arena_alloc,
+                            scan_result.records,
+                        ) catch scan_result.records;
+                        jsx_injected = (module.import_records.len > scan_result.records.len);
+                    }
+                }
+            }
+
+            module.exports_kind = determineExportsKind(scan_result, module.path);
+            module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+
+            module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, module.import_records) catch &.{};
+            binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+            module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, module.import_records, module.import_bindings) catch &.{};
+
+            if (jsx_injected) {
+                const jsx_record_idx: u32 = @intCast(scan_result.records.len);
+                module.import_bindings = createJsxImportBindings(
+                    self.jsx_runtime,
+                    arena_alloc,
+                    module.import_bindings,
+                    jsx_record_idx,
+                ) catch module.import_bindings;
+            }
         }
 
         module.state = .parsed;
