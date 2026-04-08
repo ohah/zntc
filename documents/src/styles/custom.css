@@ -2,9 +2,6 @@
   --sl-color-accent-low: #1a3a2a;
   --sl-color-accent: #4ade80;
   --sl-color-accent-high: #bbf7d0;
-  --sl-content-width: 100%;
-  --sl-content-margin-inline: 0;
-  --sl-content-pad-x: 1.5rem;
 }
 
 :root[data-theme="light"] {
@@ -13,28 +10,15 @@
   --sl-color-accent-high: #052e16;
 }
 
-/* 모든 페이지: content 폭 제한 해제 */
-.sl-container {
+/* Playground/벤치마크 등 전체 폭이 필요한 페이지에만 적용 */
+.playground-page .sl-container,
+.playground-page .content-panel,
+.playground-page .content-panel > *,
+.playground-page main,
+.playground-page .main-pane {
   max-width: 100% !important;
+  width: 100% !important;
   margin-inline: 0 !important;
-  width: 100% !important;
-}
-
-.content-panel,
-.content-panel > *,
-main,
-.main-pane {
-  max-width: 100% !important;
-  width: 100% !important;
-}
-
-.right-sidebar-panel .sl-container {
-  max-width: 100% !important;
-}
-
-/* 오른쪽 TOC 패딩 */
-.right-sidebar-panel {
-  padding-inline: 1rem;
 }
 
 /* 표 스타일 개선 */
