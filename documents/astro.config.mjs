@@ -76,6 +76,8 @@ export default defineConfig({
             { label: "트랜스파일", slug: "guides/transpile", translations: { en: "Transpile" } },
             { label: "번들링", slug: "guides/bundling", translations: { en: "Bundling" } },
             { label: "플러그인", slug: "guides/plugins", translations: { en: "Plugins" } },
+            { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },
+            { label: "마이그레이션", slug: "guides/migration", translations: { en: "Migration" } },
             { label: "React Native", slug: "guides/react-native" },
           ],
         },
