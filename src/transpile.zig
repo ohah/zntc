@@ -56,6 +56,11 @@ pub const TranspileOptions = struct {
     jsx_factory: []const u8 = "React.createElement",
     jsx_fragment: []const u8 = "React.Fragment",
     jsx_import_source: []const u8 = "react",
+
+    // --- 타겟 ---
+    /// ES 타겟. null이면 타겟 제한 검증 없음.
+    /// es2022 미만에서 top-level await 사용 시 진단을 발생시킨다.
+    es_target: ?@import("transformer/compat.zig").ESTarget = null,
 };
 
 pub const TranspileError = error{
@@ -151,6 +156,7 @@ pub fn transpileWithCallback(
     analyzer.is_module = parser.is_module;
     analyzer.is_ts = parser.is_ts;
     analyzer.is_flow = parser.is_flow;
+    analyzer.es_target = options.es_target;
     analyzer.analyze() catch return error.SemanticError;
     if (analyzer.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);

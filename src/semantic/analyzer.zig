@@ -72,6 +72,10 @@ pub const SemanticAnalyzer = struct {
     /// 함수/arrow 내부의 await는 포함하지 않음.
     has_top_level_await: bool = false,
 
+    /// ES 타겟 (--target 옵션). null이면 타겟 검증을 스킵한다.
+    /// es2022 미만에서 top-level await를 사용하면 진단을 발생시킨다.
+    es_target: ?@import("../transformer/compat.zig").ESTarget = null,
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -197,9 +201,10 @@ pub const SemanticAnalyzer = struct {
     }
 
     pub fn deinit(self: *SemanticAnalyzer) void {
-        // allocPrint으로 할당된 에러 메시지 해제
+        // allocPrint으로 할당된 에러 메시지/힌트 해제
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
+            if (err.hint) |hint| self.allocator.free(hint);
         }
         self.scopes.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
@@ -298,6 +303,30 @@ pub const SemanticAnalyzer = struct {
 
     /// 현재 스코프 체인에 function 스코프가 있는지 확인한다.
     /// TLA 감지에 사용: function 안이면 await는 TLA가 아님.
+    /// es_target < es2022일 때 top-level await 진단을 발생시킨다.
+    /// es_target이 null이면 (타겟 미지정) 진단을 생략한다.
+    fn emitTopLevelAwaitDiag(self: *SemanticAnalyzer, span: Span) !void {
+        const compat = @import("../transformer/compat.zig");
+        const target = self.es_target orelse return; // 타겟 미지정이면 스킵
+        if (@intFromEnum(target) >= @intFromEnum(compat.ESTarget.es2022)) return; // es2022 이상이면 OK
+
+        // deinit에서 message/hint를 free하므로 allocPrint로 할당
+        const msg = try std.fmt.allocPrint(self.allocator,
+            "Top-level await is not available in the configured target environment ({s})",
+            .{@tagName(target)},
+        );
+        const hint = try self.allocator.dupe(u8,
+            "Set target to 'es2022' or higher to use top-level await",
+        );
+
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = msg,
+            .kind = .semantic,
+            .hint = hint,
+        });
+    }
+
     fn isInsideFunctionScope(self: *const SemanticAnalyzer) bool {
         var scope_id = self.current_scope;
         while (!scope_id.isNone()) {
@@ -984,6 +1013,7 @@ pub const SemanticAnalyzer = struct {
                 // for await (... of ...) — top-level이면 TLA
                 if (self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
                     self.has_top_level_await = true;
+                    try self.emitTopLevelAwaitDiag(node.span);
                 }
                 try self.visitForInOf(node);
             },
@@ -1179,6 +1209,7 @@ pub const SemanticAnalyzer = struct {
                 // 현재 스코프 체인에 function 스코프가 없으면 top-level.
                 if (self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
                     self.has_top_level_await = true;
+                    try self.emitTopLevelAwaitDiag(node.span);
                 }
                 try self.visitNode(node.data.unary.operand);
             },

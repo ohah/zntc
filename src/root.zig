@@ -5,6 +5,11 @@
 const std = @import("std");
 
 pub const diagnostic = @import("diagnostic.zig");
+pub const ansi_mod = @import("ansi.zig");
+pub const rich_diagnostic = @import("rich_diagnostic.zig");
+pub const diagnostic_renderer = @import("diagnostic_renderer.zig");
+pub const levenshtein = @import("levenshtein.zig");
+pub const error_codes = @import("error_codes.zig");
 pub const lexer = @import("lexer/mod.zig");
 pub const parser = @import("parser/mod.zig");
 pub const semantic = @import("semantic/mod.zig");
@@ -28,6 +33,13 @@ test {
     _ = bundler;
     _ = server;
     _ = @import("test_arena.zig");
+
+    // diagnostic system
+    _ = ansi_mod;
+    _ = rich_diagnostic;
+    _ = diagnostic_renderer;
+    _ = levenshtein;
+    _ = error_codes;
 
     // test files
     _ = @import("config_test.zig");

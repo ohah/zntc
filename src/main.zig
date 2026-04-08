@@ -53,6 +53,8 @@ const CliOptions = struct {
     experimental_decorators: ?bool = null,
     emit_decorator_metadata: bool = false,
     unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
+    /// --target에서 파싱한 ES 타겟. top-level await 등 타겟 제한 검증에 사용.
+    es_target: ?lib.transformer.TransformOptions.compat.ESTarget = null,
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
     preserve_symlinks: bool = false,
@@ -437,6 +439,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             // ES 타겟 먼저 시도 (es5, es2015, ..., esnext)
             if (std.meta.stringToEnum(compat.ESTarget, val)) |es| {
                 opts.unsupported = compat.fromESTarget(es);
+                opts.es_target = es;
             } else {
                 // 엔진 버전 파싱 (chrome80,safari14,node16)
                 opts.unsupported = parseEngineTargets(val) orelse {
@@ -668,9 +671,20 @@ const TranspileOptions = struct {
 
 /// transpile.zig 에러 콜백: 파서/시맨틱 에러 발생 시 코드 프레임 출력
 fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const lib.diagnostic.Diagnostic) void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr_file = std.fs.File.stderr();
+    const stderr = stderr_file.deprecatedWriter();
+    const use_color = lib.ansi_mod.isTty(stderr_file);
+    const source_info = lib.rich_diagnostic.SourceInfo{
+        .source = source,
+        .line_offsets = scanner.line_offsets.items,
+    };
+    const renderer = lib.diagnostic_renderer;
+    const rich_diag_mod = lib.rich_diagnostic;
+    const opts: renderer.RenderOptions = .{ .color = use_color, .unicode = true };
+
     for (errors) |diag| {
-        printErrorCodeFrame(stderr, source, file_path, scanner, diag) catch {};
+        const rich = rich_diag_mod.fromDiagnostic(diag, file_path);
+        renderer.render(stderr, rich, source_info, opts) catch {};
     }
 }
 
@@ -1881,6 +1895,7 @@ pub fn main() !void {
             .experimental_decorators = opts.experimental_decorators orelse false,
             .emit_decorator_metadata = opts.emit_decorator_metadata,
             .unsupported = opts.unsupported,
+            .es_target = opts.es_target,
             .source_root = opts.source_root orelse "",
             .sources_content = opts.sources_content,
             .charset_utf8 = opts.charset_utf8,
@@ -2140,88 +2155,7 @@ fn collectMtimes(
 ///   file.ts:3:5: error: expected ';'
 ///     3 | const x =
 ///       |           ^
-fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: Diagnostic) !void {
-    const lc = scanner.getLineColumn(err.span.start);
-    const line_num = lc.line + 1;
-    const col_num = lc.column + 1;
-
-    // 에러 헤더
-    const kind_label: []const u8 = switch (err.kind) {
-        .parse => "error",
-        .semantic => "error[semantic]",
-    };
-    if (err.found) |found| {
-        try writer.print("{s}:{d}:{d}: {s}: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, kind_label, err.message, found });
-    } else {
-        try writer.print("{s}:{d}:{d}: {s}: {s}\n", .{ file_path, line_num, col_num, kind_label, err.message });
-    }
-
-    // 해당 줄 텍스트 추출
-    const line_start = if (lc.line < scanner.line_offsets.items.len)
-        scanner.line_offsets.items[lc.line]
-    else
-        0;
-
-    var line_end = line_start;
-    while (line_end < source.len and source[line_end] != '\n' and source[line_end] != '\r') {
-        line_end += 1;
-    }
-    const line_text = source[line_start..line_end];
-
-    // 줄 번호 너비 계산
-    var num_width: usize = 0;
-    var n = line_num;
-    while (n > 0) : (n /= 10) {
-        num_width += 1;
-    }
-
-    // 소스 줄 출력: "  3 | const x ="
-    try writer.print("  {d} | {s}\n", .{ line_num, line_text });
-
-    // 밑줄 출력: "    |           ^"
-    // 줄 번호 자리만큼 공백
-    var i: usize = 0;
-    while (i < num_width + 2) : (i += 1) {
-        try writer.writeByte(' ');
-    }
-    try writer.writeAll("| ");
-
-    // 열 위치까지 공백
-    i = 0;
-    while (i < lc.column) : (i += 1) {
-        // 원본에서 탭이면 탭으로 맞춤
-        if (line_start + i < source.len and source[line_start + i] == '\t') {
-            try writer.writeByte('\t');
-        } else {
-            try writer.writeByte(' ');
-        }
-    }
-
-    // 밑줄
-    const err_len = if (err.span.end > err.span.start)
-        @min(err.span.end - err.span.start, line_end - (line_start + lc.column))
-    else
-        1;
-    i = 0;
-    while (i < err_len) : (i += 1) {
-        try writer.writeByte('^');
-    }
-    try writer.writeByte('\n');
-
-    // 힌트 출력 (예: "  hint: Try inserting a semicolon here")
-    if (err.hint) |hint| {
-        try writer.print("  hint: {s}\n", .{hint});
-    }
-
-    // 관련 위치 출력 (예: "  --> file.ts:1:10: opening '(' is here")
-    if (err.related_span) |rel_span| {
-        const rel_lc = scanner.getLineColumn(rel_span.start);
-        const rel_line = rel_lc.line + 1;
-        const rel_col = rel_lc.column + 1;
-        const label = err.related_label orelse "related";
-        try writer.print("  --> {s}:{d}:{d}: {s}\n", .{ file_path, rel_line, rel_col, label });
-    }
-}
+// printErrorCodeFrame — 삭제됨. diagnostic_renderer.render()로 대체.
 
 fn printUsage(writer: anytype) !void {
     try writer.print(
