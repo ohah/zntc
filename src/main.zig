@@ -1168,6 +1168,9 @@ pub fn main() !void {
         }
 
         // --platform=react-native 프리셋: 사용자가 명시하지 않은 옵션에 RN 기본값 적용
+        if (opts.platform == .react_native and opts.rn_platform == .none and opts.dev) {
+            try stderr.print("zts: warning: --platform=react-native --dev without --rn-platform may cause unresolved platform-specific modules (e.g. DevTools). Use --rn-platform=ios or --rn-platform=android.\n", .{});
+        }
         if (opts.platform == .react_native) {
             if (opts.resolve_extensions_list.items.len == 0) {
                 // Metro/롤다운 호환: ts → tsx 순서 (sourceExtensions 기본 순서)
@@ -1303,6 +1306,7 @@ pub fn main() !void {
             .react_refresh = opts.dev,
             .root_dir = if (opts.dev) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
         };
+        defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
 
         // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
         if (subprocess_list.items.len > 0) {
