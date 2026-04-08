@@ -994,25 +994,68 @@ test "ES2015: generator function destructuring params lowered" {
 test "ES2015: for-of with const" {
     var r = try e2eTarget(std.testing.allocator, "for(const x of arr){f(x);}", .es5);
     defer r.deinit();
-    // _a=index, _b=array, postfix increment
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_b.length") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=_b[_a]") != null);
-    // postfix _a++ (not prefix ++_a)
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a++") != null);
+    // iterator protocol: Symbol.iterator + .next() + try-catch-finally
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "try") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "catch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "finally") != null);
 }
 
 test "ES2015: for-of with expression left" {
     var r = try e2eTarget(std.testing.allocator, "for(x of arr){}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "x=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
 }
 
 test "ES2015: for-of no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "for(const x of arr){}", .esnext);
     defer r.deinit();
     try std.testing.expectEqualStrings("for(const x of arr){}", r.output);
+}
+
+test "ES2015: for-of iterator.return cleanup in finally" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of s){}", .es5);
+    defer r.deinit();
+    // finally에서 .return != null 체크 + .return() 호출
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".return!=null") != null or
+        std.mem.indexOf(u8, r.output, ".return != null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".return()") != null);
+}
+
+test "ES2015: for-of catch rethrows in finally" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of s){}", .es5);
+    defer r.deinit();
+    // catch에서 에러 플래그 설정, finally에서 rethrow
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "throw ") != null);
+}
+
+test "ES2015: for-of let produces var" {
+    var r = try e2eTarget(std.testing.allocator, "for(let x of arr){f(x);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
+}
+
+test "ES2015: for-of .next().done in test expr" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of arr){}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".next()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".done") != null);
+}
+
+test "ES2015: nested for-of unique variable names" {
+    // 중첩 for-of에서 변수명 충돌 없이 각각 고유한 temp var 사용
+    var r = try e2eTarget(std.testing.allocator, "for(const x of a){for(const y of b){}}", .es5);
+    defer r.deinit();
+    // Symbol.iterator가 2번 이상 나와야 함 (outer + inner)
+    const first = std.mem.indexOf(u8, r.output, "Symbol.iterator") orelse unreachable;
+    try std.testing.expect(std.mem.indexOf(u8, r.output[first + 1 ..], "Symbol.iterator") != null);
 }
 
 // --- ES2015: destructuring ---
@@ -1368,6 +1411,61 @@ test "ES2015: class private field set" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.set(this,v)") != null);
 }
 
+// --- class static private field ---
+
+test "ES2022: static private field descriptor object" {
+    // static #x → var _x = { writable: true, value: init }
+    var r = try e2eTarget(std.testing.allocator, "class F{static #x=new Map();}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "writable:true") != null or
+        std.mem.indexOf(u8, r.output, "writable: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:new Map") != null or
+        std.mem.indexOf(u8, r.output, "value: new Map") != null);
+    // WeakMap이 아닌 descriptor 객체
+    try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "new WeakMap"), null);
+}
+
+test "ES2022: static private field get uses helper" {
+    // static method에서 ClassName.#x 접근 → __classStaticPrivateFieldSpecGet
+    var r = try e2eTarget(std.testing.allocator, "class F{static #m=new Map();static g(){return F.#m;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(F,F,_m)") != null);
+}
+
+test "ES2022: static private field set uses helper" {
+    // static method에서 ClassName.#x = v → __classStaticPrivateFieldSpecSet
+    var r = try e2eTarget(std.testing.allocator, "class F{static #m=0;static s(v){F.#m=v;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecSet(F,F,_m,v)") != null);
+}
+
+test "ES2022: static private field chained access" {
+    // static private field의 메서드 체이닝: F.#m.get(name)
+    var r = try e2eTarget(std.testing.allocator, "class F{static #m=new Map();static get(k){return F.#m.get(k);}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(F,F,_m)") != null);
+}
+
+test "ES2022: instance private field still uses WeakMap" {
+    // instance private field는 기존 WeakMap 패턴 유지
+    var r = try e2eTarget(std.testing.allocator, "class F{#x=1;static #y=2;g(){return this.#x;}}", .es5);
+    defer r.deinit();
+    // instance: WeakMap
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.get(this)") != null);
+    // static: descriptor
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "writable:true") != null or
+        std.mem.indexOf(u8, r.output, "writable: true") != null);
+}
+
+test "ES2022: static private field default value void 0" {
+    // 초기값 없는 static private field → value: void 0
+    var r = try e2eTarget(std.testing.allocator, "class F{static #x;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:void 0") != null or
+        std.mem.indexOf(u8, r.output, "value: void 0") != null);
+}
+
 // --- destructuring rest ---
 
 test "ES2015: destructuring object rest" {
@@ -1517,9 +1615,9 @@ test "ES2015: destructuring with string key and default uses bracket notation" {
 test "ES2015: for-of with destructuring" {
     var r = try e2eTarget(std.testing.allocator, "for(const [k,v] of arr){}", .es5);
     defer r.deinit();
-    // for-of → index loop, const → var
+    // for-of → iterator protocol, destructuring 결합
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
 }
 
 // --- class edge cases ---
