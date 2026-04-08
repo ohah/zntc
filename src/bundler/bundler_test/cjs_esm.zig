@@ -1436,9 +1436,8 @@ test "TLA: for_await_of_statement detected via AST tag" {
 // ============================================================
 
 test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
-    // react-native/index.js 패턴: Flow `import typeof` + module.exports
-    // import typeof는 type-only → 트랜스파일 시 제거 → CJS로 감지되어야 함
-    // 버그: has_module_syntax가 type-only import에서도 설정되어 ESM으로 오판
+    // Regression: 7ac17fd inline scan에서 has_module_syntax가 type-only import에도 설정되어
+    // react-native/index.js (import typeof + module.exports) 패턴이 ESM으로 오판됨
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import lib from './rn.js';\nconsole.log(lib);");
@@ -1450,9 +1449,7 @@ test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
     try writeFile(tmp.dir, "types.js", "export type Foo = string;");
     try writeFile(tmp.dir, "warn.js", "module.exports = function() {};");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dp);
-    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
     var cache = ResolveCache.init(std.testing.allocator, .{});
@@ -1462,7 +1459,6 @@ test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
     graph.flow = true;
     try graph.build(&.{entry});
 
-    // rn.js는 CJS로 감지되어야 함 (import typeof는 type-only)
     var found = false;
     for (graph.modules.items) |m| {
         if (std.mem.endsWith(u8, m.path, "rn.js")) {
@@ -1476,7 +1472,6 @@ test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
 }
 
 test "CJS: Flow import typeof with module.exports produces __commonJS wrapper" {
-    // 번들 출력에서 __commonJS 래핑이 사용되는지 확인 (런타임 에러 방지)
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import lib from './rn.js';\nconsole.log(lib);");
@@ -1495,14 +1490,11 @@ test "CJS: Flow import typeof with module.exports produces __commonJS wrapper" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // __commonJS로 래핑되어야 함 (__esm이 아님)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
-    // module.exports가 래핑 내부에 유지되어야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
 }
 
 test "CJS: TS import type does not make CJS module ESM" {
-    // TypeScript import type도 동일하게 type-only
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import lib from './lib.js';\nconsole.log(lib);");
@@ -1512,9 +1504,7 @@ test "CJS: TS import type does not make CJS module ESM" {
     );
     try writeFile(tmp.dir, "types.js", "export type Foo = string;");
 
-    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(dp);
-    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
     var cache = ResolveCache.init(std.testing.allocator, .{});
