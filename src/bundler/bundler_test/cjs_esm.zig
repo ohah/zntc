@@ -1430,3 +1430,107 @@ test "TLA: for_await_of_statement detected via AST tag" {
     // codegen이 for await of를 올바르게 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for await") != null);
 }
+
+// ============================================================
+// Regression: Flow type-only import must not affect CJS detection
+// ============================================================
+
+test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
+    // react-native/index.js 패턴: Flow `import typeof` + module.exports
+    // import typeof는 type-only → 트랜스파일 시 제거 → CJS로 감지되어야 함
+    // 버그: has_module_syntax가 type-only import에서도 설정되어 ESM으로 오판
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './rn.js';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "rn.js",
+        \\import typeof Foo from './types.js';
+        \\const warnOnce = require('./warn.js');
+        \\module.exports = { get View() { return 'View'; } };
+    );
+    try writeFile(tmp.dir, "types.js", "export type Foo = string;");
+    try writeFile(tmp.dir, "warn.js", "module.exports = function() {};");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.flow = true;
+    try graph.build(&.{entry});
+
+    // rn.js는 CJS로 감지되어야 함 (import typeof는 type-only)
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "rn.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "CJS: Flow import typeof with module.exports produces __commonJS wrapper" {
+    // 번들 출력에서 __commonJS 래핑이 사용되는지 확인 (런타임 에러 방지)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './rn.js';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "rn.js",
+        \\import typeof * as API from './types.js';
+        \\module.exports = { value: 42 };
+    );
+    try writeFile(tmp.dir, "types.js", "export type API = {};");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .flow = true });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __commonJS로 래핑되어야 함 (__esm이 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    // module.exports가 래핑 내부에 유지되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
+test "CJS: TS import type does not make CJS module ESM" {
+    // TypeScript import type도 동일하게 type-only
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.js';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.js",
+        \\import type { Foo } from './types.js';
+        \\module.exports = { value: 1 };
+    );
+    try writeFile(tmp.dir, "types.js", "export type Foo = string;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "lib.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
