@@ -1772,29 +1772,10 @@ pub fn main() !void {
                                     }
                                 }
                                 try stdout.print("]", .{});
+                            } else {
+                                // 코드 변경 없음 → 빈 updates 배열 (번개가 reload하지 않도록)
+                                try stdout.print(",\"updates\":[]", .{});
                             }
-                            // changed_count == 0: 코드 변경 없음 → 이벤트 미발송 (무시)
-                        }
-
-                        // 캐시 업데이트
-                        {
-                            var it = module_code_cache.iterator();
-                            while (it.next()) |entry| {
-                                allocator.free(entry.key_ptr.*);
-                                allocator.free(entry.value_ptr.*);
-                            }
-                            module_code_cache.clearRetainingCapacity();
-                        }
-                        for (dev_codes) |dc| {
-                            const id_copy = allocator.dupe(u8, dc.id) catch continue;
-                            const code_copy = allocator.dupe(u8, dc.code) catch {
-                                allocator.free(id_copy);
-                                continue;
-                            };
-                            module_code_cache.put(id_copy, code_copy) catch {
-                                allocator.free(id_copy);
-                                allocator.free(code_copy);
-                            };
                         }
 
                         // 캐시 업데이트
