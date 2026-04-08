@@ -55,9 +55,11 @@ ZTS 56.9ms vs rolldown 60ms (**0.95배, ZTS가 빠름**).
 
 ~~**배치 E (S급 일괄)**~~ — ✅ 완료 (CLI 옵션 13개: outbase, packages=external, drop-labels, pure, line-limit 등)
 
-**CSS 번들링** — XL (1주+)
-- 현재 플러그인 위임 (`--loader:.css=text` 또는 PostCSS/Lightning CSS 플러그인)
-- 자체 CSS 파서 (Zig 네이티브 `@import` 해석, CSS Modules)
+**CSS 번들링** — 플러그인으로 사용 가능, 자체 파서는 후순위
+- ✅ 현재 가능: Lightning CSS / PostCSS를 JS 플러그인(`--plugin`)으로 연결하여 CSS 처리
+- 후순위: 자체 CSS 파서 (Zig 네이티브 `@import` 그래프 통합, CSS tree-shaking, CSS Modules)
+- 자체 파서가 필요한 이유: subprocess IPC 왕복 비용 제거 + `@import` 체인을 모듈 그래프에 통합
+- 대부분의 프로젝트는 Lightning CSS 플러그인으로 충분
 
 **플러그인 3단계 (N-API)** — XL (2~3주)
 - 현재 subprocess IPC만 (매 모듈마다 JSON 왕복 — 느림)
@@ -280,7 +282,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 | 항목 | 난이도 | 현재 상태 | 설명 |
 |------|--------|----------|------|
-| **CSS 번들링** | XL (1주+) | 플러그인 위임 | 자체 CSS 파서, `@import` 해석, CSS Modules. 없으면 웹 프로젝트 사용 불가 |
+| **CSS 번들링 (자체 파서)** | XL (1주+) | Lightning CSS 플러그인으로 사용 가능 | 자체 Zig 파서는 성능 최적화 목적. 대부분 플러그인으로 충분 |
 | **npm 배포** | L | 로컬 빌드만 | `npm install zts`로 설치. cross-platform prebuilt binary (macOS/Linux/Windows arm64/x64) |
 | **CI 크로스 플랫폼** | M | 없음 | GitHub Actions: Linux/macOS/Windows × arm64/x64 빌드+테스트 |
 | **릴리즈 자동화** | M | 없음 | 태그 push → 바이너리 빌드 → npm publish → GitHub Release |
