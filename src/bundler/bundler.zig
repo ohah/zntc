@@ -588,24 +588,24 @@ pub const Bundler = struct {
         // react-refresh/runtime을 polyfill(번들 맨 앞)로 주입하여
         // React reconciler 로드 전에 injectIntoGlobalHook 실행.
         if (self.options.dev_mode and self.options.react_refresh) blk: {
-            const resolve_cache = self.getResolveCache();
+            // entry 디렉토리에서 node_modules/react-refresh를 직접 탐색
             const entry_dir = if (self.options.entry_points.len > 0)
                 std.fs.path.dirname(self.options.entry_points[0]) orelse "."
             else
                 ".";
-            const resolve_result = resolve_cache.resolve(
-                entry_dir,
-                "react-refresh/cjs/react-refresh-runtime.development.js",
-                .require,
-            ) catch {
-                std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
-                break :blk;
+            const dev_path = "node_modules/react-refresh/cjs/react-refresh-runtime.development.js";
+            // entry_dir/node_modules 또는 CWD/node_modules에서 탐색
+            const raw = blk2: {
+                // entry_dir 기준
+                const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
+                defer self.allocator.free(full_path);
+                if (std.fs.cwd().readFileAlloc(self.allocator, full_path, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                // CWD 기준
+                break :blk2 std.fs.cwd().readFileAlloc(self.allocator, dev_path, 1024 * 1024) catch {
+                    std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
+                    break :blk;
+                };
             };
-            const resolved_path = resolve_result orelse {
-                std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
-                break :blk;
-            };
-            const raw = std.fs.cwd().readFileAlloc(self.allocator, resolved_path.path, 1024 * 1024) catch break :blk;
             const preamble =
                 "(function(){" ++
                 "var exports = {};" ++
