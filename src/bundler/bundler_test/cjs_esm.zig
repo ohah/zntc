@@ -1524,3 +1524,61 @@ test "CJS: TS import type does not make CJS module ESM" {
     }
     try std.testing.expect(found);
 }
+
+test "CJS: export type re-export + module.exports stays CJS (regression)" {
+    // ReactNativePrivateInterface.js 패턴: export type { ... } from + module.exports
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './rn-private.js';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "rn-private.js",
+        \\export type { Foo } from './types.js';
+        \\module.exports = { get BatchedBridge() { return require('./bridge.js'); } };
+    );
+    try writeFile(tmp.dir, "types.js", "export type Foo = string;");
+    try writeFile(tmp.dir, "bridge.js", "module.exports = {};");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "rn-private.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "CJS: Flow export type alias + module.exports stays CJS (regression)" {
+    // export type Foo = ... (type alias) + module.exports
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './mod.js';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "mod.js",
+        \\import typeof Foo from './types.js';
+        \\export type Bar = ReturnType<Foo>;
+        \\module.exports = { value: 42 };
+    );
+    try writeFile(tmp.dir, "types.js", "export type Foo = string;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .flow = true });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
