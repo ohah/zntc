@@ -149,12 +149,10 @@ pub const SourceMapBuilder = struct {
         try self.buf.appendSlice(self.allocator, self.source_root);
         try self.buf.appendSlice(self.allocator, "\",\"sources\":[");
 
-        // sources 배열
+        // sources 배열 (JSON 문자열 이스케이프 — \0 등 제어 문자 처리)
         for (self.sources.items, 0..) |src, i| {
             if (i > 0) try self.buf.append(self.allocator, ',');
-            try self.buf.append(self.allocator, '"');
-            try self.buf.appendSlice(self.allocator, src);
-            try self.buf.append(self.allocator, '"');
+            try self.appendJsonString(src);
         }
 
         try self.buf.appendSlice(self.allocator, "],\"names\":[],\"mappings\":\"");
