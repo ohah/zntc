@@ -666,10 +666,15 @@ pub const ModuleGraph = struct {
         var module = &self.modules.items[mod_idx];
         module.state = .parsing;
 
+        // Plugin runner: parseModule 내에서 load + transform 훅에 공용
+        const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
+            plugin_mod.PluginRunner.init(self.plugins)
+        else
+            null;
+
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
-        if (self.plugins.len > 0) {
-            const runner = plugin_mod.PluginRunner.init(self.plugins);
+        if (plugin_runner) |runner| {
             // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
             var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
             const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
@@ -787,8 +792,7 @@ pub const ModuleGraph = struct {
         // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
         // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
         // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
-        if (self.plugins.len > 0) {
-            const runner = plugin_mod.PluginRunner.init(self.plugins);
+        if (plugin_runner) |runner| {
             const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
                 error.PluginFailed => null,
                 error.OutOfMemory => {
