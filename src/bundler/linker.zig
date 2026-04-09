@@ -182,6 +182,10 @@ pub const Linker = struct {
     /// 모듈 변수로 사용하지 않도록 리네이밍.
     global_identifiers: []const []const u8 = &.{},
 
+    /// dev mode: HMR용 모듈 참조를 __zts_modules["id"].fn()으로 생성.
+    /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
+    dev_mode: bool = false,
+
     /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
     shim_missing_exports: bool = false,
 

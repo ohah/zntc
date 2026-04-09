@@ -577,6 +577,7 @@ pub const Bundler = struct {
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
+            l.dev_mode = self.options.dev_mode;
             try l.link();
             if (!self.options.code_splitting) {
                 try l.computeRenames();
