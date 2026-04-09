@@ -81,7 +81,7 @@ describe("Plugin: subprocess", () => {
           name: 'banner',
           transform(code, id) {
             if (!id.endsWith('.ts')) return null;
-            return '/* BANNER */\\n' + code;
+            return 'var __BANNER__ = true;\\n' + code;
           }
         }] });
       `,
@@ -96,7 +96,7 @@ describe("Plugin: subprocess", () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("/* BANNER */");
+      expect(result.stdout).toContain("__BANNER__");
     } finally {
       await cleanup();
     }
@@ -157,7 +157,7 @@ describe("Plugin: subprocess", () => {
           name: 'banner',
           transform(code, id) {
             if (!id.endsWith('.ts')) return null;
-            return '/* MULTI-PLUGIN */\\n' + code;
+            return 'var __MULTI_PLUGIN__ = true;\\n' + code;
           }
         }] });
       `,
@@ -175,7 +175,7 @@ describe("Plugin: subprocess", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("h1 { font-size: 24px; }");
-      expect(result.stdout).toContain("/* MULTI-PLUGIN */");
+      expect(result.stdout).toContain("__MULTI_PLUGIN__");
     } finally {
       await cleanup();
     }
@@ -278,7 +278,7 @@ describe("Plugin: subprocess", () => {
           name: 'plugin-a',
           transform(code, id) {
             if (!id.endsWith('.ts')) return null;
-            return '/* FROM_A */\\n' + code;
+            return 'var __FROM_A__ = true;\\n' + code;
           }
         }] });
       `,
@@ -288,7 +288,7 @@ describe("Plugin: subprocess", () => {
           name: 'plugin-b',
           transform(code, id) {
             if (!id.endsWith('.ts')) return null;
-            return '/* FROM_B */\\n' + code;
+            return 'var __FROM_B__ = true;\\n' + code;
           }
         }] });
       `,
@@ -305,8 +305,8 @@ describe("Plugin: subprocess", () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("FROM_A");
-      expect(result.stdout).toContain("FROM_B");
+      expect(result.stdout).toContain("__FROM_A__");
+      expect(result.stdout).toContain("__FROM_B__");
     } finally {
       await cleanup();
     }
@@ -456,7 +456,7 @@ describe("Plugin: auto config detection", () => {
           name: 'ts-banner',
           transform(code: string, id: string) {
             if (!id.endsWith('.ts') || id.includes('zts.config')) return null;
-            return '/* TS-CONFIG */\\n' + code;
+            return 'var __TS_CONFIG__ = true;\\n' + code;
           }
         }] });
       `,
@@ -467,7 +467,7 @@ describe("Plugin: auto config detection", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toContain("Using config: zts.config.ts");
-      expect(result.stdout).toContain("/* TS-CONFIG */");
+      expect(result.stdout).toContain("__TS_CONFIG__");
     } finally {
       await cleanup();
     }
@@ -481,14 +481,14 @@ describe("Plugin: auto config detection", () => {
         import { defineConfig } from '${CORE_PATH}';
         defineConfig({ plugins: [{
           name: 'should-not-load',
-          transform(code) { return '/* AUTO */\\n' + code; }
+          transform(code) { return 'var __AUTO__ = true;\\n' + code; }
         }] });
       `,
       "custom.js": `
         import { defineConfig } from '${CORE_PATH}';
         defineConfig({ plugins: [{
           name: 'custom',
-          transform(code) { return '/* CUSTOM */\\n' + code; }
+          transform(code) { return 'var __CUSTOM__ = true;\\n' + code; }
         }] });
       `,
     });
@@ -498,8 +498,8 @@ describe("Plugin: auto config detection", () => {
       const result = await runZtsInDir(dir, ["--bundle", "entry.ts", "--plugin", "custom.js"]);
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("/* CUSTOM */");
-      expect(result.stdout).not.toContain("/* AUTO */");
+      expect(result.stdout).toContain("__CUSTOM__");
+      expect(result.stdout).not.toContain("__AUTO__");
     } finally {
       await cleanup();
     }
