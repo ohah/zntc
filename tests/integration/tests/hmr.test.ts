@@ -235,4 +235,85 @@ describe("HMR 통합 테스트", () => {
     expect(testOut).toContain("PASS");
     expect(testOut).toContain("modules registered");
   });
+
+  test("__zts_apply_update 후 __esm factory가 재실행되어 exports가 업데이트된다", async () => {
+    // HMR의 핵심 계약 검증: eval → entry.fn() → exports 업데이트
+    const fixture = await createFixture({
+      "App.tsx": `export default function App() { return "v1"; }`,
+      "index.tsx": `import App from "./App";\nconsole.log(App());`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.tsx"), "-o", outFile, "--dev"]);
+    const bundleCode = readFileSync(outFile, "utf-8");
+
+    // __zts_apply_update의 entry.fn() 호출을 합성 모듈로 검증
+    const testScript = join(fixture.dir, "hmr_fn_test.js");
+    writeFileSync(
+      testScript,
+      `
+      // 번들 로드 (HMR 런타임 + 모듈 등록)
+      ${bundleCode}
+
+      var g = globalThis;
+      var modules = g.__zts_modules;
+      var appId = Object.keys(modules).find(k => k.includes("App"));
+      if (!appId) { console.error("FAIL: App module not found"); process.exit(1); }
+
+      // v1 확인
+      var entry = modules[appId];
+      if (!entry || !entry.exports) { console.error("FAIL: no exports"); process.exit(1); }
+      var v1 = entry.exports.default();
+      if (v1 !== "v1") { console.error("FAIL: v1 expected, got " + v1); process.exit(1); }
+
+      // __zts_apply_update가 entry.fn()을 호출하는지 검증:
+      // 합성 per-module IIFE를 만들어 v2 exports로 업데이트.
+      // 모듈 key는 번들에서 사용된 실제 ID와 일치해야 함.
+      var updateCode = "(function(){" +
+        "var __zts_g=typeof globalThis!=='undefined'?globalThis:global;" +
+        "var __esm=__zts_g.__esm,__export=__zts_g.__export,__zts_modules=__zts_g.__zts_modules," +
+        "__zts_make_hot=__zts_g.__zts_make_hot,__zts_resolveRefresh=__zts_g.__zts_resolveRefresh||function(){return null}," +
+        "__zts_isReactRefreshBoundary=__zts_g.__zts_isReactRefreshBoundary," +
+        "__zts_enqueueUpdate=__zts_g.__zts_enqueueUpdate,__zts_reload=__zts_g.__zts_reload;" +
+        "var exports_App = {};" +
+        "var init_App = __esm({" +
+        "  '" + appId + "'() {" +
+        "    __export(exports_App, { default: () => App });" +
+        "    function App() { return 'v2'; }" +
+        "  }" +
+        "}, void 0, exports_App);" +
+        "})();";
+
+      // accept 콜백 등록 (HMR이 full-reload 대신 accept하도록)
+      g.__zts_make_hot(appId).accept(true);
+
+      g.__zts_apply_update([{ id: appId, code: updateCode }]);
+
+      // entry.fn()이 호출되었으면 exports가 업데이트됨
+      var entry2 = modules[appId];
+      if (!entry2 || !entry2.exports) { console.error("FAIL: no exports after update"); process.exit(1); }
+      var v2 = entry2.exports.default();
+      if (v2 !== "v2") { console.error("FAIL: v2 expected, got " + v2); process.exit(1); }
+
+      console.log("PASS: entry.fn() called — v1=" + v1 + " → v2=" + v2);
+    `,
+    );
+
+    const run = spawn({ cmd: ["bun", "run", testScript], stdout: "pipe", stderr: "pipe" });
+    const [stdout, _stderr, exitCode] = await Promise.all([
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+      run.exited,
+    ]);
+
+    if (exitCode !== 0) {
+      console.error("Test stderr:", _stderr);
+      console.error("Test stdout:", stdout);
+    }
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("PASS");
+    expect(stdout).toContain("v1=v1");
+    expect(stdout).toContain("v2=v2");
+  });
 });
