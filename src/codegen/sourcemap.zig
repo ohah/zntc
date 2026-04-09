@@ -94,6 +94,9 @@ pub const SourceMapBuilder = struct {
     /// Sentry Debug ID. non-null이면 JSON에 "debugId" 필드를 추가한다.
     /// UUID v4 문자열 (예: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx").
     debug_id: ?[]const u8 = null,
+    /// x_google_ignoreList: DevTools에서 무시할 소스 인덱스 목록.
+    /// 폴리필, node_modules 등 프레임워크 코드를 자동으로 스킵하도록 한다.
+    ignored_sources: std.ArrayList(u32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
@@ -109,7 +112,13 @@ pub const SourceMapBuilder = struct {
         self.mappings.deinit(self.allocator);
         self.sources.deinit(self.allocator);
         self.source_contents.deinit(self.allocator);
+        self.ignored_sources.deinit(self.allocator);
         self.buf.deinit(self.allocator);
+    }
+
+    /// 소스를 x_google_ignoreList에 추가. DevTools가 해당 소스의 프레임을 스킵한다.
+    pub fn addIgnoredSource(self: *SourceMapBuilder, source_index: u32) !void {
+        try self.ignored_sources.append(self.allocator, source_index);
     }
 
     /// 소스 파일 추가. 인덱스를 반환.
@@ -169,6 +178,19 @@ pub const SourceMapBuilder = struct {
                 if (i > 0) try self.buf.append(self.allocator, ',');
                 // JSON 문자열로 이스케이프
                 try self.appendJsonString(content);
+            }
+            try self.buf.append(self.allocator, ']');
+        }
+
+        // x_google_ignoreList (DevTools 프레임 스킵용)
+        if (self.ignored_sources.items.len > 0) {
+            try self.buf.appendSlice(self.allocator, ",\"x_google_ignoreList\":[");
+            for (self.ignored_sources.items, 0..) |idx, i| {
+                if (i > 0) try self.buf.append(self.allocator, ',');
+                // u32를 10진수 문자열로 변환
+                var num_buf: [10]u8 = undefined;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{idx}) catch "0";
+                try self.buf.appendSlice(self.allocator, num_str);
             }
             try self.buf.append(self.allocator, ']');
         }
