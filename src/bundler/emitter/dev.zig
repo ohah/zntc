@@ -520,5 +520,13 @@ pub fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
         if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
         if (rel.len > 0) return rel;
     }
+
+    // root_dir 밖의 경로 (monorepo node_modules 등):
+    // 공통 prefix를 찾아 ../로 시작하는 상대 경로 생성 대신,
+    // 절대 경로에서 node_modules 이후 부분만 추출
+    if (std.mem.indexOf(u8, path, "/node_modules/")) |nm_pos| {
+        return path[nm_pos + 1 ..]; // "node_modules/..." 반환
+    }
+
     return path;
 }
