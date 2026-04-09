@@ -853,7 +853,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
             .l_paren => {
                 // super() 호출은 constructor에서만 허용
                 if (self.ast.getNode(expr).tag == .super_expression and !self.allow_super_call) {
-                    try self.addError(self.ast.getNode(expr).span, "'super()' is only allowed in a class constructor");
+                    try self.addErrorCode(self.ast.getNode(expr).span, "'super()' is only allowed in a class constructor", .super_call_outside_constructor);
                 }
                 // 함수 호출
                 try self.advance();
@@ -1329,7 +1329,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // allow_super_property는 메서드 진입 시 true, 일반 함수 진입 시 false로 리셋
             // arrow function은 외부의 allow_super_property를 상속
             if (!self.allow_super_property and !self.allow_super_call) {
-                try self.addErrorCode(span, "'super' is not allowed outside of a method", .private_super_access);
+                try self.addErrorCode(span, "'super' is not allowed outside of a method", .super_outside_method);
             }
             try self.advance();
             return try self.ast.addNode(.{

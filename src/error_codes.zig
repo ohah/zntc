@@ -112,6 +112,8 @@ pub const Code = enum(u16) {
     private_rhs_in = 604,
     private_delete = 605,
     private_super_access = 606,
+    super_outside_method = 620,
+    super_call_outside_constructor = 621,
     tagged_template_optional = 607,
     property_key_expected = 608,
     property_colon_expected = 609,
@@ -199,8 +201,6 @@ pub const Code = enum(u16) {
     proto_duplicate = 1301,
     getter_no_params = 1302,
     setter_one_param = 1303,
-    checker_duplicate_param = 1304,
-    checker_private_redeclared = 1305,
 
     /// 에러 코드를 "ZTS0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -283,6 +283,8 @@ pub const Code = enum(u16) {
             .private_rhs_in => "Private name is not valid as right-hand side of 'in' expression",
             .private_delete => "Private fields cannot be deleted",
             .private_super_access => "Private field access on super is not allowed",
+            .super_outside_method => "'super' is not allowed outside of a method",
+            .super_call_outside_constructor => "'super()' is only allowed in a class constructor",
             .tagged_template_optional => "Tagged template cannot be used in optional chain",
             .property_key_expected => "Property key expected",
             .property_colon_expected => "Expected ':' after property key",
@@ -349,8 +351,6 @@ pub const Code = enum(u16) {
             .proto_duplicate => "Property name __proto__ appears more than once in object literal",
             .getter_no_params => "Getter must not have any formal parameters",
             .setter_one_param => "Setter must have exactly one formal parameter",
-            .checker_duplicate_param => "Duplicate parameter name",
-            .checker_private_redeclared => "Private field has already been declared",
         };
     }
 };

@@ -983,14 +983,6 @@ pub const SemanticAnalyzer = struct {
         try self.addErrorMsgCode(span, try std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}), .private_undeclared);
     }
 
-    fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) AllocError!void {
-        try self.errors.append(self.allocator, .{
-            .span = span,
-            .message = msg,
-            .kind = .semantic,
-        });
-    }
-
     fn addErrorMsgCode(self: *SemanticAnalyzer, span: Span, msg: []const u8, code: ErrorCode) AllocError!void {
         try self.errors.append(self.allocator, .{
             .span = span,
