@@ -84,7 +84,15 @@ export default defineConfig({
         {
           label: "레퍼런스",
           translations: { en: "Reference" },
-          autogenerate: { directory: "reference" },
+          items: [
+            { label: "CLI", slug: "reference/cli", translations: { en: "CLI" } },
+            { label: "벤치마크", slug: "reference/benchmarks", translations: { en: "Benchmarks" } },
+            {
+              label: "에러 코드",
+              translations: { en: "Error Codes" },
+              autogenerate: { directory: "reference/errors" },
+            },
+          ],
         },
         typeDocSidebarGroup,
         {
