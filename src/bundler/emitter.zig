@@ -548,7 +548,6 @@ pub fn emitWithTreeShaking(
 
 // --- Dev mode utilities (emitter/dev.zig) ---
 const dev = @import("emitter/dev.zig");
-pub const DevBundleResult = dev.DevBundleResult;
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
 
@@ -920,19 +919,8 @@ pub fn emitModule(
         }
     }
 
-    // Plugin: transform 훅 — codegen 직후, CJS 래핑 전
-    // 플러그인 결과를 arena로 복사하여 emit_arena와 같은 생명주기 보장
-    if (options.plugins.len > 0) {
-        const runner = plugin_mod.PluginRunner.init(options.plugins);
-        const transform_result = runner.runTransform(code, module.path, allocator) catch |err| switch (err) {
-            error.PluginFailed => null,
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        if (transform_result) |result| {
-            code = try arena_alloc.dupe(u8, result);
-            allocator.free(result);
-        }
-    }
+    // Plugin: transform 훅은 graph.zig에서 파싱 전에 호출 (Rolldown 호환).
+    // emitModule에서는 중복 호출하지 않는다.
 
     // keepNames: codegen이 generate() 내에서 직접 __name() 호출을 buf에 append.
     // entries가 있으면 런타임 헬퍼 플래그만 설정.
