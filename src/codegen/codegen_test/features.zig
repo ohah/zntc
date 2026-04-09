@@ -260,10 +260,27 @@ test "Codegen: import namespace" {
 }
 
 test "Codegen: export named" {
-    // export_specifier uses writeNodeSpan which preserves trailing space from source
     var r = try e2e(std.testing.allocator, "export { a, b };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export {a,b };", r.output);
+    try std.testing.expectEqualStrings("export {a,b};", r.output);
+}
+
+test "Codegen: export named (non-minify)" {
+    var r = try e2eWithOptions(std.testing.allocator, "export { a, b };", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export { a, b };\n", r.output);
+}
+
+test "Codegen: export named alias (non-minify)" {
+    var r = try e2eWithOptions(std.testing.allocator, "export { a as b };", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export { a as b };\n", r.output);
+}
+
+test "Codegen: import named (non-minify)" {
+    var r = try e2eWithOptions(std.testing.allocator, "import { a, b } from './foo';", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("import { a, b } from \"./foo\";\n", r.output);
 }
 
 test "Codegen: export default function" {

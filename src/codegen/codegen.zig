@@ -731,7 +731,7 @@ pub const Codegen = struct {
             .export_named_declaration => try self.emitExportNamed(node),
             .export_default_declaration => try self.emitExportDefault(node),
             .export_all_declaration => try self.emitExportAll(node),
-            .export_specifier => try self.writeNodeSpan(node),
+            .export_specifier => try self.emitExportSpecifier(node),
 
             // Formal parameters
             .formal_parameters, .function_body => try self.emitList(node, ", "),
@@ -2121,19 +2121,22 @@ pub const Codegen = struct {
 
         // 2단계: named specifiers를 { } 감싸서 출력
         if (has_named) {
-            if (!first) try self.write(",");
+            if (!first) try self.write(", ");
             try self.writeByte('{');
+            if (!self.options.minify_whitespace) try self.writeByte(' ');
+            const sep: []const u8 = if (self.options.minify_whitespace) "," else ", ";
             var named_first = true;
             for (spec_indices) |raw_idx| {
                 const spec: NodeIndex = @enumFromInt(raw_idx);
                 if (spec.isNone()) continue;
                 const spec_node = self.ast.getNode(spec);
                 if (spec_node.tag == .import_specifier) {
-                    if (!named_first) try self.write(",");
+                    if (!named_first) try self.write(sep);
                     try self.emitImportSpecifierRename(spec_node, " as ");
                     named_first = false;
                 }
             }
+            if (!self.options.minify_whitespace) try self.writeByte(' ');
             try self.writeByte('}');
         }
     }
@@ -2311,13 +2314,35 @@ pub const Codegen = struct {
             try self.emitNode(decl);
         } else {
             try self.writeByte('{');
-            try self.emitNodeList(specs_start, specs_len, ",");
+            if (self.options.minify_whitespace) {
+                try self.emitNodeList(specs_start, specs_len, ",");
+            } else {
+                try self.writeByte(' ');
+                try self.emitNodeList(specs_start, specs_len, ", ");
+                try self.writeByte(' ');
+            }
             try self.writeByte('}');
             if (!source.isNone()) {
                 try self.write(" from ");
                 try self.emitNode(source);
             }
             try self.writeByte(';');
+        }
+    }
+
+    /// ESM export specifier: `foo` 또는 `foo as bar`
+    /// writeNodeSpan 대신 사용 — 원본 span에 공백이 포함될 수 있으므로 구조적으로 출력.
+    fn emitExportSpecifier(self: *Codegen, node: Node) !void {
+        const local_idx = node.data.binary.left;
+        const exported_idx = node.data.binary.right;
+        const local_node = self.ast.getNode(local_idx);
+        const exported_node = self.ast.getNode(exported_idx);
+        const local_text = self.ast.getText(local_node.span);
+        const exported_text = self.ast.getText(exported_node.span);
+        try self.write(local_text);
+        if (!std.mem.eql(u8, local_text, exported_text)) {
+            try self.write(" as ");
+            try self.write(exported_text);
         }
     }
 
