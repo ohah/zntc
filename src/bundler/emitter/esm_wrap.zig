@@ -676,16 +676,40 @@ pub fn emitEsmWrappedModule(
     {
         const hm = hoist_mappings orelse &[_]SourceMap.Mapping{};
         const bm = if (body_cg.sm_builder) |*sm| sm.mappings.items else &[_]SourceMap.Mapping{};
+        const all_maps = [_][]const SourceMap.Mapping{ hm, bm };
+        const line_offsets = [_]u32{ hoist_preamble_lines, body_preamble_lines };
         const total = hm.len + bm.len;
         if (total > 0) {
-            const buf = try allocator.alloc(SourceMap.Mapping, total);
-            for (hm, 0..) |m, i| {
-                buf[i] = .{ .generated_line = m.generated_line + hoist_preamble_lines, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
+            // 각 줄의 첫 매핑이 column 0이 아니면, column 0 매핑을 추가.
+            // DevTools가 col 0으로 소스맵을 역참조할 때 올바른 줄을 반환하도록.
+            var col0_count: usize = 0;
+            for (all_maps, line_offsets) |maps, offset| {
+                var prev_gl: u32 = std.math.maxInt(u32);
+                for (maps) |m| {
+                    const gl = m.generated_line + offset;
+                    if (gl != prev_gl) {
+                        if (m.generated_column > 0) col0_count += 1;
+                        prev_gl = gl;
+                    }
+                }
             }
-            for (bm, 0..) |m, i| {
-                buf[hm.len + i] = .{ .generated_line = m.generated_line + body_preamble_lines, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
+
+            const buf = try allocator.alloc(SourceMap.Mapping, total + col0_count);
+            var wi: usize = 0;
+            for (all_maps, line_offsets) |maps, offset| {
+                var prev_gl: u32 = std.math.maxInt(u32);
+                for (maps) |m| {
+                    const gl = m.generated_line + offset;
+                    if (gl != prev_gl and m.generated_column > 0) {
+                        buf[wi] = .{ .generated_line = gl, .generated_column = 0, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
+                        wi += 1;
+                    }
+                    prev_gl = gl;
+                    buf[wi] = .{ .generated_line = gl, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
+                    wi += 1;
+                }
             }
-            mappings = buf;
+            mappings = buf[0..wi];
         }
     }
 
