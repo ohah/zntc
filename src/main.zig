@@ -1318,7 +1318,7 @@ pub fn main() !void {
             .preserve_modules_root = opts.preserve_modules_root,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
-            .root_dir = if (opts.dev) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
+            .root_dir = if (opts.dev or opts.sourcemap) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
         };
         defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
 
