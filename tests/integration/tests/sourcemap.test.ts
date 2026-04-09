@@ -3,6 +3,57 @@ import { createFixture, runZts } from "./helpers";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
+/** VLQ 디코딩: 소스맵 매핑 세그먼트를 숫자 배열로 변환 */
+function decodeVlq(s: string): number[] {
+  const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const result: number[] = [];
+  let i = 0;
+  while (i < s.length) {
+    let shift = 0,
+      value = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const c = CHARS.indexOf(s[i++]);
+      value += (c & 31) << shift;
+      shift += 5;
+      if (!(c & 32)) break;
+    }
+    result.push(value & 1 ? -(value >> 1) : value >> 1);
+  }
+  return result;
+}
+
+/** 소스맵에서 특정 source index의 매핑된 원본 라인 목록을 추출 */
+function getMappedSourceLines(
+  mappings: string,
+  targetSourceIdx: number,
+): { genLine: number; srcLine: number }[] {
+  const lines = mappings.split(";");
+  let genCol = 0,
+    srcIdx = 0,
+    srcLine = 0,
+    srcCol = 0;
+  const result: { genLine: number; srcLine: number }[] = [];
+  for (let gn = 0; gn < lines.length; gn++) {
+    if (!lines[gn]) continue;
+    genCol = 0;
+    for (const seg of lines[gn].split(",")) {
+      if (!seg) continue;
+      const vals = decodeVlq(seg);
+      genCol += vals[0];
+      if (vals.length >= 4) {
+        srcIdx += vals[1];
+        srcLine += vals[2];
+        srcCol += vals[3];
+        if (srcIdx === targetSourceIdx) {
+          result.push({ genLine: gn + 1, srcLine: srcLine + 1 });
+        }
+      }
+    }
+  }
+  return result;
+}
+
 describe("소스맵", () => {
   let cleanup: (() => Promise<void>) | undefined;
 
@@ -155,5 +206,100 @@ describe("소스맵", () => {
     expect(map.sourcesContent.length).toBe(2);
     const allContent = map.sourcesContent.join("\n");
     expect(allContent).toContain("function greet");
+  });
+
+  test("sources 경로가 상대 경로여야 한다 (절대 경로 금지)", async () => {
+    // cwd 하위에 fixture를 만들어야 root_dir prefix가 제거됨
+    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
+    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-test-"));
+    cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
+
+    wfs(join(tmpDir, "index.ts"), `import { x } from "./lib";\nconsole.log(x);`);
+    wfs(join(tmpDir, "lib.ts"), `export const x = 42;`);
+
+    const outFile = join(tmpDir, "out.js");
+    await runZts(["--bundle", join(tmpDir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+
+    for (const source of map.sources) {
+      expect(source.startsWith("/")).toBe(false);
+    }
+  });
+
+  test("매핑 줄 번호가 번들 줄 수를 초과하지 않는다 (prologue 오프셋 검증)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import { greet } from "./util";\nconsole.log(greet("world"));`,
+      "util.ts": `export function greet(name: string) {\n  return "hello " + name;\n}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const bundleLines = readFileSync(outFile, "utf-8").split("\n").length;
+
+    // 매핑의 줄 수가 번들 줄 수 이하여야 한다 (2배 되면 prologue 오프셋 버그)
+    const mappingLineCount = map.mappings.split(";").length;
+    expect(mappingLineCount).toBeLessThanOrEqual(bundleLines + 1);
+  });
+
+  test("ESM 래핑 모듈(RN)의 호이스팅 함수가 소스맵에 매핑된다", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import { greet } from "./lib";\nconsole.log(greet("test"));`,
+      "lib.ts": [
+        `export function greet(name: string) {`,
+        `  console.log("greeting:", name);`,
+        `  return "hello " + name;`,
+        `}`,
+        ``,
+        `export const VERSION = "1.0";`,
+      ].join("\n"),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap",
+      "--platform=react-native",
+    ]);
+    expect(existsSync(outFile + ".map")).toBe(true);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const bundleCode = readFileSync(outFile, "utf-8");
+    const bundleLines = bundleCode.split("\n");
+
+    // lib.ts 소스 인덱스 찾기
+    const libIdx = map.sources.findIndex((s: string) => s.includes("lib.ts"));
+    expect(libIdx).toBeGreaterThanOrEqual(0);
+
+    // lib.ts에 대한 매핑 추출
+    const libMappings = getMappedSourceLines(map.mappings, libIdx);
+    expect(libMappings.length).toBeGreaterThan(0);
+
+    // greet 함수는 ESM 래핑에서 호이스팅됨 — 함수 body (line 2: console.log)가 매핑되어야 함
+    const mappedSrcLines = new Set(libMappings.map((m) => m.srcLine));
+    // line 1: function greet, line 2: console.log, line 3: return
+    expect(mappedSrcLines.has(1) || mappedSrcLines.has(2)).toBe(true);
+
+    // 매핑된 번들 줄이 실제 번들 범위 내에 있어야 한다
+    for (const m of libMappings) {
+      expect(m.genLine).toBeLessThanOrEqual(bundleLines.length);
+    }
+
+    // 매핑된 번들 줄에 실제 greet 관련 코드가 있어야 한다
+    const greetMappings = libMappings.filter((m) => m.srcLine <= 4);
+    expect(greetMappings.length).toBeGreaterThan(0);
+    const greetBundleLine = bundleLines[greetMappings[0].genLine - 1] || "";
+    expect(
+      greetBundleLine.includes("greet") ||
+        greetBundleLine.includes("function") ||
+        greetBundleLine.includes("console"),
+    ).toBe(true);
   });
 });
