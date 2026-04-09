@@ -386,7 +386,7 @@ pub fn emitWithTreeShaking(
             if (results[i].mappings) |maps| {
                 try addModuleMappings(
                     sm,
-                    makeModuleId(m.path, options.root_dir),
+                    sourcemapSourcePath(m.path, options),
                     m.source,
                     maps,
                     module_line,
@@ -529,6 +529,13 @@ const dev = @import("emitter/dev.zig");
 pub const DevBundleResult = dev.DevBundleResult;
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
+
+/// 소스맵 sources 배열에 사용할 경로를 반환.
+/// RN 플랫폼은 Metro 호환 절대 경로, 다른 플랫폼은 root_dir 기준 상대 경로.
+pub fn sourcemapSourcePath(path: []const u8, options: EmitOptions) []const u8 {
+    if (options.platform == .react_native) return path;
+    return makeModuleId(path, options.root_dir);
+}
 
 // --- Chunks functions (emitter/chunks.zig) ---
 const chunks = @import("emitter/chunks.zig");
@@ -865,7 +872,7 @@ pub fn emitModule(
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
         cg.line_offsets = module.line_offsets;
-        try cg.addSourceFile(makeModuleId(module.path, options.root_dir));
+        try cg.addSourceFile(sourcemapSourcePath(module.path, options));
     }
     var code = try cg.generate(root);
 
