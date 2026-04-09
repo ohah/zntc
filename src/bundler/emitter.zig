@@ -430,6 +430,10 @@ pub fn emitWithTreeShaking(
     // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
     try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace, options.unsupported.arrow);
 
+    // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
+    // module_output 합류 전에 계산해야 함 — 합류 후에 세면 전체 줄 수가 됨
+    const prologue_lines: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
+
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
 
@@ -475,9 +479,6 @@ pub fn emitWithTreeShaking(
         try output.appendSlice(allocator, footer);
         try output.append(allocator, '\n');
     }
-
-    // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
-    const prologue_lines: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
 
     // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;
