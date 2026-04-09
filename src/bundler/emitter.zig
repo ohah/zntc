@@ -815,7 +815,7 @@ pub fn emitModule(
 
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
     if (module.wrap_kind == .esm) {
-        return try emitEsmWrappedModule(
+        const esm_result = try emitEsmWrappedModule(
             allocator,
             arena_alloc,
             &transformer.ast,
@@ -825,6 +825,11 @@ pub fn emitModule(
             linker,
             options,
         );
+        // ESM 모듈의 소스맵 매핑을 결과에 반영
+        if (mappings_out) |mout| {
+            mout.* = esm_result.mappings;
+        }
+        return esm_result.code;
     }
 
     // Codegen: AST → JS 문자열

@@ -31,6 +31,11 @@ const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
 const appendIndented = parent.appendIndented;
 const appendModuleCall = parent.appendModuleCall;
 
+pub const EsmEmitResult = struct {
+    code: []const u8,
+    mappings: ?[]const SourceMap.Mapping = null,
+};
+
 pub fn emitEsmWrappedModule(
     allocator: std.mem.Allocator,
     arena_alloc: std.mem.Allocator,
@@ -40,7 +45,7 @@ pub fn emitEsmWrappedModule(
     metadata: ?*const LinkingMetadata,
     linker: ?*const Linker,
     options: anytype,
-) ![]const u8 {
+) !EsmEmitResult {
     const basename = module.wrapperId();
 
     const init_name = try types.makeInitVarName(allocator, module.path);
@@ -364,7 +369,15 @@ pub fn emitEsmWrappedModule(
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
         .keep_names = options.keep_names,
+        .sourcemap = options.sourcemap,
+        .source_root = options.source_root orelse "",
+        .sources_content = options.sources_content,
     });
+    // 소스맵: 소스 파일 등록 + line_offsets 설정
+    if (options.sourcemap) {
+        body_cg.line_offsets = module.line_offsets;
+        try body_cg.addSourceFile(parent.makeModuleId(module.path, options.root_dir));
+    }
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
     // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
@@ -638,7 +651,18 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    return try allocator.dupe(u8, wrapped.items);
+    // 소스맵 매핑 수집 (body_cg에서)
+    var mappings: ?[]const SourceMap.Mapping = null;
+    if (body_cg.sm_builder) |*sm| {
+        if (sm.mappings.items.len > 0) {
+            mappings = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+        }
+    }
+
+    return .{
+        .code = try allocator.dupe(u8, wrapped.items),
+        .mappings = mappings,
+    };
 }
 
 /// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
