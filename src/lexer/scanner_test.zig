@@ -127,6 +127,45 @@ test "Scanner: line offset table" {
     try std.testing.expectEqual(@as(u32, 4), scanner.line_offsets.items[2]);
 }
 
+test "Scanner: line offsets with TypeScript type declaration" {
+    // type 선언이 있는 소스에서 line_offsets가 정확한지 검증 (#954)
+    const source =
+        \\import React from "react";
+        \\
+        \\type Props = {
+        \\  name: string;
+        \\};
+        \\
+        \\export function App() {}
+        \\
+    ;
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    while (scanner.token.kind != .eof or scanner.start == 0) {
+        try scanner.next();
+        if (scanner.token.kind == .eof) break;
+    }
+
+    // 줄 수: 8줄 (7 newlines + 마지막 줄)
+    // line 0: import React from "react";
+    // line 1: (empty)
+    // line 2: type Props = {
+    // line 3:   name: string;
+    // line 4: };
+    // line 5: (empty)
+    // line 6: export function App() {}
+    // line 7: (empty trailing)
+    try std.testing.expectEqual(@as(usize, 8), scanner.line_offsets.items.len);
+    try std.testing.expectEqual(@as(u32, 0), scanner.line_offsets.items[0]);
+
+    // 'export function'이 있는 줄의 오프셋 확인
+    const export_offset = scanner.line_offsets.items[6];
+    const src = source;
+    // 해당 오프셋에서 'export'가 시작해야 함
+    try std.testing.expect(std.mem.startsWith(u8, src[export_offset..], "export function"));
+}
+
 test "Scanner: getLineColumn" {
     const source = "ab\ncde\nf";
     var scanner = try Scanner.init(std.testing.allocator, source);

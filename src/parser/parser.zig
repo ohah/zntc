@@ -1738,6 +1738,7 @@ pub const Parser = struct {
         brace_depth: u32,
         prev_token_kind: Kind,
         template_depth_len: usize,
+        line_offsets_len: usize,
     };
 
     pub fn saveState(self: *const Parser) ScannerState {
@@ -1750,6 +1751,7 @@ pub const Parser = struct {
             .brace_depth = self.scanner.brace_depth,
             .prev_token_kind = self.scanner.prev_token_kind,
             .template_depth_len = self.scanner.template_depth_stack.items.len,
+            .line_offsets_len = self.scanner.line_offsets.items.len,
         };
     }
 
@@ -1761,6 +1763,7 @@ pub const Parser = struct {
         self.scanner.line_start = s.line_start;
         self.scanner.brace_depth = s.brace_depth;
         self.scanner.prev_token_kind = s.prev_token_kind;
+        self.scanner.line_offsets.shrinkRetainingCapacity(s.line_offsets_len);
         // template_depth_stack은 lookahead 중 push(grow) 또는 pop(shrink) 가능.
         // pop으로 줄어든 경우 saved 길이가 현재보다 크지만, capacity 내이므로
         // items.len 직접 설정으로 안전하게 복구할 수 있다.

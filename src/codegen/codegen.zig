@@ -580,9 +580,20 @@ pub const Codegen = struct {
             try self.emitComments(node.span.start);
         }
 
-        // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록
+        // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록.
+        // 컨테이너 노드(program, block, function_body)는 자식의 매핑을 오염시키므로 제외.
         if (self.sm_builder != null and node.span.start != node.span.end) {
-            try self.addSourceMapping(node.span);
+            switch (node.tag) {
+                .program,
+                .block_statement,
+                .function_body,
+                .class_body,
+                .static_block,
+                .switch_statement,
+                .try_statement,
+                => {},
+                else => try self.addSourceMapping(node.span),
+            }
         }
 
         switch (node.tag) {
