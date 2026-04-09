@@ -14,7 +14,7 @@
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 143개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.94x, ❌ 0개 | ✅ |
+| Smoke | 131개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.96x, ❌ 0개 | ✅ |
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
@@ -38,18 +38,27 @@
 | 25. ES5 다운레벨 | let→var void 0 초기화, spread string, for-in destructuring, computed destr, super computed | ✅ |
 | 26. compat-table | kangax ES5~ES2022 100% + SWC 비교 29 cases × 9 targets CI | ✅ |
 
-## 번들러 성능 현황 (200모듈, 2026-04-08 실측)
-ZTS 56.9ms vs rolldown 60ms (**0.95배, ZTS가 빠름**).
+## 번들러 성능 현황 (2026-04-10 실측)
 
-| 단계 | ZTS | 비고 |
-|------|-----|------|
-| graph (resolve+parse) | 21.5ms | 파이프라인 + inline scan |
-| link | 7.0ms | scope hoisting + rename |
-| tree-shake | 5.6ms | StmtInfo semantic 사전 구축 |
-| emit | 22.2ms | 모듈별 transform + codegen |
-| **총합** | **56.9ms** | |
+### 합성 벤치마크 (200모듈, CLI 직접 호출)
+| Tool | Avg (ms) | vs fastest |
+|------|----------|------------|
+| **ZTS** | **7** | 1.0x |
+| Bun | 10 | 1.4x |
+| esbuild | 13 | 1.9x |
+| rolldown | 62 | 8.9x |
 
-최근 최적화 (PR #917~#921): tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%)
+### 실제 npm 패키지 (131개 스모크 테스트)
+평균 번들 사이즈 비율: **0.96x** (esbuild 대비 4% 작음). 122/131 케이스에서 ZTS가 더 작음.
+
+주요 실측:
+| 라이브러리 | ZTS | esbuild | rolldown |
+|---|---|---|---|
+| vue (1.6MB) | 29ms | 56ms | 152ms |
+| cheerio (1.7MB) | 37ms | 85ms | 192ms |
+| express (787KB) | 29ms | 63ms | 180ms |
+| react-dom (1.1MB) | 14ms | 13ms | 60ms |
+| rxjs (329KB) | 27ms | 27ms | 88ms |
 
 ## 🔜 다음 우선순위
 
@@ -78,7 +87,7 @@ ZTS 56.9ms vs rolldown 60ms (**0.95배, ZTS가 빠름**).
 
 ## ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
-- **SIMD 추가** — 렉서 공백/식별자 스캔 가속 (parse 10-20% 개선 예상)
+- **SIMD 확장** — 렉서에 `@Vector(16, u8)` 부분 적용 완료 (공백/식별자 스캔). 추가 확장 여지 있음
 - **WASM 공개 AST API** — AST 안정화 후
 
 ## 의존성 관계
@@ -94,7 +103,7 @@ AST 안정화 ──────────────┬──→ WASM 공개
                          ├──→ 배치 E (S급 CLI 옵션 일괄)
                          └──→ ✅ 플러그인 API (1-2단계 완료, N-API 선택적)
 
-독립 (아무 때나): ✅ Flow, ✅ jsx-dev, ✅ using 다운레벨링, ✅ sourcemapDebugIds, SIMD
+독립 (아무 때나): ✅ Flow, ✅ jsx-dev, ✅ using 다운레벨링, ✅ sourcemapDebugIds, ✅ SIMD (부분)
 ```
 
 ## 미지원 기능 (상용 번들러 대비)
@@ -262,7 +271,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | 파서 inline scan | ✅ 완료 | import/binding scanner AST 재순회 제거 (#919) |
 | StmtInfo semantic 사전 구축 | ✅ 완료 | tree-shake 29.8→5.6ms (-81%), total 82.7→56.9ms (-31%) (#920) |
 | resolveExportChain 메모이제이션 | ✅ 완료 | re-export chain 조건부 캐시 (#918) |
-| SIMD | 미착수 | 렉서 공백/식별자/문자열 스캔 가속 (scan ~10ms 절감 예상) |
+| SIMD | ✅ 부분 적용 | `@Vector(16, u8)` 공백/식별자 스캔 적용 완료 (scanner.zig). 추가 확장 여지 있음 |
 
 ## 프로덕션 로드맵
 
@@ -274,7 +283,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 |------|--------|----------|------|
 | **통합 테스트 확대** | L | 143 패키지 스모크만 | 실제 프로젝트(Next.js, Remix, Vite 앱)로 E2E 번들링 검증 |
 | **watch/serve 장시간 안정성** | M | 기본 동작 | 8시간+ watch 시 메모리 릭, 파일 잠금, OS 이벤트 누락 검증 |
-| **에러 메시지 품질** | M | 기본 수준 | esbuild 수준 친절한 에러 + "did you mean?" 제안 + 컬러 출력 |
+| ~~**에러 메시지 품질**~~ | ✅ | 완료 | ANSI 컬러 출력 + Levenshtein "did you mean?" 제안 (ansi.zig, levenshtein.zig) |
 | **source map 품질 검증** | S | V3 생성됨 | Chrome DevTools에서 원본 소스 정확 매핑 실제 검증 |
 | **Node.js 호환성 edge case** | M | 대부분 동작 | `__dirname`/`__filename` CJS 폴백, `import.meta.url` 정확성 |
 
