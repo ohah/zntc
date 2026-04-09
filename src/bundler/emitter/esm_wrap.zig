@@ -424,33 +424,28 @@ pub fn emitEsmWrappedModule(
                         try reexport_buf.appendSlice(allocator, src_name);
                     },
                     .esm => {
-                        if (options.dev_mode and source_mod.dev_id.len > 0) {
-                            // dev mode: new Function()에서도 접근 가능하도록 __zts_modules 레지스트리 사용
-                            if (source_mod.uses_top_level_await) {
-                                try reexport_buf.appendSlice(allocator, "(await ");
-                            } else {
-                                try reexport_buf.appendSlice(allocator, "(");
-                            }
+                        if (source_mod.uses_top_level_await) {
+                            try reexport_buf.appendSlice(allocator, "(await ");
+                        } else {
+                            try reexport_buf.appendSlice(allocator, "(");
+                        }
+                        if (options.dev_mode) {
                             try reexport_buf.appendSlice(allocator, "__zts_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zts_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
-                            try reexport_buf.appendSlice(allocator, "\"].exports)).default");
+                            try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
                             const iv = try types.makeInitVarName(allocator, source_mod.path);
                             defer allocator.free(iv);
                             const ev = try types.makeExportsVarName(allocator, source_mod.path);
                             defer allocator.free(ev);
-                            if (source_mod.uses_top_level_await) {
-                                try reexport_buf.appendSlice(allocator, "(await ");
-                            } else {
-                                try reexport_buf.appendSlice(allocator, "(");
-                            }
                             try reexport_buf.appendSlice(allocator, iv);
                             try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
                             try reexport_buf.appendSlice(allocator, ev);
-                            try reexport_buf.appendSlice(allocator, ")).default");
+                            try reexport_buf.appendSlice(allocator, "))");
                         }
+                        try reexport_buf.appendSlice(allocator, ".default");
                     },
                     .cjs => {
                         // preamble에서 이미 __toESM으로 바인딩된 변수가 있으면
@@ -506,8 +501,7 @@ pub fn emitEsmWrappedModule(
             switch (src_mod.wrap_kind) {
                 .esm => {
                     if (src_mod.uses_top_level_await) try star_init_buf.appendSlice(allocator, "await ");
-                    if (options.dev_mode and src_mod.dev_id.len > 0) {
-                        // dev mode: new Function()에서도 접근 가능하도록 __zts_modules 레지스트리 사용
+                    if (options.dev_mode) {
                         try star_init_buf.appendSlice(allocator, "__zts_modules[\"");
                         try star_init_buf.appendSlice(allocator, src_mod.dev_id);
                         try star_init_buf.appendSlice(allocator, "\"].fn();\n");
@@ -567,7 +561,6 @@ pub fn emitEsmWrappedModule(
             }
         }
         if (options.dev_mode) {
-            // dev mode: exports 객체를 __esm 세 번째 인자로 전달 → __zts_modules[id].exports로 접근 가능
             try wrapped.appendSlice(allocator, "}},void 0,");
             try wrapped.appendSlice(allocator, exports_name);
             try wrapped.appendSlice(allocator, ");");
@@ -611,7 +604,6 @@ pub fn emitEsmWrappedModule(
             }
         }
         if (options.dev_mode) {
-            // dev mode: exports 객체를 __esm 세 번째 인자로 전달 → __zts_modules[id].exports로 접근 가능
             try wrapped.appendSlice(allocator, "\n\t}\n}, void 0, ");
             try wrapped.appendSlice(allocator, exports_name);
             try wrapped.appendSlice(allocator, ");\n");

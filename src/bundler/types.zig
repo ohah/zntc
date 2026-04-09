@@ -444,6 +444,13 @@ pub fn makeExportsVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
     return makeVarNameWithPrefix(allocator, path, "exports_");
 }
 
+/// dev mode: `(__zts_modules["<dev_id>"].fn(), __toCommonJS(__zts_modules["<dev_id>"].exports))`
+/// HMR에서 new Function()이 번들 스코프 밖에서 실행되므로 레지스트리 동적 lookup 사용.
+/// require_rewrites(metadata.zig) 및 default re-export(esm_wrap.zig)에서 공유.
+pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "(__zts_modules[\"{s}\"].fn(), __toCommonJS(__zts_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
+}
+
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
 /// binding_scanner, linker 등에서 동일 함수를 공유하여 키 불일치 방지.
 pub fn spanKey(span: Span) u64 {
