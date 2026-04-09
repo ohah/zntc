@@ -221,6 +221,8 @@ pub fn emitEsmWrappedModule(
     }
 
     // 3. 호이스팅된 function 선언 (rolldown 방식: canonical 변수 직접 참조)
+    var hoist_mappings: ?[]const SourceMap.Mapping = null;
+    var hoist_preamble_lines: u32 = 0;
     if (hoisted_stmts.items.len > 0) {
         var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
             .minify_whitespace = options.minify_whitespace,
@@ -230,9 +232,24 @@ pub fn emitEsmWrappedModule(
             .linking_metadata = cg_linking,
             .replace_import_meta = options.format != .esm,
             .platform = options.platform,
+            .sourcemap = options.sourcemap,
+            .source_root = options.source_root orelse "",
+            .sources_content = options.sources_content,
         });
+        if (options.sourcemap) {
+            hoist_cg.line_offsets = module.line_offsets;
+            try hoist_cg.addSourceFile(parent.makeModuleId(module.path, options.root_dir));
+        }
+        // 호이스팅 코드 삽입 전 줄 수 (소스맵 오프셋)
+        hoist_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
         try wrapped.appendSlice(allocator, hoisted_code);
+        // 호이스팅 매핑 수집
+        if (hoist_cg.sm_builder) |*sm| {
+            if (sm.mappings.items.len > 0) {
+                hoist_mappings = sm.mappings.items;
+            }
+        }
     }
 
     // 4. __export (lazy getter — 호이스팅된 변수를 참조하므로 래퍼 밖에서 안전)
@@ -557,6 +574,9 @@ pub fn emitEsmWrappedModule(
     const has_refresh = options.dev_mode and options.react_refresh and module.dev_id.len > 0 and
         std.mem.indexOf(u8, body_code, "$RefreshReg$(_") != null;
 
+    // body code 삽입 전 줄 수 (소스맵 preamble 오프셋 — body 직전에 갱신)
+    var body_preamble_lines: u32 = 0;
+
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
@@ -624,6 +644,8 @@ pub fn emitEsmWrappedModule(
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, star_init_buf.items);
         }
+        // body code 삽입 전 줄 수 캡처 (소스맵 preamble 오프셋용)
+        body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, body_code);
@@ -651,11 +673,37 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    // 소스맵 매핑 수집 (body_cg에서)
+    // 소스맵 매핑 수집: hoisted + body 매핑을 병합
+    // 각각 wrapped 내에서의 삽입 위치(줄 수)를 오프셋으로 적용한다.
     var mappings: ?[]const SourceMap.Mapping = null;
-    if (body_cg.sm_builder) |*sm| {
-        if (sm.mappings.items.len > 0) {
-            mappings = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+    {
+        var merged: std.ArrayList(SourceMap.Mapping) = .empty;
+        defer merged.deinit(allocator);
+
+        // hoisted function 매핑 (var/exports 선언 뒤, __esm 앞)
+        if (hoist_mappings) |hm| {
+            try merged.ensureTotalCapacity(allocator, hm.len);
+            for (hm) |m| {
+                var adjusted = m;
+                adjusted.generated_line += hoist_preamble_lines;
+                merged.appendAssumeCapacity(adjusted);
+            }
+        }
+
+        // body 매핑 (__esm factory 안)
+        if (body_cg.sm_builder) |*sm| {
+            if (sm.mappings.items.len > 0) {
+                try merged.ensureUnusedCapacity(allocator, sm.mappings.items.len);
+                for (sm.mappings.items) |m| {
+                    var adjusted = m;
+                    adjusted.generated_line += body_preamble_lines;
+                    merged.appendAssumeCapacity(adjusted);
+                }
+            }
+        }
+
+        if (merged.items.len > 0) {
+            mappings = try allocator.dupe(SourceMap.Mapping, merged.items);
         }
     }
 
