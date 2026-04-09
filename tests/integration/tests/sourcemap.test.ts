@@ -420,4 +420,90 @@ describe("소스맵", () => {
     const bundleLine4 = bundleLines[line4Maps[0].genLine - 1] || "";
     expect(bundleLine4).toContain("from lib line 4");
   });
+
+  test("--polyfill 소스가 소스맵 sources에 포함되고 x_google_ignoreList에 등록된다", async () => {
+    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
+    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-poly-"));
+    cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
+
+    wfs(join(tmpDir, "index.ts"), `console.log("hello");`);
+    wfs(join(tmpDir, "poly.js"), `console.log("polyfill loaded");`);
+
+    const outFile = join(tmpDir, "out.js");
+    const result = await runZts([
+      "--bundle",
+      join(tmpDir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap",
+      `--polyfill=${join(tmpDir, "poly.js")}`,
+    ]);
+    expect(result.exitCode).toBe(0);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+
+    // 폴리필이 sources에 포함
+    const polyIdx = map.sources.findIndex((s: string) => s.includes("poly.js"));
+    expect(polyIdx).toBeGreaterThanOrEqual(0);
+
+    // x_google_ignoreList에 폴리필 인덱스가 등록
+    expect(map.x_google_ignoreList).toBeArray();
+    expect(map.x_google_ignoreList).toContain(polyIdx);
+
+    // 폴리필 sourcesContent 포함
+    expect(map.sourcesContent[polyIdx]).toContain("polyfill loaded");
+  });
+
+  test("--polyfill 소스맵에 폴리필 줄의 identity mapping이 존재한다", async () => {
+    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
+    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-polymap-"));
+    cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
+
+    wfs(join(tmpDir, "index.ts"), `console.log("hello");`);
+    wfs(join(tmpDir, "poly.js"), [`var x = 1;`, `var y = 2;`, `console.log(x + y);`].join("\n"));
+
+    const outFile = join(tmpDir, "out.js");
+    await runZts([
+      "--bundle",
+      join(tmpDir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap",
+      `--polyfill=${join(tmpDir, "poly.js")}`,
+    ]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const bundleCode = readFileSync(outFile, "utf-8");
+    const bundleLines = bundleCode.split("\n");
+
+    // 폴리필 소스 인덱스 찾기
+    const polyIdx = map.sources.findIndex((s: string) => s.includes("poly.js"));
+    expect(polyIdx).toBeGreaterThanOrEqual(0);
+
+    // 폴리필에 대한 매핑 추출
+    const polyMappings = getMappedSourceLines(map.mappings, polyIdx);
+    expect(polyMappings.length).toBeGreaterThan(0);
+
+    // 매핑된 번들 줄에 폴리필 코드가 있어야 함
+    const polyGenLines = polyMappings.map((m) => bundleLines[m.genLine - 1] || "");
+    const hasPolyContent = polyGenLines.some(
+      (line) => line.includes("var x") || line.includes("var y") || line.includes("console.log"),
+    );
+    expect(hasPolyContent).toBe(true);
+  });
+
+  test("폴리필 없을 때 x_google_ignoreList가 없다", async () => {
+    const fixture = await createFixture({
+      "index.ts": `console.log("hello");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+
+    // 폴리필 없으면 x_google_ignoreList도 없어야 함
+    expect(map.x_google_ignoreList).toBeUndefined();
+  });
 });
