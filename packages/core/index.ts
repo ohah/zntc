@@ -505,7 +505,7 @@ class PluginHost {
         const ctx = this.createContext(i);
         const result = await hookFn.call(ctx, currentCode, key);
         if (result == null) continue;
-        const code = typeof result === "string" ? result : result.contents;
+        const code = typeof result === "string" ? result : (result.contents ?? result.code);
         if (code != null) {
           currentCode = code;
           changed = true;

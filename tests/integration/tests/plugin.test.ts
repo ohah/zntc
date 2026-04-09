@@ -102,6 +102,37 @@ describe("Plugin: subprocess", () => {
     }
   });
 
+  test("transform hook accepts 'code' field in result (#966)", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `const x = 1;\nconsole.log(x);`,
+      "package.json": '{"type": "module"}',
+      "plugin.js": `
+        import { defineConfig } from '${CORE_PATH}';
+        defineConfig({ plugins: [{
+          name: 'code-field',
+          transform(code, id) {
+            if (!id.endsWith('.ts')) return null;
+            return { code: 'var __CODE_FIELD__ = true;\\n' + code };
+          }
+        }] });
+      `,
+    });
+
+    try {
+      const result = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "--plugin",
+        join(dir, "plugin.js"),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("__CODE_FIELD__");
+    } finally {
+      await cleanup();
+    }
+  });
+
   test("plugin error shows descriptive message", async () => {
     const { dir, cleanup } = await createFixture({
       "entry.ts": `import './broken.css';`,

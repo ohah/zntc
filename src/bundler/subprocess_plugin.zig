@@ -419,8 +419,10 @@ pub const SubprocessPlugin = struct {
         }
 
         if (parsed.value.result) |result| {
-            if (result.contents) |contents| {
-                return allocator.dupe(u8, contents) catch return error.OutOfMemory;
+            // contents 우선, 없으면 code (Rolldown 호환)
+            const transformed = result.contents orelse result.code;
+            if (transformed) |t| {
+                return allocator.dupe(u8, t) catch return error.OutOfMemory;
             }
         }
         return null;
@@ -456,8 +458,9 @@ pub const SubprocessPlugin = struct {
         }
 
         if (parsed.value.result) |result| {
-            if (result.contents) |contents| {
-                return allocator.dupe(u8, contents) catch return error.OutOfMemory;
+            const transformed = result.contents orelse result.code;
+            if (transformed) |t| {
+                return allocator.dupe(u8, t) catch return error.OutOfMemory;
             }
         }
         return null;
@@ -630,6 +633,8 @@ const HookResponse = struct {
     const HookResult = struct {
         path: ?[]const u8 = null,
         contents: ?[]const u8 = null,
+        /// Rolldown 호환: transform 훅에서 `code` 필드도 `contents`와 동일하게 인식
+        code: ?[]const u8 = null,
         loader: ?[]const u8 = null,
     };
 };
