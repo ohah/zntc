@@ -385,13 +385,16 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAcces
 // HMR (Dev Server)
 // ============================================================
 
-/// HMR 런타임: __commonJS/__esm 래핑 + import.meta.hot API.
-/// dev mode 번들 상단에 주��된다.
+/// HMR 런타임: 롤리팝(rolldown DevRuntime) 패턴 기반.
+/// dev mode 번들 상단에 주입된다.
 ///
 /// 구조:
 ///   __commonJS/__esm → __zts_modules[id]에 자동 등록 (reset 기능 포함)
-///   __zts_make_hot(id) → import.meta.hot 호환 API 객체
-///   __zts_apply_update([{id, code}]) → eval + reset + re-execute (WS에서 호출)
+///   __zts_make_hot(id) → import.meta.hot 호환 API (refresh, refreshUtils 포함)
+///   __zts_apply_update([{id, code}]) → globalEvalWithSourceUrl/eval + accept 콜백
+///   __zts_isReactRefreshBoundary(exports) → 모든 export가 React 컴포넌트인지 확인
+///   __zts_enqueueUpdate() → 50ms debounce로 performReactRefresh 배칭
+///   모듈별 $RefreshReg$/$RefreshSig$ save/restore (emitter에서 주입)
 pub const HMR_RUNTIME =
     \\var __zts_modules = {};
     \\var __zts_hot_cbs = {};
@@ -401,6 +404,38 @@ pub const HMR_RUNTIME =
     \\  if (typeof location !== "undefined") location.reload();
     \\  else if (__zts_g.nativeModuleProxy && __zts_g.nativeModuleProxy.DevSettings) __zts_g.nativeModuleProxy.DevSettings.reload();
     \\};
+    \\// react-refresh/runtime lazy resolve: 모듈 컨텍스트에서 require()로 로드 후 캐싱.
+    \\function __zts_resolveRefresh() {
+    \\  if (__zts_g.__ReactRefresh) return __zts_g.__ReactRefresh;
+    \\  try { var r = require("react-refresh/runtime"); __zts_g.__ReactRefresh = r; __zts_g.__REACT_REFRESH_RUNTIME__ = r; return r; } catch(e) {}
+    \\  return null;
+    \\}
+    \\// isReactRefreshBoundary: 모든 export가 React 컴포넌트면 true (롤리팝 패턴).
+    \\// mixed export 모듈은 HMR 대상에서 제외 → full reload.
+    \\function __zts_isReactRefreshBoundary(moduleExports) {
+    \\  var rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();
+    \\  if (!rt) return false;
+    \\  if (rt.isLikelyComponentType(moduleExports)) return true;
+    \\  if (moduleExports == null || typeof moduleExports !== "object") return false;
+    \\  var hasExports = false;
+    \\  for (var key in moduleExports) {
+    \\    if (key === "__esModule") continue;
+    \\    hasExports = true;
+    \\    if (!rt.isLikelyComponentType(moduleExports[key])) return false;
+    \\  }
+    \\  return hasExports;
+    \\}
+    \\// enqueueUpdate: 50ms debounce로 performReactRefresh 배칭.
+    \\// 여러 모듈 업데이트를 한 번의 React refresh 사이클로 처리.
+    \\var __zts_refreshTimer;
+    \\function __zts_enqueueUpdate() {
+    \\  if (__zts_refreshTimer != null) return;
+    \\  __zts_refreshTimer = setTimeout(function() {
+    \\    __zts_refreshTimer = null;
+    \\    var rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();
+    \\    if (rt) rt.performReactRefresh();
+    \\  }, 50);
+    \\}
     \\function __zts_make_hot(id) {
     \\  if (!__zts_hot_cbs[id]) __zts_hot_cbs[id] = {};
     \\  return {
@@ -412,7 +447,12 @@ pub const HMR_RUNTIME =
     \\    },
     \\    dispose: function(cb) { __zts_hot_cbs[id].dispose = cb; },
     \\    prune: function(cb) { __zts_hot_cbs[id].prune = cb; },
-    \\    invalidate: function() { __zts_reload(); }
+    \\    invalidate: function() { __zts_reload(); },
+    \\    get refresh() { return __zts_g.__ReactRefresh || __zts_resolveRefresh(); },
+    \\    refreshUtils: {
+    \\      isReactRefreshBoundary: __zts_isReactRefreshBoundary,
+    \\      enqueueUpdate: __zts_enqueueUpdate
+    \\    }
     \\  };
     \\}
     \\// __commonJS/__esm HMR 래핑: 모듈을 __zts_modules에 자동 등록.
@@ -421,28 +461,24 @@ pub const HMR_RUNTIME =
     \\var __zts_orig_esm = typeof __esm !== "undefined" ? __esm : null;
     \\if (__zts_orig_commonJS) __commonJS = function(cb, mod) {
     \\  var id = Object.keys(cb)[0];
-    \\  // factory 실행 전 __zts_currentModuleId 설정
-    \\  var wrappedCb = {}; wrappedCb[id] = function(exports, module) { __zts_g.__zts_currentModuleId = id; return cb[id](exports, module); };
-    \\  var fn = __zts_orig_commonJS(wrappedCb, mod);
+    \\  var fn = __zts_orig_commonJS(cb, mod);
     \\  __zts_modules[id] = { type: "cjs", fn: fn, reset: function() {
-    \\    fn = __zts_orig_commonJS(wrappedCb);
+    \\    fn = __zts_orig_commonJS(cb);
     \\    __zts_modules[id].fn = fn;
     \\  }};
     \\  return fn;
     \\};
     \\if (__zts_orig_esm) __esm = function(fn, res, exportsObj) {
     \\  var id = Object.keys(fn)[0];
-    \\  var orig = fn[id];
-    \\  // factory 실행 전 __zts_currentModuleId 설정 ($RefreshReg$ 모듈 ID 일치용)
-    \\  var wrapped = {}; wrapped[id] = function() { __zts_g.__zts_currentModuleId = id; return orig.apply(this, arguments); };
-    \\  var init = __zts_orig_esm(wrapped, res);
+    \\  var init = __zts_orig_esm(fn, res);
     \\  __zts_modules[id] = { type: "esm", fn: init, exports: exportsObj, reset: function() {
-    \\    var newFn = {}; newFn[id] = function() { __zts_g.__zts_currentModuleId = id; return orig.apply(this, arguments); };
-    \\    init = __zts_orig_esm(newFn);
+    \\    init = __zts_orig_esm(fn);
     \\    __zts_modules[id].fn = init;
     \\  }};
     \\  return init;
     \\};
+    \\// HMR 업데이트: globalEvalWithSourceUrl (RN) 또는 indirect eval (브라우저).
+    \\// per-module IIFE에 런타임 헬퍼 로컬 alias가 포함되므로 파라미터 전달 불필요.
     \\function __zts_apply_update(updates) {
     \\  for (var i = 0; i < updates.length; i++) {
     \\    var id = updates[i].id;
@@ -453,43 +489,31 @@ pub const HMR_RUNTIME =
     \\        __zts_hot_data[id] = {};
     \\        cbs.dispose(__zts_hot_data[id]);
     \\      }
-    \\      __zts_g.__zts_currentModuleId = id;
-    \\      // new Function으로 런타임 헬퍼를 파라미터로 전달.
-    \\      // 번들이 모듈 스코프에서 실행되므로 eval/globalEvalWithSourceUrl로는
-    \\      // __esm/__export 등 런타임 헬퍼에 접근 불가.
-    \\      var fn = new Function("__esm", "__export", "__commonJS", "__defProp", "__toESM", "__toCommonJS", "__zts_modules", "__zts_make_hot", "$RefreshReg$", "$RefreshSig$", updates[i].code);
-    \\      fn(typeof __esm!=="undefined"?__esm:__zts_g.__esm, typeof __export!=="undefined"?__export:__zts_g.__export, typeof __commonJS!=="undefined"?__commonJS:__zts_g.__commonJS, typeof __defProp!=="undefined"?__defProp:__zts_g.__defProp, typeof __toESM!=="undefined"?__toESM:__zts_g.__toESM, typeof __toCommonJS!=="undefined"?__toCommonJS:__zts_g.__toCommonJS, __zts_modules, __zts_make_hot, __zts_g.$RefreshReg$, __zts_g.$RefreshSig$);
-    \\      // new Function()은 __esm 팩토리를 등록만 함 — 실제 실행해야 $RefreshReg$ 호출됨
-    \\      var entry = __zts_modules[id];
-    \\      if (entry && entry.fn) entry.fn();
-    \\      if (typeof cbs.accept === "function") cbs.accept();
+    \\      var evalFn = __zts_g.globalEvalWithSourceUrl;
+    \\      if (evalFn) {
+    \\        evalFn(updates[i].code, "hmr-update:" + id);
+    \\      } else {
+    \\        (0, eval)(updates[i].code);
+    \\      }
+    \\      if (typeof cbs.accept === "function") {
+    \\        var entry = __zts_modules[id];
+    \\        cbs.accept(entry && entry.exports ? entry.exports : {});
+    \\      }
     \\    } catch(e) { console.error("[zts] HMR update failed:", e); __zts_reload(); }
     \\  }
-    \\  var rt = __zts_g.__ReactRefresh || __zts_g.__REACT_REFRESH_RUNTIME__;
-    \\  if (!rt) rt = __zts_resolveRefresh();
-    \\  if (rt) rt.performReactRefresh();
     \\}
-    \\// react-refresh/runtime lazy resolve: 모듈 컨텍스트에서 require()로 로드 후 캐싱.
-    \\// polyfill 시점에는 require 미사용, $RefreshReg$ 첫 호출 시 resolve.
-    \\function __zts_resolveRefresh() {
-    \\  if (__zts_g.__ReactRefresh) return __zts_g.__ReactRefresh;
-    \\  try { var r = require("react-refresh/runtime"); __zts_g.__ReactRefresh = r; __zts_g.__REACT_REFRESH_RUNTIME__ = r; return r; } catch(e) {}
-    \\  return null;
-    \\}
-    \\__zts_g.$RefreshReg$ = function(type, id) {
-    \\  var rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();
-    \\  if (rt) rt.register(type, __zts_g.__zts_currentModuleId + " " + id);
-    \\};
-    \\__zts_g.$RefreshSig$ = function() {
-    \\  var rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();
-    \\  if (rt) return rt.createSignatureFunctionForTransform();
-    \\  return function(type) { return type; };
-    \\};
+    \\// 글로벌 $RefreshReg$/$RefreshSig$ fallback (noop).
+    \\// 실제 등록은 emitter가 모듈별로 save/restore 패턴을 주입하여 처리.
+    \\__zts_g.$RefreshReg$ = function() {};
+    \\__zts_g.$RefreshSig$ = function() { return function(type) { return type; }; };
     \\// HMR API + 런타임 헬퍼를 전역에 노출 (모듈 스코프에서 eval 접근용)
     \\__zts_g.__zts_apply_update = __zts_apply_update;
     \\__zts_g.__zts_reload = __zts_reload;
     \\__zts_g.__zts_make_hot = __zts_make_hot;
     \\__zts_g.__zts_modules = __zts_modules;
+    \\__zts_g.__zts_resolveRefresh = __zts_resolveRefresh;
+    \\__zts_g.__zts_isReactRefreshBoundary = __zts_isReactRefreshBoundary;
+    \\__zts_g.__zts_enqueueUpdate = __zts_enqueueUpdate;
     \\if (typeof __esm !== "undefined") __zts_g.__esm = __esm;
     \\if (typeof __export !== "undefined") __zts_g.__export = __export;
     \\if (typeof __commonJS !== "undefined") __zts_g.__commonJS = __commonJS;
@@ -500,7 +524,7 @@ pub const HMR_RUNTIME =
 ;
 
 pub const HMR_RUNTIME_MIN =
-    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var wc={};wc[id]=function(e,m){__zts_g.__zts_currentModuleId=id;return cb[id](e,m)};var fn=__zts_oc(wc,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(wc);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var orig=fn[id];var w={};w[id]=function(){__zts_g.__zts_currentModuleId=id;return orig.apply(this,arguments)};var init=__zts_oe(w,res);__zts_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){var nf={};nf[id]=function(){__zts_g.__zts_currentModuleId=id;return orig.apply(this,arguments)};init=__zts_oe(nf);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}__zts_g.__zts_currentModuleId=id;var fn=new Function("__esm","__export","__commonJS","__defProp","__toESM","__toCommonJS","__zts_modules","__zts_make_hot","$RefreshReg$","$RefreshSig$",u[i].code);fn(typeof __esm!=="undefined"?__esm:__zts_g.__esm,typeof __export!=="undefined"?__export:__zts_g.__export,typeof __commonJS!=="undefined"?__commonJS:__zts_g.__commonJS,typeof __defProp!=="undefined"?__defProp:__zts_g.__defProp,typeof __toESM!=="undefined"?__toESM:__zts_g.__toESM,typeof __toCommonJS!=="undefined"?__toCommonJS:__zts_g.__toCommonJS,__zts_modules,__zts_make_hot,__zts_g.$RefreshReg$,__zts_g.$RefreshSig$);var ent=__zts_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}var rt=__zts_g.__ReactRefresh||__zts_g.__REACT_REFRESH_RUNTIME__;if(!rt)rt=__zts_rr();if(rt)rt.performReactRefresh()}function __zts_rr(){if(__zts_g.__ReactRefresh)return __zts_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zts_g.__ReactRefresh=r;__zts_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}__zts_g.$RefreshReg$=function(t,id){var rt=__zts_g.__ReactRefresh||__zts_rr();if(rt)rt.register(t,__zts_g.__zts_currentModuleId+" "+id)};__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_rr();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};__zts_g.__zts_apply_update=__zts_apply_update;__zts_g.__zts_reload=__zts_reload;__zts_g.__zts_make_hot=__zts_make_hot;__zts_g.__zts_modules=__zts_modules;if(typeof __esm!=="undefined")__zts_g.__esm=__esm;if(typeof __export!=="undefined")__zts_g.__export=__export;if(typeof __commonJS!=="undefined")__zts_g.__commonJS=__commonJS;if(typeof __defProp!=="undefined")__zts_g.__defProp=__defProp;if(typeof __toESM!=="undefined")__zts_g.__toESM=__toESM;if(typeof __toCommonJS!=="undefined")__zts_g.__toCommonJS=__toCommonJS
+    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_resolveRefresh(){if(__zts_g.__ReactRefresh)return __zts_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zts_g.__ReactRefresh=r;__zts_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zts_isReactRefreshBoundary(m){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!=="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zts_refreshTimer;function __zts_enqueueUpdate(){if(__zts_refreshTimer!=null)return;__zts_refreshTimer=setTimeout(function(){__zts_refreshTimer=null;var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()},get refresh(){return __zts_g.__ReactRefresh||__zts_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zts_isReactRefreshBoundary,enqueueUpdate:__zts_enqueueUpdate}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zts_oc(cb,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(cb);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zts_oe(fn,res);__zts_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zts_oe(fn);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}var ev=__zts_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}if(typeof c.accept==="function"){var ent=__zts_modules[id];c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}}__zts_g.$RefreshReg$=function(){};__zts_g.$RefreshSig$=function(){return function(t){return t}};__zts_g.__zts_apply_update=__zts_apply_update;__zts_g.__zts_reload=__zts_reload;__zts_g.__zts_make_hot=__zts_make_hot;__zts_g.__zts_modules=__zts_modules;__zts_g.__zts_resolveRefresh=__zts_resolveRefresh;__zts_g.__zts_isReactRefreshBoundary=__zts_isReactRefreshBoundary;__zts_g.__zts_enqueueUpdate=__zts_enqueueUpdate;if(typeof __esm!=="undefined")__zts_g.__esm=__esm;if(typeof __export!=="undefined")__zts_g.__export=__export;if(typeof __commonJS!=="undefined")__zts_g.__commonJS=__commonJS;if(typeof __defProp!=="undefined")__zts_g.__defProp=__defProp;if(typeof __toESM!=="undefined")__zts_g.__toESM=__toESM;if(typeof __toCommonJS!=="undefined")__zts_g.__toCommonJS=__toCommonJS
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산용, comptime)
