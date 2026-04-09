@@ -536,6 +536,7 @@ pub const DevServer = struct {
                         getLog().print("  [hmr] graph changed, full-reload\n", .{}) catch {};
                     } else if (result.changed_modules.len > 0) {
                         // 변경 모듈만 HMR update
+                        self.ws_clients.broadcast("{\"type\":\"update-start\"}");
                         const hmr_msg = buildHmrUpdateFromModules(
                             self.allocator,
                             result.changed_modules,
@@ -547,6 +548,7 @@ pub const DevServer = struct {
                         } else {
                             self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
                         }
+                        self.ws_clients.broadcast("{\"type\":\"update-done\"}");
                     } else {
                         // 코드 diff 없음 (타입만 변경 등) → Vite와 동일하게 무시
                         getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
@@ -894,6 +896,7 @@ pub const DevServer = struct {
             \\    ws.onopen = function() { console.log('[zts] HMR connected'); };
             \\    ws.onmessage = function(e) {
             \\      var msg = JSON.parse(e.data);
+            \\      if (msg.type === 'update-start' || msg.type === 'update-done') return;
             \\      if (msg.type === 'full-reload') { hideOverlay(); location.reload(); }
             \\      if (msg.type === 'update') {
             \\        if (typeof __zts_apply_update === 'function') {
