@@ -196,14 +196,14 @@ describe("소스맵", () => {
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
 
-    // 두 모듈 모두 sources에 포함되어야 한다 (<runtime> 제외)
-    const moduleSources = map.sources.filter((s: string) => s !== "<runtime>");
+    // 두 모듈 모두 sources에 포함되어야 한다 (node_modules/.zts/runtime.js 제외)
+    const moduleSources = map.sources.filter((s: string) => s !== "node_modules/.zts/runtime.js");
     expect(moduleSources.length).toBe(2);
     const joined = moduleSources.join("|");
     expect(joined).toContain("index.ts");
     expect(joined).toContain("util.ts");
 
-    // sourcesContent도 각 모듈의 내용을 포함해야 한다 (<runtime> 제외)
+    // sourcesContent도 각 모듈의 내용을 포함해야 한다 (node_modules/.zts/runtime.js 제외)
     expect(moduleSources.length).toBe(2);
     const allContent = map.sourcesContent.join("\n");
     expect(allContent).toContain("function greet");
@@ -422,7 +422,7 @@ describe("소스맵", () => {
     expect(bundleLine4).toContain("from lib line 4");
   });
 
-  test("prologue 영역이 <runtime> 소스로 매핑되고 x_google_ignoreList에 등록된다", async () => {
+  test("prologue 영역이 node_modules/.zts/runtime.js 소스로 매핑되고 x_google_ignoreList에 등록된다", async () => {
     const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
     const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-prologue-"));
     cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
@@ -443,22 +443,22 @@ describe("소스맵", () => {
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
 
-    // <runtime> 가상 소스가 sources에 포함
-    const rtIdx = map.sources.findIndex((s: string) => s === "<runtime>");
+    // node_modules/.zts/runtime.js 가상 소스가 sources에 포함
+    const rtIdx = map.sources.findIndex((s: string) => s === "node_modules/.zts/runtime.js");
     expect(rtIdx).toBeGreaterThanOrEqual(0);
 
-    // x_google_ignoreList에 <runtime> 인덱스 등록
+    // x_google_ignoreList에 node_modules/.zts/runtime.js 인덱스 등록
     expect(map.x_google_ignoreList).toBeArray();
     expect(map.x_google_ignoreList).toContain(rtIdx);
 
-    // <runtime>에 대한 매핑이 prologue 줄을 커버
+    // node_modules/.zts/runtime.js에 대한 매핑이 prologue 줄을 커버
     const rtMappings = getMappedSourceLines(map.mappings, rtIdx);
     expect(rtMappings.length).toBeGreaterThan(0);
     // 첫 번째 매핑이 번들 앞부분(prologue)에 있어야 함
     expect(rtMappings[0].genLine).toBeLessThanOrEqual(10);
   });
 
-  test("prologue가 없는 ESM 번들에서는 <runtime>과 x_google_ignoreList가 없다", async () => {
+  test("prologue가 없는 ESM 번들에서는 node_modules/.zts/runtime.js과 x_google_ignoreList가 없다", async () => {
     const fixture = await createFixture({
       "index.ts": `console.log("hello");`,
     });
@@ -475,7 +475,7 @@ describe("소스맵", () => {
     ]);
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const hasRuntime = map.sources.some((s: string) => s === "<runtime>");
+    const hasRuntime = map.sources.some((s: string) => s === "node_modules/.zts/runtime.js");
     expect(hasRuntime).toBe(false);
   });
 });

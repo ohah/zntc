@@ -501,7 +501,7 @@ pub fn emitWithTreeShaking(
         // DevTools가 prologue 프레임을 자동으로 무시하고 유저 코드 프레임을 표시.
         // prologue_lines가 0이면 prologue가 없으므로 스킵.
         if (prologue_lines > 0) {
-            const runtime_src_idx = try sm.addSource("<runtime>");
+            const runtime_src_idx = try sm.addSource("node_modules/.zts/runtime.js");
             if (options.sources_content) {
                 try sm.addSourceContent("// zts bundle runtime (polyfills, helpers)\n");
             }
