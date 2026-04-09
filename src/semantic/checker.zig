@@ -124,10 +124,6 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 }
 
 /// 에러를 errors 목록에 추가한다.
-fn addError(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8) AllocError!void {
-    try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic });
-}
-
 fn addErrorCode(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8, code: ErrorCode) AllocError!void {
     try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic, .code = code });
 }
@@ -216,7 +212,7 @@ fn checkPrivateKeyStaticConflict(
                 allocator,
                 "Private field '{s}' has already been declared",
                 .{name},
-            ), .checker_private_redeclared);
+            ), .private_redeclared);
         }
     } else {
         try declared.put(name, .{ .is_static = is_static, .span = key_node.span });
@@ -359,7 +355,7 @@ fn recordSeenName(
             allocator,
             "Duplicate parameter name '{s}'",
             .{name},
-        ), .checker_duplicate_param);
+        ), .duplicate_parameter);
     } else {
         try seen.put(name, span);
     }

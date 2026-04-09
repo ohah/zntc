@@ -130,10 +130,7 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
 
     return .{
         .severity = .@"error",
-        .code = if (d.code) |c| c.format() else switch (d.kind) {
-            .parse => error_codes.Code.import_in_script.format(), // fallback
-            .semantic => error_codes.Code.identifier_redeclared.format(), // fallback
-        },
+        .code = if (d.code) |c| c.format() else null,
         .message = d.message,
         .span = d.span,
         .file_path = file_path,
@@ -154,11 +151,11 @@ pub fn fromBundlerDiagnostic(d: BundlerDiagnostic) RichDiagnostic {
             .unresolved_import => error_codes.Code.unresolved_import.format(),
             .missing_export => error_codes.Code.missing_export.format(),
             .circular_dependency => error_codes.Code.circular_dependency.format(),
-            .parse_error => error_codes.Code.parse_error.format(),
+            .parse_error => error_codes.Code.import_in_script.format(),
             .read_error => error_codes.Code.read_error.format(),
             .json_parse_error => error_codes.Code.json_parse_error.format(),
             .no_loader => error_codes.Code.no_loader.format(),
-            .resolve_error => null,
+            .resolve_error => error_codes.Code.resolve_error.format(),
         },
         .message = d.message,
         .span = d.span,
@@ -235,7 +232,20 @@ test "fromDiagnostic: converts parse error" {
     try std.testing.expectEqualStrings("Expected ';'", rich.message);
     try std.testing.expectEqualStrings("test.ts", rich.file_path);
     try std.testing.expectEqualStrings("Insert a semicolon here", rich.help.?);
+    // code 미지정 시 null
+    try std.testing.expect(rich.code == null);
+}
+
+test "fromDiagnostic: uses explicit error code" {
+    const d = Diagnostic{
+        .span = .{ .start = 0, .end = 6 },
+        .message = "'import' declaration is only allowed in module code",
+        .kind = .parse,
+        .code = .import_in_script,
+    };
+    const rich = fromDiagnostic(d, "test.ts");
     try std.testing.expect(rich.code != null);
+    try std.testing.expectEqualStrings("ZTS0300", rich.code.?);
 }
 
 test "fromDiagnostic: includes related span as note" {
