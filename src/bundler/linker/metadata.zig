@@ -234,10 +234,17 @@ pub fn buildMetadataForAst(
                     try esm_init_set.put(@intCast(canonical_mod), {});
                     const target_mod = &self.modules[canonical_mod];
                     if (target_mod.uses_top_level_await) try preamble.write("await ");
-                    const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
-                    defer self.allocator.free(init_name);
-                    try preamble.write(init_name);
-                    try preamble.write("();\n");
+                    if (self.dev_mode and target_mod.dev_id.len > 0) {
+                        // dev mode: new Function()에서도 접근 가능하도록 __zts_modules 레지스트리 사용
+                        try preamble.write("__zts_modules[\"");
+                        try preamble.write(target_mod.dev_id);
+                        try preamble.write("\"].fn();\n");
+                    } else {
+                        const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
+                        defer self.allocator.free(init_name);
+                        try preamble.write(init_name);
+                        try preamble.write("();\n");
+                    }
                 }
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
             }
@@ -568,12 +575,18 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
-            defer self.allocator.free(init_name);
-            const exports_name = try types.makeExportsVarName(self.allocator, target_mod.path);
-            defer self.allocator.free(exports_name);
-            const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), __toCommonJS({s}))", .{ init_name, exports_name });
-            try require_rewrites.put(self.allocator, rec.specifier, call_expr);
+            if (self.dev_mode and target_mod.dev_id.len > 0) {
+                // dev mode: new Function()에서도 접근 가능하도록 __zts_modules 레지스트리 사용
+                const call_expr = try std.fmt.allocPrint(self.allocator, "(__zts_modules[\"{s}\"].fn(), __toCommonJS(__zts_modules[\"{s}\"].exports))", .{ target_mod.dev_id, target_mod.dev_id });
+                try require_rewrites.put(self.allocator, rec.specifier, call_expr);
+            } else {
+                const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
+                defer self.allocator.free(init_name);
+                const exports_name = try types.makeExportsVarName(self.allocator, target_mod.path);
+                defer self.allocator.free(exports_name);
+                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), __toCommonJS({s}))", .{ init_name, exports_name });
+                try require_rewrites.put(self.allocator, rec.specifier, call_expr);
+            }
         }
     }
     return require_rewrites;
