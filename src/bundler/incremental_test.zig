@@ -188,6 +188,110 @@ test "IncrementalBundler: detects graph change when import removed (module delet
     }
 }
 
+test "IncrementalBundler: second file change should NOT trigger graph_changed (#951)" {
+    // 이슈 #951 재현: 첫 HMR → 두번째 full reload → 이후 정상
+    // 그래프 구조(import 관계)가 변하지 않는데 두 번째 변경에서 graph_changed=true가 됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 3단계 import chain: index → App → util
+    try writeFile(tmp.dir, "util.ts", "export const helper = () => 'v1';");
+    try writeFile(tmp.dir, "App.ts", "import { helper } from './util';\nexport const msg = helper();");
+    try writeFile(tmp.dir, "index.ts", "import { msg } from './App';\nconsole.log(msg);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer ib.deinit();
+
+    // 1) 첫 빌드 (graph_changed=true 예상, 첫 빌드이므로)
+    var first_path_count: usize = 0;
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| {
+                try std.testing.expect(s.graph_changed);
+                first_path_count = s.paths.len;
+                std.testing.allocator.free(s.changed_modules);
+            },
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+
+    // mtime 차이를 보장하기 위해 약간 대기
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+
+    // 2) 첫 번째 파일 변경 → 증분 빌드 (graph_changed=false 예상)
+    try writeFile(tmp.dir, "App.ts", "import { helper } from './util';\nexport const msg = helper() + ' v2';");
+    var second_path_count: usize = 0;
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| {
+                defer std.testing.allocator.free(s.changed_modules);
+                second_path_count = s.paths.len;
+                try std.testing.expectEqual(first_path_count, second_path_count);
+                try std.testing.expectEqual(false, s.graph_changed);
+            },
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+
+    // mtime 차이를 보장하기 위해 약간 대기
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+
+    // 3) 두 번째 파일 변경 → 증분 빌드 (graph_changed=false 이어야 함!)
+    //    이슈 #951: 이 시점에서 graph_changed=true가 되어 full-reload가 발생함
+    try writeFile(tmp.dir, "App.ts", "import { helper } from './util';\nexport const msg = helper() + ' v3';");
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| {
+                defer std.testing.allocator.free(s.changed_modules);
+                // 핵심 검증: 두 번째 변경에서도 graph_changed=false여야 함
+                try std.testing.expectEqual(second_path_count, s.paths.len);
+                try std.testing.expectEqual(false, s.graph_changed);
+                try std.testing.expect(s.changed_modules.len > 0);
+            },
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+
+    // 4) 세 번째 파일 변경도 graph_changed=false여야 함 (안정성 확인)
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "util.ts", "export const helper = () => 'v4';");
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| {
+                defer std.testing.allocator.free(s.changed_modules);
+                try std.testing.expectEqual(false, s.graph_changed);
+            },
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+}
+
 test "IncrementalBundler: build error returns error message" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

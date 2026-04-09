@@ -150,10 +150,7 @@ pub const IncrementalBundler = struct {
             return .{ .build_error = err_json };
         }
 
-        // 모듈 수 변경 → 그래프 구조 변경
-        const old_path_count = if (self.last_paths) |lp| lp.len else 0;
-        const new_path_count = if (result.module_paths) |np| np.len else 0;
-        const graph_changed = is_first or new_path_count != old_path_count;
+        const graph_changed = is_first or !self.pathSetsEqual(result.module_paths);
 
         // 변경된 모듈 코드만 수집 (캐시 대비 diff)
         var actually_changed: std.ArrayList(BundleResult.ModuleDevCode) = .empty;
@@ -186,6 +183,27 @@ pub const IncrementalBundler = struct {
                 .graph_changed = graph_changed,
             },
         };
+    }
+
+    /// 빌드 결과의 모듈 경로 집합이 캐시와 동일한지 비교 (#951).
+    /// 카운트만 비교하면 빌드 경로 차이로 false positive가 발생할 수 있다.
+    fn pathSetsEqual(self: *const IncrementalBundler, new_paths_opt: ?[]const []const u8) bool {
+        const old_paths = self.last_paths orelse return new_paths_opt == null;
+        const new_paths = new_paths_opt orelse return false;
+
+        if (old_paths.len != new_paths.len) return false;
+
+        // old_paths를 해시셋에 넣고 new_paths 전부가 존재하는지 확인
+        var set = std.StringHashMap(void).init(self.allocator);
+        defer set.deinit();
+        set.ensureTotalCapacity(@intCast(old_paths.len)) catch return false;
+        for (old_paths) |p| {
+            set.putAssumeCapacity(p, {});
+        }
+        for (new_paths) |p| {
+            if (!set.contains(p)) return false;
+        }
+        return true;
     }
 
     fn updateCache(self: *IncrementalBundler, result: *const BundleResult) void {

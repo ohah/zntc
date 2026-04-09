@@ -1769,8 +1769,16 @@ pub fn main() !void {
 
                     // --dev 모드: 캐시 대비 diff → 변경된 모듈만 updates로 출력
                     if (rebuild_result.module_dev_codes) |dev_codes| {
-                        if (dev_codes.len != module_code_cache.count()) {
-                            // 모듈 수 변경 (새 import 추가/삭제) → full reload
+                        // 모듈 ID 집합 비교 — 카운트만 비교하면 false positive 가능 (#951)
+                        const graph_changed_flag = blk: {
+                            if (dev_codes.len != module_code_cache.count()) break :blk true;
+                            for (dev_codes) |dc| {
+                                if (!module_code_cache.contains(dc.id)) break :blk true;
+                            }
+                            break :blk false;
+                        };
+                        if (graph_changed_flag) {
+                            // 모듈 집합 변경 (새 import 추가/삭제) → full reload
                             try stdout.print(",\"graph_changed\":true", .{});
                         } else {
                             // diff: 캐시와 비교하여 변경된 모듈만 수집
