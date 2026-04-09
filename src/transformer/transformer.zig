@@ -2004,7 +2004,7 @@ pub const Transformer = struct {
         self.super_call_this_alias = saved_super_alias;
 
         // $RefreshSig$ (hook signature) 스캔은 제거 — transform 후 stale AST 인덱스로 OOM 유발.
-        // Metro/롤리팝도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
+        // Metro도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
 
         const none = @intFromEnum(NodeIndex.none);
         const result = try self.addExtraNode(node.tag, node.span, &.{

@@ -95,7 +95,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
     const var_decl = try self.buildRefreshVarDeclaration();
     try self.scratch.append(self.allocator, var_decl);
 
-    // $RefreshSig$ 스캔 제거 — Metro/롤리팝 방식. hook signature 없이 $RefreshReg$만 주입.
+    // $RefreshSig$ 스캔 제거 — Metro 방식. hook signature 없이 $RefreshReg$만 주입.
 
     // $RefreshReg$(_c, "ComponentName"); 호출들
     const refresh_reg_span = try self.ast.addString("$RefreshReg$");
