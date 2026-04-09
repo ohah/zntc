@@ -636,14 +636,12 @@ pub const Bundler = struct {
             });
         }
 
-        // 2.8. React Refresh 런타임 주입 (dev mode, 비-RN만)
-        // RN: InitializeCore가 prelude(run_before_main)로 엔트리 전에 실행되어
-        //      setUpReactRefresh → require('react-refresh/runtime') → __ReactRefresh 설정.
-        //      별도 polyfill은 RN 네이티브 런타임 충돌 유발 (injectIntoGlobalHook 시점 문제).
-        // 브라우저: react-refresh/runtime을 polyfill로 직접 주입.
-        if (self.options.dev_mode and self.options.react_refresh and
-            self.options.platform != .react_native)
-        blk: {
+        // 2.8. React Refresh 런타임 주입 (dev mode)
+        // react-refresh/runtime을 polyfill로 주입하여 __ReactRefresh 글로벌 설정.
+        // HMR 런타임의 $RefreshReg$/$RefreshSig$가 이 글로벌을 참조한다.
+        // RN: injectIntoGlobalHook은 InitializeCore가 적절한 시점에 호출하므로 스킵.
+        // 브라우저: polyfill에서 직접 호출.
+        if (self.options.dev_mode and self.options.react_refresh) blk: {
             // entry 디렉토리에서 node_modules/react-refresh를 직접 탐색
             const entry_dir = if (self.options.entry_points.len > 0)
                 std.fs.path.dirname(self.options.entry_points[0]) orelse "."
@@ -667,13 +665,20 @@ pub const Bundler = struct {
                 "var exports = {};" ++
                 "var module = { exports: exports };" ++
                 "var process = { env: { NODE_ENV: \"development\" } };\n";
-            const epilogue =
+            const epilogue = if (self.options.platform == .react_native)
+                // RN: 글로벌 설정만. injectIntoGlobalHook은 InitializeCore가 처리.
                 "\nvar __r = module.exports;" ++
-                "var __g = typeof globalThis !== \"undefined\" ? globalThis : typeof global !== \"undefined\" ? global : window;" ++
-                "__g.__ReactRefresh = __r;" ++
-                "__g.__REACT_REFRESH_RUNTIME__ = __r;" ++
-                "if (__r.injectIntoGlobalHook) __r.injectIntoGlobalHook(__g);" ++
-                "})();\n";
+                    "var __g = typeof globalThis !== \"undefined\" ? globalThis : typeof global !== \"undefined\" ? global : window;" ++
+                    "__g.__ReactRefresh = __r;" ++
+                    "__g.__REACT_REFRESH_RUNTIME__ = __r;" ++
+                    "})();\n"
+            else
+                "\nvar __r = module.exports;" ++
+                    "var __g = typeof globalThis !== \"undefined\" ? globalThis : typeof global !== \"undefined\" ? global : window;" ++
+                    "__g.__ReactRefresh = __r;" ++
+                    "__g.__REACT_REFRESH_RUNTIME__ = __r;" ++
+                    "if (__r.injectIntoGlobalHook) __r.injectIntoGlobalHook(__g);" ++
+                    "})();\n";
             const wrapped = std.mem.concat(self.allocator, u8, &.{ preamble, raw, epilogue }) catch break :blk;
             self.allocator.free(raw);
             try polyfill_entries.append(self.allocator, .{
