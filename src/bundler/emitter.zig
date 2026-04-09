@@ -405,18 +405,20 @@ pub fn emitWithTreeShaking(
         }
 
         // dev mode: per-module code를 HMR eval 가능한 형태로 수집.
-        // IIFE로 래핑하여 변수 격리 + __esm factory 실행으로 $RefreshReg$ 호출.
+        // IIFE로 래핑 + 런타임 헬퍼 로컬 alias로 eval() 스코프에서 접근 가능.
         if (options.dev_mode and options.collect_module_codes) {
             const mod_id = makeModuleId(m.path, options.root_dir);
             const hmr_code = try std.mem.concat(allocator, u8, &.{
                 "(function(){\n",
+                "var __esm=__zts_g.__esm,__export=__zts_g.__export,__commonJS=__zts_g.__commonJS,",
+                "__defProp=__zts_g.__defProp,__toESM=__zts_g.__toESM,__toCommonJS=__zts_g.__toCommonJS,",
+                "__zts_modules=__zts_g.__zts_modules,__zts_make_hot=__zts_g.__zts_make_hot,",
+                "__zts_resolveRefresh=__zts_g.__zts_resolveRefresh||function(){return null},",
+                "__zts_isReactRefreshBoundary=__zts_g.__zts_isReactRefreshBoundary,",
+                "__zts_enqueueUpdate=__zts_g.__zts_enqueueUpdate,",
+                "__zts_reload=__zts_g.__zts_reload;\n",
                 code,
                 "\n})();\n",
-                "if(typeof __zts_modules!==\"undefined\"&&__zts_modules[\"",
-                mod_id,
-                "\"])__zts_modules[\"",
-                mod_id,
-                "\"].fn();\n",
             });
             try dev_module_codes.append(allocator, .{
                 .id = try allocator.dupe(u8, mod_id),

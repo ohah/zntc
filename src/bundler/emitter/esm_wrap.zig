@@ -539,6 +539,11 @@ pub fn emitEsmWrappedModule(
 
     const is_async = module.uses_top_level_await;
 
+    // React Fast Refresh: body_code에 $RefreshReg$(_c, ...) 호출이 있을 때만
+    // 모듈별 save/restore + boundary accept를 주입. 비컴포넌트 모듈은 건너뜀.
+    const has_refresh = options.dev_mode and options.react_refresh and module.dev_id.len > 0 and
+        std.mem.indexOf(u8, body_code, "$RefreshReg$(_") != null;
+
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
@@ -547,18 +552,23 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
+        if (has_refresh) {
+            try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zts_g.$RefreshReg$,__prevRefreshSig=__zts_g.$RefreshSig$;");
+            try wrapped.appendSlice(allocator, "__zts_g.$RefreshReg$=function(type,id){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)rt.register(type,\"");
+            try wrapped.appendSlice(allocator, module.dev_id);
+            try wrapped.appendSlice(allocator, " \"+id)};");
+            try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
+        }
         if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
-        // React Fast Refresh: hot.accept() (minified)
-        if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
-            if (std.mem.indexOf(u8, wrapped.items, "$RefreshReg$") != null) {
-                try wrapped.appendSlice(allocator, "__zts_make_hot(\"");
-                try wrapped.appendSlice(allocator, module.dev_id);
-                try wrapped.appendSlice(allocator, "\").accept();");
-            }
+        if (has_refresh) {
+            try wrapped.appendSlice(allocator, "__zts_g.$RefreshReg$=__prevRefreshReg;__zts_g.$RefreshSig$=__prevRefreshSig;");
+            try wrapped.appendSlice(allocator, "__zts_make_hot(\"");
+            try wrapped.appendSlice(allocator, module.dev_id);
+            try wrapped.appendSlice(allocator, "\").accept(function(m){if(__zts_isReactRefreshBoundary(m))__zts_enqueueUpdate();else __zts_reload()});");
         }
         if (options.dev_mode) {
             try wrapped.appendSlice(allocator, "}},void 0,");
@@ -575,6 +585,20 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"() {\n");
+        if (has_refresh) {
+            try wrapped.appendSlice(allocator, "\tvar __prevRefreshReg = __zts_g.$RefreshReg$, __prevRefreshSig = __zts_g.$RefreshSig$;\n");
+            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshReg$ = function(type, id) {\n");
+            try wrapped.appendSlice(allocator, "\t\tvar rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();\n");
+            try wrapped.appendSlice(allocator, "\t\tif (rt) rt.register(type, \"");
+            try wrapped.appendSlice(allocator, module.dev_id);
+            try wrapped.appendSlice(allocator, " \" + id);\n");
+            try wrapped.appendSlice(allocator, "\t};\n");
+            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshSig$ = function() {\n");
+            try wrapped.appendSlice(allocator, "\t\tvar rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();\n");
+            try wrapped.appendSlice(allocator, "\t\tif (rt) return rt.createSignatureFunctionForTransform();\n");
+            try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
+            try wrapped.appendSlice(allocator, "\t};\n");
+        }
         if (rbm_code.items.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, rbm_code.items);
@@ -595,13 +619,15 @@ pub fn emitEsmWrappedModule(
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, reexport_buf.items);
         }
-        // React Fast Refresh: hot.accept() 자동 삽입 (full reload 방지)
-        if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
-            if (std.mem.indexOf(u8, wrapped.items, "$RefreshReg$") != null) {
-                try wrapped.appendSlice(allocator, "\t__zts_make_hot(\"");
-                try wrapped.appendSlice(allocator, module.dev_id);
-                try wrapped.appendSlice(allocator, "\").accept();\n");
-            }
+        if (has_refresh) {
+            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshReg$ = __prevRefreshReg;\n");
+            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshSig$ = __prevRefreshSig;\n");
+            try wrapped.appendSlice(allocator, "\t__zts_make_hot(\"");
+            try wrapped.appendSlice(allocator, module.dev_id);
+            try wrapped.appendSlice(allocator, "\").accept(function(m) {\n");
+            try wrapped.appendSlice(allocator, "\t\tif (__zts_isReactRefreshBoundary(m)) __zts_enqueueUpdate();\n");
+            try wrapped.appendSlice(allocator, "\t\telse __zts_reload();\n");
+            try wrapped.appendSlice(allocator, "\t});\n");
         }
         if (options.dev_mode) {
             try wrapped.appendSlice(allocator, "\n\t}\n}, void 0, ");
