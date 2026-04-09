@@ -238,7 +238,7 @@ pub fn emitEsmWrappedModule(
         });
         if (options.sourcemap) {
             hoist_cg.line_offsets = module.line_offsets;
-            try hoist_cg.addSourceFile(parent.makeModuleId(module.path, options.root_dir));
+            try hoist_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
         }
         hoist_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
@@ -392,7 +392,7 @@ pub fn emitEsmWrappedModule(
     // 소스맵: 소스 파일 등록 + line_offsets 설정
     if (options.sourcemap) {
         body_cg.line_offsets = module.line_offsets;
-        try body_cg.addSourceFile(parent.makeModuleId(module.path, options.root_dir));
+        try body_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
     }
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
