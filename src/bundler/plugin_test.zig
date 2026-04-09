@@ -159,7 +159,8 @@ test "PluginRunner: generateBundle all executed" {
 // --- transform 훅 통합 테스트 ---
 
 fn integrationTransformHook(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
-    return std.mem.concat(allocator, u8, &.{ "/* PLUGIN_TRANSFORM */\n", code }) catch return error.OutOfMemory;
+    // 파싱 전에 호출되므로 실행 가능한 문을 삽입 (주석은 파서가 제거)
+    return std.mem.concat(allocator, u8, &.{ "var __PLUGIN_TRANSFORM__ = true;\n", code }) catch return error.OutOfMemory;
 }
 
 test "Plugin integration: transform hook modifies output" {
@@ -183,8 +184,8 @@ test "Plugin integration: transform hook modifies output" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    // transform 훅이 삽입한 마커가 출력에 포함되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* PLUGIN_TRANSFORM */") != null);
+    // transform 훅이 삽입한 변수 선언이 출력에 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__PLUGIN_TRANSFORM__") != null);
     try std.testing.expect(!result.hasErrors());
 }
 
@@ -251,11 +252,11 @@ test "Plugin integration: no plugins preserves existing behavior" {
 // --- 다중 플러그인 체이닝 통합 테스트 ---
 
 fn chainTransformA(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
-    return std.mem.concat(allocator, u8, &.{ "/* CHAIN_A */\n", code }) catch return error.OutOfMemory;
+    return std.mem.concat(allocator, u8, &.{ "var CHAIN_A = true;\n", code }) catch return error.OutOfMemory;
 }
 
 fn chainTransformB(_: ?*anyopaque, code: []const u8, _: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
-    return std.mem.concat(allocator, u8, &.{ "/* CHAIN_B */\n", code }) catch return error.OutOfMemory;
+    return std.mem.concat(allocator, u8, &.{ "var CHAIN_B = true;\n", code }) catch return error.OutOfMemory;
 }
 
 test "Plugin integration: multiple plugins chain transforms" {
@@ -348,4 +349,48 @@ test "Plugin integration: load null falls through to filesystem" {
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const z = 77") != null);
     try std.testing.expect(!result.hasErrors());
+}
+
+// --- transform 훅이 유저 소스 파일(non-node_modules)에도 호출되는지 테스트 (#964) ---
+
+var transform_all_call_count: usize = 0;
+var transform_all_user_file_seen: bool = false;
+
+fn countingTransformHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    transform_all_call_count += 1;
+    if (std.mem.indexOf(u8, id, "node_modules") == null) {
+        transform_all_user_file_seen = true;
+    }
+    return allocator.dupe(u8, code) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: transform hook is called for user source files (#964)" {
+    transform_all_call_count = 0;
+    transform_all_user_file_seen = false;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const hello = 'world';");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "count-transform", .transform = countingTransformHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // transform 훅이 최소 1번 호출되어야 함
+    try std.testing.expect(transform_all_call_count > 0);
+    // 유저 소스 파일(non-node_modules)에 대해 호출되어야 함
+    try std.testing.expect(transform_all_user_file_seen);
 }

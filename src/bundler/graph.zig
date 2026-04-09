@@ -784,6 +784,23 @@ pub const ModuleGraph = struct {
             module.source = source;
         }
 
+        // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
+        // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
+        // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
+        if (self.plugins.len > 0) {
+            const runner = plugin_mod.PluginRunner.init(self.plugins);
+            const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
+                error.PluginFailed => null,
+                error.OutOfMemory => {
+                    module.state = .ready;
+                    return;
+                },
+            };
+            if (transform_result) |result| {
+                module.source = result;
+            }
+        }
+
         // Scanner + Parser (arena 할당)
         var scanner = Scanner.init(arena_alloc, module.source) catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Scanner initialization failed", null);

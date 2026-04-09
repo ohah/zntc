@@ -798,7 +798,7 @@ pub fn buildDevMetadataForAst(
         if (info.default_local == null and info.namespace_local == null and info.named_count == 0) continue;
 
         const resolved_mod = @intFromEnum(rec.resolved);
-        // dev_id: emitDevBundle 진입 시 한 번 계산된 모듈 ID (ID 일원화)
+        // dev_id: 번들 진입 시 한 번 계산된 모듈 ID (ID 일원화)
         const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].dev_id else rec.specifier;
 
         // CJS 타겟이면 __toESM 래핑 (default/namespace import에서 CJS interop 필요)
