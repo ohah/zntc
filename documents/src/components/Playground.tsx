@@ -100,20 +100,35 @@ function doTranspile(
   }
 }
 
-export default function Playground() {
-  const [input, setInput] = useState(() => {
-    if (typeof window !== "undefined") {
-      const hash = window.location.hash.slice(1);
-      if (hash) {
-        try { return decodeURIComponent(escape(atob(hash))); } catch { /* ignore */ }
-      }
+/** URL hash에서 코드와 옵션을 디코딩한다.
+ *  - 새 포맷: JSON { code, options } → base64
+ *  - 구 포맷: 코드만 base64 (하위 호환)
+ */
+function decodeHash(): { code: string; options?: Partial<Options> } {
+  if (typeof window === "undefined") return { code: DEFAULT_CODE };
+  const hash = window.location.hash.slice(1);
+  if (!hash) return { code: DEFAULT_CODE };
+  try {
+    const decoded = decodeURIComponent(escape(atob(hash)));
+    // JSON 형식이면 새 포맷
+    if (decoded.startsWith("{")) {
+      const parsed = JSON.parse(decoded);
+      return { code: parsed.code || DEFAULT_CODE, options: parsed.options };
     }
-    return DEFAULT_CODE;
-  });
+    // 구 포맷: 코드만
+    return { code: decoded };
+  } catch {
+    return { code: DEFAULT_CODE };
+  }
+}
+
+export default function Playground() {
+  const hashData = decodeHash();
+  const [input, setInput] = useState(hashData.code);
   const [output, setOutput] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [options, setOptions] = useState<Options>(DEFAULT_OPTIONS);
+  const [options, setOptions] = useState<Options>({ ...DEFAULT_OPTIONS, ...hashData.options });
   const [showConfig, setShowConfig] = useState(true);
   const [outputTab, setOutputTab] = useState<"code" | "sourcemap">("code");
   const transpileFnRef = useRef<TranspileFn | undefined>(undefined);
@@ -216,7 +231,17 @@ export default function Playground() {
   }
 
   function handleShare() {
-    const encoded = btoa(unescape(encodeURIComponent(input)));
+    // 기본값과 다른 옵션만 포함하여 URL을 짧게 유지
+    const changedOpts: Partial<Options> = {};
+    for (const [key, val] of Object.entries(options)) {
+      if (val !== (DEFAULT_OPTIONS as any)[key]) {
+        (changedOpts as any)[key] = val;
+      }
+    }
+    const payload = Object.keys(changedOpts).length > 0
+      ? JSON.stringify({ code: input, options: changedOpts })
+      : input; // 옵션이 기본값이면 구 포맷 유지 (하위 호환)
+    const encoded = btoa(unescape(encodeURIComponent(payload)));
     const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
     navigator.clipboard.writeText(url);
   }
