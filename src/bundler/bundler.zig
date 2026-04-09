@@ -655,7 +655,7 @@ pub const Bundler = struct {
                 if (std.fs.cwd().readFileAlloc(self.allocator, full_path, 1024 * 1024)) |r| break :blk2 r else |_| {}
                 // CWD 기준
                 break :blk2 std.fs.cwd().readFileAlloc(self.allocator, dev_path, 1024 * 1024) catch {
-                    std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
+                    std.log.warn("zts: react-refresh not found — install react-refresh for HMR (searched: {s}/{s} and {s})", .{ entry_dir, dev_path, dev_path });
                     break :blk;
                 };
             };
