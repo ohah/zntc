@@ -385,7 +385,7 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAcces
 // HMR (Dev Server)
 // ============================================================
 
-/// HMR 런타임: 롤리팝(rolldown DevRuntime) 패턴 기반.
+/// HMR 런타임: 모듈별 $RefreshReg$ save/restore + globalEvalWithSourceUrl 기반.
 /// dev mode 번들 상단에 주입된다.
 ///
 /// 구조:
@@ -410,7 +410,7 @@ pub const HMR_RUNTIME =
     \\  try { var r = require("react-refresh/runtime"); __zts_g.__ReactRefresh = r; __zts_g.__REACT_REFRESH_RUNTIME__ = r; return r; } catch(e) {}
     \\  return null;
     \\}
-    \\// isReactRefreshBoundary: 모든 export가 React 컴포넌트면 true (롤리팝 패턴).
+    \\// isReactRefreshBoundary: 모든 export가 React 컴포넌트면 true.
     \\// mixed export 모듈은 HMR 대상에서 제외 → full reload.
     \\function __zts_isReactRefreshBoundary(moduleExports) {
     \\  var rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();

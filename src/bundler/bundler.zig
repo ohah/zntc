@@ -462,7 +462,7 @@ pub const Bundler = struct {
 
         var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
 
-        // 0. RN dev mode: InitializeCore prelude 자동 주입 (롤리팝 방식).
+        // 0. RN dev mode: InitializeCore prelude 자동 주입.
         // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
         // __ReactRefresh 글로벌은 HMR 런타임의 __zts_resolveRefresh()가
         // $RefreshReg$ 첫 호출 시 lazy하게 require("react-refresh/runtime")으로 설정.

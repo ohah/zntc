@@ -1409,7 +1409,7 @@ test "Bundler: dev mode refresh registration" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"App\"") != null);
     // var _c; 핸들 변수 선언
     try std.testing.expect(std.mem.indexOf(u8, output, "_c") != null);
-    // _s() hook signature 호출은 더 이상 주입하지 않음 (Metro/롤리팝 방식)
+    // _s() hook signature 호출은 더 이상 주입하지 않음 (Metro 방식)
     // (HMR 런타임의 $RefreshSig$ 글로벌 등록은 있지만, 모듈 코드 내 _s() 호출은 없어야 함)
     try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") == null);
 }
