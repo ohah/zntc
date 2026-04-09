@@ -464,8 +464,8 @@ pub const Bundler = struct {
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입 (롤리팝 방식).
         // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
-        // __ReactRefresh 글로벌은 별도 polyfill(2.8단계)에서 설정.
-        // polyfill은 글로벌만 설정하고 injectIntoGlobalHook은 호출하지 않음 (시점 문제).
+        // __ReactRefresh 글로벌은 HMR 런타임의 __zts_resolveRefresh()가
+        // $RefreshReg$ 첫 호출 시 lazy하게 require("react-refresh/runtime")으로 설정.
         const original_rbm = self.options.run_before_main;
         defer {
             if (self.options.run_before_main.ptr != original_rbm.ptr) {
@@ -635,63 +635,51 @@ pub const Bundler = struct {
             });
         }
 
-        // 2.8. React Refresh 런타임 주입 (dev mode)
-        // 2.8. React Refresh 런타임 주입 (dev mode)
-        // HMR 런타임의 $RefreshReg$/$RefreshSig$가 __ReactRefresh 글로벌을 참조한다.
-        if (self.options.dev_mode and self.options.react_refresh) blk: {
-            if (self.options.platform == .react_native) {
-                // RN: InitializeCore가 react-refresh/runtime을 이미 모듈로 로드하므로
-                // 파일을 직접 읽지 않고 require()로 글로벌에 노출하는 polyfill만 주입.
-                // Bun/pnpm의 symlink 문제를 우회하고 번들러의 모듈 해석을 활용.
-                try polyfill_entries.append(self.allocator, .{
-                    .name = "react-refresh-global",
-                    .content = "(function(){" ++
-                        "var __g=typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:this;" ++
-                        "try{var _rr=require(\"react-refresh/runtime\");" ++
-                        "__g.__ReactRefresh=_rr;__g.__REACT_REFRESH_RUNTIME__=_rr;" ++
-                        "}catch(e){}" ++
-                        "})();\n",
-                });
-            } else {
-                // 브라우저: react-refresh/runtime을 파일에서 읽어 polyfill로 주입 + injectIntoGlobalHook 호출.
-                const entry_dir = if (self.options.entry_points.len > 0)
-                    std.fs.path.dirname(self.options.entry_points[0]) orelse "."
-                else
-                    ".";
-                const dev_path = "node_modules/react-refresh/cjs/react-refresh-runtime.development.js";
-                const raw = blk2: {
-                    const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
-                    defer self.allocator.free(full_path);
-                    if (std.fs.cwd().realpathAlloc(self.allocator, full_path)) |real| {
-                        defer self.allocator.free(real);
-                        if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
-                    } else |_| {}
-                    if (std.fs.cwd().realpathAlloc(self.allocator, dev_path)) |real| {
-                        defer self.allocator.free(real);
-                        if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
-                    } else |_| {}
-                    std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
-                    break :blk;
-                };
-                const preamble =
-                    "(function(){" ++
-                    "var exports = {};" ++
-                    "var module = { exports: exports };" ++
-                    "var process = { env: { NODE_ENV: \"development\" } };\n";
-                const epilogue =
-                    "\nvar __r = module.exports;" ++
-                    "var __g = typeof globalThis !== \"undefined\" ? globalThis : typeof global !== \"undefined\" ? global : window;" ++
-                    "__g.__ReactRefresh = __r;" ++
-                    "__g.__REACT_REFRESH_RUNTIME__ = __r;" ++
-                    "if (__r.injectIntoGlobalHook) __r.injectIntoGlobalHook(__g);" ++
-                    "})();\n";
-                const wrapped = std.mem.concat(self.allocator, u8, &.{ preamble, raw, epilogue }) catch break :blk;
-                self.allocator.free(raw);
-                try polyfill_entries.append(self.allocator, .{
-                    .name = "react-refresh-runtime",
-                    .content = wrapped,
-                });
-            }
+        // 2.8. React Refresh 런타임 주입 (dev mode, 브라우저만)
+        // RN: HMR 런타임의 __zts_resolveRefresh()가 모듈 컨텍스트에서 lazy하게
+        //      require("react-refresh/runtime")을 호출하여 __ReactRefresh 글로벌에 캐싱.
+        //      polyfill 불필요 (polyfill 시점에는 모듈 시스템 미초기화).
+        // 브라우저: react-refresh/runtime을 파일에서 읽어 polyfill로 주입.
+        if (self.options.dev_mode and self.options.react_refresh and
+            self.options.platform != .react_native)
+        blk: {
+            const entry_dir = if (self.options.entry_points.len > 0)
+                std.fs.path.dirname(self.options.entry_points[0]) orelse "."
+            else
+                ".";
+            const dev_path = "node_modules/react-refresh/cjs/react-refresh-runtime.development.js";
+            const raw = blk2: {
+                const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
+                defer self.allocator.free(full_path);
+                if (std.fs.cwd().realpathAlloc(self.allocator, full_path)) |real| {
+                    defer self.allocator.free(real);
+                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                } else |_| {}
+                if (std.fs.cwd().realpathAlloc(self.allocator, dev_path)) |real| {
+                    defer self.allocator.free(real);
+                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                } else |_| {}
+                std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
+                break :blk;
+            };
+            const preamble =
+                "(function(){" ++
+                "var exports = {};" ++
+                "var module = { exports: exports };" ++
+                "var process = { env: { NODE_ENV: \"development\" } };\n";
+            const epilogue =
+                "\nvar __r = module.exports;" ++
+                "var __g = typeof globalThis !== \"undefined\" ? globalThis : typeof global !== \"undefined\" ? global : window;" ++
+                "__g.__ReactRefresh = __r;" ++
+                "__g.__REACT_REFRESH_RUNTIME__ = __r;" ++
+                "if (__r.injectIntoGlobalHook) __r.injectIntoGlobalHook(__g);" ++
+                "})();\n";
+            const wrapped = std.mem.concat(self.allocator, u8, &.{ preamble, raw, epilogue }) catch break :blk;
+            self.allocator.free(raw);
+            try polyfill_entries.append(self.allocator, .{
+                .name = "react-refresh-runtime",
+                .content = wrapped,
+            });
         }
 
         // 3. 번들 출력 생성
