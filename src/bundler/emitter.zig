@@ -239,13 +239,7 @@ pub fn emitWithTreeShaking(
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
-    // 소스맵: 각 폴리필의 라인 범위를 기록하여 identity mapping + x_google_ignoreList 생성.
-    const PolyfillRange = struct { start_line: u32, line_count: u32, name: []const u8, content: []const u8 };
-    var polyfill_ranges: [32]PolyfillRange = undefined;
-    var polyfill_count: usize = 0;
-
     for (options.polyfills) |poly| {
-        const start_line: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
         if (!options.minify_whitespace) {
             try output.appendSlice(allocator, "// --- polyfill: ");
             try output.appendSlice(allocator, poly.name);
@@ -256,17 +250,6 @@ pub fn emitWithTreeShaking(
         try output.appendSlice(allocator, poly.content);
         if (!options.minify_whitespace) try output.append(allocator, '\n');
         try output.appendSlice(allocator, "})();\n");
-
-        if (options.sourcemap and polyfill_count < polyfill_ranges.len) {
-            const end_line: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
-            polyfill_ranges[polyfill_count] = .{
-                .start_line = start_line,
-                .line_count = end_line - start_line,
-                .name = poly.name,
-                .content = poly.content,
-            };
-            polyfill_count += 1;
-        }
     }
 
     // 런타임 헬퍼 주입
@@ -514,21 +497,21 @@ pub fn emitWithTreeShaking(
             }
         }
 
-        // 폴리필 identity mapping + x_google_ignoreList 추가.
-        // 각 폴리필 파일을 sources에 등록하고, 모든 줄에 identity mapping 생성.
-        // DevTools가 폴리필 프레임을 자동으로 무시하고 유저 코드 프레임을 표시.
-        for (polyfill_ranges[0..polyfill_count]) |pr| {
-            const src_idx = try sm.addSource(pr.name);
+        // prologue 전체(banner/polyfill/runtime helper/HMR runtime)를 가상 소스 "<runtime>"으로 매핑.
+        // DevTools가 prologue 프레임을 자동으로 무시하고 유저 코드 프레임을 표시.
+        // prologue_lines가 0이면 prologue가 없으므로 스킵.
+        if (prologue_lines > 0) {
+            const runtime_src_idx = try sm.addSource("<runtime>");
             if (options.sources_content) {
-                try sm.addSourceContent(pr.content);
+                try sm.addSourceContent("// zts bundle runtime (polyfills, helpers)\n");
             }
-            try sm.addIgnoredSource(src_idx);
-            // identity mapping: 각 줄을 원본의 같은 줄에 매핑
-            for (0..pr.line_count) |line| {
+            try sm.addIgnoredSource(runtime_src_idx);
+            // identity mapping: prologue의 모든 줄을 <runtime>에 매핑
+            for (0..prologue_lines) |line| {
                 try sm.addMapping(.{
-                    .generated_line = pr.start_line + @as(u32, @intCast(line)),
+                    .generated_line = @intCast(line),
                     .generated_column = 0,
-                    .source_index = src_idx,
+                    .source_index = runtime_src_idx,
                     .original_line = @intCast(line),
                     .original_column = 0,
                 });

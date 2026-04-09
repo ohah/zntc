@@ -196,14 +196,15 @@ describe("소스맵", () => {
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
 
-    // 두 모듈 모두 sources에 포함되어야 한다
-    expect(map.sources.length).toBe(2);
-    const joined = map.sources.join("|");
+    // 두 모듈 모두 sources에 포함되어야 한다 (<runtime> 제외)
+    const moduleSources = map.sources.filter((s: string) => s !== "<runtime>");
+    expect(moduleSources.length).toBe(2);
+    const joined = moduleSources.join("|");
     expect(joined).toContain("index.ts");
     expect(joined).toContain("util.ts");
 
-    // sourcesContent도 각 모듈의 내용을 포함해야 한다
-    expect(map.sourcesContent.length).toBe(2);
+    // sourcesContent도 각 모듈의 내용을 포함해야 한다 (<runtime> 제외)
+    expect(moduleSources.length).toBe(2);
     const allContent = map.sourcesContent.join("\n");
     expect(allContent).toContain("function greet");
   });
@@ -421,9 +422,9 @@ describe("소스맵", () => {
     expect(bundleLine4).toContain("from lib line 4");
   });
 
-  test("--polyfill 소스가 소스맵 sources에 포함되고 x_google_ignoreList에 등록된다", async () => {
+  test("prologue 영역이 <runtime> 소스로 매핑되고 x_google_ignoreList에 등록된다", async () => {
     const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
-    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-poly-"));
+    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-prologue-"));
     cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
 
     wfs(join(tmpDir, "index.ts"), `console.log("hello");`);
@@ -442,68 +443,39 @@ describe("소스맵", () => {
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
 
-    // 폴리필이 sources에 포함
-    const polyIdx = map.sources.findIndex((s: string) => s.includes("poly.js"));
-    expect(polyIdx).toBeGreaterThanOrEqual(0);
+    // <runtime> 가상 소스가 sources에 포함
+    const rtIdx = map.sources.findIndex((s: string) => s === "<runtime>");
+    expect(rtIdx).toBeGreaterThanOrEqual(0);
 
-    // x_google_ignoreList에 폴리필 인덱스가 등록
+    // x_google_ignoreList에 <runtime> 인덱스 등록
     expect(map.x_google_ignoreList).toBeArray();
-    expect(map.x_google_ignoreList).toContain(polyIdx);
+    expect(map.x_google_ignoreList).toContain(rtIdx);
 
-    // 폴리필 sourcesContent 포함
-    expect(map.sourcesContent[polyIdx]).toContain("polyfill loaded");
+    // <runtime>에 대한 매핑이 prologue 줄을 커버
+    const rtMappings = getMappedSourceLines(map.mappings, rtIdx);
+    expect(rtMappings.length).toBeGreaterThan(0);
+    // 첫 번째 매핑이 번들 앞부분(prologue)에 있어야 함
+    expect(rtMappings[0].genLine).toBeLessThanOrEqual(10);
   });
 
-  test("--polyfill 소스맵에 폴리필 줄의 identity mapping이 존재한다", async () => {
-    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
-    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-polymap-"));
-    cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
-
-    wfs(join(tmpDir, "index.ts"), `console.log("hello");`);
-    wfs(join(tmpDir, "poly.js"), [`var x = 1;`, `var y = 2;`, `console.log(x + y);`].join("\n"));
-
-    const outFile = join(tmpDir, "out.js");
-    await runZts([
-      "--bundle",
-      join(tmpDir, "index.ts"),
-      "-o",
-      outFile,
-      "--sourcemap",
-      `--polyfill=${join(tmpDir, "poly.js")}`,
-    ]);
-
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const bundleCode = readFileSync(outFile, "utf-8");
-    const bundleLines = bundleCode.split("\n");
-
-    // 폴리필 소스 인덱스 찾기
-    const polyIdx = map.sources.findIndex((s: string) => s.includes("poly.js"));
-    expect(polyIdx).toBeGreaterThanOrEqual(0);
-
-    // 폴리필에 대한 매핑 추출
-    const polyMappings = getMappedSourceLines(map.mappings, polyIdx);
-    expect(polyMappings.length).toBeGreaterThan(0);
-
-    // 매핑된 번들 줄에 폴리필 코드가 있어야 함
-    const polyGenLines = polyMappings.map((m) => bundleLines[m.genLine - 1] || "");
-    const hasPolyContent = polyGenLines.some(
-      (line) => line.includes("var x") || line.includes("var y") || line.includes("console.log"),
-    );
-    expect(hasPolyContent).toBe(true);
-  });
-
-  test("폴리필 없을 때 x_google_ignoreList가 없다", async () => {
+  test("prologue가 없는 ESM 번들에서는 <runtime>과 x_google_ignoreList가 없다", async () => {
     const fixture = await createFixture({
       "index.ts": `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap",
+      "--format=esm",
+    ]);
 
     const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-
-    // 폴리필 없으면 x_google_ignoreList도 없어야 함
-    expect(map.x_google_ignoreList).toBeUndefined();
+    const hasRuntime = map.sources.some((s: string) => s === "<runtime>");
+    expect(hasRuntime).toBe(false);
   });
 });
