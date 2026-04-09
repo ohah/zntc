@@ -240,7 +240,6 @@ pub fn emitEsmWrappedModule(
             hoist_cg.line_offsets = module.line_offsets;
             try hoist_cg.addSourceFile(parent.makeModuleId(module.path, options.root_dir));
         }
-        // 호이스팅 코드 삽입 전 줄 수 (소스맵 오프셋)
         hoist_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         const hoisted_code = try hoist_cg.generateStatements(root, hoisted_stmts.items);
         try wrapped.appendSlice(allocator, hoisted_code);
@@ -574,7 +573,7 @@ pub fn emitEsmWrappedModule(
     const has_refresh = options.dev_mode and options.react_refresh and module.dev_id.len > 0 and
         std.mem.indexOf(u8, body_code, "$RefreshReg$(_") != null;
 
-    // body code 삽입 전 줄 수 (소스맵 preamble 오프셋 — body 직전에 갱신)
+    // minified는 한 줄이므로 body_preamble_lines = 0, non-minified에서 갱신
     var body_preamble_lines: u32 = 0;
 
     if (options.minify_whitespace) {
@@ -644,7 +643,6 @@ pub fn emitEsmWrappedModule(
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, star_init_buf.items);
         }
-        // body code 삽입 전 줄 수 캡처 (소스맵 preamble 오프셋용)
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
@@ -673,37 +671,21 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    // 소스맵 매핑 수집: hoisted + body 매핑을 병합
-    // 각각 wrapped 내에서의 삽입 위치(줄 수)를 오프셋으로 적용한다.
+    // 소스맵 매핑 수집: hoisted + body 매핑을 병합하여 단일 슬라이스로 할당.
     var mappings: ?[]const SourceMap.Mapping = null;
     {
-        var merged: std.ArrayList(SourceMap.Mapping) = .empty;
-        defer merged.deinit(allocator);
-
-        // hoisted function 매핑 (var/exports 선언 뒤, __esm 앞)
-        if (hoist_mappings) |hm| {
-            try merged.ensureTotalCapacity(allocator, hm.len);
-            for (hm) |m| {
-                var adjusted = m;
-                adjusted.generated_line += hoist_preamble_lines;
-                merged.appendAssumeCapacity(adjusted);
+        const hm = hoist_mappings orelse &[_]SourceMap.Mapping{};
+        const bm = if (body_cg.sm_builder) |*sm| sm.mappings.items else &[_]SourceMap.Mapping{};
+        const total = hm.len + bm.len;
+        if (total > 0) {
+            const buf = try allocator.alloc(SourceMap.Mapping, total);
+            for (hm, 0..) |m, i| {
+                buf[i] = .{ .generated_line = m.generated_line + hoist_preamble_lines, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
             }
-        }
-
-        // body 매핑 (__esm factory 안)
-        if (body_cg.sm_builder) |*sm| {
-            if (sm.mappings.items.len > 0) {
-                try merged.ensureUnusedCapacity(allocator, sm.mappings.items.len);
-                for (sm.mappings.items) |m| {
-                    var adjusted = m;
-                    adjusted.generated_line += body_preamble_lines;
-                    merged.appendAssumeCapacity(adjusted);
-                }
+            for (bm, 0..) |m, i| {
+                buf[hm.len + i] = .{ .generated_line = m.generated_line + body_preamble_lines, .generated_column = m.generated_column, .source_index = m.source_index, .original_line = m.original_line, .original_column = m.original_column };
             }
-        }
-
-        if (merged.items.len > 0) {
-            mappings = try allocator.dupe(SourceMap.Mapping, merged.items);
+            mappings = buf;
         }
     }
 
