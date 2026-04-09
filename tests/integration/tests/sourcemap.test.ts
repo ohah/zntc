@@ -302,4 +302,122 @@ describe("소스맵", () => {
         greetBundleLine.includes("console"),
     ).toBe(true);
   });
+
+  test("TypeScript type 선언이 있어도 소스맵 줄 번호가 정확하다 (#954)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import { App } from "./app";\nconsole.log(App("test"));`,
+      "app.ts": [
+        `import React from "react";`, // line 1
+        ``, // line 2
+        `type Props = {`, // line 3
+        `  name: string;`, // line 4
+        `};`, // line 5
+        ``, // line 6
+        `interface Config {`, // line 7
+        `  debug: boolean;`, // line 8
+        `}`, // line 9
+        ``, // line 10
+        `export function App(name: string) {`, // line 11
+        `  console.log("line 12: inside App");`, // line 12
+        `  console.log("line 13: name is", name);`, // line 13
+        `  return "hello " + name;`, // line 14
+        `}`, // line 15
+      ].join("\n"),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+
+    const appIdx = map.sources.findIndex((s: string) => s.includes("app.ts"));
+    expect(appIdx).toBeGreaterThanOrEqual(0);
+
+    const appMappings = getMappedSourceLines(map.mappings, appIdx);
+    expect(appMappings.length).toBeGreaterThan(0);
+
+    // 매핑된 소스 라인 집합
+    const mappedLines = new Set(appMappings.map((m) => m.srcLine));
+
+    // function App은 line 11에 있어야 함 (type/interface 때문에 밀리면 안 됨)
+    expect(mappedLines.has(11)).toBe(true);
+    // console.log "line 12" 매핑 존재
+    expect(mappedLines.has(12)).toBe(true);
+    // console.log "line 13" 매핑 존재
+    expect(mappedLines.has(13)).toBe(true);
+
+    // type 선언 라인(3-9)은 매핑에 없어야 함 (삭제됨)
+    expect(mappedLines.has(3)).toBe(false);
+    expect(mappedLines.has(4)).toBe(false);
+    expect(mappedLines.has(7)).toBe(false);
+    expect(mappedLines.has(8)).toBe(false);
+  });
+
+  test("단일 파일 트랜스파일에서도 type 선언 후 줄 번호가 정확하다 (#954)", async () => {
+    const fixture = await createFixture({
+      "input.ts": [
+        `type X = { a: number };`, // line 1
+        `const val = 42;`, // line 2
+        `console.log(val);`, // line 3
+      ].join("\n"),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts([join(fixture.dir, "input.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const srcIdx = map.sources.findIndex((s: string) => s.includes("input.ts"));
+    expect(srcIdx).toBeGreaterThanOrEqual(0);
+
+    const mappings = getMappedSourceLines(map.mappings, srcIdx);
+    const mappedLines = new Set(mappings.map((m) => m.srcLine));
+
+    // const val = 42 → line 2
+    expect(mappedLines.has(2)).toBe(true);
+    // console.log(val) → line 3
+    expect(mappedLines.has(3)).toBe(true);
+    // type X → line 1 (삭제됨, 매핑 없어야 함)
+    expect(mappedLines.has(1)).toBe(false);
+  });
+
+  test("번들 소스맵에서 console.log가 올바른 원본 줄에 매핑된다", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import { hello } from "./lib";\nhello();`,
+      "lib.ts": [
+        `export function hello() {`, // line 1
+        `  const x = 1;`, // line 2
+        `  console.log("from lib line 3");`, // line 3
+        `  console.log("from lib line 4");`, // line 4
+        `}`, // line 5
+      ].join("\n"),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const bundleCode = readFileSync(outFile, "utf-8");
+    const bundleLines = bundleCode.split("\n");
+
+    const libIdx = map.sources.findIndex((s: string) => s.includes("lib.ts"));
+    expect(libIdx).toBeGreaterThanOrEqual(0);
+
+    const libMappings = getMappedSourceLines(map.mappings, libIdx);
+
+    // console.log("from lib line 3") → src line 3에 매핑
+    const line3Maps = libMappings.filter((m) => m.srcLine === 3);
+    expect(line3Maps.length).toBeGreaterThan(0);
+    // 해당 번들 줄에 실제로 "from lib line 3" 내용이 있어야 함
+    const bundleLine3 = bundleLines[line3Maps[0].genLine - 1] || "";
+    expect(bundleLine3).toContain("from lib line 3");
+
+    // console.log("from lib line 4") → src line 4에 매핑
+    const line4Maps = libMappings.filter((m) => m.srcLine === 4);
+    expect(line4Maps.length).toBeGreaterThan(0);
+    const bundleLine4 = bundleLines[line4Maps[0].genLine - 1] || "";
+    expect(bundleLine4).toContain("from lib line 4");
+  });
 });
