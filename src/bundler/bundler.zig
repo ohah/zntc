@@ -463,10 +463,9 @@ pub const Bundler = struct {
         var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입 (롤리팝 방식).
-        // RN에서 react-refresh는 InitializeCore → setUpReactRefresh에서 설정된다.
-        // InitializeCore를 run_before_main에 추가하면 모듈 그래프 안에서 엔트리 전에 실행되어
-        // __ReactRefresh가 컴포넌트 모듈보다 먼저 초기화된다.
-        // (polyfill 단계에서 injectIntoGlobalHook을 호출하면 RN 네이티브 런타임 충돌)
+        // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
+        // __ReactRefresh 글로벌은 별도 polyfill(2.8단계)에서 설정.
+        // polyfill은 글로벌만 설정하고 injectIntoGlobalHook은 호출하지 않음 (시점 문제).
         const original_rbm = self.options.run_before_main;
         defer {
             if (self.options.run_before_main.ptr != original_rbm.ptr) {
