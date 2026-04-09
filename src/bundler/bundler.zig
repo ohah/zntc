@@ -647,17 +647,23 @@ pub const Bundler = struct {
             else
                 ".";
             const dev_path = "node_modules/react-refresh/cjs/react-refresh-runtime.development.js";
-            // entry_dir/node_modules 또는 CWD/node_modules에서 탐색
+            // entry_dir/node_modules 또는 CWD/node_modules에서 탐색.
+            // Bun은 node_modules에 symlink를 사용하므로 realpathAlloc으로 해석 후 읽기.
             const raw = blk2: {
                 // entry_dir 기준
                 const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
                 defer self.allocator.free(full_path);
-                if (std.fs.cwd().readFileAlloc(self.allocator, full_path, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                if (std.fs.cwd().realpathAlloc(self.allocator, full_path)) |real| {
+                    defer self.allocator.free(real);
+                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                } else |_| {}
                 // CWD 기준
-                break :blk2 std.fs.cwd().readFileAlloc(self.allocator, dev_path, 1024 * 1024) catch {
-                    std.log.warn("zts: react-refresh not found — install react-refresh for HMR (searched: {s}/{s} and {s})", .{ entry_dir, dev_path, dev_path });
-                    break :blk;
-                };
+                if (std.fs.cwd().realpathAlloc(self.allocator, dev_path)) |real| {
+                    defer self.allocator.free(real);
+                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                } else |_| {}
+                std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
+                break :blk;
             };
             const preamble =
                 "(function(){" ++
