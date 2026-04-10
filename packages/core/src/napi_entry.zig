@@ -444,8 +444,8 @@ const NapiPlugin = struct {
         ctx.mutex.lock();
         ctx.response = resp;
         ctx.response_ready = true;
-        ctx.mutex.unlock();
         ctx.cond.signal();
+        ctx.mutex.unlock();
     }
 
     /// Promise의 .then() 콜백 — resolve 시 결과를 파싱하여 워커 스레드에 전달
@@ -551,10 +551,15 @@ const NapiPlugin = struct {
         }
 
         // 결과 대기 (메인 스레드에서 callJsCallback이 ctx에 결과를 씀)
+        // 30초 타임아웃: Promise가 resolve/reject되지 않는 경우 hang 방지
         ctx.mutex.lock();
         defer ctx.mutex.unlock();
+        const timeout_ns: u64 = 30 * std.time.ns_per_s;
         while (!ctx.response_ready) {
-            ctx.cond.wait(&ctx.mutex);
+            ctx.cond.timedWait(&ctx.mutex, timeout_ns) catch {
+                // 타임아웃: 플러그인 응답 없음으로 처리
+                return null;
+            };
         }
 
         return ctx.response;
