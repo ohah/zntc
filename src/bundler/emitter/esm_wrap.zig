@@ -104,15 +104,11 @@ pub fn emitEsmWrappedModule(
 
         switch (effective_tag) {
             .function_declaration => {
-                // dev 모드: function을 init 안에 유지. import binding이 rename된 경우
-                // var로 호이스팅되지만 할당은 init 안에서 발생하므로,
-                // 호이스팅된 function이 init 전에 참조하면 undefined.
-                // prod: rolldown 방식 — function은 __esm 밖으로 호이스팅.
-                if (options.dev_mode) {
-                    try body_stmts.append(allocator, raw_idx);
-                } else {
-                    try hoisted_stmts.append(allocator, raw_idx);
-                }
+                // rolldown 방식: function은 __esm 밖으로 호이스팅.
+                // __export의 lazy getter가 외부 스코프에서 함수명을 참조하므로
+                // function이 외부 스코프에 있어야 함.
+                // function 본문의 import binding은 호출 시점에 init 완료 후이므로 유효.
+                try hoisted_stmts.append(allocator, raw_idx);
             },
             .class_declaration => {
                 // class는 block-scoped → var 호이스팅 + init 안에서 할당문으로 변환.
