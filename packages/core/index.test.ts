@@ -682,7 +682,7 @@ describe("@zts/core 플러그인 심화", () => {
     const countPlugin: ZtsPlugin = {
       name: "count-transforms",
       setup(build) {
-        build.onTransform({ filter: /\.ts$/ }, (args) => {
+        build.onTransform({ filter: /\.ts$/ }, (_args) => {
           transformCount++;
           return null; // 변환 없이 카운트만
         });

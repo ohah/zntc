@@ -102,23 +102,84 @@ Node.js (JS 플러그인 호스트)
   └─ @zts/plugin npm 패키지 (JSON 프로토콜 래퍼)
 ```
 
-### 3단계: N-API addon 방식 (난이도 XL, 2~3주, 선택적)
-- Zig를 .node shared library로 빌드 → Node.js에서 `require('./zts.node')` 로딩
-- in-process 호출로 IPC 오버헤드 제거 (호출당 ~1~5μs)
-- Plugin 인터페이스 동일 — 전송 계층만 subprocess → N-API로 교체
-- 전체 파일 대상 transform 플러그인 등 호출 빈도 높은 경우에 유효
-- Zig에 napi-rs 같은 성숙한 바인딩 라이브러리 없음 → N-API C 헤더 직접 사용
+### 3단계: C NAPI 바인딩 ✅ 완료 (#975, #978, #979, #980)
+- `zig build napi` → `.node` 공유 라이브러리 빌드
+- `@zts/core` npm 패키지: `transpile()`, `buildSync()`, `build()` API
+- esbuild 스타일 JS 플러그인: `onResolve`, `onLoad`, `onTransform`
+- `napi_threadsafe_function` + mutex/condvar로 워커 스레드 ↔ 메인 스레드 동기화
+- Node.js + Bun 모두 지원, 80개 테스트 (1240 expect calls)
 
-**2단계 → 3단계 전환 비용**: Plugin 인터페이스가 동일하므로 호출부(resolver, graph, emitter) 수정 불필요.
-전송 계층(JSON IPC → N-API 직접 호출)만 교체. esbuild는 4년간 subprocess 방식으로 프로덕션 운영 중.
+```typescript
+import { init, build } from "@zts/core";
+init();
+const result = await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [{
+    name: "css-plugin",
+    setup(build) {
+      build.onResolve({ filter: /\.css$/ }, args => ({ path: resolve(args.path) }));
+      build.onLoad({ filter: /\.css$/ }, () => ({ contents: 'export default "red"' }));
+    },
+  }],
+});
+```
 
-### 참고: 다른 번들러의 JS 플러그인 아키텍처
-| 번들러 | 방식 | 이유 |
-|--------|------|------|
-| esbuild | subprocess + stdin/stdout JSON | Go는 shared lib 불편, 충분히 빠름 |
-| rolldown | N-API .node addon (napi-rs) | Rust↔Node는 napi-rs로 쉬움 |
-| rspack | N-API .node addon (napi-rs) | 동일 |
-| Bun | JS 런타임 내장 (JavaScriptCore) | 런타임 자체가 목적 |
+**제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` (async)에서만 사용 가능.
+
+### 4단계: Vite/Rollup 호환 어댑터 (예정)
+- Vite/Rollup 플러그인(`resolveId`, `load`, `transform`, `renderChunk`, `generateBundle`)을
+  3단계의 esbuild 스타일 API로 변환하는 JS 어댑터
+- Zig 코어 수정 없이 JS 레이어에서 처리
+- `this.resolve()`, `this.emitFile()` 등 Rollup 컨텍스트 메서드 구현
+
+### 5단계: Tapable 하이브리드 — webpack/Rspack 호환 (예정)
+> 방식 C: Zig에 Tapable 스타일 훅을 네이티브로 구현하고 NAPI로 노출.
+> 네이티브 속도 + webpack 훅 시스템을 동시에 달성하는 것이 목표.
+
+**왜 하이브리드인가:**
+- A (Rspack 방식, 풀 재작성): webpack 호환 90%+이지만 번들러 재설계 필요, ZTS의 단순함/속도 잃을 위험
+- B (어댑터 방식, JS 시뮬레이션): 코어 변경 없지만 플러그인 호출마다 JS 오버헤드
+- **C (하이브리드)**: Zig에 훅 포인트 추가 + NAPI 콜백으로 JS에 노출. 플러그인 없으면 오버헤드 제로
+
+**구현 계획:**
+
+```
+Zig 코어 (번들러 파이프라인에 Tapable 훅 포인트 추가)
+  ↕ NAPI (napi_threadsafe_function)
+JS Compiler/Compilation 객체
+  ├─ compiler.hooks.compilation.tap(...)
+  ├─ compilation.hooks.processAssets.tap(...)
+  └─ compilation.hooks.optimizeChunks.tap(...)
+```
+
+1단계: Compiler/Compilation 기본 훅 (compile, thisCompilation, compilation, make, emit, done)
+2단계: processAssets 6단계 (ADDITIONAL → OPTIMIZE → SUMMARIZE → ...)
+3단계: Module/Chunk 훅 (buildModule, succeedModule, optimizeModules, optimizeChunks)
+4단계: Loader 호환 (module.rules, loader context)
+
+**우선 구현할 webpack 훅 (실무 사용 빈도 순):**
+| 훅 | 사용 빈도 | 용도 |
+|---|---|---|
+| `compiler.hooks.compilation` | 매우 높음 | compilation 객체 접근 |
+| `compilation.hooks.processAssets` | 높음 | 에셋 후처리 (HTML, manifest) |
+| `compiler.hooks.emit` | 높음 | 출력 전 에셋 추가/수정 |
+| `compiler.hooks.done` | 높음 | 빌드 완료 후 콜백 |
+| `module.rules` (loaders) | 매우 높음 | 파일별 변환 (babel-loader 등) |
+| `compiler.hooks.afterPlugins` | 중간 | 플러그인 초기화 후 |
+| `compilation.hooks.optimizeChunks` | 중간 | 청크 최적화 |
+
+**벤치마크 목표:**
+- 플러그인 없음: 현재 ZTS 성능과 동일 (훅 포인트만 조건 분기, 오버헤드 ~0)
+- webpack 플러그인 사용: Rspack과 동등 수준
+
+### 참고: 번들러별 JS 플러그인 아키텍처
+| 번들러 | 방식 | 플러그인 모델 |
+|--------|------|-------------|
+| esbuild | subprocess + JSON IPC | esbuild 전용 (onResolve/onLoad) |
+| rolldown | NAPI (napi-rs) | Rollup 호환 (resolveId/load/transform) |
+| rspack | NAPI (napi-rs) | webpack 호환 (Tapable compiler.hooks) |
+| **ZTS** | **NAPI (C NAPI)** | **esbuild → Vite → webpack 점진적 확장** |
+| Bun | JS 런타임 내장 (JSC) | esbuild 호환 |
 
 ## 플러그인 인터페이스
 ```zig
@@ -151,20 +212,31 @@ pub const Plugin = struct {
 └────────────────────────┴───────────────────────────────────────┘
 ```
 
-## Vite 호환 확장 (후순위)
+## Vite 호환 확장 (4단계)
+- resolveId / load / transform — Rollup 호환 (어댑터로 변환)
+- renderChunk / generateBundle — 출력 단계 훅
 - config / configResolved — 설정 변환
 - configureServer — 서버 커스텀
 - transformIndexHtml — HTML 변환
 - hotUpdate — HMR 업데이트 커스터마이징
 
+## webpack 호환 확장 (5단계)
+- Compiler hooks: compilation, emit, done, afterPlugins
+- Compilation hooks: processAssets (6단계), optimizeChunks, optimizeModules
+- Module/Chunk 객체 노출
+- Loader 시스템 (module.rules, pitch, context)
+
 ## 구현 순서
-1. 플러그인 인터페이스 정의 (Zig struct) — 1단계
-2. 파이프라인에 훅 호출 삽입 (resolver, graph, emitter) — 1단계
-3. Builtin 플러그인 (json, text, asset) — 1단계
-4. subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
-5. @zts/plugin npm 패키지 (JS API 래퍼) — 2단계
-6. N-API .node addon (선택적 성능 최적화) — 3단계
-7. Vite 호환 확장 — 후순위
+1. ✅ 플러그인 인터페이스 정의 (Zig struct) — 1단계
+2. ✅ 파이프라인에 훅 호출 삽입 (resolver, graph, emitter) — 1단계
+3. ✅ Builtin 플러그인 (json, text, asset) — 1단계
+4. ✅ subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
+5. ✅ @zts/plugin npm 패키지 (JS API 래퍼) — 2단계
+6. ✅ C NAPI .node addon + esbuild 스타일 JS 플러그인 — 3단계
+7. Vite/Rollup 플러그인 어댑터 (JS 레이어) — 4단계
+8. Tapable 하이브리드: Zig 훅 포인트 + NAPI 노출 — 5단계
+9. webpack Compiler/Compilation 호환 — 5단계
+10. Loader 시스템 (module.rules) — 5단계
 
 ## 참고
 - Rollup/Rolldown: `references/rolldown/packages/rolldown/src/plugin/index.ts`
