@@ -1031,6 +1031,9 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // `!` 뒤에 `.`, `[`, `(` 가 오면 체이닝 (foo()!.bar)
                 // 줄바꿈 뒤의 `!`는 논리 NOT으로 해석해야 하므로 제외
                 if (self.scanner.token.has_newline_before) break;
+                // non-null assertion은 postfix 연산자이므로 뒤의 `/`는 division이어야 한다.
+                // .bang은 slashIsRegex()에서 regex로 판정되므로 .r_paren으로 오버라이드한다.
+                self.scanner.prev_token_kind = .r_paren;
                 try self.advance();
                 expr = try self.ast.addNode(.{
                     .tag = .ts_non_null_expression,

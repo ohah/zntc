@@ -886,7 +886,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             try self.expect(.l_paren);
             const params = try parseTypeMemberParamList(self);
             try self.expect(.arrow);
-            const return_type = try parseType(self);
+            const return_type = try parseTypeOrTypePredicate(self);
             const extra = try self.ast.addExtras(&.{
                 @intFromEnum(type_params),
                 params.start,
@@ -1043,7 +1043,7 @@ fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!
     try self.expect(.l_paren);
     const params = try parseTypeMemberParamList(self);
     try self.expect(.arrow);
-    const return_type = try parseType(self);
+    const return_type = try parseTypeOrTypePredicate(self);
 
     const extra = try self.ast.addExtras(&.{
         @intFromEnum(type_params),
@@ -1083,7 +1083,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         // 빈 괄호 + => → 함수 타입 () => R (tryParse에서 이미 처리되므로 여기 안 옴)
         if (self.current() == .arrow) {
             try self.advance();
-            const return_type = try parseType(self);
+            const return_type = try parseTypeOrTypePredicate(self);
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1115,7 +1115,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         try self.expect(.r_paren);
         if (self.current() == .arrow) {
             try self.advance();
-            const return_type = try parseType(self);
+            const return_type = try parseTypeOrTypePredicate(self);
             const extra = try self.ast.addExtras(&.{
                 @intFromEnum(NodeIndex.none),
                 params.start,
@@ -1167,7 +1167,7 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
         try self.advance();
         if (self.current() == .arrow) {
             try self.advance();
-            const return_type = try parseType(self);
+            const return_type = try parseTypeOrTypePredicate(self);
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1236,7 +1236,7 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
             if (self.current() == .arrow) {
                 // 함수 타입 확정: (x) => R
                 try self.advance(); // skip =>
-                const return_type = try parseType(self);
+                const return_type = try parseTypeOrTypePredicate(self);
                 const param_node = try self.ast.addNode(.{
                     .tag = .ts_type_reference,
                     .span = id_span,
@@ -1280,7 +1280,7 @@ fn isFunctionTypeParam(self: *Parser) bool {
 fn parseFunctionTypeParams(self: *Parser, start: u32) ParseError2!NodeIndex {
     const params = try parseTypeMemberParamList(self);
     try self.expect(.arrow);
-    const return_type = try parseType(self);
+    const return_type = try parseTypeOrTypePredicate(self);
 
     const extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none), // no type params (제네릭은 parsePrimaryType에서 < 감지)
