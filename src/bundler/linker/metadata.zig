@@ -151,6 +151,17 @@ pub fn buildMetadataForAst(
         cjs_var_cache.deinit();
     }
 
+    // CJS 모듈별 namespace 변수명 캐시 (ESM-wrapped → CJS named import의 namespace 접근 패턴)
+    var cjs_ns_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
+    defer cjs_ns_cache.deinit(); // 값은 ns_var_list가 소유
+    var ns_var_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    // ns_var_list 소유권은 metadata.dev_ns_vars로 이전됨 (정상 경로)
+    // 에러 시에만 여기서 해제
+    errdefer {
+        for (ns_var_list.items) |v| self.allocator.free(v);
+        ns_var_list.deinit(self.allocator);
+    }
+
     // namespace import export 수집 캐시: target_mod_idx → []NsExportPair
     // 같은 타겟을 여러 모듈이 namespace import할 때 collectExportsRecursive 반복 순회 방지.
     var ns_export_cache = std.AutoHashMap(u32, []NsExportPair).init(self.allocator);
@@ -205,10 +216,41 @@ pub fn buildMetadataForAst(
             // 할당문 + init 호출을 처리하므로 preamble 생성 skip.
             // __esm → __esm은 live binding (preamble init + canonical rename) 사용.
             // 단, synthetic binding(JSX runtime 등)은 AST body에 require()가 없으므로 skip하지 않음.
+            //
+            // named import from CJS in ESM-wrapped → namespace 접근 패턴:
+            // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
+            // 개별 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다 (rolldown 방식).
+            // preamble에서 ns_var = __toESM(require_xxx()) 생성 + rename 등록.
             const is_synthetic = ib.local_span.start >= 0xFFFF_0000;
             if (!is_synthetic and m.wrap_kind == .esm and canonical_mod < self.modules.len and
                 (self.modules[canonical_mod].wrap_kind == .cjs or canonical_mod == module_index))
             {
+                if (ib.kind == .named and self.modules[canonical_mod].wrap_kind == .cjs) {
+                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
+                    const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+
+                    // CJS 모듈별 namespace var 생성 (한 번만)
+                    const ns_var = if (cjs_ns_cache.get(@intCast(canonical_mod))) |cached| cached else blk: {
+                        const ns_name = try std.fmt.allocPrint(self.allocator, "__ns_{d}", .{cjs_ns_cache.count()});
+                        try cjs_ns_cache.put(@intCast(canonical_mod), ns_name);
+                        try ns_var_list.append(self.allocator, ns_name);
+                        // preamble: ns_var = __toESM(require_xxx()) (assign-only)
+                        const toesm_suffix: []const u8 = if (interop_mode == .node) "(), 1)" else "())";
+                        try preamble.write(ns_name);
+                        try preamble.write(" = __toESM(");
+                        try preamble.write(req_var);
+                        try preamble.write(toesm_suffix);
+                        try preamble.write(";\n");
+                        break :blk ns_name;
+                    };
+
+                    // rename: symbol_id → "ns_var.imported_name"
+                    if (module_scope.get(ib.local_name)) |sym_idx| {
+                        const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
+                        try owned_nested_renames.append(self.allocator, rename);
+                        try renames.put(@intCast(sym_idx), rename);
+                    }
+                }
                 continue;
             }
 
@@ -513,6 +555,14 @@ pub fn buildMetadataForAst(
     // 내부 require() 호출도 require_xxx()로 치환해야 함.
     const require_rewrites = try self.buildRequireRewrites(&m);
 
+    // ns_var_list → dev_ns_vars: 소유권 이전
+    const dev_ns_vars: ?[]const []const u8 = if (ns_var_list.items.len > 0)
+        try self.allocator.dupe([]const u8, ns_var_list.items)
+    else
+        null;
+    // dupe 후 list는 해제하되 개별 문자열은 유지 (dev_ns_vars가 소유)
+    ns_var_list.deinit(self.allocator);
+
     return .{
         .skip_nodes = skip_nodes,
         .renames = renames,
@@ -526,6 +576,7 @@ pub fn buildMetadataForAst(
         .const_values = const_values,
         .export_getter_overrides = export_getter_overrides,
         .owned_rename_values = owned_nested_renames,
+        .dev_ns_vars = dev_ns_vars,
         .allocator = self.allocator,
     };
 }
@@ -703,11 +754,30 @@ pub fn finalizeNamespaceData(
     };
 }
 
+/// import binding의 local_span으로 symbol_id를 탐색한다.
+/// 파서에서 import specifier의 로컬 이름은 identifier_reference 또는 binding_identifier로 생성되므로
+/// 두 태그 모두 매칭한다.
+fn findSymbolIdBySpan(symbol_ids: []const ?u32, ast: *const Ast, span: Span) ?u32 {
+    const node_count = ast.nodes.items.len;
+    for (symbol_ids, 0..) |maybe_sid, node_i| {
+        if (maybe_sid) |sid| {
+            if (node_i >= node_count) continue;
+            const node = ast.nodes.items[node_i];
+            if ((node.tag == .binding_identifier or node.tag == .identifier_reference) and
+                node.span.start == span.start and node.span.end == span.end)
+            {
+                return sid;
+            }
+        }
+    }
+    return null;
+}
+
 /// Dev mode용 LinkingMetadata를 생성한다.
 ///
 /// 프로덕션 buildMetadataForAst와의 차이:
-///   - renames 없음 (스코프 호이스팅 안 함, 각 모듈이 자체 스코프 유지)
-///   - cjs_import_preamble: `const { x } = __zts_require("./path")` 형태
+///   - renames: named import에 한해 namespace 접근 패턴 renames 생성
+///   - cjs_import_preamble: `__ns_N = __zts_require("./path")` 형태 (namespace 할당)
 ///   - final_exports: 모든 모듈에 `exports.x = x;` 형태 (entry만이 아닌 전체)
 pub fn buildDevMetadataForAst(
     self: *const Linker,
@@ -790,6 +860,67 @@ pub fn buildDevMetadataForAst(
         info.named_count += 1;
     }
 
+    // namespace 접근 패턴: named import → namespace 변수 프로퍼티 접근.
+    // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
+    // 개별 구조분해 대신 namespace 객체를 사용한다 (rolldown 방식).
+    //
+    // Before: var { useState } = __zts_require("react");  (inside __esm, function-scoped)
+    // After:  __ns_0 = __zts_require("react");             (inside __esm, assign-only)
+    //         var __ns_0;                                   (hoisted outside __esm)
+    //         → codegen: useState → __ns_0.useState
+
+    // record별 namespace 변수명 생성
+    var ns_record_count: u32 = 0;
+    for (record_infos[0..m.import_records.len]) |info_r| {
+        if (info_r.named_count > 0) ns_record_count += 1;
+    }
+
+    var dev_ns_vars: ?[][]const u8 = null;
+    const ns_var_for_record = try self.allocator.alloc(?[]const u8, m.import_records.len);
+    defer self.allocator.free(ns_var_for_record);
+    @memset(ns_var_for_record, null);
+
+    if (ns_record_count > 0) {
+        const vars = try self.allocator.alloc([]const u8, ns_record_count);
+        var vi: u32 = 0;
+        for (record_infos[0..m.import_records.len], 0..) |info_r, ri| {
+            if (info_r.named_count > 0) {
+                vars[vi] = try std.fmt.allocPrint(self.allocator, "__ns_{d}", .{vi});
+                ns_var_for_record[ri] = vars[vi];
+                vi += 1;
+            }
+        }
+        dev_ns_vars = vars;
+    }
+    errdefer if (dev_ns_vars) |vars| {
+        for (vars) |v| self.allocator.free(v);
+        self.allocator.free(vars);
+    };
+
+    // named binding의 symbol_id → "ns_var.imported_name" renames 등록
+    var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+    errdefer renames.deinit();
+    var owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (owned_rename_values.items) |v| self.allocator.free(v);
+        owned_rename_values.deinit(self.allocator);
+    }
+
+    if (ns_record_count > 0) {
+        if (m.semantic) |sem| {
+            for (m.import_bindings) |ib| {
+                if (ib.kind != .named) continue;
+                if (ib.import_record_index >= m.import_records.len) continue;
+                const ns_var = ns_var_for_record[ib.import_record_index] orelse continue;
+                // binding_identifier의 span으로 symbol_id 탐색
+                const sym_id = findSymbolIdBySpan(sem.symbol_ids, ast, ib.local_span) orelse continue;
+                const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
+                try owned_rename_values.append(self.allocator, rename);
+                try renames.put(sym_id, rename);
+            }
+        }
+    }
+
     for (m.import_records, 0..) |rec, i| {
         if (rec.resolved.isNone()) continue;
         if (rec.kind == .dynamic_import) continue;
@@ -815,8 +946,10 @@ pub fn buildDevMetadataForAst(
             try dev_preamble.writeDevRequireInterop(def_local, resolved_path, ".default", is_cjs_target);
         }
         if (info.named_count > 0) {
-            const start = info.named_start;
-            try dev_preamble.writeDevRequireNamed(named_bindings[start .. start + info.named_count], resolved_path);
+            // namespace 접근 패턴: __ns_N = [__toESM(]__zts_require("path")[)];
+            if (ns_var_for_record[i]) |ns_var| {
+                try dev_preamble.writeDevRequireNamespace(ns_var, resolved_path, is_cjs_target);
+            }
         }
     }
 
@@ -868,19 +1001,23 @@ pub fn buildDevMetadataForAst(
 
     const sem = m.semantic orelse return .{
         .skip_nodes = skip_nodes,
-        .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+        .renames = renames,
         .final_exports = final_exports,
         .symbol_ids = &.{},
         .cjs_import_preamble = cjs_import_preamble,
+        .dev_ns_vars = dev_ns_vars,
+        .owned_rename_values = owned_rename_values,
         .allocator = self.allocator,
     };
 
     return .{
         .skip_nodes = skip_nodes,
-        .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+        .renames = renames,
         .final_exports = final_exports,
         .symbol_ids = sem.symbol_ids,
         .cjs_import_preamble = cjs_import_preamble,
+        .dev_ns_vars = dev_ns_vars,
+        .owned_rename_values = owned_rename_values,
         .allocator = self.allocator,
     };
 }

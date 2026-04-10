@@ -1299,7 +1299,11 @@ pub fn collectImportBindingNames(
                 if (!local_idx.isNone()) {
                     const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
                     const name = esm_ast.getText(local_node.data.string_ref);
-                    try out.append(allocator, resolveNodeName(md, @intFromEnum(local_idx), name));
+                    const resolved = resolveNodeName(md, @intFromEnum(local_idx), name);
+                    // namespace 접근 패턴 rename (__ns_N.prop)은 var 선언에 넣을 수 없음.
+                    // namespace 변수는 dev_ns_vars로 별도 호이스팅됨.
+                    if (std.mem.indexOfScalar(u8, resolved, '.') != null) continue;
+                    try out.append(allocator, resolved);
                 }
             },
             else => {},
