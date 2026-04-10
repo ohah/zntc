@@ -719,6 +719,97 @@ describe("@zts/core 플러그인 심화", () => {
     expect(result.outputFiles[0].text).toContain("x = 1");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("멀티스레드: 10개 모듈 + onTransform 플러그인 (#985)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-mt-"));
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(dir, `mod${i}.ts`), `export const val${i} = ${i};`);
+    }
+    const imports = Array.from({ length: 10 }, (_, i) => `import { val${i} } from "./mod${i}";`);
+    const usage = Array.from({ length: 10 }, (_, i) => `val${i}`).join(" + ");
+    writeFileSync(join(dir, "entry.ts"), `${imports.join("\n")}\nconsole.log(${usage});`);
+
+    let callCount = 0;
+    const countPlugin: ZtsPlugin = {
+      name: "count",
+      setup(build) {
+        build.onTransform({ filter: /\.ts$/ }, (_args) => {
+          callCount++;
+          return null;
+        });
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [countPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("val9");
+    expect(callCount).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("멀티스레드: 동시 resolveId + load + transform (#985)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-mt2-"));
+    writeFileSync(join(dir, "entry.ts"), 'import css from "./style.css";\nconsole.log(css);');
+
+    const hooksCalled: string[] = [];
+    const multiHookPlugin: ZtsPlugin = {
+      name: "multi-hook",
+      setup(build) {
+        build.onResolve({ filter: /\.css$/ }, (args) => {
+          hooksCalled.push("resolve");
+          return { path: resolve(dir, args.path) };
+        });
+        build.onLoad({ filter: /\.css$/ }, () => {
+          hooksCalled.push("load");
+          return { contents: 'export default "red";' };
+        });
+        build.onTransform({ filter: /\.ts$/ }, (_args) => {
+          hooksCalled.push("transform");
+          return null;
+        });
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [multiHookPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("red");
+    expect(hooksCalled).toContain("resolve");
+    expect(hooksCalled).toContain("load");
+    expect(hooksCalled).toContain("transform");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("멀티스레드: 플러그인 + minify + sourcemap 동시 (#985)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-mt3-"));
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(dir, `mod${i}.ts`), `export const val${i} = ${i};`);
+    }
+    const imports = Array.from({ length: 5 }, (_, i) => `import { val${i} } from "./mod${i}";`);
+    writeFileSync(join(dir, "entry.ts"), `${imports.join("\n")}\nconsole.log(val0);`);
+
+    const noopPlugin: ZtsPlugin = {
+      name: "noop",
+      setup(build) {
+        build.onTransform({ filter: /\.ts$/ }, () => null);
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [noopPlugin],
+      minify: true,
+      sourcemap: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBe(2); // js + map
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("@zts/core 번들 포맷/플랫폼", () => {
