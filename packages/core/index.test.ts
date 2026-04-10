@@ -3355,7 +3355,7 @@ describe("React Refresh: function expression", () => {
     rmSync(dir, { recursive: true });
   });
 
-  test("export default function expression은 등록 안 함", () => {
+  test("export default function declaration은 $RefreshReg$ 등록", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-refresh-"));
     writeFileSync(join(dir, "entry.ts"), `export default function MyScreen() { return null; }\n`);
     const result = buildSync({
