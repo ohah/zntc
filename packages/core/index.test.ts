@@ -10,7 +10,7 @@ import {
   type RollupPlugin,
 } from "./index";
 import { resolve } from "node:path";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -2933,5 +2933,59 @@ describe("실제 라이브러리 번들링", () => {
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).not.toContain('"dev"');
+  });
+});
+
+// ─── import.meta.glob 테스트 (#1026) ───
+
+describe("import.meta.glob", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-glob-"));
+    mkdirSync(join(dir, "pages"), { recursive: true });
+    writeFileSync(join(dir, "pages", "Home.tsx"), 'export default "Home";');
+    writeFileSync(join(dir, "pages", "About.tsx"), 'export default "About";');
+    writeFileSync(join(dir, "pages", "Contact.tsx"), 'export default "Contact";');
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("기본 glob: lazy import 객체 생성", () => {
+    writeFileSync(
+      join(dir, "entry.ts"),
+      'const m = import.meta.glob("./pages/*.tsx");\nexport { m };',
+    );
+    const result = buildSync({ entryPoints: [join(dir, "entry.ts")], format: "esm" });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("./pages/Home.tsx");
+    expect(text).toContain("./pages/About.tsx");
+    expect(text).toContain("./pages/Contact.tsx");
+    expect(text).toContain("() => import(");
+    expect(text).not.toContain("import.meta.glob");
+  });
+
+  test("매칭 파일 없는 패턴 → 빈 객체", () => {
+    writeFileSync(
+      join(dir, "empty.ts"),
+      'const m = import.meta.glob("./nonexistent/*.ts");\nexport { m };',
+    );
+    const result = buildSync({ entryPoints: [join(dir, "empty.ts")], format: "esm" });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("import(");
+  });
+
+  test("다른 확장자 패턴", () => {
+    writeFileSync(join(dir, "pages", "data.json"), '{"key":"value"}');
+    writeFileSync(
+      join(dir, "json-glob.ts"),
+      'const m = import.meta.glob("./pages/*.json");\nexport { m };',
+    );
+    const result = buildSync({ entryPoints: [join(dir, "json-glob.ts")], format: "esm" });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("./pages/data.json");
   });
 });

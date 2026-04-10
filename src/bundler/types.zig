@@ -66,6 +66,8 @@ pub const ImportKind = enum {
     require,
     /// new Worker(new URL('./worker.ts', import.meta.url))
     worker,
+    /// import.meta.glob("./pages/*.tsx") — Vite 호환
+    glob,
 };
 
 // ============================================================
@@ -345,6 +347,12 @@ pub const ImportRecord = struct {
     resolved: ModuleIndex = .none,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
+    /// glob: eager import 여부 (import.meta.glob의 { eager: true } 옵션)
+    glob_eager: bool = false,
+    /// glob: import할 export 이름 (import.meta.glob의 { import: "default" } 옵션)
+    glob_import_name: ?[]const u8 = null,
+    /// glob: 확장된 매칭 파일 목록 (resolve 후 graph가 설정)
+    glob_matches: ?[]const []const u8 = null,
 };
 
 // ============================================================
