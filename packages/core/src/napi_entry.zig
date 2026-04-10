@@ -396,7 +396,7 @@ const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
 
-    const HookType = enum { resolveId, load, transform };
+    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle };
 
     const PluginResponse = struct {
         resolved_path: ?[]const u8 = null,
@@ -409,6 +409,8 @@ const NapiPlugin = struct {
         hook: HookType,
         arg1: []const u8,
         arg2: ?[]const u8,
+        /// generateBundle 전용: OutputFile 배열 (callJsCallback에서 JS 배열로 변환)
+        output_files: ?[]const bundler_mod.emitter.OutputFile = null,
         response: ?PluginResponse = null,
         response_ready: bool = false,
         mutex: std.Thread.Mutex = .{},
@@ -483,11 +485,29 @@ const NapiPlugin = struct {
             .resolveId => "resolveId",
             .load => "load",
             .transform => "transform",
+            .renderChunk => "renderChunk",
+            .generateBundle => "generateBundle",
         };
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
         var js_arg1: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, ctx.arg1.ptr, ctx.arg1.len, &js_arg1);
+        // generateBundle: arg1 대신 output_files JS 배열을 생성
+        if (ctx.output_files) |files| {
+            _ = c.napi_create_array_with_length(env, files.len, &js_arg1);
+            for (files, 0..) |file, i| {
+                var js_file: c.napi_value = undefined;
+                _ = c.napi_create_object(env, &js_file);
+                var js_path: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, file.path.ptr, file.path.len, &js_path);
+                _ = c.napi_set_named_property(env, js_file, "path", js_path);
+                var js_text: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, file.contents.ptr, file.contents.len, &js_text);
+                _ = c.napi_set_named_property(env, js_file, "text", js_text);
+                _ = c.napi_set_element(env, js_arg1, @intCast(i), js_file);
+            }
+        } else {
+            _ = c.napi_create_string_utf8(env, ctx.arg1.ptr, ctx.arg1.len, &js_arg1);
+        }
 
         var js_arg2: c.napi_value = undefined;
         if (ctx.arg2) |a2| {
@@ -614,6 +634,43 @@ const NapiPlugin = struct {
         return null;
     }
 
+    fn pluginRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.renderChunk, code, chunk_name) orelse return null;
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+        }
+
+        if (resp.code) |result_code| {
+            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            native_alloc.free(result_code);
+            return result;
+        }
+        return null;
+    }
+
+    fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        // output_files를 CallContext에 직접 전달 → callJsCallback에서 JS 배열로 변환
+        var call_ctx = CallContext{
+            .hook = .generateBundle,
+            .arg1 = "",
+            .arg2 = null,
+            .output_files = output_files,
+        };
+
+        if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&call_ctx), c.napi_tsfn_blocking) != c.napi_ok) {
+            return;
+        }
+
+        call_ctx.mutex.lock();
+        defer call_ctx.mutex.unlock();
+        const timeout_ns: u64 = 30 * std.time.ns_per_s;
+        while (!call_ctx.response_ready) {
+            call_ctx.cond.timedWait(&call_ctx.mutex, timeout_ns) catch return;
+        }
+    }
+
     fn toPlugin(self: *NapiPlugin) Plugin {
         return .{
             .name = self.name,
@@ -621,6 +678,8 @@ const NapiPlugin = struct {
             .resolveId = pluginResolveId,
             .load = pluginLoad,
             .transform = pluginTransform,
+            .renderChunk = pluginRenderChunk,
+            .generateBundle = pluginGenerateBundle,
         };
     }
 
