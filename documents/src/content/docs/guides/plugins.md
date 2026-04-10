@@ -5,7 +5,49 @@ description: ZTS 플러그인 시스템 사용법을 알아봅니다.
 
 ## 개요
 
-ZTS는 Rollup/Vite 호환 플러그인 인터페이스를 제공합니다. 플러그인은 JS/TS로 작성하며, subprocess JSON IPC로 통신합니다.
+ZTS는 두 가지 플러그인 실행 방식을 제공합니다:
+
+1. **NAPI (권장)**: `@zts/core`의 `build()` API로 in-process 실행. 최고 성능.
+2. **Subprocess**: CLI `--plugin` 옵션으로 JSON IPC 통신. Node.js 없이도 동작.
+
+## NAPI 플러그인 (권장)
+
+```typescript
+import { init, build, vitePlugin } from "@zts/core";
+init();
+
+// esbuild 스타일
+const result = await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [{
+    name: "css-loader",
+    setup(build) {
+      build.onResolve({ filter: /\.css$/ }, (args) => ({ path: resolve(args.path) }));
+      build.onLoad({ filter: /\.css$/ }, () => ({ contents: 'export default "red";' }));
+      build.onTransform({ filter: /\.ts$/ }, (args) => ({
+        code: args.code.replace("__VERSION__", '"1.0"'),
+      }));
+    },
+  }],
+});
+
+// Vite/Rollup 플러그인 어댑터
+const result2 = await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [
+    vitePlugin({
+      name: "json-loader",
+      resolveId(source) { if (source.endsWith(".json")) return resolve(source); },
+      load(id) { if (id.endsWith(".json")) return `export default ${readFileSync(id)}`; },
+      transform(code) { return code.replace("import.meta.env.MODE", '"production"'); },
+    }),
+  ],
+});
+```
+
+> **참고**: `buildSync()`에서는 JS 플러그인을 사용할 수 없습니다 (메인 스레드 데드락). `build()` (async)에서만 지원됩니다.
+
+## Subprocess 플러그인 (CLI)
 
 ## 설정 파일
 
