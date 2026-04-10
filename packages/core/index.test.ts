@@ -2669,6 +2669,103 @@ describe("옵션 조합 통합 테스트", () => {
     expect(() => new Function("self", result.outputFiles[0].text)(ctx.self)).not.toThrow();
   });
 
+  test("format: umd + minify → 압축 후 런타임 실행", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "umd",
+      globalName: "M",
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const mod: any = { exports: {} };
+    new Function("module", "exports", result.outputFiles[0].text)(mod, mod.exports);
+    expect(mod.exports.util()).toBe(42);
+  });
+
+  test("format: amd + minify → 압축 후 런타임 실행", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "amd",
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    let amdResult: any = null;
+    const define: any = (_: any, factory: () => any) => {
+      amdResult = factory();
+    };
+    define.amd = true;
+    new Function("define", result.outputFiles[0].text)(define);
+    expect(amdResult.util()).toBe(42);
+  });
+
+  test("format: umd + 다중 export → 모든 export 접근 가능", async () => {
+    writeFileSync(
+      join(dir, "multi.ts"),
+      "export const a = 1;\nexport const b = 2;\nexport function sum() { return a + b; }",
+    );
+    const result = await build({
+      entryPoints: [join(dir, "multi.ts")],
+      format: "umd",
+      globalName: "Multi",
+    });
+    expect(result.errors.length).toBe(0);
+    const mod: any = { exports: {} };
+    new Function("module", "exports", result.outputFiles[0].text)(mod, mod.exports);
+    expect(mod.exports.a).toBe(1);
+    expect(mod.exports.b).toBe(2);
+    expect(mod.exports.sum()).toBe(3);
+  });
+
+  test("format: umd + sourcemap → 소스맵 생성", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "umd",
+      globalName: "Lib",
+      sourcemap: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const mapFile = result.outputFiles.find((f: any) => f.path.endsWith(".map"));
+    expect(mapFile).toBeDefined();
+    expect(mapFile!.text).toContain("mappings");
+  });
+
+  test("format: umd + external → 외부 모듈 제외", async () => {
+    writeFileSync(join(dir, "ext.ts"), 'import React from "react";\nexport default React;');
+    const result = await build({
+      entryPoints: [join(dir, "ext.ts")],
+      format: "umd",
+      globalName: "App",
+      external: ["react"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("require");
+  });
+
+  test("format: iife + globalName → 런타임 실행 검증", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "iife",
+      globalName: "ILib",
+    });
+    expect(result.errors.length).toBe(0);
+    const ctx: any = {};
+    new Function("var ILib; " + result.outputFiles[0].text + " return ILib;").call(null);
+    // IIFE는 var ILib = (function() { ... })(); 형태
+    const fn = new Function(result.outputFiles[0].text + "\nreturn ILib;");
+    const lib = fn();
+    expect(lib.util()).toBe(42);
+  });
+
+  test("format: cjs → use strict + 함수 선언 출력", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "cjs",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('"use strict"');
+    expect(result.outputFiles[0].text).toContain("function util()");
+  });
+
   test("allowOverwrite: true → 입력=출력 허용", () => {
     const outfile = join(dir, "overwrite-test.ts");
     writeFileSync(outfile, "export const z = 1;");
@@ -2679,5 +2776,154 @@ describe("옵션 조합 통합 테스트", () => {
     });
     expect(result.errors.length).toBe(0);
     rmSync(outfile, { force: true });
+  });
+});
+
+// ─── 실제 라이브러리 번들링 테스트 ───
+
+describe("실제 라이브러리 번들링", () => {
+  let dir: string;
+  const projectRoot = resolve(__dirname, "../..");
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-real-lib-"));
+    // tmp 디렉토리에서 node_modules를 resolve할 수 있도록 symlink 생성
+    const { symlinkSync } = require("fs");
+    try {
+      symlinkSync(join(projectRoot, "node_modules"), join(dir, "node_modules"), "junction");
+    } catch {}
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("React: ESM 번들", async () => {
+    writeFileSync(
+      join(dir, "react-app.tsx"),
+      'import React from "react";\nexport const el = React.createElement("div", null, "hello");',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "react-app.tsx")],
+      format: "esm",
+      jsx: "classic",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("createElement");
+  });
+
+  test("React: UMD + external → require 유지", async () => {
+    writeFileSync(
+      join(dir, "react-umd.tsx"),
+      'import React from "react";\nexport function App() { return React.createElement("div", null, "hi"); }',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "react-umd.tsx")],
+      format: "umd",
+      globalName: "ReactApp",
+      external: ["react"],
+      jsx: "classic",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("ReactApp");
+    expect(text).toContain("require");
+  });
+
+  test("React: IIFE 인라인 → 런타임 실행", async () => {
+    writeFileSync(
+      join(dir, "react-iife.tsx"),
+      'import React from "react";\nexport const version = React.version;',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "react-iife.tsx")],
+      format: "iife",
+      globalName: "ReactBundle",
+    });
+    expect(result.errors.length).toBe(0);
+    const fn = new Function(result.outputFiles[0].text + "\nreturn ReactBundle;");
+    const lib = fn();
+    expect(lib.version).toBeDefined();
+  });
+
+  test("React + minify → 압축 번들 생성", async () => {
+    writeFileSync(
+      join(dir, "react-min.tsx"),
+      'import React from "react";\nexport const v = React.version;',
+    );
+    const normal = await build({
+      entryPoints: [join(dir, "react-min.tsx")],
+      format: "iife",
+      globalName: "R",
+    });
+    const minified = await build({
+      entryPoints: [join(dir, "react-min.tsx")],
+      format: "iife",
+      globalName: "R",
+      minify: true,
+    });
+    expect(minified.errors.length).toBe(0);
+    expect(minified.outputFiles[0].text.length).toBeLessThan(normal.outputFiles[0].text.length);
+  });
+
+  test("lodash-es: tree-shaking으로 번들 크기 축소", async () => {
+    writeFileSync(
+      join(dir, "lodash-app.ts"),
+      'import { chunk } from "lodash-es";\nexport const result = chunk([1,2,3,4], 2);',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "lodash-app.ts")],
+      format: "esm",
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text.length).toBeLessThan(50000);
+  });
+
+  test("다중 엔트리 + code splitting + React", async () => {
+    writeFileSync(
+      join(dir, "page-a.tsx"),
+      'import React from "react";\nexport const A = React.createElement("div", null, "A");',
+    );
+    writeFileSync(
+      join(dir, "page-b.tsx"),
+      'import React from "react";\nexport const B = React.createElement("div", null, "B");',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "page-a.tsx"), join(dir, "page-b.tsx")],
+      splitting: true,
+      format: "esm",
+      jsx: "classic",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("React JSX automatic 모드", async () => {
+    writeFileSync(join(dir, "jsx-auto.tsx"), "export const App = () => <div>hello</div>;");
+    const result = await build({
+      entryPoints: [join(dir, "jsx-auto.tsx")],
+      jsx: "automatic",
+      format: "esm",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("jsx");
+  });
+
+  test("React + define + platform=browser → production 빌드", async () => {
+    writeFileSync(
+      join(dir, "react-prod.tsx"),
+      'import React from "react";\nif (process.env.NODE_ENV !== "production") { console.log("dev"); }\nexport const v = React.version;',
+    );
+    const result = await build({
+      entryPoints: [join(dir, "react-prod.tsx")],
+      format: "iife",
+      globalName: "Prod",
+      platform: "browser",
+      define: { "process.env.NODE_ENV": '"production"' },
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain('"dev"');
   });
 });
