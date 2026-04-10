@@ -5,6 +5,7 @@
   "workspaces": [
     "./packages/core",
     "./packages/wasm",
+    "./packages/plugin",
     "./documents",
     "./tests/integration",
     "./tests/e2e",

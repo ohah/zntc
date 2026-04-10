@@ -80,12 +80,22 @@ const result = buildSync({ entryPoints: ["src/index.ts"] });
 // 비동기 번들링 + JS 플러그인
 const result = await build({
   entryPoints: ["src/index.ts"],
+  target: "es2020",                          // ES 다운레벨 타겟
+  loader: { ".png": "file", ".svg": "text" }, // 확장자별 로더
+  conditions: ["import", "default"],          // package.json exports 조건
+  resolveExtensions: [".ts", ".tsx", ".js"],  // 확장자 탐색 순서
+  mainFields: ["module", "main"],             // package.json 필드 순서
+  outdir: "./dist",                           // 출력 디렉토리 (자동 write)
+  // outfile: "./dist/bundle.js",             // 단일 파일 출력
+  // write: false,                            // 디스크 쓰기 비활성화
   plugins: [{
     name: "css",
     setup(build) {
       build.onResolve({ filter: /\.css$/ }, args => ({ path: resolve(args.path) }));
       build.onLoad({ filter: /\.css$/ }, () => ({ contents: 'export default "red"' }));
       build.onTransform({ filter: /\.ts$/ }, args => ({ code: args.code.replace(...) }));
+      build.onRenderChunk({ filter: /.*/ }, args => ({ code: `/* banner */\n${args.code}` }));
+      build.onGenerateBundle(outputs => { console.log("files:", outputs.length); });
     },
   }],
 });
@@ -103,10 +113,15 @@ await build({
       resolveId(source) { if (source.endsWith(".json")) return resolve(source); },
       load(id) { if (id.endsWith(".json")) return `export default ${readFileSync(id)}`; },
       transform(code, id) { return code.replace("import.meta.env.MODE", '"production"'); },
+      renderChunk(code, chunk) { return `/* ${chunk} */\n${code}`; },
+      generateBundle(outputs) { console.log("Generated", outputs.length, "files"); },
     }),
   ],
 });
 ```
+
+> **async 훅 지원**: 모든 Rollup/Vite 훅은 `Promise`를 반환할 수 있다.
+> `async resolveId()`, `async load()`, `async transform()`, `async renderChunk()`, `async generateBundle()` 모두 동작.
 
 ### define/alias
 ```typescript
