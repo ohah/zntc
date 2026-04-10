@@ -379,6 +379,39 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
         _ = c.napi_set_named_property(env, js_result, "metafile", js_mf);
     }
 
+    // moduleCodes — HMR용 per-module 코드 (devMode + collectModuleCodes 활성 시)
+    if (result.module_dev_codes) |codes| {
+        var js_codes: c.napi_value = undefined;
+        _ = c.napi_create_array_with_length(env, codes.len, &js_codes);
+        for (codes, 0..) |mc, i| {
+            var js_mc: c.napi_value = undefined;
+            _ = c.napi_create_object(env, &js_mc);
+
+            var js_id: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, mc.id.ptr, mc.id.len, &js_id);
+            _ = c.napi_set_named_property(env, js_mc, "id", js_id);
+
+            var js_code: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, mc.code.ptr, mc.code.len, &js_code);
+            _ = c.napi_set_named_property(env, js_mc, "code", js_code);
+
+            _ = c.napi_set_element(env, js_codes, @intCast(i), js_mc);
+        }
+        _ = c.napi_set_named_property(env, js_result, "moduleCodes", js_codes);
+    }
+
+    // modulePaths — 번들에 포함된 모든 모듈 절대 경로 (watch용)
+    if (result.module_paths) |paths| {
+        var js_paths: c.napi_value = undefined;
+        _ = c.napi_create_array_with_length(env, paths.len, &js_paths);
+        for (paths, 0..) |p, i| {
+            var js_p: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, p.ptr, p.len, &js_p);
+            _ = c.napi_set_element(env, js_paths, @intCast(i), js_p);
+        }
+        _ = c.napi_set_named_property(env, js_result, "modulePaths", js_paths);
+    }
+
     return js_result;
 }
 
@@ -842,6 +875,671 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     return promise;
 }
 
+// ─── watch() 비동기 (콜백 기반) ───
+
+const WatchAsyncData = struct {
+    env: c.napi_env,
+    // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
+    options: BundleOptions,
+    owned_strings: std.ArrayList([]const u8),
+    owned_string_arrays: std.ArrayList([]const []const u8),
+    // NAPI 플러그인 (JS 콜백 기반)
+    napi_plugins: std.ArrayList(*NapiPlugin),
+    zig_plugins: std.ArrayList(Plugin),
+    // Watch-specific
+    ready_tsfn: c.napi_threadsafe_function,
+    rebuild_tsfn: c.napi_threadsafe_function,
+    stop_flag: std.atomic.Value(bool),
+
+    fn deinit(self: *WatchAsyncData) void {
+        // 소유된 문자열 해제
+        for (self.owned_strings.items) |s| native_alloc.free(s);
+        self.owned_strings.deinit(native_alloc);
+        // 배열 컨테이너 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
+        for (self.owned_string_arrays.items) |arr| native_alloc.free(arr);
+        self.owned_string_arrays.deinit(native_alloc);
+        // NAPI 플러그인 해제
+        for (self.napi_plugins.items) |np| np.deinit();
+        self.napi_plugins.deinit(native_alloc);
+        self.zig_plugins.deinit(native_alloc);
+        native_alloc.destroy(self);
+    }
+};
+
+/// onReady 콜백에 전달할 이벤트 데이터
+const WatchReadyEvent = struct {
+    files: usize,
+    bytes: usize,
+};
+
+/// onRebuild 콜백에 전달할 이벤트 데이터
+const WatchRebuildEvent = struct {
+    success: bool,
+    // 성공 시
+    changed: ?[]const []const u8 = null,
+    graph_changed: bool = false,
+    updates: ?[]const ModuleUpdate = null,
+    bytes: usize = 0,
+    // 실패 시
+    error_msg: ?[]const u8 = null,
+
+    const ModuleUpdate = struct {
+        id: []const u8,
+        code: []const u8,
+    };
+
+    fn deinit(self: *WatchRebuildEvent) void {
+        if (self.changed) |ch| {
+            for (ch) |s| native_alloc.free(s);
+            native_alloc.free(ch);
+        }
+        if (self.updates) |upd| {
+            for (upd) |u| {
+                native_alloc.free(u.id);
+                native_alloc.free(u.code);
+            }
+            native_alloc.free(upd);
+        }
+        if (self.error_msg) |msg| native_alloc.free(msg);
+        native_alloc.destroy(self);
+    }
+};
+
+/// 파일의 mtime을 가져온다.
+fn getFileMtime(path: []const u8) !i128 {
+    const stat = try std.fs.cwd().statFile(path);
+    return stat.mtime;
+}
+
+/// onReady TSFN 콜백 — 메인 스레드에서 실행
+fn watchReadyTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const event: *WatchReadyEvent = @ptrCast(@alignCast(data.?));
+    defer native_alloc.destroy(event);
+
+    if (js_func == null) return;
+
+    // {files: N, bytes: N} 객체 생성
+    var js_event: c.napi_value = undefined;
+    if (c.napi_create_object(env, &js_event) != c.napi_ok) return;
+
+    var js_files: c.napi_value = undefined;
+    _ = c.napi_create_int64(env, @intCast(event.files), &js_files);
+    _ = c.napi_set_named_property(env, js_event, "files", js_files);
+
+    var js_bytes: c.napi_value = undefined;
+    _ = c.napi_create_int64(env, @intCast(event.bytes), &js_bytes);
+    _ = c.napi_set_named_property(env, js_event, "bytes", js_bytes);
+
+    // onReady(event) 호출
+    var js_undefined: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &js_undefined);
+    var js_result: c.napi_value = undefined;
+    var call_args = [_]c.napi_value{js_event};
+    _ = c.napi_call_function(env, js_undefined, js_func, 1, &call_args, &js_result);
+}
+
+/// onRebuild TSFN 콜백 — 메인 스레드에서 실행
+fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const event: *WatchRebuildEvent = @ptrCast(@alignCast(data.?));
+    defer event.deinit();
+
+    if (js_func == null) return;
+
+    var js_event: c.napi_value = undefined;
+    if (c.napi_create_object(env, &js_event) != c.napi_ok) return;
+
+    // success
+    var js_success: c.napi_value = undefined;
+    _ = c.napi_get_boolean(env, event.success, &js_success);
+    _ = c.napi_set_named_property(env, js_event, "success", js_success);
+
+    if (event.success) {
+        // changed: string[]
+        var js_changed: c.napi_value = undefined;
+        if (event.changed) |ch| {
+            _ = c.napi_create_array_with_length(env, ch.len, &js_changed);
+            for (ch, 0..) |path, i| {
+                var js_path: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, path.ptr, path.len, &js_path);
+                _ = c.napi_set_element(env, js_changed, @intCast(i), js_path);
+            }
+        } else {
+            _ = c.napi_create_array(env, &js_changed);
+        }
+        _ = c.napi_set_named_property(env, js_event, "changed", js_changed);
+
+        // graphChanged?: bool
+        if (event.graph_changed) {
+            var js_gc: c.napi_value = undefined;
+            _ = c.napi_get_boolean(env, true, &js_gc);
+            _ = c.napi_set_named_property(env, js_event, "graphChanged", js_gc);
+        }
+
+        // updates?: [{id, code}]
+        if (event.updates) |upd| {
+            var js_updates: c.napi_value = undefined;
+            _ = c.napi_create_array_with_length(env, upd.len, &js_updates);
+            for (upd, 0..) |u, i| {
+                var js_u: c.napi_value = undefined;
+                _ = c.napi_create_object(env, &js_u);
+                var js_id: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, u.id.ptr, u.id.len, &js_id);
+                _ = c.napi_set_named_property(env, js_u, "id", js_id);
+                var js_code: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, u.code.ptr, u.code.len, &js_code);
+                _ = c.napi_set_named_property(env, js_u, "code", js_code);
+                _ = c.napi_set_element(env, js_updates, @intCast(i), js_u);
+            }
+            _ = c.napi_set_named_property(env, js_event, "updates", js_updates);
+        }
+
+        // bytes
+        var js_bytes: c.napi_value = undefined;
+        _ = c.napi_create_int64(env, @intCast(event.bytes), &js_bytes);
+        _ = c.napi_set_named_property(env, js_event, "bytes", js_bytes);
+    } else {
+        // error: string
+        if (event.error_msg) |msg| {
+            var js_err: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, msg.ptr, msg.len, &js_err);
+            _ = c.napi_set_named_property(env, js_event, "error", js_err);
+        }
+    }
+
+    // onRebuild(event) 호출
+    var js_undefined: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &js_undefined);
+    var js_result: c.napi_value = undefined;
+    var call_args = [_]c.napi_value{js_event};
+    _ = c.napi_call_function(env, js_undefined, js_func, 1, &call_args, &js_result);
+}
+
+/// watch 워커 스레드: 초기 빌드 → ready 이벤트 → 폴링 루프 → rebuild 이벤트
+fn watchWorkerThread(async_data: *WatchAsyncData) void {
+    const allocator = native_alloc;
+    const bundle_opts = async_data.options;
+
+    // 초기 빌드
+    var bundler = Bundler.init(allocator, bundle_opts);
+    var result = bundler.bundle() catch |err| {
+        // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
+        const event = allocator.create(WatchRebuildEvent) catch return;
+        const err_name: [:0]const u8 = @errorName(err);
+        event.* = .{
+            .success = false,
+            .error_msg = allocator.dupe(u8, err_name) catch null,
+        };
+        _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    // 증분 빌드용 PersistentModuleStore + ResolveCache
+    const module_store_mod = bundler_mod.module_store;
+    const ResolveCache = bundler_mod.ResolveCache;
+    var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
+    defer persistent_store.deinit();
+
+    // dev mode: per-module code 캐시 (HMR diff용)
+    var module_code_cache = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var it = module_code_cache.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        module_code_cache.deinit();
+    }
+
+    // 초기 빌드의 module_dev_codes로 캐시 초기화
+    if (result.module_dev_codes) |codes| {
+        for (codes) |mc| {
+            const id_copy = allocator.dupe(u8, mc.id) catch continue;
+            const code_copy = allocator.dupe(u8, mc.code) catch {
+                allocator.free(id_copy);
+                continue;
+            };
+            module_code_cache.put(id_copy, code_copy) catch {
+                allocator.free(id_copy);
+                allocator.free(code_copy);
+            };
+        }
+    }
+
+    var persistent_resolve_cache = ResolveCache.init(allocator, .{
+        .platform = bundle_opts.platform,
+        .external_patterns = bundle_opts.external,
+        .custom_conditions = bundle_opts.conditions,
+        .preserve_symlinks = bundle_opts.preserve_symlinks,
+        .alias = bundle_opts.alias,
+        .resolve_extensions = bundle_opts.resolve_extensions,
+        .main_fields = bundle_opts.main_fields,
+        .packages_external = bundle_opts.packages_external,
+        .node_paths = bundle_opts.node_paths,
+    });
+    defer persistent_resolve_cache.deinit();
+
+    // mtime 맵 초기화
+    var mtime_map = std.StringHashMap(i128).init(allocator);
+    defer {
+        var it = mtime_map.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        mtime_map.deinit();
+    }
+
+    // 엔트리 파일을 감시 대상에 추가
+    if (bundle_opts.entry_points.len > 0) {
+        const entry_path = bundle_opts.entry_points[0];
+        const entry_dupe = allocator.dupe(u8, entry_path) catch @as([]u8, "");
+        if (entry_dupe.len > 0) {
+            const entry_mtime = getFileMtime(entry_path) catch 0;
+            mtime_map.put(entry_dupe, entry_mtime) catch {
+                allocator.free(entry_dupe);
+            };
+        }
+    }
+
+    // 초기 빌드의 module_paths에서 mtime 수집
+    if (result.module_paths) |paths| {
+        for (paths) |p| {
+            const duped = allocator.dupe(u8, p) catch continue;
+            const mt = getFileMtime(p) catch continue;
+            mtime_map.put(duped, mt) catch {
+                allocator.free(duped);
+                continue;
+            };
+        }
+    }
+
+    // 초기 빌드 바이트 수 계산
+    var initial_bytes: usize = 0;
+    if (result.outputs) |outputs| {
+        for (outputs) |o| initial_bytes += o.contents.len;
+    } else {
+        initial_bytes = result.output.len;
+    }
+
+    // ready 이벤트 전송
+    {
+        const ready_event = allocator.create(WatchReadyEvent) catch return;
+        ready_event.* = .{
+            .files = mtime_map.count(),
+            .bytes = initial_bytes,
+        };
+        _ = c.napi_call_threadsafe_function(async_data.ready_tsfn, @ptrCast(ready_event), c.napi_tsfn_blocking);
+    }
+
+    // 폴링 루프 — 500ms 간격으로 파일 변경 감지
+    while (!async_data.stop_flag.load(.acquire)) {
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+
+        // stop_flag 재확인 (sleep 후)
+        if (async_data.stop_flag.load(.acquire)) break;
+
+        // mtime 변경 확인 + 변경 파일 수집
+        var changed = false;
+        var changed_files: std.ArrayList([]const u8) = .empty;
+        defer changed_files.deinit(allocator);
+
+        var mit = mtime_map.iterator();
+        while (mit.next()) |entry| {
+            const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
+            if (current_mtime != entry.value_ptr.*) {
+                entry.value_ptr.* = current_mtime;
+                changed = true;
+                changed_files.append(allocator, entry.key_ptr.*) catch {};
+            }
+        }
+
+        if (!changed) continue;
+
+        // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
+        var incremental_opts = bundle_opts;
+        incremental_opts.collect_module_codes = bundle_opts.dev_mode;
+        incremental_opts.module_store = &persistent_store;
+        var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
+        defer rebundler.deinit();
+
+        const rebuild_result = rebundler.bundle() catch |err| {
+            // 재빌드 실패
+            const event = allocator.create(WatchRebuildEvent) catch continue;
+            const err_name: [:0]const u8 = @errorName(err);
+            event.* = .{
+                .success = false,
+                .error_msg = allocator.dupe(u8, err_name) catch null,
+            };
+            _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+            continue;
+        };
+        defer rebuild_result.deinit(allocator);
+
+        // 출력 바이트 수 계산
+        var output_bytes: usize = 0;
+        if (rebuild_result.outputs) |outputs| {
+            for (outputs) |o| output_bytes += o.contents.len;
+        } else {
+            output_bytes = rebuild_result.output.len;
+        }
+
+        // rebuild 이벤트 생성
+        const event = allocator.create(WatchRebuildEvent) catch continue;
+        event.* = .{
+            .success = true,
+            .bytes = output_bytes,
+        };
+
+        // changed 파일 목록 복사
+        {
+            const ch = allocator.alloc([]const u8, changed_files.items.len) catch null;
+            if (ch) |ch_arr| {
+                var valid: usize = 0;
+                for (changed_files.items) |path| {
+                    ch_arr[valid] = allocator.dupe(u8, path) catch continue;
+                    valid += 1;
+                }
+                if (valid > 0) {
+                    event.changed = ch_arr[0..valid];
+                } else {
+                    allocator.free(ch_arr);
+                }
+            }
+        }
+
+        // dev mode: HMR diff
+        if (rebuild_result.module_dev_codes) |dev_codes| {
+            // 모듈 ID 집합 비교 — graph 변경 감지
+            const graph_changed_flag = blk: {
+                if (dev_codes.len != module_code_cache.count()) break :blk true;
+                for (dev_codes) |dc| {
+                    if (!module_code_cache.contains(dc.id)) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (graph_changed_flag) {
+                event.graph_changed = true;
+            } else {
+                // diff: 캐시와 비교하여 변경된 모듈만 수집
+                var changed_count: usize = 0;
+                for (dev_codes) |dc| {
+                    const cached = module_code_cache.get(dc.id);
+                    if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                        changed_count += 1;
+                    }
+                }
+
+                if (changed_count > 0) {
+                    const updates = allocator.alloc(WatchRebuildEvent.ModuleUpdate, changed_count) catch null;
+                    if (updates) |upd| {
+                        var idx: usize = 0;
+                        for (dev_codes) |dc| {
+                            const cached = module_code_cache.get(dc.id);
+                            if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                                upd[idx] = .{
+                                    .id = allocator.dupe(u8, dc.id) catch continue,
+                                    .code = allocator.dupe(u8, dc.code) catch continue,
+                                };
+                                idx += 1;
+                            }
+                        }
+                        event.updates = upd[0..idx];
+                    }
+                } else {
+                    // 코드 변경 없음 — 빈 updates 배열
+                    event.updates = &.{};
+                }
+            }
+
+            // 캐시 업데이트
+            {
+                var it = module_code_cache.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    allocator.free(entry.value_ptr.*);
+                }
+                module_code_cache.clearRetainingCapacity();
+            }
+            for (dev_codes) |dc| {
+                const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                const code_copy = allocator.dupe(u8, dc.code) catch {
+                    allocator.free(id_copy);
+                    continue;
+                };
+                module_code_cache.put(id_copy, code_copy) catch {
+                    allocator.free(id_copy);
+                    allocator.free(code_copy);
+                };
+            }
+        }
+
+        // rebuild 이벤트 전송
+        _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+
+        // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
+        {
+            var kit = mtime_map.keyIterator();
+            while (kit.next()) |k| allocator.free(k.*);
+            mtime_map.clearRetainingCapacity();
+
+            // 엔트리 재추가
+            if (bundle_opts.entry_points.len > 0) {
+                const entry_path = bundle_opts.entry_points[0];
+                const re_entry = allocator.dupe(u8, entry_path) catch continue;
+                const re_mtime = getFileMtime(entry_path) catch 0;
+                mtime_map.put(re_entry, re_mtime) catch {
+                    allocator.free(re_entry);
+                    continue;
+                };
+            }
+
+            if (rebuild_result.module_paths) |paths| {
+                for (paths) |p| {
+                    const duped = allocator.dupe(u8, p) catch continue;
+                    const mt = getFileMtime(p) catch continue;
+                    mtime_map.put(duped, mt) catch {
+                        allocator.free(duped);
+                        continue;
+                    };
+                }
+            }
+        }
+    }
+
+    // 스레드 종료: TSFN 해제
+    _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+    _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+
+    // async_data는 stop handle의 reference가 해제될 때까지 유지되어야 한다.
+    // stop()이 호출되면 stop_flag가 설정되고, 여기에 도달한다.
+    // stop handle의 ref가 GC되면 wrap의 weak ref callback으로 정리.
+    // 단, TSFN은 이미 release했으므로 플러그인/문자열만 정리.
+    async_data.deinit();
+}
+
+/// stop() 네이티브 메서드 — JS에서 handle.stop() 호출 시
+fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    // this 객체에서 WatchAsyncData 포인터 추출
+    var argc: usize = 0;
+    var this: c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
+        return throwError(env, "failed to get this");
+    }
+
+    var async_data_ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, this, &async_data_ptr) != c.napi_ok) {
+        return throwError(env, "failed to unwrap watch handle");
+    }
+    if (async_data_ptr) |ptr| {
+        const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr));
+        async_data.stop_flag.store(true, .release);
+    }
+
+    var js_undefined: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &js_undefined);
+    return js_undefined;
+}
+
+fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+    if (argc < 1) return throwError(env, "watch requires an options object");
+
+    // async data 할당
+    const async_data = native_alloc.create(WatchAsyncData) catch return throwError(env, "OutOfMemory");
+    async_data.* = .{
+        .env = env,
+        .options = undefined,
+        .owned_strings = .empty,
+        .owned_string_arrays = .empty,
+        .napi_plugins = .empty,
+        .zig_plugins = .empty,
+        .ready_tsfn = undefined,
+        .rebuild_tsfn = undefined,
+        .stop_flag = std.atomic.Value(bool).init(false),
+    };
+
+    // 옵션 파싱
+    var opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
+        native_alloc.destroy(async_data);
+        return throwError(env, "invalid watch options");
+    };
+
+    // _pluginDispatcher가 있으면 NapiPlugin 생성 (napiBuild와 동일 패턴)
+    if (getNamedProperty(env, argv[0], "_pluginDispatcher")) |dispatcher_fn| {
+        const np = native_alloc.create(NapiPlugin) catch {
+            native_alloc.destroy(async_data);
+            return throwError(env, "OutOfMemory");
+        };
+        np.* = .{
+            .name = native_alloc.dupe(u8, "js-plugin") catch {
+                native_alloc.destroy(np);
+                native_alloc.destroy(async_data);
+                return throwError(env, "OutOfMemory");
+            },
+            .tsfn = undefined,
+        };
+
+        var resource_name_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, "zts_watch_plugin", "zts_watch_plugin".len, &resource_name_str);
+        if (c.napi_create_threadsafe_function(
+            env,
+            dispatcher_fn,
+            null,
+            resource_name_str,
+            0,
+            1,
+            null,
+            null,
+            @ptrCast(np),
+            NapiPlugin.callJsCallback,
+            &np.tsfn,
+        ) != c.napi_ok) {
+            native_alloc.free(np.name);
+            native_alloc.destroy(np);
+            native_alloc.destroy(async_data);
+            return throwError(env, "failed to create threadsafe function");
+        }
+
+        async_data.napi_plugins.append(native_alloc, np) catch {};
+        async_data.zig_plugins.append(native_alloc, np.toPlugin()) catch {};
+        opts.plugins = async_data.zig_plugins.items;
+    }
+
+    async_data.options = opts;
+
+    // onReady 콜백 추출
+    const on_ready_fn = getNamedProperty(env, argv[0], "onReady");
+
+    // onRebuild 콜백 추출
+    const on_rebuild_fn = getNamedProperty(env, argv[0], "onRebuild");
+
+    // onReady TSFN 생성
+    {
+        var resource_name: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, "zts_watch_ready", "zts_watch_ready".len, &resource_name);
+        if (c.napi_create_threadsafe_function(
+            env,
+            on_ready_fn orelse null,
+            null,
+            resource_name,
+            0,
+            1,
+            null,
+            null,
+            null,
+            watchReadyTsfn,
+            &async_data.ready_tsfn,
+        ) != c.napi_ok) {
+            async_data.deinit();
+            return throwError(env, "failed to create ready tsfn");
+        }
+    }
+
+    // onRebuild TSFN 생성
+    {
+        var resource_name: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, "zts_watch_rebuild", "zts_watch_rebuild".len, &resource_name);
+        if (c.napi_create_threadsafe_function(
+            env,
+            on_rebuild_fn orelse null,
+            null,
+            resource_name,
+            0,
+            1,
+            null,
+            null,
+            null,
+            watchRebuildTsfn,
+            &async_data.rebuild_tsfn,
+        ) != c.napi_ok) {
+            _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+            async_data.deinit();
+            return throwError(env, "failed to create rebuild tsfn");
+        }
+    }
+
+    // TSFN의 ref를 해제하여 watch 스레드만으로는 Node.js 프로세스가 종료되는 것을 막지 않도록 한다.
+    // (stop() 호출 없이도 프로세스가 종료되도록)
+    _ = c.napi_unref_threadsafe_function(env, async_data.ready_tsfn);
+    _ = c.napi_unref_threadsafe_function(env, async_data.rebuild_tsfn);
+
+    // 리턴할 handle 객체 생성: { stop() }
+    var js_handle: c.napi_value = undefined;
+    if (c.napi_create_object(env, &js_handle) != c.napi_ok) {
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
+        return throwError(env, "failed to create handle object");
+    }
+
+    // napi_wrap으로 async_data를 handle 객체에 연결
+    if (c.napi_wrap(env, js_handle, @ptrCast(async_data), null, null, null) != c.napi_ok) {
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
+        return throwError(env, "failed to wrap handle");
+    }
+
+    // stop() 메서드 추가
+    var stop_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "stop", "stop".len, napiWatchStop, null, &stop_fn);
+    _ = c.napi_set_named_property(env, js_handle, "stop", stop_fn);
+
+    // 워커 스레드 시작
+    const thread = std.Thread.spawn(.{}, watchWorkerThread, .{async_data}) catch {
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
+        return throwError(env, "failed to spawn watch thread");
+    };
+    thread.detach();
+
+    return js_handle;
+}
+
 /// 옵션 파싱 함수. owned_strings/owned_string_arrays에 할당된 메모리를 추적.
 /// 반환된 BundleOptions의 문자열은 owned 리스트가 소유.
 fn parseBuildOptions(
@@ -1156,6 +1854,10 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var build_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "build", "build".len, napiBuild, null, &build_fn);
     _ = c.napi_set_named_property(env, exports, "build", build_fn);
+
+    var watch_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "watch", "watch".len, napiWatch, null, &watch_fn);
+    _ = c.napi_set_named_property(env, exports, "watch", watch_fn);
 
     return exports;
 }
