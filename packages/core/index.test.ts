@@ -2609,7 +2609,7 @@ describe("옵션 조합 통합 테스트", () => {
     ).toThrow("overwrite");
   });
 
-  test("format: umd + globalName", async () => {
+  test("format: umd + globalName → 글로벌 변수로 실행 가능", async () => {
     const result = await build({
       entryPoints: [join(dir, "lib.ts")],
       format: "umd",
@@ -2617,32 +2617,56 @@ describe("옵션 조합 통합 테스트", () => {
     });
     expect(result.errors.length).toBe(0);
     const text = result.outputFiles[0].text;
+    // 구조 확인
     expect(text).toContain('typeof define === "function"');
-    expect(text).toContain("module.exports = factory()");
     expect(text).toContain("root.MyLib = factory()");
-    expect(text).toContain("return {");
+    // 실제 런타임 실행: 글로벌 변수로 접근
+    const ctx: Record<string, any> = { self: {} };
+    new Function("self", text)(ctx.self);
+    expect((ctx.self as any).MyLib).toBeDefined();
+    expect((ctx.self as any).MyLib.util()).toBe(42);
   });
 
-  test("format: amd", async () => {
+  test("format: umd → CJS 모드로 실행 가능", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "umd",
+      globalName: "MyLib",
+    });
+    // CJS 시뮬레이션: module.exports에 할당
+    const mod: any = { exports: {} };
+    new Function("module", "exports", result.outputFiles[0].text)(mod, mod.exports);
+    expect(mod.exports.util()).toBe(42);
+  });
+
+  test("format: amd → define 콜백으로 실행 가능", async () => {
     const result = await build({
       entryPoints: [join(dir, "lib.ts")],
       format: "amd",
     });
     expect(result.errors.length).toBe(0);
-    const text = result.outputFiles[0].text;
-    expect(text).toContain("define([], function()");
-    expect(text).toContain("return {");
+    // AMD 시뮬레이션: define(deps, factory) 호출 캡처
+    let amdResult: any = null;
+    const define: any = (_deps: any, factory: () => any) => {
+      amdResult = factory();
+    };
+    define.amd = true;
+    new Function("define", result.outputFiles[0].text)(define);
+    expect(amdResult).toBeDefined();
+    expect(amdResult.util()).toBe(42);
   });
 
-  test("format: umd (globalName 없음)", async () => {
+  test("format: umd (globalName 없음) → factory 직접 실행", async () => {
     const result = await build({
       entryPoints: [join(dir, "lib.ts")],
       format: "umd",
     });
     expect(result.errors.length).toBe(0);
-    const text = result.outputFiles[0].text;
-    expect(text).toContain('typeof define === "function"');
-    expect(text).toContain("else factory()");
+    // globalName 없으면 "else factory()" 경로
+    expect(result.outputFiles[0].text).toContain("else factory()");
+    // 에러 없이 실행 가능한지 확인
+    const ctx: Record<string, any> = { self: {} };
+    expect(() => new Function("self", result.outputFiles[0].text)(ctx.self)).not.toThrow();
   });
 
   test("allowOverwrite: true → 입력=출력 허용", () => {
