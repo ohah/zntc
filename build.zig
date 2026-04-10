@@ -167,6 +167,35 @@ pub fn build(b: *std.Build) void {
         wasm_step.dependOn(&wasm_install.step);
     }
 
+    // ─── FFI 동적 라이브러리 빌드 ───
+    // `zig build ffi` — 네이티브 공유 라이브러리(.dylib/.so)를 빌드한다.
+    // bun:ffi 등에서 로드하여 in-process 트랜스파일을 수행할 수 있다.
+    {
+        const ffi_lib_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+
+        const ffi_mod = b.createModule(.{
+            .root_source_file = b.path("packages/ffi/src/ffi_entry.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        ffi_mod.addImport("zts_lib", ffi_lib_mod);
+
+        const ffi_lib = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = "zts",
+            .root_module = ffi_mod,
+        });
+        ffi_lib.linkLibC();
+
+        const ffi_install = b.addInstallArtifact(ffi_lib, .{});
+        const ffi_step = b.step("ffi", "Build native shared library (.dylib/.so) for FFI");
+        ffi_step.dependOn(&ffi_install.step);
+    }
+
     // Test262 러너 테스트 (유닛 테스트)
     // lib_mod에 이미 test262가 포함되어 있으므로 같은 모듈로 테스트.
     const test262_step = b.step("test262", "Run Test262 runner unit tests");

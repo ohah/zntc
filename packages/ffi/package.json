@@ -1,0 +1,22 @@
+{
+  "name": "@zts/ffi",
+  "version": "0.1.0",
+  "description": "ZTS TypeScript transpiler — native FFI binding (NAPI-like performance)",
+  "license": "MIT",
+  "files": ["dist/", "libzts.dylib"],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build:ffi": "cd ../.. && zig build ffi",
+    "build:js": "bun build index.ts --outdir dist --format esm --target bun",
+    "build": "bun run build:ffi && cp ../../zig-out/lib/libzts.dylib . && bun run build:js",
+    "test": "bun test"
+  }
+}
