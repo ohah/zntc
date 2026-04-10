@@ -41,11 +41,24 @@ jobs:
       - name: Install benchmark dependencies
         run: bun install --cwd tests/benchmark
 
-      - name: Run benchmark
+      - name: Build NAPI module
+        run: zig build napi
+
+      - name: Build WASM module
+        run: zig build wasm
+        continue-on-error: true
+
+      - name: Run CLI benchmark
         shell: bash
         run: |
           cd tests/benchmark
           bun run bench.ts 2>&1 | tee bench-output.txt
+
+      - name: Run NAPI vs WASM vs CLI benchmark
+        shell: bash
+        run: |
+          cd tests/benchmark
+          bun run napi-bench.ts 2>&1 | tee -a bench-output.txt
 
       - name: Upload results
         uses: actions/upload-artifact@v4
