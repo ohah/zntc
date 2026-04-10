@@ -2103,4 +2103,92 @@ describe("renderChunk/generateBundle 훅", () => {
     });
     expect(called).toBe(true);
   });
+
+  test("renderChunk 체이닝: 2개 플러그인 순차 적용", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [
+        vitePlugin({
+          name: "chunk-step1",
+          renderChunk(code) {
+            return code.replace("x = 1", "x = 10");
+          },
+        }),
+        vitePlugin({
+          name: "chunk-step2",
+          renderChunk(code) {
+            return code.replace("x = 10", "x = 100");
+          },
+        }),
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("x = 100");
+    expect(result.outputFiles[0].text).not.toContain("x = 1;");
+  });
+
+  test("async generateBundle", async () => {
+    let called = false;
+    await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [
+        vitePlugin({
+          name: "async-generate",
+          async generateBundle(outputs) {
+            await new Promise((r) => setTimeout(r, 5));
+            called = true;
+            expect(outputs.length).toBeGreaterThan(0);
+          },
+        }),
+      ],
+    });
+    expect(called).toBe(true);
+  });
+
+  test("generateBundle: 에러가 throw되어도 빌드 성공", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [
+        vitePlugin({
+          name: "error-generate",
+          generateBundle() {
+            throw new Error("intentional error");
+          },
+        }),
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+});
+
+describe("BuildOptions: 엣지 케이스", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-edge-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = () => 1;");
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("target: 잘못된 값은 무시 (변환 없음)", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      target: "es2099" as any,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("=>");
+  });
+
+  test("loader: 잘못된 값은 무시", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      loader: { ".ts": "invalid_loader" },
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
 });
