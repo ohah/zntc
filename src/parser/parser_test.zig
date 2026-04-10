@@ -813,6 +813,81 @@ test "Parser: TS non-null assertion" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: TS non-null assertion followed by division" {
+    // non-null assertion `!` 뒤의 `/`가 regex가 아닌 division으로 파싱되어야 한다
+    const cases = [_][]const u8{
+        "const z = x > y! / 2;",
+        "const z = y! / 2;",
+        "const z = y! / 2 + 1;",
+        "const z = foo()! / bar;",
+        "const z = arr[0]! / len;",
+        "const z = a.b! / c.d;",
+        "const z = (x as number)! / 2;",
+    };
+    for (cases) |source| {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
+test "Parser: prefix logical NOT with regex" {
+    // prefix `!` 뒤의 `/`는 regex로 파싱되어야 한다 (non-null assertion과 구분)
+    const cases = [_][]const u8{
+        "const x = !/test/;",
+        "const x = !/test/.test('a');",
+        "if (!/pattern/) {}",
+    };
+    for (cases) |source| {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
+test "Parser: TS type predicate in function type literal" {
+    // 함수 타입 리터럴의 return type에서 type predicate (`value is Type`)가 파싱되어야 한다
+    const cases = [_][]const u8{
+        // object type 내부 메서드 시그니처
+        "type X = { determine: (value: object) => value is string; };",
+        // 변수 타입
+        "let guard: (x: unknown) => x is number;",
+        // 제네릭 함수 타입
+        "type Guard<T> = <U>(value: U) => value is T;",
+        // 빈 괄호 + type predicate (this is Type)
+        "type X = { isReady: () => this is Ready; };",
+        // 단일 파라미터 shorthand
+        "type F = (x) => x is string;",
+        // asserts predicate
+        "type F = (x: unknown) => asserts x is string;",
+        // asserts without is
+        "type F = (x: unknown) => asserts x;",
+        // 다중 파라미터 함수 타입
+        "type F = (a: unknown, b: unknown) => a is string;",
+        // intersection/union과 함께
+        "type X = { check: (v: any) => v is Foo } & { other: number };",
+        // 중첩 함수 타입
+        "type F = (f: (x: any) => x is string) => boolean;",
+    };
+    for (cases) |source| {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
 test "Parser: TS object type literal" {
     var scanner = try Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
     defer scanner.deinit();
