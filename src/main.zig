@@ -136,6 +136,8 @@ const CliOptions = struct {
     watch_delay_ms: u32 = 100,
     /// --clean: 빌드 전 출력 디렉토리 정리
     clean: bool = false,
+    /// --jobs=N: 병렬 워커 스레드 수 (0=기본값/CPU코어수, 1=단일스레드)
+    max_threads: u32 = 0,
     /// --preserve-modules: 모듈 1개 = 출력 파일 1개 (라이브러리 빌드용)
     preserve_modules: bool = false,
     /// --preserve-modules-root=<dir>: 출력 디렉토리 구조의 기준 경로
@@ -550,6 +552,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             };
         } else if (std.mem.eql(u8, arg, "--clean")) {
             opts.clean = true;
+        } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
+            const val = arg["--jobs=".len..];
+            opts.max_threads = std.fmt.parseInt(u32, val, 10) catch {
+                try stderr.print("zts: --jobs requires a number: {s}\n", .{val});
+                std.process.exit(1);
+            };
         } else if (std.mem.eql(u8, arg, "--plugin")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1293,6 +1301,7 @@ pub fn main() !void {
             .keep_names = opts.keep_names,
             .shim_missing_exports = opts.shim_missing_exports,
             .plugins = plugin_list.items,
+            .max_threads = opts.max_threads,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
             .configurable_exports = opts.configurable_exports or opts.dev, // HMR: export 재정의 필요

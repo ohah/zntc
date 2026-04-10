@@ -124,6 +124,8 @@ pub const BundleOptions = struct {
     keep_names: bool = false,
     /// 플러그인 배열 (resolveId, load, transform, renderChunk, generateBundle 훅)
     plugins: []const plugin_mod.Plugin = &.{},
+    /// 최대 워커 스레드 수. 0이면 기본값(CPU 코어 수). 1이면 단일 스레드.
+    max_threads: u32 = 0,
     /// Flow 모드 강제 활성화 (--flow). @flow pragma 없이도 .js/.jsx를 Flow로 파싱.
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
@@ -413,6 +415,7 @@ pub const Bundler = struct {
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         worker_graph.plugins = self.options.plugins;
+        worker_graph.max_threads = self.options.max_threads;
         worker_graph.flow = self.options.flow;
         worker_graph.jsx_in_js = self.options.jsx_in_js;
         worker_graph.jsx_runtime = self.options.jsx_runtime;
@@ -528,6 +531,7 @@ pub const Bundler = struct {
         defer if (combined_inject) |c| self.allocator.free(c);
         graph.inject_files = combined_inject orelse self.options.inject;
         graph.plugins = self.options.plugins;
+        graph.max_threads = self.options.max_threads;
         graph.flow = self.options.flow;
         graph.jsx_in_js = self.options.jsx_in_js;
         graph.jsx_runtime = self.options.jsx_runtime;
