@@ -226,9 +226,34 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
 
   return function dispatcher(hookName: string, arg1: string, arg2: string | null) {
     const hookList = hooks[hookName];
-    const buildArgs = argBuilders[hookName];
-    if (!hookList || !buildArgs) return null;
+    if (!hookList) return null;
 
+    // transform은 체이닝: 이전 결과의 code가 다음 입력이 됨
+    if (hookName === "transform") {
+      let currentCode = arg1;
+      let changed = false;
+      for (const h of hookList) {
+        if (h.filter.test(arg2 ?? "")) {
+          try {
+            const result = h.callback({ code: currentCode, path: arg2 });
+            if (result != null) {
+              const newCode = typeof result === "string" ? result : result.code;
+              if (newCode != null) {
+                currentCode = newCode;
+                changed = true;
+              }
+            }
+          } catch {
+            // 에러 시 해당 플러그인 건너뛰고 다음으로
+          }
+        }
+      }
+      return changed ? { code: currentCode } : null;
+    }
+
+    // resolveId/load: 첫 번째 매칭 반환 (first 모드)
+    const buildArgs = argBuilders[hookName];
+    if (!buildArgs) return null;
     const [filterTarget, cbArgs] = buildArgs(arg1, arg2);
     for (const h of hookList) {
       if (h.filter.test(filterTarget)) {
