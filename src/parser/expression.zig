@@ -871,6 +871,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // Inline scan: require("specifier") → CJS import record
                 if (self.enable_scan) {
                     scanRequireCall(self, expr, arg_list);
+                    scanGlobCall(self, expr, arg_list);
                 }
 
                 expr = try self.ast.addNode(.{
@@ -2173,6 +2174,47 @@ fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
         .span = arg_node.span,
     }) catch {};
     self.scan_result.has_cjs_require = true;
+}
+
+/// import.meta.glob("pattern") 호출을 감지하여 glob import 레코드를 생성한다.
+fn scanGlobCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
+    if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (callee_node.tag != .static_member_expression) return;
+
+    const extras = self.ast.extra_data.items;
+    if (callee_node.data.extra + 2 >= extras.len) return;
+
+    // object: meta_property (import.meta)
+    const obj_idx: NodeIndex = @enumFromInt(extras[callee_node.data.extra]);
+    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return;
+    const obj_node = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    if (obj_node.tag != .meta_property) return;
+    if (obj_node.data.none != 0) return;
+
+    // property: "glob"
+    const prop_idx: NodeIndex = @enumFromInt(extras[callee_node.data.extra + 1]);
+    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
+    const prop_node = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    const prop_name = self.ast.source[prop_node.span.start..prop_node.span.end];
+    if (!std.mem.eql(u8, prop_name, "glob")) return;
+
+    // 첫 번째 인수가 string_literal인지
+    if (arg_list.len == 0) return;
+    if (arg_list.start >= extras.len) return;
+    const arg_idx: NodeIndex = @enumFromInt(extras[arg_list.start]);
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= self.ast.nodes.items.len) return;
+    const arg_node = self.ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg_node.tag != .string_literal) return;
+
+    const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
+    const specifier = import_scanner.stripQuotes(raw) orelse raw;
+
+    self.scan_import_records.append(self.allocator, .{
+        .specifier = specifier,
+        .kind = .glob,
+        .span = callee_node.span, // import.meta.glob 전체 span
+    }) catch {};
 }
 
 /// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.

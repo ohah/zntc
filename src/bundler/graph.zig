@@ -627,7 +627,17 @@ pub const ModuleGraph = struct {
         else
             null;
 
+        // import.meta.glob: 워커에서 glob 확장 수행
+        for (self.modules.items[mod_idx].import_records) |*record| {
+            if (record.kind == .glob) {
+                const matches = expandGlob(self.allocator, source_dir, record.specifier) catch &.{};
+                record.glob_matches = matches;
+            }
+        }
+
         for (records, 0..) |record, rec_i| {
+            if (record.kind == .glob) continue;
+
             if (plugin_runner) |runner| {
                 const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
                     error.PluginFailed => null,
@@ -1218,7 +1228,22 @@ pub const ModuleGraph = struct {
         else
             null;
 
+        // import.meta.glob: glob 레코드를 파일 시스템에서 확장
+        for (self.modules.items[mod_idx].import_records) |*record| {
+            if (record.kind == .glob) {
+                const matches = try expandGlob(self.allocator, source_dir, record.specifier);
+                record.glob_matches = matches;
+                for (matches) |match_path| {
+                    const abs = std.fs.path.resolve(self.allocator, &.{ source_dir, match_path }) catch continue;
+                    defer self.allocator.free(abs);
+                    _ = self.addModule(abs) catch continue;
+                }
+            }
+        }
+
         for (records, 0..) |record, rec_i| {
+            if (record.kind == .glob) continue;
+
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
             if (plugin_runner) |runner| {
                 const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
@@ -1838,4 +1863,63 @@ pub fn determineExportsKind(
     if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return .esm;
 
     return .none;
+}
+
+/// import.meta.glob 패턴을 파일 시스템에서 확장한다.
+/// 패턴: "./dir/*.ext" — prefix(./dir/) + *와 suffix(.ext)로 분리하여 디렉토리 탐색.
+/// 상대 경로 배열을 반환한다 (예: ["./pages/Home.tsx", "./pages/About.tsx"]).
+fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []const u8) ![]const []const u8 {
+    // 패턴에서 * 위치 찾기
+    const star_pos = std.mem.indexOf(u8, pattern, "*") orelse return &.{};
+    const prefix = pattern[0..star_pos]; // "./pages/"
+    const suffix = pattern[star_pos + 1 ..]; // ".tsx"
+
+    // prefix에서 디렉토리 경로 추출
+    const glob_dir_rel = if (prefix.len > 0 and prefix[prefix.len - 1] == '/')
+        prefix[0 .. prefix.len - 1]
+    else if (std.fs.path.dirname(prefix)) |d| d else ".";
+
+    // 절대 경로로 변환
+    const glob_dir_abs = try std.fs.path.resolve(allocator, &.{ source_dir, glob_dir_rel });
+    defer allocator.free(glob_dir_abs);
+
+    // 디렉토리 열기
+    var dir = std.fs.cwd().openDir(glob_dir_abs, .{ .iterate = true }) catch return &.{};
+    defer dir.close();
+
+    var results: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (results.items) |r| allocator.free(r);
+        results.deinit(allocator);
+    }
+
+    // prefix에서 디렉토리 이후 부분 (파일명 prefix)
+    const file_prefix = if (prefix.len > 0 and prefix[prefix.len - 1] == '/')
+        ""
+    else
+        std.fs.path.basename(prefix);
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
+        const name = entry.name;
+
+        // prefix 매칭
+        if (file_prefix.len > 0 and !std.mem.startsWith(u8, name, file_prefix)) continue;
+        // suffix 매칭 (확장자)
+        if (suffix.len > 0 and !std.mem.endsWith(u8, name, suffix)) continue;
+
+        // 상대 경로 생성: "./dir/filename.ext"
+        const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ glob_dir_rel, name });
+        try results.append(allocator, rel_path);
+    }
+
+    // 결정적 순서를 위해 정렬
+    std.mem.sortUnstable([]const u8, results.items, {}, struct {
+        fn cmp(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.cmp);
+
+    return try results.toOwnedSlice(allocator);
 }

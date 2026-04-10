@@ -88,6 +88,8 @@ pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const 
                 if (tryExtractRequire(ast, node)) |record| {
                     has_cjs_require = true;
                     try records.append(allocator, record);
+                } else if (tryExtractGlob(ast, node)) |record| {
+                    try records.append(allocator, record);
                 }
             },
             .new_expression => {
@@ -409,4 +411,60 @@ pub fn stripQuotes(text: []const u8) ?[]const u8 {
         return text[1 .. text.len - 1];
     }
     return null;
+}
+
+/// import.meta.glob("pattern") 호출을 감지하여 glob ImportRecord를 생성한다.
+/// call_expression: extra [callee, args_start, args_len, flags]
+///   callee: static_member_expression (import.meta.glob)
+///     object: meta_property (import.meta, data.none == 0)
+///     property: "glob"
+///   args[0]: string_literal (패턴)
+///   args[1]: object_expression (옵션, optional)
+fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
+    if (node.tag != .call_expression) return null;
+    const extras = ast.extra_data.items;
+    const e = node.data.extra;
+    if (e + 2 >= extras.len) return null;
+
+    const callee_idx: NodeIndex = @enumFromInt(extras[e]);
+    const args_start = extras[e + 1];
+    const args_len = extras[e + 2];
+    if (args_len == 0) return null;
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
+
+    // callee가 static_member_expression(import.meta.glob)인지 확인
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag != .static_member_expression) return null;
+    if (callee.data.extra + 2 >= extras.len) return null;
+
+    const obj_idx: NodeIndex = @enumFromInt(extras[callee.data.extra]);
+    const prop_idx: NodeIndex = @enumFromInt(extras[callee.data.extra + 1]);
+    if (obj_idx.isNone() or prop_idx.isNone()) return null;
+    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+
+    // object: meta_property (import.meta)
+    const obj = ast.getNode(obj_idx);
+    if (obj.tag != .meta_property) return null;
+    if (obj.data.none != 0) return null; // 0 = import.meta, 1 = new.target
+
+    // property: "glob"
+    const prop = ast.getNode(prop_idx);
+    const prop_name = ast.source[prop.span.start..prop.span.end];
+    if (!std.mem.eql(u8, prop_name, "glob")) return null;
+
+    // args[0]: string_literal (패턴)
+    if (args_start >= extras.len) return null;
+    const arg0_idx: NodeIndex = @enumFromInt(extras[args_start]);
+    if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= ast.nodes.items.len) return null;
+    const arg0 = ast.getNode(arg0_idx);
+    if (arg0.tag != .string_literal) return null;
+
+    const pattern = stripQuotes(ast.source[arg0.span.start..arg0.span.end]) orelse return null;
+
+    return ImportRecord{
+        .specifier = pattern,
+        .kind = .glob,
+        .span = node.span,
+        .glob_eager = false,
+    };
 }

@@ -17,6 +17,7 @@ pub const ImportKind = enum {
     side_effect,
     require,
     worker,
+    glob,
 };
 
 /// 파서가 수집하는 import 레코드. bundler ImportRecord의 경량 버전.
