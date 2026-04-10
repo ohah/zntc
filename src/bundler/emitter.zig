@@ -961,7 +961,7 @@ pub fn emitModule(
 
     const final_exports = if (raw_final_exports) |fe| blk: {
         if (options.format.isWrappedFormat()) {
-            if (options.global_name != null or options.format == .umd or options.format == .amd) {
+            if (options.format != .iife or options.global_name != null) {
                 if (std.mem.startsWith(u8, fe, "export {")) {
                     wrapped_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
                     break :blk wrapped_return_buf.?;
@@ -1350,7 +1350,9 @@ fn emitFormatPrologue(
             }
         },
         .umd => {
-            // UMD: CommonJS + AMD + 글로벌 자동 감지
+            if (has_tla) {
+                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+            }
             try output.appendSlice(allocator, "(function(root, factory) {\n");
             try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([], factory);\n");
             try output.appendSlice(allocator, "  else if (typeof module === \"object\" && module.exports) module.exports = factory();\n");
@@ -1364,7 +1366,9 @@ fn emitFormatPrologue(
             try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function() {\n");
         },
         .amd => {
-            // AMD: define() 래핑
+            if (has_tla) {
+                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+            }
             try output.appendSlice(allocator, "define([], function() {\n");
         },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
@@ -1376,8 +1380,7 @@ fn emitFormatPrologue(
 fn emitFormatEpilogue(output: *std.ArrayList(u8), allocator: std.mem.Allocator, format: types.Format) !void {
     switch (format) {
         .iife => try output.appendSlice(allocator, "})();\n"),
-        .umd => try output.appendSlice(allocator, "});\n"),
-        .amd => try output.appendSlice(allocator, "});\n"),
+        .umd, .amd => try output.appendSlice(allocator, "});\n"),
         .cjs, .esm => {},
     }
 }
