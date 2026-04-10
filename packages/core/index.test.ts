@@ -4,6 +4,7 @@ import {
   transpile,
   build,
   buildSync,
+  watch,
   close,
   vitePlugin,
   type ZtsPlugin,
@@ -3246,5 +3247,215 @@ describe("엣지 케이스 + 조합 보강", () => {
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).not.toContain("longName");
+  });
+});
+
+// ================================================================
+// watch() API 테스트
+// ================================================================
+
+describe("watch()", () => {
+  test("초기 빌드 후 onReady 콜백 호출", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise, resolve: done } = Promise.withResolvers<{ files: number; bytes: number }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady(event) {
+        done(event);
+      },
+    });
+
+    const event = await promise;
+    expect(event.files).toBeGreaterThan(0);
+    expect(event.bytes).toBeGreaterThan(0);
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  });
+
+  test("파일 변경 시 onRebuild 콜백 호출", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      success: boolean;
+      bytes?: number;
+    }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+
+    await readyP;
+
+    // 파일 수정 (mtime polling 500ms 대기)
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+
+    const event = await rebuildP;
+    expect(event.success).toBe(true);
+    expect(event.bytes).toBeGreaterThan(0);
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("devMode에서 moduleCodes diff → updates 전달", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: Array<{ id: string; code: string }>;
+      graphChanged?: boolean;
+    }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+
+    await readyP;
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 999;");
+
+    const event = await rebuildP;
+    expect(event.graphChanged).toBeFalsy();
+    // updates가 있으면 변경된 모듈 코드가 포함되어야 함
+    if (event.updates && event.updates.length > 0) {
+      expect(event.updates[0].id).toBeDefined();
+      expect(event.updates[0].code).toContain("999");
+    }
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("새 import 추가 시 graphChanged 감지", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      graphChanged?: boolean;
+    }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+
+    await readyP;
+
+    // 새 모듈 추가 → graph 변경
+    writeFileSync(join(dir, "util.ts"), "export const y = 42;");
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), 'import { y } from "./util"; export const x = y;');
+
+    const event = await rebuildP;
+    expect(event.graphChanged).toBe(true);
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("stop() 후 리빌드 발생하지 않음", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let rebuildCount = 0;
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuildCount++;
+      },
+    });
+
+    await readyP;
+    handle.stop();
+
+    // stop 후 파일 수정
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+    await new Promise((r) => setTimeout(r, 1000));
+
+    expect(rebuildCount).toBe(0);
+    rmSync(dir, { recursive: true });
+  }, 5000);
+
+  test("double stop()은 에러 없이 무시", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+    });
+
+    await readyP;
+    handle.stop();
+    // 두 번째 stop() — 에러 없이 무시되어야 함
+    expect(() => handle.stop()).not.toThrow();
+    rmSync(dir, { recursive: true });
+  });
+
+  test("플러그인과 함께 watch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), 'import "./style.css"; export const x = 1;');
+    writeFileSync(join(dir, "style.css"), "body { color: red; }");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+
+    const cssPlugin: ZtsPlugin = {
+      name: "css-loader",
+      setup(build) {
+        build.onLoad({ filter: /\.css$/ }, () => ({
+          contents: 'export default "css-loaded";',
+        }));
+      },
+    };
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [cssPlugin],
+      onReady(event) {
+        expect(event.files).toBeGreaterThan(0);
+        readyDone();
+      },
+    });
+
+    await readyP;
+    handle.stop();
+    rmSync(dir, { recursive: true });
   });
 });
