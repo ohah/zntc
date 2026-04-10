@@ -111,18 +111,30 @@ jobs:
         run: cd packages/core && bun test bin/zts.test.ts
 
   wasm:
-    name: WASM Build
+    name: WASM Build & Test
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
-      - name: Build WASM (ReleaseSmall)
-        run: zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
-        continue-on-error: true  # WASM 타겟은 추후 본격 지원 시 필수로 전환
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build WASM
+        run: zig build wasm
+
+      - name: Run WASM tests
+        run: cd packages/wasm && bun test
