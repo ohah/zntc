@@ -174,6 +174,8 @@ export interface BuildOptions {
   outfile?: string;
   /** 디스크 쓰기 여부 (기본: false, outdir/outfile 지정 시 자동 true) */
   write?: boolean;
+  /** 출력 파일이 입력 파일을 덮어쓰는 것을 허용 */
+  allowOverwrite?: boolean;
   /** 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정) */
   outbase?: string;
   /** 모든 bare import를 external 처리 */
@@ -379,6 +381,7 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   delete napiOptions.write;
   delete napiOptions.outdir;
   delete napiOptions.plugins;
+  delete napiOptions.allowOverwrite;
   return napiOptions;
 }
 
@@ -388,6 +391,18 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
 function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
   const shouldWrite = options.write ?? (options.outdir != null || options.outfile != null);
   if (!shouldWrite) return;
+
+  // allowOverwrite 체크: 입력 파일과 동일 경로에 출력 방지
+  if (!options.allowOverwrite && options.outfile) {
+    const outResolved = resolve(options.outfile);
+    for (const entry of options.entryPoints) {
+      if (resolve(entry) === outResolved) {
+        throw new Error(
+          `@zts/core: output file '${options.outfile}' would overwrite input file (set allowOverwrite: true to permit)`,
+        );
+      }
+    }
+  }
 
   const createdDirs = new Set<string>();
   const outfileResolved = options.outfile ? resolve(options.outfile) : null;

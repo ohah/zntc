@@ -2599,4 +2599,25 @@ describe("옵션 조합 통합 테스트", () => {
     expect(hooks).toContain("generateBundle");
     expect(result.outputFiles[0].text).toContain("/* built */");
   });
+
+  test("allowOverwrite: false → 입력=출력 시 에러", () => {
+    expect(() =>
+      buildSync({
+        entryPoints: [join(dir, "lib.ts")],
+        outfile: join(dir, "lib.ts"),
+      }),
+    ).toThrow("overwrite");
+  });
+
+  test("allowOverwrite: true → 입력=출력 허용", () => {
+    const outfile = join(dir, "overwrite-test.ts");
+    writeFileSync(outfile, "export const z = 1;");
+    const result = buildSync({
+      entryPoints: [outfile],
+      outfile,
+      allowOverwrite: true,
+    });
+    expect(result.errors.length).toBe(0);
+    rmSync(outfile, { force: true });
+  });
 });
