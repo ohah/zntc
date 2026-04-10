@@ -283,3 +283,85 @@ export function buildSync(options: BuildOptions): BuildResult {
 export function close(): void {
   native = null;
 }
+
+// ─── Vite/Rollup 플러그인 어댑터 ───
+
+/**
+ * Rollup/Vite 스타일 플러그인을 ZTS 플러그인으로 변환한다.
+ *
+ * @example
+ * ```ts
+ * import { vitePlugin } from "@zts/core";
+ *
+ * const result = await build({
+ *   entryPoints: ["src/index.ts"],
+ *   plugins: [
+ *     vitePlugin({
+ *       name: "my-rollup-plugin",
+ *       resolveId(source) { ... },
+ *       load(id) { ... },
+ *       transform(code, id) { ... },
+ *     }),
+ *   ],
+ * });
+ * ```
+ */
+
+export interface RollupPlugin {
+  name: string;
+  resolveId?(
+    source: string,
+    importer?: string | null,
+  ): string | null | undefined | void | { id: string; external?: boolean };
+  load?(id: string): string | null | undefined | void | { code: string; map?: unknown };
+  transform?(
+    code: string,
+    id: string,
+  ): string | null | undefined | void | { code: string; map?: unknown };
+}
+
+export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
+  return {
+    name: rollupPlugin.name,
+    setup(build) {
+      if (rollupPlugin.resolveId) {
+        const hook = rollupPlugin.resolveId;
+        build.onResolve({ filter: /.*/ }, (args) => {
+          const result = hook(args.path, args.importer);
+          if (result == null) return null;
+          if (typeof result === "string") return { path: result };
+          if (typeof result === "object" && "id" in result) {
+            return { path: result.id, external: result.external };
+          }
+          return null;
+        });
+      }
+
+      if (rollupPlugin.load) {
+        const hook = rollupPlugin.load;
+        build.onLoad({ filter: /.*/ }, (args) => {
+          const result = hook(args.path);
+          if (result == null) return null;
+          if (typeof result === "string") return { contents: result };
+          if (typeof result === "object" && "code" in result) {
+            return { contents: result.code };
+          }
+          return null;
+        });
+      }
+
+      if (rollupPlugin.transform) {
+        const hook = rollupPlugin.transform;
+        build.onTransform({ filter: /.*/ }, (args) => {
+          const result = hook(args.code, args.path);
+          if (result == null) return null;
+          if (typeof result === "string") return { code: result };
+          if (typeof result === "object" && "code" in result) {
+            return { code: result.code };
+          }
+          return null;
+        });
+      }
+    },
+  };
+}
