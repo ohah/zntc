@@ -2988,4 +2988,49 @@ describe("import.meta.glob", () => {
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).toContain("./pages/data.json");
   });
+
+  test("glob + IIFE 포맷 → 객체 리터럴 출력", () => {
+    writeFileSync(
+      join(dir, "iife-glob.ts"),
+      'const m = import.meta.glob("./pages/*.tsx");\nexport { m };',
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "iife-glob.ts")],
+      format: "iife",
+      globalName: "G",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("./pages/Home.tsx");
+    expect(text).toContain("() => import(");
+    expect(text).not.toContain("import.meta.glob");
+  });
+
+  test("glob + minify → 축소 후에도 정상 출력", () => {
+    writeFileSync(
+      join(dir, "min-glob.ts"),
+      'const m = import.meta.glob("./pages/*.tsx");\nexport { m };',
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "min-glob.ts")],
+      format: "esm",
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("./pages/Home.tsx");
+    expect(text).toContain("import(");
+    expect(text).not.toContain("import.meta.glob");
+  });
+
+  test("glob: 코드 내 문자열에 import.meta.glob이 있어도 오탐 안 함", () => {
+    writeFileSync(
+      join(dir, "no-false-match.ts"),
+      'const msg = "use import.meta.glob() to load";\nexport { msg };',
+    );
+    const result = buildSync({ entryPoints: [join(dir, "no-false-match.ts")], format: "esm" });
+    expect(result.errors.length).toBe(0);
+    // 문자열 리터럴 안의 import.meta.glob은 교체되지 않아야 함
+    expect(result.outputFiles[0].text).toContain("import.meta.glob");
+  });
 });
