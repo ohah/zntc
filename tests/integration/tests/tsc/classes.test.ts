@@ -8741,7 +8741,7 @@ class B extends A {
     );
   });
   test("privateNamesAssertion", async () => {
-    await expectError(
+    await expectPass(
       `
 class Foo {
     #p1: (v: any) => asserts v is string = (v) => {
