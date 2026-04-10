@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "description": "ZTS TypeScript transpiler — native FFI binding (NAPI-like performance)",
   "license": "MIT",
-  "files": ["dist/", "libzts.dylib"],
+  "files": [
+    "dist/",
+    "libzts.dylib"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
