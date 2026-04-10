@@ -1435,6 +1435,20 @@ pub const SemanticAnalyzer = struct {
         return self.predeclared_scope == self.current_scope;
     }
 
+    /// var 전용: 현재 스코프의 조상이 predeclared_scope인지 확인.
+    /// var는 함수 스코프까지 hoisting되므로 nested block에서도 predeclare 모드 유지.
+    fn isVarPredeclared(self: *const SemanticAnalyzer) bool {
+        if (self.predeclared_scope.isNone()) return false;
+        var scope_id = self.current_scope;
+        while (!scope_id.isNone()) {
+            if (scope_id == self.predeclared_scope) return true;
+            const idx = scope_id.toIndex();
+            if (idx >= self.scopes.items.len) break;
+            scope_id = self.scopes.items[idx].parent;
+        }
+        return false;
+    }
+
     fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
@@ -1656,13 +1670,20 @@ pub const SemanticAnalyzer = struct {
         // 함수 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
-            if (!self.isInPredeclaredScope()) {
+            const fn_predeclared = if (self.isInPredeclaredScope()) true else blk: {
+                // 함수 body 내 predeclare로 이미 등록된 함수인지 확인
+                const name_node = self.ast.getNode(name_idx);
+                const fname = self.ast.source[name_node.span.start..name_node.span.end];
+                const var_scope = self.findVarScope();
+                if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
+                    break :blk self.scope_maps.items[var_scope.toIndex()].contains(fname);
+                }
+                break :blk false;
+            };
+            if (!fn_predeclared) {
                 const name_node = self.ast.getNode(name_idx);
                 try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
             } else {
-                // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정.
-                // declareSymbolWithNode를 skip하지만 symbol_ids는 설정해야
-                // buildFromSemantic/build에서 declared 매칭이 정확하다.
                 const name_node = self.ast.getNode(name_idx);
                 self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
             }
@@ -2272,8 +2293,27 @@ pub const SemanticAnalyzer = struct {
                 const init_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra + 2]);
 
                 // predeclared_scope에서는 이미 1st pass에서 바인딩이 등록되었으므로 건너뛴다.
-                // 다시 registerBinding을 호출하면 let/const 재선언 에러가 발생한다.
-                if (!self.isInPredeclaredScope()) {
+                // var hoisting: 함수 body에서 predeclareVarDecls로 미리 등록된 var는
+                // registerBinding 대신 setSymbolIdForPredeclaredBinding으로 기존 심볼 재사용.
+                const is_predeclared = if (self.isInPredeclaredScope())
+                    true
+                else if (sym_kind == .variable_var) blk: {
+                    // var가 이미 함수 스코프에 등록되어 있으면 predeclare 경로
+                    if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                        const bnode = self.ast.getNode(binding_idx);
+                        if (bnode.tag == .binding_identifier or bnode.tag == .assignment_target_identifier) {
+                            const bname = self.ast.source[bnode.span.start..bnode.span.end];
+                            const var_scope = self.findVarScope();
+                            if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
+                                if (self.scope_maps.items[var_scope.toIndex()].contains(bname)) {
+                                    break :blk true;
+                                }
+                            }
+                        }
+                    }
+                    break :blk false;
+                } else false;
+                if (!is_predeclared) {
                     try self.registerBinding(binding_idx, sym_kind);
                 } else {
                     // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정
@@ -2659,10 +2699,90 @@ pub const SemanticAnalyzer = struct {
         if (body_idx.isNone()) return;
         const body_node = self.ast.getNode(body_idx);
         if (body_node.tag == .block_statement) {
-            // function 스코프가 이미 생성되었으므로 block_statement의 내용만 순회
+            // var hoisting: 함수 body 내부의 모든 var 선언을 함수 스코프에 미리 등록.
+            // ECMAScript var는 함수 진입 시 hoisting되므로 사용 위치가 선언보다 앞이어도 유효.
+            // predeclared_scope는 설정하지 않음 — isVarPredeclared가 var 전용으로 처리.
+            try self.predeclareVarDecls(body_node.data.list);
             try self.visitNodeList(body_node.data.list);
         } else {
             try self.visitNode(body_idx);
+        }
+    }
+
+    /// 함수 body의 var 선언을 현재 함수 스코프에 재귀적으로 미리 등록한다.
+    /// var는 함수 스코프까지 hoisting되므로, 코드에서 사용 위치가 선언보다 앞이어도 resolve 가능해야 한다.
+    /// if/for/while/block 안의 var도 포함하기 위해 재귀 탐색.
+    fn predeclareVarDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx));
+        }
+    }
+
+    fn predeclareVarDeclsRecursive(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone()) return;
+        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .variable_declaration => {
+                const extra_start = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (extra_start + 2 >= extras.len) return;
+                const kind_flags = extras[extra_start];
+                if (kind_flags != 0) return; // let/const는 block scoped
+                try self.predeclareVarDecl(node);
+            },
+            // 함수 선언도 hoisting 대상 (var scope에 등록)
+            .function_declaration => {
+                const extra_start = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (extra_start >= extras.len) return;
+                const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    try self.declareSymbolWithNode(name_node.span, .function_decl, name_node.span, null);
+                }
+            },
+            // 재귀 대상: block/if/for/while/switch/try/labeled 등
+            .block_statement, .static_block => {
+                try self.predeclareVarDecls(node.data.list);
+            },
+            .if_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.b);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+            },
+            .for_statement => {
+                const extras = self.ast.extra_data.items;
+                if (node.data.extra + 3 < extras.len) {
+                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra])); // init
+                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra + 3])); // body
+                }
+            },
+            .for_in_statement, .for_of_statement, .for_await_of_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+            },
+            .while_statement, .do_while_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.binary.right);
+            },
+            .labeled_statement, .with_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.binary.right);
+            },
+            .try_statement => {
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.b);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+            },
+            .switch_case => {
+                try self.predeclareVarDecls(node.data.list);
+            },
+            .expression_statement => {
+                // expression_statement 안에 var는 없으므로 스킵
+            },
+            else => {},
         }
     }
 };
