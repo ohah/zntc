@@ -881,6 +881,52 @@ fn parseBuildOptions(
         alias_entries = als;
     }
 
+    // loader: { ".png": "file", ".svg": "text" } → []LoaderOverride
+    const loader_pairs = getObjectKeyValuePairs(env, opts_obj, "loader", native_alloc);
+    var loader_overrides: []const bundler_mod.types.LoaderOverride = &.{};
+    if (loader_pairs) |pairs| {
+        const overrides = native_alloc.alloc(bundler_mod.types.LoaderOverride, pairs.len) catch return null;
+        var valid_count: usize = 0;
+        for (pairs) |pair| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            const loader = bundler_mod.types.Loader.fromString(pair[1]) orelse continue;
+            overrides[valid_count] = .{ .ext = pair[0], .loader = loader };
+            valid_count += 1;
+        }
+        native_alloc.free(pairs);
+        loader_overrides = overrides[0..valid_count];
+    }
+
+    const conditions = getObjectStringArray(env, opts_obj, "conditions", native_alloc);
+    if (conditions) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    const resolve_extensions = getObjectStringArray(env, opts_obj, "resolveExtensions", native_alloc);
+    if (resolve_extensions) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    const main_fields = getObjectStringArray(env, opts_obj, "mainFields", native_alloc);
+    if (main_fields) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
+    const target_str = getObjectString(env, opts_obj, "target", native_alloc);
+    if (target_str) |s| if (!trackStr(owned_strings, s)) return null;
+    const unsupported: compat.UnsupportedFeatures = if (target_str) |s|
+        if (std.meta.stringToEnum(compat.ESTarget, s)) |t| compat.fromESTarget(t) else .{}
+    else
+        .{};
+
+    // outfile → output_filename (소스맵 참조용)
+    const outfile = ownStr(env, opts_obj, "outfile", owned_strings);
+
     const minify = getObjectBool(env, opts_obj, "minify", false);
     return .{
         .entry_points = entries,
@@ -920,6 +966,12 @@ fn parseBuildOptions(
         .jsx_import_source = jsx_import_source orelse "react",
         .inject = inject orelse &.{},
         .max_threads = getObjectUint32(env, opts_obj, "jobs", 0),
+        .loader_overrides = loader_overrides,
+        .conditions = conditions orelse &.{},
+        .resolve_extensions = resolve_extensions orelse &.{},
+        .main_fields = main_fields orelse &.{},
+        .unsupported = unsupported,
+        .output_filename = outfile orelse "bundle.js",
     };
 }
 

@@ -14,8 +14,8 @@
  */
 
 import { createRequire } from "module";
-import { existsSync } from "fs";
-import { join, dirname } from "path";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
@@ -62,21 +62,21 @@ let native: NativeModule | null = null;
 function findAddon(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
 
-  // 1. 같은 디렉토리 (소스에서 직접 사용)
-  const local = join(__dirname, "zts.node");
-  if (existsSync(local)) return local;
-
-  // 2. 한 단계 위 (dist/index.js에서 사용 시)
-  const parent = join(__dirname, "../zts.node");
-  if (existsSync(parent)) return parent;
-
-  // 3. zig-out (개발 시)
+  // 1. zig-out 빌드 산출물 우선 (개발 시 항상 최신 바이너리 사용)
   const zigOut = join(__dirname, "../../zig-out/lib/zts.node");
   if (existsSync(zigOut)) return zigOut;
 
-  // 4. dist에서 3단계 위
+  // 2. dist에서 3단계 위 (packages/core/dist/ → zig-out/lib/)
   const zigOut2 = join(__dirname, "../../../zig-out/lib/zts.node");
   if (existsSync(zigOut2)) return zigOut2;
+
+  // 3. 같은 디렉토리 (npm 배포 패키지)
+  const local = join(__dirname, "zts.node");
+  if (existsSync(local)) return local;
+
+  // 4. 한 단계 위 (dist/index.js에서 사용 시)
+  const parent = join(__dirname, "../zts.node");
+  if (existsSync(parent)) return parent;
 
   throw new Error("@zts/core: zts.node not found. Run `zig build napi` first.");
 }
@@ -158,6 +158,22 @@ export interface BuildOptions {
   inject?: string[];
   jobs?: number;
   plugins?: ZtsPlugin[];
+  /** 확장자별 로더 오버라이드 (예: { ".png": "file", ".svg": "text" }) */
+  loader?: Record<string, string>;
+  /** package.json exports 커스텀 조건 */
+  conditions?: string[];
+  /** 확장자 탐색 순서 (예: [".ts", ".tsx", ".js"]) */
+  resolveExtensions?: string[];
+  /** package.json 필드 순서 (예: ["module", "main"]) */
+  mainFields?: string[];
+  /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
+  target?: import("../shared/index").Target;
+  /** 출력 디렉토리 (write: true 시 사용) */
+  outdir?: string;
+  /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */
+  outfile?: string;
+  /** 디스크 쓰기 여부 (기본: false, outdir/outfile 지정 시 자동 true) */
+  write?: boolean;
 }
 
 export interface ZtsPlugin {
@@ -270,6 +286,51 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
 }
 
 /**
+ * JS-only 옵션을 제거하고 NAPI에 전달할 옵션 객체를 생성한다.
+ * write/outdir는 JS에서 처리, plugins는 dispatcher로 변환되므로 제거.
+ * target/outfile은 Zig가 파싱하므로 그대로 전달.
+ */
+function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
+  const napiOptions: Record<string, unknown> = { ...options };
+  delete napiOptions.write;
+  delete napiOptions.outdir;
+  delete napiOptions.plugins;
+  return napiOptions;
+}
+
+/**
+ * write/outdir/outfile 옵션에 따라 빌드 결과를 디스크에 기록한다.
+ */
+function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
+  const shouldWrite = options.write ?? (options.outdir != null || options.outfile != null);
+  if (!shouldWrite) return;
+
+  const createdDirs = new Set<string>();
+  const outfileResolved = options.outfile ? resolve(options.outfile) : null;
+
+  for (const file of result.outputFiles) {
+    let outPath: string;
+    if (outfileResolved && file.path === "bundle.js") {
+      // 메인 번들 → outfile 경로로 출력
+      outPath = outfileResolved;
+    } else if (outfileResolved && file.path.endsWith(".map")) {
+      // 소스맵 → outfile 옆에 .map으로 출력
+      outPath = outfileResolved + ".map";
+    } else if (options.outdir) {
+      outPath = join(resolve(options.outdir), file.path);
+    } else {
+      outPath = resolve(file.path);
+    }
+    const dir = dirname(outPath);
+    if (!createdDirs.has(dir)) {
+      mkdirSync(dir, { recursive: true });
+      createdDirs.add(dir);
+    }
+    writeFileSync(outPath, file.text, "utf-8");
+  }
+}
+
+/**
  * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
  * JS 플러그인은 이 함수에서만 지원됨.
  */
@@ -277,14 +338,15 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
 
-  const napiOptions: Record<string, unknown> = { ...options };
+  const napiOptions = prepareNapiOptions(options);
 
   if (options.plugins?.length) {
     napiOptions._pluginDispatcher = createPluginDispatcher(options.plugins);
-    delete napiOptions.plugins;
   }
 
-  return native.build(napiOptions);
+  const result: BuildResult = await native.build(napiOptions);
+  writeOutputFiles(result, options);
+  return result;
 }
 
 /**
@@ -300,7 +362,10 @@ export function buildSync(options: BuildOptions): BuildResult {
     );
   }
 
-  return native.buildSync(options as unknown as Record<string, unknown>);
+  const napiOptions = prepareNapiOptions(options);
+  const result: BuildResult = native.buildSync(napiOptions);
+  writeOutputFiles(result, options);
+  return result;
 }
 
 /**

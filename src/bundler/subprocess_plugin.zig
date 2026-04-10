@@ -45,6 +45,19 @@ pub const FilterMap = struct {
     }
 };
 
+/// Forward plugin stderr to parent stderr line by line.
+/// Runs in a background thread to avoid blocking the IPC loop.
+fn forwardStderr(stderr_file: std.fs.File, plugin_path: []const u8) void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = stderr_file.read(&buf) catch break;
+        if (n == 0) break; // EOF — plugin process exited
+        stderr.print("[plugin:{s}] ", .{std.fs.path.basename(plugin_path)}) catch {};
+        _ = stderr.write(buf[0..n]) catch {};
+    }
+}
+
 pub const SubprocessPlugin = struct {
     child: std.process.Child,
     stdin_file: std.fs.File,
@@ -59,6 +72,8 @@ pub const SubprocessPlugin = struct {
     last_error: ?[]const u8 = null,
     /// config 파일에서 전달된 빌드 옵션
     config: InitResponse.ConfigOptions = .{},
+    /// stderr 전달 스레드 (shutdown 시 join)
+    stderr_thread: ?std.Thread = null,
     allocator: std.mem.Allocator,
     filter_arena: std.heap.ArenaAllocator,
 
@@ -81,12 +96,19 @@ pub const SubprocessPlugin = struct {
         var child = std.process.Child.init(argv, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
+        // Pipe stderr instead of Inherit to prevent fd interference
+        // when ZTS is spawned as a child process (e.g., from Node.js/Bun).
+        // Plugin stderr is forwarded to parent stderr manually.
+        child.stderr_behavior = .Pipe;
 
         try child.spawn();
 
         const stdin_file = child.stdin orelse return error.SpawnFailed;
         const stdout_file = child.stdout orelse return error.SpawnFailed;
+        const stderr_file = child.stderr orelse return error.SpawnFailed;
+
+        // Forward plugin stderr to parent stderr in a background thread
+        const stderr_thread = std.Thread.spawn(.{}, forwardStderr, .{ stderr_file, config_path }) catch null;
 
         const self = try allocator.create(SubprocessPlugin);
         self.* = .{
@@ -95,6 +117,7 @@ pub const SubprocessPlugin = struct {
             .stdout_file = stdout_file,
             .allocator = allocator,
             .filter_arena = std.heap.ArenaAllocator.init(allocator),
+            .stderr_thread = stderr_thread,
         };
 
         self.handshake() catch {
@@ -246,7 +269,13 @@ pub const SubprocessPlugin = struct {
         // child.wait()가 이미 닫힌 fd를 다시 닫지 않도록 null 설정
         self.child.stdin = null;
         self.child.stdout = null;
+        if (self.child.stderr) |f| {
+            f.close();
+            self.child.stderr = null;
+        }
         _ = self.child.wait() catch {};
+        // stderr 전달 스레드 종료 대기
+        if (self.stderr_thread) |t| t.join();
         self.filter_arena.deinit();
         self.allocator.destroy(self);
     }
