@@ -355,48 +355,40 @@ const ResolveResult = bundler_mod.ResolveResult;
 const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
-    // 워커 스레드 ↔ 메인 스레드 동기화
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
-    // 요청/응답 공유 데이터
-    request: ?PluginRequest = null,
-    response: ?PluginResponse = null,
-    response_ready: bool = false,
 
     const HookType = enum { resolveId, load, transform };
 
-    const PluginRequest = struct {
-        hook: HookType,
-        arg1: []const u8,
-        arg2: ?[]const u8,
-    };
-
     const PluginResponse = struct {
-        // resolveId 결과
         resolved_path: ?[]const u8 = null,
         is_external: bool = false,
-        // load/transform 결과
         code: ?[]const u8 = null,
     };
 
-    /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
-    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
-        const self: *NapiPlugin = @ptrCast(@alignCast(data.?));
-        self.mutex.lock();
-        defer {
-            self.response_ready = true;
-            self.mutex.unlock();
-            self.cond.signal();
-        }
+    /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
+    const CallContext = struct {
+        hook: HookType,
+        arg1: []const u8,
+        arg2: ?[]const u8,
+        response: ?PluginResponse = null,
+        response_ready: bool = false,
+        mutex: std.Thread.Mutex = .{},
+        cond: std.Thread.Condition = .{},
+    };
 
-        const req = self.request orelse {
-            self.response = .{};
-            return;
-        };
+    /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
+    /// data = CallContext 포인터 (per-call, 워커 스레드가 스택/힙에 소유)
+    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+        const ctx: *CallContext = @ptrCast(@alignCast(data.?));
+        ctx.mutex.lock();
+        defer {
+            ctx.response_ready = true;
+            ctx.mutex.unlock();
+            ctx.cond.signal();
+        }
 
         // JS dispatcher 호출: dispatcher(hookName, arg1, arg2)
         var hook_str: c.napi_value = undefined;
-        const hook_name: []const u8 = switch (req.hook) {
+        const hook_name: []const u8 = switch (ctx.hook) {
             .resolveId => "resolveId",
             .load => "load",
             .transform => "transform",
@@ -404,10 +396,10 @@ const NapiPlugin = struct {
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
         var js_arg1: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, req.arg1.ptr, req.arg1.len, &js_arg1);
+        _ = c.napi_create_string_utf8(env, ctx.arg1.ptr, ctx.arg1.len, &js_arg1);
 
         var js_arg2: c.napi_value = undefined;
-        if (req.arg2) |a2| {
+        if (ctx.arg2) |a2| {
             _ = c.napi_create_string_utf8(env, a2.ptr, a2.len, &js_arg2);
         } else {
             _ = c.napi_get_null(env, &js_arg2);
@@ -418,7 +410,7 @@ const NapiPlugin = struct {
         var js_undefined: c.napi_value = undefined;
         _ = c.napi_get_undefined(env, &js_undefined);
         if (c.napi_call_function(env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
-            self.response = .{};
+            ctx.response = .{};
             return;
         }
 
@@ -426,7 +418,7 @@ const NapiPlugin = struct {
         var result_type: c.napi_valuetype = undefined;
         _ = c.napi_typeof(env, js_result, &result_type);
         if (result_type == c.napi_null or result_type == c.napi_undefined) {
-            self.response = .{};
+            ctx.response = .{};
             return;
         }
 
@@ -446,30 +438,31 @@ const NapiPlugin = struct {
             }
         }
 
-        self.response = resp;
+        ctx.response = resp;
     }
 
-    /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기
+    /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기.
+    /// per-call CallContext를 스택에 생성하여 멀티스레드 안전.
     fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
-        self.mutex.lock();
-        self.request = .{ .hook = hook, .arg1 = arg1, .arg2 = arg2 };
-        self.response = null;
-        self.response_ready = false;
-        self.mutex.unlock();
+        var ctx = CallContext{
+            .hook = hook,
+            .arg1 = arg1,
+            .arg2 = arg2,
+        };
 
-        // threadsafe function 호출 (블로킹 — 큐에 추가될 때까지 대기)
-        if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(self), c.napi_tsfn_blocking) != c.napi_ok) {
+        // TSFN 호출 — CallContext 포인터를 data로 전달
+        if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&ctx), c.napi_tsfn_blocking) != c.napi_ok) {
             return null;
         }
 
-        // 결과 대기
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        while (!self.response_ready) {
-            self.cond.wait(&self.mutex);
+        // 결과 대기 (메인 스레드에서 callJsCallback이 ctx에 결과를 씀)
+        ctx.mutex.lock();
+        defer ctx.mutex.unlock();
+        while (!ctx.response_ready) {
+            ctx.cond.wait(&ctx.mutex);
         }
 
-        return self.response;
+        return ctx.response;
     }
 
     // ─── Plugin 인터페이스 구현 ───
