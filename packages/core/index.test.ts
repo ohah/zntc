@@ -2422,3 +2422,181 @@ describe("BundleOptions: 전체 옵션 노출", () => {
     expect(result.errors.length).toBe(0);
   });
 });
+
+// ─── 옵션 조합 + 엣지 케이스 통합 테스트 ───
+
+describe("옵션 조합 통합 테스트", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-combo-"));
+    writeFileSync(
+      join(dir, "app.ts"),
+      'import { util } from "./lib";\nDEV: { console.log("debug"); }\nconsole.log(util());',
+    );
+    writeFileSync(join(dir, "lib.ts"), "export function util() { return 42; }");
+    writeFileSync(join(dir, "logo.txt"), "LOGO_TEXT");
+    writeFileSync(
+      join(dir, "with-license.ts"),
+      '/** @license Apache-2.0 */\nexport const licensed = "yes";',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("minify + target + dropLabels 조합", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "app.ts")],
+      minify: true,
+      target: "es2020",
+      dropLabels: ["DEV"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("debug");
+    expect(result.outputFiles[0].text).toContain("42");
+  });
+
+  test("sourcemap + sourceRoot + outfile 조합", () => {
+    const outfile = join(dir, "combo-out", "bundle.js");
+    buildSync({
+      entryPoints: [join(dir, "app.ts")],
+      sourcemap: true,
+      sourceRoot: "/src",
+      outfile,
+      dropLabels: ["DEV"],
+    });
+    const map = readFileSync(outfile + ".map", "utf-8");
+    expect(map).toContain("/src");
+    expect(map).toContain("mappings");
+    rmSync(join(dir, "combo-out"), { recursive: true, force: true });
+  });
+
+  test("loader + packagesExternal 조합", () => {
+    writeFileSync(
+      join(dir, "asset-entry.ts"),
+      'import logo from "./logo.txt";\nimport React from "react";\nexport { logo, React };',
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "asset-entry.ts")],
+      loader: { ".txt": "text" },
+      packagesExternal: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("LOGO_TEXT");
+    expect(result.outputFiles[0].text).toMatch(/import.*react|require.*react/);
+  });
+
+  test("splitting + entryNames + chunkNames 조합", async () => {
+    writeFileSync(join(dir, "dyn-entry.ts"), 'export const lazy = () => import("./lib");');
+    const result = await build({
+      entryPoints: [join(dir, "dyn-entry.ts")],
+      splitting: true,
+      entryNames: "[name]",
+      chunkNames: "chunks/[name]-[hash]",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("legalComments: none + minify 조합", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "with-license.ts")],
+      legalComments: "none",
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("@license");
+  });
+
+  test("format: cjs + platform: node 조합", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "cjs",
+      platform: "node",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("use strict");
+  });
+
+  test("format: iife + globalName 조합", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "iife",
+      globalName: "MyLib",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("MyLib");
+  });
+
+  test("define + alias + inject 조합", () => {
+    writeFileSync(join(dir, "shim.ts"), "globalThis.__INJECTED__ = true;");
+    writeFileSync(
+      join(dir, "define-entry.ts"),
+      'import { foo } from "@alias/mod";\nconsole.log(__DEV__, foo);',
+    );
+    writeFileSync(join(dir, "real.ts"), 'export const foo = "real";');
+    const result = buildSync({
+      entryPoints: [join(dir, "define-entry.ts")],
+      define: { __DEV__: "false" },
+      alias: { "@alias/mod": join(dir, "real.ts") },
+      inject: [join(dir, "shim.ts")],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("false");
+    expect(result.outputFiles[0].text).toContain("real");
+    expect(result.outputFiles[0].text).toContain("__INJECTED__");
+  });
+
+  test("write + outdir + metafile 조합", () => {
+    const outdir = join(dir, "meta-out");
+    const result = buildSync({
+      entryPoints: [join(dir, "lib.ts")],
+      outdir,
+      metafile: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.metafile).toBeDefined();
+    const written = readFileSync(join(outdir, "bundle.js"), "utf-8");
+    expect(written.length).toBeGreaterThan(0);
+    rmSync(outdir, { recursive: true, force: true });
+  });
+
+  test("async build + 모든 플러그인 훅 조합", async () => {
+    const hooks: string[] = [];
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      dropLabels: ["DEV"],
+      plugins: [
+        vitePlugin({
+          name: "full-lifecycle",
+          resolveId(source) {
+            if (source === "./lib") {
+              hooks.push("resolveId");
+              return join(dir, "lib.ts");
+            }
+          },
+          load(id) {
+            if (id.endsWith("lib.ts")) hooks.push("load");
+          },
+          transform(code) {
+            hooks.push("transform");
+          },
+          renderChunk(code) {
+            hooks.push("renderChunk");
+            return `/* built */\n${code}`;
+          },
+          generateBundle(outputs) {
+            hooks.push("generateBundle");
+          },
+        }),
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(hooks).toContain("resolveId");
+    expect(hooks).toContain("renderChunk");
+    expect(hooks).toContain("generateBundle");
+    expect(result.outputFiles[0].text).toContain("/* built */");
+  });
+});
