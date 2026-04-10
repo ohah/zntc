@@ -107,7 +107,9 @@ export type Target =
 /** Result returned by a plugin's `load` or `transform` hook. */
 export interface LoadResult {
   /** The transformed source code. */
-  contents: string;
+  contents?: string;
+  /** Alias for `contents` (Rolldown compatibility). `contents` takes precedence if both are set. */
+  code?: string;
   /** Optional loader override for this file. */
   loader?: Loader;
 }
