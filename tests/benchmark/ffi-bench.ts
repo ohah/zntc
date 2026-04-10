@@ -196,7 +196,8 @@ interface BenchResult {
 }
 
 function runWorker(method: "ffi" | "wasm" | "cli", scale: string, sourceFile: string): BenchResult {
-  const label = method === "ffi" ? "FFI (NAPI-like)" : method === "wasm" ? "WASM" : "CLI (subprocess)";
+  const label =
+    method === "ffi" ? "FFI (NAPI-like)" : method === "wasm" ? "WASM" : "CLI (subprocess)";
   const workerPath = createWorkerScript(method, sourceFile);
 
   const result = spawnSync("bun", ["run", workerPath], {
@@ -209,7 +210,8 @@ function runWorker(method: "ffi" | "wasm" | "cli", scale: string, sourceFile: st
 
   if (result.status !== 0) {
     console.error(`  ${label}: FAILED`);
-    if (result.stderr.length > 0) console.error(`  stderr: ${result.stderr.toString().slice(0, 200)}`);
+    if (result.stderr.length > 0)
+      console.error(`  stderr: ${result.stderr.toString().slice(0, 200)}`);
     return { method: label, scale, medianUs: -1, minUs: -1, maxUs: -1 };
   }
 
@@ -286,7 +288,9 @@ for (const scale of scales) {
     const min = r.minUs === -1 ? "-" : String(r.minUs);
     const max = r.maxUs === -1 ? "-" : String(r.maxUs);
     const ratio = r.medianUs > 0 ? `${(r.medianUs / fastest).toFixed(1)}x` : "-";
-    console.log(`| ${r.method.padEnd(15)} | ${median.padStart(11)} | ${min.padStart(8)} | ${max.padStart(8)} | ${ratio.padStart(10)} |`);
+    console.log(
+      `| ${r.method.padEnd(15)} | ${median.padStart(11)} | ${min.padStart(8)} | ${max.padStart(8)} | ${ratio.padStart(10)} |`,
+    );
   }
   console.log();
 }

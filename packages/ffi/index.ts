@@ -101,12 +101,18 @@ export interface TranspileResult {
 interface ZtsLib {
   symbols: {
     zts_transpile(
-      srcPtr: number, srcLen: number,
-      filePtr: number, fileLen: number,
-      flags: number, unsupported: number,
-      jsxFactoryPtr: number, jsxFactoryLen: number,
-      jsxFragmentPtr: number, jsxFragmentLen: number,
-      jsxImportSourcePtr: number, jsxImportSourceLen: number,
+      srcPtr: number,
+      srcLen: number,
+      filePtr: number,
+      fileLen: number,
+      flags: number,
+      unsupported: number,
+      jsxFactoryPtr: number,
+      jsxFactoryLen: number,
+      jsxFragmentPtr: number,
+      jsxFragmentLen: number,
+      jsxImportSourcePtr: number,
+      jsxImportSourceLen: number,
     ): number | null;
     zts_result_len(): number;
     zts_error_ptr(): number | null;
@@ -178,9 +184,7 @@ function findDylib(): string {
   const zigOut = join(__dirname, "../../zig-out/lib/libzts.dylib");
   if (existsSync(zigOut)) return zigOut;
 
-  throw new Error(
-    "zts-ffi: libzts.dylib not found. Run `zig build ffi` first.",
-  );
+  throw new Error("zts-ffi: libzts.dylib not found. Run `zig build ffi` first.");
 }
 
 // ─── Public API ───
@@ -198,13 +202,18 @@ export function init(dylibPath?: string): void {
   lib = dlopen(path, {
     zts_transpile: {
       args: [
-        FFIType.ptr, FFIType.u32, // src
-        FFIType.ptr, FFIType.u32, // file
-        FFIType.u32,              // flags
-        FFIType.u32,              // unsupported
-        FFIType.ptr, FFIType.u32, // jsx_factory
-        FFIType.ptr, FFIType.u32, // jsx_fragment
-        FFIType.ptr, FFIType.u32, // jsx_import_source
+        FFIType.ptr,
+        FFIType.u32, // src
+        FFIType.ptr,
+        FFIType.u32, // file
+        FFIType.u32, // flags
+        FFIType.u32, // unsupported
+        FFIType.ptr,
+        FFIType.u32, // jsx_factory
+        FFIType.ptr,
+        FFIType.u32, // jsx_fragment
+        FFIType.ptr,
+        FFIType.u32, // jsx_import_source
       ],
       returns: FFIType.ptr,
     },
@@ -242,12 +251,18 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   const importSourceBuf = options.jsxImportSource ? Buffer.from(options.jsxImportSource) : null;
 
   const resultPtr = lib.symbols.zts_transpile(
-    ptr(srcBuf), srcBuf.length,
-    ptr(fileBuf), fileBuf.length,
-    flags, unsupported,
-    factoryBuf ? ptr(factoryBuf) : 0, factoryBuf?.length ?? 0,
-    fragmentBuf ? ptr(fragmentBuf) : 0, fragmentBuf?.length ?? 0,
-    importSourceBuf ? ptr(importSourceBuf) : 0, importSourceBuf?.length ?? 0,
+    ptr(srcBuf),
+    srcBuf.length,
+    ptr(fileBuf),
+    fileBuf.length,
+    flags,
+    unsupported,
+    factoryBuf ? ptr(factoryBuf) : 0,
+    factoryBuf?.length ?? 0,
+    fragmentBuf ? ptr(fragmentBuf) : 0,
+    fragmentBuf?.length ?? 0,
+    importSourceBuf ? ptr(importSourceBuf) : 0,
+    importSourceBuf?.length ?? 0,
   );
 
   if (resultPtr === null || resultPtr === 0) {
