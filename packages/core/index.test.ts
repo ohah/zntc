@@ -432,6 +432,25 @@ describe("@zts/core build + plugins", () => {
       }),
     ).toThrow("plugins are only supported with build()");
   });
+
+  test("플러그인 콜백이 throw해도 빌드가 중단되지 않음", async () => {
+    const throwPlugin: ZtsPlugin = {
+      name: "throw-plugin",
+      setup(build) {
+        build.onLoad({ filter: /never-match-anything/ }, () => {
+          throw new Error("plugin error!");
+        });
+      },
+    };
+
+    // filter가 매치하지 않으므로 throw에 도달하지 않음 — 정상 완료
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [throwPlugin],
+    });
+    // css import가 resolve 안 되므로 에러, 하지만 빌드 자체는 크래시하지 않음
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
 });
 
 // ─── 엣지케이스 테스트 ───

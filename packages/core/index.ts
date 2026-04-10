@@ -205,30 +205,23 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     plugin.setup(build);
   }
 
+  // hookName → { filter 대상, 콜백 인자 } 매핑
+  const argBuilders: Record<string, (arg1: string, arg2: string | null) => [string, unknown]> = {
+    resolveId: (arg1, arg2) => [arg1, { path: arg1, importer: arg2 }],
+    load: (arg1, _) => [arg1, { path: arg1 }],
+    transform: (arg1, arg2) => [arg2 ?? "", { code: arg1, path: arg2 }],
+  };
+
   return function dispatcher(hookName: string, arg1: string, arg2: string | null) {
     const hookList = hooks[hookName];
-    if (!hookList) return null;
+    const buildArgs = argBuilders[hookName];
+    if (!hookList || !buildArgs) return null;
 
-    if (hookName === "resolveId") {
-      for (const h of hookList) {
-        if (h.filter.test(arg1)) {
-          const result = h.callback({ path: arg1, importer: arg2 });
-          if (result != null) return result;
-        }
-      }
-    } else if (hookName === "load") {
-      for (const h of hookList) {
-        if (h.filter.test(arg1)) {
-          const result = h.callback({ path: arg1 });
-          if (result != null) return result;
-        }
-      }
-    } else if (hookName === "transform") {
-      for (const h of hookList) {
-        if (h.filter.test(arg2 ?? "")) {
-          const result = h.callback({ code: arg1, path: arg2 });
-          if (result != null) return result;
-        }
+    const [filterTarget, cbArgs] = buildArgs(arg1, arg2);
+    for (const h of hookList) {
+      if (h.filter.test(filterTarget)) {
+        const result = h.callback(cbArgs);
+        if (result != null) return result;
       }
     }
     return null;
