@@ -417,6 +417,87 @@ test "minifyIdentifiers: for-in LHS identifier should be renamed" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "myObj") == null);
 }
 
+test "minifyIdentifiers: var hoisting inside function body (#1041)" {
+    // var가 사용보다 뒤에 선언되어도 hoisting되므로 올바르게 rename되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\export default (function() {
+        \\  console.log(hoistedVar);
+        \\  for (hoistedVar in obj) {}
+        \\  var obj = { a: 1 };
+        \\  var hoistedVar = 42;
+        \\  return hoistedVar;
+        \\})();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const r = try b.bundle();
+    defer r.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "hoistedVar") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj") == null);
+}
+
+test "minifyIdentifiers: function declaration hoisting inside function body (#1041)" {
+    // 함수 선언도 hoisting되므로 사용보다 뒤에 선언되어도 rename 일관성 유지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\export default (function() {
+        \\  var result = helperFn();
+        \\  function helperFn() { return 99; }
+        \\  return result;
+        \\})();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const r = try b.bundle();
+    defer r.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "helperFn") == null);
+}
+
+test "minifyIdentifiers: nested block var hoisting (#1041)" {
+    // if/for 안의 var도 함수 스코프까지 hoisting되므로 올바르게 rename
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\export default (function() {
+        \\  console.log(deepVar);
+        \\  if (true) {
+        \\    for (deepVar in {}) {}
+        \\    var deepVar = 1;
+        \\  }
+        \\  return deepVar;
+        \\})();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const r = try b.bundle();
+    defer r.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "deepVar") == null);
+}
+
 test "Format: scope_hoist false with all three formats" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
