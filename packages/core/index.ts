@@ -197,6 +197,11 @@ export interface PluginBuild {
     options: { filter: RegExp },
     callback: (args: { code: string; path: string }) => { code: string } | null | undefined,
   ): void;
+  onRenderChunk(
+    options: { filter: RegExp },
+    callback: (args: { code: string; chunk: string }) => { code: string } | null | undefined,
+  ): void;
+  onGenerateBundle(callback: (outputs: OutputFile[]) => void): void;
 }
 
 export interface BuildResult {
@@ -216,7 +221,9 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     resolveId: [],
     load: [],
     transform: [],
+    renderChunk: [],
   };
+  const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void> = [];
 
   for (const plugin of plugins) {
     const build: PluginBuild = {
@@ -229,6 +236,12 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       onTransform(opts, cb) {
         hooks.transform.push({ filter: opts.filter, callback: cb });
       },
+      onRenderChunk(opts, cb) {
+        hooks.renderChunk.push({ filter: opts.filter, callback: cb });
+      },
+      onGenerateBundle(cb) {
+        generateBundleCallbacks.push(cb);
+      },
     };
     plugin.setup(build);
   }
@@ -237,21 +250,42 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
   const argBuilders: Record<string, (arg1: string, arg2: string | null) => [string, unknown]> = {
     resolveId: (arg1, arg2) => [arg1, { path: arg1, importer: arg2 }],
     load: (arg1, _) => [arg1, { path: arg1 }],
-    transform: (arg1, arg2) => [arg2 ?? "", { code: arg1, path: arg2 }],
+    renderChunk: (arg1, arg2) => [arg2 ?? "", { code: arg1, chunk: arg2 }],
   };
 
-  return async function dispatcher(hookName: string, arg1: string, arg2: string | null) {
+  return async function dispatcher(
+    hookName: string,
+    arg1: string | OutputFile[],
+    arg2: string | null,
+  ) {
+    // generateBundle: arg1이 OutputFile[] 배열
+    if (hookName === "generateBundle") {
+      const outputs = arg1 as OutputFile[];
+      for (const cb of generateBundleCallbacks) {
+        try {
+          await cb(outputs);
+        } catch {
+          // 에러 시 건너뛰기
+        }
+      }
+      return null;
+    }
+
     const hookList = hooks[hookName];
     if (!hookList) return null;
 
-    // transform은 체이닝: 이전 결과의 code가 다음 입력이 됨
-    if (hookName === "transform") {
-      let currentCode = arg1;
+    // transform/renderChunk: 체이닝 (이전 결과의 code가 다음 입력)
+    if (hookName === "transform" || hookName === "renderChunk") {
+      let currentCode = arg1 as string;
       let changed = false;
       for (const h of hookList) {
         if (h.filter.test(arg2 ?? "")) {
           try {
-            const result = await h.callback({ code: currentCode, path: arg2 });
+            const cbArgs =
+              hookName === "transform"
+                ? { code: currentCode, path: arg2 }
+                : { code: currentCode, chunk: arg2 };
+            const result = await h.callback(cbArgs);
             if (result != null) {
               const newCode = typeof result === "string" ? result : result.code;
               if (newCode != null) {
@@ -270,7 +304,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     // resolveId/load: 첫 번째 매칭 반환 (first 모드)
     const buildArgs = argBuilders[hookName];
     if (!buildArgs) return null;
-    const [filterTarget, cbArgs] = buildArgs(arg1, arg2);
+    const [filterTarget, cbArgs] = buildArgs(arg1 as string, arg2);
     for (const h of hookList) {
       if (h.filter.test(filterTarget)) {
         try {
@@ -414,6 +448,11 @@ export interface RollupPlugin {
     code: string,
     id: string,
   ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
+  renderChunk?(
+    code: string,
+    chunk: string,
+  ): MaybePromise<string | null | undefined | void | { code: string }>;
+  generateBundle?(outputs: OutputFile[]): MaybePromise<void>;
 }
 
 export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
@@ -456,6 +495,26 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
             return { code: result.code };
           }
           return null;
+        });
+      }
+
+      if (rollupPlugin.renderChunk) {
+        const hook = rollupPlugin.renderChunk;
+        build.onRenderChunk({ filter: /.*/ }, async (args) => {
+          const result = await hook(args.code, args.chunk);
+          if (result == null) return null;
+          if (typeof result === "string") return { code: result };
+          if (typeof result === "object" && "code" in result) {
+            return { code: result.code };
+          }
+          return null;
+        });
+      }
+
+      if (rollupPlugin.generateBundle) {
+        const hook = rollupPlugin.generateBundle;
+        build.onGenerateBundle(async (outputs) => {
+          await hook(outputs);
         });
       }
     },
