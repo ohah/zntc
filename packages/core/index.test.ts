@@ -1760,3 +1760,133 @@ describe("@zts/core 옵션 조합 심화", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── 새 BuildOptions 테스트 ───
+
+describe("BuildOptions: 누락 옵션 노출 (#1005)", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-build-opts-"));
+    writeFileSync(join(dir, "entry.ts"), "export const fn = () => 1;");
+    writeFileSync(join(dir, "data.txt"), "hello text");
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("target: es5 → arrow function이 function으로 변환됨", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      target: "es5",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("=>");
+    expect(result.outputFiles[0].text).toContain("function");
+  });
+
+  test("target: esnext → arrow function 유지", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      target: "esnext",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("=>");
+  });
+
+  test("loader: .txt=text → 텍스트 파일이 문자열로 export됨", () => {
+    writeFileSync(join(dir, "import-txt.ts"), 'import txt from "./data.txt";\nconsole.log(txt);');
+    const result = buildSync({
+      entryPoints: [join(dir, "import-txt.ts")],
+      loader: { ".txt": "text" },
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("hello text");
+  });
+
+  test("resolveExtensions: 커스텀 확장자 순서가 적용됨", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      resolveExtensions: [".ts", ".tsx", ".js"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+
+  test("mainFields: 커스텀 필드 순서가 적용됨", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      mainFields: ["module", "main"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+
+  test("conditions: 커스텀 exports 조건이 적용됨", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      conditions: ["import", "default"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+
+  test("write + outdir: 디스크에 파일이 기록됨", () => {
+    const outdir = join(dir, "out-dir");
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outdir,
+      write: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const written = readFileSync(join(outdir, "bundle.js"), "utf-8");
+    expect(written).toContain("fn");
+    rmSync(outdir, { recursive: true, force: true });
+  });
+
+  test("outfile: 단일 파일 출력 경로 지정", () => {
+    const outfile = join(dir, "custom-out", "my-bundle.js");
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile,
+    });
+    expect(result.errors.length).toBe(0);
+    const written = readFileSync(outfile, "utf-8");
+    expect(written).toContain("fn");
+    rmSync(join(dir, "custom-out"), { recursive: true, force: true });
+  });
+
+  test("outdir 지정 시 write 자동 true", () => {
+    const outdir = join(dir, "auto-write");
+    buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outdir,
+    });
+    const written = readFileSync(join(outdir, "bundle.js"), "utf-8");
+    expect(written).toContain("fn");
+    rmSync(outdir, { recursive: true, force: true });
+  });
+
+  test("write: false → 디스크에 기록하지 않음", () => {
+    const outdir = join(dir, "no-write");
+    buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outdir,
+      write: false,
+    });
+    expect(() => readFileSync(join(outdir, "bundle.js"))).toThrow();
+  });
+
+  test("outfile + sourcemap: 소스맵이 outfile 옆에 생성됨", () => {
+    const outfile = join(dir, "sm-out", "bundle.js");
+    buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile,
+      sourcemap: true,
+    });
+    const mapContent = readFileSync(outfile + ".map", "utf-8");
+    expect(mapContent).toContain("mappings");
+    rmSync(join(dir, "sm-out"), { recursive: true, force: true });
+  });
+});
