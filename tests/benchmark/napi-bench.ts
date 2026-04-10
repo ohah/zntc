@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * ZTS FFI vs WASM vs CLI 벤치마크
+ * ZTS NAPI vs WASM vs CLI 벤치마크
  *
  * 세 가지 호출 방식의 트랜스파일 성능을 비교한다:
- *   - CLI: subprocess spawn (현재 방식)
- *   - WASM: WebAssembly in-process (별도 프로세스에서 실행)
- *   - FFI: 네이티브 dylib in-process (NAPI와 동일한 성능 특성)
+ *   - NAPI: .node addon in-process (C NAPI)
+ *   - WASM: WebAssembly in-process
+ *   - CLI: subprocess spawn (Zig 바이너리)
  *
- * WASM과 FFI를 같은 프로세스에서 로드하면 심볼 충돌로 크래시하므로
+ * WASM과 NAPI를 같은 프로세스에서 로드하면 심볼 충돌로 크래시하므로
  * 각 방식을 별도 프로세스로 실행한 뒤 결과를 취합한다.
  */
 
@@ -36,20 +36,17 @@ function generateTS(lines: number): string {
 
 // ─── 워커 스크립트 생성 ───
 
-function createWorkerScript(method: "ffi" | "wasm" | "cli", sourceFile: string): string {
+function createWorkerScript(method: "napi" | "wasm" | "cli", sourceFile: string): string {
   const dir = mkdtempSync(resolve(tmpdir(), "zts-bench-worker-"));
 
-  if (method === "ffi") {
+  if (method === "napi") {
     const script = `
-import { dlopen, FFIType, ptr, toBuffer } from "bun:ffi";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
-const DYLIB = "${resolve(ROOT, "zig-out/lib/libzts.dylib")}";
-const lib = dlopen(DYLIB, {
-  zts_transpile: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32], returns: FFIType.ptr },
-  zts_result_len: { args: [], returns: FFIType.u32 },
-  zts_free_result: { args: [], returns: FFIType.void },
-});
+const require = createRequire(import.meta.url);
+const NAPI_PATH = "${resolve(ROOT, "zig-out/lib/zts.node")}";
+const native = require(NAPI_PATH);
 
 const source = readFileSync("${sourceFile}", "utf8");
 const flags = (1 << 16) | (1 << 22);
@@ -57,11 +54,7 @@ const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
 
 function run() {
-  const srcBuf = Buffer.from(source);
-  const fileBuf = Buffer.from("input.ts");
-  const rp = lib.symbols.zts_transpile(ptr(srcBuf), srcBuf.length, ptr(fileBuf), fileBuf.length, flags, 0, 0, 0, 0, 0, 0, 0);
-  if (rp === null || rp === 0) throw new Error("FFI failed");
-  lib.symbols.zts_free_result();
+  native.transpile(source, "input.ts", flags, 0, "", "", "");
 }
 
 for (let i = 0; i < WARMUP; i++) run();
@@ -77,7 +70,6 @@ console.log(JSON.stringify({
   minUs: Math.round(times[0]),
   maxUs: Math.round(times[times.length - 1]),
 }));
-lib.close();
 `;
     const path = resolve(dir, "worker.ts");
     writeFileSync(path, script);
@@ -90,7 +82,6 @@ import { readFileSync } from "node:fs";
 
 const WASM_PATH = "${resolve(ROOT, "zig-out/bin/zts.wasm")}";
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 const wasmBytes = readFileSync(WASM_PATH);
 let memory;
@@ -195,9 +186,13 @@ interface BenchResult {
   maxUs: number;
 }
 
-function runWorker(method: "ffi" | "wasm" | "cli", scale: string, sourceFile: string): BenchResult {
+function runWorker(
+  method: "napi" | "wasm" | "cli",
+  scale: string,
+  sourceFile: string,
+): BenchResult {
   const label =
-    method === "ffi" ? "FFI (NAPI-like)" : method === "wasm" ? "WASM" : "CLI (subprocess)";
+    method === "napi" ? "NAPI (.node)" : method === "wasm" ? "WASM (.wasm)" : "CLI (subprocess)";
   const workerPath = createWorkerScript(method, sourceFile);
 
   const result = spawnSync("bun", ["run", workerPath], {
@@ -205,7 +200,6 @@ function runWorker(method: "ffi" | "wasm" | "cli", scale: string, sourceFile: st
     timeout: 120000,
   });
 
-  // 임시 파일 정리
   rmSync(resolve(workerPath, ".."), { recursive: true, force: true });
 
   if (result.status !== 0) {
@@ -227,10 +221,9 @@ function runWorker(method: "ffi" | "wasm" | "cli", scale: string, sourceFile: st
 
 // ─── Main ───
 
-console.log("ZTS FFI vs WASM vs CLI Benchmark");
+console.log("ZTS NAPI vs WASM vs CLI Benchmark");
 console.log(`  Warmup: ${WARMUP}, Iterations: ${ITERATIONS} (median)`);
-console.log(`  Platform: ${process.platform} ${process.arch}`);
-console.log(`  각 방식은 별도 프로세스에서 실행 (심볼 충돌 방지)\n`);
+console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
 const scales = [
   { name: "small (100 lines)", lines: 100 },
@@ -245,15 +238,14 @@ for (const scale of scales) {
   const source = generateTS(scale.lines);
   const sizeKB = (Buffer.byteLength(source) / 1024).toFixed(0);
 
-  // 소스 파일을 임시 파일에 저장
   const tmpDir = mkdtempSync(resolve(tmpdir(), "zts-bench-src-"));
   const sourceFile = resolve(tmpDir, "input.ts");
   writeFileSync(sourceFile, source);
 
   console.log(`--- ${scale.name} (${sizeKB} KB) ---`);
 
-  for (const method of ["ffi", "wasm", "cli"] as const) {
-    const label = method === "ffi" ? "FFI" : method === "wasm" ? "WASM" : "CLI";
+  for (const method of ["napi", "wasm", "cli"] as const) {
+    const label = method === "napi" ? "NAPI" : method === "wasm" ? "WASM" : "CLI";
     process.stdout.write(`  ${label}... `);
     const r = runWorker(method, scale.name, sourceFile);
     if (r.medianUs > 0) {
