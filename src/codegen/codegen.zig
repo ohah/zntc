@@ -112,6 +112,8 @@ pub const CodegenOptions = struct {
     esm_var_assign_only: bool = false,
     /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zts_make_hot("id") 변환.
     dev_module_id: ?[]const u8 = null,
+    /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
+    import_records: []const @import("../bundler/types.zig").ImportRecord = &.{},
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -1571,12 +1573,78 @@ pub const Codegen = struct {
         // CJS require() 치환: require('specifier') → require_xxx()
         if (try self.tryRewriteRequire(callee, args_start, args_len)) return;
 
+        // import.meta.glob() → 객체 리터럴 직접 출력
+        if (try self.tryEmitGlobObject(callee, args_start, args_len)) return;
+
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
         try self.writeByte('(');
         try self.emitNodeList(args_start, args_len, if (self.options.minify_whitespace) "," else ", ");
         try self.writeByte(')');
+    }
+
+    /// import.meta.glob("pattern") 호출을 감지하고 매칭 파일 객체 리터럴을 직접 출력한다.
+    /// AST 수준 교체: 문자열 후처리보다 안전 (minify, 문자열 리터럴 내 패턴에 영향 안 받음).
+    fn tryEmitGlobObject(self: *Codegen, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
+        if (self.options.import_records.len == 0) return false;
+        if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return false;
+
+        // callee: static_member_expression(import.meta.glob)
+        const callee_node = self.ast.getNode(callee);
+        if (callee_node.tag != .static_member_expression) return false;
+
+        const extras = self.ast.extra_data.items;
+        if (callee_node.data.extra + 2 >= extras.len) return false;
+
+        const obj_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[callee_node.data.extra]));
+        const prop_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[callee_node.data.extra + 1]));
+        if (obj_idx.isNone() or prop_idx.isNone()) return false;
+        if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+
+        const obj_node = self.ast.getNode(obj_idx);
+        if (obj_node.tag != .meta_property or obj_node.data.none != 0) return false;
+
+        const prop_node = self.ast.getNode(prop_idx);
+        const prop_name = self.ast.source[prop_node.span.start..prop_node.span.end];
+        if (!std.mem.eql(u8, prop_name, "glob")) return false;
+
+        // 첫 번째 인수에서 패턴 추출
+        if (args_len == 0 or args_start >= extras.len) return false;
+        const arg0_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[args_start]));
+        if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
+        const arg0_node = self.ast.getNode(arg0_idx);
+        if (arg0_node.tag != .string_literal) return false;
+        const raw = self.ast.source[arg0_node.span.start..arg0_node.span.end];
+        const pattern = Ast.stripStringQuotes(raw);
+
+        // import_records에서 매칭되는 glob 레코드 찾기
+        const ImportRecord = @import("../bundler/types.zig").ImportRecord;
+        for (self.options.import_records) |rec| {
+            if (rec.kind != .glob) continue;
+            if (!std.mem.eql(u8, rec.specifier, pattern)) continue;
+
+            // 매칭 → 객체 리터럴 출력
+            if (rec.glob_matches) |matches| {
+                try self.write("{\n");
+                for (matches, 0..) |match_path, i| {
+                    if (i > 0) try self.write(",\n");
+                    try self.write("  \"");
+                    try self.write(match_path);
+                    // TODO: eager 모드 구현 시 정적 import로 변경
+                    try self.write("\": () => import(\"");
+                    try self.write(match_path);
+                    try self.write("\")");
+                }
+                try self.write("\n}");
+            } else {
+                try self.write("{}");
+            }
+            return true;
+        }
+        _ = ImportRecord;
+
+        return false;
     }
 
     /// string_literal 노드에서 specifier를 추출하고 require_rewrites 맵에서 조회.
