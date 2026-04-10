@@ -39,6 +39,17 @@ interface NativeBuildResult {
   errors: Diagnostic[];
   warnings: Diagnostic[];
   metafile?: string;
+  moduleCodes?: Array<{ id: string; code: string }>;
+  modulePaths?: string[];
+}
+
+interface NativeBuildResultWithCodes extends NativeBuildResult {
+  moduleCodes?: Array<{ id: string; code: string }>;
+  modulePaths?: string[];
+}
+
+interface NativeWatchHandle {
+  stop(): void;
 }
 
 interface NativeModule {
@@ -53,6 +64,7 @@ interface NativeModule {
   ): { code: string; map?: string };
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   build(options: Record<string, unknown>): Promise<NativeBuildResult>;
+  watch(options: Record<string, unknown>): NativeWatchHandle;
 }
 
 let native: NativeModule | null = null;
@@ -226,6 +238,28 @@ export interface BuildOptions {
   polyfills?: string[];
   /** 엔트리 모듈 직전에 실행할 모듈 경로 */
   runBeforeMain?: string[];
+  /** watch 모드 빌드 완료 콜백 */
+  onReady?: (event: WatchReadyEvent) => void;
+  /** watch 모드 리빌드 콜백 */
+  onRebuild?: (event: WatchRebuildEvent) => void;
+}
+
+export interface WatchReadyEvent {
+  files: number;
+  bytes: number;
+}
+
+export interface WatchRebuildEvent {
+  success: boolean;
+  error?: string;
+  changed?: string[];
+  graphChanged?: boolean;
+  updates?: Array<{ id: string; code: string }>;
+  bytes?: number;
+}
+
+export interface WatchHandle {
+  stop(): void;
 }
 
 export interface ZtsPlugin {
@@ -584,4 +618,69 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
       }
     },
   };
+}
+
+/**
+ * Watch 모드로 번들링한다. 파일 변경 시 incremental rebuild + HMR diff.
+ * 초기 빌드 완료 시 onReady, 리빌드 시 onRebuild 콜백 호출.
+ */
+export function watch(options: BuildOptions): WatchHandle {
+  if (!native) throw new Error("call init() first");
+
+  const nativeOpts: Record<string, unknown> = { ...options };
+
+  // 플러그인 dispatcher (build()와 동일 패턴)
+  if (options.plugins && options.plugins.length > 0) {
+    const plugins = options.plugins;
+    nativeOpts._pluginDispatcher = (
+      hookName: string,
+      arg1: string,
+      arg2: string | null,
+      outputFiles: OutputFile[] | null,
+    ): unknown => {
+      for (const plugin of plugins) {
+        const handlers = (plugin as unknown as { _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>> })._handlers;
+        if (!handlers) continue;
+        const hooks = handlers.get(hookName);
+        if (!hooks) continue;
+        for (const { filter, callback } of hooks) {
+          const testStr = hookName === "resolveId" ? arg1 : (arg2 ?? arg1);
+          if (filter.test(testStr)) {
+            if (hookName === "resolveId") {
+              const result = callback({ path: arg1, importer: arg2 });
+              if (result != null) return result;
+            } else if (hookName === "load") {
+              const result = callback({ path: arg1 });
+              if (result != null) return result;
+            } else if (hookName === "transform") {
+              const result = callback({ code: arg1, path: arg2 });
+              if (result != null) return result;
+            } else if (hookName === "renderChunk") {
+              const result = callback({ code: arg1, chunk: arg2 });
+              if (result != null) return result;
+            } else if (hookName === "generateBundle") {
+              callback(outputFiles);
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    // 플러그인 setup 실행
+    for (const plugin of plugins) {
+      const handlers = new Map<string, Array<{ filter: RegExp; callback: Function }>>();
+      (plugin as unknown as { _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>> })._handlers = handlers;
+      plugin.setup({
+        onResolve(opts, cb) { handlers.set("resolveId", [...(handlers.get("resolveId") ?? []), { filter: opts.filter, callback: cb }]); },
+        onLoad(opts, cb) { handlers.set("load", [...(handlers.get("load") ?? []), { filter: opts.filter, callback: cb }]); },
+        onTransform(opts, cb) { handlers.set("transform", [...(handlers.get("transform") ?? []), { filter: opts.filter, callback: cb }]); },
+        onRenderChunk(opts, cb) { handlers.set("renderChunk", [...(handlers.get("renderChunk") ?? []), { filter: opts.filter, callback: cb }]); },
+        onGenerateBundle(cb) { handlers.set("generateBundle", [...(handlers.get("generateBundle") ?? []), { filter: /.*/, callback: cb }]); },
+      });
+    }
+    delete nativeOpts.plugins;
+  }
+
+  return (native as unknown as { watch(opts: Record<string, unknown>): NativeWatchHandle }).watch(nativeOpts);
 }
