@@ -407,7 +407,9 @@ export interface RollupPlugin {
     source: string,
     importer?: string | null,
   ): MaybePromise<string | null | undefined | void | { id: string; external?: boolean }>;
-  load?(id: string): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
+  load?(
+    id: string,
+  ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
   transform?(
     code: string,
     id: string,
