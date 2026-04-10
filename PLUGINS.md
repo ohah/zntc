@@ -126,12 +126,13 @@ const result = await build({
 
 **제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` (async)에서만 사용 가능.
 
-### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992)
+### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992, #1004, #1007)
 - `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZTS 플러그인으로 변환
-- `resolveId`, `load`, `transform` 훅 지원 (문자열/객체/null 반환)
+- `resolveId`, `load`, `transform`, `renderChunk`, `generateBundle` 훅 지원
+- 모든 훅 async/Promise 반환 지원 (`MaybePromise<T>`)
 - ZTS 네이티브 플러그인과 혼합 사용 가능
-- 13개 테스트 (JSON 플러그인, 환경 변수 치환 등 실전 패턴 포함)
-- **미지원**: `renderChunk`, `generateBundle`, `this.resolve()`, `this.emitFile()` (후순위)
+- `onRenderChunk`: 청크 코드 후처리 (체이닝), `onGenerateBundle`: 번들 완료 콜백
+- **미지원**: `this.resolve()`, `this.emitFile()` (후순위)
 
 ### 5단계: Tapable 하이브리드 — webpack/Rspack 호환 (예정)
 > 방식 C: Zig에 Tapable 스타일 훅을 네이티브로 구현하고 NAPI로 노출.

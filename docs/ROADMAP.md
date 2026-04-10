@@ -43,6 +43,9 @@
 | 30. Vite 어댑터 | `vitePlugin()` Rollup→ZTS 플러그인 변환, resolveId/load/transform | ✅ |
 | 31. define/alias | NAPI BuildOptions에 `define`/`alias` 옵션 노출 | ✅ |
 | 32. tsconfig | CLI에서 tsconfig.json 자동 탐색+로드 (experimentalDecorators, jsx 등) | ✅ |
+| 33. BuildOptions 확장 | loader, conditions, resolveExtensions, mainFields, target, outdir, outfile, write | ✅ |
+| 34. 플러그인 훅 확장 | renderChunk/generateBundle NAPI 노출 + vitePlugin 매핑 | ✅ |
+| 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
