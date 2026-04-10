@@ -606,6 +606,13 @@ fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(
             _ = c.napi_create_error(env, null, js_err_str, &js_error);
             _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
         }
+    } else {
+        // 방어 코드: result와 err_msg 모두 null인 경우 (이론상 불가능)
+        var js_err_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, "unknown build error", "unknown build error".len, &js_err_str);
+        var js_error: c.napi_value = undefined;
+        _ = c.napi_create_error(env, null, js_err_str, &js_error);
+        _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
     }
 }
 
@@ -711,33 +718,35 @@ fn parseBuildOptions(
     owned_strings: *std.ArrayList([]const u8),
     owned_string_arrays: *std.ArrayList([]const []const u8),
 ) ?BundleOptions {
-    // 문자열 소유권 추적 헬퍼
+    // 문자열 소유권 추적 헬퍼 (OOM 시 false 반환)
     const trackStr = struct {
-        fn f(list: *std.ArrayList([]const u8), s: []const u8) void {
-            list.append(native_alloc, s) catch {};
+        fn f(list: *std.ArrayList([]const u8), s: []const u8) bool {
+            list.append(native_alloc, s) catch return false;
+            return true;
         }
     }.f;
     const trackArr = struct {
-        fn f(list: *std.ArrayList([]const []const u8), arr: []const []const u8) void {
-            list.append(native_alloc, arr) catch {};
+        fn f(list: *std.ArrayList([]const []const u8), arr: []const []const u8) bool {
+            list.append(native_alloc, arr) catch return false;
+            return true;
         }
     }.f;
 
     // entryPoints
     const raw_entries = getObjectStringArray(env, opts_obj, "entryPoints", native_alloc) orelse return null;
-    for (raw_entries) |e| trackStr(owned_strings, e);
-    trackArr(owned_string_arrays, raw_entries);
+    for (raw_entries) |e| if (!trackStr(owned_strings, e)) return null;
+    if (!trackArr(owned_string_arrays, raw_entries)) return null;
 
     const entries = native_alloc.alloc([]const u8, raw_entries.len) catch return null;
-    trackArr(owned_string_arrays, entries);
+    if (!trackArr(owned_string_arrays, entries)) return null;
     for (raw_entries, 0..) |e, i| {
         entries[i] = resolveEntryPoint(native_alloc, e) orelse return null;
-        trackStr(owned_strings, entries[i]);
+        if (!trackStr(owned_strings, entries[i])) return null;
     }
 
     // format
     const format_str = getObjectString(env, opts_obj, "format", native_alloc);
-    if (format_str) |s| trackStr(owned_strings, s);
+    if (format_str) |s| if (!trackStr(owned_strings, s)) return null;
     const format: EmitFormat = if (format_str) |s|
         if (std.mem.eql(u8, s, "cjs")) .cjs else if (std.mem.eql(u8, s, "iife")) .iife else .esm
     else
@@ -745,7 +754,7 @@ fn parseBuildOptions(
 
     // platform
     const platform_str = getObjectString(env, opts_obj, "platform", native_alloc);
-    if (platform_str) |s| trackStr(owned_strings, s);
+    if (platform_str) |s| if (!trackStr(owned_strings, s)) return null;
     const platform: Platform = if (platform_str) |s|
         if (std.mem.eql(u8, s, "node")) .node else if (std.mem.eql(u8, s, "neutral")) .neutral else if (std.mem.eql(u8, s, "react-native")) .react_native else .browser
     else
@@ -754,15 +763,18 @@ fn parseBuildOptions(
     // external
     const external = getObjectStringArray(env, opts_obj, "external", native_alloc);
     if (external) |exts| {
-        for (exts) |e| trackStr(owned_strings, e);
-        trackArr(owned_string_arrays, exts);
+        for (exts) |e| if (!trackStr(owned_strings, e)) return null;
+        if (!trackArr(owned_string_arrays, exts)) return null;
     }
 
     // 문자열 옵션 헬퍼
     const ownStr = struct {
         fn f(e: c.napi_env, obj: c.napi_value, key: [*:0]const u8, list: *std.ArrayList([]const u8)) ?[]const u8 {
             const s = getObjectString(e, obj, key, native_alloc) orelse return null;
-            list.append(native_alloc, s) catch {};
+            list.append(native_alloc, s) catch {
+                native_alloc.free(s);
+                return null;
+            };
             return s;
         }
     }.f;
@@ -788,8 +800,8 @@ fn parseBuildOptions(
     // inject
     const inject = getObjectStringArray(env, opts_obj, "inject", native_alloc);
     if (inject) |arr| {
-        for (arr) |s| trackStr(owned_strings, s);
-        trackArr(owned_string_arrays, arr);
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
     const minify = getObjectBool(env, opts_obj, "minify", false);
