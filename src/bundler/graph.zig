@@ -76,6 +76,8 @@ pub const ModuleGraph = struct {
     inject_files: []const []const u8 = &.{},
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
+    /// 최대 워커 스레드 수. 0이면 기본값(CPU 코어 수). 1이면 단일 스레드 (플러그인 IPC 디버깅용).
+    max_threads: u32 = 0,
     /// Flow 모드 강제 활성화 (--flow). bundler에서 전파.
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).
@@ -168,7 +170,11 @@ pub const ModuleGraph = struct {
         }
 
         var pool: std.Thread.Pool = undefined;
-        const pool_ok = if (pool.init(.{ .allocator = self.allocator })) |_| true else |_| false;
+        const pool_opts: std.Thread.Pool.Options = if (self.max_threads > 0)
+            .{ .allocator = self.allocator, .n_jobs = self.max_threads }
+        else
+            .{ .allocator = self.allocator };
+        const pool_ok = if (pool.init(pool_opts)) |_| true else |_| false;
         defer if (pool_ok) pool.deinit();
 
         var scan_timer: ?std.time.Timer = if (self.timing) std.time.Timer.start() catch null else null;
