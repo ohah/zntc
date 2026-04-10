@@ -60,6 +60,56 @@ jobs:
       - name: Check formatting
         run: zig fmt --check src/
 
+  napi:
+    name: NAPI Build & Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build NAPI module
+        run: zig build napi
+
+      - name: Build JS wrapper
+        run: cd packages/core && bun build index.ts --outdir dist --format esm --target node
+
+      - name: Copy .node to package
+        run: cp zig-out/lib/zts.node packages/core/zts.node 2>/dev/null || true
+
+      - name: Run NAPI tests (Bun)
+        run: cd packages/core && bun test index.test.ts
+
+      - name: Run NAPI tests (Node.js)
+        run: node --test packages/core/napi.test.mjs
+
+      - name: Run CLI tests (Bun)
+        run: cd packages/core && bun test bin/zts.test.ts
+
   wasm:
     name: WASM Build
     runs-on: ubuntu-latest

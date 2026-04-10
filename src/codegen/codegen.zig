@@ -212,6 +212,18 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
+
+        // hashbang: 소스가 #!로 시작하면 strip_hashbang이 아닐 때 보존
+        if (!self.options.strip_hashbang and self.ast.source.len >= 2 and
+            self.ast.source[0] == '#' and self.ast.source[1] == '!')
+        {
+            // 첫 번째 줄 끝까지 출력
+            var end: usize = 0;
+            while (end < self.ast.source.len and self.ast.source[end] != '\n') : (end += 1) {}
+            try self.write(self.ast.source[0..end]);
+            try self.writeByte('\n');
+        }
+
         // namespace var 중복 제거: top-level 선언 이름 사전 수집
         self.collectTopLevelDeclNames(root);
         try self.emitNode(root);
