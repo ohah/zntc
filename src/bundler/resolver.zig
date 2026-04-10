@@ -202,6 +202,8 @@ pub const Resolver = struct {
     main_fields: []const []const u8 = &.{},
     /// 디렉토리 엔트리 캐시. null이면 캐시 없이 매번 stat() 호출 (테스트용).
     dir_cache: ?*DirEntryCache = null,
+    /// NODE_PATH 추가 탐색 경로 (--node-paths). 상위 디렉토리 탐색 실패 시 폴백.
+    node_paths: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
         return .{ .allocator = allocator };
@@ -420,6 +422,19 @@ pub const Resolver = struct {
             const parent = std.fs.path.dirname(current_dir) orelse break;
             if (std.mem.eql(u8, parent, current_dir)) break; // 루트 도달
             current_dir = parent;
+        }
+
+        // NODE_PATH 폴백: --node-paths로 지정된 추가 경로에서 탐색
+        for (self.node_paths) |np| {
+            const pkg_dir_path = std.fs.path.resolve(self.allocator, &.{ np, pkg_name }) catch
+                return error.OutOfMemory;
+            defer self.allocator.free(pkg_dir_path);
+
+            if (self.dirExists(pkg_dir_path)) {
+                if (try self.resolvePackage(pkg_dir_path, subpath)) |result| {
+                    return result;
+                }
+            }
         }
 
         return error.ModuleNotFound;

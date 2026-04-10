@@ -2783,15 +2783,10 @@ describe("옵션 조합 통합 테스트", () => {
 
 describe("실제 라이브러리 번들링", () => {
   let dir: string;
-  const projectRoot = resolve(__dirname, "../..");
+  const projectNodeModules = resolve(__dirname, "../../node_modules");
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "zts-real-lib-"));
-    // tmp 디렉토리에서 node_modules를 resolve할 수 있도록 symlink 생성
-    const { symlinkSync } = require("fs");
-    try {
-      symlinkSync(join(projectRoot, "node_modules"), join(dir, "node_modules"), "junction");
-    } catch {}
   });
 
   afterAll(() => {
@@ -2807,6 +2802,7 @@ describe("실제 라이브러리 번들링", () => {
       entryPoints: [join(dir, "react-app.tsx")],
       format: "esm",
       jsx: "classic",
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).toContain("createElement");
@@ -2823,6 +2819,7 @@ describe("실제 라이브러리 번들링", () => {
       globalName: "ReactApp",
       external: ["react"],
       jsx: "classic",
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     const text = result.outputFiles[0].text;
@@ -2839,6 +2836,7 @@ describe("실제 라이브러리 번들링", () => {
       entryPoints: [join(dir, "react-iife.tsx")],
       format: "iife",
       globalName: "ReactBundle",
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     const fn = new Function(result.outputFiles[0].text + "\nreturn ReactBundle;");
@@ -2855,12 +2853,14 @@ describe("실제 라이브러리 번들링", () => {
       entryPoints: [join(dir, "react-min.tsx")],
       format: "iife",
       globalName: "R",
+      nodePaths: [projectNodeModules],
     });
     const minified = await build({
       entryPoints: [join(dir, "react-min.tsx")],
       format: "iife",
       globalName: "R",
       minify: true,
+      nodePaths: [projectNodeModules],
     });
     expect(minified.errors.length).toBe(0);
     expect(minified.outputFiles[0].text.length).toBeLessThan(normal.outputFiles[0].text.length);
@@ -2875,6 +2875,7 @@ describe("실제 라이브러리 번들링", () => {
       entryPoints: [join(dir, "lodash-app.ts")],
       format: "esm",
       minify: true,
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text.length).toBeLessThan(50000);
@@ -2894,6 +2895,7 @@ describe("실제 라이브러리 번들링", () => {
       splitting: true,
       format: "esm",
       jsx: "classic",
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles.length).toBeGreaterThanOrEqual(3);
@@ -2905,6 +2907,7 @@ describe("실제 라이브러리 번들링", () => {
       entryPoints: [join(dir, "jsx-auto.tsx")],
       jsx: "automatic",
       format: "esm",
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).toContain("jsx");
@@ -2922,6 +2925,7 @@ describe("실제 라이브러리 번들링", () => {
       platform: "browser",
       define: { "process.env.NODE_ENV": '"production"' },
       minify: true,
+      nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).not.toContain('"dev"');
