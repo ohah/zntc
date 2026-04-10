@@ -3251,6 +3251,80 @@ describe("엣지 케이스 + 조합 보강", () => {
 });
 
 // ================================================================
+// React Refresh: function expression 이름 등록 방지
+// ================================================================
+
+describe("React Refresh: function expression", () => {
+  test("function expression 이름이 $RefreshReg$에 등록되지 않아야 함", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-refresh-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      `
+      const MyComp = function MyCompFactory() { return null; };
+      export default MyComp;
+    `,
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      reactRefresh: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const code = result.outputFiles[0].text;
+    // function expression 이름 "MyCompFactory"가 $RefreshReg$에 등록되면 안 됨
+    expect(code).not.toContain('$RefreshReg$(_c, "MyCompFactory")');
+    // function declaration이 아니므로 외부에서 참조 불가
+    expect(code).not.toContain("_c = MyCompFactory");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("function declaration은 정상적으로 $RefreshReg$에 등록", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-refresh-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      `
+      function MyComponent() { return null; }
+      export default MyComponent;
+    `,
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      reactRefresh: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const code = result.outputFiles[0].text;
+    // function declaration 이름 "MyComponent"는 등록되어야 함
+    expect(code).toContain("MyComponent");
+    expect(code).toContain("$RefreshReg$");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("named function expression을 인자로 전달해도 $RefreshReg$ 미등록", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-refresh-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      `
+      function App() {
+        const handler = someHook(function HandlerFactory() { return 1; }, []);
+        return handler;
+      }
+      export default App;
+    `,
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      reactRefresh: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const code = result.outputFiles[0].text;
+    expect(code).not.toContain('"HandlerFactory"');
+    rmSync(dir, { recursive: true });
+  });
+});
+
+// ================================================================
 // watch() API 테스트
 // ================================================================
 
