@@ -125,6 +125,10 @@ function parseArgs(argv) {
     }
     if (arg === "--serve") {
       opts.serve = true;
+      // 다음 인자가 디렉토리 경로면 serveDir로 사용
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        opts.serveDir = args[++i];
+      }
       continue;
     }
     if (arg === "--open") {

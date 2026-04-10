@@ -543,7 +543,7 @@ const NapiPlugin = struct {
 const BuildAsyncData = struct {
     env: c.napi_env,
     deferred: c.napi_deferred,
-    async_work: c.napi_async_work,
+    completion_tsfn: c.napi_threadsafe_function,
     // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
     options: BundleOptions,
     // 소유된 문자열 목록 (deinit 시 해제)
@@ -557,22 +557,25 @@ const BuildAsyncData = struct {
     err_msg: ?[*:0]const u8 = null,
 };
 
-/// 워커 스레드에서 실행 — 번들링 수행
-fn buildExecute(_: c.napi_env, data: ?*anyopaque) callconv(.c) void {
-    const async_data: *BuildAsyncData = @ptrCast(@alignCast(data.?));
+/// 독립 스레드에서 번들링 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
+fn buildWorkerThread(async_data: *BuildAsyncData) void {
     var bundler = Bundler.init(native_alloc, async_data.options);
     async_data.result = bundler.bundle() catch |err| {
         async_data.err_msg = @errorName(err);
+        // 완료 TSFN 호출
+        _ = c.napi_call_threadsafe_function(async_data.completion_tsfn, @ptrCast(async_data), c.napi_tsfn_blocking);
         return;
     };
+    // 완료 TSFN 호출 → 메인 스레드에서 Promise resolve
+    _ = c.napi_call_threadsafe_function(async_data.completion_tsfn, @ptrCast(async_data), c.napi_tsfn_blocking);
 }
 
-/// 메인 스레드에서 실행 — 결과를 JS Promise로 반환
-fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(.c) void {
+/// 메인 스레드에서 실행 — 결과를 JS Promise로 반환 (TSFN 콜백)
+fn buildCompleteTsfn(env: c.napi_env, _: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
     const async_data: *BuildAsyncData = @ptrCast(@alignCast(data.?));
     defer {
-        // 비동기 작업 정리
-        _ = c.napi_delete_async_work(env, async_data.async_work);
+        // TSFN 해제
+        _ = c.napi_release_threadsafe_function(async_data.completion_tsfn, c.napi_tsfn_release);
         // 소유된 문자열 해제 (개별 문자열)
         for (async_data.owned_strings.items) |s| native_alloc.free(s);
         async_data.owned_strings.deinit(native_alloc);
@@ -587,14 +590,12 @@ fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(
     }
 
     if (async_data.err_msg) |msg| {
-        // reject
         var js_err: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(env, msg, std.mem.len(msg), &js_err);
         var js_error: c.napi_value = undefined;
         _ = c.napi_create_error(env, null, js_err, &js_error);
         _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
     } else if (async_data.result) |*result| {
-        // resolve
         defer result.deinit(native_alloc);
         const js_result = buildResultToJS(env, result);
         if (js_result) |val| {
@@ -607,7 +608,6 @@ fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(
             _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
         }
     } else {
-        // 방어 코드: result와 err_msg 모두 null인 경우 (이론상 불가능)
         var js_err_str: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(env, "unknown build error", "unknown build error".len, &js_err_str);
         var js_error: c.napi_value = undefined;
@@ -629,7 +629,7 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     async_data.* = .{
         .env = env,
         .deferred = undefined,
-        .async_work = undefined,
+        .completion_tsfn = undefined,
         .options = undefined,
         .owned_strings = .empty,
         .owned_string_arrays = .empty,
@@ -694,18 +694,33 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         return throwError(env, "failed to create promise");
     }
 
-    // async work 생성 및 큐잉
+    // 완료 TSFN 생성 (빌드 완료 시 메인 스레드에서 Promise resolve)
     var resource_name: c.napi_value = undefined;
-    _ = c.napi_create_string_utf8(env, "zts_build", "zts_build".len, &resource_name);
-    if (c.napi_create_async_work(env, null, resource_name, buildExecute, buildComplete, async_data, &async_data.async_work) != c.napi_ok) {
+    _ = c.napi_create_string_utf8(env, "zts_build_complete", "zts_build_complete".len, &resource_name);
+    if (c.napi_create_threadsafe_function(
+        env,
+        null, // js_func: 사용 안 함 (call_js에서 직접 처리)
+        null, // async_resource
+        resource_name,
+        0, // max_queue_size: unlimited
+        1, // initial_thread_count
+        null, // thread_finalize_data
+        null, // thread_finalize_cb
+        null, // context
+        buildCompleteTsfn,
+        &async_data.completion_tsfn,
+    ) != c.napi_ok) {
         native_alloc.destroy(async_data);
-        return throwError(env, "failed to create async work");
+        return throwError(env, "failed to create completion tsfn");
     }
-    if (c.napi_queue_async_work(env, async_data.async_work) != c.napi_ok) {
-        _ = c.napi_delete_async_work(env, async_data.async_work);
+
+    // 독립 스레드에서 빌드 실행 (libuv 워커 미사용 → TSFN 데드락 방지)
+    const thread = std.Thread.spawn(.{}, buildWorkerThread, .{async_data}) catch {
+        _ = c.napi_release_threadsafe_function(async_data.completion_tsfn, c.napi_tsfn_release);
         native_alloc.destroy(async_data);
-        return throwError(env, "failed to queue async work");
-    }
+        return throwError(env, "failed to spawn build thread");
+    };
+    thread.detach();
 
     return promise;
 }
