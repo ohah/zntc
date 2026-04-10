@@ -1,0 +1,14 @@
+{
+  "name": "@zts/plugin",
+  "version": "0.1.0",
+  "description": "ZTS plugin runtime — Vite/Rollup compatible plugin interface (subprocess IPC)",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}

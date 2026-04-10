@@ -88,7 +88,7 @@ CJS 래핑 등
 
 ### 2단계: JS 플러그인 — subprocess 방식 ✅ 완료 (PR #523, #524, #525)
 - SubprocessPlugin: Node.js child process spawn + stdin/stdout JSON IPC
-- @zts/core npm 패키지: definePlugin(), build.onResolve/onLoad/onTransform
+- @zts/plugin npm 패키지: definePlugin(), build.onResolve/onLoad/onTransform
 - CLI: `--plugin <path>` 옵션으로 JS 플러그인 파일 지정
 - suffix 기반 필터 매칭 (.css, .svg 등)으로 IPC 호출 최소화
 - **제한사항**: 현재 load 훅은 JS 모듈 파싱 경로에서만 동작. 비-JS 확장자(.css 등)를 JS로 변환하려면 graph.zig의 module_type 결정 로직 확장 필요.
@@ -99,7 +99,7 @@ ZTS (Zig 바이너리)
 Node.js (JS 플러그인 호스트)
   ├─ 사용자 플러그인 코드
   ├─ PostCSS / Lightning CSS / Babel 등
-  └─ @zts/core npm 패키지 (JSON 프로토콜 래퍼)
+  └─ @zts/plugin npm 패키지 (JSON 프로토콜 래퍼)
 ```
 
 ### 3단계: N-API addon 방식 (난이도 XL, 2~3주, 선택적)
@@ -162,7 +162,7 @@ pub const Plugin = struct {
 2. 파이프라인에 훅 호출 삽입 (resolver, graph, emitter) — 1단계
 3. Builtin 플러그인 (json, text, asset) — 1단계
 4. subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
-5. @zts/core npm 패키지 (JS API 래퍼) — 2단계
+5. @zts/plugin npm 패키지 (JS API 래퍼) — 2단계
 6. N-API .node addon (선택적 성능 최적화) — 3단계
 7. Vite 호환 확장 — 후순위
 

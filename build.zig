@@ -178,7 +178,7 @@ pub fn build(b: *std.Build) void {
         });
 
         const ffi_mod = b.createModule(.{
-            .root_source_file = b.path("packages/ffi/src/ffi_entry.zig"),
+            .root_source_file = b.path("packages/core/src/ffi_entry.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         });
