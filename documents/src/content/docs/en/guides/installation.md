@@ -43,7 +43,38 @@ const result = transpile("const x: number = 1;");
 console.log(result.code); // "const x = 1;"
 ```
 
-## JS Build API
+## NAPI (Node.js/Bun — Recommended)
+
+```bash
+bun add @zts/core
+```
+
+```typescript
+import { init, transpile, build, buildSync, vitePlugin } from "@zts/core";
+
+init();
+
+// Transpile
+const { code } = transpile("const x: number = 1;");
+
+// Sync bundling
+const result = buildSync({ entryPoints: ["src/index.ts"], minify: true });
+
+// Async bundling with JS plugins
+const result2 = await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [
+    vitePlugin({
+      name: "env-replace",
+      transform(code) {
+        return code.replace("import.meta.env.MODE", '"production"');
+      },
+    }),
+  ],
+});
+```
+
+## JS Plugin API (subprocess)
 
 ```bash
 bun add @zts/plugin
