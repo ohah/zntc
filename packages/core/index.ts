@@ -240,7 +240,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     transform: (arg1, arg2) => [arg2 ?? "", { code: arg1, path: arg2 }],
   };
 
-  return function dispatcher(hookName: string, arg1: string, arg2: string | null) {
+  return async function dispatcher(hookName: string, arg1: string, arg2: string | null) {
     const hookList = hooks[hookName];
     if (!hookList) return null;
 
@@ -251,7 +251,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       for (const h of hookList) {
         if (h.filter.test(arg2 ?? "")) {
           try {
-            const result = h.callback({ code: currentCode, path: arg2 });
+            const result = await h.callback({ code: currentCode, path: arg2 });
             if (result != null) {
               const newCode = typeof result === "string" ? result : result.code;
               if (newCode != null) {
@@ -274,7 +274,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     for (const h of hookList) {
       if (h.filter.test(filterTarget)) {
         try {
-          const result = h.callback(cbArgs);
+          const result = await h.callback(cbArgs);
           if (result != null) return result;
         } catch {
           return null;
@@ -399,17 +399,19 @@ export function close(): void {
  * ```
  */
 
+type MaybePromise<T> = T | Promise<T>;
+
 export interface RollupPlugin {
   name: string;
   resolveId?(
     source: string,
     importer?: string | null,
-  ): string | null | undefined | void | { id: string; external?: boolean };
-  load?(id: string): string | null | undefined | void | { code: string; map?: unknown };
+  ): MaybePromise<string | null | undefined | void | { id: string; external?: boolean }>;
+  load?(id: string): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
   transform?(
     code: string,
     id: string,
-  ): string | null | undefined | void | { code: string; map?: unknown };
+  ): MaybePromise<string | null | undefined | void | { code: string; map?: unknown }>;
 }
 
 export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
@@ -418,8 +420,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
     setup(build) {
       if (rollupPlugin.resolveId) {
         const hook = rollupPlugin.resolveId;
-        build.onResolve({ filter: /.*/ }, (args) => {
-          const result = hook(args.path, args.importer);
+        build.onResolve({ filter: /.*/ }, async (args) => {
+          const result = await hook(args.path, args.importer);
           if (result == null) return null;
           if (typeof result === "string") return { path: result };
           if (typeof result === "object" && "id" in result) {
@@ -431,8 +433,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 
       if (rollupPlugin.load) {
         const hook = rollupPlugin.load;
-        build.onLoad({ filter: /.*/ }, (args) => {
-          const result = hook(args.path);
+        build.onLoad({ filter: /.*/ }, async (args) => {
+          const result = await hook(args.path);
           if (result == null) return null;
           if (typeof result === "string") return { contents: result };
           if (typeof result === "object" && "code" in result) {
@@ -444,8 +446,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 
       if (rollupPlugin.transform) {
         const hook = rollupPlugin.transform;
-        build.onTransform({ filter: /.*/ }, (args) => {
-          const result = hook(args.code, args.path);
+        build.onTransform({ filter: /.*/ }, async (args) => {
+          const result = await hook(args.code, args.path);
           if (result == null) return null;
           if (typeof result === "string") return { code: result };
           if (typeof result === "object" && "code" in result) {

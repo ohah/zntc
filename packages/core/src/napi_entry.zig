@@ -415,16 +415,67 @@ const NapiPlugin = struct {
         cond: std.Thread.Condition = .{},
     };
 
+    /// JS 결과 객체에서 PluginResponse 필드를 추출한다.
+    fn parseJsResult(env: c.napi_env, js_result: c.napi_value) PluginResponse {
+        var result_type: c.napi_valuetype = undefined;
+        _ = c.napi_typeof(env, js_result, &result_type);
+        if (result_type == c.napi_null or result_type == c.napi_undefined) {
+            return .{};
+        }
+
+        var resp = PluginResponse{};
+        if (getObjectString(env, js_result, "path", native_alloc)) |path| {
+            resp.resolved_path = path;
+        }
+        resp.is_external = getObjectBool(env, js_result, "external", false);
+        if (getObjectString(env, js_result, "contents", native_alloc)) |contents| {
+            resp.code = contents;
+        }
+        if (resp.code == null) {
+            if (getObjectString(env, js_result, "code", native_alloc)) |code| {
+                resp.code = code;
+            }
+        }
+        return resp;
+    }
+
+    /// CallContext에 응답을 기록하고 워커 스레드에 시그널을 보낸다.
+    fn signalResponse(ctx: *CallContext, resp: PluginResponse) void {
+        ctx.mutex.lock();
+        ctx.response = resp;
+        ctx.response_ready = true;
+        ctx.mutex.unlock();
+        ctx.cond.signal();
+    }
+
+    /// Promise의 .then() 콜백 — resolve 시 결과를 파싱하여 워커 스레드에 전달
+    fn promiseThenCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
+        var cb_data: ?*anyopaque = null;
+        _ = c.napi_get_cb_info(env, info, &argc, &argv, null, &cb_data);
+        const ctx: *CallContext = @ptrCast(@alignCast(cb_data.?));
+        signalResponse(ctx, if (argc > 0) parseJsResult(env, argv[0]) else .{});
+        var undef: c.napi_value = undefined;
+        _ = c.napi_get_undefined(env, &undef);
+        return undef;
+    }
+
+    /// Promise의 .catch() 콜백 — reject 시 빈 응답으로 워커 스레드에 전달
+    fn promiseCatchCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var cb_data: ?*anyopaque = null;
+        _ = c.napi_get_cb_info(env, info, null, null, null, &cb_data);
+        const ctx: *CallContext = @ptrCast(@alignCast(cb_data.?));
+        signalResponse(ctx, .{});
+        var undef: c.napi_value = undefined;
+        _ = c.napi_get_undefined(env, &undef);
+        return undef;
+    }
+
     /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
-    /// data = CallContext 포인터 (per-call, 워커 스레드가 스택/힙에 소유)
+    /// data = CallContext 포인터 (per-call, 워커 스레드가 스택에 소유하며 condvar 대기 중)
     fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
         const ctx: *CallContext = @ptrCast(@alignCast(data.?));
-        ctx.mutex.lock();
-        defer {
-            ctx.response_ready = true;
-            ctx.mutex.unlock();
-            ctx.cond.signal();
-        }
 
         // JS dispatcher 호출: dispatcher(hookName, arg1, arg2)
         var hook_str: c.napi_value = undefined;
@@ -450,35 +501,39 @@ const NapiPlugin = struct {
         var js_undefined: c.napi_value = undefined;
         _ = c.napi_get_undefined(env, &js_undefined);
         if (c.napi_call_function(env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
-            ctx.response = .{};
+            signalResponse(ctx, .{});
             return;
         }
 
-        // 결과 파싱
-        var result_type: c.napi_valuetype = undefined;
-        _ = c.napi_typeof(env, js_result, &result_type);
-        if (result_type == c.napi_null or result_type == c.napi_undefined) {
-            ctx.response = .{};
-            return;
-        }
-
-        // 객체에서 필드 추출
-        var resp = PluginResponse{};
-
-        if (getObjectString(env, js_result, "path", native_alloc)) |path| {
-            resp.resolved_path = path;
-        }
-        resp.is_external = getObjectBool(env, js_result, "external", false);
-        if (getObjectString(env, js_result, "contents", native_alloc)) |contents| {
-            resp.code = contents;
-        }
-        if (resp.code == null) {
-            if (getObjectString(env, js_result, "code", native_alloc)) |code| {
-                resp.code = code;
+        // Promise 체크: 결과가 Promise이면 .then()/.catch()로 비동기 대기
+        var is_promise: bool = false;
+        _ = c.napi_is_promise(env, js_result, &is_promise);
+        if (is_promise) {
+            // .then(onFulfilled) 등록
+            var then_fn: c.napi_value = undefined;
+            if (getNamedProperty(env, js_result, "then")) |t| {
+                then_fn = t;
+            } else {
+                signalResponse(ctx, .{});
+                return;
             }
+
+            var on_fulfilled: c.napi_value = undefined;
+            _ = c.napi_create_function(env, "onFulfilled", "onFulfilled".len, promiseThenCallback, @ptrCast(ctx), &on_fulfilled);
+            var on_rejected: c.napi_value = undefined;
+            _ = c.napi_create_function(env, "onRejected", "onRejected".len, promiseCatchCallback, @ptrCast(ctx), &on_rejected);
+
+            var then_args = [_]c.napi_value{ on_fulfilled, on_rejected };
+            var then_result: c.napi_value = undefined;
+            if (c.napi_call_function(env, js_result, then_fn, 2, &then_args, &then_result) != c.napi_ok) {
+                signalResponse(ctx, .{});
+            }
+            // Promise 경우: 여기서 리턴. 워커 스레드는 then/catch 콜백이 signal할 때까지 대기.
+            return;
         }
 
-        ctx.response = resp;
+        // 동기 결과: 즉시 파싱하여 시그널
+        signalResponse(ctx, parseJsResult(env, js_result));
     }
 
     /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기.
