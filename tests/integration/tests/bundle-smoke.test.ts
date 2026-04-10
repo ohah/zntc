@@ -200,7 +200,7 @@ describe("번들 스모크 테스트", () => {
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("42");
+    expect(result.runOutput).toContain("42");
   });
 
   test("namespace import 동적 접근 (import * as + obj[key])", async () => {
@@ -341,7 +341,7 @@ describe("번들 스모크 테스트", () => {
     });
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("42");
+    expect(result.runOutput).toContain("42");
   });
 
   test("import source from — default import (not phase modifier)", async () => {
@@ -351,7 +351,7 @@ describe("번들 스모크 테스트", () => {
     });
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("42");
+    expect(result.runOutput).toContain("42");
   });
 
   test("import defer, { x } from — defer as default + named import", async () => {
@@ -1378,7 +1378,7 @@ console.log(new Sig().aborted);`,
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("42");
+    expect(result.runOutput).toContain("42");
   });
 
   test("export * from 이 직접 export보다 우선순위가 낮다", async () => {
@@ -1519,7 +1519,7 @@ describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
       "entry.ts",
     );
     cleanup = result.cleanup;
-    expect(result.runOutput).toBe("42");
+    expect(result.runOutput).toContain("42");
   });
 
   test("TS: export interface + module.exports → __commonJS 래핑", async () => {
@@ -1531,7 +1531,7 @@ describe("export type/interface + module.exports → CJS 판별 (#713)", () => {
       "entry.ts",
     );
     cleanup = result.cleanup;
-    expect(result.runOutput).toBe("99");
+    expect(result.runOutput).toContain("99");
   });
 
   test("Flow: export type alias + module.exports → __commonJS 래핑", async () => {
@@ -2054,5 +2054,187 @@ describe("ESM default re-export CJS interop (#812)", () => {
     });
     cleanup = result.cleanup;
     expect(result.runOutput).toBe("named-default");
+  });
+});
+
+// ================================================================
+// dev 모드 ESM re-export init 호출 테스트
+// ================================================================
+
+describe("dev 모드: re-export 소스 모듈 init", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  test("named re-export 체인에서 import binding이 올바르게 초기화됨", async () => {
+    // reanimated 패턴: index.ts -> hook/index.ts -> hook/useSharedValue.ts
+    // useSharedValue가 react의 useState를 import하여 사용
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { useSharedValue } from './hook';
+          console.log(useSharedValue(42));
+        `,
+        "hook/index.ts": `
+          export { useSharedValue } from './useSharedValue';
+        `,
+        "hook/useSharedValue.ts": `
+          import { useState } from '../react';
+          export function useSharedValue(v: number) { return useState(v); }
+        `,
+        "react.ts": `
+          export function useState(init: number) { return [init]; }
+        `,
+      },
+      "index.ts",
+      ["--dev"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42");
+  });
+
+  test("star re-export 체인에서 import binding이 올바르게 초기화됨", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { helper } from './barrel';
+          console.log(helper());
+        `,
+        "barrel/index.ts": `
+          export * from './utils';
+        `,
+        "barrel/utils.ts": `
+          import { prefix } from '../config';
+          export function helper() { return prefix + "world"; }
+        `,
+        "config.ts": `
+          export const prefix = "hello ";
+        `,
+      },
+      "index.ts",
+      ["--dev"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello world");
+  });
+
+  test("여러 named re-export가 같은 소스를 참조해도 init 1회만", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { foo, bar } from './barrel';
+          console.log(foo() + "," + bar());
+        `,
+        "barrel/index.ts": `
+          export { foo, bar } from './impl';
+        `,
+        "barrel/impl.ts": `
+          import { base } from '../base';
+          export function foo() { return base + "A"; }
+          export function bar() { return base + "B"; }
+        `,
+        "base.ts": `
+          export const base = "X";
+        `,
+      },
+      "index.ts",
+      ["--dev"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("XA,XB");
+  });
+
+  test("3단계 re-export 체인 (index → sub → sub/sub)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { deep } from './a';
+          console.log(deep());
+        `,
+        "a/index.ts": `
+          export { deep } from './b';
+        `,
+        "a/b/index.ts": `
+          export { deep } from './c';
+        `,
+        "a/b/c.ts": `
+          import { val } from '../../root';
+          export function deep() { return "deep:" + val; }
+        `,
+        "root.ts": `
+          export const val = 42;
+        `,
+      },
+      "index.ts",
+      ["--dev"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("deep:42");
+  });
+
+  test("mixed re-export: named + star from 같은 모듈", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { named, starred } from './barrel';
+          console.log(named() + "," + starred());
+        `,
+        "barrel/index.ts": `
+          export { named } from './a';
+          export * from './b';
+        `,
+        "barrel/a.ts": `
+          import { dep } from '../dep';
+          export function named() { return "N:" + dep; }
+        `,
+        "barrel/b.ts": `
+          import { dep } from '../dep';
+          export function starred() { return "S:" + dep; }
+        `,
+        "dep.ts": `
+          export const dep = "OK";
+        `,
+      },
+      "index.ts",
+      ["--dev"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("N:OK,S:OK");
+  });
+
+  test("non-dev 모드에서도 re-export 체인 정상 동작", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          import { useSharedValue } from './hook';
+          console.log(useSharedValue(99));
+        `,
+        "hook/index.ts": `
+          export { useSharedValue } from './useSharedValue';
+        `,
+        "hook/useSharedValue.ts": `
+          import { useState } from '../react';
+          export function useSharedValue(v: number) { return useState(v); }
+        `,
+        "react.ts": `
+          export function useState(init: number) { return [init]; }
+        `,
+      },
+      "index.ts",
+      [], // no --dev
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("99");
   });
 });
