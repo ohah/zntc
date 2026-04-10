@@ -558,34 +558,46 @@ const NapiPlugin = struct {
 
     /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기.
     /// per-call CallContext를 스택에 생성하여 멀티스레드 안전.
-    fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
+    fn callHookFull(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, files: ?[]const bundler_mod.emitter.OutputFile) ?PluginResponse {
         var ctx = CallContext{
             .hook = hook,
             .arg1 = arg1,
             .arg2 = arg2,
+            .output_files = files,
         };
 
-        // TSFN 호출 — CallContext 포인터를 data로 전달
         if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&ctx), c.napi_tsfn_blocking) != c.napi_ok) {
             return null;
         }
 
-        // 결과 대기 (메인 스레드에서 callJsCallback이 ctx에 결과를 씀)
         // 30초 타임아웃: Promise가 resolve/reject되지 않는 경우 hang 방지
         ctx.mutex.lock();
         defer ctx.mutex.unlock();
         const timeout_ns: u64 = 30 * std.time.ns_per_s;
         while (!ctx.response_ready) {
-            ctx.cond.timedWait(&ctx.mutex, timeout_ns) catch {
-                // 타임아웃: 플러그인 응답 없음으로 처리
-                return null;
-            };
+            ctx.cond.timedWait(&ctx.mutex, timeout_ns) catch return null;
         }
 
         return ctx.response;
     }
 
+    fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
+        return self.callHookFull(hook, arg1, arg2, null);
+    }
+
     // ─── Plugin 인터페이스 구현 ───
+
+    /// code를 반환하는 훅 공통 구현 (transform, renderChunk, load)
+    fn callCodeHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const resp = self.callHook(hook, arg1, arg2) orelse return null;
+        defer if (resp.resolved_path) |p| native_alloc.free(p);
+        if (resp.code) |result_code| {
+            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            native_alloc.free(result_code);
+            return result;
+        }
+        return null;
+    }
 
     fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?ResolveResult {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
@@ -606,69 +618,22 @@ const NapiPlugin = struct {
 
     fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.load, path, null) orelse return null;
-        defer {
-            if (resp.resolved_path) |p| native_alloc.free(p);
-        }
-
-        if (resp.code) |code| {
-            const result = alloc.dupe(u8, code) catch return error.OutOfMemory;
-            native_alloc.free(code);
-            return result;
-        }
-        return null;
+        return self.callCodeHook(.load, path, null, alloc);
     }
 
     fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.transform, code, id) orelse return null;
-        defer {
-            if (resp.resolved_path) |p| native_alloc.free(p);
-        }
-
-        if (resp.code) |result_code| {
-            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-            native_alloc.free(result_code);
-            return result;
-        }
-        return null;
+        return self.callCodeHook(.transform, code, id, alloc);
     }
 
     fn pluginRenderChunk(ctx: ?*anyopaque, code: []const u8, chunk_name: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        const resp = self.callHook(.renderChunk, code, chunk_name) orelse return null;
-        defer {
-            if (resp.resolved_path) |p| native_alloc.free(p);
-        }
-
-        if (resp.code) |result_code| {
-            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
-            native_alloc.free(result_code);
-            return result;
-        }
-        return null;
+        return self.callCodeHook(.renderChunk, code, chunk_name, alloc);
     }
 
     fn pluginGenerateBundle(ctx: ?*anyopaque, output_files: []const bundler_mod.emitter.OutputFile) void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        // output_files를 CallContext에 직접 전달 → callJsCallback에서 JS 배열로 변환
-        var call_ctx = CallContext{
-            .hook = .generateBundle,
-            .arg1 = "",
-            .arg2 = null,
-            .output_files = output_files,
-        };
-
-        if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(&call_ctx), c.napi_tsfn_blocking) != c.napi_ok) {
-            return;
-        }
-
-        call_ctx.mutex.lock();
-        defer call_ctx.mutex.unlock();
-        const timeout_ns: u64 = 30 * std.time.ns_per_s;
-        while (!call_ctx.response_ready) {
-            call_ctx.cond.timedWait(&call_ctx.mutex, timeout_ns) catch return;
-        }
+        _ = self.callHookFull(.generateBundle, "", null, output_files);
     }
 
     fn toPlugin(self: *NapiPlugin) Plugin {
