@@ -104,6 +104,8 @@ pub const EmitOptions = struct {
     legal_comments: types.LegalComments = .default,
     /// --keep-names: minify 시 함수/클래스 .name 프로퍼티 보존
     keep_names: bool = false,
+    /// --drop-labels: 특정 라벨의 labeled statement 제거
+    drop_labels: []const []const u8 = &.{},
     /// JSX 런타임 모드
     jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
     /// classic 모드 JSX factory
@@ -694,6 +696,7 @@ pub fn emitModule(
         .emit_decorator_metadata = options.emit_decorator_metadata,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .unsupported = options.unsupported,
+        .drop_labels = options.drop_labels,
         .jsx_transform = jsx_active,
         .jsx_runtime = options.jsx_runtime,
         .jsx_factory = options.jsx_factory,

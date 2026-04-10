@@ -1008,8 +1008,32 @@ fn parseBuildOptions(
     else
         .{};
 
-    // outfile → output_filename (소스맵 참조용)
     const outfile = ownStr(env, opts_obj, "outfile", owned_strings);
+    const outbase = ownStr(env, opts_obj, "outbase", owned_strings);
+    const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
+    const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
+    const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
+
+    // dropLabels: string[]
+    const drop_labels = getObjectStringArray(env, opts_obj, "dropLabels", native_alloc);
+    if (drop_labels) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    // pure: string[]
+    const pure = getObjectStringArray(env, opts_obj, "pure", native_alloc);
+    if (pure) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    // nodePaths: string[]
+    const node_paths = getObjectStringArray(env, opts_obj, "nodePaths", native_alloc);
+    if (node_paths) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
 
     const minify = getObjectBool(env, opts_obj, "minify", false);
     return .{
@@ -1056,6 +1080,19 @@ fn parseBuildOptions(
         .main_fields = main_fields orelse &.{},
         .unsupported = unsupported,
         .output_filename = outfile orelse "bundle.js",
+        .outbase = outbase,
+        .packages_external = getObjectBool(env, opts_obj, "packagesExternal", false),
+        .preserve_symlinks = getObjectBool(env, opts_obj, "preserveSymlinks", false),
+        .ignore_annotations = getObjectBool(env, opts_obj, "ignoreAnnotations", false),
+        .jsx_side_effects = getObjectBool(env, opts_obj, "jsxSideEffects", false),
+        .analyze = getObjectBool(env, opts_obj, "analyze", false),
+        .drop_labels = drop_labels orelse &.{},
+        .pure = pure orelse &.{},
+        .tsconfig_raw = tsconfig_raw,
+        .node_paths = node_paths orelse &.{},
+        .line_limit = getObjectUint32(env, opts_obj, "lineLimit", 0),
+        .out_extension_js = out_extension_js,
+        .source_root = source_root,
     };
 }
 

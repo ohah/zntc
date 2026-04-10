@@ -2192,3 +2192,124 @@ describe("BuildOptions: 엣지 케이스", () => {
     expect(result.outputFiles.length).toBeGreaterThan(0);
   });
 });
+
+// ─── 배치 E: S급 옵션 노출 테스트 ───
+
+describe("배치 E: S급 BuildOptions", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-batch-e-"));
+    writeFileSync(join(dir, "entry.ts"), 'DEV: { console.log("dev only"); }\nexport const x = 1;');
+    writeFileSync(
+      join(dir, "pure-test.ts"),
+      'import { pureUtil } from "./util";\nconst unused = pureUtil();\nexport const y = 2;',
+    );
+    writeFileSync(join(dir, "util.ts"), "export function pureUtil() { return 42; }");
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("packagesExternal: bare import를 external 처리", () => {
+    writeFileSync(join(dir, "ext-entry.ts"), 'import React from "react";\nexport default React;');
+    const result = buildSync({
+      entryPoints: [join(dir, "ext-entry.ts")],
+      packagesExternal: true,
+    });
+    expect(result.errors.length).toBe(0);
+    // react가 external이므로 번들에 포함되지 않고 import 문이 유지됨
+    expect(result.outputFiles[0].text).toMatch(/import.*react|require.*react/);
+  });
+
+  test("dropLabels: DEV 라벨 제거", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      dropLabels: ["DEV"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("dev only");
+    expect(result.outputFiles[0].text).toContain("x = 1");
+  });
+
+  test("pure: 미사용 순수 함수 호출 제거", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "pure-test.ts")],
+      pure: ["pureUtil"],
+      minify: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("2");
+  });
+
+  test("lineLimit: 줄 길이 제한", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      lineLimit: 40,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+
+  test("preserveSymlinks: 옵션 파싱 확인", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      preserveSymlinks: true,
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("ignoreAnnotations: 옵션 파싱 확인", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      ignoreAnnotations: true,
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("analyze: metafile 강제 활성화", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      analyze: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.metafile).toBeDefined();
+  });
+
+  test("nodePaths: 추가 탐색 경로", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      nodePaths: ["/tmp/nonexistent-path"],
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("tsconfigRaw: 인라인 tsconfig 오버라이드", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      tsconfigRaw: '{"compilerOptions":{"strict":true}}',
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("outbase: 엔트리 공통 기준 경로", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      outbase: dir,
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("sourceRoot: 소스맵 sourceRoot", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      sourcemap: true,
+      sourceRoot: "https://example.com/src",
+    });
+    expect(result.errors.length).toBe(0);
+    const mapFile = result.outputFiles.find((f: any) => f.path.endsWith(".map"));
+    expect(mapFile).toBeDefined();
+    expect(mapFile!.text).toContain("https://example.com/src");
+  });
+});

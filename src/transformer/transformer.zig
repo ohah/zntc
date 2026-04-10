@@ -60,6 +60,8 @@ pub const TransformOptions = struct {
     drop_console: bool = false,
     /// debugger 문 제거 (--drop=debugger)
     drop_debugger: bool = false,
+    /// 특정 라벨의 labeled statement 제거 (--drop-labels=DEV,TEST)
+    drop_labels: []const []const u8 = &.{},
     /// define 글로벌 치환 (D020). 예: process.env.NODE_ENV → "production"
     define: []const DefineEntry = &.{},
     /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$/$RefreshSig$ 주입.
@@ -497,6 +499,13 @@ pub const Transformer = struct {
         }
         if (self.options.drop_console and node.tag == .expression_statement) {
             if (self.isConsoleCall(node)) return .none;
+        }
+        if (self.options.drop_labels.len > 0 and node.tag == .labeled_statement) {
+            const label_node = self.ast.getNode(node.data.binary.left);
+            const label_name = self.ast.getText(label_node.span);
+            for (self.options.drop_labels) |drop| {
+                if (std.mem.eql(u8, label_name, drop)) return .none;
+            }
         }
 
         // --------------------------------------------------------
