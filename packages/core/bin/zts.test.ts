@@ -642,4 +642,27 @@ describe("CLI: tsconfig", () => {
     expect(stdout).toContain("this.x");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("tsconfig에 URL이 포함된 문자열이 있어도 파싱 성공", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-tsconfig-url-"));
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      `{
+  // tsconfig with URL in value
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "baseUrl": "https://example.com/path"
+  }
+}`,
+    );
+    writeFileSync(
+      join(dir, "input.ts"),
+      "@sealed\nclass G { x: string; constructor(m: string) { this.x = m; } }",
+    );
+
+    const { stdout, exitCode } = runCli([join(dir, "input.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("__decorate");
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
