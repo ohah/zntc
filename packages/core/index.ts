@@ -153,6 +153,8 @@ export interface BuildOptions {
   jsxFactory?: string;
   jsxFragment?: string;
   jsxImportSource?: string;
+  define?: Record<string, string>;
+  alias?: Record<string, string>;
   inject?: string[];
   jobs?: number;
   plugins?: ZtsPlugin[];

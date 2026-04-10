@@ -148,4 +148,47 @@ function buildSync(options) {
 function close() {
   native = null;
 }
-export { transpile, init, close, buildSync, build };
+function vitePlugin(rollupPlugin) {
+  return {
+    name: rollupPlugin.name,
+    setup(build2) {
+      if (rollupPlugin.resolveId) {
+        const hook = rollupPlugin.resolveId;
+        build2.onResolve({ filter: /.*/ }, (args) => {
+          const result = hook(args.path, args.importer);
+          if (result == null) return null;
+          if (typeof result === "string") return { path: result };
+          if (typeof result === "object" && "id" in result) {
+            return { path: result.id, external: result.external };
+          }
+          return null;
+        });
+      }
+      if (rollupPlugin.load) {
+        const hook = rollupPlugin.load;
+        build2.onLoad({ filter: /.*/ }, (args) => {
+          const result = hook(args.path);
+          if (result == null) return null;
+          if (typeof result === "string") return { contents: result };
+          if (typeof result === "object" && "code" in result) {
+            return { contents: result.code };
+          }
+          return null;
+        });
+      }
+      if (rollupPlugin.transform) {
+        const hook = rollupPlugin.transform;
+        build2.onTransform({ filter: /.*/ }, (args) => {
+          const result = hook(args.code, args.path);
+          if (result == null) return null;
+          if (typeof result === "string") return { code: result };
+          if (typeof result === "object" && "code" in result) {
+            return { code: result.code };
+          }
+          return null;
+        });
+      }
+    },
+  };
+}
+export { vitePlugin, transpile, init, close, buildSync, build };

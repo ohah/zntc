@@ -197,6 +197,46 @@ fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, 
     return result[0..count];
 }
 
+/// JS 객체의 키-값 쌍을 [2][]const u8 배열로 추출. { "key": "value", ... }
+fn getObjectKeyValuePairs(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[][2][]const u8 {
+    const val = getNamedProperty(env, obj, key) orelse return null;
+
+    // 프로퍼티 이름 목록 가져오기
+    var prop_names: c.napi_value = undefined;
+    if (c.napi_get_property_names(env, val, &prop_names) != c.napi_ok) return null;
+    var len: u32 = 0;
+    _ = c.napi_get_array_length(env, prop_names, &len);
+    if (len == 0) return null;
+
+    const result = alloc.alloc([2][]const u8, len) catch return null;
+    var count: u32 = 0;
+    for (0..len) |i| {
+        var prop_key: c.napi_value = undefined;
+        if (c.napi_get_element(env, prop_names, @intCast(i), &prop_key) != c.napi_ok) continue;
+        const k = getStringArg(env, prop_key, alloc) orelse continue;
+
+        // napi_get_property로 키에 대한 값 가져오기 (null-terminated 불필요)
+        var prop_val: c.napi_value = undefined;
+        if (c.napi_get_property(env, val, prop_key, &prop_val) != c.napi_ok) {
+            alloc.free(k);
+            continue;
+        }
+
+        const v = getStringArg(env, prop_val, alloc) orelse {
+            alloc.free(k);
+            continue;
+        };
+
+        result[count] = .{ k, v };
+        count += 1;
+    }
+    if (count == 0) {
+        alloc.free(result);
+        return null;
+    }
+    return result[0..count];
+}
+
 fn resolveEntryPoint(alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
     const resolved = std.fs.cwd().realpathAlloc(alloc, path) catch return alloc.dupe(u8, path) catch null;
     return resolved;
@@ -812,12 +852,43 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // define: { "key": "value" } → []DefineEntry
+    const define_pairs = getObjectKeyValuePairs(env, opts_obj, "define", native_alloc);
+    var define_entries: []const @import("zts_lib").transformer.transformer.DefineEntry = &.{};
+    if (define_pairs) |pairs| {
+        const defs = native_alloc.alloc(@import("zts_lib").transformer.transformer.DefineEntry, pairs.len) catch return null;
+        for (pairs, 0..) |pair, idx| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            defs[idx] = .{ .key = pair[0], .value = pair[1] };
+        }
+        // pairs 배열 자체는 해제 (키/값은 owned_strings가 소유)
+        native_alloc.free(pairs);
+        define_entries = defs;
+    }
+
+    // alias: { "from": "to" } → []AliasEntry
+    const alias_pairs = getObjectKeyValuePairs(env, opts_obj, "alias", native_alloc);
+    var alias_entries: []const bundler_mod.types.AliasEntry = &.{};
+    if (alias_pairs) |pairs| {
+        const als = native_alloc.alloc(bundler_mod.types.AliasEntry, pairs.len) catch return null;
+        for (pairs, 0..) |pair, idx| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            als[idx] = .{ .from = pair[0], .to = pair[1] };
+        }
+        native_alloc.free(pairs);
+        alias_entries = als;
+    }
+
     const minify = getObjectBool(env, opts_obj, "minify", false);
     return .{
         .entry_points = entries,
         .format = format,
         .platform = platform,
         .external = external orelse &.{},
+        .define = define_entries,
+        .alias = alias_entries,
         .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
         .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
