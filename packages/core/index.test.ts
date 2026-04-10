@@ -2844,7 +2844,7 @@ describe("실제 라이브러리 번들링", () => {
     expect(lib.version).toBeDefined();
   });
 
-  test("React + minify → 압축 번들 생성", async () => {
+  test("React + minify → 압축 후 런타임 실행 (#1041)", async () => {
     writeFileSync(
       join(dir, "react-min.tsx"),
       'import React from "react";\nexport const v = React.version;',
@@ -2864,6 +2864,10 @@ describe("실제 라이브러리 번들링", () => {
     });
     expect(minified.errors.length).toBe(0);
     expect(minified.outputFiles[0].text.length).toBeLessThan(normal.outputFiles[0].text.length);
+    // 런타임 실행: minify 후에도 React가 정상 동작
+    const fn = new Function(minified.outputFiles[0].text + "\nreturn R;");
+    const lib = fn();
+    expect(lib.v).toBeDefined();
   });
 
   test("lodash-es: tree-shaking으로 번들 크기 축소", async () => {
