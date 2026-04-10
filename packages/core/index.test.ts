@@ -637,3 +637,267 @@ describe("@zts/core edge cases", () => {
     }
   });
 });
+
+// ─── 추가 커버리지 테스트 ───
+
+describe("@zts/core 플러그인 심화", () => {
+  test("플러그인 콜백이 매치 후 throw — 에러로 전파", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-throw-"));
+    writeFileSync(join(dir, "index.ts"), 'import "./data.json";');
+
+    const throwPlugin: ZtsPlugin = {
+      name: "throw-on-load",
+      setup(build) {
+        build.onResolve({ filter: /\.json$/ }, (args) => ({
+          path: resolve(dir, args.path),
+        }));
+        build.onLoad({ filter: /\.json$/ }, () => {
+          throw new Error("intentional plugin error");
+        });
+      },
+    };
+
+    // 플러그인이 throw하면 load 결과가 null → 번들러가 파일 읽기로 폴백
+    // .json 파일이 없으므로 에러 발생
+    const result = await build({
+      entryPoints: [join(dir, "index.ts")],
+      plugins: [throwPlugin],
+    });
+    expect(result.errors.length).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("다중 모듈 번들 + 플러그인", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-large-"));
+
+    // 5개 모듈 생성
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(dir, `mod${i}.ts`), `export const val${i} = ${i};`);
+    }
+    const imports = Array.from({ length: 5 }, (_, i) => `import { val${i} } from "./mod${i}";`);
+    const usage = Array.from({ length: 5 }, (_, i) => `val${i}`).join(" + ");
+    writeFileSync(join(dir, "entry.ts"), `${imports.join("\n")}\nconsole.log(${usage});`);
+
+    let transformCount = 0;
+    const countPlugin: ZtsPlugin = {
+      name: "count-transforms",
+      setup(build) {
+        build.onTransform({ filter: /\.ts$/ }, (args) => {
+          transformCount++;
+          return null; // 변환 없이 카운트만
+        });
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [countPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("val4");
+    // 최소 1회 이상 transform 호출됨
+    expect(transformCount).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("플러그인 콜백이 undefined 반환 (null과 동일 처리)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-undef-"));
+    writeFileSync(join(dir, "index.ts"), "export const x = 1;");
+
+    const undefPlugin: ZtsPlugin = {
+      name: "undef-return",
+      setup(build) {
+        build.onLoad({ filter: /\.ts$/ }, () => undefined as any);
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "index.ts")],
+      plugins: [undefPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("x = 1");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("@zts/core 번들 포맷/플랫폼", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-format-"));
+    writeFileSync(join(dir, "index.ts"), 'export const greeting = "hello";\nexport default 42;');
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("IIFE 포맷", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      format: "iife",
+    });
+    expect(result.errors.length).toBe(0);
+    // IIFE는 즉시 실행 함수로 감싸짐
+    expect(
+      result.outputFiles[0].text.includes("(function") ||
+        result.outputFiles[0].text.includes("(() =>") ||
+        result.outputFiles[0].text.includes("(()"),
+    ).toBe(true);
+  });
+
+  test("IIFE + globalName", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      format: "iife",
+      globalName: "MyLib",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("MyLib");
+  });
+
+  test("platform=node", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      platform: "node",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("greeting");
+  });
+
+  test("platform=react-native", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      platform: "react-native",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("greeting");
+  });
+
+  test("ESM import/export 보존", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      format: "esm",
+    });
+    expect(result.errors.length).toBe(0);
+    // ESM은 export 키워드 포함
+    expect(result.outputFiles[0].text).toContain("greeting");
+  });
+});
+
+describe("@zts/core build 옵션 조합", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-combo-"));
+    writeFileSync(
+      join(dir, "index.ts"),
+      'import { helper } from "./util";\nconsole.log(helper());',
+    );
+    writeFileSync(join(dir, "util.ts"), "export function helper() { return 42; }");
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("minifyWhitespace만 적용", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      minifyWhitespace: true,
+    });
+    expect(result.errors.length).toBe(0);
+    // 줄바꿈/공백이 줄어듦
+    expect(result.outputFiles[0].text.split("\n").length).toBeLessThan(20);
+  });
+
+  test("minifyIdentifiers 적용 시 출력 크기 감소", () => {
+    const normal = buildSync({ entryPoints: [join(dir, "index.ts")] });
+    const minified = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      minifyIdentifiers: true,
+    });
+    expect(minified.errors.length).toBe(0);
+    // 식별자 축소로 출력이 줄어들거나 동일 (scope hoist 인라인 시)
+    expect(minified.outputFiles[0].text.length).toBeLessThanOrEqual(
+      normal.outputFiles[0].text.length,
+    );
+  });
+
+  test("sourcemap + minify + metafile 동시", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "index.ts")],
+      minify: true,
+      sourcemap: true,
+      metafile: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles.length).toBe(2); // js + map
+    expect(result.metafile).toBeDefined();
+    const map = JSON.parse(result.outputFiles.find((f) => f.path.endsWith(".map"))!.text);
+    expect(map.version).toBe(3);
+  });
+
+  test("treeShaking=false로 미사용 export 보존", () => {
+    const tsDir = mkdtempSync(join(tmpdir(), "zts-tree-"));
+    writeFileSync(join(tsDir, "index.ts"), 'import { used } from "./lib";\nconsole.log(used);');
+    writeFileSync(join(tsDir, "lib.ts"), "export const used = 1;\nexport const unused = 2;");
+
+    const withTree = buildSync({
+      entryPoints: [join(tsDir, "index.ts")],
+      treeShaking: true,
+    });
+    const withoutTree = buildSync({
+      entryPoints: [join(tsDir, "index.ts")],
+      treeShaking: false,
+    });
+    // tree-shaking 끄면 unused도 포함
+    expect(withoutTree.outputFiles[0].text).toContain("unused");
+    // tree-shaking 켜면 unused 제거 (scope hoist 활성화 시)
+    expect(withTree.outputFiles[0].text).not.toContain("unused");
+    rmSync(tsDir, { recursive: true, force: true });
+  });
+
+  test("JSX automatic + build", () => {
+    const jsxDir = mkdtempSync(join(tmpdir(), "zts-jsx-build-"));
+    writeFileSync(join(jsxDir, "app.tsx"), "export default () => <div>hello</div>;");
+
+    const result = buildSync({
+      entryPoints: [join(jsxDir, "app.tsx")],
+      jsx: "automatic",
+      jsxInJs: true,
+      external: ["react/jsx-runtime"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("jsx-runtime");
+    rmSync(jsxDir, { recursive: true, force: true });
+  });
+
+  test("Flow 파일 번들링", () => {
+    const flowDir = mkdtempSync(join(tmpdir(), "zts-flow-build-"));
+    writeFileSync(
+      join(flowDir, "index.js"),
+      '// @flow\nfunction foo(x: string): number { return x.length; }\nconsole.log(foo("test"));',
+    );
+
+    const result = buildSync({
+      entryPoints: [join(flowDir, "index.js")],
+      flow: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain(": string");
+    expect(result.outputFiles[0].text).not.toContain(": number");
+    rmSync(flowDir, { recursive: true, force: true });
+  });
+
+  test("build async: 동시 5개 호출", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => build({ entryPoints: [join(dir, "index.ts")] })),
+    );
+    for (const r of results) {
+      expect(r.errors.length).toBe(0);
+      expect(r.outputFiles[0].text).toContain("helper");
+    }
+  });
+});

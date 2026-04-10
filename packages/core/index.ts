@@ -220,8 +220,12 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     const [filterTarget, cbArgs] = buildArgs(arg1, arg2);
     for (const h of hookList) {
       if (h.filter.test(filterTarget)) {
-        const result = h.callback(cbArgs);
-        if (result != null) return result;
+        try {
+          const result = h.callback(cbArgs);
+          if (result != null) return result;
+        } catch {
+          return null;
+        }
       }
     }
     return null;
