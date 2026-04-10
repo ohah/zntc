@@ -1,7 +1,8 @@
 # ZTS - Zig TypeScript Transpiler
 
 ## Project Overview
-Zig로 작성하는 JavaScript/TypeScript/Flow 트랜스파일러. SWC/oxc 수준의 프로덕션 레벨 품질을 목표로 하는 학습 + 실용 프로젝트. 추후 번들러까지 확장 예정.
+Zig로 작성하는 JavaScript/TypeScript/Flow 트랜스파일러 + 번들러. SWC/oxc 수준의 프로덕션 레벨 품질을 목표.
+C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용 가능. Vite/Rollup 플러그인 어댑터 지원.
 
 ## Tech Stack
 - **Language**: Zig 0.15.2
@@ -89,6 +90,36 @@ const result = await build({
   }],
 });
 ```
+
+### Vite/Rollup 플러그인 어댑터
+```typescript
+import { vitePlugin } from "@zts/core";
+
+await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [
+    vitePlugin({
+      name: "json-loader",
+      resolveId(source) { if (source.endsWith(".json")) return resolve(source); },
+      load(id) { if (id.endsWith(".json")) return `export default ${readFileSync(id)}`; },
+      transform(code, id) { return code.replace("import.meta.env.MODE", '"production"'); },
+    }),
+  ],
+});
+```
+
+### define/alias
+```typescript
+buildSync({
+  entryPoints: ["index.ts"],
+  define: { "process.env.NODE_ENV": '"production"', __DEV__: "false" },
+  alias: { "@alias/mod": "./real.ts" },
+});
+```
+
+### ES 다운레벨 타겟
+`es5` ~ `es2025`, `esnext` 지원. tsconfig `target`과 연동.
+ES2023: hashbang (#!) 다운레벨 (strip). ES2025: `using` 선언 다운레벨.
 
 ### Node.js CLI (`packages/core/bin/zts.mjs`)
 Zig 독립 바이너리(`zig-out/bin/zts`)를 대체하는 Node.js/Bun 호환 CLI.

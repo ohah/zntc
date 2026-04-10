@@ -126,11 +126,12 @@ const result = await build({
 
 **제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` (async)에서만 사용 가능.
 
-### 4단계: Vite/Rollup 호환 어댑터 (예정)
-- Vite/Rollup 플러그인(`resolveId`, `load`, `transform`, `renderChunk`, `generateBundle`)을
-  3단계의 esbuild 스타일 API로 변환하는 JS 어댑터
-- Zig 코어 수정 없이 JS 레이어에서 처리
-- `this.resolve()`, `this.emitFile()` 등 Rollup 컨텍스트 메서드 구현
+### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992)
+- `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZTS 플러그인으로 변환
+- `resolveId`, `load`, `transform` 훅 지원 (문자열/객체/null 반환)
+- ZTS 네이티브 플러그인과 혼합 사용 가능
+- 13개 테스트 (JSON 플러그인, 환경 변수 치환 등 실전 패턴 포함)
+- **미지원**: `renderChunk`, `generateBundle`, `this.resolve()`, `this.emitFile()` (후순위)
 
 ### 5단계: Tapable 하이브리드 — webpack/Rspack 호환 (예정)
 > 방식 C: Zig에 Tapable 스타일 훅을 네이티브로 구현하고 NAPI로 노출.
@@ -233,7 +234,7 @@ pub const Plugin = struct {
 4. ✅ subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
 5. ✅ @zts/plugin npm 패키지 (JS API 래퍼) — 2단계
 6. ✅ C NAPI .node addon + esbuild 스타일 JS 플러그인 — 3단계
-7. Vite/Rollup 플러그인 어댑터 (JS 레이어) — 4단계
+7. ✅ Vite/Rollup 플러그인 어댑터 (`vitePlugin()`) — 4단계
 8. Tapable 하이브리드: Zig 훅 포인트 + NAPI 노출 — 5단계
 9. webpack Compiler/Compilation 호환 — 5단계
 10. Loader 시스템 (module.rules) — 5단계

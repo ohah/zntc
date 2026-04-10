@@ -1409,4 +1409,159 @@ describe("vitePlugin 어댑터", () => {
     expect(result.outputFiles[0].text).toContain("production");
     rmSync(envDir, { recursive: true, force: true });
   });
+
+  test("실전 패턴: YAML 로더 플러그인", async () => {
+    const yamlDir = mkdtempSync(join(tmpdir(), "zts-vite-yaml-"));
+    writeFileSync(join(yamlDir, "config.yaml"), "name: test\nversion: 2.0");
+    writeFileSync(
+      join(yamlDir, "index.ts"),
+      'import config from "./config.yaml";\nconsole.log(config);',
+    );
+
+    const yamlPlugin: RollupPlugin = {
+      name: "rollup-yaml",
+      resolveId(source, importer) {
+        if (source.endsWith(".yaml") && importer) return resolve(yamlDir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".yaml")) {
+          const content = readFileSync(id, "utf8");
+          const obj: Record<string, string> = {};
+          for (const line of content.split("\n")) {
+            const [k, v] = line.split(": ");
+            if (k && v) obj[k.trim()] = v.trim();
+          }
+          return `export default ${JSON.stringify(obj)};`;
+        }
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(yamlDir, "index.ts")],
+      plugins: [vitePlugin(yamlPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("test");
+    expect(result.outputFiles[0].text).toContain("2.0");
+    rmSync(yamlDir, { recursive: true, force: true });
+  });
+
+  test("실전 패턴: SVG → React 컴포넌트 플러그인", async () => {
+    const svgDir = mkdtempSync(join(tmpdir(), "zts-vite-svg-"));
+    writeFileSync(join(svgDir, "icon.svg"), '<svg><circle r="10"/></svg>');
+    writeFileSync(join(svgDir, "index.tsx"), 'import Icon from "./icon.svg";\nconsole.log(Icon);');
+
+    const svgPlugin: RollupPlugin = {
+      name: "rollup-svg-react",
+      resolveId(source, importer) {
+        if (source.endsWith(".svg") && importer) return resolve(svgDir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".svg")) {
+          const svg = readFileSync(id, "utf8");
+          return `export default function SvgIcon() { return "${svg.replace(/"/g, '\\"')}"; }`;
+        }
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(svgDir, "index.tsx")],
+      plugins: [vitePlugin(svgPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("SvgIcon");
+    expect(result.outputFiles[0].text).toContain("circle");
+    rmSync(svgDir, { recursive: true, force: true });
+  });
+
+  test("실전 패턴: GraphQL 쿼리 로더", async () => {
+    const gqlDir = mkdtempSync(join(tmpdir(), "zts-vite-gql-"));
+    writeFileSync(join(gqlDir, "query.graphql"), "query GetUser { user { name } }");
+    writeFileSync(
+      join(gqlDir, "index.ts"),
+      'import query from "./query.graphql";\nconsole.log(query);',
+    );
+
+    const gqlPlugin: RollupPlugin = {
+      name: "rollup-graphql",
+      resolveId(source, importer) {
+        if (source.endsWith(".graphql") && importer) return resolve(gqlDir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".graphql")) {
+          const content = readFileSync(id, "utf8");
+          return `export default ${JSON.stringify(content)};`;
+        }
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(gqlDir, "index.ts")],
+      plugins: [vitePlugin(gqlPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("GetUser");
+    rmSync(gqlDir, { recursive: true, force: true });
+  });
+
+  test("실전 패턴: 코드 내 console.log 자동 제거 transform", async () => {
+    const stripDir = mkdtempSync(join(tmpdir(), "zts-vite-strip-"));
+    writeFileSync(
+      join(stripDir, "index.ts"),
+      'console.log("debug");\nconst x = 1;\nconsole.log("also debug");\nconsole.warn("keep");',
+    );
+
+    const stripPlugin: RollupPlugin = {
+      name: "rollup-strip-console-log",
+      transform(code, _id) {
+        return code.replace(/console\.log\([^)]*\);?\n?/g, "");
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(stripDir, "index.ts")],
+      plugins: [vitePlugin(stripPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("console.log");
+    expect(result.outputFiles[0].text).toContain("console.warn");
+    expect(result.outputFiles[0].text).toContain("x = 1");
+    rmSync(stripDir, { recursive: true, force: true });
+  });
+
+  test("실전 패턴: 다중 vitePlugin transform 체이닝", async () => {
+    const chainDir = mkdtempSync(join(tmpdir(), "zts-vite-chain-"));
+    writeFileSync(join(chainDir, "index.ts"), 'const msg = "HELLO_WORLD";');
+
+    // 첫 번째 플러그인: HELLO → Hello
+    const lowercasePlugin: RollupPlugin = {
+      name: "lowercase-first",
+      transform(code) {
+        return code.replace("HELLO", "Hello");
+      },
+    };
+
+    // 두 번째 플러그인: _WORLD → _World (첫 번째 결과를 입력으로 받음)
+    const capitalizePlugin: RollupPlugin = {
+      name: "capitalize-second",
+      transform(code) {
+        return code.replace("_WORLD", "_World");
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(chainDir, "index.ts")],
+      plugins: [vitePlugin(lowercasePlugin), vitePlugin(capitalizePlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    // 두 플러그인의 transform이 순차 체이닝되어야 함
+    expect(result.outputFiles[0].text).toContain("Hello_World");
+    rmSync(chainDir, { recursive: true, force: true });
+  });
 });

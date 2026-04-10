@@ -37,6 +37,12 @@
 | 24. RN 호환 | self-require 방지, shimMissingExports, __rest Symbol, class field _this 캡처 | ✅ |
 | 25. ES5 다운레벨 | let→var void 0 초기화, spread string, for-in destructuring, computed destr, super computed | ✅ |
 | 26. compat-table | kangax ES5~ES2022 100% + SWC 비교 29 cases × 9 targets CI | ✅ |
+| 27. ES2023 | `--target=es2023`, hashbang (#!) 다운레벨, compat_table 엔진 버전 | ✅ |
+| 28. NAPI | C NAPI 바인딩: transpile, buildSync, build (async + plugins) | ✅ |
+| 29. Node.js CLI | Zig CLI → Node.js/Bun CLI 전환 (Rolldown 방식), watch/serve JS 구현 | ✅ |
+| 30. Vite 어댑터 | `vitePlugin()` Rollup→ZTS 플러그인 변환, resolveId/load/transform | ✅ |
+| 31. define/alias | NAPI BuildOptions에 `define`/`alias` 옵션 노출 | ✅ |
+| 32. tsconfig | CLI에서 tsconfig.json 자동 탐색+로드 (experimentalDecorators, jsx 등) | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
