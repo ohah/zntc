@@ -1707,7 +1707,7 @@ describe("@zts/core 옵션 조합 심화", () => {
     }
   });
 
-  test("build + platform=node + jsx=automatic + external", async () => {
+  test("build + platform=node + jsx=automatic + plugins (실제 코드 변환)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-combo-node-jsx-"));
     writeFileSync(join(dir, "app.tsx"), "export default () => <div>hello</div>;");
 
@@ -1716,8 +1716,20 @@ describe("@zts/core 옵션 조합 심화", () => {
       platform: "node",
       jsx: "automatic",
       external: ["react/jsx-runtime"],
+      plugins: [
+        {
+          name: "replace-transform",
+          setup(build) {
+            // 주석이 아닌 실제 코드 변환 (주석은 파서에서 제거됨)
+            build.onTransform({ filter: /\.tsx$/ }, (args) => ({
+              code: args.code.replace("hello", "transformed"),
+            }));
+          },
+        },
+      ],
     });
     expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("transformed");
     expect(result.outputFiles[0].text).toContain("jsx-runtime");
     rmSync(dir, { recursive: true, force: true });
   });
