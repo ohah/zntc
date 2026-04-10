@@ -675,6 +675,8 @@ const TranspileOptions = struct {
     core: lib.transpile.TranspileOptions = .{},
     /// CLI 전용: 파이프라인 단계별 소요시간 출력 (--timing)
     timing: bool = false,
+    /// --allow-overwrite: 출력 파일이 입력 파일을 덮어쓰는 것을 허용
+    allow_overwrite: bool = false,
 };
 
 /// transpile.zig 에러 콜백: 파서/시맨틱 에러 발생 시 코드 프레임 출력
@@ -779,6 +781,18 @@ fn transpileFile(
     if (timer) |*t| {
         t_transpile = t.read();
         t.reset();
+    }
+
+    // --allow-overwrite 체크
+    if (!options.allow_overwrite) {
+        if (output_path) |out_path| {
+            const in_abs = std.fs.cwd().realpathAlloc(arena_alloc, file_path) catch file_path;
+            const out_abs = std.fs.cwd().realpathAlloc(arena_alloc, out_path) catch out_path;
+            if (std.mem.eql(u8, in_abs, out_abs)) {
+                try stderr.print("zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n", .{out_path});
+                return error.TranspileFailed;
+            }
+        }
     }
 
     // 출력
@@ -1503,6 +1517,18 @@ pub fn main() !void {
             }
         }
 
+        // --allow-overwrite 체크: 출력 파일이 입력 파일을 덮어쓰지 않도록
+        if (!opts.allow_overwrite) {
+            const entry_abs = abs_entry;
+            if (opts.output_file) |out_path| {
+                const out_abs = std.fs.cwd().realpathAlloc(allocator, out_path) catch out_path;
+                if (std.mem.eql(u8, entry_abs, out_abs)) {
+                    try stderr.print("zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n", .{out_path});
+                    return error.TranspileFailed;
+                }
+            }
+        }
+
         // 출력
         // --watch-json 모드에서는 stdout이 NDJSON 전용이므로
         // 상태 메시지와 raw 번들 출력은 억제
@@ -1924,6 +1950,7 @@ pub fn main() !void {
             .jsx_import_source = opts.jsx_import_source,
         },
         .timing = opts.timing,
+        .allow_overwrite = opts.allow_overwrite,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
