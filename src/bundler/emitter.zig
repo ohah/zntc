@@ -1452,12 +1452,8 @@ fn replaceImportMetaGlob(
                     if (i > 0) try result.appendSlice(allocator, ",\n");
                     try result.appendSlice(allocator, "  \"");
                     try result.appendSlice(allocator, match_path);
-                    if (rec.glob_eager) {
-                        // eager: 정적 import (별도 처리 필요, 현재 미구현)
-                        try result.appendSlice(allocator, "\": () => import(\"");
-                    } else {
-                        try result.appendSlice(allocator, "\": () => import(\"");
-                    }
+                    // TODO: eager 모드 구현 시 정적 import로 변경
+                    try result.appendSlice(allocator, "\": () => import(\"");
                     try result.appendSlice(allocator, match_path);
                     try result.appendSlice(allocator, "\")");
                 }

@@ -628,12 +628,7 @@ pub const ModuleGraph = struct {
             null;
 
         // import.meta.glob: 워커에서 glob 확장 수행
-        for (self.modules.items[mod_idx].import_records) |*record| {
-            if (record.kind == .glob) {
-                const matches = expandGlob(self.allocator, source_dir, record.specifier) catch &.{};
-                record.glob_matches = matches;
-            }
-        }
+        expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
@@ -1229,17 +1224,7 @@ pub const ModuleGraph = struct {
             null;
 
         // import.meta.glob: glob 레코드를 파일 시스템에서 확장
-        for (self.modules.items[mod_idx].import_records) |*record| {
-            if (record.kind == .glob) {
-                const matches = try expandGlob(self.allocator, source_dir, record.specifier);
-                record.glob_matches = matches;
-                for (matches) |match_path| {
-                    const abs = std.fs.path.resolve(self.allocator, &.{ source_dir, match_path }) catch continue;
-                    defer self.allocator.free(abs);
-                    _ = self.addModule(abs) catch continue;
-                }
-            }
-        }
+        expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
@@ -1922,4 +1907,14 @@ fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []c
     }.cmp);
 
     return try results.toOwnedSlice(allocator);
+}
+
+/// import_records 배열에서 glob 레코드를 찾아 expandGlob으로 파일 매칭을 수행한다.
+/// scanWorker와 resolveModuleImports 양쪽에서 호출되는 공통 헬퍼.
+fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord, source_dir: []const u8) void {
+    for (records) |*record| {
+        if (record.kind == .glob) {
+            record.glob_matches = expandGlob(allocator, source_dir, record.specifier) catch &.{};
+        }
+    }
 }
