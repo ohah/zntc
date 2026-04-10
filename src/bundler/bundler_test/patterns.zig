@@ -388,6 +388,35 @@ test "Format: minify removes module boundary comments" {
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "// ---") == null);
 }
 
+test "minifyIdentifiers: for-in LHS identifier should be renamed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\var myObj = { a: 1, b: 2 };
+        \\var myKey;
+        \\for (myKey in myObj) {
+        \\  console.log(myKey);
+        \\}
+        \\export var result = myKey;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const r = try b.bundle();
+    defer r.deinit(std.testing.allocator);
+
+    // "myKey" should NOT appear in the output (it should be renamed)
+    // The for-in LHS must use the same renamed identifier as the var declaration
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "myKey") == null);
+    // "myObj" should also be renamed
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "myObj") == null);
+}
+
 test "Format: scope_hoist false with all three formats" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
