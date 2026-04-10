@@ -866,6 +866,7 @@ pub fn emitModule(
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
         // dev mode: import.meta.hot → __zts_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
+        .import_records = module.import_records,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -873,9 +874,6 @@ pub fn emitModule(
         try cg.addSourceFile(sourcemapSourcePath(module.path, options));
     }
     var code = try cg.generate(root);
-
-    // import.meta.glob: 코드에서 glob 호출을 매칭 파일 객체로 교체
-    code = try replaceImportMetaGlob(arena_alloc, code, module.import_records);
 
     // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입.
     // accept() 없으면 __zts_apply_update가 full reload로 fallback.
@@ -1386,92 +1384,4 @@ fn emitFormatEpilogue(output: *std.ArrayList(u8), allocator: std.mem.Allocator, 
         .umd, .amd => try output.appendSlice(allocator, "});\n"),
         .cjs, .esm => {},
     }
-}
-
-// --- import.meta.glob 코드 교체 ---
-
-/// 코드에서 `import.meta.glob("pattern")` 호출을 매칭 파일 객체 리터럴로 교체한다.
-/// Vite 호환: lazy → `{ "./a.ts": () => import("./a.ts"), ... }`
-fn replaceImportMetaGlob(
-    allocator: std.mem.Allocator,
-    code: []const u8,
-    import_records: []const types.ImportRecord,
-) ![]const u8 {
-    // glob 레코드가 있는지 확인
-    var has_glob = false;
-    for (import_records) |rec| {
-        if (rec.kind == .glob) {
-            has_glob = true;
-            break;
-        }
-    }
-    if (!has_glob) return code;
-
-    // 코드에서 import.meta.glob( 패턴을 찾아 교체
-    var result: std.ArrayList(u8) = .empty;
-    var pos: usize = 0;
-
-    while (std.mem.indexOf(u8, code[pos..], "import.meta.glob(")) |rel_idx| {
-        const start = pos + rel_idx;
-        // 닫는 괄호 찾기 (중첩 괄호 고려)
-        var paren_depth: u32 = 0;
-        var end = start + "import.meta.glob(".len;
-        while (end < code.len) : (end += 1) {
-            if (code[end] == '(') {
-                paren_depth += 1;
-            } else if (code[end] == ')') {
-                if (paren_depth == 0) {
-                    end += 1; // ')' 포함
-                    break;
-                }
-                paren_depth -= 1;
-            }
-        }
-
-        // 이 glob 호출에 대응하는 import_record 찾기
-        var matching_record: ?*const types.ImportRecord = null;
-        for (import_records) |*rec| {
-            if (rec.kind == .glob) {
-                // 패턴 문자열이 이 위치의 코드에 포함되어 있는지 확인
-                const glob_code = code[start..end];
-                if (std.mem.indexOf(u8, glob_code, rec.specifier) != null) {
-                    matching_record = rec;
-                    break;
-                }
-            }
-        }
-
-        // 교체 전 코드 복사
-        try result.appendSlice(allocator, code[pos..start]);
-
-        if (matching_record) |rec| {
-            if (rec.glob_matches) |matches| {
-                // 객체 리터럴 생성: { "./a.ts": () => import("./a.ts"), ... }
-                try result.appendSlice(allocator, "{\n");
-                for (matches, 0..) |match_path, i| {
-                    if (i > 0) try result.appendSlice(allocator, ",\n");
-                    try result.appendSlice(allocator, "  \"");
-                    try result.appendSlice(allocator, match_path);
-                    // TODO: eager 모드 구현 시 정적 import로 변경
-                    try result.appendSlice(allocator, "\": () => import(\"");
-                    try result.appendSlice(allocator, match_path);
-                    try result.appendSlice(allocator, "\")");
-                }
-                try result.appendSlice(allocator, "\n}");
-            } else {
-                // 매칭 파일 없음 → 빈 객체
-                try result.appendSlice(allocator, "{}");
-            }
-        } else {
-            // 매칭 레코드 없음 → 원본 유지
-            try result.appendSlice(allocator, code[start..end]);
-        }
-
-        pos = end;
-    }
-
-    // 남은 코드 복사
-    try result.appendSlice(allocator, code[pos..]);
-
-    return try result.toOwnedSlice(allocator);
 }
