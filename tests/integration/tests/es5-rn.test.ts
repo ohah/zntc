@@ -367,6 +367,96 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
   }, 60_000);
 });
 
+/**
+ * ES5 클래스: abstract/declare/overload 메서드 스트리핑 테스트
+ */
+describe("RN ES5 다운레벨링: abstract/declare/overload 메서드 스트리핑", () => {
+  async function transpileES5Inline(code: string): Promise<string> {
+    const { mkdtempSync, writeFileSync, rmSync } = require("fs");
+    const { join } = require("path");
+    const { tmpdir } = require("os");
+    const dir = mkdtempSync(join(tmpdir(), "zts-es5-"));
+    const file = join(dir, "input.ts");
+    writeFileSync(file, code);
+    const proc = Bun.spawnSync([ZTS_BIN, "--target=es5", file]);
+    const stdout = proc.stdout.toString();
+    rmSync(dir, { recursive: true });
+    expect(proc.exitCode).toBe(0);
+    return stdout;
+  }
+
+  test("abstract 메서드가 prototype에 emit되지 않아야 함", async () => {
+    const out = await transpileES5Inline(`
+      abstract class Gesture {
+        abstract toGestureArray(): any[];
+        abstract initialize(): void;
+        abstract prepare(): void;
+        concrete(): string { return "hi"; }
+      }
+    `);
+    expect(out).not.toContain("toGestureArray = function()");
+    expect(out).not.toContain("initialize = function()");
+    expect(out).not.toContain("prepare = function()");
+    expect(out).toContain("concrete = function()");
+  });
+
+  test("abstract class를 상속한 concrete class는 정상 변환", async () => {
+    const out = await transpileES5Inline(`
+      abstract class Base {
+        abstract getValue(): number;
+        shared(): string { return "shared"; }
+      }
+      class Impl extends Base {
+        getValue() { return 42; }
+      }
+    `);
+    expect(out).not.toContain("getValue = function();\n");
+    expect(out).toContain("shared = function()");
+    expect(out).toContain("getValue = function()");
+    expect(out).toContain("return 42");
+  });
+
+  test("TS 오버로드 시그니처가 emit되지 않아야 함", async () => {
+    const out = await transpileES5Inline(`
+      class Foo {
+        method(x: string): void;
+        method(x: number): void;
+        method(x: string | number): void { console.log(x); }
+      }
+    `);
+    // 오버로드 시그니처 2개는 제거, 구현만 남아야 함
+    const methodCount = (out.match(/method = function/g) || []).length;
+    expect(methodCount).toBe(1);
+    expect(out).toContain("console.log(x)");
+  });
+
+  test("declare 메서드가 emit되지 않아야 함", async () => {
+    const out = await transpileES5Inline(`
+      declare class DeclaredClass {
+        doSomething(): void;
+      }
+      class Real {
+        real() { return 1; }
+      }
+    `);
+    expect(out).not.toContain("doSomething");
+    expect(out).toContain("real = function()");
+  });
+
+  test("abstract + private + static 혼합 클래스", async () => {
+    const out = await transpileES5Inline(`
+      abstract class Mixed {
+        abstract abstractMethod(): void;
+        static staticMethod() { return "static"; }
+        normalMethod() { return "normal"; }
+      }
+    `);
+    expect(out).not.toContain("abstractMethod");
+    expect(out).toContain("staticMethod");
+    expect(out).toContain("normalMethod");
+  });
+});
+
 describe("RN ES5 다운레벨링: 기존 flow-rn fixtures", () => {
   // 기존 50개 fixtures 중 async/class가 있는 파일도 ES5로 검증
   test("Animated/AnimatedEvent.js", () => expectES5Pass("Animated/AnimatedEvent.js"));

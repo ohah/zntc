@@ -1090,8 +1090,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const is_declare = (flags & 0x40) != 0;
                     const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
 
-                    // abstract/declare 메서드는 타입 전용 → 스트리핑 (본문 없음)
-                    if (is_abstract or is_declare) continue;
+                    // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
+                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, 3));
+                    if (is_abstract or is_declare or method_body.isNone()) continue;
 
                     if (!is_static and isConstructorKey(self, key)) {
                         cm.constructor_idx = @enumFromInt(raw_idx);
