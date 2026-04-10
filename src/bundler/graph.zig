@@ -838,7 +838,9 @@ pub const ModuleGraph = struct {
             }
         }
         // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
-        if (self.jsx_in_js) {
+        // .ts 파일은 이미 configureForBundler에서 JSX 설정됨 (.tsx만 true)
+        // .ts에 강제 jsx=true하면 <T> 제네릭이 JSX로 오파싱됨
+        if (self.jsx_in_js and !parser.is_ts) {
             parser.is_jsx = true;
         }
 
