@@ -129,10 +129,11 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
   `--asset-names`, `--public-path` 지원.
 
-- ~~**플러그인 API**~~ — ✅ 1-2단계 완료 ([PLUGINS.md](../PLUGINS.md) 참조)
+- ~~**플러그인 API**~~ — ✅ 1-4단계 완료 ([PLUGINS.md](../PLUGINS.md) 참조)
   - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅
   - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/plugin, CLI --plugin
-  - 3단계: N-API .node addon (XL, 2~3주, 선택적) — in-process 호출 최적화
+  - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지
+  - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
 - **CSS 번들링** — 현재 플러그인 위임, 자체 구현은 후순위
@@ -180,7 +181,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 | 항목 | 난이도 | esbuild | rolldown | rspack | 설명 |
 |------|--------|---------|----------|--------|------|
 | **CSS 번들링** | XL | ✅ | ✅ | ✅ | 자체 CSS 파서, @import, CSS Modules |
-| **플러그인 N-API** | XL | ✅ (Go) | ✅ (Rust) | ✅ | in-process 플러그인 (현재 subprocess IPC만) |
+| ~~**플러그인 N-API**~~ | ✅ | ✅ (Go) | ✅ (Rust) | ✅ | in-process NAPI 플러그인 + async 훅 + Vite 어댑터 |
 | ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 구현 완료 |
 | ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/plugin |
 | ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/plugin |
@@ -206,7 +207,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 단독 XL ────────────────────────────────────────────────────────
   CSS 번들링 — 현재 플러그인 위임 (자체 CSS 파서는 후순위)
-  플러그인 API ✅ 1-2단계 완료 — N-API 3단계는 선택적
+  플러그인 API ✅ 1-4단계 완료 — NAPI + Vite 어댑터 + async 훅
   엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
   Web Worker ✅ 완료 — new Worker(new URL(...)) 자동 감지+IIFE 번들 (esbuild 미지원)
   mangleProps (1주+) — cross-module 프로퍼티 추적
