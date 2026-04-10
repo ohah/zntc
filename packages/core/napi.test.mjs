@@ -18,20 +18,31 @@ const require = createRequire(import.meta.url);
 const addonPath = join(__dirname, "../../zig-out/lib/zts.node");
 const native = require(addonPath);
 
+// 플래그 비트마스크 상수 (encodeFlags 비트 레이아웃 참조)
+const F = {
+  SOURCEMAP: 1 << 0,
+  JSX_AUTOMATIC: 1 << 4,
+  DROP_CONSOLE: 1 << 6,
+  CJS: 1 << 12,
+  USE_DEFINE: 1 << 16, // useDefineForClassFields (기본 true)
+  SOURCES_CONTENT: 1 << 22, // sourcesContent (기본 true)
+};
+const DEFAULT_FLAGS = F.USE_DEFINE | F.SOURCES_CONTENT;
+
 describe("@zts/core NAPI (Node.js)", () => {
   it("모듈이 transpile 함수를 export한다", () => {
     assert.equal(typeof native.transpile, "function");
   });
 
   it("기본 TypeScript 트랜스파일", () => {
-    const flags = (1 << 16) | (1 << 22); // useDefineForClassFields + sourcesContent
+    const flags = DEFAULT_FLAGS; // useDefineForClassFields + sourcesContent
     const result = native.transpile("const x: number = 1;", "input.ts", flags, 0, "", "", "");
     assert.ok(result.code.includes("const x = 1;"));
     assert.equal(result.map, undefined);
   });
 
   it("인터페이스 스트리핑", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     const result = native.transpile(
       "interface Foo { bar: string; }\nconst x = 1;",
       "input.ts",
@@ -46,7 +57,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("타입 어노테이션 제거", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     const result = native.transpile(
       "function add(a: number, b: number): number { return a + b; }",
       "input.ts",
@@ -60,7 +71,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("소스맵 생성", () => {
-    const flags = (1 << 0) | (1 << 16) | (1 << 22); // sourcemap + defaults
+    const flags = F.SOURCEMAP | DEFAULT_FLAGS; // sourcemap + defaults
     const result = native.transpile("const x: number = 1;", "input.ts", flags, 0, "", "", "");
     assert.ok(result.code.includes("const x = 1;"));
     assert.ok(result.map !== undefined);
@@ -70,7 +81,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("CJS 포맷", () => {
-    const flags = (1 << 12) | (1 << 16) | (1 << 22); // cjs + defaults
+    const flags = F.CJS | DEFAULT_FLAGS; // cjs + defaults
     const result = native.transpile(
       'export const x = 1; export default "hello";',
       "input.ts",
@@ -84,7 +95,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("JSX 트랜스파일 (classic)", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     const result = native.transpile(
       '<div className="app">hello</div>',
       "app.tsx",
@@ -98,7 +109,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("JSX 트랜스파일 (automatic)", () => {
-    const flags = (1 << 4) | (1 << 16) | (1 << 22); // automatic jsx
+    const flags = F.JSX_AUTOMATIC | DEFAULT_FLAGS; // automatic jsx
     const result = native.transpile(
       '<div className="app">hello</div>',
       "app.tsx",
@@ -112,20 +123,20 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("jsxFactory 커스텀", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     const result = native.transpile("<div />", "app.tsx", flags, 0, "h", "", "");
     assert.ok(result.code.includes("h("));
     assert.ok(!result.code.includes("React.createElement"));
   });
 
   it("jsxImportSource 커스텀", () => {
-    const flags = (1 << 4) | (1 << 16) | (1 << 22); // automatic jsx
+    const flags = F.JSX_AUTOMATIC | DEFAULT_FLAGS; // automatic jsx
     const result = native.transpile("<div />", "app.tsx", flags, 0, "", "", "preact");
     assert.ok(result.code.includes("preact"));
   });
 
   it("ES5 다운레벨링", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     const unsupported = 0x1fffff; // es5
     const result = native.transpile(
       "const x = () => 1;",
@@ -141,7 +152,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("drop console", () => {
-    const flags = (1 << 6) | (1 << 16) | (1 << 22); // drop_console + defaults
+    const flags = F.DROP_CONSOLE | DEFAULT_FLAGS; // drop_console + defaults
     const result = native.transpile(
       'console.log("hello"); const x = 1;',
       "input.ts",
@@ -156,7 +167,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("파싱 에러 시 throw", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     assert.throws(
       () => native.transpile("const = ;", "input.ts", flags, 0, "", "", ""),
       (err) => err.message.includes("ParseError"),
@@ -164,7 +175,7 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("반복 호출 안정성", () => {
-    const flags = (1 << 16) | (1 << 22);
+    const flags = DEFAULT_FLAGS;
     for (let i = 0; i < 100; i++) {
       const result = native.transpile(
         `const x${i}: number = ${i};`,
