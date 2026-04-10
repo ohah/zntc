@@ -2348,7 +2348,10 @@ describe("BundleOptions: 전체 옵션 노출", () => {
 
   test("preserveModules: 모듈별 개별 파일 출력", async () => {
     writeFileSync(join(dir, "mod-a.ts"), "export const a = 1;");
-    writeFileSync(join(dir, "mod-entry.ts"), 'import { a } from "./mod-a";\nexport const b = a + 1;');
+    writeFileSync(
+      join(dir, "mod-entry.ts"),
+      'import { a } from "./mod-a";\nexport const b = a + 1;',
+    );
     const result = await build({
       entryPoints: [join(dir, "mod-entry.ts")],
       preserveModules: true,
