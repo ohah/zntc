@@ -442,9 +442,11 @@ function loadTsConfig(opts) {
   if (!tsconfigPath || !existsSync(tsconfigPath)) return;
 
   try {
-    // JSON with comments를 간단히 파싱 (줄 주석, 블록 주석 제거)
+    // JSON with comments 파싱 — 문자열 리터럴 내의 // 를 보호
     const raw = readFileSync(resolve(tsconfigPath), "utf8");
-    const stripped = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const stripped = raw.replace(/"(?:[^"\\]|\\.)*"|\/\/.*$|\/\*[\s\S]*?\*\//gm, (m) =>
+      m.startsWith('"') ? m : "",
+    );
     const config = JSON.parse(stripped);
     const co = config.compilerOptions;
     if (!co) return;
@@ -489,7 +491,7 @@ function loadTsConfig(opts) {
         es2020: "es2020",
         es2021: "es2021",
         es2022: "es2022",
-        es2023: "es2024",
+        es2023: "es2024", // ZTS에 es2023 타겟이 없으므로 es2024로 올림
         es2024: "es2024",
         esnext: "esnext",
       };
