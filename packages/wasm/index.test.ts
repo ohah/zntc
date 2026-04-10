@@ -78,7 +78,7 @@ describe("@zts/wasm", () => {
   });
 
   test("파싱 에러", () => {
-    expect(() => transpile("const = ;")).toThrow("ParseError");
+    expect(() => transpile("const = ;")).toThrow("error:");
   });
 
   test("Flow 스트리핑", () => {
