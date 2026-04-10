@@ -1,7 +1,16 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { init, transpile, build, buildSync, close, type ZtsPlugin } from "./index";
+import {
+  init,
+  transpile,
+  build,
+  buildSync,
+  close,
+  vitePlugin,
+  type ZtsPlugin,
+  type RollupPlugin,
+} from "./index";
 import { resolve } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -990,5 +999,293 @@ describe("@zts/core build 옵션 조합", () => {
       expect(r.errors.length).toBe(0);
       expect(r.outputFiles[0].text).toContain("helper");
     }
+  });
+});
+
+// ─── Vite/Rollup 플러그인 어댑터 ───
+
+describe("vitePlugin 어댑터", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-vite-adapter-"));
+    writeFileSync(join(dir, "entry.ts"), 'import css from "./style.css";\nconsole.log(css);');
+    writeFileSync(join(dir, "app.ts"), 'import { greet } from "./util";\nconsole.log(greet());');
+    writeFileSync(join(dir, "util.ts"), "export function greet(): string { return 'Hello!'; }");
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("resolveId 훅 — 문자열 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-resolve-string",
+      resolveId(source) {
+        if (source.endsWith(".css")) return resolve(dir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".css")) return 'export default "red";';
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("red");
+  });
+
+  test("resolveId 훅 — { id } 객체 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-resolve-object",
+      resolveId(source) {
+        if (source.endsWith(".css")) return { id: resolve(dir, source) };
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".css")) return { code: 'export default "blue";' };
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("blue");
+  });
+
+  test("load 훅 — 문자열 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-load-string",
+      resolveId(source) {
+        if (source.endsWith(".css")) return resolve(dir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".css")) return 'export default "from-string";';
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("from-string");
+  });
+
+  test("load 훅 — { code } 객체 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-load-object",
+      resolveId(source) {
+        if (source.endsWith(".css")) return resolve(dir, source);
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".css")) return { code: 'export default "from-object";' };
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("from-object");
+  });
+
+  test("transform 훅 — 문자열 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-transform-string",
+      transform(code, _id) {
+        return code.replace("Hello!", "Transformed!");
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("Transformed!");
+  });
+
+  test("transform 훅 — { code } 객체 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-transform-object",
+      transform(code, _id) {
+        return { code: code.replace("Hello!", "ObjectTransformed!") };
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("ObjectTransformed!");
+  });
+
+  test("transform 훅 — null 반환 (통과)", async () => {
+    const plugin: RollupPlugin = {
+      name: "rollup-transform-null",
+      transform() {
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("Hello!");
+  });
+
+  test("여러 Rollup 플러그인 조합", async () => {
+    const resolverPlugin: RollupPlugin = {
+      name: "resolver",
+      resolveId(source) {
+        if (source.endsWith(".css")) return resolve(dir, source);
+        return null;
+      },
+    };
+
+    const loaderPlugin: RollupPlugin = {
+      name: "loader",
+      load(id) {
+        if (id.endsWith(".css")) return 'export default "multi-plugin";';
+        return null;
+      },
+    };
+
+    const transformerPlugin: RollupPlugin = {
+      name: "transformer",
+      transform(code, _id) {
+        return code.replace("multi-plugin", "MULTI-TRANSFORMED");
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [
+        vitePlugin(resolverPlugin),
+        vitePlugin(loaderPlugin),
+        vitePlugin(transformerPlugin),
+      ],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("MULTI-TRANSFORMED");
+  });
+
+  test("ZTS 플러그인과 Vite 플러그인 혼합", async () => {
+    const nativePlugin: ZtsPlugin = {
+      name: "native-resolve",
+      setup(build) {
+        build.onResolve({ filter: /\.css$/ }, (args) => ({
+          path: resolve(dir, args.path),
+        }));
+      },
+    };
+
+    const rollupLoader: RollupPlugin = {
+      name: "rollup-loader",
+      load(id) {
+        if (id.endsWith(".css")) return 'export default "mixed";';
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [nativePlugin, vitePlugin(rollupLoader)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("mixed");
+  });
+
+  test("훅이 없는 빈 Rollup 플러그인", async () => {
+    const emptyPlugin: RollupPlugin = { name: "empty" };
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      plugins: [vitePlugin(emptyPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("Hello!");
+  });
+
+  test("resolveId에서 undefined/void 반환", async () => {
+    const plugin: RollupPlugin = {
+      name: "void-return",
+      resolveId() {
+        // void — 아무것도 반환하지 않음
+      },
+    };
+    const result = await build({
+      entryPoints: [join(dir, "app.ts")],
+      plugins: [vitePlugin(plugin)],
+    });
+    expect(result.errors.length).toBe(0);
+  });
+
+  test("실전 패턴: JSON 플러그인 (Rollup 스타일)", async () => {
+    const jsonDir = mkdtempSync(join(tmpdir(), "zts-vite-json-"));
+    writeFileSync(join(jsonDir, "data.json"), '{"name":"test","version":"1.0"}');
+    writeFileSync(
+      join(jsonDir, "index.ts"),
+      'import data from "./data.json";\nconsole.log(data.name);',
+    );
+
+    const jsonPlugin: RollupPlugin = {
+      name: "rollup-json",
+      resolveId(source, importer) {
+        if (source.endsWith(".json") && importer) {
+          return resolve(jsonDir, source);
+        }
+        return null;
+      },
+      load(id) {
+        if (id.endsWith(".json")) {
+          const json = readFileSync(id, "utf8");
+          return `export default ${json};`;
+        }
+        return null;
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(jsonDir, "index.ts")],
+      plugins: [vitePlugin(jsonPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("test");
+    expect(result.outputFiles[0].text).toContain("1.0");
+    rmSync(jsonDir, { recursive: true, force: true });
+  });
+
+  test("실전 패턴: 환경 변수 치환 플러그인", async () => {
+    const envDir = mkdtempSync(join(tmpdir(), "zts-vite-env-"));
+    writeFileSync(join(envDir, "index.ts"), "console.log(import.meta.env.MODE);");
+
+    const envPlugin: RollupPlugin = {
+      name: "rollup-env",
+      transform(code, _id) {
+        return code.replace("import.meta.env.MODE", '"production"');
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(envDir, "index.ts")],
+      plugins: [vitePlugin(envPlugin)],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("production");
+    rmSync(envDir, { recursive: true, force: true });
   });
 });
