@@ -46,11 +46,11 @@ console.log(result.code); // "const x = 1;"
 ## JS Build API
 
 ```bash
-bun add @zts/core
+bun add @zts/plugin
 ```
 
 ```typescript
-import { build } from "@zts/core";
+import { build } from "@zts/plugin";
 
 const result = await build({
   entryPoints: ["src/index.ts"],

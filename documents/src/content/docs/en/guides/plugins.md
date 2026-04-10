@@ -13,7 +13,7 @@ Create a `zts.config.ts` (or `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`) at the proje
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 
 export default defineConfig({
   plugins: [
@@ -110,7 +110,7 @@ Called after bundle generation is complete.
 ## Build API
 
 ```typescript
-import { build } from "@zts/core";
+import { build } from "@zts/plugin";
 
 const result = await build({
   entryPoints: ["src/index.ts"],

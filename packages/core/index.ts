@@ -1,88 +1,25 @@
 /**
- * @zts/core — ZTS Plugin & Build API
+ * @zts/core — ZTS TypeScript 트랜스파일러 네이티브 바인딩
  *
- * Vite/Rollup-compatible plugin interface for ZTS.
- * The ZTS binary spawns the config file and communicates via stdin/stdout JSON IPC.
- *
- * @example
- * ```ts
- * import { defineConfig } from '@zts/core';
- * import fs from 'node:fs';
- *
- * export default defineConfig({
- *   plugins: [
- *     {
- *       name: 'css-loader',
- *       load(id) {
- *         if (!id.endsWith('.css')) return null;
- *         const css = fs.readFileSync(id, 'utf8');
- *         return { contents: css, loader: 'text' };
- *       }
- *     }
- *   ]
- * });
- * ```
- *
- * @packageDocumentation
- */
-
-import { createInterface } from "node:readline";
-
-// ===== Type Definitions =====
-
-/** Result of a plugin's `resolveId` hook. */
-export interface ResolveResult {
-  /** Resolved absolute file path. */
-  path: string;
-}
-
-/**
- * File loader type. Determines how a file extension is processed during bundling.
- *
- * - `"js"` / `"ts"` — Parse as JavaScript/TypeScript
- * - `"json"` — Parse as JSON module
- * - `"text"` — Import as a string
- * - `"file"` — Copy to output and export the URL
- * - `"dataurl"` — Inline as a `data:` URL
- * - `"binary"` — Import as a `Uint8Array`
- * - `"copy"` — Copy to output preserving directory structure
- * - `"empty"` — Replace with an empty module
- */
-export type Loader =
-  | "js"
-  | "ts"
-  | "json"
-  | "text"
-  | "css"
-  | "file"
-  | "dataurl"
-  | "binary"
-  | "copy"
-  | "empty";
-
-/** Output module format. */
-export type Format = "esm" | "cjs" | "iife";
-
-/** Target platform. Affects module resolution, built-in polyfills, and default format. */
-export type Platform = "browser" | "node" | "neutral" | "react-native";
-
-/** JSX transform mode. */
-export type JsxMode = "classic" | "automatic" | "automatic-dev";
-
-/** How to handle legal comments (license headers) in the output. */
-export type LegalComments = "none" | "inline" | "eof";
-
-/**
- * Transpilation target. Can be an ES version, a browser/engine with version number,
- * or an array of targets for multi-target builds.
+ * bun:ffi를 사용하여 네이티브 dylib을 in-process로 로드.
+ * NAPI와 동일한 성능 특성 (프로세스 spawn 없음, 직렬화 없음).
  *
  * @example
  * ```ts
- * target: "es2020"
- * target: ["chrome90", "firefox88"]
- * target: "hermes0.12"
+ * import { init, transpile } from "@zts/core";
+ * init(); // 또는 init("/path/to/libzts.dylib")
+ * const result = transpile("const x: number = 1;");
+ * console.log(result.code);
  * ```
  */
+
+import { dlopen, FFIType, ptr, toBuffer } from "bun:ffi";
+import { existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+// ─── Types (packages/wasm과 동일) ───
+
 export type Target =
   | "es5"
   | "es2015"
@@ -93,794 +30,272 @@ export type Target =
   | "es2020"
   | "es2021"
   | "es2022"
-  | "esnext"
-  | `chrome${number}`
-  | `firefox${number}`
-  | `safari${number}`
-  | `edge${number}`
-  | `node${number}`
-  | `deno${number}`
-  | `ios${number}`
-  | `hermes${number}`
-  | (string & {});
+  | "es2024"
+  | "es2025"
+  | "esnext";
 
-/** Result returned by a plugin's `load` or `transform` hook. */
-export interface LoadResult {
-  /** The transformed source code. */
-  contents?: string;
-  /** Alias for `contents` (Rolldown compatibility). `contents` takes precedence if both are set. */
-  code?: string;
-  /** Optional loader override for this file. */
-  loader?: Loader;
-}
+export type Platform = "browser" | "node" | "neutral" | "react-native";
 
-/** Represents an output file from the bundle. */
-export interface OutputFile {
-  /** Absolute path of the output file. */
-  path: string;
-}
-
-// ===== Plugin Context API =====
-
-/** Options for {@link PluginContext.emitFile}. */
-export interface EmitFileOptions {
-  /** Output file name (relative to outdir). */
-  fileName: string;
-  /** File contents as a string. */
-  source: string;
-}
-
-/** Module metadata returned by {@link PluginContext.getModuleInfo}. */
-export interface ModuleInfo {
-  /** Resolved module ID (absolute path). */
-  id: string;
-  /** Whether this module is an entry point. */
-  isEntry: boolean;
-  /** List of imported module specifiers. */
-  importedIds: string[];
-}
-
-/** Context object passed to plugin hooks for accessing build utilities. */
-export interface PluginContext {
-  /**
-   * Emit an additional file to the output directory.
-   * Can be called during `generateBundle` or `renderChunk` hooks.
-   */
-  emitFile(options: EmitFileOptions): string;
-
-  /**
-   * Resolve a module specifier using the plugin chain.
-   * Calls other plugins' `resolveId` hooks (skipping the calling plugin to avoid infinite recursion).
-   */
-  resolve(specifier: string, importer?: string): Promise<ResolveResult | null>;
-
-  /**
-   * Get metadata about a module by its resolved ID.
-   * Returns null if the module is not in the graph.
-   */
-  getModuleInfo(id: string): ModuleInfo | null;
-}
-
-/**
- * Plugin interface — compatible with Vite/Rollup plugin conventions.
- *
- * Hooks are called via JSON IPC between the ZTS binary and the Node.js/Bun subprocess.
- * Each hook receives a {@link PluginContext} as `this`, providing access to build utilities.
- *
- * @example
- * ```ts
- * const myPlugin: Plugin = {
- *   name: 'virtual-module',
- *   resolveId(source) {
- *     if (source === 'virtual:config') return { path: '\0virtual:config' };
- *     return null;
- *   },
- *   load(id) {
- *     if (id === '\0virtual:config') return 'export default { debug: true }';
- *     return null;
- *   }
- * };
- * ```
- */
-export interface Plugin {
-  /** Plugin name, shown in debug logs and error messages. */
-  name: string;
-  /**
-   * Resolve a module specifier to an absolute path.
-   * Return `null` to defer to the next plugin or default resolution.
-   */
-  resolveId?(
-    this: PluginContext,
-    source: string,
-    importer: string,
-  ): Promise<ResolveResult | string | null> | ResolveResult | string | null;
-  /**
-   * Load the contents of a module by its resolved path.
-   * Return `null` to defer to the next plugin or default loading.
-   */
-  load?(
-    this: PluginContext,
-    id: string,
-  ): Promise<LoadResult | string | null> | LoadResult | string | null;
-  /**
-   * Transform the source code of a module after loading.
-   * Plugins are chained: each plugin receives the previous plugin's output.
-   */
-  transform?(
-    this: PluginContext,
-    code: string,
-    id: string,
-  ): Promise<LoadResult | string | null> | LoadResult | string | null;
-  /**
-   * Post-process a generated chunk's code before writing to disk.
-   * Plugins are chained like `transform`.
-   */
-  renderChunk?(
-    this: PluginContext,
-    code: string,
-    chunkName: string,
-  ): Promise<LoadResult | string | null> | LoadResult | string | null;
-  /** Called after all chunks have been generated. Use for side effects like writing extra files. */
-  generateBundle?(this: PluginContext, outputs: OutputFile[]): Promise<void> | void;
-}
-
-/** Dev server configuration. */
-export interface ServerConfig {
-  /** Server port (default: 12300). */
-  port?: number;
-  /** Bind address (default: "localhost", use "0.0.0.0" for all interfaces). */
-  host?: string;
-  /** Automatically open the browser on start. */
-  open?: boolean;
-  /** API proxy mapping. Example: `{ "/api": "http://localhost:3000" }` */
-  proxy?: Record<string, string>;
-}
-
-/**
- * ZTS configuration object. Passed to {@link defineConfig} to configure
- * plugins, bundling options, and the dev server.
- *
- * @example
- * ```ts
- * import { defineConfig } from '@zts/core';
- *
- * export default defineConfig({
- *   entryPoints: ['src/index.ts'],
- *   outdir: 'dist',
- *   bundle: true,
- *   format: 'esm',
- *   platform: 'browser',
- *   minify: true,
- *   plugins: [myPlugin],
- * });
- * ```
- */
-export interface ZtsConfig {
-  /** List of plugins to apply. */
-  plugins?: Plugin[];
-
-  // === Input / Output ===
-  /** Entry point file paths. */
-  entryPoints?: string[];
-  /** Output directory (for multi-file output). */
-  outdir?: string;
-  /** Output file path (for single-file output). */
-  outfile?: string;
-
-  // === Bundle Options ===
-  /** Enable bundle mode. */
-  bundle?: boolean;
-  /** Output module format. */
-  format?: Format;
-  /** Target platform. */
-  platform?: Platform;
-  /** ES/engine target. Example: `"es2020"`, `"chrome90"`, `["es2020", "node16"]` */
-  target?: Target | Target[];
-  /** Enable code splitting. */
-  splitting?: boolean;
-  /** Output each module as a separate file (library builds). */
-  preserveModules?: boolean;
-  /** Root directory for `preserveModules` output structure. */
-  preserveModulesRoot?: string;
-
-  // === Transform ===
-  /** Loader overrides by file extension. Example: `{ '.png': 'file' }` */
-  loader?: Record<string, Loader>;
-  /** Global define replacements. Example: `{ 'process.env.NODE_ENV': '"production"' }` */
-  define?: Record<string, string>;
-  /** Import path aliases. Example: `{ '@': './src' }` */
-  alias?: Record<string, string>;
-  /** Packages to exclude from the bundle. */
-  external?: string[];
-  /** Generate source maps. */
+export interface TranspileOptions {
+  /** 파일 경로 (확장자 감지용, 기본: "input.ts") */
+  filename?: string;
+  /** 소스맵 생성 */
   sourcemap?: boolean;
-  /** Minify the output. */
+  /** 소스맵 Debug ID (Sentry 호환) */
+  sourcemapDebugIds?: boolean;
+  /** 소스맵에 원본 소스 포함 (기본: true) */
+  sourcesContent?: boolean;
+  /** 공백 축소 */
+  minifyWhitespace?: boolean;
+  /** 식별자 축소 */
+  minifyIdentifiers?: boolean;
+  /** 구문 축소 */
+  minifySyntax?: boolean;
+  /** 전체 축소 (whitespace + identifiers + syntax) */
   minify?: boolean;
-  /** JSX transform mode. */
-  jsx?: JsxMode;
-  /** JSX factory function for classic mode (default: `"React.createElement"`). */
+  /** JSX 런타임 */
+  jsx?: "classic" | "automatic" | "automatic-dev";
+  /** classic 모드 JSX factory (기본: "React.createElement") */
   jsxFactory?: string;
-  /** JSX fragment factory for classic mode (default: `"React.Fragment"`). */
+  /** classic 모드 Fragment factory (기본: "React.Fragment") */
   jsxFragment?: string;
-  /** Import source for automatic JSX mode (default: `"react"`). */
+  /** automatic 모드 import source (기본: "react") */
   jsxImportSource?: string;
-
-  // === Output ===
-  /** Text to prepend to each output file. */
-  banner?: { js?: string };
-  /** Text to append to each output file. */
-  footer?: { js?: string };
-  /** URL prefix for assets and chunks (CDN deployments). */
-  publicPath?: string;
-  /** Files to auto-import in every entry point. */
-  inject?: string[];
-  /** Global variable name for IIFE format. */
-  globalName?: string;
-  /** How to handle legal/license comments. */
-  legalComments?: LegalComments;
-  /** Preserve `.name` property on functions/classes when minifying. */
-  keepNames?: boolean;
-
-  // === Dev Server ===
-  /** Dev server configuration. */
-  server?: ServerConfig;
+  /** JS 파일에서도 JSX 허용 */
+  jsxInJs?: boolean;
+  /** console.* 호출 제거 */
+  dropConsole?: boolean;
+  /** debugger 문 제거 */
+  dropDebugger?: boolean;
+  /** non-ASCII를 \uXXXX로 이스케이프 */
+  asciiOnly?: boolean;
+  /** non-ASCII를 이스케이프하지 않음 */
+  charsetUtf8?: boolean;
+  /** Flow 타입 스트리핑 */
+  flow?: boolean;
+  /** legacy decorator 변환 */
+  experimentalDecorators?: boolean;
+  /** decorator metadata emit */
+  emitDecoratorMetadata?: boolean;
+  /** class field → constructor this.x = v 변환 (기본: true) */
+  useDefineForClassFields?: boolean;
+  /** 모듈 포맷 */
+  format?: "esm" | "cjs";
+  /** 문자열 따옴표 스타일 */
+  quotes?: "double" | "single" | "preserve";
+  /** 타겟 플랫폼 */
+  platform?: Platform;
+  /** ES 다운레벨 타겟 */
+  target?: Target;
 }
 
-// ===== IPC 메시지 타입 =====
-
-interface IpcMessage {
-  id: number;
-  type: string;
-  specifier?: string;
-  importer?: string;
-  path?: string;
-  code?: string;
-  moduleId?: string;
-  chunkName?: string;
-  outputs?: OutputFile[];
+export interface TranspileResult {
+  /** 변환된 JavaScript 코드 */
+  code: string;
+  /** 소스맵 JSON (sourcemap: true 시) */
+  map?: string;
 }
 
-interface IpcResponse {
-  id: number;
-  result?: unknown;
-  error: string | null;
-  name?: string;
-  filters?: Record<string, string[]>;
-  hooks?: Record<string, boolean>;
-  config?: Partial<ZtsConfig>;
+// ─── FFI Instance ───
+
+interface ZtsLib {
+  symbols: {
+    zts_transpile(
+      srcPtr: number,
+      srcLen: number,
+      filePtr: number,
+      fileLen: number,
+      flags: number,
+      unsupported: number,
+      jsxFactoryPtr: number,
+      jsxFactoryLen: number,
+      jsxFragmentPtr: number,
+      jsxFragmentLen: number,
+      jsxImportSourcePtr: number,
+      jsxImportSourceLen: number,
+    ): number | null;
+    zts_result_len(): number;
+    zts_error_ptr(): number | null;
+    zts_error_len(): number;
+    zts_free_result(): void;
+  };
+  close(): void;
 }
 
-// ===== PluginHost =====
+let lib: ZtsLib | null = null;
 
-class PluginHost {
-  private plugins: Plugin[];
-  private config: ZtsConfig;
-  /** Files emitted by plugins via emitFile(). Written after generateBundle. */
-  emittedFiles: EmitFileOptions[] = [];
-  /** Module info cache populated during build. */
-  moduleInfoMap: Map<string, ModuleInfo> = new Map();
+// ─── ES Target → UnsupportedFeatures bitmask ───
 
-  constructor(config: ZtsConfig) {
-    this.plugins = config.plugins || [];
-    this.config = config;
-  }
+const ES_TARGET_BITS: Record<string, number> = {
+  es5: 0x1fffff,
+  es2015: 0x1ff800,
+  es2016: 0x1ff000,
+  es2017: 0x1fe000,
+  es2018: 0x1fc000,
+  es2019: 0x1f8000,
+  es2020: 0x1e0000,
+  es2021: 0x1c0000,
+  es2022: 0x100000,
+  es2024: 0x100000,
+  es2025: 0x0,
+  esnext: 0x0,
+};
 
-  /**
-   * Create a PluginContext for a specific plugin.
-   * The context skips the current plugin in resolve() to prevent infinite recursion.
-   */
-  private createContext(currentPluginIndex: number): PluginContext {
-    return {
-      emitFile: (options: EmitFileOptions): string => {
-        this.emittedFiles.push(options);
-        return options.fileName;
-      },
+// ─── 옵션 인코딩 (wasm/index.ts와 동일한 비트 레이아웃) ───
 
-      resolve: async (specifier: string, importer?: string): Promise<ResolveResult | null> => {
-        // Call other plugins' resolveId hooks (skip current plugin to avoid infinite recursion)
-        for (let i = 0; i < this.plugins.length; i++) {
-          if (i === currentPluginIndex) continue;
-          const plugin = this.plugins[i];
-          if (!plugin.resolveId) continue;
-          try {
-            const ctx = this.createContext(i);
-            const result = await plugin.resolveId.call(ctx, specifier, importer || "");
-            if (result == null) continue;
-            return typeof result === "string" ? { path: result } : result;
-          } catch {
-            continue;
-          }
-        }
-        return null;
-      },
-
-      getModuleInfo: (id: string): ModuleInfo | null => {
-        return this.moduleInfoMap.get(id) || null;
-      },
-    };
-  }
-
-  getFilters(): Record<string, string[]> {
-    return { resolveId: [], load: [], transform: [] };
-  }
-
-  getHooks(): Record<string, boolean> {
-    return {
-      resolveId: this.plugins.some((p) => !!p.resolveId),
-      load: this.plugins.some((p) => !!p.load),
-      transform: this.plugins.some((p) => !!p.transform),
-      renderChunk: this.plugins.some((p) => !!p.renderChunk),
-      generateBundle: this.plugins.some((p) => !!p.generateBundle),
-    };
-  }
-
-  getPluginNames(): string {
-    return this.plugins.map((p) => p.name || "unnamed").join(", ");
-  }
-
-  async handleMessage(msg: IpcMessage): Promise<IpcResponse> {
-    switch (msg.type) {
-      case "init": {
-        const { plugins: _, ...configWithoutPlugins } = this.config;
-        return {
-          id: msg.id,
-          name: this.getPluginNames(),
-          filters: this.getFilters(),
-          hooks: this.getHooks(),
-          config: configWithoutPlugins,
-          error: null,
-        };
-      }
-      case "resolveId":
-        return this.runResolveId(msg);
-      case "load":
-        return this.runLoad(msg);
-      case "transform":
-        return this.runTransform(msg);
-      case "renderChunk":
-        return this.runRenderChunk(msg);
-      case "generateBundle":
-        return this.runGenerateBundle(msg);
-      case "shutdown":
-        process.exit(0);
-      default:
-        return { id: msg.id, result: null, error: `Unknown message type: ${msg.type}` };
-    }
-  }
-
-  private async runResolveId(msg: IpcMessage): Promise<IpcResponse> {
-    for (let i = 0; i < this.plugins.length; i++) {
-      const plugin = this.plugins[i];
-      if (!plugin.resolveId) continue;
-      try {
-        const ctx = this.createContext(i);
-        const result = await plugin.resolveId.call(ctx, msg.specifier!, msg.importer!);
-        if (result == null) continue;
-        const resolved = typeof result === "string" ? { path: result } : result;
-        return { id: msg.id, result: resolved, error: null };
-      } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
-      }
-    }
-    return { id: msg.id, result: null, error: null };
-  }
-
-  private async runLoad(msg: IpcMessage): Promise<IpcResponse> {
-    for (let i = 0; i < this.plugins.length; i++) {
-      const plugin = this.plugins[i];
-      if (!plugin.load) continue;
-      try {
-        const ctx = this.createContext(i);
-        const result = await plugin.load.call(ctx, msg.path!);
-        if (result == null) continue;
-        const loaded = typeof result === "string" ? { contents: result } : result;
-        return { id: msg.id, result: loaded, error: null };
-      } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
-      }
-    }
-    return { id: msg.id, result: null, error: null };
-  }
-
-  private async runTransform(msg: IpcMessage): Promise<IpcResponse> {
-    return this.runChainHook("transform", msg.code!, msg.moduleId!, msg);
-  }
-
-  private async runRenderChunk(msg: IpcMessage): Promise<IpcResponse> {
-    return this.runChainHook("renderChunk", msg.code!, msg.chunkName!, msg);
-  }
-
-  private async runChainHook(
-    hookName: "transform" | "renderChunk",
-    initialCode: string,
-    key: string,
-    msg: IpcMessage,
-  ): Promise<IpcResponse> {
-    let currentCode = initialCode;
-    let changed = false;
-
-    for (let i = 0; i < this.plugins.length; i++) {
-      const plugin = this.plugins[i];
-      const hookFn = plugin[hookName];
-      if (!hookFn) continue;
-      try {
-        const ctx = this.createContext(i);
-        const result = await hookFn.call(ctx, currentCode, key);
-        if (result == null) continue;
-        const code = typeof result === "string" ? result : (result.contents ?? result.code);
-        if (code != null) {
-          currentCode = code;
-          changed = true;
-        }
-      } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
-      }
-    }
-
-    return changed
-      ? { id: msg.id, result: { contents: currentCode }, error: null }
-      : { id: msg.id, result: null, error: null };
-  }
-
-  private async runGenerateBundle(msg: IpcMessage): Promise<IpcResponse> {
-    // Populate module info cache from outputs
-    if (msg.outputs) {
-      for (const output of msg.outputs) {
-        this.moduleInfoMap.set(output.path, {
-          id: output.path,
-          isEntry: false,
-          importedIds: [],
-        });
-      }
-    }
-
-    // Reset emitted files for this generateBundle run
-    this.emittedFiles = [];
-
-    for (let i = 0; i < this.plugins.length; i++) {
-      const plugin = this.plugins[i];
-      if (!plugin.generateBundle) continue;
-      try {
-        const ctx = this.createContext(i);
-        await plugin.generateBundle.call(ctx, msg.outputs || []);
-      } catch (err) {
-        return { id: msg.id, result: null, error: `[${plugin.name}] ${err}` };
-      }
-    }
-
-    // Include emitted files in the response so Zig can write them
-    const result = this.emittedFiles.length > 0 ? { emittedFiles: this.emittedFiles } : null;
-    return { id: msg.id, result, error: null };
-  }
+function encodeFlags(opts: TranspileOptions = {}): number {
+  let flags = 0;
+  if (opts.sourcemap) flags |= 1 << 0;
+  if (opts.minifyWhitespace || opts.minify) flags |= 1 << 1;
+  if (opts.minifyIdentifiers || opts.minify) flags |= 1 << 2;
+  if (opts.minifySyntax || opts.minify) flags |= 1 << 3;
+  if (opts.jsx === "automatic") flags |= 1 << 4;
+  if (opts.jsx === "automatic-dev") flags |= 1 << 5;
+  if (opts.dropConsole) flags |= 1 << 6;
+  if (opts.dropDebugger) flags |= 1 << 7;
+  if (opts.asciiOnly) flags |= 1 << 8;
+  if (opts.flow) flags |= 1 << 9;
+  if (opts.experimentalDecorators) flags |= 1 << 10;
+  if (opts.emitDecoratorMetadata) flags |= 1 << 11;
+  if (opts.format === "cjs") flags |= 1 << 12;
+  if (opts.quotes === "single") flags |= 1 << 14;
+  if (opts.quotes === "preserve") flags |= 2 << 14;
+  if (opts.useDefineForClassFields !== false) flags |= 1 << 16;
+  if (opts.charsetUtf8) flags |= 1 << 17;
+  if (opts.platform === "node") flags |= 1 << 18;
+  if (opts.platform === "neutral") flags |= 2 << 18;
+  if (opts.platform === "react-native") flags |= 3 << 18;
+  if (opts.jsxInJs) flags |= 1 << 20;
+  if (opts.sourcemapDebugIds) flags |= 1 << 21;
+  if (opts.sourcesContent !== false) flags |= 1 << 22;
+  return flags;
 }
 
-// ===== Public API =====
+// ─── dylib 경로 탐색 ───
+
+function findDylib(): string {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+
+  // 1. 패키지 루트 (배포 시)
+  const local = join(__dirname, "libzts.dylib");
+  if (existsSync(local)) return local;
+
+  // 2. zig-out (개발 시)
+  const zigOut = join(__dirname, "../../zig-out/lib/libzts.dylib");
+  if (existsSync(zigOut)) return zigOut;
+
+  throw new Error("@zts/core: libzts.dylib not found. Run `zig build ffi` first.");
+}
+
+// ─── Public API ───
 
 /**
- * Define a ZTS configuration with plugins.
- * Initializes the plugin host and starts JSON IPC communication with the ZTS binary.
+ * 네이티브 FFI 라이브러리를 로드한다.
+ * 이미 로드된 경우 무시한다.
  *
- * @example
- * ```ts
- * // zts.config.ts
- * import { defineConfig } from '@zts/core';
- *
- * export default defineConfig({
- *   plugins: [myPlugin],
- *   bundle: true,
- *   outdir: 'dist',
- * });
- * ```
+ * @param dylibPath - dylib 경로 (생략 시 자동 탐색)
  */
-export function defineConfig(config: ZtsConfig): ZtsConfig {
-  const host = new PluginHost(config);
-  startIPC(host);
-  return config;
+export function init(dylibPath?: string): void {
+  if (lib) return;
+
+  const path = dylibPath ?? findDylib();
+  lib = dlopen(path, {
+    zts_transpile: {
+      args: [
+        FFIType.ptr,
+        FFIType.u32, // src
+        FFIType.ptr,
+        FFIType.u32, // file
+        FFIType.u32, // flags
+        FFIType.u32, // unsupported
+        FFIType.ptr,
+        FFIType.u32, // jsx_factory
+        FFIType.ptr,
+        FFIType.u32, // jsx_fragment
+        FFIType.ptr,
+        FFIType.u32, // jsx_import_source
+      ],
+      returns: FFIType.ptr,
+    },
+    zts_result_len: { args: [], returns: FFIType.u32 },
+    zts_error_ptr: { args: [], returns: FFIType.ptr },
+    zts_error_len: { args: [], returns: FFIType.u32 },
+    zts_free_result: { args: [], returns: FFIType.void },
+  }) as unknown as ZtsLib;
 }
 
 /**
- * Define a single ZTS plugin.
- * Convenience wrapper that creates a plugin host with a single plugin.
+ * TypeScript/JSX 소스 코드를 트랜스파일한다.
  *
- * @example
- * ```ts
- * // my-plugin.ts
- * import { definePlugin } from '@zts/core';
- *
- * export default definePlugin({
- *   name: 'my-plugin',
- *   transform(code, id) {
- *     if (!id.endsWith('.graphql')) return null;
- *     return `export default \`${code}\``;
- *   }
- * });
- * ```
+ * @param source - 소스 코드 문자열
+ * @param options - 트랜스파일 옵션
+ * @returns 변환된 코드와 선택적 소스맵
  */
-export function definePlugin(plugin: Plugin): Plugin {
-  const host = new PluginHost({ plugins: [plugin] });
-  startIPC(host);
-  return plugin;
-}
+export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
+  if (!lib) {
+    throw new Error("@zts/core: not initialized. Call init() first.");
+  }
 
-// ===== Build API =====
+  if (!source) {
+    throw new Error("@zts/core: empty source");
+  }
+
+  const srcBuf = Buffer.from(source);
+  const fileBuf = Buffer.from(options.filename ?? "input.ts");
+  const flags = encodeFlags(options);
+  const unsupported = options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
+
+  // 문자열 옵션 (없으면 빈 Buffer → ptr=0, len=0)
+  const factoryBuf = options.jsxFactory ? Buffer.from(options.jsxFactory) : null;
+  const fragmentBuf = options.jsxFragment ? Buffer.from(options.jsxFragment) : null;
+  const importSourceBuf = options.jsxImportSource ? Buffer.from(options.jsxImportSource) : null;
+
+  const resultPtr = lib.symbols.zts_transpile(
+    ptr(srcBuf),
+    srcBuf.length,
+    ptr(fileBuf),
+    fileBuf.length,
+    flags,
+    unsupported,
+    factoryBuf ? ptr(factoryBuf) : 0,
+    factoryBuf?.length ?? 0,
+    fragmentBuf ? ptr(fragmentBuf) : 0,
+    fragmentBuf?.length ?? 0,
+    importSourceBuf ? ptr(importSourceBuf) : 0,
+    importSourceBuf?.length ?? 0,
+  );
+
+  if (resultPtr === null || resultPtr === 0) {
+    const errLen = lib.symbols.zts_error_len();
+    const errPtr = lib.symbols.zts_error_ptr();
+    if (errPtr && errLen > 0) {
+      const errMsg = Buffer.from(toBuffer(errPtr, 0, errLen)).toString();
+      lib.symbols.zts_free_result();
+      throw new Error(`@zts/core: ${errMsg}`);
+    }
+    lib.symbols.zts_free_result();
+    throw new Error("@zts/core: transpile failed");
+  }
+
+  const len = lib.symbols.zts_result_len();
+  const raw = Buffer.from(toBuffer(resultPtr, 0, len)).toString();
+  lib.symbols.zts_free_result();
+
+  // 소스맵이 있으면 \0 구분자로 분리
+  const nullIdx = options.sourcemap ? raw.indexOf("\0") : -1;
+  if (nullIdx !== -1) {
+    return { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) };
+  }
+
+  return { code: raw };
+}
 
 /**
- * Options for the programmatic {@link build} API.
- * Extends {@link ZtsConfig} without `plugins` and `server`.
+ * FFI 라이브러리를 언로드한다.
  */
-export interface BuildOptions extends Omit<ZtsConfig, "plugins" | "server"> {
-  /** If `false`, return output in memory instead of writing to disk. */
-  write?: boolean;
-}
-
-/** Result of a programmatic {@link build} call. */
-export interface BuildResult {
-  /** Generated output files. When `write: false`, `contents` contains the file data. */
-  outputFiles: BuildOutputFile[];
-  /** Error messages if the build failed. Empty array on success. */
-  errors: string[];
-}
-
-/** A single output file from a {@link build} call. */
-export interface BuildOutputFile {
-  /** Absolute path of the output file. */
-  path: string;
-  /** File contents as a UTF-8 string. */
-  contents: string;
-}
-
-/**
- * Programmatically run the ZTS bundler.
- * Spawns the ZTS CLI binary as a subprocess and returns the build result.
- *
- * @example
- * ```ts
- * import { build } from '@zts/core';
- *
- * const result = await build({
- *   entryPoints: ['src/index.ts'],
- *   outdir: 'dist',
- *   bundle: true,
- *   minify: true,
- * });
- *
- * if (result.errors.length > 0) {
- *   console.error('Build failed:', result.errors);
- * }
- * ```
- */
-export async function build(options: BuildOptions): Promise<BuildResult> {
-  const args = buildArgsFromOptions(options);
-  const { spawn } = await import("node:child_process");
-
-  // ZTS 바이너리 경로: @zts/core 패키지 기준으로 탐색
-  const ztsBin = await findZtsBin();
-
-  return new Promise<BuildResult>((res, reject) => {
-    const proc = spawn(ztsBin, args, { stdio: ["pipe", "pipe", "pipe"] });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
-    });
-    proc.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
-    proc.on("error", (err: Error) => {
-      reject(new Error(`Failed to spawn ZTS: ${err.message}`));
-    });
-
-    proc.on("close", async (code: number | null) => {
-      if (code !== 0) {
-        res({ outputFiles: [], errors: [stderr.trim() || `ZTS exited with code ${code}`] });
-        return;
-      }
-
-      // write=false (stdout 출력)이면 stdout이 번들 결과
-      if (options.write === false && !options.outdir) {
-        res({
-          outputFiles: [{ path: options.outfile || "bundle.js", contents: stdout }],
-          errors: [],
-        });
-        return;
-      }
-
-      // outdir가 있으면 출력 파일을 읽어서 반환
-      if (options.outdir) {
-        const { existsSync } = await import("node:fs");
-        if (!existsSync(options.outdir)) {
-          res({ outputFiles: [], errors: [stderr.trim() || "Output directory was not created"] });
-          return;
-        }
-        try {
-          const files = await collectOutputFiles(options.outdir);
-          res({ outputFiles: files, errors: [] });
-        } catch (err) {
-          res({ outputFiles: [], errors: [`Failed to read output: ${err}`] });
-        }
-        return;
-      }
-
-      // outfile이 있으면 해당 파일 읽기
-      if (options.outfile) {
-        try {
-          const { readFile } = await import("node:fs/promises");
-          const contents = await readFile(options.outfile, "utf-8");
-          res({ outputFiles: [{ path: options.outfile, contents }], errors: [] });
-        } catch (err) {
-          res({ outputFiles: [], errors: [`Failed to read output: ${err}`] });
-        }
-        return;
-      }
-
-      // 출력 경로 미지정 → stdout이 결과
-      res({
-        outputFiles: [{ path: "bundle.js", contents: stdout }],
-        errors: [],
-      });
-    });
-  });
-}
-
-async function findZtsBin(): Promise<string> {
-  const { resolve } = await import("node:path");
-  const { existsSync } = await import("node:fs");
-
-  // 1. 환경변수
-  if (process.env.ZTS_BIN && existsSync(process.env.ZTS_BIN)) {
-    return process.env.ZTS_BIN;
+export function close(): void {
+  if (lib) {
+    lib.close();
+    lib = null;
   }
-
-  // 2. 프로젝트 루트의 zig-out/bin/zts
-  let dir = process.cwd();
-  for (let i = 0; i < 5; i++) {
-    const candidate = resolve(dir, "zig-out/bin/zts");
-    if (existsSync(candidate)) return candidate;
-    const candidate2 = resolve(dir, "node_modules/.bin/zts");
-    if (existsSync(candidate2)) return candidate2;
-    dir = resolve(dir, "..");
-  }
-
-  // 3. PATH에서 찾기
-  return "zts";
-}
-
-function buildArgsFromOptions(options: BuildOptions): string[] {
-  const args: string[] = [];
-
-  if (options.bundle !== false) args.push("--bundle");
-
-  // 엔트리 포인트
-  if (options.entryPoints && options.entryPoints.length > 0) {
-    args.push(options.entryPoints[0]);
-    // 다중 엔트리는 현재 CLI에서 미지원 — 첫 번째만 사용
-  }
-
-  // 출력
-  if (options.outdir) {
-    args.push("--outdir", options.outdir);
-  } else if (options.outfile) {
-    args.push("-o", options.outfile);
-  }
-
-  // 포맷/플랫폼
-  if (options.format) args.push(`--format=${options.format}`);
-  if (options.platform) args.push(`--platform=${options.platform}`);
-
-  // 타겟
-  if (options.target) {
-    const targets = Array.isArray(options.target) ? options.target : [options.target];
-    args.push(`--target=${targets.join(",")}`);
-  }
-
-  // 번들 옵션
-  if (options.splitting) args.push("--splitting");
-  if (options.preserveModules) args.push("--preserve-modules");
-  if (options.preserveModulesRoot)
-    args.push(`--preserve-modules-root=${options.preserveModulesRoot}`);
-  if (options.sourcemap) args.push("--sourcemap");
-  if (options.minify) args.push("--minify");
-  if (options.keepNames) args.push("--keep-names");
-  if (options.globalName) args.push(`--global-name=${options.globalName}`);
-  if (options.publicPath) args.push(`--public-path=${options.publicPath}`);
-  if (options.legalComments) args.push(`--legal-comments=${options.legalComments}`);
-
-  // JSX
-  if (options.jsx) args.push(`--jsx=${options.jsx}`);
-  if (options.jsxFactory) args.push(`--jsx-factory=${options.jsxFactory}`);
-  if (options.jsxFragment) args.push(`--jsx-fragment=${options.jsxFragment}`);
-  if (options.jsxImportSource) args.push(`--jsx-import-source=${options.jsxImportSource}`);
-
-  // banner/footer
-  if (options.banner?.js) args.push(`--banner:js=${options.banner.js}`);
-  if (options.footer?.js) args.push(`--footer:js=${options.footer.js}`);
-
-  // define
-  if (options.define) {
-    for (const [key, value] of Object.entries(options.define)) {
-      args.push(`--define:${key}=${value}`);
-    }
-  }
-
-  // alias
-  if (options.alias) {
-    for (const [from, to] of Object.entries(options.alias)) {
-      args.push(`--alias:${from}=${to}`);
-    }
-  }
-
-  // external
-  if (options.external) {
-    for (const ext of options.external) {
-      args.push("--external", ext);
-    }
-  }
-
-  // loader
-  if (options.loader) {
-    for (const [ext, loader] of Object.entries(options.loader)) {
-      args.push(`--loader:${ext}=${loader}`);
-    }
-  }
-
-  // inject
-  if (options.inject) {
-    for (const path of options.inject) {
-      args.push(`--inject:${path}`);
-    }
-  }
-
-  return args;
-}
-
-async function collectOutputFiles(dir: string): Promise<BuildOutputFile[]> {
-  const { readFile, readdir } = await import("node:fs/promises");
-  const { resolve } = await import("node:path");
-  const files: BuildOutputFile[] = [];
-
-  async function walk(d: string): Promise<void> {
-    const entries = await readdir(d, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = resolve(d, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-      } else {
-        const contents = await readFile(fullPath, "utf-8");
-        files.push({ path: fullPath, contents });
-      }
-    }
-  }
-
-  await walk(dir);
-  return files;
-}
-
-function startIPC(host: PluginHost): void {
-  const rl = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
-
-  let processing = false;
-  const queue: string[] = [];
-
-  async function processNext(): Promise<void> {
-    if (processing || queue.length === 0) return;
-    processing = true;
-    const line = queue.shift()!;
-    try {
-      const msg: IpcMessage = JSON.parse(line);
-      const response = await host.handleMessage(msg);
-      process.stdout.write(`${JSON.stringify(response)}\n`);
-    } catch (err) {
-      process.stdout.write(`${JSON.stringify({ id: 0, result: null, error: String(err) })}\n`);
-    }
-    processing = false;
-    processNext();
-  }
-
-  rl.on("line", (line: string) => {
-    queue.push(line);
-    processNext();
-  });
 }

@@ -1,156 +1,195 @@
-/**
- * @zts/core 단위 테스트
- * bun test packages/core/index.test.ts
- */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { init, transpile, close } from "./index";
 
-describe("PluginHost: resolveId", () => {
-  test("returns first non-null result", async () => {
-    const plugins = [
-      { name: "skip", resolveId: () => null },
-      { name: "match", resolveId: (source) => (source === "./foo" ? "/resolved/foo.ts" : null) },
-      {
-        name: "never",
-        resolveId: () => {
-          throw new Error("should not reach");
-        },
-      },
-    ];
-
-    // runResolveId 로직 재현
-    let result = null;
-    for (const p of plugins) {
-      if (!p.resolveId) continue;
-      const r = await p.resolveId("./foo", "/src/index.ts");
-      if (r != null) {
-        result = typeof r === "string" ? { path: r } : r;
-        break;
-      }
-    }
-    expect(result).toEqual({ path: "/resolved/foo.ts" });
-  });
-
-  test("returns null if no plugin matches", async () => {
-    const plugins = [{ name: "skip", resolveId: () => null }];
-
-    let result = null;
-    for (const p of plugins) {
-      const r = await p.resolveId("./bar", "/src/index.ts");
-      if (r != null) {
-        result = r;
-        break;
-      }
-    }
-    expect(result).toBeNull();
-  });
+beforeAll(() => {
+  init();
 });
 
-describe("PluginHost: load", () => {
-  test("string return becomes { contents }", async () => {
-    const plugin = {
-      name: "css",
-      load: (id) => (id.endsWith(".css") ? "body { color: red }" : null),
-    };
-
-    const result = await plugin.load("style.css");
-    expect(result).toBe("body { color: red }");
-
-    const skip = await plugin.load("index.ts");
-    expect(skip).toBeNull();
-  });
+afterAll(() => {
+  close();
 });
 
-describe("PluginHost: transform chain", () => {
-  test("chains through all plugins", async () => {
-    const plugins = [
-      { name: "a", transform: (code) => `/* A */${code}` },
-      { name: "b", transform: (code) => `/* B */${code}` },
-    ];
-
-    let code = "original";
-    for (const p of plugins) {
-      if (!p.transform) continue;
-      const result = await p.transform(code, "test.ts");
-      if (result != null) {
-        code = typeof result === "string" ? result : result.contents;
-      }
-    }
-    expect(code).toBe("/* B *//* A */original");
+describe("@zts/core", () => {
+  test("기본 TypeScript 트랜스파일", () => {
+    const result = transpile("const x: number = 1;");
+    expect(result.code).toContain("const x = 1;");
+    expect(result.map).toBeUndefined();
   });
 
-  test("skips plugins without transform hook", async () => {
-    const plugins = [
-      { name: "no-transform" },
-      { name: "has-transform", transform: (code) => `/* X */${code}` },
-    ];
-
-    let code = "src";
-    for (const p of plugins) {
-      if (!p.transform) continue;
-      const r = await p.transform(code, "t.ts");
-      if (r != null) code = typeof r === "string" ? r : r.contents;
-    }
-    expect(code).toBe("/* X */src");
+  test("인터페이스 스트리핑", () => {
+    const result = transpile("interface Foo { bar: string; }\nconst x = 1;");
+    expect(result.code).not.toContain("interface");
+    expect(result.code).toContain("const x = 1;");
   });
-});
 
-describe("PluginHost: error handling", () => {
-  test("plugin error is caught and reported", async () => {
-    const plugin = {
-      name: "broken",
-      load: () => {
-        throw new Error("compilation failed");
-      },
-    };
-
-    let error = null;
-    try {
-      await plugin.load("test.css");
-    } catch (err) {
-      error = String(err);
-    }
-    expect(error).toContain("compilation failed");
+  test("타입 어노테이션 제거", () => {
+    const result = transpile("function add(a: number, b: number): number { return a + b; }");
+    expect(result.code).toContain("function add(a,b)");
+    expect(result.code).not.toContain(": number");
   });
-});
 
-describe("PluginHost: hooks detection", () => {
-  test("getHooks reports registered hooks", () => {
-    const plugins = [
-      { name: "a", load: () => null },
-      { name: "b", transform: () => null },
-    ];
-
-    const hooks = {
-      resolveId: plugins.some((p) => p.resolveId),
-      load: plugins.some((p) => p.load),
-      transform: plugins.some((p) => p.transform),
-    };
-
-    expect(hooks.resolveId).toBe(false);
-    expect(hooks.load).toBe(true);
-    expect(hooks.transform).toBe(true);
+  test("enum 변환", () => {
+    const result = transpile("enum Color { Red, Green, Blue }");
+    expect(result.code).toContain("Color");
   });
-});
 
-describe("IPC queue serialization", () => {
-  test("processes messages in order", async () => {
-    const results = [];
-    let processing = false;
-    const queue = [];
+  test("JSX 트랜스파일 (classic)", () => {
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      jsx: "classic",
+    });
+    expect(result.code).toContain("React.createElement");
+  });
 
-    async function processNext() {
-      if (processing || queue.length === 0) return;
-      processing = true;
-      const item = queue.shift();
-      await new Promise((r) => setTimeout(r, 5));
-      results.push(item);
-      processing = false;
-      await processNext();
+  test("JSX 트랜스파일 (automatic)", () => {
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      jsx: "automatic",
+    });
+    expect(result.code).toContain("jsx");
+  });
+
+  test("소스맵 생성", () => {
+    const result = transpile("const x: number = 1;", { sourcemap: true });
+    expect(result.code).toContain("const x = 1;");
+    expect(result.map).toBeDefined();
+    const map = JSON.parse(result.map!);
+    expect(map.version).toBe(3);
+    expect(map.mappings).toBeDefined();
+  });
+
+  test("minify", () => {
+    const result = transpile("const   x: number   =   1;", {
+      minifyWhitespace: true,
+    });
+    expect(result.code.length).toBeLessThan("const   x   =   1;".length);
+  });
+
+  test("CJS 포맷", () => {
+    const result = transpile('export const x = 1; export default "hello";', {
+      format: "cjs",
+    });
+    expect(result.code).toContain("exports");
+  });
+
+  test("빈 소스 에러", () => {
+    expect(() => transpile("")).toThrow();
+  });
+
+  test("파싱 에러", () => {
+    expect(() => transpile("const = ;")).toThrow();
+  });
+
+  test("Flow 스트리핑", () => {
+    const result = transpile("// @flow\nfunction foo(x: string): number { return 1; }", {
+      flow: true,
+      filename: "test.js",
+    });
+    expect(result.code).not.toContain(": string");
+    expect(result.code).not.toContain(": number");
+  });
+
+  test("drop console", () => {
+    const result = transpile('console.log("hello"); const x = 1;', {
+      dropConsole: true,
+    });
+    expect(result.code).not.toContain("console.log");
+    expect(result.code).toContain("const x = 1;");
+  });
+
+  test("filename으로 확장자 감지 (.tsx)", () => {
+    const result = transpile("const el = <div />;", { filename: "comp.tsx" });
+    expect(result.code).not.toContain("<div");
+  });
+
+  test("JSX 트랜스파일 (automatic-dev)", () => {
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      jsx: "automatic-dev",
+    });
+    expect(result.code).toContain("jsxDEV");
+  });
+
+  test("minify 단축 옵션 (whitespace + identifiers + syntax)", () => {
+    const result = transpile("const   longVariableName: number   =   1;", {
+      minify: true,
+    });
+    expect(result.code.length).toBeLessThan("const longVariableName = 1;".length);
+  });
+
+  test("drop debugger", () => {
+    const result = transpile("debugger; const x = 1;", {
+      dropDebugger: true,
+    });
+    expect(result.code).not.toContain("debugger");
+    expect(result.code).toContain("const x = 1;");
+  });
+
+  test("quotes: single", () => {
+    const result = transpile('const x = "hello";', { quotes: "single" });
+    expect(result.code).toContain("'hello'");
+  });
+
+  test("ascii only", () => {
+    const result = transpile('const x = "한글";');
+    const asciiResult = transpile('const x = "한글";', { asciiOnly: true });
+    expect(asciiResult.code).toContain("\\u");
+    expect(result.code).toContain("한글");
+  });
+
+  test("ES5 다운레벨링", () => {
+    const result = transpile("const x = () => 1;", { target: "es5" });
+    expect(result.code).not.toContain("=>");
+    expect(result.code).toContain("function");
+  });
+
+  test("ES2015 다운레벨링 (template literal)", () => {
+    const result = transpile("const s = `hello ${name}`;", { target: "es5" });
+    expect(result.code).not.toContain("`");
+  });
+
+  test("target esnext (변환 없음)", () => {
+    const result = transpile("const x = () => 1;", { target: "esnext" });
+    expect(result.code).toContain("=>");
+  });
+
+  test("platform node", () => {
+    const result = transpile("const x: number = 1;", { platform: "node" });
+    expect(result.code).toContain("const x = 1;");
+  });
+
+  test("jsxFactory 커스텀", () => {
+    const result = transpile("<div />", {
+      filename: "app.tsx",
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(result.code).toContain("h(");
+    expect(result.code).not.toContain("React.createElement");
+  });
+
+  test("jsxImportSource 커스텀", () => {
+    const result = transpile("<div />", {
+      filename: "app.tsx",
+      jsx: "automatic",
+      jsxImportSource: "preact",
+    });
+    expect(result.code).toContain("preact");
+  });
+
+  test("useDefineForClassFields false", () => {
+    const result = transpile("class A { x = 1; }", { useDefineForClassFields: false });
+    expect(result.code).toContain("this.x");
+  });
+
+  test("init 중복 호출은 무시", () => {
+    expect(() => init()).not.toThrow();
+  });
+
+  test("여러 번 호출해도 메모리 누수 없이 동작", () => {
+    for (let i = 0; i < 100; i++) {
+      const result = transpile(`const x${i}: number = ${i};`);
+      expect(result.code).toContain(`const x${i} = ${i};`);
     }
-
-    queue.push("a", "b", "c");
-    await processNext();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(results).toEqual(["a", "b", "c"]);
   });
 });

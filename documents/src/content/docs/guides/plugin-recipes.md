@@ -15,7 +15,7 @@ npm install lightningcss
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { transform, bundleAsync } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -58,7 +58,7 @@ CSS Modules를 Lightning CSS로 처리하여 클래스 이름을 해싱합니다
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { transformStyleAttribute, transform } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -112,7 +112,7 @@ npm install postcss tailwindcss @tailwindcss/postcss
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { readFileSync } from "fs";
@@ -147,7 +147,7 @@ SVG 파일을 React 컴포넌트로 변환합니다.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -195,7 +195,7 @@ npm install yaml
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { parse } from "yaml";
 import { readFileSync } from "fs";
 
@@ -222,7 +222,7 @@ export default defineConfig({
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -247,7 +247,7 @@ export default defineConfig({
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 import { readFileSync, existsSync } from "fs";
 
 function loadEnv(path = ".env"): Record<string, string> {
@@ -291,7 +291,7 @@ export default defineConfig({
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zts/plugin";
 
 export default defineConfig({
   plugins: [

@@ -1,14 +1,25 @@
 {
   "name": "@zts/core",
   "version": "0.1.0",
-  "description": "ZTS plugin API — Vite/Rollup compatible plugin interface",
+  "description": "ZTS TypeScript transpiler — native binding",
   "license": "MIT",
+  "files": [
+    "dist/",
+    "libzts.dylib"
+  ],
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
-    ".": "./index.ts"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
   },
-  "devDependencies": {
-    "@types/node": "^22.0.0"
+  "scripts": {
+    "build:ffi": "cd ../.. && zig build ffi",
+    "build:js": "bun build index.ts --outdir dist --format esm --target bun",
+    "build": "bun run build:ffi && cp ../../zig-out/lib/libzts.dylib . && bun run build:js",
+    "test": "bun test"
   }
 }

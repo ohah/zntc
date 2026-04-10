@@ -122,7 +122,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 - ~~**플러그인 API**~~ — ✅ 1-2단계 완료 ([PLUGINS.md](../PLUGINS.md) 참조)
   - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅
-  - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/core, CLI --plugin
+  - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/plugin, CLI --plugin
   - 3단계: N-API .node addon (XL, 2~3주, 선택적) — in-process 호출 최적화
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
@@ -173,8 +173,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 | **CSS 번들링** | XL | ✅ | ✅ | ✅ | 자체 CSS 파서, @import, CSS Modules |
 | **플러그인 N-API** | XL | ✅ (Go) | ✅ (Rust) | ✅ | in-process 플러그인 (현재 subprocess IPC만) |
 | ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 구현 완료 |
-| ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/core |
-| ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/core |
+| ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/plugin |
+| ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/plugin |
 | **HTTPS dev server** | M | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
 
 ### 배치 그룹 & 구현 순서
