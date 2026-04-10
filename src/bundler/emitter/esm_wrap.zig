@@ -513,20 +513,28 @@ pub fn emitEsmWrappedModule(
         break; // default re-export는 모듈당 하나만 존재
     }
 
-    // 5.3. export * from 소스 모듈 init/require 호출 생성.
-    // export * from은 import_bindings를 만들지 않으므로 linker preamble에 포함되지 않는다.
-    // __esm body에서 소스 모듈을 초기화해야 lazy getter가 올바른 값을 반환한다.
+    // 5.3. re-export 소스 모듈 init/require 호출 생성.
+    // re_export, re_export_all 모두 import_bindings를 만들지 않으므로 linker preamble에 포함되지 않는다.
+    // __esm body에서 소스 모듈을 초기화해야 lazy getter가 올바른 값을 반환하고,
+    // 호이스팅된 함수가 참조하는 import binding이 init 시점에 할당된다.
     var star_init_buf: std.ArrayList(u8) = .empty;
     defer star_init_buf.deinit(allocator);
     if (linker) |l| {
+        // 중복 init 방지 (같은 소스 모듈에 대해 여러 re-export가 있을 수 있음)
+        var re_export_inited = std.AutoHashMap(u32, void).init(allocator);
+        defer re_export_inited.deinit();
+
         for (module.export_bindings) |eb| {
-            if (eb.kind != .re_export_all) continue;
+            if (eb.kind != .re_export_all and eb.kind != .re_export) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= module.import_records.len) continue;
             const source_mod_idx = module.import_records[rec_idx].resolved;
             if (source_mod_idx.isNone()) continue;
             const src_i = @intFromEnum(source_mod_idx);
             if (src_i >= l.modules.len) continue;
+            // 같은 소스 모듈에 대해 중복 init 방지
+            if (re_export_inited.contains(src_i)) continue;
+            re_export_inited.put(src_i, {}) catch {};
 
             const src_mod = &l.modules[src_i];
             switch (src_mod.wrap_kind) {
