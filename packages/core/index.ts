@@ -622,95 +622,11 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 export function watch(options: BuildOptions): WatchHandle {
   if (!native) throw new Error("call init() first");
 
-  const nativeOpts: Record<string, unknown> = { ...options };
+  const nativeOpts = prepareNapiOptions(options);
 
-  // 플러그인 dispatcher (build()와 동일 패턴)
   if (options.plugins && options.plugins.length > 0) {
-    const plugins = options.plugins;
-    nativeOpts._pluginDispatcher = (
-      hookName: string,
-      arg1: string,
-      arg2: string | null,
-      outputFiles: OutputFile[] | null,
-    ): unknown => {
-      for (const plugin of plugins) {
-        const handlers = (
-          plugin as unknown as {
-            _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>>;
-          }
-        )._handlers;
-        if (!handlers) continue;
-        const hooks = handlers.get(hookName);
-        if (!hooks) continue;
-        for (const { filter, callback } of hooks) {
-          const testStr = hookName === "resolveId" ? arg1 : (arg2 ?? arg1);
-          if (filter.test(testStr)) {
-            if (hookName === "resolveId") {
-              const result = callback({ path: arg1, importer: arg2 });
-              if (result != null) return result;
-            } else if (hookName === "load") {
-              const result = callback({ path: arg1 });
-              if (result != null) return result;
-            } else if (hookName === "transform") {
-              const result = callback({ code: arg1, path: arg2 });
-              if (result != null) return result;
-            } else if (hookName === "renderChunk") {
-              const result = callback({ code: arg1, chunk: arg2 });
-              if (result != null) return result;
-            } else if (hookName === "generateBundle") {
-              callback(outputFiles);
-            }
-          }
-        }
-      }
-      return null;
-    };
-
-    // 플러그인 setup 실행
-    for (const plugin of plugins) {
-      const handlers = new Map<string, Array<{ filter: RegExp; callback: Function }>>();
-      (
-        plugin as unknown as {
-          _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>>;
-        }
-      )._handlers = handlers;
-      plugin.setup({
-        onResolve(opts, cb) {
-          handlers.set("resolveId", [
-            ...(handlers.get("resolveId") ?? []),
-            { filter: opts.filter, callback: cb },
-          ]);
-        },
-        onLoad(opts, cb) {
-          handlers.set("load", [
-            ...(handlers.get("load") ?? []),
-            { filter: opts.filter, callback: cb },
-          ]);
-        },
-        onTransform(opts, cb) {
-          handlers.set("transform", [
-            ...(handlers.get("transform") ?? []),
-            { filter: opts.filter, callback: cb },
-          ]);
-        },
-        onRenderChunk(opts, cb) {
-          handlers.set("renderChunk", [
-            ...(handlers.get("renderChunk") ?? []),
-            { filter: opts.filter, callback: cb },
-          ]);
-        },
-        onGenerateBundle(cb) {
-          handlers.set("generateBundle", [
-            ...(handlers.get("generateBundle") ?? []),
-            { filter: /.*/, callback: cb },
-          ]);
-        },
-      });
-    }
-    delete nativeOpts.plugins;
+    nativeOpts._pluginDispatcher = createPluginDispatcher(options.plugins);
   }
 
-  return (native as unknown as { watch(opts: Record<string, unknown>): NativeWatchHandle }).watch(
-    nativeOpts,
-  );
+  return native.watch(nativeOpts);
 }

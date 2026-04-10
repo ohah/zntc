@@ -1063,13 +1063,25 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     var bundler = Bundler.init(allocator, bundle_opts);
     var result = bundler.bundle() catch |err| {
         // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
-        const event = allocator.create(WatchRebuildEvent) catch return;
+        const event = allocator.create(WatchRebuildEvent) catch {
+            // OOM — TSFN 해제 + 정리 후 종료
+            _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+            _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+            async_data.deinit();
+            return;
+        };
         const err_name: [:0]const u8 = @errorName(err);
         event.* = .{
             .success = false,
             .error_msg = allocator.dupe(u8, err_name) catch null,
         };
-        _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+        if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+            event.deinit();
+        }
+        // TSFN 해제 + 정리 후 종료
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
         return;
     };
     defer result.deinit(allocator);
@@ -1166,7 +1178,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .files = mtime_map.count(),
             .bytes = initial_bytes,
         };
-        _ = c.napi_call_threadsafe_function(async_data.ready_tsfn, @ptrCast(ready_event), c.napi_tsfn_blocking);
+        if (c.napi_call_threadsafe_function(async_data.ready_tsfn, @ptrCast(ready_event), c.napi_tsfn_blocking) != c.napi_ok) {
+            allocator.destroy(ready_event);
+        }
     }
 
     // 폴링 루프 — 500ms 간격으로 파일 변경 감지
@@ -1208,7 +1222,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 .success = false,
                 .error_msg = allocator.dupe(u8, err_name) catch null,
             };
-            _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+            if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+                event.deinit();
+            }
             continue;
         };
         defer rebuild_result.deinit(allocator);
@@ -1259,34 +1275,29 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             if (graph_changed_flag) {
                 event.graph_changed = true;
             } else {
-                // diff: 캐시와 비교하여 변경된 모듈만 수집
-                var changed_count: usize = 0;
+                // 단일 패스: 캐시와 비교하여 변경된 모듈만 수집
+                var update_list: std.ArrayList(WatchRebuildEvent.ModuleUpdate) = .empty;
                 for (dev_codes) |dc| {
                     const cached = module_code_cache.get(dc.id);
                     if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
-                        changed_count += 1;
+                        const id_copy = allocator.dupe(u8, dc.id) catch continue;
+                        const code_copy = allocator.dupe(u8, dc.code) catch {
+                            allocator.free(id_copy);
+                            continue;
+                        };
+                        update_list.append(allocator, .{ .id = id_copy, .code = code_copy }) catch {
+                            allocator.free(id_copy);
+                            allocator.free(code_copy);
+                            continue;
+                        };
                     }
                 }
-
-                if (changed_count > 0) {
-                    const updates = allocator.alloc(WatchRebuildEvent.ModuleUpdate, changed_count) catch null;
-                    if (updates) |upd| {
-                        var idx: usize = 0;
-                        for (dev_codes) |dc| {
-                            const cached = module_code_cache.get(dc.id);
-                            if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
-                                upd[idx] = .{
-                                    .id = allocator.dupe(u8, dc.id) catch continue,
-                                    .code = allocator.dupe(u8, dc.code) catch continue,
-                                };
-                                idx += 1;
-                            }
-                        }
-                        event.updates = upd[0..idx];
-                    }
+                if (update_list.items.len > 0) {
+                    event.updates = update_list.toOwnedSlice(allocator) catch null;
                 } else {
-                    // 코드 변경 없음 — 빈 updates 배열
-                    event.updates = &.{};
+                    update_list.deinit(allocator);
+                    // 코드 변경 없음 — 힙 할당된 빈 슬라이스 (deinit에서 free 가능)
+                    event.updates = allocator.alloc(WatchRebuildEvent.ModuleUpdate, 0) catch null;
                 }
             }
 
@@ -1313,7 +1324,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
 
         // rebuild 이벤트 전송
-        _ = c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking);
+        if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+            event.deinit();
+        }
 
         // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
         {
@@ -1365,9 +1378,13 @@ fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         return throwError(env, "failed to get this");
     }
 
+    // napi_remove_wrap: 포인터를 추출하면서 wrap 해제 (double stop 방지)
     var async_data_ptr: ?*anyopaque = null;
-    if (c.napi_unwrap(env, this, &async_data_ptr) != c.napi_ok) {
-        return throwError(env, "failed to unwrap watch handle");
+    if (c.napi_remove_wrap(env, this, &async_data_ptr) != c.napi_ok) {
+        // 이미 stop()이 호출된 경우 — 무시
+        var js_undefined: c.napi_value = undefined;
+        _ = c.napi_get_undefined(env, &js_undefined);
+        return js_undefined;
     }
     if (async_data_ptr) |ptr| {
         const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr));
