@@ -47,6 +47,7 @@ pub const ESTarget = enum(u8) {
     es2020,
     es2021,
     es2022,
+    es2023,
     es2024,
     es2025,
     esnext,
@@ -83,6 +84,8 @@ pub const Feature = enum(u5) {
     // ES2022
     class_static_block,
     class_private_method,
+    // ES2023
+    hashbang,
     // ES2025
     using,
 
@@ -97,6 +100,7 @@ pub const Feature = enum(u5) {
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
             .class_static_block, .class_private_method => .es2022,
+            .hashbang => .es2023,
             .using => .es2025,
         };
     }
@@ -134,10 +138,12 @@ pub const UnsupportedFeatures = packed struct(u32) {
     // ES2022
     class_static_block: bool = false,
     class_private_method: bool = false,
+    // ES2023
+    hashbang: bool = false,
     // ES2025
     using: bool = false,
 
-    _: u11 = 0,
+    _: u10 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -406,6 +412,16 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .class_private_method, .engine = .ios, .major = 15 },
     // hermes: private methods 미지원 → compat_table에 없음 → 항상 다운레벨링
 
+    // ── ES2023: hashbang (#!) ──
+    .{ .feature = .hashbang, .engine = .chrome, .major = 74 },
+    .{ .feature = .hashbang, .engine = .firefox, .major = 67 },
+    .{ .feature = .hashbang, .engine = .safari, .major = 13, .minor = 1 },
+    .{ .feature = .hashbang, .engine = .edge, .major = 79 },
+    .{ .feature = .hashbang, .engine = .node, .major = 12 },
+    .{ .feature = .hashbang, .engine = .deno, .major = 1 },
+    .{ .feature = .hashbang, .engine = .ios, .major = 13, .minor = 4 },
+    .{ .feature = .hashbang, .engine = .hermes, .major = 0 },
+
     // ── ES2025: using (Explicit Resource Management) ──
     .{ .feature = .using, .engine = .chrome, .major = 134 },
     .{ .feature = .using, .engine = .firefox, .major = 132 },
@@ -631,7 +647,8 @@ test "fromESTarget — es2022는 class_static_block, class_private_method 지원
     try std.testing.expect(!f.class_private_method);
     try std.testing.expect(!f.logical_assignment);
     try std.testing.expect(!f.optional_chaining);
-    // es2022에서 ES2025 using만 미지원
+    // es2022에서 ES2023+ 미지원
+    try std.testing.expect(f.hashbang);
     try std.testing.expect(f.using);
 }
 
