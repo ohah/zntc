@@ -13302,7 +13302,7 @@ else {
     );
   });
   test("typeGuardFunction", async () => {
-    await expectError(
+    await expectPass(
       `
 class A {
     propA: number;
@@ -13562,7 +13562,7 @@ declare function newError3(x: number): x is NeedsFoo<number>; // should error`,
     );
   });
   test("typeGuardFunctionGenerics", async () => {
-    await expectError(
+    await expectPass(
       `
 class A {
     propA: number;

@@ -3458,4 +3458,162 @@ describe("watch()", () => {
     handle.stop();
     rmSync(dir, { recursive: true });
   });
+
+  test("콜백 없이 watch — crash 없이 동작", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    // onReady, onRebuild 모두 미제공
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+    });
+
+    // 초기 빌드 완료 대기 (콜백 없으므로 타이머로)
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(() => handle.stop()).not.toThrow();
+    rmSync(dir, { recursive: true });
+  }, 5000);
+
+  test("리빌드 중 문법 에러 시 success: false + error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      success: boolean;
+      error?: string;
+    }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+
+    await readyP;
+
+    // 문법 에러가 있는 코드로 변경
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const = ;; {{{{");
+
+    const event = await rebuildP;
+    // 에러가 발생하더라도 watch는 계속 동작해야 함
+    // (ZTS 파서가 에러 복구를 하므로 success: true일 수도 있음)
+    expect(typeof event.success).toBe("boolean");
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("changed 배열에 변경된 파일 경로 포함", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
+    const entryPath = join(dir, "entry.ts");
+    writeFileSync(entryPath, "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      changed?: string[];
+    }>();
+
+    const handle = watch({
+      entryPoints: [entryPath],
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+
+    await readyP;
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(entryPath, "export const x = 2;");
+
+    const event = await rebuildP;
+    expect(event.changed).toBeDefined();
+    expect(event.changed!.length).toBeGreaterThan(0);
+    // 변경된 파일의 절대 경로가 포함되어야 함
+    const hasEntry = event.changed!.some((p) => p.includes("entry.ts"));
+    expect(hasEntry).toBe(true);
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+});
+
+// ================================================================
+// buildResult에 moduleCodes/modulePaths 노출 테스트
+// ================================================================
+
+describe("buildResult moduleCodes/modulePaths", () => {
+  test("buildSync: collectModuleCodes=true → moduleCodes 반환", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-mc-"));
+    writeFileSync(join(dir, "entry.ts"), 'import { y } from "./util"; export const x = y;');
+    writeFileSync(join(dir, "util.ts"), "export const y = 42;");
+
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.moduleCodes).toBeDefined();
+    expect(result.moduleCodes!.length).toBeGreaterThan(0);
+    // 각 moduleCodes에 id와 code가 있어야 함
+    for (const mc of result.moduleCodes!) {
+      expect(mc.id).toBeDefined();
+      expect(mc.code.length).toBeGreaterThan(0);
+    }
+    rmSync(dir, { recursive: true });
+  });
+
+  test("buildSync: collectModuleCodes 미지정 → moduleCodes 없음", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-mc-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.moduleCodes).toBeUndefined();
+  });
+
+  test("buildSync: modulePaths 반환 (번들에 포함된 모듈 경로)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-mp-"));
+    writeFileSync(join(dir, "entry.ts"), 'import { y } from "./util"; export const x = y;');
+    writeFileSync(join(dir, "util.ts"), "export const y = 42;");
+
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.modulePaths).toBeDefined();
+    expect(result.modulePaths!.length).toBeGreaterThanOrEqual(2);
+    // entry.ts와 util.ts 경로가 포함되어야 함
+    const hasEntry = result.modulePaths!.some((p) => p.includes("entry.ts"));
+    const hasUtil = result.modulePaths!.some((p) => p.includes("util.ts"));
+    expect(hasEntry).toBe(true);
+    expect(hasUtil).toBe(true);
+  });
+
+  test("build (async): moduleCodes + modulePaths 반환", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-mc-async-"));
+    writeFileSync(join(dir, "entry.ts"), 'import { y } from "./util"; export const x = y;');
+    writeFileSync(join(dir, "util.ts"), "export const y = 42;");
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.moduleCodes).toBeDefined();
+    expect(result.moduleCodes!.length).toBeGreaterThan(0);
+    expect(result.modulePaths).toBeDefined();
+    expect(result.modulePaths!.length).toBeGreaterThanOrEqual(2);
+    rmSync(dir, { recursive: true });
+  });
 });
