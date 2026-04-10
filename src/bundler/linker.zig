@@ -59,6 +59,10 @@ pub const LinkingMetadata = struct {
     const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{},
     /// nested mangling에서 소유권을 이전받은 문자열. deinit에서 해제.
     owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// dev 모드 namespace import 변수명. esm_wrap에서 __esm 바깥으로 호이스팅.
+    /// named import를 namespace 접근 패턴으로 전환할 때 사용.
+    /// e.g., ["__ns_0", "__ns_1"] → 호이스팅: var __ns_0, __ns_1;
+    dev_ns_vars: ?[]const []const u8 = null,
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {
@@ -134,6 +138,11 @@ pub const LinkingMetadata = struct {
             self.allocator.free(self.ns_inline_objects.entries);
         }
         self.export_getter_overrides.deinit(self.allocator);
+        // dev_ns_vars 해제
+        if (self.dev_ns_vars) |vars| {
+            for (vars) |v| self.allocator.free(v);
+            self.allocator.free(vars);
+        }
     }
 };
 
@@ -1676,6 +1685,20 @@ pub const PreambleWriter = struct {
         try self.write(" } = __zts_require(\"");
         try self.write(path);
         try self.write("\");\n");
+    }
+
+    /// dev 모드 namespace 할당 (assign-only, var 없음).
+    /// __esm init 안에서: __ns_0 = __zts_require("path");
+    /// CJS 타겟이면: __ns_0 = __toESM(__zts_require("path"));
+    pub fn writeDevRequireNamespace(self: *PreambleWriter, ns_var: []const u8, path: []const u8, to_esm: bool) !void {
+        try self.write(ns_var);
+        try self.write(" = ");
+        if (to_esm) try self.write("__toESM(");
+        try self.write("__zts_require(\"");
+        try self.write(path);
+        try self.write("\")");
+        if (to_esm) try self.write(")");
+        try self.write(";\n");
     }
 
     pub fn writeNamespaceObject(self: *PreambleWriter, var_name: []const u8, object_literal: []const u8) !void {

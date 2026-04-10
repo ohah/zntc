@@ -2253,6 +2253,37 @@ pub const Codegen = struct {
             }
         }
 
+        // namespace 접근 패턴: named import만 있고, 모든 named binding이
+        // __ns_N.prop 형태의 rename을 가지면 이 import 선언을 skip한다.
+        // preamble에서 이미 ns_var = __toESM(require_xxx())가 생성되었으므로
+        // body의 destructuring assignment는 불필요.
+        if (named_count > 0 and !has_default and !has_namespace and self.options.linking_metadata != null) {
+            const meta = self.options.linking_metadata.?;
+            var all_ns_renamed = true;
+            for (spec_indices) |raw_idx| {
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                if (spec.tag != .import_specifier) continue;
+                const local_idx = spec.data.binary.right;
+                if (!local_idx.isNone()) {
+                    if (self.resolveSymbolId(local_idx, meta)) |sid| {
+                        if (meta.renames.get(sid)) |rename| {
+                            if (!std.mem.startsWith(u8, rename, "__ns_")) {
+                                all_ns_renamed = false;
+                                break;
+                            }
+                        } else {
+                            all_ns_renamed = false;
+                            break;
+                        }
+                    } else {
+                        all_ns_renamed = false;
+                        break;
+                    }
+                }
+            }
+            if (all_ns_renamed) return;
+        }
+
         // __esm 호이스팅: var 선언이 래퍼 밖에 있으므로 body에서는 할당만.
         // named import ({a, b})는 destructuring assignment — var 생략 시 ({a,b}=expr) 괄호 필요.
         const skip_keyword = self.options.esm_var_assign_only;

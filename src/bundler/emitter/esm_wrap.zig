@@ -190,6 +190,16 @@ pub fn emitEsmWrappedModule(
         }
     }
 
+    // dev 모드 namespace 변수 호이스팅: named import를 namespace 접근 패턴으로
+    // 전환할 때 __ns_N 변수를 __esm 바깥에 선언해야 호이스팅된 함수에서 접근 가능.
+    if (metadata) |md| {
+        if (md.dev_ns_vars) |ns_vars| {
+            for (ns_vars) |ns_var| {
+                try hoisted_var_names.append(allocator, ns_var);
+            }
+        }
+    }
+
     // codegen 공통 옵션
     const cg_linking = if (metadata) |m| @as(?*const LinkingMetadata, m) else null;
 

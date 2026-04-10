@@ -1527,6 +1527,46 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
+test "Bundler: dev mode ESM→CJS named import uses namespace access pattern" {
+    // dev 모드에서 CJS 모듈의 named import → namespace 접근 패턴.
+    // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
+    // 개별 구조분해 대신 __ns_N.prop 형태로 접근한다 (rolldown 방식).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "react.js", "module.exports = { useState: function(v) { return [v, function(){}]; }, useEffect: function(f) { f(); } };");
+    try writeFile(tmp.dir, "app.ts",
+        \\import { useState, useEffect } from './react';
+        \\export function App() {
+        \\  const [count, setCount] = useState(0);
+        \\  useEffect(() => { console.log(count); }, [count]);
+        \\  return count;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "app.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+
+    // namespace 변수가 호이스팅됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0") != null);
+    // namespace 접근 패턴: __ns_0.useState, __ns_0.useEffect
+    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0.useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0.useEffect") != null);
+    // 구조분해 패턴 없음 (({useState:...} = ...) 형태가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, output, "{useState") == null);
+}
+
 test "Profile: pipeline stage timing (dev only, not for CI)" {
     // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
     const alloc = std.testing.allocator;
