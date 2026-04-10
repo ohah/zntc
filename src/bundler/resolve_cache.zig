@@ -139,6 +139,7 @@ pub const ResolveCache = struct {
         r.alias = alias;
         r.custom_extensions = options.resolve_extensions;
         r.main_fields = options.main_fields;
+        r.node_paths = options.node_paths;
         const has_custom = custom_conditions.len > 0;
         const cond_import = if (has_custom)
             buildConditions(allocator, baseConditionsFor(platform, .static_import), custom_conditions) catch baseConditionsFor(platform, .static_import)
