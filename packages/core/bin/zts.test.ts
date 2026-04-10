@@ -12,7 +12,19 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const CLI = resolve(import.meta.dir, "zts.mjs");
-const RUNTIME = "bun"; // bun이 .ts import를 직접 지원하므로
+const RUNTIME = "bun";
+
+async function waitForServer(port: number, maxRetries = 20, interval = 100) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await fetch(`http://localhost:${port}/`);
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  throw new Error(`Server on port ${port} did not start`);
+}
 
 function runCli(args: string[], options: { input?: string; cwd?: string; timeout?: number } = {}) {
   const result = spawnSync(RUNTIME, [CLI, ...args], {
@@ -379,8 +391,7 @@ describe("CLI: serve", () => {
     const port = 12400 + Math.floor(Math.random() * 100);
     const proc = spawn(RUNTIME, [CLI, "--serve", dir, `--port=${port}`]);
 
-    // 서버 기동 대기
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForServer(port);
 
     try {
       const res = await fetch(`http://localhost:${port}/`);
