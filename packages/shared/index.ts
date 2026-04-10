@@ -14,6 +14,7 @@ export type Target =
   | "es2020"
   | "es2021"
   | "es2022"
+  | "es2023"
   | "es2024"
   | "es2025"
   | "esnext";
@@ -83,16 +84,17 @@ export interface TranspileResult {
 // ─── ES Target → UnsupportedFeatures bitmask ───
 
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0x1fffff,
-  es2015: 0x1ff800,
-  es2016: 0x1ff000,
-  es2017: 0x1fe000,
-  es2018: 0x1fc000,
-  es2019: 0x1f8000,
-  es2020: 0x1e0000,
-  es2021: 0x1c0000,
-  es2022: 0x100000,
-  es2024: 0x100000,
+  es5: 0x3fffff, // bit 0-21: 모든 feature unsupported
+  es2015: 0x3ff800, // bit 11-21
+  es2016: 0x3ff000, // bit 12-21
+  es2017: 0x3fe000, // bit 13-21
+  es2018: 0x3fc000, // bit 14-21
+  es2019: 0x3f8000, // bit 15-21
+  es2020: 0x3e0000, // bit 17-21
+  es2021: 0x3c0000, // bit 18-21
+  es2022: 0x300000, // bit 20-21 (hashbang + using)
+  es2023: 0x200000, // bit 21 (using only)
+  es2024: 0x200000, // bit 21 (using only, ES2024에 구문 변환 기능 없음)
   es2025: 0x0,
   esnext: 0x0,
 };

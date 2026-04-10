@@ -491,7 +491,7 @@ function loadTsConfig(opts) {
         es2020: "es2020",
         es2021: "es2021",
         es2022: "es2022",
-        es2023: "es2024", // ZTS에 es2023 타겟이 없으므로 es2024로 올림
+        es2023: "es2023",
         es2024: "es2024",
         esnext: "esnext",
       };

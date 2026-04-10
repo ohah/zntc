@@ -137,7 +137,7 @@ describe("@zts/core NAPI (Node.js)", () => {
 
   it("ES5 다운레벨링", () => {
     const flags = DEFAULT_FLAGS;
-    const unsupported = 0x1fffff; // es5
+    const unsupported = 0x3fffff; // es5 (bit 0-21)
     const result = native.transpile(
       "const x = () => 1;",
       "input.ts",
