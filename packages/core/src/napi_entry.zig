@@ -1163,12 +1163,37 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
     }
 
-    // 초기 빌드 바이트 수 계산
+    // 초기 빌드 결과를 파일에 쓰기 (onReady 전에 완료해야 서버가 읽을 수 있음)
     var initial_bytes: usize = 0;
     if (result.outputs) |outputs| {
         for (outputs) |o| initial_bytes += o.contents.len;
+        // code splitting: 각 output의 path로 직접 쓰기
+        for (outputs) |o| {
+            if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
+            const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
+            defer file.close();
+            file.writeAll(o.contents) catch continue;
+        }
     } else {
         initial_bytes = result.output.len;
+        // 단일 파일: output_filename으로 쓰기
+        if (bundle_opts.output_filename.len > 0) {
+            if (std.fs.path.dirname(bundle_opts.output_filename)) |dir| std.fs.cwd().makePath(dir) catch {};
+            if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
+                defer file.close();
+                file.writeAll(result.output) catch {};
+                if (result.sourcemap) |sm| {
+                    const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{bundle_opts.output_filename}) catch null;
+                    if (map_path) |mp| {
+                        defer allocator.free(mp);
+                        if (std.fs.cwd().createFile(mp, .{})) |sm_file| {
+                            defer sm_file.close();
+                            sm_file.writeAll(sm) catch {};
+                        } else |_| {}
+                    }
+                }
+            } else |_| {}
+        }
     }
 
     // ready 이벤트 전송
@@ -1229,12 +1254,35 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         };
         defer rebuild_result.deinit(allocator);
 
-        // 출력 바이트 수 계산
+        // 출력 파일 쓰기 + 바이트 수 계산
         var output_bytes: usize = 0;
         if (rebuild_result.outputs) |outputs| {
             for (outputs) |o| output_bytes += o.contents.len;
+            for (outputs) |o| {
+                if (std.fs.path.dirname(o.path)) |dir| std.fs.cwd().makePath(dir) catch {};
+                const file = std.fs.cwd().createFile(o.path, .{}) catch continue;
+                defer file.close();
+                file.writeAll(o.contents) catch continue;
+            }
         } else {
             output_bytes = rebuild_result.output.len;
+            if (bundle_opts.output_filename.len > 0) {
+                if (std.fs.path.dirname(bundle_opts.output_filename)) |dir| std.fs.cwd().makePath(dir) catch {};
+                if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
+                    defer file.close();
+                    file.writeAll(rebuild_result.output) catch {};
+                    if (rebuild_result.sourcemap) |sm| {
+                        const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{bundle_opts.output_filename}) catch null;
+                        if (map_path) |mp| {
+                            defer allocator.free(mp);
+                            if (std.fs.cwd().createFile(mp, .{})) |sm_file| {
+                                defer sm_file.close();
+                                sm_file.writeAll(sm) catch {};
+                            } else |_| {}
+                        }
+                    }
+                } else |_| {}
+            }
         }
 
         // rebuild 이벤트 생성
