@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { createFixture, runZtsInDir } from "./helpers";
 import { spawn } from "bun";
 
-const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.ts");
+const CORE_PATH = resolve(import.meta.dir, "../../../packages/plugin/index.ts");
 
 describe("config 옵션 확장", () => {
   let cleanup: (() => Promise<void>) | undefined;

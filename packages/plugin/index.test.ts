@@ -1,6 +1,6 @@
 /**
  * @zts/plugin 단위 테스트
- * bun test packages/core/index.test.ts
+ * bun test packages/plugin/index.test.ts
  */
 import { describe, test, expect } from "bun:test";
 

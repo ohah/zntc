@@ -203,7 +203,7 @@ describe("Dev Server", () => {
   test.skipIf(!!process.env.CI && process.platform === "linux")(
     "--serve with --plugin loads CSS via plugin",
     async () => {
-      const CORE_PATH = join(import.meta.dir, "../../../packages/core/index.ts");
+      const CORE_PATH = join(import.meta.dir, "../../../packages/plugin/index.ts");
 
       const fixture = await createFixture({
         "index.ts": `import css from './style.css';\nconsole.log(css);`,

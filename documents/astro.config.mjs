@@ -34,8 +34,8 @@ export default defineConfig({
       plugins: [
         starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] }),
         starlightTypeDoc({
-          entryPoints: ["../packages/core/index.ts"],
-          tsconfig: "../packages/core/tsconfig.json",
+          entryPoints: ["../packages/plugin/index.ts"],
+          tsconfig: "../packages/plugin/tsconfig.json",
           output: "reference/api",
           sidebar: {
             label: "API Reference",

@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { createFixture, runZts, runZtsInDir, ZTS_BIN } from "./helpers";
 import { join, resolve } from "node:path";
 
-const CORE_PATH = resolve(import.meta.dir, "../../../packages/core/index.ts");
+const CORE_PATH = resolve(import.meta.dir, "../../../packages/plugin/index.ts");
 
 describe("Plugin: subprocess", () => {
   test("load hook transforms .css to JS export", async () => {
