@@ -91,6 +91,8 @@ function parseArgs(argv) {
     jsxInJs: false,
     outExtensionJs: undefined,
     sourceRoot: undefined,
+    target: undefined,
+    emitDecoratorMetadata: false,
     drop: [],
   };
 
@@ -415,6 +417,92 @@ function parseArgs(argv) {
   return opts;
 }
 
+// ─── tsconfig.json 로드 ───
+
+function loadTsConfig(opts) {
+  // --project로 지정하거나 자동 탐색
+  let tsconfigPath = opts.project;
+  if (!tsconfigPath) {
+    // 엔트리 파일 기준으로 상위 디렉토리 탐색
+    const startDir =
+      opts.entryPoints.length > 0 ? dirname(resolve(opts.entryPoints[0])) : process.cwd();
+    let dir = startDir;
+    while (true) {
+      const candidate = join(dir, "tsconfig.json");
+      if (existsSync(candidate)) {
+        tsconfigPath = candidate;
+        break;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+
+  if (!tsconfigPath || !existsSync(tsconfigPath)) return;
+
+  try {
+    // JSON with comments를 간단히 파싱 (줄 주석, 블록 주석 제거)
+    const raw = readFileSync(resolve(tsconfigPath), "utf8");
+    const stripped = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const config = JSON.parse(stripped);
+    const co = config.compilerOptions;
+    if (!co) return;
+
+    // CLI 옵션이 명시적으로 지정되지 않은 경우에만 tsconfig 값 적용
+    if (co.experimentalDecorators && !opts.experimentalDecorators) {
+      opts.experimentalDecorators = true;
+    }
+    if (co.emitDecoratorMetadata) {
+      opts.emitDecoratorMetadata = true;
+    }
+    if (co.useDefineForClassFields === false) {
+      opts.useDefineForClassFields = false;
+    }
+
+    // jsx: "react" → classic, "react-jsx" → automatic, "react-jsxdev" → automatic-dev
+    if (co.jsx && !opts.jsx) {
+      const jsxMap = {
+        react: "classic",
+        "react-jsx": "automatic",
+        "react-jsxdev": "automatic-dev",
+        preserve: undefined, // ZTS가 기본적으로 preserve하지 않으므로 무시
+      };
+      const mapped = jsxMap[co.jsx];
+      if (mapped) opts.jsx = mapped;
+    }
+
+    if (co.jsxFactory && !opts.jsxFactory) opts.jsxFactory = co.jsxFactory;
+    if (co.jsxFragmentFactory && !opts.jsxFragment) opts.jsxFragment = co.jsxFragmentFactory;
+    if (co.jsxImportSource && !opts.jsxImportSource) opts.jsxImportSource = co.jsxImportSource;
+
+    // target → ES 다운레벨 (transpile의 target 옵션)
+    if (co.target && !opts.target) {
+      const targetMap = {
+        es5: "es5",
+        es6: "es2015",
+        es2015: "es2015",
+        es2016: "es2016",
+        es2017: "es2017",
+        es2018: "es2018",
+        es2019: "es2019",
+        es2020: "es2020",
+        es2021: "es2021",
+        es2022: "es2022",
+        es2023: "es2024",
+        es2024: "es2024",
+        esnext: "esnext",
+      };
+      opts.target = targetMap[co.target.toLowerCase()] || undefined;
+    }
+  } catch {
+    // tsconfig 파싱 실패는 무시 (경고만)
+    if (opts.logLevel !== "silent") {
+      console.error(`warning: failed to parse ${tsconfigPath}`);
+    }
+  }
+}
+
 // ─── 파일 출력 ───
 
 function writeOutputFiles(outputFiles, outfile, outdir) {
@@ -468,6 +556,7 @@ async function runTranspile(opts) {
     platform: opts.platform,
     dropConsole: opts.drop.includes("console"),
     dropDebugger: opts.drop.includes("debugger"),
+    target: opts.target,
   });
 
   if (opts.outfile) {
@@ -810,6 +899,9 @@ async function main() {
     console.error("       zts --serve --bundle <entry.ts>");
     process.exit(1);
   }
+
+  // tsconfig.json 자동 로드 (CLI 옵션보다 낮은 우선순위)
+  loadTsConfig(opts);
 
   init();
 
