@@ -1086,7 +1086,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const key: NodeIndex = self.readNodeIdx(me, 0);
                     const flags = self.readU32(me, 4);
                     const is_static = (flags & 0x01) != 0;
+                    const is_abstract = (flags & 0x20) != 0;
+                    const is_declare = (flags & 0x40) != 0;
                     const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
+
+                    // abstract/declare 메서드는 타입 전용 → 스트리핑 (본문 없음)
+                    if (is_abstract or is_declare) continue;
 
                     if (!is_static and isConstructorKey(self, key)) {
                         cm.constructor_idx = @enumFromInt(raw_idx);
