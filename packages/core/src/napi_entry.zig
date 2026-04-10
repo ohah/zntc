@@ -212,135 +212,30 @@ fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     }
     if (argc < 1) return throwError(env, "buildSync requires an options object");
 
-    const opts_obj = argv[0];
-
-    // entryPoints (필수)
-    const raw_entries = getObjectStringArray(env, opts_obj, "entryPoints", native_alloc) orelse {
-        return throwError(env, "entryPoints is required");
-    };
+    var owned_strings: std.ArrayList([]const u8) = .empty;
     defer {
-        for (raw_entries) |e| native_alloc.free(e);
-        native_alloc.free(raw_entries);
+        for (owned_strings.items) |s| native_alloc.free(s);
+        owned_strings.deinit(native_alloc);
     }
-
-    // 절대 경로로 해석
-    const entries = native_alloc.alloc([]const u8, raw_entries.len) catch return throwError(env, "OutOfMemory");
+    var owned_string_arrays: std.ArrayList([]const []const u8) = .empty;
     defer {
-        for (entries) |e| native_alloc.free(e);
-        native_alloc.free(entries);
+        for (owned_string_arrays.items) |arr| {
+            // 개별 문자열은 owned_strings에서 해제되므로 배열 자체만 해제
+            native_alloc.free(arr);
+        }
+        owned_string_arrays.deinit(native_alloc);
     }
-    for (raw_entries, 0..) |e, i| {
-        entries[i] = resolveEntryPoint(native_alloc, e) orelse return throwError(env, "failed to resolve entry point");
-    }
 
-    // format
-    const format_str = getObjectString(env, opts_obj, "format", native_alloc);
-    defer if (format_str) |s| native_alloc.free(s);
-    const format: EmitFormat = if (format_str) |s|
-        if (std.mem.eql(u8, s, "cjs")) .cjs else if (std.mem.eql(u8, s, "iife")) .iife else .esm
-    else
-        .esm;
-
-    // platform
-    const platform_str = getObjectString(env, opts_obj, "platform", native_alloc);
-    defer if (platform_str) |s| native_alloc.free(s);
-    const platform: Platform = if (platform_str) |s|
-        if (std.mem.eql(u8, s, "node")) .node else if (std.mem.eql(u8, s, "neutral")) .neutral else if (std.mem.eql(u8, s, "react-native")) .react_native else .browser
-    else
-        .browser;
-
-    // external
-    const external = getObjectStringArray(env, opts_obj, "external", native_alloc);
-    defer if (external) |exts| {
-        for (exts) |e| native_alloc.free(e);
-        native_alloc.free(exts);
+    const bundle_opts = parseBuildOptions(env, argv[0], &owned_strings, &owned_string_arrays) orelse {
+        return throwError(env, "invalid build options (entryPoints required)");
     };
 
-    // 문자열 옵션
-    const banner_js = getObjectString(env, opts_obj, "banner", native_alloc);
-    defer if (banner_js) |s| native_alloc.free(s);
-    const footer_js = getObjectString(env, opts_obj, "footer", native_alloc);
-    defer if (footer_js) |s| native_alloc.free(s);
-    const global_name = getObjectString(env, opts_obj, "globalName", native_alloc);
-    defer if (global_name) |s| native_alloc.free(s);
-    const public_path = getObjectString(env, opts_obj, "publicPath", native_alloc);
-    defer if (public_path) |s| native_alloc.free(s);
-    const entry_names = getObjectString(env, opts_obj, "entryNames", native_alloc);
-    defer if (entry_names) |s| native_alloc.free(s);
-    const chunk_names = getObjectString(env, opts_obj, "chunkNames", native_alloc);
-    defer if (chunk_names) |s| native_alloc.free(s);
-    const asset_names = getObjectString(env, opts_obj, "assetNames", native_alloc);
-    defer if (asset_names) |s| native_alloc.free(s);
-
-    // JSX 옵션
-    const jsx_str = getObjectString(env, opts_obj, "jsx", native_alloc);
-    defer if (jsx_str) |s| native_alloc.free(s);
-    const jsx_runtime: JsxRuntime = if (jsx_str) |s|
-        if (std.mem.eql(u8, s, "automatic")) .automatic else if (std.mem.eql(u8, s, "automatic-dev")) .automatic_dev else .classic
-    else
-        .classic;
-    const jsx_factory = getObjectString(env, opts_obj, "jsxFactory", native_alloc);
-    defer if (jsx_factory) |s| native_alloc.free(s);
-    const jsx_fragment = getObjectString(env, opts_obj, "jsxFragment", native_alloc);
-    defer if (jsx_fragment) |s| native_alloc.free(s);
-    const jsx_import_source = getObjectString(env, opts_obj, "jsxImportSource", native_alloc);
-    defer if (jsx_import_source) |s| native_alloc.free(s);
-
-    // inject
-    const inject = getObjectStringArray(env, opts_obj, "inject", native_alloc);
-    defer if (inject) |arr| {
-        for (arr) |s| native_alloc.free(s);
-        native_alloc.free(arr);
-    };
-
-    // BundleOptions 구성
-    const minify = getObjectBool(env, opts_obj, "minify", false);
-    const bundle_opts = BundleOptions{
-        .entry_points = entries,
-        .format = format,
-        .platform = platform,
-        .external = external orelse &.{},
-        .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
-        .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
-        .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
-        .code_splitting = getObjectBool(env, opts_obj, "splitting", false),
-        .sourcemap = getObjectBool(env, opts_obj, "sourcemap", false),
-        .sourcemap_debug_ids = getObjectBool(env, opts_obj, "sourcemapDebugIds", false),
-        .sources_content = getObjectBool(env, opts_obj, "sourcesContent", true),
-        .tree_shaking = getObjectBool(env, opts_obj, "treeShaking", true),
-        .scope_hoist = getObjectBool(env, opts_obj, "scopeHoist", true),
-        .metafile = getObjectBool(env, opts_obj, "metafile", false),
-        .keep_names = getObjectBool(env, opts_obj, "keepNames", false),
-        .shim_missing_exports = getObjectBool(env, opts_obj, "shimMissingExports", false),
-        .flow = getObjectBool(env, opts_obj, "flow", false),
-        .jsx_in_js = getObjectBool(env, opts_obj, "jsxInJs", false),
-        .charset_utf8 = getObjectBool(env, opts_obj, "charsetUtf8", false),
-        .use_define_for_class_fields = getObjectBool(env, opts_obj, "useDefineForClassFields", true),
-        .experimental_decorators = getObjectBool(env, opts_obj, "experimentalDecorators", false),
-        .emit_decorator_metadata = getObjectBool(env, opts_obj, "emitDecoratorMetadata", false),
-        .banner_js = banner_js,
-        .footer_js = footer_js,
-        .global_name = global_name,
-        .public_path = public_path orelse "",
-        .entry_names = entry_names orelse "[name]",
-        .chunk_names = chunk_names orelse "[name]-[hash]",
-        .asset_names = asset_names orelse "[name]-[hash]",
-        .jsx_runtime = jsx_runtime,
-        .jsx_factory = jsx_factory orelse "React.createElement",
-        .jsx_fragment = jsx_fragment orelse "React.Fragment",
-        .jsx_import_source = jsx_import_source orelse "react",
-        .inject = inject orelse &.{},
-        .max_threads = getObjectUint32(env, opts_obj, "jobs", 0),
-    };
-
-    // 번들 실행
     var bundler = Bundler.init(native_alloc, bundle_opts);
     var result = bundler.bundle() catch |err| {
         return throwError(env, @errorName(err));
     };
     defer result.deinit(native_alloc);
 
-    // JS 결과 객체 생성: { outputFiles: [...], errors: [...], warnings: [...], metafile?: string }
     return buildResultToJS(env, &result);
 }
 
@@ -447,6 +342,248 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
     return js_result;
 }
 
+// ─── build() 비동기 (Promise) ───
+
+const BuildAsyncData = struct {
+    env: c.napi_env,
+    deferred: c.napi_deferred,
+    async_work: c.napi_async_work,
+    // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
+    options: BundleOptions,
+    // 소유된 문자열 목록 (deinit 시 해제)
+    owned_strings: std.ArrayList([]const u8),
+    owned_string_arrays: std.ArrayList([]const []const u8),
+    // 결과
+    result: ?bundler_mod.BundleResult = null,
+    err_msg: ?[*:0]const u8 = null,
+};
+
+/// 워커 스레드에서 실행 — 번들링 수행
+fn buildExecute(_: c.napi_env, data: ?*anyopaque) callconv(.c) void {
+    const async_data: *BuildAsyncData = @ptrCast(@alignCast(data.?));
+    var bundler = Bundler.init(native_alloc, async_data.options);
+    async_data.result = bundler.bundle() catch |err| {
+        async_data.err_msg = @errorName(err);
+        return;
+    };
+}
+
+/// 메인 스레드에서 실행 — 결과를 JS Promise로 반환
+fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(.c) void {
+    const async_data: *BuildAsyncData = @ptrCast(@alignCast(data.?));
+    defer {
+        // 비동기 작업 정리
+        _ = c.napi_delete_async_work(env, async_data.async_work);
+        // 소유된 문자열 해제 (개별 문자열)
+        for (async_data.owned_strings.items) |s| native_alloc.free(s);
+        async_data.owned_strings.deinit(native_alloc);
+        // 배열 컨테이너만 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
+        for (async_data.owned_string_arrays.items) |arr| native_alloc.free(arr);
+        async_data.owned_string_arrays.deinit(native_alloc);
+        native_alloc.destroy(async_data);
+    }
+
+    if (async_data.err_msg) |msg| {
+        // reject
+        var js_err: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, msg, std.mem.len(msg), &js_err);
+        var js_error: c.napi_value = undefined;
+        _ = c.napi_create_error(env, null, js_err, &js_error);
+        _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
+    } else if (async_data.result) |*result| {
+        // resolve
+        defer result.deinit(native_alloc);
+        const js_result = buildResultToJS(env, result);
+        if (js_result) |val| {
+            _ = c.napi_resolve_deferred(env, async_data.deferred, val);
+        } else {
+            var js_err_str: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, "failed to create result", "failed to create result".len, &js_err_str);
+            var js_error: c.napi_value = undefined;
+            _ = c.napi_create_error(env, null, js_err_str, &js_error);
+            _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
+        }
+    }
+}
+
+fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+    if (argc < 1) return throwError(env, "build requires an options object");
+
+    // async data 할당
+    const async_data = native_alloc.create(BuildAsyncData) catch return throwError(env, "OutOfMemory");
+    async_data.* = .{
+        .env = env,
+        .deferred = undefined,
+        .async_work = undefined,
+        .options = undefined,
+        .owned_strings = .empty,
+        .owned_string_arrays = .empty,
+    };
+
+    // 옵션 파싱 (모든 문자열을 소유 메모리로 복사)
+    const opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
+        native_alloc.destroy(async_data);
+        return throwError(env, "invalid build options");
+    };
+    async_data.options = opts;
+
+    // Promise 생성
+    var promise: c.napi_value = undefined;
+    if (c.napi_create_promise(env, &async_data.deferred, &promise) != c.napi_ok) {
+        native_alloc.destroy(async_data);
+        return throwError(env, "failed to create promise");
+    }
+
+    // async work 생성 및 큐잉
+    var resource_name: c.napi_value = undefined;
+    _ = c.napi_create_string_utf8(env, "zts_build", "zts_build".len, &resource_name);
+    if (c.napi_create_async_work(env, null, resource_name, buildExecute, buildComplete, async_data, &async_data.async_work) != c.napi_ok) {
+        native_alloc.destroy(async_data);
+        return throwError(env, "failed to create async work");
+    }
+    if (c.napi_queue_async_work(env, async_data.async_work) != c.napi_ok) {
+        _ = c.napi_delete_async_work(env, async_data.async_work);
+        native_alloc.destroy(async_data);
+        return throwError(env, "failed to queue async work");
+    }
+
+    return promise;
+}
+
+/// 옵션 파싱 함수. owned_strings/owned_string_arrays에 할당된 메모리를 추적.
+/// 반환된 BundleOptions의 문자열은 owned 리스트가 소유.
+fn parseBuildOptions(
+    env: c.napi_env,
+    opts_obj: c.napi_value,
+    owned_strings: *std.ArrayList([]const u8),
+    owned_string_arrays: *std.ArrayList([]const []const u8),
+) ?BundleOptions {
+    // 문자열 소유권 추적 헬퍼
+    const trackStr = struct {
+        fn f(list: *std.ArrayList([]const u8), s: []const u8) void {
+            list.append(native_alloc, s) catch {};
+        }
+    }.f;
+    const trackArr = struct {
+        fn f(list: *std.ArrayList([]const []const u8), arr: []const []const u8) void {
+            list.append(native_alloc, arr) catch {};
+        }
+    }.f;
+
+    // entryPoints
+    const raw_entries = getObjectStringArray(env, opts_obj, "entryPoints", native_alloc) orelse return null;
+    for (raw_entries) |e| trackStr(owned_strings, e);
+    trackArr(owned_string_arrays, raw_entries);
+
+    const entries = native_alloc.alloc([]const u8, raw_entries.len) catch return null;
+    trackArr(owned_string_arrays, entries);
+    for (raw_entries, 0..) |e, i| {
+        entries[i] = resolveEntryPoint(native_alloc, e) orelse return null;
+        trackStr(owned_strings, entries[i]);
+    }
+
+    // format
+    const format_str = getObjectString(env, opts_obj, "format", native_alloc);
+    if (format_str) |s| trackStr(owned_strings, s);
+    const format: EmitFormat = if (format_str) |s|
+        if (std.mem.eql(u8, s, "cjs")) .cjs else if (std.mem.eql(u8, s, "iife")) .iife else .esm
+    else
+        .esm;
+
+    // platform
+    const platform_str = getObjectString(env, opts_obj, "platform", native_alloc);
+    if (platform_str) |s| trackStr(owned_strings, s);
+    const platform: Platform = if (platform_str) |s|
+        if (std.mem.eql(u8, s, "node")) .node else if (std.mem.eql(u8, s, "neutral")) .neutral else if (std.mem.eql(u8, s, "react-native")) .react_native else .browser
+    else
+        .browser;
+
+    // external
+    const external = getObjectStringArray(env, opts_obj, "external", native_alloc);
+    if (external) |exts| {
+        for (exts) |e| trackStr(owned_strings, e);
+        trackArr(owned_string_arrays, exts);
+    }
+
+    // 문자열 옵션 헬퍼
+    const ownStr = struct {
+        fn f(e: c.napi_env, obj: c.napi_value, key: [*:0]const u8, list: *std.ArrayList([]const u8)) ?[]const u8 {
+            const s = getObjectString(e, obj, key, native_alloc) orelse return null;
+            list.append(native_alloc, s) catch {};
+            return s;
+        }
+    }.f;
+
+    const banner_js = ownStr(env, opts_obj, "banner", owned_strings);
+    const footer_js = ownStr(env, opts_obj, "footer", owned_strings);
+    const global_name = ownStr(env, opts_obj, "globalName", owned_strings);
+    const public_path = ownStr(env, opts_obj, "publicPath", owned_strings);
+    const entry_names = ownStr(env, opts_obj, "entryNames", owned_strings);
+    const chunk_names = ownStr(env, opts_obj, "chunkNames", owned_strings);
+    const asset_names = ownStr(env, opts_obj, "assetNames", owned_strings);
+
+    // JSX
+    const jsx_str = ownStr(env, opts_obj, "jsx", owned_strings);
+    const jsx_runtime: JsxRuntime = if (jsx_str) |s|
+        if (std.mem.eql(u8, s, "automatic")) .automatic else if (std.mem.eql(u8, s, "automatic-dev")) .automatic_dev else .classic
+    else
+        .classic;
+    const jsx_factory = ownStr(env, opts_obj, "jsxFactory", owned_strings);
+    const jsx_fragment = ownStr(env, opts_obj, "jsxFragment", owned_strings);
+    const jsx_import_source = ownStr(env, opts_obj, "jsxImportSource", owned_strings);
+
+    // inject
+    const inject = getObjectStringArray(env, opts_obj, "inject", native_alloc);
+    if (inject) |arr| {
+        for (arr) |s| trackStr(owned_strings, s);
+        trackArr(owned_string_arrays, arr);
+    }
+
+    const minify = getObjectBool(env, opts_obj, "minify", false);
+    return .{
+        .entry_points = entries,
+        .format = format,
+        .platform = platform,
+        .external = external orelse &.{},
+        .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
+        .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
+        .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
+        .code_splitting = getObjectBool(env, opts_obj, "splitting", false),
+        .sourcemap = getObjectBool(env, opts_obj, "sourcemap", false),
+        .sourcemap_debug_ids = getObjectBool(env, opts_obj, "sourcemapDebugIds", false),
+        .sources_content = getObjectBool(env, opts_obj, "sourcesContent", true),
+        .tree_shaking = getObjectBool(env, opts_obj, "treeShaking", true),
+        .scope_hoist = getObjectBool(env, opts_obj, "scopeHoist", true),
+        .metafile = getObjectBool(env, opts_obj, "metafile", false),
+        .keep_names = getObjectBool(env, opts_obj, "keepNames", false),
+        .shim_missing_exports = getObjectBool(env, opts_obj, "shimMissingExports", false),
+        .flow = getObjectBool(env, opts_obj, "flow", false),
+        .jsx_in_js = getObjectBool(env, opts_obj, "jsxInJs", false),
+        .charset_utf8 = getObjectBool(env, opts_obj, "charsetUtf8", false),
+        .use_define_for_class_fields = getObjectBool(env, opts_obj, "useDefineForClassFields", true),
+        .experimental_decorators = getObjectBool(env, opts_obj, "experimentalDecorators", false),
+        .emit_decorator_metadata = getObjectBool(env, opts_obj, "emitDecoratorMetadata", false),
+        .banner_js = banner_js,
+        .footer_js = footer_js,
+        .global_name = global_name,
+        .public_path = public_path orelse "",
+        .entry_names = entry_names orelse "[name]",
+        .chunk_names = chunk_names orelse "[name]-[hash]",
+        .asset_names = asset_names orelse "[name]-[hash]",
+        .jsx_runtime = jsx_runtime,
+        .jsx_factory = jsx_factory orelse "React.createElement",
+        .jsx_fragment = jsx_fragment orelse "React.Fragment",
+        .jsx_import_source = jsx_import_source orelse "react",
+        .inject = inject orelse &.{},
+        .max_threads = getObjectUint32(env, opts_obj, "jobs", 0),
+    };
+}
+
 // ─── 모듈 등록 ───
 
 export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi_value {
@@ -454,9 +591,13 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     _ = c.napi_create_function(env, "transpile", "transpile".len, napiTranspile, null, &fn_value);
     _ = c.napi_set_named_property(env, exports, "transpile", fn_value);
 
+    var build_sync_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "buildSync", "buildSync".len, napiBuildSync, null, &build_sync_fn);
+    _ = c.napi_set_named_property(env, exports, "buildSync", build_sync_fn);
+
     var build_fn: c.napi_value = undefined;
-    _ = c.napi_create_function(env, "buildSync", "buildSync".len, napiBuildSync, null, &build_fn);
-    _ = c.napi_set_named_property(env, exports, "buildSync", build_fn);
+    _ = c.napi_create_function(env, "build", "build".len, napiBuild, null, &build_fn);
+    _ = c.napi_set_named_property(env, exports, "build", build_fn);
 
     return exports;
 }
