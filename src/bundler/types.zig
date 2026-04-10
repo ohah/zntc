@@ -224,6 +224,16 @@ pub const Format = enum {
     esm,
     cjs,
     iife,
+    umd,
+    amd,
+
+    /// IIFE 계열 포맷 (iife, umd, amd) — 함수 래핑 필요
+    pub fn isWrappedFormat(self: Format) bool {
+        return switch (self) {
+            .iife, .umd, .amd => true,
+            .esm, .cjs => false,
+        };
+    }
 };
 
 // ============================================================

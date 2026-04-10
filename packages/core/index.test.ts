@@ -2609,6 +2609,42 @@ describe("옵션 조합 통합 테스트", () => {
     ).toThrow("overwrite");
   });
 
+  test("format: umd + globalName", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "umd",
+      globalName: "MyLib",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain('typeof define === "function"');
+    expect(text).toContain("module.exports = factory()");
+    expect(text).toContain("root.MyLib = factory()");
+    expect(text).toContain("return {");
+  });
+
+  test("format: amd", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "amd",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("define([], function()");
+    expect(text).toContain("return {");
+  });
+
+  test("format: umd (globalName 없음)", async () => {
+    const result = await build({
+      entryPoints: [join(dir, "lib.ts")],
+      format: "umd",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain('typeof define === "function"');
+    expect(text).toContain("else factory()");
+  });
+
   test("allowOverwrite: true → 입력=출력 허용", () => {
     const outfile = join(dir, "overwrite-test.ts");
     writeFileSync(outfile, "export const z = 1;");

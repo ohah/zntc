@@ -429,6 +429,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             opts.bundle_format = .iife;
             opts.bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--format=umd")) {
+            opts.bundle_format = .umd;
+            opts.bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--format=amd")) {
+            opts.bundle_format = .amd;
+            opts.bundle_format_explicit = true;
         } else if (std.mem.eql(u8, arg, "--experimental-decorators")) {
             opts.experimental_decorators = true;
         } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=false")) {

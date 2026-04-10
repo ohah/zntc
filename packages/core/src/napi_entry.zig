@@ -880,7 +880,7 @@ fn parseBuildOptions(
     const format_str = getObjectString(env, opts_obj, "format", native_alloc);
     if (format_str) |s| if (!trackStr(owned_strings, s)) return null;
     const format: EmitFormat = if (format_str) |s|
-        if (std.mem.eql(u8, s, "cjs")) .cjs else if (std.mem.eql(u8, s, "iife")) .iife else .esm
+        if (std.mem.eql(u8, s, "cjs")) .cjs else if (std.mem.eql(u8, s, "iife")) .iife else if (std.mem.eql(u8, s, "umd")) .umd else if (std.mem.eql(u8, s, "amd")) .amd else .esm
     else
         .esm;
 

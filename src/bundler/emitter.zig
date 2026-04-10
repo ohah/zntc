@@ -204,40 +204,17 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
-    // TLA 포함 여부: IIFE를 async로 감싸야 하는지 결정
+    // TLA 포함 여부: 래핑 포맷에서 async로 감싸야 하는지 결정
     const has_tla = blk: {
         for (sorted.items) |m| {
             if (m.uses_top_level_await) break :blk true;
         }
         break :blk false;
     };
-    const iife_fn = if (has_tla) "(async function() {\n" else "(function() {\n";
+    const factory_fn = if (has_tla) "(async function() {\n" else "(function() {\n";
 
     // 포맷별 prologue
-    switch (options.format) {
-        .iife => {
-            if (has_tla) {
-                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
-            }
-            if (options.global_name) |gn| {
-                if (std.mem.indexOfScalar(u8, gn, '.') != null) {
-                    try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
-                    try output.appendSlice(allocator, gn);
-                    try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
-                    try output.appendSlice(allocator, iife_fn);
-                } else {
-                    try output.appendSlice(allocator, "var ");
-                    try output.appendSlice(allocator, gn);
-                    try output.appendSlice(allocator, " = ");
-                    try output.appendSlice(allocator, iife_fn);
-                }
-            } else {
-                try output.appendSlice(allocator, iife_fn);
-            }
-        },
-        .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
-        .esm => {},
-    }
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, has_tla);
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
@@ -465,10 +442,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 포맷별 epilogue
-    switch (options.format) {
-        .iife => try output.appendSlice(allocator, "})();\n"),
-        .cjs, .esm => {},
-    }
+    try emitFormatEpilogue(&output, allocator, options.format);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
     const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
@@ -978,26 +952,25 @@ pub fn emitModule(
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
     const raw_final_exports = if (metadata) |md| md.final_exports else null;
 
-    // IIFE + globalName: "export { x }" → "return { x }" 변환.
-    // IIFE (globalName 없음): export 구문은 IIFE 안에서 syntax error → 제거.
-    // CJS: export 구문은 CJS 래핑과 무관 → 제거.
+    // 래핑 포맷 (IIFE/UMD/AMD): "export { x }" → "return { x }" 변환 (factory 반환값).
+    // 래핑 + globalName 없음: export 구문은 syntax error → 제거.
+    // CJS: export 구문은 불필요 (CJS 래핑이 exports 처리).
     // linker는 format-agnostic하게 "export {}" 를 생성하므로, emitter에서 포맷별 치환/제거.
-    var iife_return_buf: ?[]const u8 = null;
-    defer if (iife_return_buf) |buf| allocator.free(buf);
+    var wrapped_return_buf: ?[]const u8 = null;
+    defer if (wrapped_return_buf) |buf| allocator.free(buf);
 
     const final_exports = if (raw_final_exports) |fe| blk: {
-        if (options.format == .iife) {
-            if (options.global_name != null) {
+        if (options.format.isWrappedFormat()) {
+            if (options.global_name != null or options.format == .umd or options.format == .amd) {
                 if (std.mem.startsWith(u8, fe, "export {")) {
-                    iife_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
-                    break :blk iife_return_buf.?;
+                    wrapped_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
+                    break :blk wrapped_return_buf.?;
                 }
             }
-            // IIFE (globalName 없음): export는 syntax error이므로 제거
+            // 래핑 포맷 (globalName 없음, IIFE): export는 syntax error이므로 제거
             break :blk @as(?[]const u8, null);
         }
         if (options.format == .cjs) {
-            // CJS: export 구문은 불필요 (CJS 래핑이 exports 처리)
             break :blk @as(?[]const u8, null);
         }
         break :blk fe;
@@ -1343,3 +1316,68 @@ pub fn collectImportBindingNames(
 // --- ESM wrap functions (emitter/esm_wrap.zig) ---
 const esm_wrap = @import("emitter/esm_wrap.zig");
 const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
+
+// --- 포맷별 래핑 (prologue/epilogue) ---
+
+/// 포맷별 prologue를 output에 추가한다.
+fn emitFormatPrologue(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    format: types.Format,
+    global_name: ?[]const u8,
+    factory_fn: []const u8,
+    has_tla: bool,
+) !void {
+    switch (format) {
+        .iife => {
+            if (has_tla) {
+                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+            }
+            if (global_name) |gn| {
+                if (std.mem.indexOfScalar(u8, gn, '.') != null) {
+                    try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
+                    try output.appendSlice(allocator, gn);
+                    try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
+                    try output.appendSlice(allocator, factory_fn);
+                } else {
+                    try output.appendSlice(allocator, "var ");
+                    try output.appendSlice(allocator, gn);
+                    try output.appendSlice(allocator, " = ");
+                    try output.appendSlice(allocator, factory_fn);
+                }
+            } else {
+                try output.appendSlice(allocator, factory_fn);
+            }
+        },
+        .umd => {
+            // UMD: CommonJS + AMD + 글로벌 자동 감지
+            try output.appendSlice(allocator, "(function(root, factory) {\n");
+            try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([], factory);\n");
+            try output.appendSlice(allocator, "  else if (typeof module === \"object\" && module.exports) module.exports = factory();\n");
+            if (global_name) |gn| {
+                try output.appendSlice(allocator, "  else root.");
+                try output.appendSlice(allocator, gn);
+                try output.appendSlice(allocator, " = factory();\n");
+            } else {
+                try output.appendSlice(allocator, "  else factory();\n");
+            }
+            try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function() {\n");
+        },
+        .amd => {
+            // AMD: define() 래핑
+            try output.appendSlice(allocator, "define([], function() {\n");
+        },
+        .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
+        .esm => {},
+    }
+}
+
+/// 포맷별 epilogue를 output에 추가한다.
+fn emitFormatEpilogue(output: *std.ArrayList(u8), allocator: std.mem.Allocator, format: types.Format) !void {
+    switch (format) {
+        .iife => try output.appendSlice(allocator, "})();\n"),
+        .umd => try output.appendSlice(allocator, "});\n"),
+        .amd => try output.appendSlice(allocator, "});\n"),
+        .cjs, .esm => {},
+    }
+}
