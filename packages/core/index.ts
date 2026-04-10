@@ -145,6 +145,30 @@ export interface BuildOptions {
   jsxImportSource?: string;
   inject?: string[];
   jobs?: number;
+  plugins?: ZtsPlugin[];
+}
+
+export interface ZtsPlugin {
+  name: string;
+  setup(build: PluginBuild): void;
+}
+
+export interface PluginBuild {
+  onResolve(
+    options: { filter: RegExp },
+    callback: (args: {
+      path: string;
+      importer: string | null;
+    }) => { path: string; external?: boolean } | null | undefined,
+  ): void;
+  onLoad(
+    options: { filter: RegExp },
+    callback: (args: { path: string }) => { contents: string; loader?: string } | null | undefined,
+  ): void;
+  onTransform(
+    options: { filter: RegExp },
+    callback: (args: { code: string; path: string }) => { code: string } | null | undefined,
+  ): void;
 }
 
 export interface BuildResult {
@@ -155,21 +179,92 @@ export interface BuildResult {
 }
 
 /**
+ * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
+ * dispatcher(hookName, arg1, arg2) → result | null
+ */
+function createPluginDispatcher(plugins: ZtsPlugin[]) {
+  type HookEntry = { filter: RegExp; callback: (...args: any[]) => any };
+  const hooks: Record<string, HookEntry[]> = {
+    resolveId: [],
+    load: [],
+    transform: [],
+  };
+
+  for (const plugin of plugins) {
+    const build: PluginBuild = {
+      onResolve(opts, cb) {
+        hooks.resolveId.push({ filter: opts.filter, callback: cb });
+      },
+      onLoad(opts, cb) {
+        hooks.load.push({ filter: opts.filter, callback: cb });
+      },
+      onTransform(opts, cb) {
+        hooks.transform.push({ filter: opts.filter, callback: cb });
+      },
+    };
+    plugin.setup(build);
+  }
+
+  return function dispatcher(hookName: string, arg1: string, arg2: string | null) {
+    const hookList = hooks[hookName];
+    if (!hookList) return null;
+
+    if (hookName === "resolveId") {
+      for (const h of hookList) {
+        if (h.filter.test(arg1)) {
+          const result = h.callback({ path: arg1, importer: arg2 });
+          if (result != null) return result;
+        }
+      }
+    } else if (hookName === "load") {
+      for (const h of hookList) {
+        if (h.filter.test(arg1)) {
+          const result = h.callback({ path: arg1 });
+          if (result != null) return result;
+        }
+      }
+    } else if (hookName === "transform") {
+      for (const h of hookList) {
+        if (h.filter.test(arg2 ?? "")) {
+          const result = h.callback({ code: arg1, path: arg2 });
+          if (result != null) return result;
+        }
+      }
+    }
+    return null;
+  };
+}
+
+/**
  * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
+ * JS 플러그인은 이 함수에서만 지원됨.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
 
-  return native.build(options as unknown as Record<string, unknown>);
+  const napiOptions: Record<string, unknown> = { ...options };
+
+  if (options.plugins?.length) {
+    napiOptions._pluginDispatcher = createPluginDispatcher(options.plugins);
+    delete napiOptions.plugins;
+  }
+
+  return native.build(napiOptions);
 }
 
 /**
  * 번들링을 동기적으로 실행한다.
+ * 주의: JS 플러그인은 build() (async)에서만 지원됨.
  */
 export function buildSync(options: BuildOptions): BuildResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
+  if (options.plugins?.length) {
+    throw new Error(
+      "@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().",
+    );
+  }
 
   return native.buildSync(options as unknown as Record<string, unknown>);
 }
