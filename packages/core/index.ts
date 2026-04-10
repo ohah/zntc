@@ -62,11 +62,21 @@ let native: NativeModule | null = null;
 function findAddon(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
 
+  // 1. 같은 디렉토리 (소스에서 직접 사용)
   const local = join(__dirname, "zts.node");
   if (existsSync(local)) return local;
 
+  // 2. 한 단계 위 (dist/index.js에서 사용 시)
+  const parent = join(__dirname, "../zts.node");
+  if (existsSync(parent)) return parent;
+
+  // 3. zig-out (개발 시)
   const zigOut = join(__dirname, "../../zig-out/lib/zts.node");
   if (existsSync(zigOut)) return zigOut;
+
+  // 4. dist에서 3단계 위
+  const zigOut2 = join(__dirname, "../../../zig-out/lib/zts.node");
+  if (existsSync(zigOut2)) return zigOut2;
 
   throw new Error("@zts/core: zts.node not found. Run `zig build napi` first.");
 }
