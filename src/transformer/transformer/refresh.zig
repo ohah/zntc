@@ -47,6 +47,9 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
     if (!self.options.react_refresh) return;
 
     const func_node = self.ast.getNode(new_func_idx);
+    // function_expression의 이름은 함수 내부 스코프에서만 접근 가능하므로
+    // 외부에서 $RefreshReg$에 등록하면 ReferenceError 발생
+    if (func_node.tag == .function_expression) return;
     const name = self.getFunctionName(func_node) orelse return;
     if (!isComponentName(name)) return;
 
