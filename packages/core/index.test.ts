@@ -1,5 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { init, transpile, close } from "./index";
+import { init, transpile, buildSync, close } from "./index";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 beforeAll(() => {
   init();
@@ -191,5 +194,93 @@ describe("@zts/core", () => {
       const result = transpile(`const x${i}: number = ${i};`);
       expect(result.code).toContain(`const x${i} = ${i};`);
     }
+  });
+});
+
+describe("@zts/core buildSync", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-napi-build-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      'import { hello } from "./util";\nconsole.log(hello("world"));',
+    );
+    writeFileSync(
+      join(dir, "util.ts"),
+      "export function hello(name: string): string { return `Hello, ${name}!`; }",
+    );
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("기본 번들링", () => {
+    const result = buildSync({ entryPoints: [join(dir, "entry.ts")] });
+    expect(result.outputFiles.length).toBeGreaterThan(0);
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("hello");
+    expect(result.outputFiles[0].text).toContain("Hello");
+  });
+
+  test("CJS 포맷", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      format: "cjs",
+    });
+    expect(result.outputFiles[0].text).toContain("use strict");
+  });
+
+  test("minify", () => {
+    const normal = buildSync({ entryPoints: [join(dir, "entry.ts")] });
+    const minified = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      minify: true,
+    });
+    expect(minified.outputFiles[0].text.length).toBeLessThan(normal.outputFiles[0].text.length);
+  });
+
+  test("소스맵 생성", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      sourcemap: true,
+    });
+    // 소스맵이 별도 outputFile로 포함
+    expect(result.outputFiles.length).toBe(2);
+    const smFile = result.outputFiles.find((f) => f.path.endsWith(".map"));
+    expect(smFile).toBeDefined();
+    const map = JSON.parse(smFile!.text);
+    expect(map.version).toBe(3);
+  });
+
+  test("metafile 생성", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      metafile: true,
+    });
+    expect(result.metafile).toBeDefined();
+    const meta = JSON.parse(result.metafile!);
+    expect(meta.outputs).toBeDefined();
+  });
+
+  test("에러 반환", () => {
+    const badDir = mkdtempSync(join(tmpdir(), "zts-napi-err-"));
+    writeFileSync(join(badDir, "bad.ts"), 'import { x } from "./nonexistent";');
+    const result = buildSync({ entryPoints: [join(badDir, "bad.ts")] });
+    expect(result.errors.length).toBeGreaterThan(0);
+    rmSync(badDir, { recursive: true, force: true });
+  });
+
+  test("external", () => {
+    const extDir = mkdtempSync(join(tmpdir(), "zts-napi-ext-"));
+    writeFileSync(join(extDir, "app.ts"), 'import React from "react";\nconsole.log(React);');
+    const result = buildSync({
+      entryPoints: [join(extDir, "app.ts")],
+      external: ["react"],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("react");
+    rmSync(extDir, { recursive: true, force: true });
   });
 });
