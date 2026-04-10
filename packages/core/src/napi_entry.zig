@@ -1013,6 +1013,40 @@ fn parseBuildOptions(
     const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
     const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
     const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
+    const root_dir = ownStr(env, opts_obj, "rootDir", owned_strings);
+    const preserve_modules_root = ownStr(env, opts_obj, "preserveModulesRoot", owned_strings);
+
+    // legalComments: "none" | "inline" | "eof" | "linked"
+    const legal_str = getObjectString(env, opts_obj, "legalComments", native_alloc);
+    if (legal_str) |s| if (!trackStr(owned_strings, s)) return null;
+    const legal_comments: bundler_mod.types.LegalComments = if (legal_str) |s|
+        if (std.mem.eql(u8, s, "none")) .none
+        else if (std.mem.eql(u8, s, "inline")) .@"inline"
+        else if (std.mem.eql(u8, s, "eof")) .eof
+        else if (std.mem.eql(u8, s, "linked")) .linked
+        else .default
+    else .default;
+
+    // globalIdentifiers: string[]
+    const global_identifiers = getObjectStringArray(env, opts_obj, "globalIdentifiers", native_alloc);
+    if (global_identifiers) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    // polyfills: string[]
+    const polyfills = getObjectStringArray(env, opts_obj, "polyfills", native_alloc);
+    if (polyfills) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
+    // runBeforeMain: string[]
+    const run_before_main = getObjectStringArray(env, opts_obj, "runBeforeMain", native_alloc);
+    if (run_before_main) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
 
     // dropLabels: string[]
     const drop_labels = getObjectStringArray(env, opts_obj, "dropLabels", native_alloc);
@@ -1093,6 +1127,18 @@ fn parseBuildOptions(
         .line_limit = getObjectUint32(env, opts_obj, "lineLimit", 0),
         .out_extension_js = out_extension_js,
         .source_root = source_root,
+        .legal_comments = legal_comments,
+        .preserve_modules = getObjectBool(env, opts_obj, "preserveModules", false),
+        .preserve_modules_root = preserve_modules_root,
+        .timing = getObjectBool(env, opts_obj, "timing", false),
+        .dev_mode = getObjectBool(env, opts_obj, "devMode", false),
+        .root_dir = root_dir,
+        .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
+        .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
+        .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false),
+        .global_identifiers = global_identifiers orelse &.{},
+        .polyfills = polyfills orelse &.{},
+        .run_before_main = run_before_main orelse &.{},
     };
 }
 

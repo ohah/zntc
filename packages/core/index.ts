@@ -200,6 +200,30 @@ export interface BuildOptions {
   outExtension?: string;
   /** 소스맵 sourceRoot 필드 */
   sourceRoot?: string;
+  /** 라이센스 주석 처리 ("none" | "inline" | "eof" | "linked") */
+  legalComments?: "none" | "inline" | "eof" | "linked";
+  /** 모듈별 개별 파일 출력 (라이브러리 빌드) */
+  preserveModules?: boolean;
+  /** preserve-modules 출력 디렉토리 구조 기준 경로 */
+  preserveModulesRoot?: string;
+  /** 파이프라인 단계별 타이밍 출력 */
+  timing?: boolean;
+  /** dev mode: 모듈을 __zts_register() 팩토리로 래핑 + HMR 런타임 주입 */
+  devMode?: boolean;
+  /** dev mode 모듈 ID 기준 경로 */
+  rootDir?: string;
+  /** React Fast Refresh 활성화 */
+  reactRefresh?: boolean;
+  /** dev mode per-module codes 수집 (HMR rebuild용) */
+  collectModuleCodes?: boolean;
+  /** Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환) */
+  configurableExports?: boolean;
+  /** scope hoisting 시 예약할 전역 식별자 */
+  globalIdentifiers?: string[];
+  /** 번들 시작 시 즉시 실행 폴리필 경로 */
+  polyfills?: string[];
+  /** 엔트리 모듈 직전에 실행할 모듈 경로 */
+  runBeforeMain?: string[];
 }
 
 export interface ZtsPlugin {
