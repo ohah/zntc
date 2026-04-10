@@ -31,13 +31,19 @@ pub fn parse(self: *Parser) !NodeIndex {
         self.is_strict_mode = true;
     }
 
-    // hashbang (#! ...) 건너뛰기
-    if (self.current() == .hashbang_comment) {
-        try self.advance();
-    }
-
     var stmts: std.ArrayList(NodeIndex) = .empty;
     defer stmts.deinit(self.allocator);
+
+    // hashbang (#! ...) — AST에 노드로 추가 (codegen에서 strip_hashbang 조건부 출력)
+    if (self.current() == .hashbang_comment) {
+        const hashbang_node = try self.ast.addNode(.{
+            .tag = .hashbang,
+            .span = self.currentSpan(),
+            .data = .{ .none = 0 },
+        });
+        try stmts.append(self.allocator, hashbang_node);
+        try self.advance();
+    }
 
     // directive prologue 감지: 프로그램 시작 부분의 "use strict"
     var in_directive_prologue = true;
