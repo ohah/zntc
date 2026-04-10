@@ -368,23 +368,31 @@ describe("RN 번들: Metro vs ZTS 모듈 수 비교", () => {
 });
 
 /**
+ * inline 코드를 임시 파일로 만들어 ZTS CLI로 트랜스파일하는 헬퍼.
+ * ext: 확장자 (기본 ".ts"), flags: 추가 CLI 플래그
+ */
+function transpileInline(code: string, ext = ".ts", flags: string[] = []): string {
+  const { mkdtempSync, writeFileSync, rmSync } = require("fs");
+  const { join } = require("path");
+  const { tmpdir } = require("os");
+  const dir = mkdtempSync(join(tmpdir(), "zts-inline-"));
+  const file = join(dir, `input${ext}`);
+  writeFileSync(file, code);
+  const proc = Bun.spawnSync([ZTS_BIN, ...flags, file]);
+  const stdout = proc.stdout.toString();
+  rmSync(dir, { recursive: true });
+  expect(proc.exitCode).toBe(0);
+  return stdout;
+}
+
+function transpileES5Inline(code: string): string {
+  return transpileInline(code, ".ts", ["--target=es5"]);
+}
+
+/**
  * ES5 클래스: abstract/declare/overload 메서드 스트리핑 테스트
  */
 describe("RN ES5 다운레벨링: abstract/declare/overload 메서드 스트리핑", () => {
-  async function transpileES5Inline(code: string): Promise<string> {
-    const { mkdtempSync, writeFileSync, rmSync } = require("fs");
-    const { join } = require("path");
-    const { tmpdir } = require("os");
-    const dir = mkdtempSync(join(tmpdir(), "zts-es5-"));
-    const file = join(dir, "input.ts");
-    writeFileSync(file, code);
-    const proc = Bun.spawnSync([ZTS_BIN, "--target=es5", file]);
-    const stdout = proc.stdout.toString();
-    rmSync(dir, { recursive: true });
-    expect(proc.exitCode).toBe(0);
-    return stdout;
-  }
-
   test("abstract 메서드가 prototype에 emit되지 않아야 함", async () => {
     const out = await transpileES5Inline(`
       abstract class Gesture {
@@ -516,9 +524,9 @@ describe("RN ES5 다운레벨링: abstract/declare/overload 메서드 스트리�
         name() { return "Rex"; }
       }
     `);
-    // abstract 메서드는 모두 스트리핑
-    expect(out).not.toContain("speak = function();\n");
-    expect(out).not.toContain("name = function();\n");
+    // abstract 메서드는 빈 function() stub로 나오면 안 됨
+    expect(out).not.toMatch(/speak = function\(\)\s*;/);
+    expect(out).not.toMatch(/name = function\(\)\s*;/);
     // concrete 메서드만 남아야 함
     expect(out).toContain("move = function()");
     expect(out).toContain("greet = function()");
@@ -557,75 +565,31 @@ describe("RN ES5 다운레벨링: abstract/declare/overload 메서드 스트리�
  * jsx_in_js가 .ts 파일에 영향 주지 않는지 테스트
  */
 describe("RN ES5 다운레벨링: jsx_in_js + .ts 제네릭", () => {
-  test(".ts 파일의 angle bracket 제네릭이 JSX로 오파싱되지 않아야 함", async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = require("fs");
-    const { join } = require("path");
-    const { tmpdir } = require("os");
-    const dir = mkdtempSync(join(tmpdir(), "zts-jsx-"));
-    writeFileSync(
-      join(dir, "input.ts"),
-      `
-      const x = <string>"hello";
-      function identity<T>(v: T): T { return v; }
-      const y = identity<number>(42);
-    `,
+  test(".ts 파일의 angle bracket 제네릭이 JSX로 오파싱되지 않아야 함", () => {
+    const out = transpileInline(
+      `const x = <string>"hello";\nfunction identity<T>(v: T): T { return v; }\nconst y = identity<number>(42);`,
+      ".ts",
+      ["--target=es5", "--flow", "--jsx-in-js"],
     );
-    const proc = Bun.spawnSync([
-      ZTS_BIN,
-      "--target=es5",
-      "--flow",
-      "--jsx-in-js",
-      join(dir, "input.ts"),
-    ]);
-    expect(proc.exitCode).toBe(0);
-    const out = proc.stdout.toString();
     expect(out).toContain('"hello"');
     expect(out).toContain("42");
-    // JSX 변환이 아닌 type assertion 스트리핑
     expect(out).not.toContain("createElement");
-    rmSync(dir, { recursive: true });
   });
 
-  test(".js 파일의 JSX는 정상 변환", async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = require("fs");
-    const { join } = require("path");
-    const { tmpdir } = require("os");
-    const dir = mkdtempSync(join(tmpdir(), "zts-jsx-"));
-    writeFileSync(
-      join(dir, "input.js"),
-      `
-      function App() { return <div>hello</div>; }
-    `,
-    );
-    const proc = Bun.spawnSync([
-      ZTS_BIN,
+  test(".js 파일의 JSX는 정상 변환", () => {
+    const out = transpileInline(`function App() { return <div>hello</div>; }`, ".js", [
       "--flow",
       "--jsx-in-js",
       "--jsx=classic",
-      join(dir, "input.js"),
     ]);
-    expect(proc.exitCode).toBe(0);
-    const out = proc.stdout.toString();
     expect(out).toContain("createElement");
-    rmSync(dir, { recursive: true });
   });
 
-  test(".tsx 파일은 jsx-in-js 무관하게 JSX 활성", async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = require("fs");
-    const { join } = require("path");
-    const { tmpdir } = require("os");
-    const dir = mkdtempSync(join(tmpdir(), "zts-jsx-"));
-    writeFileSync(
-      join(dir, "input.tsx"),
-      `
-      function App() { return <div>hello</div>; }
-    `,
-    );
-    const proc = Bun.spawnSync([ZTS_BIN, "--jsx=classic", join(dir, "input.tsx")]);
-    expect(proc.exitCode).toBe(0);
-    const out = proc.stdout.toString();
+  test(".tsx 파일은 jsx-in-js 무관하게 JSX 활성", () => {
+    const out = transpileInline(`function App() { return <div>hello</div>; }`, ".tsx", [
+      "--jsx=classic",
+    ]);
     expect(out).toContain("createElement");
-    rmSync(dir, { recursive: true });
   });
 });
 
