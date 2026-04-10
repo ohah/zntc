@@ -1134,7 +1134,7 @@ pub const SemanticAnalyzer = struct {
             },
 
             // ---- 식별자 참조 추적 ----
-            .identifier_reference => {
+            .identifier_reference, .assignment_target_identifier => {
                 const name = self.ast.getSourceText(node.span);
                 self.resolveIdentifier(name, @intFromEnum(idx));
             },
