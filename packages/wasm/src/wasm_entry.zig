@@ -118,71 +118,7 @@ export fn dealloc(ptr: u32, len: u32) void {
     wasm_alloc.free(slice[0..len]);
 }
 
-/// 트랜스파일 옵션 플래그 (비트마스크)
-///
-///   bit 0:  sourcemap
-///   bit 1:  minify_whitespace
-///   bit 2:  minify_identifiers
-///   bit 3:  minify_syntax
-///   bit 4:  jsx_runtime (automatic)
-///   bit 5:  jsx_dev (automatic-dev)
-///   bit 6:  drop_console
-///   bit 7:  drop_debugger
-///   bit 8:  ascii_only
-///   bit 9:  flow
-///   bit 10: experimental_decorators
-///   bit 11: emit_decorator_metadata
-///   bit 12-13: module_format (00=esm, 01=cjs)
-///   bit 14-15: quote_style (00=double, 01=single, 10=preserve)
-///   bit 16: use_define_for_class_fields (1=true, 기본값 true)
-///   bit 17: charset_utf8
-///   bit 18-19: platform (00=browser, 01=node, 10=neutral, 11=react-native)
-///   bit 20: jsx_in_js
-///   bit 21: sourcemap_debug_ids
-///   bit 22: sources_content (1=true, 기본값 true)
-fn decodeFlags(flags: u32) TranspileOptions {
-    return .{
-        .sourcemap = flags & (1 << 0) != 0,
-        .minify_whitespace = flags & (1 << 1) != 0,
-        .minify_identifiers = flags & (1 << 2) != 0,
-        .minify_syntax = flags & (1 << 3) != 0,
-        .jsx_runtime = if (flags & (1 << 5) != 0)
-            .automatic_dev
-        else if (flags & (1 << 4) != 0)
-            .automatic
-        else
-            .classic,
-        .drop_console = flags & (1 << 6) != 0,
-        .drop_debugger = flags & (1 << 7) != 0,
-        .ascii_only = flags & (1 << 8) != 0,
-        .flow = flags & (1 << 9) != 0,
-        .experimental_decorators = flags & (1 << 10) != 0,
-        .emit_decorator_metadata = flags & (1 << 11) != 0,
-        .module_format = switch ((flags >> 12) & 0x3) {
-            0 => .esm,
-            1 => .cjs,
-            else => .esm,
-        },
-        .quote_style = switch ((flags >> 14) & 0x3) {
-            0 => .double,
-            1 => .single,
-            2 => .preserve,
-            else => .double,
-        },
-        .use_define_for_class_fields = flags & (1 << 16) != 0,
-        .charset_utf8 = flags & (1 << 17) != 0,
-        .platform = switch ((flags >> 18) & 0x3) {
-            0 => .browser,
-            1 => .node,
-            2 => .neutral,
-            3 => .react_native,
-            else => .browser,
-        },
-        .jsx_in_js = flags & (1 << 20) != 0,
-        .sourcemap_debug_ids = flags & (1 << 21) != 0,
-        .sources_content = flags & (1 << 22) != 0,
-    };
-}
+const decodeFlags = transpile_mod.decodeFlags;
 
 /// 소스 코드를 트랜스파일한다.
 ///
