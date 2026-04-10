@@ -121,7 +121,7 @@ export type { OutputFile, Diagnostic };
 
 export interface BuildOptions {
   entryPoints: string[];
-  format?: "esm" | "cjs" | "iife";
+  format?: "esm" | "cjs" | "iife" | "umd" | "amd";
   platform?: "browser" | "node" | "neutral" | "react-native";
   external?: string[];
   minify?: boolean;
