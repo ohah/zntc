@@ -24,6 +24,23 @@ import { encodeFlags, ES_TARGET_BITS } from "../shared/index";
 
 // ─── NAPI Module ───
 
+interface OutputFile {
+  path: string;
+  text: string;
+}
+
+interface Diagnostic {
+  text: string;
+  location?: { file: string };
+}
+
+interface NativeBuildResult {
+  outputFiles: OutputFile[];
+  errors: Diagnostic[];
+  warnings: Diagnostic[];
+  metafile?: string;
+}
+
 interface NativeModule {
   transpile(
     source: string,
@@ -34,6 +51,7 @@ interface NativeModule {
     jsxFragment: string,
     jsxImportSource: string,
   ): { code: string; map?: string };
+  buildSync(options: Record<string, unknown>): NativeBuildResult;
 }
 
 let native: NativeModule | null = null;
@@ -84,6 +102,65 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     options.jsxFragment ?? "",
     options.jsxImportSource ?? "",
   );
+}
+
+// ─── Build API ───
+
+export type { OutputFile, Diagnostic };
+
+export interface BuildOptions {
+  entryPoints: string[];
+  format?: "esm" | "cjs" | "iife";
+  platform?: "browser" | "node" | "neutral" | "react-native";
+  external?: string[];
+  minify?: boolean;
+  minifyWhitespace?: boolean;
+  minifyIdentifiers?: boolean;
+  minifySyntax?: boolean;
+  splitting?: boolean;
+  sourcemap?: boolean;
+  sourcemapDebugIds?: boolean;
+  sourcesContent?: boolean;
+  treeShaking?: boolean;
+  metafile?: boolean;
+  keepNames?: boolean;
+  shimMissingExports?: boolean;
+  flow?: boolean;
+  jsxInJs?: boolean;
+  charsetUtf8?: boolean;
+  useDefineForClassFields?: boolean;
+  experimentalDecorators?: boolean;
+  emitDecoratorMetadata?: boolean;
+  banner?: string;
+  footer?: string;
+  globalName?: string;
+  publicPath?: string;
+  entryNames?: string;
+  chunkNames?: string;
+  assetNames?: string;
+  jsx?: "classic" | "automatic" | "automatic-dev";
+  jsxFactory?: string;
+  jsxFragment?: string;
+  jsxImportSource?: string;
+  inject?: string[];
+  jobs?: number;
+}
+
+export interface BuildResult {
+  outputFiles: OutputFile[];
+  errors: Diagnostic[];
+  warnings: Diagnostic[];
+  metafile?: string;
+}
+
+/**
+ * 번들링을 동기적으로 실행한다.
+ */
+export function buildSync(options: BuildOptions): BuildResult {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
+
+  return native.buildSync(options as unknown as Record<string, unknown>);
 }
 
 /**

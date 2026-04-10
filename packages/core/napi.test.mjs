@@ -5,7 +5,7 @@
  * 실행: node --test packages/core/napi.test.mjs
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { join, dirname } from "node:path";
@@ -188,5 +188,64 @@ describe("@zts/core NAPI (Node.js)", () => {
       );
       assert.ok(result.code.includes(`const x${i} = ${i};`));
     }
+  });
+});
+
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+describe("@zts/core buildSync NAPI (Node.js)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zts-napi-build-"));
+  writeFileSync(
+    join(dir, "entry.ts"),
+    'import { hello } from "./util";\nconsole.log(hello("world"));',
+  );
+  writeFileSync(
+    join(dir, "util.ts"),
+    "export function hello(name: string): string { return `Hello, ${name}!`; }",
+  );
+
+  after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("기본 번들링", () => {
+    const result = native.buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+    });
+    assert.ok(result.outputFiles.length > 0);
+    assert.equal(result.errors.length, 0);
+    assert.ok(result.outputFiles[0].text.includes("hello"));
+  });
+
+  it("소스맵 생성", () => {
+    const result = native.buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      sourcemap: true,
+    });
+    assert.equal(result.outputFiles.length, 2);
+    const smFile = result.outputFiles.find((f) => f.path.endsWith(".map"));
+    assert.ok(smFile);
+    const map = JSON.parse(smFile.text);
+    assert.equal(map.version, 3);
+  });
+
+  it("minify", () => {
+    const normal = native.buildSync({ entryPoints: [join(dir, "entry.ts")] });
+    const minified = native.buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      minify: true,
+    });
+    assert.ok(minified.outputFiles[0].text.length < normal.outputFiles[0].text.length);
+  });
+
+  it("metafile", () => {
+    const result = native.buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      metafile: true,
+    });
+    assert.ok(result.metafile);
+    const meta = JSON.parse(result.metafile);
+    assert.ok(meta.outputs);
   });
 });
