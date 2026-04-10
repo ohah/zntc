@@ -29,50 +29,7 @@ fn freeError() void {
     last_error = null;
 }
 
-/// 옵션 플래그 디코딩 (wasm_entry.zig와 동일한 비트 레이아웃)
-fn decodeFlags(flags: u32) TranspileOptions {
-    return .{
-        .sourcemap = flags & (1 << 0) != 0,
-        .minify_whitespace = flags & (1 << 1) != 0,
-        .minify_identifiers = flags & (1 << 2) != 0,
-        .minify_syntax = flags & (1 << 3) != 0,
-        .jsx_runtime = if (flags & (1 << 5) != 0)
-            .automatic_dev
-        else if (flags & (1 << 4) != 0)
-            .automatic
-        else
-            .classic,
-        .drop_console = flags & (1 << 6) != 0,
-        .drop_debugger = flags & (1 << 7) != 0,
-        .ascii_only = flags & (1 << 8) != 0,
-        .flow = flags & (1 << 9) != 0,
-        .experimental_decorators = flags & (1 << 10) != 0,
-        .emit_decorator_metadata = flags & (1 << 11) != 0,
-        .module_format = switch ((flags >> 12) & 0x3) {
-            0 => .esm,
-            1 => .cjs,
-            else => .esm,
-        },
-        .quote_style = switch ((flags >> 14) & 0x3) {
-            0 => .double,
-            1 => .single,
-            2 => .preserve,
-            else => .double,
-        },
-        .use_define_for_class_fields = flags & (1 << 16) != 0,
-        .charset_utf8 = flags & (1 << 17) != 0,
-        .platform = switch ((flags >> 18) & 0x3) {
-            0 => .browser,
-            1 => .node,
-            2 => .neutral,
-            3 => .react_native,
-            else => .browser,
-        },
-        .jsx_in_js = flags & (1 << 20) != 0,
-        .sourcemap_debug_ids = flags & (1 << 21) != 0,
-        .sources_content = flags & (1 << 22) != 0,
-    };
-}
+const decodeFlags = transpile_mod.decodeFlags;
 
 /// 소스 코드를 트랜스파일한다.
 ///
