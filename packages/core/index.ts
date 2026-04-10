@@ -52,6 +52,7 @@ interface NativeModule {
     jsxImportSource: string,
   ): { code: string; map?: string };
   buildSync(options: Record<string, unknown>): NativeBuildResult;
+  build(options: Record<string, unknown>): Promise<NativeBuildResult>;
 }
 
 let native: NativeModule | null = null;
@@ -151,6 +152,16 @@ export interface BuildResult {
   errors: Diagnostic[];
   warnings: Diagnostic[];
   metafile?: string;
+}
+
+/**
+ * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
+ */
+export async function build(options: BuildOptions): Promise<BuildResult> {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
+
+  return native.build(options as unknown as Record<string, unknown>);
 }
 
 /**
