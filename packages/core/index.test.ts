@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { init, transpile, build, buildSync, close } from "./index";
+import { init, transpile, build, buildSync, close, type ZtsPlugin } from "./index";
+import { resolve } from "node:path";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -334,5 +335,101 @@ describe("@zts/core build (async)", () => {
     const syncResult = buildSync({ entryPoints: [join(dir, "entry.ts")] });
     const asyncResult = await build({ entryPoints: [join(dir, "entry.ts")] });
     expect(asyncResult.outputFiles[0].text).toBe(syncResult.outputFiles[0].text);
+  });
+});
+
+describe("@zts/core build + plugins", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-napi-plugin-"));
+    writeFileSync(join(dir, "entry.ts"), 'import css from "./style.css";\nconsole.log(css);');
+    writeFileSync(
+      join(dir, "app.ts"),
+      'import { greet } from "./virtual:greeting";\nconsole.log(greet());',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("onResolve + onLoad 플러그인 (CSS → JS 변환)", async () => {
+    const cssPlugin: ZtsPlugin = {
+      name: "css-plugin",
+      setup(build) {
+        build.onResolve({ filter: /\.css$/ }, (args) => ({
+          path: resolve(dir, args.path),
+        }));
+        build.onLoad({ filter: /\.css$/ }, () => ({
+          contents: 'export default "color: red";',
+        }));
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [cssPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("color: red");
+  });
+
+  test("multiple plugins 체이닝", async () => {
+    const plugin1: ZtsPlugin = {
+      name: "css-resolve",
+      setup(build) {
+        build.onResolve({ filter: /\.css$/ }, (args) => ({
+          path: resolve(dir, args.path),
+        }));
+      },
+    };
+    const plugin2: ZtsPlugin = {
+      name: "css-load",
+      setup(build) {
+        build.onLoad({ filter: /\.css$/ }, () => ({
+          contents: 'export default "blue";',
+        }));
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [plugin1, plugin2],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("blue");
+  });
+
+  test("onTransform 플러그인 (코드 변환)", async () => {
+    const transformPlugin: ZtsPlugin = {
+      name: "transform-plugin",
+      setup(build) {
+        build.onTransform({ filter: /\.ts$/ }, (args) => ({
+          code: args.code.replace("console.log", "console.warn"),
+        }));
+      },
+    };
+
+    const entryDir = mkdtempSync(join(tmpdir(), "zts-transform-"));
+    writeFileSync(join(entryDir, "main.ts"), 'console.log("hello");');
+
+    const result = await build({
+      entryPoints: [join(entryDir, "main.ts")],
+      plugins: [transformPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("console.warn");
+    expect(result.outputFiles[0].text).not.toContain("console.log");
+    rmSync(entryDir, { recursive: true, force: true });
+  });
+
+  test("buildSync에서 plugins 사용 시 에러", () => {
+    expect(() =>
+      buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        plugins: [{ name: "test", setup() {} }],
+      }),
+    ).toThrow("plugins are only supported with build()");
   });
 });

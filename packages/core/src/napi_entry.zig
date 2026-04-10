@@ -342,6 +342,202 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
     return js_result;
 }
 
+// ─── NapiPlugin: JS 플러그인 브릿지 ───
+// 워커 스레드에서 JS 콜백을 호출하기 위한 napi_threadsafe_function 기반 브릿지.
+// 워커 스레드: 요청 저장 → tsfn 호출 → condvar 대기
+// 메인 스레드: JS 콜백 실행 → 결과 저장 → condvar 시그널
+
+const plugin_mod = bundler_mod.plugin;
+const Plugin = plugin_mod.Plugin;
+const PluginError = plugin_mod.PluginError;
+const ResolveResult = bundler_mod.ResolveResult;
+
+const NapiPlugin = struct {
+    name: []const u8,
+    tsfn: c.napi_threadsafe_function,
+    // 워커 스레드 ↔ 메인 스레드 동기화
+    mutex: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+    // 요청/응답 공유 데이터
+    request: ?PluginRequest = null,
+    response: ?PluginResponse = null,
+    response_ready: bool = false,
+
+    const HookType = enum { resolveId, load, transform };
+
+    const PluginRequest = struct {
+        hook: HookType,
+        arg1: []const u8,
+        arg2: ?[]const u8,
+    };
+
+    const PluginResponse = struct {
+        // resolveId 결과
+        resolved_path: ?[]const u8 = null,
+        is_external: bool = false,
+        // load/transform 결과
+        code: ?[]const u8 = null,
+    };
+
+    /// threadsafe function의 call_js 콜백 (메인 스레드에서 실행)
+    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(data.?));
+        self.mutex.lock();
+        defer {
+            self.response_ready = true;
+            self.mutex.unlock();
+            self.cond.signal();
+        }
+
+        const req = self.request orelse {
+            self.response = .{};
+            return;
+        };
+
+        // JS dispatcher 호출: dispatcher(hookName, arg1, arg2)
+        var hook_str: c.napi_value = undefined;
+        const hook_name: []const u8 = switch (req.hook) {
+            .resolveId => "resolveId",
+            .load => "load",
+            .transform => "transform",
+        };
+        _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
+
+        var js_arg1: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, req.arg1.ptr, req.arg1.len, &js_arg1);
+
+        var js_arg2: c.napi_value = undefined;
+        if (req.arg2) |a2| {
+            _ = c.napi_create_string_utf8(env, a2.ptr, a2.len, &js_arg2);
+        } else {
+            _ = c.napi_get_null(env, &js_arg2);
+        }
+
+        var js_result: c.napi_value = undefined;
+        const args = [_]c.napi_value{ hook_str, js_arg1, js_arg2 };
+        var js_undefined: c.napi_value = undefined;
+        _ = c.napi_get_undefined(env, &js_undefined);
+        if (c.napi_call_function(env, js_undefined, js_callback, 3, &args, &js_result) != c.napi_ok) {
+            self.response = .{};
+            return;
+        }
+
+        // 결과 파싱
+        var result_type: c.napi_valuetype = undefined;
+        _ = c.napi_typeof(env, js_result, &result_type);
+        if (result_type == c.napi_null or result_type == c.napi_undefined) {
+            self.response = .{};
+            return;
+        }
+
+        // 객체에서 필드 추출
+        var resp = PluginResponse{};
+
+        if (getObjectString(env, js_result, "path", native_alloc)) |path| {
+            resp.resolved_path = path;
+        }
+        resp.is_external = getObjectBool(env, js_result, "external", false);
+        if (getObjectString(env, js_result, "contents", native_alloc)) |contents| {
+            resp.code = contents;
+        }
+        if (resp.code == null) {
+            if (getObjectString(env, js_result, "code", native_alloc)) |code| {
+                resp.code = code;
+            }
+        }
+
+        self.response = resp;
+    }
+
+    /// 워커 스레드에서 호출 — JS 콜백 실행 후 결과 대기
+    fn callHook(self: *NapiPlugin, hook: HookType, arg1: []const u8, arg2: ?[]const u8) ?PluginResponse {
+        self.mutex.lock();
+        self.request = .{ .hook = hook, .arg1 = arg1, .arg2 = arg2 };
+        self.response = null;
+        self.response_ready = false;
+        self.mutex.unlock();
+
+        // threadsafe function 호출 (블로킹 — 큐에 추가될 때까지 대기)
+        if (c.napi_call_threadsafe_function(self.tsfn, @ptrCast(self), c.napi_tsfn_blocking) != c.napi_ok) {
+            return null;
+        }
+
+        // 결과 대기
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        while (!self.response_ready) {
+            self.cond.wait(&self.mutex);
+        }
+
+        return self.response;
+    }
+
+    // ─── Plugin 인터페이스 구현 ───
+
+    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?ResolveResult {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+            if (resp.code) |co| native_alloc.free(co);
+        }
+
+        if (resp.resolved_path) |path| {
+            return .{
+                .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
+                .module_type = .javascript,
+            };
+        }
+        return null;
+    }
+
+    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.load, path, null) orelse return null;
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+        }
+
+        if (resp.code) |code| {
+            const result = alloc.dupe(u8, code) catch return error.OutOfMemory;
+            native_alloc.free(code);
+            return result;
+        }
+        return null;
+    }
+
+    fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        const resp = self.callHook(.transform, code, id) orelse return null;
+        defer {
+            if (resp.resolved_path) |p| native_alloc.free(p);
+        }
+
+        if (resp.code) |result_code| {
+            const result = alloc.dupe(u8, result_code) catch return error.OutOfMemory;
+            native_alloc.free(result_code);
+            return result;
+        }
+        return null;
+    }
+
+    fn toPlugin(self: *NapiPlugin) Plugin {
+        return .{
+            .name = self.name,
+            .context = @ptrCast(self),
+            .resolveId = pluginResolveId,
+            .load = pluginLoad,
+            .transform = pluginTransform,
+        };
+    }
+
+    fn deinit(self: *NapiPlugin) void {
+        _ = c.napi_release_threadsafe_function(self.tsfn, c.napi_tsfn_release);
+        native_alloc.free(self.name);
+        native_alloc.destroy(self);
+    }
+};
+
 // ─── build() 비동기 (Promise) ───
 
 const BuildAsyncData = struct {
@@ -353,6 +549,9 @@ const BuildAsyncData = struct {
     // 소유된 문자열 목록 (deinit 시 해제)
     owned_strings: std.ArrayList([]const u8),
     owned_string_arrays: std.ArrayList([]const []const u8),
+    // NAPI 플러그인 (JS 콜백 기반)
+    napi_plugins: std.ArrayList(*NapiPlugin),
+    zig_plugins: std.ArrayList(Plugin),
     // 결과
     result: ?bundler_mod.BundleResult = null,
     err_msg: ?[*:0]const u8 = null,
@@ -380,6 +579,10 @@ fn buildComplete(env: c.napi_env, _: c.napi_status, data: ?*anyopaque) callconv(
         // 배열 컨테이너만 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
         for (async_data.owned_string_arrays.items) |arr| native_alloc.free(arr);
         async_data.owned_string_arrays.deinit(native_alloc);
+        // NAPI 플러그인 해제
+        for (async_data.napi_plugins.items) |np| np.deinit();
+        async_data.napi_plugins.deinit(native_alloc);
+        async_data.zig_plugins.deinit(native_alloc);
         native_alloc.destroy(async_data);
     }
 
@@ -423,13 +626,58 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         .options = undefined,
         .owned_strings = .empty,
         .owned_string_arrays = .empty,
+        .napi_plugins = .empty,
+        .zig_plugins = .empty,
     };
 
     // 옵션 파싱 (모든 문자열을 소유 메모리로 복사)
-    const opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
+    var opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {
         native_alloc.destroy(async_data);
         return throwError(env, "invalid build options");
     };
+
+    // _pluginDispatcher가 있으면 NapiPlugin 생성
+    if (getNamedProperty(env, argv[0], "_pluginDispatcher")) |dispatcher_fn| {
+        const np = native_alloc.create(NapiPlugin) catch {
+            native_alloc.destroy(async_data);
+            return throwError(env, "OutOfMemory");
+        };
+        np.* = .{
+            .name = native_alloc.dupe(u8, "js-plugin") catch {
+                native_alloc.destroy(np);
+                native_alloc.destroy(async_data);
+                return throwError(env, "OutOfMemory");
+            },
+            .tsfn = undefined,
+        };
+
+        // threadsafe function 생성
+        var resource_name_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, "zts_plugin", "zts_plugin".len, &resource_name_str);
+        if (c.napi_create_threadsafe_function(
+            env,
+            dispatcher_fn,
+            null,
+            resource_name_str,
+            0, // max_queue_size: 0 = unlimited
+            1, // initial_thread_count
+            null, // thread_finalize_data
+            null, // thread_finalize_cb
+            @ptrCast(np), // context passed to call_js
+            NapiPlugin.callJsCallback,
+            &np.tsfn,
+        ) != c.napi_ok) {
+            native_alloc.free(np.name);
+            native_alloc.destroy(np);
+            native_alloc.destroy(async_data);
+            return throwError(env, "failed to create threadsafe function");
+        }
+
+        async_data.napi_plugins.append(native_alloc, np) catch {};
+        async_data.zig_plugins.append(native_alloc, np.toPlugin()) catch {};
+        opts.plugins = async_data.zig_plugins.items;
+    }
+
     async_data.options = opts;
 
     // Promise 생성
