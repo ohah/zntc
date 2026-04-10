@@ -167,33 +167,38 @@ pub fn build(b: *std.Build) void {
         wasm_step.dependOn(&wasm_install.step);
     }
 
-    // ─── FFI 동적 라이브러리 빌드 ───
-    // `zig build ffi` — 네이티브 공유 라이브러리(.dylib/.so)를 빌드한다.
-    // bun:ffi 등에서 로드하여 in-process 트랜스파일을 수행할 수 있다.
+    // ─── NAPI 네이티브 모듈 빌드 ───
+    // `zig build napi` — .node 파일(공유 라이브러리)을 빌드한다.
+    // Node.js/Bun/Deno에서 require()로 로드하여 in-process 트랜스파일을 수행한다.
     {
-        const ffi_lib_mod = b.createModule(.{
+        const napi_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         });
 
-        const ffi_mod = b.createModule(.{
-            .root_source_file = b.path("packages/core/src/ffi_entry.zig"),
+        const napi_mod = b.createModule(.{
+            .root_source_file = b.path("packages/core/src/napi_entry.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         });
-        ffi_mod.addImport("zts_lib", ffi_lib_mod);
+        napi_mod.addImport("zts_lib", napi_lib_mod);
+        napi_mod.addIncludePath(b.path("vendor/node-api-headers"));
 
-        const ffi_lib = b.addLibrary(.{
+        const napi_lib = b.addLibrary(.{
             .linkage = .dynamic,
-            .name = "zts",
-            .root_module = ffi_mod,
+            .name = "zts-napi",
+            .root_module = napi_mod,
         });
-        ffi_lib.linkLibC();
+        napi_lib.linkLibC();
+        // Node.js NAPI 심볼은 런타임에 제공되므로 undefined 허용
+        napi_lib.linker_allow_shlib_undefined = true;
 
-        const ffi_install = b.addInstallArtifact(ffi_lib, .{});
-        const ffi_step = b.step("ffi", "Build native shared library (.dylib/.so) for FFI");
-        ffi_step.dependOn(&ffi_install.step);
+        const napi_install = b.addInstallArtifact(napi_lib, .{
+            .dest_sub_path = "zts.node",
+        });
+        const napi_step = b.step("napi", "Build NAPI native module (.node)");
+        napi_step.dependOn(&napi_install.step);
     }
 
     // Test262 러너 테스트 (유닛 테스트)

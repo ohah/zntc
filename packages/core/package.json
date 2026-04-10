@@ -5,7 +5,7 @@
   "license": "MIT",
   "files": [
     "dist/",
-    "libzts.dylib"
+    "zts.node"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -17,9 +17,9 @@
     }
   },
   "scripts": {
-    "build:ffi": "cd ../.. && zig build ffi",
-    "build:js": "bun build index.ts --outdir dist --format esm --target bun",
-    "build": "bun run build:ffi && cp ../../zig-out/lib/libzts.dylib . && bun run build:js",
+    "build:napi": "cd ../.. && zig build napi",
+    "build:js": "bun build index.ts --outdir dist --format esm --target node",
+    "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js",
     "test": "bun test"
   }
 }
