@@ -1400,12 +1400,8 @@ pub fn main() !void {
             // format
             if (!opts.bundle_format_explicit) {
                 if (sp.config.format) |fmt| {
-                    if (std.mem.eql(u8, fmt, "esm")) {
-                        bundle_opts.format = .esm;
-                    } else if (std.mem.eql(u8, fmt, "cjs")) {
-                        bundle_opts.format = .cjs;
-                    } else if (std.mem.eql(u8, fmt, "iife")) {
-                        bundle_opts.format = .iife;
+                    if (std.meta.stringToEnum(emitter.EmitOptions.Format, fmt)) |f| {
+                        bundle_opts.format = f;
                     }
                 }
             }
@@ -2224,7 +2220,7 @@ fn printUsage(writer: anytype) !void {
         \\  -o, --out-file <path>            Output file path
         \\  --outdir <path>                  Output directory (for directory input)
         \\  --minify                         Minify output
-        \\  --format=esm|cjs|iife            Module format (default: esm)
+        \\  --format=esm|cjs|iife|umd|amd    Module format (default: esm)
         \\  --drop=console                   Remove console.* calls
         \\  --drop=debugger                  Remove debugger statements
         \\  --define:KEY=VALUE               Replace KEY with VALUE globally
