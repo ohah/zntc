@@ -332,6 +332,7 @@ pub const Bundler = struct {
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
             .keep_names = self.options.keep_names,
+            .drop_labels = self.options.drop_labels,
             .jsx_runtime = self.options.jsx_runtime,
             .jsx_factory = self.options.jsx_factory,
             .jsx_fragment = self.options.jsx_fragment,

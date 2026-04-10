@@ -174,6 +174,32 @@ export interface BuildOptions {
   outfile?: string;
   /** 디스크 쓰기 여부 (기본: false, outdir/outfile 지정 시 자동 true) */
   write?: boolean;
+  /** 엔트리 포인트 공통 기준 경로 (출력 디렉토리 구조 결정) */
+  outbase?: string;
+  /** 모든 bare import를 external 처리 */
+  packagesExternal?: boolean;
+  /** symlink를 따라가지 않고 링크 경로로 해석 */
+  preserveSymlinks?: boolean;
+  /** @__PURE__, sideEffects 어노테이션 무시 */
+  ignoreAnnotations?: boolean;
+  /** 미사용 JSX를 tree-shake하지 않음 */
+  jsxSideEffects?: boolean;
+  /** 번들 분석 출력 (metafile 강제 활성화) */
+  analyze?: boolean;
+  /** 제거할 labeled statement의 라벨 이름 목록 */
+  dropLabels?: string[];
+  /** 순수 함수로 마킹할 글로벌 함수명 목록 */
+  pure?: string[];
+  /** tsconfig.json 인라인 JSON 오버라이드 */
+  tsconfigRaw?: string;
+  /** NODE_PATH 추가 탐색 경로 */
+  nodePaths?: string[];
+  /** 줄 길이 제한 (0=무제한) */
+  lineLimit?: number;
+  /** 출력 파일 확장자 오버라이드 (예: ".mjs") */
+  outExtension?: string;
+  /** 소스맵 sourceRoot 필드 */
+  sourceRoot?: string;
 }
 
 export interface ZtsPlugin {
