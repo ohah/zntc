@@ -43,11 +43,6 @@ interface NativeBuildResult {
   modulePaths?: string[];
 }
 
-interface NativeBuildResultWithCodes extends NativeBuildResult {
-  moduleCodes?: Array<{ id: string; code: string }>;
-  modulePaths?: string[];
-}
-
 interface NativeWatchHandle {
   stop(): void;
 }
@@ -639,7 +634,11 @@ export function watch(options: BuildOptions): WatchHandle {
       outputFiles: OutputFile[] | null,
     ): unknown => {
       for (const plugin of plugins) {
-        const handlers = (plugin as unknown as { _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>> })._handlers;
+        const handlers = (
+          plugin as unknown as {
+            _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>>;
+          }
+        )._handlers;
         if (!handlers) continue;
         const hooks = handlers.get(hookName);
         if (!hooks) continue;
@@ -670,17 +669,48 @@ export function watch(options: BuildOptions): WatchHandle {
     // 플러그인 setup 실행
     for (const plugin of plugins) {
       const handlers = new Map<string, Array<{ filter: RegExp; callback: Function }>>();
-      (plugin as unknown as { _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>> })._handlers = handlers;
+      (
+        plugin as unknown as {
+          _handlers: Map<string, Array<{ filter: RegExp; callback: Function }>>;
+        }
+      )._handlers = handlers;
       plugin.setup({
-        onResolve(opts, cb) { handlers.set("resolveId", [...(handlers.get("resolveId") ?? []), { filter: opts.filter, callback: cb }]); },
-        onLoad(opts, cb) { handlers.set("load", [...(handlers.get("load") ?? []), { filter: opts.filter, callback: cb }]); },
-        onTransform(opts, cb) { handlers.set("transform", [...(handlers.get("transform") ?? []), { filter: opts.filter, callback: cb }]); },
-        onRenderChunk(opts, cb) { handlers.set("renderChunk", [...(handlers.get("renderChunk") ?? []), { filter: opts.filter, callback: cb }]); },
-        onGenerateBundle(cb) { handlers.set("generateBundle", [...(handlers.get("generateBundle") ?? []), { filter: /.*/, callback: cb }]); },
+        onResolve(opts, cb) {
+          handlers.set("resolveId", [
+            ...(handlers.get("resolveId") ?? []),
+            { filter: opts.filter, callback: cb },
+          ]);
+        },
+        onLoad(opts, cb) {
+          handlers.set("load", [
+            ...(handlers.get("load") ?? []),
+            { filter: opts.filter, callback: cb },
+          ]);
+        },
+        onTransform(opts, cb) {
+          handlers.set("transform", [
+            ...(handlers.get("transform") ?? []),
+            { filter: opts.filter, callback: cb },
+          ]);
+        },
+        onRenderChunk(opts, cb) {
+          handlers.set("renderChunk", [
+            ...(handlers.get("renderChunk") ?? []),
+            { filter: opts.filter, callback: cb },
+          ]);
+        },
+        onGenerateBundle(cb) {
+          handlers.set("generateBundle", [
+            ...(handlers.get("generateBundle") ?? []),
+            { filter: /.*/, callback: cb },
+          ]);
+        },
       });
     }
     delete nativeOpts.plugins;
   }
 
-  return (native as unknown as { watch(opts: Record<string, unknown>): NativeWatchHandle }).watch(nativeOpts);
+  return (native as unknown as { watch(opts: Record<string, unknown>): NativeWatchHandle }).watch(
+    nativeOpts,
+  );
 }
