@@ -185,7 +185,7 @@ pub fn transpileWithCallback(
             parser.configureFlowFromPath(file_path);
         }
     }
-    if (options.jsx_in_js) {
+    if (options.jsx_in_js and !parser.is_ts) {
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
