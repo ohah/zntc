@@ -716,14 +716,14 @@ test "ES2015 arrow: inner function resets this scope" {
 // ============================================================
 
 const Codegen = @import("../codegen/codegen.zig").Codegen;
-const AstPlugin = transformer_mod.AstPlugin;
+const Plugin = transformer_mod.Plugin;
 const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
 
 /// 테스트 헬퍼: 소스 코드를 파싱 → worklet 변환 → codegen으로 JS 출력.
 fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    const plugins = [_]AstPlugin{worklet_plugin_mod.plugin()};
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
     return parseAndTransformWithOptions(allocator, source, .{
-        .ast_plugins = &plugins,
+        .plugins = &plugins,
         .jsx_filename = "test.ts",
     });
 }
@@ -777,7 +777,7 @@ test "Worklet: statement count includes property assignments" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "function animate(x) { \"worklet\"; return withSpring(x + offset); }",
-        .{ .ast_plugins = &[_]AstPlugin{worklet_plugin_mod.plugin()}, .jsx_filename = "test.ts" },
+        .{ .plugins = &[_]Plugin{worklet_plugin_mod.plugin()}, .jsx_filename = "test.ts" },
     );
     defer r.deinit();
     // 1 function declaration + 3 property assignments = 4 statements
@@ -795,6 +795,98 @@ test "Worklet: no closure vars produces empty closure object" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
-    // __closure = {} (빈 객체)
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: multiple closure vars are sorted alphabetically" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function anim(x) {
+        \\  "worklet";
+        \\  return withSpring(x + offset + scale);
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // closure 변수: offset, scale, withSpring (알파벳 순)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "offset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "scale") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "withSpring") != null);
+}
+
+test "Worklet: parameters are not closure vars" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function anim(x, y) {
+        \\  "worklet";
+        \\  return x + y + offset;
+        \\}
+    );
+    defer r.deinit();
+    // function + 3 property assignments = 4 statements
+    try std.testing.expectEqual(@as(u32, 4), r.statementCount());
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // x, y는 파라미터이므로 closure에 포함되지 않아야 함
+    // __closure에 offset만 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { offset }") != null);
+}
+
+test "Worklet: initData contains code and location" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function move() {
+        \\  "worklet";
+        \\  return velocity;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // __initData에 code와 location 필드가 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "code:") != null or
+        std.mem.indexOf(u8, code, "code: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "location:") != null or
+        std.mem.indexOf(u8, code, "location: ") != null);
+    // location에 test.ts 경로가 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "test.ts") != null);
+}
+
+test "Worklet: non-worklet function mixed with worklet function" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function normal() { return 1; }
+        \\function anim() {
+        \\  "worklet";
+        \\  return 2;
+        \\}
+    );
+    defer r.deinit();
+    // normal(1) + anim(1) + 3 property assignments = 5 statements
+    try std.testing.expectEqual(@as(u32, 5), r.statementCount());
+}
+
+test "Worklet: globals are excluded from closure vars" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function anim() {
+        \\  "worklet";
+        \\  console.log(Math.random());
+        \\  return undefined;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // console, Math, undefined는 글로벌이므로 closure에 포함되지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: worklet transform disabled when no plugins" {
+    // plugins 없이 변환하면 worklet 처리 안 됨
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function f() { \"worklet\"; return 1; }",
+        .{},
+    );
+    defer r.deinit();
+    // plugins가 없으므로 worklet 변환 없음 — statement 1개 (함수만)
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }

@@ -1,22 +1,22 @@
-//! Reanimated Worklet AST Plugin
+//! Reanimated Worklet Plugin
 //!
 //! "worklet" 디렉티브가 있는 함수를 감지하고,
 //! __workletHash, __closure, __initData 프로퍼티 할당을 함수 뒤에 주입한다.
 //!
 //! 사용:
-//!   const plugins = [_]AstPlugin{ WorkletPlugin.plugin() };
-//!   var t = Transformer.init(alloc, ast, .{ .ast_plugins = &plugins });
+//!   const plugins = [_]Plugin{ worklet_plugin.plugin() };
+//!   var t = Transformer.init(alloc, ast, .{ .plugins = &plugins });
 
 const std = @import("std");
 const ast_plugin = @import("../ast_plugin.zig");
-const AstPlugin = ast_plugin.AstPlugin;
 const AstTransformCtx = ast_plugin.AstTransformCtx;
 const FunctionInfo = ast_plugin.FunctionInfo;
 const worklet_mod = @import("../transformer/worklet.zig");
-const Error = @import("../transformer.zig").Transformer.Error;
+const Plugin = @import("../../bundler/plugin.zig").Plugin;
+const PluginError = @import("../../bundler/plugin.zig").PluginError;
 
-/// Worklet AstPlugin 인스턴스를 반환한다.
-pub fn plugin() AstPlugin {
+/// Worklet Plugin 인스턴스를 반환한다.
+pub fn plugin() Plugin {
     return .{
         .name = "reanimated-worklet",
         .onFunction = onFunction,
@@ -24,7 +24,7 @@ pub fn plugin() AstPlugin {
 }
 
 /// onFunction 훅 — "worklet" 디렉티브 감지 + 프로퍼티 할당 주입.
-fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Error!void {
+fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) PluginError!void {
     _ = ctx;
 
     // "worklet" 디렉티브 확인

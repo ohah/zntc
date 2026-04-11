@@ -1,16 +1,11 @@
-//! AST Plugin System — Zig 네이티브 + JS/NAPI 공통 인터페이스
+//! AST Plugin 타입 + 유틸리티
 //!
-//! SWC의 Rust VisitMut trait처럼 AST 노드 레벨에서 변환을 수행하는 플러그인 시스템.
-//! 기존 string-based Plugin(resolveId/load/transform)과 별개로,
-//! transformer 내부에서 AST 노드 방문 시 호출된다.
+//! Plugin(plugin.zig)의 AST 훅(onFunction 등)이 사용하는 타입과 컨텍스트.
+//! FunctionInfo, AstTransformCtx를 정의하고, 플러그인이 AST를 안전하게 조작하는 API를 제공.
 //!
-//! 사용 예 (Zig 플러그인):
-//!   const worklet = @import("plugins/worklet_plugin.zig");
-//!   const plugins = [_]AstPlugin{ worklet.plugin() };
-//!   var t = Transformer.init(alloc, ast, .{ .ast_plugins = &plugins });
-//!
-//! 향후 JS/NAPI 플러그인:
-//!   build.onAstFunction({ filter: /\.tsx?$/ }, (info) => { ... });
+//! 사용 예:
+//!   const plugins = [_]Plugin{ worklet_plugin.plugin() };
+//!   var t = Transformer.init(alloc, ast, .{ .plugins = &plugins });
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -28,33 +23,7 @@ const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
 // worklet 유틸리티 (기존 코드 재사용)
-const worklet_mod = @import("transformer/worklet.zig");
-
-// ================================================================
-// AstPlugin — 플러그인 등록 단위
-// ================================================================
-
-/// AST 변환 플러그인.
-/// 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
-/// context 필드로 플러그인 상태를 전달 (stateless 플러그인은 null).
-pub const AstPlugin = struct {
-    /// 플러그인 이름 (디버깅/로깅용)
-    name: []const u8,
-    /// 플러그인 상태를 전달하는 opaque 포인터.
-    context: ?*anyopaque = null,
-
-    /// 함수 노드 방문 훅. visitFunction 완료 후 호출.
-    /// function_declaration, function_expression, arrow_function_expression 모두 대상.
-    onFunction: ?*const fn (
-        ctx: ?*anyopaque,
-        api: *AstTransformCtx,
-        func: FunctionInfo,
-    ) Error!void = null,
-
-    // 향후 확장:
-    // onClass: ?*const fn(ctx: ?*anyopaque, api: *AstTransformCtx, class: ClassInfo) Error!void = null,
-    // onNode: ?*const fn(ctx: ?*anyopaque, api: *AstTransformCtx, node: NodeInfo) Error!void = null,
-};
+pub const worklet_mod = @import("transformer/worklet.zig");
 
 // ================================================================
 // FunctionInfo — 읽기 전용 함수 정보
@@ -169,6 +138,160 @@ pub const AstTransformCtx = struct {
 
     pub fn getAllocator(self: *AstTransformCtx) std.mem.Allocator {
         return self.transformer.allocator;
+    }
+
+    // --- 코드 파싱 (JS AST 플러그인용) ---
+
+    /// 코드 문자열을 파싱하여 statement NodeIndex 배열을 반환한다.
+    /// JS AST 플러그인의 trailingCode 문자열을 AST 노드로 변환하는 데 사용.
+    /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
+    pub fn parseAndInjectStatements(self: *AstTransformCtx, code: []const u8) Error![]const NodeIndex {
+        const Scanner = @import("../lexer/scanner.zig").Scanner;
+        const Parser = @import("../parser/parser.zig").Parser;
+        const alloc = self.transformer.allocator;
+
+        const scanner_ptr = alloc.create(Scanner) catch return error.OutOfMemory;
+        scanner_ptr.* = Scanner.init(alloc, code) catch return error.OutOfMemory;
+        defer {
+            scanner_ptr.deinit();
+            alloc.destroy(scanner_ptr);
+        }
+
+        const parser_ptr = alloc.create(Parser) catch return error.OutOfMemory;
+        parser_ptr.* = Parser.init(alloc, scanner_ptr);
+        defer {
+            parser_ptr.deinit();
+            alloc.destroy(parser_ptr);
+        }
+
+        _ = parser_ptr.parse() catch return error.OutOfMemory;
+
+        const root_idx = parser_ptr.ast.nodes.items.len - 1;
+        const root = parser_ptr.ast.nodes.items[root_idx];
+        if (root.tag != .program) return &.{};
+
+        const list = root.data.list;
+        if (list.len == 0) return &.{};
+
+        // 파싱된 노드를 transformer의 AST에 복사
+        var result = alloc.alloc(NodeIndex, list.len) catch return error.OutOfMemory;
+        var count: usize = 0;
+        var si: u32 = 0;
+        while (si < list.len) : (si += 1) {
+            const stmt_raw = parser_ptr.ast.extra_data.items[list.start + si];
+            const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
+            if (stmt_idx.isNone()) continue;
+
+            // 파싱된 AST의 노드를 transformer AST에 복사
+            const copied = self.copyNodeFromParsedAst(&parser_ptr.ast, stmt_idx) catch continue;
+            result[count] = copied;
+            count += 1;
+        }
+
+        if (count == 0) {
+            alloc.free(result);
+            return &.{};
+        }
+        return result[0..count];
+    }
+
+    /// 파싱된 AST에서 노드를 재귀적으로 transformer AST에 복사한다.
+    fn copyNodeFromParsedAst(self: *AstTransformCtx, src_ast: *const Ast, src_idx: NodeIndex) Error!NodeIndex {
+        if (src_idx.isNone()) return .none;
+        const src_node = src_ast.nodes.items[@intFromEnum(src_idx)];
+
+        // 소스 텍스트 참조 → string_table로 복사 (span이 src_ast.source를 참조하므로)
+        var new_span = src_node.span;
+        if (src_node.span.start & 0x8000_0000 == 0 and
+            src_node.span.start < src_node.span.end and
+            src_node.span.end <= @as(u32, @intCast(src_ast.source.len)))
+        {
+            const text = src_ast.source[src_node.span.start..src_node.span.end];
+            new_span = self.transformer.ast.addString(text) catch return error.OutOfMemory;
+        }
+
+        // data 복사는 태그에 따라 다름 — 간단한 노드만 지원
+        return switch (src_node.tag) {
+            // 리프 노드: data를 그대로 복사하되 span 갱신
+            .identifier_reference,
+            .string_literal,
+            .numeric_literal,
+            .boolean_literal,
+            .null_literal,
+            .this_expression,
+            => self.transformer.ast.addNode(.{
+                .tag = src_node.tag,
+                .span = new_span,
+                .data = .{ .string_ref = new_span },
+            }),
+
+            // 단항: operand 재귀 복사
+            .expression_statement,
+            .return_statement,
+            .throw_statement,
+            => blk: {
+                const new_operand = try self.copyNodeFromParsedAst(src_ast, src_node.data.unary.operand);
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = src_node.tag,
+                    .span = new_span,
+                    .data = .{ .unary = .{ .operand = new_operand, .flags = src_node.data.unary.flags } },
+                });
+            },
+
+            // 이항: left/right 재귀 복사
+            .assignment_expression,
+            .binary_expression,
+            .object_property,
+            => blk: {
+                const new_left = try self.copyNodeFromParsedAst(src_ast, src_node.data.binary.left);
+                const new_right = try self.copyNodeFromParsedAst(src_ast, src_node.data.binary.right);
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = src_node.tag,
+                    .span = new_span,
+                    .data = .{ .binary = .{ .left = new_left, .right = new_right, .flags = src_node.data.binary.flags } },
+                });
+            },
+
+            // 리스트: 각 요소 재귀 복사
+            .object_expression,
+            .array_expression,
+            .sequence_expression,
+            => blk: {
+                const src_list = src_node.data.list;
+                const scratch_top = self.transformer.scratch.items.len;
+                defer self.transformer.scratch.shrinkRetainingCapacity(scratch_top);
+                var i: u32 = 0;
+                while (i < src_list.len) : (i += 1) {
+                    const elem_raw = src_ast.extra_data.items[src_list.start + i];
+                    const copied = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(elem_raw));
+                    try self.transformer.scratch.append(self.transformer.allocator, copied);
+                }
+                const new_list = try self.transformer.ast.addNodeList(
+                    self.transformer.scratch.items[scratch_top..],
+                );
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = src_node.tag,
+                    .span = new_span,
+                    .data = .{ .list = new_list },
+                });
+            },
+
+            // extra 노드 (static_member_expression, call_expression 등):
+            // extra_data를 복사하되, 자식 노드 인덱스는 재귀 복사
+            .static_member_expression => blk: {
+                const e = src_node.data.extra;
+                const obj = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(src_ast.extra_data.items[e]));
+                const prop = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(src_ast.extra_data.items[e + 1]));
+                const flags = src_ast.extra_data.items[e + 2];
+                break :blk self.addExtraNode(.static_member_expression, new_span, &.{
+                    @intFromEnum(obj), @intFromEnum(prop), flags,
+                });
+            },
+
+            // 지원하지 않는 노드: data에 AST 인덱스가 포함될 수 있으므로
+            // raw 복사는 dangling index 위험. 안전하게 스킵.
+            else => .none,
+        };
     }
 
     // --- 코드 생성 ---
