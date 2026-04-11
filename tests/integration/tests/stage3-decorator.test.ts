@@ -282,6 +282,44 @@ describe("Stage 3 Decorators", () => {
     expect(result.runOutput).toContain("true");
   });
 
+  // --- Private member decorator ---
+
+  // TODO: private method는 descriptor 래핑 + getter 변환이 필요 (TypeScript: __setFunctionName + get #method())
+  it.skip("private method decorator context", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function log(fn: any, ctx: any) {
+          console.log(ctx.kind + ":" + ctx.name + ":private=" + ctx.private);
+          return fn;
+        }
+        class Foo {
+          @log #secret() { return 42; }
+        }
+        new Foo();
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("method:#secret:private=true");
+  });
+
+  it("private field decorator context", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function log(value: any, ctx: any) {
+          console.log(ctx.kind + ":" + ctx.name + ":private=" + ctx.private);
+        }
+        class Foo {
+          @log #value = 42;
+        }
+        new Foo();
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("field:#value:private=true");
+  });
+
   // --- Transpile (non-bundle) mode ---
 
   it("transpile mode outputs __esDecorate", async () => {
