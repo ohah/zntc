@@ -725,7 +725,7 @@ pub const Codegen = struct {
             .class_body => try self.emitClassBody(node),
             .method_definition => try self.emitMethodDef(node),
             .property_definition => try self.emitPropertyDef(node),
-            .static_block => try self.writeNodeSpan(node),
+            .static_block => try self.emitStaticBlock(node),
             .decorator => try self.emitDecorator(node),
             .accessor_property => try self.emitAccessorProp(node),
 
@@ -1934,6 +1934,21 @@ pub const Codegen = struct {
 
     fn emitClassBody(self: *Codegen, node: Node) !void {
         try self.emitBracedList(node);
+    }
+
+    // static_block: unary = { operand = body(block_statement) }
+    // 파서 노드는 writeNodeSpan으로 처리하지만,
+    // transformer가 생성한 합성 노드(span={0,0})는 AST 기반으로 출력한다.
+    fn emitStaticBlock(self: *Codegen, node: Node) !void {
+        if (node.span.start != 0 or node.span.end != 0) {
+            // 파서 원본 노드 → 소스 텍스트 그대로 출력
+            try self.writeNodeSpan(node);
+            return;
+        }
+        // 합성 노드 → AST 기반 출력
+        try self.write("static");
+        try self.writeSpace();
+        try self.emitNode(node.data.unary.operand);
     }
 
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]

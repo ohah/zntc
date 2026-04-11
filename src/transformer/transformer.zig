@@ -2660,6 +2660,21 @@ pub const Transformer = struct {
     pub const buildParamTypesArray = class_deco.buildParamTypesArray;
     pub const appendMemberMetadata = class_deco.appendMemberMetadata;
     pub const appendClassMetadata = class_deco.appendClassMetadata;
+    // Stage 3 (TC39) decorator
+    pub const hasAnyMemberDecorators = class_deco.hasAnyMemberDecorators;
+    pub const transformStage3Decorators = class_deco.transformStage3Decorators;
+    pub const memberKeyToStringLiteral = class_deco.memberKeyToStringLiteral;
+    pub const collectStage3Decorators = class_deco.collectStage3Decorators;
+    pub const buildEsDecorateCall = class_deco.buildEsDecorateCall;
+    pub const buildClassEsDecorateCall = class_deco.buildClassEsDecorateCall;
+    pub const buildContextObject = class_deco.buildContextObject;
+    pub const buildMetadataDecl = class_deco.buildMetadataDecl;
+    pub const buildClassReassign = class_deco.buildClassReassign;
+    pub const buildRunInitializersCall = class_deco.buildRunInitializersCall;
+    pub const buildRunInitializersCall2 = class_deco.buildRunInitializersCall2;
+    pub const buildStage3LetDeclarations = class_deco.buildStage3LetDeclarations;
+    pub const makeLet = class_deco.makeLet;
+    pub const makeObjProp = class_deco.makeObjProp;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
