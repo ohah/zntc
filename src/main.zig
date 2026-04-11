@@ -97,6 +97,9 @@ const CliOptions = struct {
     configurable_exports: bool = false,
     /// strict execution order: 함수 호이스팅 방지.
     strict_execution_order: bool = false,
+    /// Reanimated worklet 변환: "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.
+    /// --platform=react-native에서 자동 활성화. --worklet로 수동 제어.
+    worklet_transform: bool = false,
     /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
     /// null이면 사용자 미지정 — 플랫폼 프리셋 또는 tsconfig에서 결정.
     jsx_runtime: ?lib.codegen.codegen.JsxRuntime = null,
@@ -1248,6 +1251,7 @@ pub fn main() !void {
             opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
             opts.configurable_exports = true; // RN/Hermes: defineProperty에 configurable: true 필요
             opts.strict_execution_order = true; // Babel worklet 변환 호환: 함수 호이스팅 방지
+            opts.worklet_transform = true; // Reanimated worklet 네이티브 변환
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
@@ -1329,6 +1333,7 @@ pub fn main() !void {
             .jsx_in_js = opts.jsx_in_js,
             .configurable_exports = opts.configurable_exports or opts.dev, // HMR: export 재정의 필요
             .strict_execution_order = opts.strict_execution_order,
+            .worklet_transform = opts.worklet_transform,
             .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,

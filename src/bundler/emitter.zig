@@ -60,6 +60,8 @@ pub const EmitOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// Reanimated worklet 네이티브 변환.
+    worklet_transform: bool = false,
     /// dev mode에서 per-module codes 수집 여부.
     /// false면 output만 생성하고 module_dev_codes를 건너뛴다 (초기 빌드용, 메모리 절감).
     /// true면 HMR 업데이트용 module_dev_codes를 수집한다 (rebuild용).
@@ -695,8 +697,19 @@ pub fn emitModule(
     const jsx_active = ast.has_jsx;
     const apply_refresh = options.react_refresh and
         std.mem.indexOf(u8, module.path, "/node_modules/") == null;
+    // AST 플러그인 빌드
+    const worklet_plugin_mod = @import("../transformer/plugins/worklet_plugin.zig");
+    const AstPlugin = @import("../transformer/ast_plugin.zig").AstPlugin;
+    var ast_plugins_buf: [8]AstPlugin = undefined;
+    var ast_plugin_count: usize = 0;
+    if (options.worklet_transform and std.mem.indexOf(u8, module.path, "/node_modules/") == null) {
+        ast_plugins_buf[ast_plugin_count] = worklet_plugin_mod.plugin();
+        ast_plugin_count += 1;
+    }
+
     var transformer = try Transformer.init(arena_alloc, ast, .{
         .react_refresh = apply_refresh,
+        .ast_plugins = ast_plugins_buf[0..ast_plugin_count],
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .emit_decorator_metadata = options.emit_decorator_metadata,

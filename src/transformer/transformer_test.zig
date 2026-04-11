@@ -279,13 +279,10 @@ fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8
 
     var t = try Transformer.init(allocator, &parser_ptr.ast, options);
     const root = try t.transform();
-    t.scratch.deinit(allocator);
-    t.pending_nodes.deinit(allocator);
-    for (t.block_rename_stack.items) |entry| allocator.free(entry.new_name);
-    t.block_rename_stack.deinit(allocator);
-    t.scope_var_names.deinit(allocator);
+    const moved_ast = t.ast;
+    t.deinitExceptAst();
 
-    return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+    return .{ .ast = moved_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
 // ============================================================
@@ -712,4 +709,92 @@ test "ES2015 arrow: inner function resets this scope" {
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+// ============================================================
+// Worklet 변환 테스트
+// ============================================================
+
+const Codegen = @import("../codegen/codegen.zig").Codegen;
+const AstPlugin = transformer_mod.AstPlugin;
+const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+
+/// 테스트 헬퍼: 소스 코드를 파싱 → worklet 변환 → codegen으로 JS 출력.
+fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    const plugins = [_]AstPlugin{worklet_plugin_mod.plugin()};
+    return parseAndTransformWithOptions(allocator, source, .{
+        .ast_plugins = &plugins,
+        .jsx_filename = "test.ts",
+    });
+}
+
+/// TestResult에서 codegen 출력을 얻는 헬퍼.
+/// 반환값은 r.allocator로 할당된 복제본 — r.deinit() 후에도 안전하지만 별도 free 필요.
+/// 테스트에서는 allocator가 GPA이므로 검사됨.
+fn generateCode(r: *TestResult) ![]const u8 {
+    var codegen = Codegen.init(r.allocator, &r.ast);
+    const code = try codegen.generate(r.root);
+    // 코드를 복제 후 codegen 해제 (buf 누수 방지)
+    const duped = try r.allocator.dupe(u8, code);
+    codegen.deinit();
+    return duped;
+}
+
+test "Worklet: function with worklet directive adds property assignments" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function animate(x) {
+        \\  "worklet";
+        \\  return withSpring(x + offset);
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // "worklet" 디렉티브가 제거되고, 함수 뒤에 __workletHash, __closure, __initData가 추가됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__initData") != null);
+    // "worklet" 디렉티브는 출력에서 제거됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\"") == null);
+}
+
+test "Worklet: function without worklet directive is unchanged" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function foo(x) {
+        \\  return x + 1;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // worklet 변환 없음
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure") == null);
+}
+
+test "Worklet: statement count includes property assignments" {
+    // function + 3 property assignments = 4 statements
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function animate(x) { \"worklet\"; return withSpring(x + offset); }",
+        .{ .ast_plugins = &[_]AstPlugin{worklet_plugin_mod.plugin()}, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    // 1 function declaration + 3 property assignments = 4 statements
+    try std.testing.expectEqual(@as(u32, 4), r.statementCount());
+}
+
+test "Worklet: no closure vars produces empty closure object" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function simple() {
+        \\  "worklet";
+        \\  return 42;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    // __closure = {} (빈 객체)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
