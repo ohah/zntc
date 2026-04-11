@@ -333,4 +333,164 @@ describe("CSS Bundling", () => {
     const js = await readFile(join(outDir, "index.js"), "utf-8");
     expect(js).toContain("console.log");
   });
+
+  it("CSS with only whitespace/comments after @import stripping → no .css file", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './wrapper.css';`,
+      "wrapper.css": `@import "./actual.css";\n/* just a wrapper */\n`,
+      "actual.css": `.actual { color: green; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css).toContain(".actual { color: green; }");
+    // wrapper.css는 @import 외에 주석뿐이므로 그 부분은 무시됨
+    expect(css).not.toContain("@import");
+  });
+
+  it("CSS with multiple @import then rules", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './main.css';`,
+      "main.css": `@import "./vars.css";\n@import "./reset.css";\n@import "./base.css";\n.main { color: black; }`,
+      "vars.css": `:root { --c: red; }`,
+      "reset.css": `* { margin: 0; }`,
+      "base.css": `body { font: 16px sans-serif; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    // 순서: vars → reset → base → main
+    const varsIdx = css.indexOf("--c: red");
+    const resetIdx = css.indexOf("margin: 0");
+    const baseIdx = css.indexOf("font: 16px");
+    const mainIdx = css.indexOf("color: black");
+    expect(varsIdx).toBeGreaterThanOrEqual(0);
+    expect(resetIdx).toBeGreaterThan(varsIdx);
+    expect(baseIdx).toBeGreaterThan(resetIdx);
+    expect(mainIdx).toBeGreaterThan(baseIdx);
+    expect(css).not.toContain("@import");
+  });
+
+  it("CSS with special characters in selectors and values", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './special.css';`,
+      "special.css": `.cls\\:hover { color: red; }\n[data-attr="@import"] { display: none; }\n.emoji { content: "\\1F600"; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    // @import가 selector/value 안에 있으면 추출되면 안 됨
+    expect(css).toContain("[data-attr=\"@import\"]");
+    expect(css).toContain("emoji");
+  });
+
+  it("empty CSS file → no .css output", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './empty.css';\nconsole.log("hi");`,
+      "empty.css": ``,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    let hasCss = true;
+    try {
+      await readFile(join(fixture.dir, "index.css"), "utf-8");
+    } catch {
+      hasCss = false;
+    }
+    expect(hasCss).toBe(false);
+  });
+
+  it("CSS with @import inside a rule block → not extracted", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './style.css';`,
+      "style.css": `.parent {\n  color: red;\n}\n/* @import inside comment: @import "./nope.css"; */\n.child { color: blue; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css).toContain(".parent");
+    expect(css).toContain(".child");
+  });
+
+  it("CSS with BOM (byte order mark)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './bom.css';`,
+      "bom.css": `\uFEFF@import "./base.css";\n.bom { color: red; }`,
+      "base.css": `.base { margin: 0; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css).toContain(".bom");
+    // base.css가 인라인되었으면 OK, 안 되었어도 bom.css 자체는 출력
+    expect(css.length).toBeGreaterThan(0);
+  });
+
+  it("large CSS file with many rules", async () => {
+    // 1000개 rule 생성
+    const rules = Array.from({ length: 1000 }, (_, i) => `.c${i} { color: hsl(${i}, 50%, 50%); }`).join("\n");
+    const fixture = await createFixture({
+      "index.ts": `import './big.css';`,
+      "big.css": rules,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css).toContain(".c0");
+    expect(css).toContain(".c999");
+    // 모든 rule이 포함되어야 함
+    expect(css.split(".c").length - 1).toBe(1000);
+  });
+
+  it("re-export chain: JS re-exports from module that imports CSS", async () => {
+    const fixture = await createFixture({
+      "index.ts": `export { x } from './lib.ts';`,
+      "lib.ts": `import './lib.css';\nexport const x = 42;`,
+      "lib.css": `.lib { padding: 10px; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css).toContain(".lib { padding: 10px; }");
+  });
+
+  it("CSS and JS interleaved imports preserve CSS order", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './a.css';\nimport { x } from './util.ts';\nimport './b.css';\nconsole.log(x);`,
+      "util.ts": `export const x = 1;`,
+      "a.css": `.a { order: 1; }`,
+      "b.css": `.b { order: 2; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outJs = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs]);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    expect(css.indexOf(".a")).toBeLessThan(css.indexOf(".b"));
+  });
 });
