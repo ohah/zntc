@@ -1794,6 +1794,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     break :blk orig_key.tag == .private_identifier;
                 };
 
+                const is_private_method = is_private and deco_len > 0 and !is_getter and !is_setter;
+
                 if (deco_len > 0) {
                     const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
@@ -1806,11 +1808,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     var m_body: NodeIndex = .none;
                     var m_params_start: u32 = 0;
                     var m_params_len: u32 = 0;
-                    if (is_private and !is_getter and !is_setter) {
-                        const name_node = self.ast.getNode(name_node_idx);
-                        const raw_n = self.ast.getText(name_node.data.string_ref);
-                        const clean_n = if (raw_n.len >= 2 and raw_n[0] == '"') raw_n[1 .. raw_n.len - 1] else raw_n;
-                        const var_n = if (clean_n.len > 0 and clean_n[0] == '#') clean_n[1..] else clean_n;
+                    if (is_private_method) {
+                        const var_n = extractCleanVarName(self, name_node_idx);
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
                         m_body = try self.visitNode(self.readNodeIdx(me, 3));
                         m_params_start = self.readU32(me, 1);
@@ -1830,35 +1829,14 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     });
                 }
 
-                // private decorated method → getter로 교체
-                if (is_private and deco_len > 0 and !is_getter and !is_setter) {
-                    // get #method() { return _private_method_descriptor.value; }
-                    const last_info = member_infos.items[member_infos.items.len - 1];
-                    if (last_info.descriptor_name) |dname| {
-                        const desc_ref = try makeIdentifier(self, dname);
-                        const val_key = try makeIdentifier(self, "value");
-                        const desc_val = try es_helpers.makeStaticMember(self, desc_ref, val_key, zero_span);
-                        const return_stmt = try self.ast.addNode(.{
-                            .tag = .return_statement, .span = zero_span,
-                            .data = .{ .unary = .{ .operand = desc_val, .flags = 0 } },
-                        });
-                        const body_list = try self.ast.addNodeList(&.{return_stmt});
-                        const getter_body = try self.ast.addNode(.{
-                            .tag = .block_statement, .span = zero_span,
-                            .data = .{ .list = body_list },
-                        });
-                        const empty_params = try self.ast.addNodeList(&.{});
-                        const empty_decos = try self.ast.addNodeList(&.{});
-                        const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
-                        const getter_method = try self.addExtraNode(.method_definition, member.span, &.{
-                            @intFromEnum(new_key),
-                            empty_params.start, empty_params.len,
-                            @intFromEnum(getter_body),
-                            getter_flags,
-                            empty_decos.start, empty_decos.len,
-                        });
-                        try new_members.append(self.allocator, getter_method);
-                    }
+                if (is_private_method) {
+                    // private decorated method → getter로 교체: get #method() { return _descriptor.value; }
+                    const info = member_infos.items[member_infos.items.len - 1];
+                    const desc_ref = try makeIdentifier(self, info.descriptor_name.?);
+                    const val_key = try makeIdentifier(self, "value");
+                    const return_expr = try es_helpers.makeStaticMember(self, desc_ref, val_key, zero_span);
+                    const getter = try self.buildGetterMethod(new_key, return_expr, is_static, member.span);
+                    try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
                     const new_body = try self.visitNode(self.readNodeIdx(me, 3));
@@ -1999,10 +1977,6 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
                     // get x() { return this.#_x_accessor_storage; }
                     {
-                        const getter_key = try self.ast.addNode(.{
-                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
-                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
-                        });
                         const this_node = try self.ast.addNode(.{
                             .tag = .this_expression, .span = zero_span,
                             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
@@ -2011,27 +1985,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             .tag = .private_identifier, .span = storage_span,
                             .data = .{ .string_ref = storage_span },
                         });
-                        const this_storage = try self.addExtraNode(.static_member_expression, zero_span, &.{
-                            @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+                        const return_expr = try es_helpers.makeStaticMember(self, this_node, storage_ref, zero_span);
+                        const getter_key = try self.ast.addNode(.{
+                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
+                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
                         });
-                        const return_stmt = try self.ast.addNode(.{
-                            .tag = .return_statement, .span = zero_span,
-                            .data = .{ .unary = .{ .operand = this_storage, .flags = 0 } },
-                        });
-                        const body_list = try self.ast.addNodeList(&.{return_stmt});
-                        const body = try self.ast.addNode(.{
-                            .tag = .block_statement, .span = zero_span,
-                            .data = .{ .list = body_list },
-                        });
-                        const empty_params = try self.ast.addNodeList(&.{});
-                        const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0); // getter + static
-                        const getter = try self.addExtraNode(.method_definition, zero_span, &.{
-                            @intFromEnum(getter_key),
-                            empty_params.start, empty_params.len,
-                            @intFromEnum(body),
-                            getter_flags,
-                            empty_decos.start, empty_decos.len,
-                        });
+                        const getter = try self.buildGetterMethod(getter_key, return_expr, is_static, zero_span);
                         try new_members.append(self.allocator, getter);
                     }
 
@@ -2998,18 +2957,14 @@ const FieldInitNames = struct {
 };
 
 pub fn buildFieldInitNames(self: *Transformer, name_node_idx: NodeIndex) Error!FieldInitNames {
+    const var_name = extractCleanVarName(self, name_node_idx);
+    // clean_name은 #을 포함 (private field identity), var_name은 # 제거 (JS 변수명)
     const name_node = self.ast.getNode(name_node_idx);
     const raw_name = self.ast.getText(name_node.data.string_ref);
-    // 따옴표 제거: "\"foo\"" → "foo", "\"#foo\"" → "#foo"
     const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
     else
         raw_name;
-    // 변수명에서 # 제거: #foo → foo (JS 변수명에 # 사용 불가)
-    const var_name = if (clean_name.len > 0 and clean_name[0] == '#')
-        clean_name[1..]
-    else
-        clean_name;
     const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{var_name});
     const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{var_name});
     return .{ .init_name = init_name, .extra_name = extra_name, .clean_name = clean_name };
@@ -3075,4 +3030,41 @@ pub fn buildMetadataDefineProperty(self: *Transformer, classThis_span: Span) Err
         .tag = .if_statement, .span = zero_span,
         .data = .{ .ternary = .{ .a = metadata_cond, .b = body, .c = .none } },
     });
+}
+
+/// getter method_definition 생성 헬퍼: get key() { return return_expr; }
+/// private method → getter 변환, accessor → getter 생성 양쪽에서 공용.
+pub fn buildGetterMethod(self: *Transformer, key: NodeIndex, return_expr: NodeIndex, is_static: bool, span: Span) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const return_stmt = try self.ast.addNode(.{
+        .tag = .return_statement, .span = zero_span,
+        .data = .{ .unary = .{ .operand = return_expr, .flags = 0 } },
+    });
+    const body_list = try self.ast.addNodeList(&.{return_stmt});
+    const getter_body = try self.ast.addNode(.{
+        .tag = .block_statement, .span = zero_span,
+        .data = .{ .list = body_list },
+    });
+    const empty_params = try self.ast.addNodeList(&.{});
+    const empty_decos = try self.ast.addNodeList(&.{});
+    const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
+    return self.addExtraNode(.method_definition, span, &.{
+        @intFromEnum(key),
+        empty_params.start, empty_params.len,
+        @intFromEnum(getter_body),
+        getter_flags,
+        empty_decos.start, empty_decos.len,
+    });
+}
+
+/// 문자열 리터럴 노드에서 JS 변수명으로 사용 가능한 이름 추출.
+/// 따옴표 제거 ("\"foo\"" → "foo") + # 제거 ("#foo" → "foo").
+pub fn extractCleanVarName(self: *Transformer, name_node_idx: NodeIndex) []const u8 {
+    const name_node = self.ast.getNode(name_node_idx);
+    const raw_name = self.ast.getText(name_node.data.string_ref);
+    const clean = if (raw_name.len >= 2 and raw_name[0] == '"')
+        raw_name[1 .. raw_name.len - 1]
+    else
+        raw_name;
+    return if (clean.len > 0 and clean[0] == '#') clean[1..] else clean;
 }
