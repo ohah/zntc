@@ -456,6 +456,9 @@ test "stage3: method decorator → __esDecorate with kind method" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"greet\"") != null);
+    // access: { has: obj => "greet" in obj, get: obj => obj.greet }
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "access") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "has") != null);
     // instance method → __runInitializers in constructor
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers") != null);
 }
