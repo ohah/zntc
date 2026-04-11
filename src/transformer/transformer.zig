@@ -45,6 +45,11 @@ const es2025_using = @import("es2025_using.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const worklet_mod = @import("transformer/worklet.zig");
+pub const ast_plugin_mod = @import("ast_plugin.zig");
+pub const AstPlugin = ast_plugin_mod.AstPlugin;
+pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
+pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
 pub const DefineEntry = struct {
@@ -94,6 +99,10 @@ pub const TransformOptions = struct {
     jsx_import_source: []const u8 = "react",
     /// jsxDEV의 fileName 출력용 파일 경로
     jsx_filename: []const u8 = "",
+
+    /// AST 플러그인 배열. transformer가 AST 노드 방문 시 각 플러그인의 훅을 호출.
+    /// 예: worklet 플러그인, styled-components 플러그인 등.
+    ast_plugins: []const AstPlugin = &.{},
 
     pub const compat = @import("compat.zig");
 };
@@ -286,6 +295,11 @@ pub const Transformer = struct {
     /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
     refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
 
+    /// 후행 노드 버퍼 (함수 뒤에 프로퍼티 할당문 삽입용).
+    /// pending_nodes가 자식 앞에 삽입되는 것과 대칭: trailing_nodes는 자식 뒤에 삽입.
+    /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
+    trailing_nodes: std.ArrayList(NodeIndex) = .empty,
+
     pub const BlockRenameEntry = struct {
         old_name: []const u8,
         new_name: []const u8,
@@ -358,6 +372,12 @@ pub const Transformer = struct {
 
     pub fn deinit(self: *Transformer) void {
         self.ast.deinit();
+        self.deinitExceptAst();
+    }
+
+    /// AST를 제외한 모든 리소스를 해제한다.
+    /// 테스트에서 AST를 별도로 관리할 때 사용.
+    pub fn deinitExceptAst(self: *Transformer) void {
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
@@ -365,6 +385,7 @@ pub const Transformer = struct {
         self.refresh_registrations.deinit(self.allocator);
         for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
         self.refresh_signatures.deinit(self.allocator);
+        self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
         self.tagged_template_fns.deinit(self.allocator);
@@ -1398,6 +1419,10 @@ pub const Transformer = struct {
         const pending_top = self.pending_nodes.items.len;
         defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
+        // trailing_nodes save/restore: 중첩 visitExtraList 호출에 안전.
+        const trailing_top = self.trailing_nodes.items.len;
+        defer self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+
         var i: u32 = 0;
         while (i < len) : (i += 1) {
             // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
@@ -1412,6 +1437,13 @@ pub const Transformer = struct {
 
             if (!new_child.isNone()) {
                 try self.scratch.append(self.allocator, new_child);
+            }
+
+            // trailing_nodes 드레인: visitNode가 추가한 후행 노드를 자식 뒤에 삽입
+            // (예: worklet 함수 뒤의 __workletHash/__closure/__initData 프로퍼티 할당)
+            if (self.trailing_nodes.items.len > trailing_top) {
+                try self.scratch.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
+                self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
             }
         }
 
@@ -2022,6 +2054,30 @@ pub const Transformer = struct {
             @intFromEnum(new_name), pp.new_params.start, pp.new_params.len,
             @intFromEnum(new_body), self.readU32(e, 4),  none,
         });
+
+        // AST Plugin dispatch: onFunction
+        if (self.options.ast_plugins.len > 0) {
+            var api = AstTransformCtx{ .transformer = self, .modified_body = null };
+            const func_info = FunctionInfo{
+                .node_idx = result,
+                .name = self.getFunctionName(self.ast.getNode(result)),
+                .body_idx = new_body,
+                .params_start = pp.new_params.start,
+                .params_len = pp.new_params.len,
+                .flags = self.readU32(e, 4),
+                .source_path = self.options.jsx_filename,
+            };
+            for (self.options.ast_plugins) |ast_plugin| {
+                if (ast_plugin.onFunction) |hook| {
+                    try hook(ast_plugin.context, &api, func_info);
+                }
+            }
+            // 플러그인이 body를 수정했으면 result 노드의 extra_data를 패치
+            if (api.modified_body) |new_body_idx| {
+                const result_extra = self.ast.getNode(result).data.extra;
+                self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
+            }
+        }
 
         // React Fast Refresh: PascalCase 함수 → 컴포넌트 등록
         try self.maybeRegisterRefreshComponent(result);

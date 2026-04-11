@@ -81,7 +81,7 @@ const result = buildSync({ entryPoints: ["src/index.ts"] });
 const result = await build({
   entryPoints: ["src/index.ts"],
   target: "es2020",                          // ES 다운레벨 타겟
-  loader: { ".png": "file", ".svg": "text" }, // 확장자별 로더
+  loader: { ".png": "file", ".svg": "text" }, // 확장자별 로더 (.css는 자동 번들링)
   conditions: ["import", "default"],          // package.json exports 조건
   resolveExtensions: [".ts", ".tsx", ".js"],  // 확장자 탐색 순서
   mainFields: ["module", "main"],             // package.json 필드 순서
@@ -122,6 +122,22 @@ await build({
 
 > **async 훅 지원**: 모든 Rollup/Vite 훅은 `Promise`를 반환할 수 있다.
 > `async resolveId()`, `async load()`, `async transform()`, `async renderChunk()`, `async generateBundle()` 모두 동작.
+
+### vite-plugin-zts (Vite 플러그인)
+Vite의 esbuild transform을 ZTS로 교체하는 플러그인.
+```typescript
+// vite.config.ts
+import { defineConfig } from "vite";
+import { zts } from "vite-plugin-zts";
+
+export default defineConfig({
+  plugins: [zts()],
+});
+```
+옵션:
+- `include?: RegExp` — 변환할 파일 패턴 (기본: `/\.(tsx?|jsx)$/`)
+- `exclude?: RegExp` — 제외 패턴 (기본: `/node_modules/`)
+- `transpileOptions?: TranspileOptions` — ZTS transpile 옵션
 
 ### define/alias
 ```typescript
@@ -202,6 +218,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 --entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
 --chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
 --asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], [dir]/[name]/[hash]/[ext] 지원)
+--css-names=<pattern>        CSS 출력 파일명 패턴 (기본: [name])
 --loader:.ext=type           확장자별 로더 지정 (file, dataurl, text, binary, copy, empty)
 --metafile=<path>            빌드 입출력 JSON (esbuild 호환, 기본: meta.json)
 --analyze                    번들 분석 출력 (metafile JSON을 stderr에 출력)
@@ -245,6 +262,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 - `--platform=react-native` → RN 프리셋 자동 적용 (아래 참조)
 - `import.meta` → CJS+node: `require("url").pathToFileURL(__filename).href` / CJS+browser: `""`
 - `--watch` / `--serve` → 증분 빌드 (변경 모듈만 재파싱, 나머지 캐시)
+- `import './style.css'` → 별도 `.css` 파일 자동 생성 (CSS `@import` 인라이닝, `--minify` 시 Lightning CSS minify)
 
 ### React Native 프리셋 (`--platform=react-native`)
 - resolve-extensions (사용자 미지정 시):

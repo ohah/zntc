@@ -249,7 +249,8 @@ pub const Plugin = struct {
 
 ## 로더 시스템 (esbuild/Rolldown 호환)
 
-현재 ZTS는 .ts/.tsx/.js/.jsx만 처리. 플러그인의 load 훅으로 구현:
+현재 ZTS는 .ts/.tsx/.js/.jsx/.css를 네이티브 처리. 그 외는 플러그인의 load 훅으로 구현:
+- **CSS**: `import './style.css'` → 별도 `.css` 파일 emit, `@import` 인라이닝, `--minify` 시 Lightning CSS
 - **JSON**: `import pkg from './package.json'` → `export default {...}` + named exports
 - **Text**: 파일 내용을 문자열로 `export default "..."`
 - **Base64**: 파일을 base64 인코딩 `export default "data:...;base64,..."`
@@ -257,9 +258,9 @@ pub const Plugin = struct {
 - **Binary**: 파일을 Uint8Array로 export
 - **File/Asset**: 파일을 출력 디렉토리에 복사, 해시 파일명 URL 반환
 - **Copy**: 파일을 그대로 복사
-- **Empty**: 빈 모듈로 처리 (tree-shaking 대상)
+- **Empty**: 빈 모듈로 처리 (tree-shaking 대상, `--loader:.css=empty`로 CSS 무시 가능)
 
-CLI: `--loader:.json=json --loader:.txt=text --loader:.png=file`
+CLI: `--loader:.json=json --loader:.txt=text --loader:.png=file --loader:.css=empty`
 
 ---
 

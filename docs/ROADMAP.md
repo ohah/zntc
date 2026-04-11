@@ -328,6 +328,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | **플러그인 예제** | S~M | 없음 | PostCSS, Tailwind, SVG, YAML 등 커뮤니티 플러그인 레퍼런스 |
 | ~~**import.meta.glob**~~ | ✅ | 완료 | Vite 호환 glob import (eager/import 옵션) |
 | **마이그레이션 가이드** | S | 없음 | esbuild → ZTS, Vite → ZTS 설정 대응표 |
+| ~~**vite-plugin-zts**~~ | ✅ | 완료 | Vite의 esbuild transform을 ZTS로 교체하는 플러그인 |
 | **프레임워크 통합** | XL | 없음 | Next.js/Remix/SvelteKit 플러그인 또는 어댑터 |
 | **Vite 호환 모드** | XL | 없음 | `vite.config.js` 읽어서 마이그레이션 비용 제로 (장기 목표) |
 

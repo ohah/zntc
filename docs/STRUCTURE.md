@@ -93,6 +93,8 @@ src/
     purity.zig              #   순수성 분석 (expression/statement/varDecl/class 공유)
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
+    css_scanner.zig         #   CSS @import 추출기 (경량 상태 머신)
+    css_emitter.zig         #   CSS 번들 생성 (@import strip + 연결 + 파일명 패턴)
     emitter/                #   emitter 서브 모듈
       dev.zig               #     dev mode 번들링 (HMR, __zts_register)
       chunks.zig            #     code splitting + hash/naming
@@ -140,6 +142,7 @@ src/
     runner.zig              #   메타데이터 파서 + 테스트 실행기
 packages/
   core/                     # N-API 바인딩 (npm 패키지)
+  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체)
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈)
   integration/              # Bun 기반 CLI 통합 테스트
