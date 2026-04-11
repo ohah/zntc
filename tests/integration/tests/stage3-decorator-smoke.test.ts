@@ -73,8 +73,7 @@ describe.skipIf(!hasMobx)("Stage 3 Decorator Smoke — MobX 6", () => {
     expect(r.output).toContain("0,1,2,3");
   });
 
-  // TODO: @computed getter에서 MobX 내부 descriptor 조회 실패 — getter decorator의 descriptor 전달 방식 검토 필요
-  it.skip("@computed getter", async () => {
+  it("@computed getter", async () => {
     const r = await mobxSmoke(`
       import { makeObservable, observable, computed, action } from "mobx";
       class Store {
