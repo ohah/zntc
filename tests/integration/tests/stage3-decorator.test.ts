@@ -149,8 +149,7 @@ describe("Stage 3 Decorators", () => {
     expect(result.runOutput).toContain("field:x:true");
   });
 
-  // TODO: field 초기값을 __runInitializers로 래핑하는 변환 구현 후 활성화
-  it.skip("field decorator can transform initial value", async () => {
+  it("field decorator can transform initial value", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         function multiply(factor: number) {
@@ -259,8 +258,29 @@ describe("Stage 3 Decorators", () => {
   });
 
   // --- Decorator metadata (Symbol.metadata) ---
-  // TODO: Object.defineProperty(_classThis, Symbol.metadata, ...) 호출 생성 후 활성화
-  // it("metadata is set on class", async () => { ... });
+
+  it("metadata is set on class", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        // Symbol.metadata polyfill (Bun 1.x에서 아직 미지원)
+        if (!("metadata" in Symbol)) {
+          (Symbol as any).metadata = Symbol("Symbol.metadata");
+        }
+        function meta(value: any, ctx: any) {
+          if (ctx.metadata) {
+            ctx.metadata.decorated = true;
+          }
+          return value;
+        }
+        @meta class Foo {}
+        const m = (Foo as any)[Symbol.metadata];
+        console.log(m ? m.decorated : "no-metadata");
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("true");
+  });
 
   // --- Transpile (non-bundle) mode ---
 
