@@ -391,9 +391,9 @@ export default (() => {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
 		}
-		prop = __runInitializers(this, _prop_initializers, void 0);
+		prop = (__runInitializers(this, _instanceExtraInitializers),__runInitializers(this, _prop_initializers, void 0));
 		constructor() {
-			__runInitializers(this, _instanceExtraInitializers);
+			__runInitializers(this, _prop_extraInitializers);
 		}
 	};
 	return _Class = _classThis;

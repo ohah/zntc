@@ -2812,9 +2812,9 @@ class DerivedWithDecoratorOnClassProperty extends Base {
 						Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 					}
 				}
-				innerProp = __runInitializers(this, _innerProp_initializers, true);
+				innerProp = (__runInitializers(this, _instanceExtraInitializers),__runInitializers(this, _innerProp_initializers, true));
 				constructor() {
-					__runInitializers(this, _instanceExtraInitializers);
+					__runInitializers(this, _innerProp_extraInitializers);
 				}
 			};
 			return InnerClass = _classThis;
@@ -7444,12 +7444,12 @@ dec];
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
 		}
-		#foo = __runInitializers(this, _foo_initializers, 1);
+		#foo = (__runInitializers(this, _instanceExtraInitializers),__runInitializers(this, _foo_initializers, 1));
 		get #bar() {
 			return _private_bar_descriptor.value;
 		}
 		constructor() {
-			__runInitializers(this, _instanceExtraInitializers);
+			__runInitializers(this, _foo_extraInitializers);
 		}
 	};
 	return A = _classThis;
@@ -10797,7 +10797,7 @@ let A = (() => {
 		static set x(value) {
 			this.#_x_accessor_storage = value;
 		}
-		#_y_accessor_storage = __runInitializers(this, _y_initializers, 2);
+		#_y_accessor_storage = (__runInitializers(this, _instanceExtraInitializers),__runInitializers(this, _y_initializers, 2));
 		get y() {
 			return this.#_y_accessor_storage;
 		}
@@ -10805,7 +10805,7 @@ let A = (() => {
 			this.#_y_accessor_storage = value;
 		}
 		constructor() {
-			__runInitializers(this, _instanceExtraInitializers);
+			__runInitializers(this, _y_extraInitializers);
 		}
 	};
 	return A = _classThis;

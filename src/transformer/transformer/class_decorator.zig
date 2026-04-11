@@ -1767,6 +1767,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     var has_constructor = false;
 
+    // instance field/accessor initializer 체이닝용: 마지막 field의 extra_initializers_name만 추적.
+    // TypeScript 패턴: 첫 field에 _instanceExtraInitializers를 piggyback,
+    // 이후 field에 이전 field의 _extraInitializers를 piggyback,
+    // constructor에 마지막 field의 _extraInitializers를 삽입
+    var last_instance_field_extra: ?[]const u8 = null;
+
     {
         var i: u32 = 0;
         while (i < body_len) : (i += 1) {
@@ -1909,7 +1915,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 // property를 decorator 없이 추가 (decorated면 초기값을 __runInitializers로 래핑)
                 const raw_init = try self.visitNode(self.readNodeIdx(me, 1));
                 const new_init = if (field_init_name) |init_name| blk: {
-                    // field = __runInitializers(this, _x_initializers, originalValue)
+                    // TypeScript 패턴: (runInit(this, _prevExtra), runInit(this, _x_initializers, val))
+                    // 첫 field: _prevExtra = _instanceExtraInitializers
+                    // 이후 field: _prevExtra = 이전 field의 _extraInitializers
                     const this_node = try self.ast.addNode(.{
                         .tag = .this_expression,
                         .span = zero_span,
@@ -1917,18 +1925,31 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     });
                     const callee = try makeIdentifier(self, "__runInitializers");
                     const init_arr = try makeIdentifier(self, init_name);
-                    if (!raw_init.isNone()) {
+                    const init_call = if (!raw_init.isNone()) init_blk: {
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, raw_init });
-                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
+                        break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                             @intFromEnum(callee), args.start, args.len, 0,
                         });
-                    } else {
+                    } else init_blk: {
                         // 초기값 없어도 void 0을 명시적으로 전달 — __runInitializers가 arguments.length > 2를 체크
                         const void0 = try makeIdentifier(self, "void 0");
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, void0 });
-                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
+                        break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                             @intFromEnum(callee), args.start, args.len, 0,
                         });
+                    };
+
+                    // instance field만 initializer 체이닝 적용 (static은 static block에서 처리)
+                    if (!is_static) {
+                        const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
+                        const result = try buildPiggybackedInitCall(self,prev_extra, init_call);
+                        const info = member_infos.items[member_infos.items.len - 1];
+                        if (info.extra_initializers_name) |extra_name| {
+                            last_instance_field_extra = extra_name;
+                        }
+                        break :blk result;
+                    } else {
+                        break :blk init_call;
                     }
                 } else raw_init;
                 const empty_list = try self.ast.addNodeList(&.{});
@@ -1982,20 +2003,31 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .span = storage_span,
                         .data = .{ .string_ref = storage_span },
                     });
-                    // 초기값: __runInitializers(this, _x_initializers, originalValue)
-                    const init_val = if (!new_init.isNone()) blk: {
-                        const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = zero_span,
-                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
-                        });
-                        const callee = try makeIdentifier(self, "__runInitializers");
-                        const init_arr_ref = try makeIdentifier(self, names.init_name);
-                        const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
-                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
-                            @intFromEnum(callee), args.start, args.len, 0,
-                        });
-                    } else NodeIndex.none;
+                    // 초기값: TypeScript 패턴 — (runInit(this, _prevExtra), runInit(this, _x_initializers, val))
+                    const init_val = blk: {
+                        const init_call = if (!new_init.isNone()) init_blk: {
+                            const this_node = try self.ast.addNode(.{
+                                .tag = .this_expression,
+                                .span = zero_span,
+                                .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                            });
+                            const callee = try makeIdentifier(self, "__runInitializers");
+                            const init_arr_ref = try makeIdentifier(self, names.init_name);
+                            const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
+                            break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
+                                @intFromEnum(callee), args.start, args.len, 0,
+                            });
+                        } else NodeIndex.none;
+
+                        // instance accessor만 initializer 체이닝 적용
+                        if (!is_static) {
+                            const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
+                            last_instance_field_extra = names.extra_name;
+                            break :blk try buildPiggybackedInitCall(self,prev_extra, init_call);
+                        } else {
+                            break :blk init_call;
+                        }
+                    };
 
                     const empty_decos = try self.ast.addNodeList(&.{});
                     const backing_field = try self.addExtraNode(.property_definition, member.span, &.{
@@ -2264,44 +2296,83 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         try new_members.insert(self.allocator, 1, sb);
     }
 
-    // constructor에 __runInitializers(this, _instanceExtraInitializers) 삽입
-    if (has_instance_decorators and !has_constructor) {
-        // 빈 constructor 생성: constructor() { __runInitializers(this, _instanceExtraInitializers); }
+    // constructor에 __runInitializers 삽입
+    // TypeScript 패턴:
+    //   - field/accessor decorator 있을 때: constructor 앞에 마지막 field의 _extraInitializers 삽입
+    //     (_instanceExtraInitializers는 첫 field 초기화에 piggyback됨)
+    //   - field/accessor decorator 없을 때: constructor 앞에 _instanceExtraInitializers 삽입
+    if (has_instance_decorators) {
+        // constructor에 삽입할 initializer 이름 결정
+        const ctor_init_name = last_instance_field_extra orelse "_instanceExtraInitializers";
+
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
         });
-        const run_init = try self.buildRunInitializersCall2(this_node, "_instanceExtraInitializers");
+        const run_init = try self.buildRunInitializersCall2(this_node, ctor_init_name);
         const run_init_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
         });
-        const ctor_body_list = try self.ast.addNodeList(&.{run_init_stmt});
-        const ctor_body = try self.ast.addNode(.{
-            .tag = .block_statement,
-            .span = zero_span,
-            .data = .{ .list = ctor_body_list },
-        });
-        const ctor_key_span = try self.ast.addString("constructor");
-        const ctor_key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = ctor_key_span,
-            .data = .{ .string_ref = ctor_key_span },
-        });
-        const empty_params = try self.ast.addNodeList(&.{});
-        const empty_decos = try self.ast.addNodeList(&.{});
-        const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
-            @intFromEnum(ctor_key),
-            empty_params.start,
-            empty_params.len,
-            @intFromEnum(ctor_body),
-            0, // flags (no static/getter/setter)
-            empty_decos.start,
-            empty_decos.len,
-        });
-        try new_members.append(self.allocator, ctor_method);
+
+        if (has_constructor) {
+            // new_members에서 constructor를 key 기반으로 탐색 (static block 삽입에 무관)
+            for (new_members.items, 0..) |member_node_idx, mi| {
+                const m = self.ast.getNode(member_node_idx);
+                if (m.tag != .method_definition) continue;
+                const m_flags = self.readU32(m.data.extra, 4);
+                if ((m_flags & 0x07) != 0) continue; // getter/setter/static이면 skip
+                const m_key_idx = self.readNodeIdx(m.data.extra, 0);
+                if (m_key_idx.isNone()) continue;
+                const m_key = self.ast.getNode(m_key_idx);
+                if (m_key.tag != .identifier_reference and m_key.tag != .binding_identifier) continue;
+                if (!std.mem.eql(u8, self.ast.getText(m_key.data.string_ref), "constructor")) continue;
+
+                // prependStatementsToBody로 기존 body 앞에 삽입
+                const old_body_idx = self.readNodeIdx(m.data.extra, 3);
+                const new_body_ctor = try self.prependStatementsToBody(old_body_idx, &.{run_init_stmt});
+                const empty_decos = try self.ast.addNodeList(&.{});
+                const new_ctor_method = try self.addExtraNode(.method_definition, m.span, &.{
+                    self.readU32(m.data.extra, 0), // key
+                    self.readU32(m.data.extra, 1), // params_start
+                    self.readU32(m.data.extra, 2), // params_len
+                    @intFromEnum(new_body_ctor),
+                    self.readU32(m.data.extra, 4), // flags
+                    empty_decos.start,
+                    empty_decos.len,
+                });
+                new_members.items[mi] = new_ctor_method;
+                break;
+            }
+        } else {
+            // 빈 constructor 생성
+            const ctor_body_list = try self.ast.addNodeList(&.{run_init_stmt});
+            const ctor_body = try self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = zero_span,
+                .data = .{ .list = ctor_body_list },
+            });
+            const ctor_key_span = try self.ast.addString("constructor");
+            const ctor_key = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = ctor_key_span,
+                .data = .{ .string_ref = ctor_key_span },
+            });
+            const empty_params = try self.ast.addNodeList(&.{});
+            const empty_decos = try self.ast.addNodeList(&.{});
+            const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
+                @intFromEnum(ctor_key),
+                empty_params.start,
+                empty_params.len,
+                @intFromEnum(ctor_body),
+                0, // flags (no static/getter/setter)
+                empty_decos.start,
+                empty_decos.len,
+            });
+            try new_members.append(self.allocator, ctor_method);
+        }
     }
 
     // 새 class body 생성
@@ -3284,4 +3355,33 @@ pub fn appendEsDecorateStmt(self: *Transformer, stmts: *std.ArrayList(NodeIndex)
     const zero_span = Span{ .start = 0, .end = 0 };
     const call = try self.buildEsDecorateCall(info);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
+}
+
+/// field/accessor 초기화에 이전 extra initializers를 piggyback하는 sequence expression 생성.
+/// TypeScript 패턴: `(__runInitializers(this, _prevExtra), __runInitializers(this, _x_initializers, val))`
+/// init_call이 .none이면 prevCall만 반환 (초기값 없는 accessor).
+fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, init_call: NodeIndex) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const prev_this = try self.ast.addNode(.{
+        .tag = .this_expression,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+    });
+    const prev_callee = try makeIdentifier(self, "__runInitializers");
+    const prev_arr = try makeIdentifier(self, prev_extra_name);
+    const prev_args = try self.ast.addNodeList(&.{ prev_this, prev_arr });
+    const prev_call = try self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(prev_callee), prev_args.start, prev_args.len, 0,
+    });
+    if (!init_call.isNone()) {
+        const seq_list = try self.ast.addNodeList(&.{ prev_call, init_call });
+        const seq = try self.ast.addNode(.{
+            .tag = .sequence_expression,
+            .span = zero_span,
+            .data = .{ .list = seq_list },
+        });
+        return es_helpers.makeParenExpr(self, seq, zero_span);
+    } else {
+        return prev_call;
+    }
 }

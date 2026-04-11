@@ -185,7 +185,7 @@ var init_react_native_Libraries_Performance_Systrace = __esm({
 	TRACE_TAG_REACT = 1 << 13;
 	_asyncCookie = 0;
 	if (false) {
-		Systrace = { isEnabled, setEnabled, beginEvent, endEvent, beginAsyncEvent, endAsyncEvent, counterEvent };
+		const Systrace = { isEnabled, setEnabled, beginEvent, endEvent, beginAsyncEvent, endAsyncEvent, counterEvent };
 		global[(global.__METRO_GLOBAL_PREFIX__ || "") + "__SYSTRACE"] = Systrace;
 	}
 	
@@ -420,7 +420,7 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 			this.__guard(() => {
 				this.__callReactNativeMicrotasks();
 			});
-			queue = this._queue;
+			const queue = this._queue;
 			this._queue = [[], [], [], this._callID];
 			return queue[0].length ? queue : null;
 		}
@@ -431,8 +431,8 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 			this._lazyCallableModules[name] = () => module;
 		}
 		registerLazyCallableModule(name,factory) {
-			
-			getValue = factory;
+			let module;
+			let getValue = factory;
 			this._lazyCallableModules[name] = () => {
 				if (getValue) {
 					module = getValue();
@@ -442,7 +442,7 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 			};
 		}
 		getCallableModule(name) {
-			getValue = this._lazyCallableModules[name];
+			const getValue = this._lazyCallableModules[name];
 			return getValue ? getValue() : null;
 		}
 		callNativeSyncHook(moduleID,methodID,params,onFail,onSucc) {
@@ -460,11 +460,11 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 						delete this._debugInfo[this._callID - DEBUG_INFO_LIMIT];
 					}
 					if (this._successCallbacks.size > 500) {
-						info = {};
+						const info = {};
 						this._successCallbacks.forEach((_,callID) => {
-							debug = this._debugInfo[callID];
-							module = debug && this._remoteModuleTable[debug[0]];
-							method = debug && this._remoteMethodTable[debug[0]][debug[1]];
+							const debug = this._debugInfo[callID];
+							const module = debug && this._remoteModuleTable[debug[0]];
+							const method = debug && this._remoteMethodTable[debug[0]][debug[1]];
 							info[callID] = { module, method };
 						});
 						warnOnce$1("excessive-number-of-pending-callbacks", `Excessive number of pending callbacks: ${this._successCallbacks.size}. Some pending callbacks that might have leaked by never being called from native code: ${stringifySafe$1(info)}`);
@@ -485,7 +485,7 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 			this._queue[MODULE_IDS].push(moduleID);
 			this._queue[METHOD_IDS].push(methodID);
 			if (false) {
-				isValidArgument = (val) => {
+				const isValidArgument = (val) => {
 					switch (typeof val) {
 						case "undefined":
 						case "boolean":
@@ -512,8 +512,8 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 							return false;
 					}
 				};
-				replacer = (key, val) => {
-					t = typeof val;
+				const replacer = (key, val) => {
+					const t = typeof val;
 					if (t === "function") {
 						return "<<Function " + val.name + ">>";
 					} else if (t === "number" && !isFinite(val)) {
@@ -526,9 +526,9 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 				deepFreezeAndThrowOnMutationInDev$1(params);
 			}
 			this._queue[PARAMS].push(params);
-			now = Date.now();
+			const now = Date.now();
 			if (global.nativeFlushQueueImmediate && now - this._lastFlush >= MIN_TIME_BETWEEN_FLUSHES_MS) {
-				queue = this._queue;
+				const queue = this._queue;
 				this._queue = [[], [], [], this._callID];
 				this._lastFlush = now;
 				global.nativeFlushQueueImmediate(queue);
@@ -585,12 +585,12 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 				if (this.__spy) {
 					this.__spy({ type: TO_JS, module, method, args });
 				}
-				moduleMethods = this.getCallableModule(module);
+				const moduleMethods = this.getCallableModule(module);
 				if (!moduleMethods) {
-					callableModuleNames = Object.keys(this._lazyCallableModules);
-					n = callableModuleNames.length;
-					callableModuleNameList = callableModuleNames.join(", ");
-					isBridgelessMode = global.RN$Bridgeless === true ? "true" : "false";
+					const callableModuleNames = Object.keys(this._lazyCallableModules);
+					const n = callableModuleNames.length;
+					const callableModuleNameList = callableModuleNames.join(", ");
+					const isBridgelessMode = global.RN$Bridgeless === true ? "true" : "false";
 					invariant$2(false, `Failed to call into JavaScript module method ${module}.${method}(). Module has not been registered as callable. Bridgeless Mode: ${isBridgelessMode}. Registered callable JavaScript modules (n = ${n}): ${callableModuleNameList}.
 	          A frequent cause of the error is that the application entry file path is incorrect. This can also happen when the JS bundle is corrupt or there is an early initialization error when loading React Native.`);
 				}
@@ -605,15 +605,15 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 		__invokeCallback(cbID,args) {
 			this._lastFlush = Date.now();
 			this._eventLoopStartTime = this._lastFlush;
-			callID = cbID >>> 1;
-			isSuccess = cbID & 1;
-			callback = isSuccess ? this._successCallbacks.get(callID) : this._failureCallbacks.get(callID);
+			const callID = cbID >>> 1;
+			const isSuccess = cbID & 1;
+			const callback = isSuccess ? this._successCallbacks.get(callID) : this._failureCallbacks.get(callID);
 			if (false) {
-				debug = this._debugInfo[callID];
-				module = debug && this._remoteModuleTable[debug[0]];
-				method = debug && this._remoteMethodTable[debug[0]][debug[1]];
+				const debug = this._debugInfo[callID];
+				const module = debug && this._remoteModuleTable[debug[0]];
+				const method = debug && this._remoteMethodTable[debug[0]][debug[1]];
 				invariant$2(callback, `No callback found with cbID ${cbID} and callID ${callID} for ` + (method ? ` ${module}.${method} - most likely the callback was already invoked` : `module ${module || "<unknown>"}`) + `. Args: '${stringifySafe$1(args)}'`);
-				profileName = debug ? "<callback for " + module + "." + method + ">" : cbID;
+				const profileName = debug ? "<callback for " + module + "." + method + ">" : cbID;
 				if (callback && this.__spy) {
 					this.__spy({ type: TO_JS, module: null, method: profileName, args });
 				}
@@ -775,11 +775,11 @@ var init_react_native_Libraries_BatchedBridge_NativeModules = __esm({
 	if (global.nativeModuleProxy) {
 		NativeModules = global.nativeModuleProxy;
 	} else {
-		bridgeConfig = global.__fbBatchedBridgeConfig;
+		const bridgeConfig = global.__fbBatchedBridgeConfig;
 		invariant$3(bridgeConfig, "__fbBatchedBridgeConfig is not set, cannot invoke native modules");
-		defineLazyObjectProperty = (init_react_native_Libraries_Utilities_defineLazyObjectProperty(), __toCommonJS(exports_react_native_Libraries_Utilities_defineLazyObjectProperty)).default;
+		const defineLazyObjectProperty = (init_react_native_Libraries_Utilities_defineLazyObjectProperty(), __toCommonJS(exports_react_native_Libraries_Utilities_defineLazyObjectProperty)).default;
 		(bridgeConfig.remoteModuleConfig || []).forEach((config, moduleID) => {
-			info = genModule(config, moduleID);
+			const info = genModule(config, moduleID);
 			if (!info) {
 				return;
 			}
@@ -1736,9 +1736,9 @@ var init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios = __esm({
 		if ("semantic" in color) {
 			return color;
 		} else if ("dynamic" in color && color.dynamic !== undefined) {
-			normalizeColor = (init_react_native_Libraries_StyleSheet_normalizeColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_normalizeColor)).default;
-			dynamic = color.dynamic;
-			dynamicColor = { dynamic: { light: normalizeColor(dynamic.light), dark: normalizeColor(dynamic.dark), highContrastLight: normalizeColor(dynamic.highContrastLight), highContrastDark: normalizeColor(dynamic.highContrastDark) } };
+			const normalizeColor = (init_react_native_Libraries_StyleSheet_normalizeColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_normalizeColor)).default;
+			const dynamic = color.dynamic;
+			const dynamicColor = { dynamic: { light: normalizeColor(dynamic.light), dark: normalizeColor(dynamic.dark), highContrastLight: normalizeColor(dynamic.highContrastLight), highContrastDark: normalizeColor(dynamic.highContrastDark) } };
 			return dynamicColor;
 		}
 		return null;
@@ -1746,9 +1746,9 @@ var init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios = __esm({
 	normalizeColorObject = _normalizeColorObject;
 	_processColorObject = (color) => {
 		if ("dynamic" in color && color.dynamic != null) {
-			processColor = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
-			dynamic = color.dynamic;
-			dynamicColor = { dynamic: { light: processColor(dynamic.light), dark: processColor(dynamic.dark), highContrastLight: processColor(dynamic.highContrastLight), highContrastDark: processColor(dynamic.highContrastDark) } };
+			const processColor = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
+			const dynamic = color.dynamic;
+			const dynamicColor = { dynamic: { light: processColor(dynamic.light), dark: processColor(dynamic.dark), highContrastLight: processColor(dynamic.highContrastLight), highContrastDark: processColor(dynamic.highContrastDark) } };
 			return dynamicColor;
 		}
 		return color;
@@ -2379,20 +2379,20 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 	"processBackgroundPosition.js"() {
 	"use strict";
 	parseBackgroundPositionCSSString = (backgroundPosition) => {
-		result = [];
-		positions = backgroundPosition.split(",").map((s) => s.trim());
+		const result = [];
+		const positions = backgroundPosition.split(",").map((s) => s.trim());
 		for (const position of positions) {
-			
-			
-			
-			
-			parts = position.split(/\s+/).filter((p) => p.length > 0);
+			let top;
+			let left;
+			let right;
+			let bottom;
+			const parts = position.split(/\s+/).filter((p) => p.length > 0);
 			if (parts.length === 1) {
-				t1 = parts[0];
+				const t1 = parts[0];
 				if (t1 == null) {
 					return [];
 				}
-				token1 = t1.toLowerCase().trim();
+				const token1 = t1.toLowerCase().trim();
 				if (token1 === "left") {
 					left = "0%";
 					top = "50%";
@@ -2409,7 +2409,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 					left = "50%";
 					top = "100%";
 				} else if (isValidPosition(token1)) {
-					value = getPositionFromCSSValue$1(token1);
+					const value = getPositionFromCSSValue$1(token1);
 					if (value == null) {
 						return [];
 					}
@@ -2418,12 +2418,12 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 				}
 			}
 			if (parts.length === 2) {
-				t1 = parts[0];
-				t2 = parts[1];
+				const t1 = parts[0];
+				const t2 = parts[1];
 				if (t1 == null || t2 == null) {
 					return [];
 				}
-				token1 = t1.toLowerCase().trim();
+				const token1 = t1.toLowerCase().trim();
 				if (token1 === "left") {
 					left = "0%";
 				} else if (token1 === "center") {
@@ -2435,13 +2435,13 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 				} else if (token1 === "bottom") {
 					top = "100%";
 				} else if (isValidPosition(token1)) {
-					value = getPositionFromCSSValue$1(token1);
+					const value = getPositionFromCSSValue$1(token1);
 					if (value == null) {
 						return [];
 					}
 					left = value;
 				}
-				token2 = t2.toLowerCase().trim();
+				const token2 = t2.toLowerCase().trim();
 				if (token2 === "top") {
 					top = "0%";
 				} else if (token2 === "center") {
@@ -2453,7 +2453,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 				} else if (token2 === "right") {
 					left = "100%";
 				} else if (isValidPosition(token2)) {
-					value = getPositionFromCSSValue$1(token2);
+					const value = getPositionFromCSSValue$1(token2);
 					if (value == null) {
 						return [];
 					}
@@ -2461,18 +2461,18 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 				}
 			}
 			if (parts.length === 3) {
-				t1 = parts[0];
-				t2 = parts[1];
-				t3 = parts[2];
+				const t1 = parts[0];
+				const t2 = parts[1];
+				const t3 = parts[2];
 				if (t1 == null || t2 == null || t3 == null) {
 					return [];
 				}
-				token1 = t1.toLowerCase().trim();
-				token2 = t2.toLowerCase().trim();
-				token3 = t3.toLowerCase().trim();
+				const token1 = t1.toLowerCase().trim();
+				const token2 = t2.toLowerCase().trim();
+				const token3 = t3.toLowerCase().trim();
 				if (token1 === "center") {
 					left = "50%";
-					value = getPositionFromCSSValue$1(token3);
+					const value = getPositionFromCSSValue$1(token3);
 					if (value == null) {
 						return [];
 					}
@@ -2485,7 +2485,7 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 					}
 				} else if (token3 === "center") {
 					top = "50%";
-					value = getPositionFromCSSValue$1(token2);
+					const value = getPositionFromCSSValue$1(token2);
 					if (value == null) {
 						return [];
 					}
@@ -2497,15 +2497,15 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 						return [];
 					}
 				} else {
-					tokens = [token1, token2, token3];
+					const tokens = [token1, token2, token3];
 					for (let i = 0; i < tokens.length; i++) {
-						token = tokens[i];
+						const token = tokens[i];
 						if (isValidPosition(token)) {
-							value = getPositionFromCSSValue$1(token);
+							const value = getPositionFromCSSValue$1(token);
 							if (value == null) {
 								return [];
 							}
-							previousToken = tokens[i - 1];
+							const previousToken = tokens[i - 1];
 							if (previousToken === "left") {
 								left = value;
 							} else if (previousToken === "right") {
@@ -2532,21 +2532,21 @@ var init_react_native_Libraries_StyleSheet_processBackgroundPosition = __esm({
 				}
 			}
 			if (parts.length === 4) {
-				t1 = parts.shift();
-				t2 = parts.shift();
-				t3 = parts.shift();
-				t4 = parts.shift();
+				const t1 = parts.shift();
+				const t2 = parts.shift();
+				const t3 = parts.shift();
+				const t4 = parts.shift();
 				if (t1 == null || t2 == null || t3 == null || t4 == null) {
 					return [];
 				}
-				token1 = t1.toLowerCase().trim();
-				token2 = t2.toLowerCase().trim();
-				token3 = t3.toLowerCase().trim();
-				token4 = t4.toLowerCase().trim();
-				keyword1 = token1;
-				value1 = getPositionFromCSSValue$1(token2);
-				keyword2 = token3;
-				value2 = getPositionFromCSSValue$1(token4);
+				const token1 = t1.toLowerCase().trim();
+				const token2 = t2.toLowerCase().trim();
+				const token3 = t3.toLowerCase().trim();
+				const token4 = t4.toLowerCase().trim();
+				const keyword1 = token1;
+				const value1 = getPositionFromCSSValue$1(token2);
+				const keyword2 = token3;
+				const value2 = getPositionFromCSSValue$1(token4);
 				if (value1 == null || value2 == null) {
 					return [];
 				}
@@ -3208,18 +3208,18 @@ var init_react_native_Libraries_StyleSheet_processTransform = __esm({
 	stringifySafe$2 = (init_react_native_Libraries_Utilities_stringifySafe(), __toCommonJS(exports_react_native_Libraries_Utilities_stringifySafe)).default;
 	invariant$6 = require_invariant_browser();
 	_getKeyAndValueFromCSSTransform = (key,args) => {
-		argsWithUnitsRegex = new RegExp(/([+-]?\d+(\.\d+)?)([a-zA-Z]+|%)?/g);
+		const argsWithUnitsRegex = new RegExp(/([+-]?\d+(\.\d+)?)([a-zA-Z]+|%)?/g);
 		switch (key) {
 			case "matrix":
 				return { key, value: args.match(/[+-]?\d+(\.\d+)?/g)?.map(Number) };
 			case "translate":
 			case "translate3d":
-				parsedArgs = [];
-				missingUnitOfMeasurement = false;
-				
+				const parsedArgs = [];
+				let missingUnitOfMeasurement = false;
+				let matches;
 				while ((matches = argsWithUnitsRegex.exec(args))) {
-					value = Number(matches[1]);
-					unitOfMeasurement = matches[3];
+					const value = Number(matches[1]);
+					const unitOfMeasurement = matches[3];
 					if (value !== 0 && !unitOfMeasurement) {
 						missingUnitOfMeasurement = true;
 					}
@@ -3244,12 +3244,12 @@ var init_react_native_Libraries_StyleSheet_processTransform = __esm({
 			case "translateX":
 			case "translateY":
 			case "perspective":
-				argMatches = argsWithUnitsRegex.exec(args);
+				const argMatches = argsWithUnitsRegex.exec(args);
 				if (!argMatches?.length) {
 					return { key, value: undefined };
 				}
-				value = Number(argMatches[1]);
-				unitOfMeasurement = argMatches[3];
+				const value = Number(argMatches[1]);
+				const unitOfMeasurement = argMatches[3];
 				if (false) {
 					invariant$6(value === 0 || unitOfMeasurement, `Transform with key ${key} must have units unless the provided value is 0, found %s`, `${key}(${args})`);
 				}
@@ -3443,15 +3443,15 @@ var init_react_native_Libraries_vendor_emitter_EventEmitter = __esm({
 			if (typeof listener !== "function") {
 				throw new TypeError("EventEmitter.addListener(...): 2nd argument must be a function.");
 			}
-			registrations = allocate(this.#registry, eventType);
-			registration = { context, listener, remove() {
+			const registrations = allocate(this.#registry, eventType);
+			const registration = { context, listener, remove() {
 				registrations.delete(registration);
 			} };
 			registrations.add(registration);
 			return registration;
 		}
 		emit(eventType,...args) {
-			registrations = this.#registry[eventType];
+			const registrations = this.#registry[eventType];
 			if (registrations != null) {
 				for (const registration of Array.from(registrations)) {
 					registration.listener.apply(registration.context, args);
@@ -3466,7 +3466,7 @@ var init_react_native_Libraries_vendor_emitter_EventEmitter = __esm({
 			}
 		}
 		listenerCount(eventType) {
-			registrations = this.#registry[eventType];
+			const registrations = this.#registry[eventType];
 			return registrations == null ? 0 : registrations.size;
 		}
 	};
@@ -3619,7 +3619,7 @@ var init_react_native_Libraries_Utilities_PixelRatio = __esm({
 			return Math.round(layoutSize * PixelRatio.get());
 		}
 		static roundToNearestPixel(layoutSize) {
-			ratio = PixelRatio.get();
+			const ratio = PixelRatio.get();
 			return Math.round(layoutSize * ratio) / ratio;
 		}
 		static startDetecting() {
@@ -3654,7 +3654,7 @@ var init_react_native_Libraries_StyleSheet_StyleSheetExports = __esm({
 		Object.freeze(absoluteFill);
 	}
 	_default$5={ hairlineWidth, absoluteFill, absoluteFillObject: absoluteFill, compose: composeStyles, flatten: flattenStyle, setStyleAttributePreprocessor(property,process) {
-		
+		let value;
 		if (ReactNativeStyleAttributes$1[property] === true) {
 			value = { process };
 		} else if (typeof ReactNativeStyleAttributes$1[property] === "object") {
@@ -4883,7 +4883,7 @@ var init_react_native_Libraries_Image_AssetSourceResolver = __esm({
 			return this.fromSource(getScaledAssetPath(this.asset));
 		}
 		scaledAssetURLNearBundle() {
-			path = this.jsbundleUrl ?? "file://";
+			const path = this.jsbundleUrl ?? "file://";
 			return this.fromSource(path + getScaledAssetPath(this.asset).replace(/\.\.\//g, "_"));
 		}
 		resourceIdentifierWithoutScale() {
@@ -4891,7 +4891,7 @@ var init_react_native_Libraries_Image_AssetSourceResolver = __esm({
 			return this.fromSource(getAndroidResourceIdentifier$1(this.asset));
 		}
 		drawableFolderInBundle() {
-			path = this.jsbundleUrl ?? "file://";
+			const path = this.jsbundleUrl ?? "file://";
 			return this.fromSource(path + getAssetPathInDrawableFolder(this.asset));
 		}
 		fromSource(source) {
@@ -5193,8 +5193,8 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 	nullthrows$1=__toESM(require_nullthrows_nullthrows()).default;
 	getUIManagerConstants = global.RN$LegacyInterop_UIManager_getConstants;
 	getUIManagerConstantsCached = (function() {
-		wasCalledOnce = false;
-		result = {};
+		let wasCalledOnce = false;
+		let result = {};
 		return () => {
 			if (!wasCalledOnce) {
 				result = nullthrows$1(getUIManagerConstants)();
@@ -5206,8 +5206,8 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 	getConstantsForViewManager = global.RN$LegacyInterop_UIManager_getConstantsForViewManager;
 	getDefaultEventTypes = global.RN$LegacyInterop_UIManager_getDefaultEventTypes;
 	getDefaultEventTypesCached = (function() {
-		wasCalledOnce = false;
-		result = null;
+		let wasCalledOnce = false;
+		let result = null;
 		return () => {
 			if (!wasCalledOnce) {
 				result = nullthrows$1(getDefaultEventTypes)();
@@ -5258,8 +5258,8 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 			console.warn("setLayoutAnimationEnabledExperimental is currently a no-op in the New Architecture.");
 		}
 	}, sendAccessibilityEvent: (reactTag, eventType) => {
-		AccessibilityEvent = { TYPE_VIEW_FOCUSED: 0x00000008, TYPE_WINDOW_STATE_CHANGED: 0x00000020, TYPE_VIEW_CLICKED: 0x00000001, TYPE_VIEW_HOVER_ENTER: 0x00000080 };
-		eventName = null;
+		const AccessibilityEvent = { TYPE_VIEW_FOCUSED: 0x00000008, TYPE_WINDOW_STATE_CHANGED: 0x00000020, TYPE_VIEW_CLICKED: 0x00000001, TYPE_VIEW_HOVER_ENTER: 0x00000080 };
+		let eventName = null;
 		if (eventType === AccessibilityEvent.TYPE_VIEW_FOCUSED) {
 			eventName = "focus";
 		} else if (eventType === AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
@@ -5272,8 +5272,8 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 			console.error(`sendAccessibilityEvent() dropping event: Called with unsupported eventType: ${eventType}`);
 			return;
 		}
-		FabricUIManager = nullthrows$1(getFabricUIManager());
-		shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
+		const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 		if (!shadowNode) {
 			console.error(`sendAccessibilityEvent() dropping event: Cannot find view with tag #${reactTag}`);
 			return;
@@ -5283,16 +5283,16 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 		raiseSoftError("lazilyLoadView");
 		return {};
 	}, focus: (reactTag) => {
-		FabricUIManager = nullthrows$1(getFabricUIManager());
-		shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
+		const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 		if (!shadowNode) {
 			console.error(`focus() noop: Cannot find view with tag #${reactTag}`);
 			return;
 		}
 		FabricUIManager.dispatchCommand(shadowNode, "focus", []);
 	}, blur: (reactTag) => {
-		FabricUIManager = nullthrows$1(getFabricUIManager());
-		shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
+		const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 		if (!shadowNode) {
 			console.error(`blur() noop: Cannot find view with tag #${reactTag}`);
 			return;
@@ -5301,7 +5301,7 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 	} } });
 	UIManagerJS = { ...UIManagerJSOverridenAPIs, ...UIManagerJSDeprecatedPlatformAPIs, ...UIManagerJSPlatformAPIs, ...UIManagerJSUnusedInNewArchAPIs, getViewManagerConfig: (viewManagerName) => {
 		if (getUIManagerConstants) {
-			constants = getUIManagerConstantsCached();
+			const constants = getUIManagerConstantsCached();
 			if (!constants[viewManagerName] && UIManagerJS.getConstantsForViewManager) {
 				constants[viewManagerName] = UIManagerJS.getConstantsForViewManager(viewManagerName);
 			}
@@ -5320,8 +5320,8 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 			return null;
 		}
 	}, findSubviewIn: (reactTag, point, callback) => {
-		FabricUIManager = nullthrows$1(getFabricUIManager());
-		shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
+		const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 		if (!shadowNode) {
 			console.error(`findSubviewIn() noop: Cannot find view with reactTag ${reactTag}`);
 			return;
@@ -5331,35 +5331,35 @@ var init_react_native_Libraries_ReactNative_BridgelessUIManager = __esm({
 				console.error("findSubviewIn(): Cannot find node at point");
 				return;
 			}
-			instanceHandle = internalInstanceHandle;
-			node = instanceHandle.stateNode.node;
+			let instanceHandle = internalInstanceHandle;
+			let node = instanceHandle.stateNode.node;
 			if (!node) {
 				console.error("findSubviewIn(): Cannot find node at point");
 				return;
 			}
-			nativeViewTag = instanceHandle.stateNode.canonical.nativeTag;
+			let nativeViewTag = instanceHandle.stateNode.canonical.nativeTag;
 			FabricUIManager.measure(node, function(x,y,width,height,pageX,pageY) {
 				callback(nativeViewTag, pageX, pageY, width, height);
 			});
 		});
 	}, viewIsDescendantOf: (reactTag, ancestorReactTag, callback) => {
-		FabricUIManager = nullthrows$1(getFabricUIManager());
-		shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
+		const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 		if (!shadowNode) {
 			console.error(`viewIsDescendantOf() noop: Cannot find view with reactTag ${reactTag}`);
 			return;
 		}
-		ancestorShadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(ancestorReactTag);
+		const ancestorShadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(ancestorReactTag);
 		if (!ancestorShadowNode) {
 			console.error(`viewIsDescendantOf() noop: Cannot find view with ancestorReactTag ${ancestorReactTag}`);
 			return;
 		}
-		DOCUMENT_POSITION_CONTAINED_BY = 16;
-		result = FabricUIManager.compareDocumentPosition(ancestorShadowNode, shadowNode);
-		isAncestor = (result & DOCUMENT_POSITION_CONTAINED_BY) !== 0;
+		const DOCUMENT_POSITION_CONTAINED_BY = 16;
+		let result = FabricUIManager.compareDocumentPosition(ancestorShadowNode, shadowNode);
+		let isAncestor = (result & DOCUMENT_POSITION_CONTAINED_BY) !== 0;
 		callback([isAncestor]);
 	}, configureNextLayoutAnimation: (config, callback, errorCallback) => {
-		FabricUIManager = nullthrows$1(getFabricUIManager());
+		const FabricUIManager = nullthrows$1(getFabricUIManager());
 		FabricUIManager.configureNextLayoutAnimation(config, callback, errorCallback);
 	} };
 	if (getUIManagerConstants) {
@@ -5563,8 +5563,8 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 	UIManagerImpl = global.RN$Bridgeless === true ? (init_react_native_Libraries_ReactNative_BridgelessUIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_BridgelessUIManager)).default : (init_react_native_Libraries_ReactNative_PaperUIManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_PaperUIManager)).default;
 	UIManager = { ...UIManagerImpl, measure(reactTag,callback) {
 		if (isFabricReactTag(reactTag)) {
-			FabricUIManager = nullthrows$3(getFabricUIManager());
-			shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+			const FabricUIManager = nullthrows$3(getFabricUIManager());
+			const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 			if (shadowNode) {
 				FabricUIManager.measure(shadowNode, callback);
 			} else {
@@ -5576,8 +5576,8 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 		}
 	}, measureInWindow(reactTag,callback) {
 		if (isFabricReactTag(reactTag)) {
-			FabricUIManager = nullthrows$3(getFabricUIManager());
-			shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+			const FabricUIManager = nullthrows$3(getFabricUIManager());
+			const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 			if (shadowNode) {
 				FabricUIManager.measureInWindow(shadowNode, callback);
 			} else {
@@ -5589,9 +5589,9 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 		}
 	}, measureLayout(reactTag,ancestorReactTag,errorCallback,callback) {
 		if (isFabricReactTag(reactTag)) {
-			FabricUIManager = nullthrows$3(getFabricUIManager());
-			shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
-			ancestorShadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(ancestorReactTag);
+			const FabricUIManager = nullthrows$3(getFabricUIManager());
+			const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+			const ancestorShadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(ancestorReactTag);
 			if (!shadowNode || !ancestorShadowNode) {
 				return;
 			}
@@ -5602,8 +5602,8 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 	}, measureLayoutRelativeToParent(reactTag,errorCallback,callback) {
 		if (isFabricReactTag(reactTag)) {
 			console.warn("RCTUIManager.measureLayoutRelativeToParent method is deprecated and it will not be implemented in newer versions of RN (Fabric) - T47686450");
-			FabricUIManager = nullthrows$3(getFabricUIManager());
-			shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+			const FabricUIManager = nullthrows$3(getFabricUIManager());
+			const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 			if (shadowNode) {
 				FabricUIManager.measure(shadowNode, (left,top,width,height,pageX,pageY) => {
 					callback(left, top, width, height);
@@ -5617,8 +5617,8 @@ var init_react_native_Libraries_ReactNative_UIManager = __esm({
 			throw new Error("dispatchViewManagerCommand: found null reactTag");
 		}
 		if (isFabricReactTag(reactTag)) {
-			FabricUIManager = nullthrows$3(getFabricUIManager());
-			shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
+			const FabricUIManager = nullthrows$3(getFabricUIManager());
+			const shadowNode = FabricUIManager.findShadowNodeByTag_DEPRECATED(reactTag);
 			if (shadowNode) {
 				commandName = `${commandName}`;
 				FabricUIManager.dispatchCommand(shadowNode, commandName, commandArgs);
@@ -6283,7 +6283,7 @@ var init_react_native_Libraries_Utilities_RCTLog = __esm({
 			}
 		}
 	}, logToConsole(level,...args) {
-		logFn = levelsMap[level];
+		const logFn = levelsMap[level];
 		invariant$12(logFn, "Level \"" + level + "\" not one of " + Object.keys(levelsMap).toString());
 		console[logFn](...args);
 	}, setWarningHandler(handler) {
@@ -6792,15 +6792,15 @@ var init_whatwg_fetch_fetch = __esm({
 		}
 	})(), formData: "FormData" in g, arrayBuffer: "ArrayBuffer" in g };
 	if (support.arrayBuffer) {
-		viewClasses = ["[object Int8Array]", "[object Uint8Array]", "[object Uint8ClampedArray]", "[object Int16Array]", "[object Uint16Array]", "[object Int32Array]", "[object Uint32Array]", "[object Float32Array]", "[object Float64Array]"];
-		isArrayBufferView = ArrayBuffer.isView || function(obj) {
+		var viewClasses = ["[object Int8Array]", "[object Uint8Array]", "[object Uint8ClampedArray]", "[object Int16Array]", "[object Uint16Array]", "[object Int32Array]", "[object Uint32Array]", "[object Float32Array]", "[object Float64Array]"];
+		var isArrayBufferView = ArrayBuffer.isView || function(obj) {
 			return obj && viewClasses.indexOf(Object.prototype.toString.call(obj)) > -1;
 		};
 	}
 	Headers.prototype.append = function(name,value) {
 		name = normalizeName(name);
 		value = normalizeValue(value);
-		oldValue = this.map[name];
+		var oldValue = this.map[name];
 		this.map[name] = oldValue ? oldValue + ", " + value : value;
 	};
 	Headers.prototype["delete"] = function(name) {
@@ -6824,21 +6824,21 @@ var init_whatwg_fetch_fetch = __esm({
 		}
 	};
 	Headers.prototype.keys = function() {
-		items = [];
+		var items = [];
 		this.forEach(function(value,name) {
 			items.push(name);
 		});
 		return iteratorFor(items);
 	};
 	Headers.prototype.values = function() {
-		items = [];
+		var items = [];
 		this.forEach(function(value) {
 			items.push(value);
 		});
 		return iteratorFor(items);
 	};
 	Headers.prototype.entries = function() {
-		items = [];
+		var items = [];
 		this.forEach(function(value,name) {
 			items.push([name, value]);
 		});
@@ -6857,7 +6857,7 @@ var init_whatwg_fetch_fetch = __esm({
 		return new Response(this._bodyInit, { status: this.status, statusText: this.statusText, headers: new Headers(this.headers), url: this.url });
 	};
 	Response.error = function() {
-		response = new Response(null, { status: 200, statusText: "" });
+		var response = new Response(null, { status: 200, statusText: "" });
 		response.ok = false;
 		response.status = 0;
 		response.type = "error";
@@ -6877,7 +6877,7 @@ var init_whatwg_fetch_fetch = __esm({
 		DOMException = function(message,name) {
 			this.message = message;
 			this.name = name;
-			error = Error(message);
+			var error = Error(message);
 			this.stack = error.stack;
 		};
 		DOMException.prototype = Object.create(Error.prototype);
@@ -6965,9 +6965,9 @@ var init_react_native_Libraries_LogBox_Data_LogBoxSymbolication = __esm({
 		if (!Array.isArray(maybeStack)) {
 			throw new Error("Expected stack to be an array.");
 		}
-		stack = [];
+		const stack = [];
 		for (const maybeFrame of maybeStack) {
-			collapse = false;
+			let collapse = false;
 			if ("collapse" in maybeFrame) {
 				if (typeof maybeFrame.collapse !== "boolean") {
 					throw new Error("Expected stack frame `collapse` to be a boolean.");
@@ -7048,7 +7048,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxLog = __esm({
 			return this.symbolicatedComponentStack.status === "COMPLETE" ? this.symbolicatedComponentStack.componentStack : this.componentStack;
 		}
 		retrySymbolicate(callback) {
-			retry = false;
+			let retry = false;
 			if (this.symbolicated.status !== "COMPLETE") {
 				deleteStack(this.stack);
 				retry = true;
@@ -7077,7 +7077,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxLog = __esm({
 			}
 			if (this.componentStack != null && this.componentStackType === "stack" && this.symbolicatedComponentStack.status !== "PENDING" && this.symbolicatedComponentStack.status !== "COMPLETE") {
 				this.updateComponentStackStatus(null, null, null, callback);
-				componentStackFrames = convertComponentStateToStack(this.componentStack);
+				const componentStackFrames = convertComponentStateToStack(this.componentStack);
 				symbolicate(componentStackFrames, []).then((data) => {
 					this.updateComponentStackStatus(null, convertStackToComponentStack(data.stack), data?.codeFrame, callback);
 				}, (error) => {
@@ -7086,7 +7086,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxLog = __esm({
 			}
 		}
 		updateStatus(error,stack,codeFrame,callback) {
-			lastStatus = this.symbolicated.status;
+			const lastStatus = this.symbolicated.status;
 			if (error != null) {
 				this.symbolicated = { error, stack: null, status: "FAILED" };
 			} else if (stack != null) {
@@ -7102,7 +7102,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxLog = __esm({
 			}
 		}
 		updateComponentStackStatus(error,componentStack,codeFrame,callback) {
-			lastStatus = this.symbolicatedComponentStack.status;
+			const lastStatus = this.symbolicatedComponentStack.status;
 			if (error != null) {
 				this.symbolicatedComponentStack = { error, componentStack: null, status: "FAILED" };
 			} else if (componentStack != null) {
@@ -7714,11 +7714,11 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 	React$4=__toESM(require_react_index());
 	
 	if (false) {
-		LogBoxData = (init_react_native_Libraries_LogBox_Data_LogBoxData(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxData));
+		const LogBoxData = (init_react_native_Libraries_LogBox_Data_LogBoxData(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxData));
 		const { parseLogBoxLog:parseLogBoxLog, parseComponentStack:parseComponentStack } = (init_react_native_Libraries_LogBox_Data_parseLogBoxLog(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_parseLogBoxLog));
-		
-		
-		isLogBoxInstalled = false;
+		let originalConsoleWarn;
+		let consoleWarnImpl;
+		let isLogBoxInstalled = false;
 		LogBox = { install() {
 			if (isLogBoxInstalled) {
 				return;
@@ -7733,7 +7733,7 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 				});
 			}
 			(init_react_native_Libraries_NativeModules_specs_NativeLogBox(), __toCommonJS(exports_react_native_Libraries_NativeModules_specs_NativeLogBox));
-			isFirstInstall = originalConsoleWarn == null;
+			const isFirstInstall = originalConsoleWarn == null;
 			if (isFirstInstall) {
 				originalConsoleWarn = console.warn.bind(console);
 				console.warn = (...args) => {
@@ -7767,11 +7767,11 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 			}
 		}, addConsoleLog(level,...args) {
 			if (isLogBoxInstalled) {
-				filteredLevel = level;
+				let filteredLevel = level;
 				try {
-					format = args[0];
+					let format = args[0];
 					if (typeof format === "string") {
-						filterResult = (init_react_native_Libraries_LogBox_Data_LogBoxData(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxData)).checkWarningFilter(format.replace(/^Warning: /, ""));
+						const filterResult = (init_react_native_Libraries_LogBox_Data_LogBoxData(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxData)).checkWarningFilter(format.replace(/^Warning: /, ""));
 						if (filterResult.monitorEvent !== "warning_unhandled") {
 							if (filterResult.suppressCompletely) {
 								return;
@@ -7784,15 +7784,15 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 							args[0] = filterResult.finalFormat;
 						}
 					}
-					result = parseLogBoxLog(args);
-					category = result.category;
-					message = result.message;
-					componentStackType = result.componentStackType;
-					componentStack = result.componentStack;
+					const result = parseLogBoxLog(args);
+					const category = result.category;
+					const message = result.message;
+					let componentStackType = result.componentStackType;
+					let componentStack = result.componentStack;
 					if ((!componentStack || componentStack.length === 0) && React$4.captureOwnerStack) {
-						ownerStack = React$4.captureOwnerStack();
+						const ownerStack = React$4.captureOwnerStack();
 						if (ownerStack != null && ownerStack.length > 0) {
-							parsedComponentStack = parseComponentStack(ownerStack);
+							const parsedComponentStack = parseComponentStack(ownerStack);
 							componentStack = parsedComponentStack.stack;
 							componentStackType = parsedComponentStack.type;
 						}
@@ -7810,10 +7810,10 @@ var init_react_native_Libraries_LogBox_LogBox = __esm({
 				LogBoxData.addException(error);
 			}
 		}
-		isRCTLogAdviceWarning = (...args) => {
+		const isRCTLogAdviceWarning = (...args) => {
 			return typeof args[0] === "string" && args[0].startsWith("(ADVICE)");
 		};
-		registerWarning = (...args) => {
+		const registerWarning = (...args) => {
 			if (LogBoxData.isLogBoxErrorMessage(String(args[0]))) {
 				return;
 			} else {
@@ -8105,7 +8105,7 @@ var init_react_native_Libraries_Core_registerCallableModule = __esm({
 				global.RN$registerCallableModule(name, () => moduleOrFactory);
 			};
 		}
-		BatchedBridge = (init_react_native_Libraries_BatchedBridge_BatchedBridge(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_BatchedBridge)).default;
+		const BatchedBridge = (init_react_native_Libraries_BatchedBridge_BatchedBridge(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_BatchedBridge)).default;
 		return (name,moduleOrFactory) => {
 			if (typeof moduleOrFactory === "function") {
 				BatchedBridge.registerLazyCallableModule(name, moduleOrFactory);
@@ -8398,7 +8398,7 @@ var init_react_native_Libraries_Core_ReactFiberErrorDialog = __esm({
 	init_react_native_Libraries_Core_ExceptionsManager();
 		
 	ReactFiberErrorDialog = { showErrorDialog({ componentStack:componentStack, error:errorValue }) {
-		
+		let error;
 		if (errorValue instanceof Error) {
 			error = errorValue;
 		} else if (typeof errorValue === "string") {
@@ -8643,7 +8643,7 @@ var init_react_native_src_private_webapis_dom_events_Event = __esm({
 			if (arguments.length < 1) {
 				throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present.");
 			}
-			typeOfOptions = typeof options;
+			const typeOfOptions = typeof options;
 			if (options != null && typeOfOptions !== "object" && typeOfOptions !== "function") {
 				throw new TypeError("Failed to construct 'Event': The provided value is not of type 'EventInit'.");
 			}
@@ -9064,7 +9064,7 @@ var init_react_native_src_private_webapis_dom_oldstylecollections_HTMLCollection
 			if (index < 0 || index >= this._length) {
 				return null;
 			}
-			arrayLike = this;
+			const arrayLike = this;
 			return arrayLike[index];
 		}
 		namedItem(name) {
@@ -9291,32 +9291,32 @@ var init_react_native_src_private_webapis_geometry_DOMRectReadOnly = __esm({
 			return this.#height;
 		}
 		get top() {
-			height = this.#height;
-			y = this.#y;
+			const height = this.#height;
+			const y = this.#y;
 			if (height < 0) {
 				return y + height;
 			}
 			return y;
 		}
 		get right() {
-			width = this.#width;
-			x = this.#x;
+			const width = this.#width;
+			const x = this.#x;
 			if (width < 0) {
 				return x;
 			}
 			return x + width;
 		}
 		get bottom() {
-			height = this.#height;
-			y = this.#y;
+			const height = this.#height;
+			const y = this.#y;
 			if (height < 0) {
 				return y;
 			}
 			return y + height;
 		}
 		get left() {
-			width = this.#width;
-			x = this.#x;
+			const width = this.#width;
+			const x = this.#x;
 			if (width < 0) {
 				return x + width;
 			}
@@ -9444,14 +9444,14 @@ var init_react_native_src_private_webapis_dom_oldstylecollections_NodeList = __e
 			if (index < 0 || index >= this._length) {
 				return null;
 			}
-			arrayLike = this;
+			const arrayLike = this;
 			return arrayLike[index];
 		}
 		entries() {
 			return createEntriesIterator(this);
 		}
 		forEach(callbackFn,thisArg) {
-			arrayLike = this;
+			const arrayLike = this;
 			for (let index = 0; index < this._length; index++) {
 				if (thisArg == null) {
 					callbackFn(arrayLike[index], index, this);
@@ -9540,25 +9540,25 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyNode = __esm({
 			setInstanceHandle(this, instanceHandle);
 		}
 		get childNodes() {
-			childNodes = getChildNodes(this);
+			const childNodes = getChildNodes(this);
 			return createNodeList(childNodes);
 		}
 		get firstChild() {
-			childNodes = getChildNodes(this);
+			const childNodes = getChildNodes(this);
 			if (childNodes.length === 0) {
 				return null;
 			}
 			return childNodes[0];
 		}
 		get isConnected() {
-			shadowNode = getNativeNodeReference(this);
+			const shadowNode = getNativeNodeReference(this);
 			if (shadowNode == null) {
 				return false;
 			}
 			return _default$20.isConnected(shadowNode);
 		}
 		get lastChild() {
-			childNodes = getChildNodes(this);
+			const childNodes = getChildNodes(this);
 			if (childNodes.length === 0) {
 				return null;
 			}
@@ -9584,18 +9584,18 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyNode = __esm({
 			return getOwnerDocument(this);
 		}
 		get parentElement() {
-			parentNode = this.parentNode;
+			const parentNode = this.parentNode;
 			if (parentNode != null && parentNode.nodeType === ReadOnlyNode.ELEMENT_NODE) {
 				return parentNode;
 			}
 			return null;
 		}
 		get parentNode() {
-			shadowNode = getNativeNodeReference(this);
+			const shadowNode = getNativeNodeReference(this);
 			if (shadowNode == null) {
 				return null;
 			}
-			parentInstanceHandle = _default$20.getParentNode(shadowNode);
+			const parentInstanceHandle = _default$20.getParentNode(shadowNode);
 			if (parentInstanceHandle == null) {
 				return null;
 			}
@@ -9615,8 +9615,8 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyNode = __esm({
 			if (otherNode === this) {
 				return 0;
 			}
-			shadowNode = getNativeNodeReference(this);
-			otherShadowNode = getNativeNodeReference(otherNode);
+			const shadowNode = getNativeNodeReference(this);
+			const otherShadowNode = getNativeNodeReference(otherNode);
 			if (shadowNode == null || otherShadowNode == null) {
 				return ReadOnlyNode.DOCUMENT_POSITION_DISCONNECTED;
 			}
@@ -9626,7 +9626,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyNode = __esm({
 			if (otherNode === this) {
 				return true;
 			}
-			position = this.compareDocumentPosition(otherNode);
+			const position = this.compareDocumentPosition(otherNode);
 			return (position & ReadOnlyNode.DOCUMENT_POSITION_CONTAINED_BY) !== 0;
 		}
 		getRootNode() {
@@ -9737,51 +9737,51 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyElement = __esm({
 			return createHTMLCollection(getChildElements(this));
 		}
 		get clientHeight() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				innerSize = _default$20.getInnerSize(node);
+				const innerSize = _default$20.getInnerSize(node);
 				return innerSize[1];
 			}
 			return 0;
 		}
 		get clientLeft() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				borderSize = _default$20.getBorderWidth(node);
+				const borderSize = _default$20.getBorderWidth(node);
 				return borderSize[3];
 			}
 			return 0;
 		}
 		get clientTop() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				borderSize = _default$20.getBorderWidth(node);
+				const borderSize = _default$20.getBorderWidth(node);
 				return borderSize[0];
 			}
 			return 0;
 		}
 		get clientWidth() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				innerSize = _default$20.getInnerSize(node);
+				const innerSize = _default$20.getInnerSize(node);
 				return innerSize[0];
 			}
 			return 0;
 		}
 		get firstElementChild() {
-			childElements = getChildElements(this);
+			const childElements = getChildElements(this);
 			if (childElements.length === 0) {
 				return null;
 			}
 			return childElements[0];
 		}
 		get id() {
-			instanceHandle = getInstanceHandle(this);
-			props = instanceHandle?.stateNode?.canonical?.currentProps;
+			const instanceHandle = getInstanceHandle(this);
+			const props = instanceHandle?.stateNode?.canonical?.currentProps;
 			return props?.id ?? props?.nativeID ?? "";
 		}
 		get lastElementChild() {
-			childElements = getChildElements(this);
+			const childElements = getChildElements(this);
 			if (childElements.length === 0) {
 				return null;
 			}
@@ -9805,46 +9805,46 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyElement = __esm({
 			return getElementSibling(this, "previous");
 		}
 		get scrollHeight() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				scrollSize = _default$20.getScrollSize(node);
+				const scrollSize = _default$20.getScrollSize(node);
 				return scrollSize[1];
 			}
 			return 0;
 		}
 		get scrollLeft() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				scrollPosition = _default$20.getScrollPosition(node);
+				const scrollPosition = _default$20.getScrollPosition(node);
 				return scrollPosition[0];
 			}
 			return 0;
 		}
 		get scrollTop() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				scrollPosition = _default$20.getScrollPosition(node);
+				const scrollPosition = _default$20.getScrollPosition(node);
 				return scrollPosition[1];
 			}
 			return 0;
 		}
 		get scrollWidth() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				scrollSize = _default$20.getScrollSize(node);
+				const scrollSize = _default$20.getScrollSize(node);
 				return scrollSize[0];
 			}
 			return 0;
 		}
 		get tagName() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				return _default$20.getTagName(node);
 			}
 			return "";
 		}
 		get textContent() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				return _default$20.getTextContent(node);
 			}
@@ -9854,20 +9854,20 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyElement = __esm({
 			return getBoundingClientRect(this, { includeTransform: true });
 		}
 		hasPointerCapture(pointerId) {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				return _default$20.hasPointerCapture(node, pointerId);
 			}
 			return false;
 		}
 		setPointerCapture(pointerId) {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				_default$20.setPointerCapture(node, pointerId);
 			}
 		}
 		releasePointerCapture(pointerId) {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				_default$20.releasePointerCapture(node, pointerId);
 			}
@@ -9928,30 +9928,30 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeElement = __esm({
 			return Math.round(getBoundingClientRect(this, { includeTransform: false }).height);
 		}
 		get offsetLeft() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				offset = _default$20.getOffset(node);
+				const offset = _default$20.getOffset(node);
 				return Math.round(offset[2]);
 			}
 			return 0;
 		}
 		get offsetParent() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				offset = _default$20.getOffset(node);
+				const offset = _default$20.getOffset(node);
 				if (offset[0] != null) {
-					offsetParentInstanceHandle = offset[0];
-					offsetParent = getPublicInstanceFromInstanceHandle(offsetParentInstanceHandle);
-					offsetParentElement = offsetParent;
+					const offsetParentInstanceHandle = offset[0];
+					const offsetParent = getPublicInstanceFromInstanceHandle(offsetParentInstanceHandle);
+					const offsetParentElement = offsetParent;
 					return offsetParentElement;
 				}
 			}
 			return null;
 		}
 		get offsetTop() {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
-				offset = _default$20.getOffset(node);
+				const offset = _default$20.getOffset(node);
 				return Math.round(offset[1]);
 			}
 			return 0;
@@ -9974,13 +9974,13 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeElement = __esm({
 			}
 		}
 		measure(callback) {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				_default$20.measure(node, callback);
 			}
 		}
 		measureInWindow(callback) {
-			node = getNativeElementReference(this);
+			const node = getNativeElementReference(this);
 			if (node != null) {
 				_default$20.measureInWindow(node, callback);
 			}
@@ -9992,8 +9992,8 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeElement = __esm({
 				}
 				return;
 			}
-			toStateNode = getNativeElementReference(this);
-			fromStateNode = getNativeElementReference(relativeToNativeNode);
+			const toStateNode = getNativeElementReference(this);
+			const fromStateNode = getNativeElementReference(relativeToNativeNode);
 			if (toStateNode != null && fromStateNode != null) {
 				_default$20.measureLayout(toStateNode, fromStateNode, onFail != null ? onFail : noop$1, onSuccess != null ? onSuccess : noop$1);
 			}
@@ -10002,8 +10002,8 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeElement = __esm({
 			if (false) {
 				warnForStyleProps(nativeProps, this.__viewConfig.validAttributes);
 			}
-			updatePayload = create(nativeProps, this.__viewConfig.validAttributes);
-			node = getNativeElementReference(this);
+			const updatePayload = create(nativeProps, this.__viewConfig.validAttributes);
+			const node = getNativeElementReference(this);
 			if (node != null && updatePayload != null) {
 				_default$20.setNativeProps(node, updatePayload);
 			}
@@ -10090,11 +10090,11 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeDocument = __esm(
 			return null;
 		}
 		getElementById(id) {
-			elementByIdInstanceHandle = _default$20.getElementById(this._rootTag, id);
+			const elementByIdInstanceHandle = _default$20.getElementById(this._rootTag, id);
 			if (elementByIdInstanceHandle == null) {
 				return null;
 			}
-			elementById = getPublicInstanceFromInstanceHandle(elementByIdInstanceHandle);
+			const elementById = getPublicInstanceFromInstanceHandle(elementByIdInstanceHandle);
 			return elementById instanceof ReadOnlyElement ? elementById : null;
 		}
 	};
@@ -10126,7 +10126,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyCharacterData = __es
 			return getElementSibling(this, "previous");
 		}
 		get data() {
-			node = getNativeTextReference(this);
+			const node = getNativeTextReference(this);
 			if (node != null) {
 				return _default$20.getTextContent(node);
 			}
@@ -10142,14 +10142,14 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyCharacterData = __es
 			return this.data;
 		}
 		substringData(offset,count) {
-			data = this.data;
+			const data = this.data;
 			if (offset < 0) {
 				throw new TypeError(`Failed to execute 'substringData' on 'CharacterData': The offset ${offset} is negative.`);
 			}
 			if (offset > data.length) {
 				throw new TypeError(`Failed to execute 'substringData' on 'CharacterData': The offset ${offset} is greater than the node's length (${data.length}).`);
 			}
-			adjustedCount = count < 0 || count > data.length ? data.length : count;
+			let adjustedCount = count < 0 || count > data.length ? data.length : count;
 			return data.slice(offset, offset + adjustedCount);
 		}
 	};
@@ -10364,7 +10364,7 @@ var init_react_native_src_private_webapis_geometry_DOMRectList = __esm({
 			if (index < 0 || index >= this.#length) {
 				return null;
 			}
-			arrayLike = this;
+			const arrayLike = this;
 			return arrayLike[index];
 		}
 		[Symbol.iterator]() {
@@ -11111,7 +11111,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 	MARK_OPTIONS_REUSABLE_OBJECT = { startTime: 0, detail: undefined };
 	MEASURE_OPTIONS_REUSABLE_OBJECT = { name: "", startTime: 0, duration: 0, detail: undefined };
 	getMarkTimeForMeasure = (markName) => {
-		markTime = cachedGetMarkTime(markName);
+		const markTime = cachedGetMarkTime(markName);
 		if (markTime == null) {
 			throw new DOMException$1(`Failed to execute 'measure' on 'Performance': The mark '${markName}' does not exist.`, "SyntaxError");
 		}
@@ -11123,7 +11123,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			return this.#eventCounts;
 		}
 		get memory() {
-			memoryInfo = NativePerformance$2.getSimpleMemoryInfo();
+			const memoryInfo = NativePerformance$2.getSimpleMemoryInfo();
 			if (memoryInfo.hasOwnProperty("hermes_heapSize")) {
 				const { hermes_heapSize:totalJSHeapSize, hermes_allocatedBytes:usedJSHeapSize } = memoryInfo;
 				return new MemoryInfo({ jsHeapSizeLimit: null, totalJSHeapSize, usedJSHeapSize });
@@ -11149,11 +11149,11 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			if (markName === undefined) {
 				throw new TypeError(`Failed to execute 'mark' on 'Performance': 1 argument required, but only 0 present.`);
 			}
-			resolvedMarkName = typeof markName === "string" ? markName : String(markName);
-			
-			
-			
-			
+			const resolvedMarkName = typeof markName === "string" ? markName : String(markName);
+			let resolvedStartTime;
+			let resolvedDetail;
+			let startTime;
+			let detail;
 			if (markOptions != null) {
 				({ startTime, detail } = markOptions);
 			}
@@ -11172,7 +11172,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			}
 			MARK_OPTIONS_REUSABLE_OBJECT.startTime = resolvedStartTime;
 			MARK_OPTIONS_REUSABLE_OBJECT.detail = resolvedDetail;
-			entry = new PerformanceMark(resolvedMarkName, MARK_OPTIONS_REUSABLE_OBJECT);
+			const entry = new PerformanceMark(resolvedMarkName, MARK_OPTIONS_REUSABLE_OBJECT);
 			cachedReportMark(resolvedMarkName, resolvedStartTime, entry);
 			return entry;
 		}
@@ -11180,10 +11180,10 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			cachedNativeClearMarks(markName);
 		}
 		measure(measureName,startMarkOrOptions,endMark) {
-			
-			
-			
-			
+			let resolvedMeasureName;
+			let resolvedStartTime;
+			let resolvedDuration;
+			let resolvedDetail;
 			if (measureName === undefined) {
 				throw new TypeError(`Failed to execute 'measure' on 'Performance': 1 argument required, but only 0 present.`);
 			}
@@ -11196,7 +11196,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 								throw new TypeError(`Failed to execute 'measure' on 'Performance': If a non-empty PerformanceMeasureOptions object was passed, |end_mark| must not be passed.`);
 							}
 							const { start:start, end:end, duration:duration, detail:detail } = startMarkOrOptions;
-							
+							let resolvedEndTime;
 							if (start !== undefined && end !== undefined && duration !== undefined) {
 								throw new TypeError(`Failed to execute 'measure' on 'Performance': If a non-empty PerformanceMeasureOptions object was passed, it must not have all of its 'start', 'duration', and 'end' properties defined`);
 							}
@@ -11309,7 +11309,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 			MEASURE_OPTIONS_REUSABLE_OBJECT.startTime = resolvedStartTime;
 			MEASURE_OPTIONS_REUSABLE_OBJECT.duration = resolvedDuration;
 			MEASURE_OPTIONS_REUSABLE_OBJECT.detail = resolvedDetail;
-			entry = new PerformanceMeasure(MEASURE_OPTIONS_REUSABLE_OBJECT);
+			const entry = new PerformanceMeasure(MEASURE_OPTIONS_REUSABLE_OBJECT);
 			cachedReportMeasure(resolvedMeasureName, resolvedStartTime, resolvedDuration, entry);
 			return entry;
 		}
@@ -11406,7 +11406,7 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 			if (this.#nativeObserverHandle == null) {
 				this.#nativeObserverHandle = this.#createNativeObserver();
 			}
-			observerHandle = nullthrows$7(this.#nativeObserverHandle);
+			const observerHandle = nullthrows$7(this.#nativeObserverHandle);
 			if (options.entryTypes) {
 				this.#type = "multiple";
 				NativePerformance$3.observe(observerHandle, { entryTypes: options.entryTypes.map(performanceEntryTypeToRaw) });
@@ -11422,9 +11422,9 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 			NativePerformance$3.disconnect(this.#nativeObserverHandle);
 		}
 		takeRecords() {
-			entries = [];
+			let entries = [];
 			if (this.#nativeObserverHandle != null) {
-				rawEntries = NativePerformance$3.takeRecords(this.#nativeObserverHandle, true);
+				const rawEntries = NativePerformance$3.takeRecords(this.#nativeObserverHandle, true);
 				if (rawEntries && rawEntries.length > 0) {
 					entries = rawEntries.map(rawToPerformanceEntry);
 				}
@@ -11433,14 +11433,14 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 		}
 		#createNativeObserver() {
 			this.#calledAtLeastOnce = false;
-			observerHandle = NativePerformance$3.createObserver(() => {
-				rawEntries = NativePerformance$3.takeRecords(observerHandle, true);
+			const observerHandle = NativePerformance$3.createObserver(() => {
+				const rawEntries = NativePerformance$3.takeRecords(observerHandle, true);
 				if (!rawEntries || rawEntries.length === 0) {
 					return;
 				}
-				entries = rawEntries.map(rawToPerformanceEntry);
-				entryList = new PerformanceObserverEntryList(entries);
-				droppedEntriesCount = 0;
+				const entries = rawEntries.map(rawToPerformanceEntry);
+				const entryList = new PerformanceObserverEntryList(entries);
+				let droppedEntriesCount = 0;
 				if (!this.#calledAtLeastOnce) {
 					droppedEntriesCount = NativePerformance$3.getDroppedEntriesCount(observerHandle);
 					this.#calledAtLeastOnce = true;
@@ -11525,7 +11525,7 @@ var init_react_native_Libraries_Core_setUpPerformance = __esm({
 			}, measure: () => {
 			}, clearMeasures: () => {
 			}, now: () => {
-				performanceNow = global.nativePerformanceNow || Date.now;
+				const performanceNow = global.nativePerformanceNow || Date.now;
 				return performanceNow();
 			} };
 		}
@@ -12670,7 +12670,7 @@ var init_react_native_Libraries_promiseRejectionTrackingOptions = __esm({
 	init_react_native_Libraries_Core_ExceptionsManager();
 		
 	rejectionTrackingOptions = { allRejections: true, onUnhandled: (id,rejection) => {
-		
+		let message;
 		if (rejection === undefined) {
 			message = "";
 		} else if (Object.prototype.toString.call(rejection) === "[object Error]") {
@@ -12684,7 +12684,7 @@ var init_react_native_Libraries_promiseRejectionTrackingOptions = __esm({
 		}
 		ExceptionsManager$1.handleException(new Error(`Uncaught (in promise, id: ${id})${message ? `: "${message}"` : ""}`, { cause: rejection }), false);
 	}, onHandled: (id) => {
-		warning = `Promise rejection handled (id: ${id})\n` + "This means you can ignore any previous messages of the form " + `"Uncaught (in promise, id: ${id})"`;
+		const warning = `Promise rejection handled (id: ${id})\n` + "This means you can ignore any previous messages of the form " + `"Uncaught (in promise, id: ${id})"`;
 		console.warn(warning);
 	} };
 	
@@ -13398,28 +13398,28 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 	errors = [];
 	hasEmittedTimeDriftWarning = false;
 	JSTimers = { setTimeout: function(func,duration,...args) {
-		id = _allocateCallback(() => func.apply(undefined, args), "setTimeout");
+		const id = _allocateCallback(() => func.apply(undefined, args), "setTimeout");
 		createTimer(id, duration || 0, Date.now(), false);
 		return id;
 	}, setInterval: function(func,duration,...args) {
-		id = _allocateCallback(() => func.apply(undefined, args), "setInterval");
+		const id = _allocateCallback(() => func.apply(undefined, args), "setInterval");
 		createTimer(id, duration || 0, Date.now(), true);
 		return id;
 	}, queueReactNativeMicrotask: function(func,...args) {
-		id = _allocateCallback(() => func.apply(undefined, args), "queueReactNativeMicrotask");
+		const id = _allocateCallback(() => func.apply(undefined, args), "queueReactNativeMicrotask");
 		reactNativeMicrotasks.push(id);
 		return id;
 	}, requestAnimationFrame: function(func) {
-		id = _allocateCallback(func, "requestAnimationFrame");
+		const id = _allocateCallback(func, "requestAnimationFrame");
 		createTimer(id, 1, Date.now(), false);
 		return id;
 	}, requestIdleCallback: function(func,options) {
 		if (requestIdleCallbacks.length === 0) {
 			setSendIdleEvents(true);
 		}
-		timeout = options && options.timeout;
-		id = _allocateCallback(timeout != null ? (deadline) => {
-			timeoutId = requestIdleCallbackTimeouts[id];
+		const timeout = options && options.timeout;
+		const id = _allocateCallback(timeout != null ? (deadline) => {
+			const timeoutId = requestIdleCallbackTimeouts[id];
 			if (timeoutId) {
 				JSTimers.clearTimeout(timeoutId);
 				delete requestIdleCallbackTimeouts[id];
@@ -13428,8 +13428,8 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 		} : func, "requestIdleCallback");
 		requestIdleCallbacks.push(id);
 		if (timeout != null) {
-			timeoutId = JSTimers.setTimeout(() => {
-				index = requestIdleCallbacks.indexOf(id);
+			const timeoutId = JSTimers.setTimeout(() => {
+				const index = requestIdleCallbacks.indexOf(id);
 				if (index > -1) {
 					requestIdleCallbacks.splice(index, 1);
 					_callTimer(id, global.performance.now(), true);
@@ -13444,11 +13444,11 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 		return id;
 	}, cancelIdleCallback: function(timerID) {
 		_freeCallback(timerID);
-		index = requestIdleCallbacks.indexOf(timerID);
+		const index = requestIdleCallbacks.indexOf(timerID);
 		if (index !== -1) {
 			requestIdleCallbacks.splice(index, 1);
 		}
-		timeoutId = requestIdleCallbackTimeouts[timerID];
+		const timeoutId = requestIdleCallbackTimeouts[timerID];
 		if (timeoutId) {
 			JSTimers.clearTimeout(timeoutId);
 			delete requestIdleCallbackTimeouts[timerID];
@@ -13462,7 +13462,7 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 		_freeCallback(timerID);
 	}, clearReactNativeMicrotask: function(timerID) {
 		_freeCallback(timerID);
-		index = reactNativeMicrotasks.indexOf(timerID);
+		const index = reactNativeMicrotasks.indexOf(timerID);
 		if (index !== -1) {
 			reactNativeMicrotasks.splice(index, 1);
 		}
@@ -13474,7 +13474,7 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 		for (let i = 0; i < timersToCall.length; i++) {
 			_callTimer(timersToCall[i], 0);
 		}
-		errorCount = errors.length;
+		const errorCount = errors.length;
 		if (errorCount > 0) {
 			if (errorCount > 1) {
 				for (let ii = 1; ii < errorCount; ii++) {
@@ -13491,7 +13491,7 @@ var init_react_native_Libraries_Core_Timers_JSTimers = __esm({
 		}
 		errors.length = 0;
 		if (requestIdleCallbacks.length > 0) {
-			passIdleCallbacks = requestIdleCallbacks;
+			const passIdleCallbacks = requestIdleCallbacks;
 			requestIdleCallbacks = [];
 			for (let i = 0; i < passIdleCallbacks.length; ++i) {
 				_callTimer(passIdleCallbacks[i], frameTime);
@@ -13625,8 +13625,8 @@ var init_react_native_src_private_devsupport_rndevtools_setUpFuseboxReactDevTool
 			this.onMessage = new EventScope();
 		}
 		sendMessage(message) {
-			messageWithDomain = { domain: this.name, message };
-			serializedMessageWithDomain = JSON.stringify(messageWithDomain);
+			const messageWithDomain = { domain: this.name, message };
+			const serializedMessageWithDomain = JSON.stringify(messageWithDomain);
 			global[FuseboxReactDevToolsDispatcher.BINDING_NAME](serializedMessageWithDomain);
 		}
 	};
@@ -13635,18 +13635,18 @@ var init_react_native_src_private_devsupport_rndevtools_setUpFuseboxReactDevTool
 		static BINDING_NAME = "__CHROME_DEVTOOLS_FRONTEND_BINDING__";
 		static onDomainInitialization = new EventScope();
 		static initializeDomain(domainName) {
-			domain = new Domain(domainName);
+			const domain = new Domain(domainName);
 			this.#domainNameToDomainMap.set(domainName, domain);
 			this.onDomainInitialization.emit(domain);
 			return domain;
 		}
 		static sendMessage(domainName,message) {
-			domain = this.#domainNameToDomainMap.get(domainName);
+			const domain = this.#domainNameToDomainMap.get(domainName);
 			if (domain == null) {
 				throw new Error(`Could not send message to ${domainName}: domain doesn't exist`);
 			}
 			try {
-				parsedMessage = JSON.parse(message);
+				const parsedMessage = JSON.parse(message);
 				domain.onMessage.emit(parsedMessage);
 			} catch (err) {
 				console.error(`Error while trying to send a message to domain ${domainName}:`, err);
@@ -25390,7 +25390,7 @@ var init_react_native_Libraries_Settings_Settings_ios = __esm({
 			keys = [keys];
 		}
 		invariant$14(Array.isArray(keys), "keys should be a string or array of strings");
-		sid = subscriptions.length;
+		const sid = subscriptions.length;
 		subscriptions.push({ keys: keys, callback: callback });
 		return sid;
 	}, clearWatch(watchId) {
@@ -25399,8 +25399,8 @@ var init_react_native_Libraries_Settings_Settings_ios = __esm({
 		}
 	}, _sendObservations(body) {
 		Object.keys(body).forEach((key) => {
-			newValue = body[key];
-			didChange = this._settings[key] !== newValue;
+			const newValue = body[key];
+			const didChange = this._settings[key] !== newValue;
 			this._settings[key] = newValue;
 			if (didChange) {
 				subscriptions.forEach((sub) => {
@@ -25478,8 +25478,8 @@ var init_react_native_Libraries_EventEmitter_NativeEventEmitter = __esm({
 			if (Platform.OS === "ios") {
 				invariant$15(nativeModule != null, "`new NativeEventEmitter()` requires a non-null argument.");
 			}
-			hasAddListener = !!nativeModule && typeof nativeModule.addListener === "function";
-			hasRemoveListeners = !!nativeModule && typeof nativeModule.removeListeners === "function";
+			const hasAddListener = !!nativeModule && typeof nativeModule.addListener === "function";
+			const hasRemoveListeners = !!nativeModule && typeof nativeModule.removeListeners === "function";
 			if (nativeModule && hasAddListener && hasRemoveListeners) {
 				this._nativeModule = nativeModule;
 			} else if (nativeModule != null) {
@@ -25493,7 +25493,7 @@ var init_react_native_Libraries_EventEmitter_NativeEventEmitter = __esm({
 		}
 		addListener(eventType,listener,context) {
 			this._nativeModule?.addListener(eventType);
-			subscription = _default$3.addListener(eventType, listener, context);
+			let subscription = _default$3.addListener(eventType, listener, context);
 			return { remove: () => {
 				if (subscription != null) {
 					this._nativeModule?.removeListeners(1);
@@ -25529,7 +25529,7 @@ var init_react_native_Libraries_Utilities_logError = __esm({
 	"use strict";
 	logError$1 = function(...args) {
 		if (args.length === 1 && args[0] instanceof Error) {
-			err = args[0];
+			const err = args[0];
 			console.error("Error: \"" + err.message + "\".  Stack:\n" + err.stack);
 		} else {
 			console.error.apply(console, args);
@@ -25599,10 +25599,10 @@ var init_react_native_Libraries_AppState_AppState = __esm({
 				this.isAvailable = false;
 			} else {
 				this.isAvailable = true;
-				emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$38);
+				const emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$38);
 				this._emitter = emitter;
 				this.currentState = _default$38.getConstants().initialAppState;
-				eventUpdated = false;
+				let eventUpdated = false;
 				emitter.addListener("appStateDidChange", (appStateData) => {
 					eventUpdated = true;
 					this.currentState = appStateData.app_state;
@@ -25616,22 +25616,22 @@ var init_react_native_Libraries_AppState_AppState = __esm({
 			}
 		}
 		addEventListener(type,handler) {
-			emitter = this._emitter;
+			const emitter = this._emitter;
 			if (emitter == null) {
 				throw new Error("Cannot use AppState when `isAvailable` is false.");
 			}
 			switch (type) {
 				case "change":
-					changeHandler = handler;
+					const changeHandler = handler;
 					return emitter.addListener("appStateDidChange", (appStateData) => {
 						changeHandler(appStateData.app_state);
 					});
 				case "memoryWarning":
-					memoryWarningHandler = handler;
+					const memoryWarningHandler = handler;
 					return emitter.addListener("memoryWarning", memoryWarningHandler);
 				case "blur":
 				case "focus":
-					focusOrBlurHandler = handler;
+					const focusOrBlurHandler = handler;
 					return emitter.addListener("appStateFocusChange", (hasFocus) => {
 						if (type === "blur" && !hasFocus) {
 							focusOrBlurHandler();
@@ -25849,11 +25849,11 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 				return;
 			}
 			validateCallback(callback, "addEventListener");
-			processedType = String(type);
-			
-			
-			
-			
+			const processedType = String(type);
+			let capture;
+			let passive;
+			let once;
+			let signal;
 			if (optionsOrUseCapture != null && (typeof optionsOrUseCapture === "object" || typeof optionsOrUseCapture === "function")) {
 				capture = Boolean(optionsOrUseCapture.capture);
 				passive = optionsOrUseCapture.passive == null ? getDefaultPassiveValue(processedType, this) : Boolean(optionsOrUseCapture.passive);
@@ -25871,8 +25871,8 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 			if (signal?.aborted) {
 				return;
 			}
-			listenersByType = getListenersForPhase(this, capture);
-			listeners = listenersByType?.get(processedType);
+			let listenersByType = getListenersForPhase(this, capture);
+			let listeners = listenersByType?.get(processedType);
 			if (listeners == null) {
 				if (listenersByType == null) {
 					listenersByType = new Map();
@@ -25883,9 +25883,9 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 			} else if (listeners.has(callback)) {
 				return;
 			}
-			listener = { callback, passive, once, removed: false };
+			const listener = { callback, passive, once, removed: false };
 			listeners.set(callback, listener);
-			nonNullListeners = listeners;
+			const nonNullListeners = listeners;
 			if (signal != null) {
 				signal.addEventListener("abort", () => {
 					listener.removed = true;
@@ -25903,14 +25903,14 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 				return;
 			}
 			validateCallback(callback, "removeEventListener");
-			processedType = String(type);
-			capture = typeof optionsOrUseCapture === "boolean" ? optionsOrUseCapture : Boolean(optionsOrUseCapture.capture);
-			listenersByType = getListenersForPhase(this, capture);
-			listeners = listenersByType?.get(processedType);
+			const processedType = String(type);
+			const capture = typeof optionsOrUseCapture === "boolean" ? optionsOrUseCapture : Boolean(optionsOrUseCapture.capture);
+			const listenersByType = getListenersForPhase(this, capture);
+			const listeners = listenersByType?.get(processedType);
 			if (listeners == null) {
 				return;
 			}
-			listener = listeners.get(callback);
+			const listener = listeners.get(callback);
 			if (listener != null) {
 				listener.removed = true;
 				listeners.delete(callback);
@@ -26078,7 +26078,7 @@ var init_react_native_Libraries_Blob_BlobRegistry = __esm({
 	"BlobRegistry.js"() {
 	registry = new Map();
 	register$1 = (id) => {
-		used = registry.get(id);
+		const used = registry.get(id);
 		if (used != null) {
 			registry.set(id, used + 1);
 		} else {
@@ -26086,7 +26086,7 @@ var init_react_native_Libraries_Blob_BlobRegistry = __esm({
 		}
 	};
 	unregister = (id) => {
-		used = registry.get(id);
+		const used = registry.get(id);
 		if (used != null) {
 			if (used <= 1) {
 				registry.delete(id);
@@ -26132,8 +26132,8 @@ var init_react_native_Libraries_Blob_BlobManager = __esm({
 		static isAvailable = !!_default$40;
 		static createFromParts(parts,options) {
 			invariant$16(_default$40, "NativeBlobModule is available.");
-			blobId = uuidv4();
-			items = parts.map((part) => {
+			const blobId = uuidv4();
+			const items = parts.map((part) => {
 				if (part instanceof ArrayBuffer || ArrayBuffer.isView(part)) {
 					throw new Error("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported");
 				}
@@ -26143,7 +26143,7 @@ var init_react_native_Libraries_Blob_BlobManager = __esm({
 					return { data: String(part), type: "string" };
 				}
 			});
-			size = items.reduce((acc,curr) => {
+			const size = items.reduce((acc,curr) => {
 				if (curr.type === "string") {
 					return acc + global.unescape(encodeURI(curr.data)).length;
 				} else {
@@ -26199,7 +26199,7 @@ var init_react_native_Libraries_Blob_Blob = __esm({
 	Blob$2 = class Blob$2 {
 		_data;
 		constructor(parts=[],options) {
-			BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
+			const BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
 			this.data = BlobManager.createFromParts(parts, options).data;
 		}
 		set data(data) {
@@ -26212,7 +26212,7 @@ var init_react_native_Libraries_Blob_Blob = __esm({
 			return this._data;
 		}
 		slice(start,end,contentType="") {
-			BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
+			const BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
 			let { offset:offset, size:size } = this.data;
 			if (typeof start === "number") {
 				if (start > size) {
@@ -26233,7 +26233,7 @@ var init_react_native_Libraries_Blob_Blob = __esm({
 			return BlobManager.createFromOptions({ blobId: this.data.blobId, offset, size, type: contentType, __collector: this.data.__collector });
 		}
 		close() {
-			BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
+			const BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
 			BlobManager.release(this.data.blobId);
 			this.data = null;
 		}
@@ -26536,8 +26536,8 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 			_default$42.ping(this._socketId);
 		}
 		_close(code,reason) {
-			statusCode = typeof code === "number" ? code : CLOSE_NORMAL;
-			closeReason = typeof reason === "string" ? reason : "";
+			const statusCode = typeof code === "number" ? code : CLOSE_NORMAL;
+			const closeReason = typeof reason === "string" ? reason : "";
 			_default$42.close(statusCode, closeReason, this._socketId);
 			if (BlobManager.isAvailable && this._binaryType === "blob") {
 				BlobManager.removeWebSocketHandler(this._socketId);
@@ -26552,7 +26552,7 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 				if (ev.id !== this._socketId) {
 					return;
 				}
-				data = ev.data;
+				let data = ev.data;
 				switch (ev.type) {
 					case "binary":
 						data = base64$1.toByteArray(ev.data).buffer;
@@ -27434,7 +27434,7 @@ var init_react_native_Libraries_Utilities_createPerformanceLogger = __esm({
 			}
 		}
 		removeExtra(key) {
-			value = this._extras[key];
+			const value = this._extras[key];
 			delete this._extras[key];
 			return value;
 		}
@@ -27478,7 +27478,7 @@ var init_react_native_Libraries_Utilities_createPerformanceLogger = __esm({
 				}
 				return;
 			}
-			timespan = this._timespans[key];
+			const timespan = this._timespans[key];
 			if (!timespan || timespan.startTime == null) {
 				if (PRINT_TO_CONSOLE && false) {
 					console.log("PerformanceLogger: Attempting to end a timespan that has not started ", key);
@@ -27544,8 +27544,8 @@ var init_react_native_Libraries_Network_FormData = __esm({
 		}
 		getParts() {
 			return this._parts.map(([name, value]) => {
-				contentDisposition = "form-data; name=\"" + name + "\"";
-				headers = { "content-disposition": contentDisposition };
+				const contentDisposition = "form-data; name=\"" + name + "\"";
+				const headers = { "content-disposition": contentDisposition };
 				if (typeof value === "object" && !Array.isArray(value) && value) {
 					if (typeof value.name === "string") {
 						headers["content-disposition"] += `; filename="${encodeFilename(value.name)}"`;
@@ -27658,8 +27658,8 @@ var init_react_native_Libraries_Network_RCTNetworking_ios = __esm({
 	RCTNetworking = { addListener(eventType,listener,context) {
 		return _default$3.addListener(eventType, listener, context);
 	}, sendRequest(method,trackingName,url,headers,data,responseType,incrementalUpdates,timeout,callback,withCredentials) {
-		body = convertRequestBody(data);
-		devToolsRequestId = global.__NETWORK_REPORTER__?.createDevToolsRequestId();
+		const body = convertRequestBody(data);
+		const devToolsRequestId = global.__NETWORK_REPORTER__?.createDevToolsRequestId();
 		_default$44.sendRequest({ method, url, data: { ...body, trackingName }, headers, responseType, incrementalUpdates, timeout, withCredentials, unstable_devToolsRequestId: devToolsRequestId }, callback);
 	}, abortRequest(requestId) {
 		_default$44.abortRequest(requestId);
@@ -27959,12 +27959,12 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 			if (!this.responseHeaders) {
 				return null;
 			}
-			responseHeaders = this.responseHeaders;
-			unsortedHeaders = new Map();
+			const responseHeaders = this.responseHeaders;
+			const unsortedHeaders = new Map();
 			for (const rawHeaderName of Object.keys(responseHeaders)) {
-				headerValue = responseHeaders[rawHeaderName];
-				lowerHeaderName = rawHeaderName.toLowerCase();
-				header = unsortedHeaders.get(lowerHeaderName);
+				const headerValue = responseHeaders[rawHeaderName];
+				const lowerHeaderName = rawHeaderName.toLowerCase();
+				const header = unsortedHeaders.get(lowerHeaderName);
 				if (header) {
 					header.headerValue += ", " + headerValue;
 					unsortedHeaders.set(lowerHeaderName, header);
@@ -27972,7 +27972,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 					unsortedHeaders.set(lowerHeaderName, { lowerHeaderName, upperHeaderName: rawHeaderName.toUpperCase(), headerValue });
 				}
 			}
-			sortedHeaders = [...unsortedHeaders.values()].sort((a,b) => {
+			const sortedHeaders = [...unsortedHeaders.values()].sort((a,b) => {
 				if (a.upperHeaderName < b.upperHeaderName) {
 					return -1;
 				}
@@ -27986,7 +27986,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 			}).join("\r\n") + "\r\n");
 		}
 		getResponseHeader(header) {
-			value = this._lowerCaseResponseHeaders[header.toLowerCase()];
+			const value = this._lowerCaseResponseHeaders[header.toLowerCase()];
 			return value !== undefined ? value : null;
 		}
 		setRequestHeader(header,value) {
@@ -28026,22 +28026,22 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 				throw new Error("Request has already been sent");
 			}
 			this._sent = true;
-			incrementalEvents = this._incrementalEvents || !!this.onreadystatechange || !!this.onprogress;
+			const incrementalEvents = this._incrementalEvents || !!this.onreadystatechange || !!this.onprogress;
 			this._subscriptions.push(RCTNetworking$1.addListener("didSendNetworkData", (args) => this.__didUploadProgress(...args)));
 			this._subscriptions.push(RCTNetworking$1.addListener("didReceiveNetworkResponse", (args) => this.__didReceiveResponse(...args)));
 			this._subscriptions.push(RCTNetworking$1.addListener("didReceiveNetworkData", (args) => this.__didReceiveData(...args)));
 			this._subscriptions.push(RCTNetworking$1.addListener("didReceiveNetworkIncrementalData", (args) => this.__didReceiveIncrementalData(...args)));
 			this._subscriptions.push(RCTNetworking$1.addListener("didReceiveNetworkDataProgress", (args) => this.__didReceiveDataProgress(...args)));
 			this._subscriptions.push(RCTNetworking$1.addListener("didCompleteNetworkResponse", (args) => this.__didCompleteResponse(...args)));
-			nativeResponseType = "text";
+			let nativeResponseType = "text";
 			if (this._responseType === "arraybuffer") {
 				nativeResponseType = "base64";
 			}
 			if (this._responseType === "blob") {
 				nativeResponseType = "blob";
 			}
-			doSend = () => {
-				friendlyName = this._trackingName ?? this._url;
+			const doSend = () => {
+				const friendlyName = this._trackingName ?? this._url;
 				this._perfKey = "network_XMLHttpRequest_" + String(friendlyName);
 				this._performanceLogger.startTimespan(this._perfKey);
 				this._startTime = performance.now();
@@ -28068,7 +28068,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 		}
 		setResponseHeaders(responseHeaders) {
 			this.responseHeaders = responseHeaders || null;
-			headers = responseHeaders || {};
+			const headers = responseHeaders || {};
 			this._lowerCaseResponseHeaders = Object.keys(headers).reduce((lcaseHeaders,headerName) => {
 				lcaseHeaders[headerName.toLowerCase()] = headers[headerName];
 				return lcaseHeaders;
@@ -28218,7 +28218,7 @@ var init_react_native_Libraries_Blob_NativeFileReaderModule = __esm({
 
 // --- FileReader.js ---
 var exports_react_native_Libraries_Blob_FileReader = {};
-var toByteArray$1, EMPTY, LOADING$1, DONE$1, FileReader$1, __ns_546_0;
+var toByteArray$1, EMPTY, LOADING$1, DONE$1, FileReader$1, __ns_526_0;
 __export(exports_react_native_Libraries_Blob_FileReader, {
 	"default": function() { return FileReader$1; },
 });
@@ -28228,7 +28228,7 @@ var init_react_native_Libraries_Blob_FileReader = __esm({
 	init_react_native_src_private_webapis_dom_events_EventHandlerAttributes();
 	init_react_native_src_private_webapis_dom_events_EventTarget();
 	init_react_native_Libraries_Blob_NativeFileReaderModule();
-	__ns_546_0 = __toESM(require_base64_js_index());
+	__ns_526_0 = __toESM(require_base64_js_index());
 		
 	
 	
@@ -28280,8 +28280,8 @@ var init_react_native_Libraries_Blob_FileReader = __esm({
 				if (this._aborted) {
 					return;
 				}
-				base64 = text.split(",")[1];
-				typedArray = toByteArray$1(base64);
+				const base64 = text.split(",")[1];
+				const typedArray = toByteArray$1(base64);
 				this._result = typedArray.buffer;
 				this._setReadyState(DONE$1);
 			}, (error) => {
@@ -28431,7 +28431,7 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 			this._searchParams.delete(name);
 		}
 		get(name) {
-			values = this._searchParams.get(name);
+			const values = this._searchParams.get(name);
 			return values ? values[0] : null;
 		}
 		getAll(name) {
@@ -28477,7 +28477,7 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 			this._searchParams = new Map([...this._searchParams.entries()].sort(([a], [b]) => a.localeCompare(b)));
 		}
 		[Symbol.iterator]() {
-			entries = [];
+			const entries = [];
 			for (const [key, values] of this._searchParams) {
 				for (const value of values) {
 					entries.push([key, value]);
@@ -28510,7 +28510,7 @@ var init_react_native_Libraries_Blob_URL = __esm({
 		
 	BLOB_URL_PREFIX = null;
 	if (_default$40 && typeof _default$40.getConstants().BLOB_URI_SCHEME === "string") {
-		constants = _default$40.getConstants();
+		const constants = _default$40.getConstants();
 		BLOB_URL_PREFIX = constants.BLOB_URI_SCHEME + ":";
 		if (typeof constants.BLOB_URI_HOST === "string") {
 			BLOB_URL_PREFIX += `//${constants.BLOB_URI_HOST}/`;
@@ -28529,13 +28529,13 @@ var init_react_native_Libraries_Blob_URL = __esm({
 		static revokeObjectURL(url) {
 		}
 		constructor(url,base) {
-			baseUrl = null;
+			let baseUrl = null;
 			if (!base || validateBaseUrl(url)) {
 				this._url = url;
 				if (this._url.includes("#")) {
-					split = this._url.split("#");
-					beforeHash = split[0];
-					website = beforeHash.split("://")[1];
+					const split = this._url.split("#");
+					const beforeHash = split[0];
+					const website = beforeHash.split("://")[1];
 					if (!website.includes("/")) {
 						this._url = split.join("/#");
 					}
@@ -28565,43 +28565,43 @@ var init_react_native_Libraries_Blob_URL = __esm({
 			}
 		}
 		get hash() {
-			hashMatch = this._url.match(/#([^/]*)/);
+			const hashMatch = this._url.match(/#([^/]*)/);
 			return hashMatch ? `#${hashMatch[1]}` : "";
 		}
 		get host() {
-			hostMatch = this._url.match(/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/);
-			portMatch = this._url.match(/:(\d+)(?=[/?#]|$)/);
+			const hostMatch = this._url.match(/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/);
+			const portMatch = this._url.match(/:(\d+)(?=[/?#]|$)/);
 			return hostMatch ? hostMatch[1] + (portMatch ? `:${portMatch[1]}` : "") : "";
 		}
 		get hostname() {
-			hostnameMatch = this._url.match(/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/);
+			const hostnameMatch = this._url.match(/^https?:\/\/(?:[^@]+@)?([^:/?#]+)/);
 			return hostnameMatch ? hostnameMatch[1] : "";
 		}
 		get href() {
 			return this.toString();
 		}
 		get origin() {
-			matches = this._url.match(/^(https?:\/\/[^/]+)/);
+			const matches = this._url.match(/^(https?:\/\/[^/]+)/);
 			return matches ? matches[1] : "";
 		}
 		get password() {
-			passwordMatch = this._url.match(/https?:\/\/.*:(.*)@/);
+			const passwordMatch = this._url.match(/https?:\/\/.*:(.*)@/);
 			return passwordMatch ? passwordMatch[1] : "";
 		}
 		get pathname() {
-			pathMatch = this._url.match(/https?:\/\/[^/]+(\/[^?#]*)?/);
+			const pathMatch = this._url.match(/https?:\/\/[^/]+(\/[^?#]*)?/);
 			return pathMatch ? pathMatch[1] || "/" : "/";
 		}
 		get port() {
-			portMatch = this._url.match(/:(\d+)(?=[/?#]|$)/);
+			const portMatch = this._url.match(/:(\d+)(?=[/?#]|$)/);
 			return portMatch ? portMatch[1] : "";
 		}
 		get protocol() {
-			protocolMatch = this._url.match(/^([a-zA-Z][a-zA-Z\d+\-.]*):/);
+			const protocolMatch = this._url.match(/^([a-zA-Z][a-zA-Z\d+\-.]*):/);
 			return protocolMatch ? protocolMatch[1] + ":" : "";
 		}
 		get search() {
-			searchMatch = this._url.match(/\?([^#]*)/);
+			const searchMatch = this._url.match(/\?([^#]*)/);
 			return searchMatch ? `?${searchMatch[1]}` : "";
 		}
 		get searchParams() {
@@ -28617,12 +28617,12 @@ var init_react_native_Libraries_Blob_URL = __esm({
 			if (this._searchParamsInstance === null) {
 				return this._url;
 			}
-			instanceString = this._searchParamsInstance.toString();
-			separator = this._url.indexOf("?") > -1 ? "&" : "?";
+			const instanceString = this._searchParamsInstance.toString();
+			const separator = this._url.indexOf("?") > -1 ? "&" : "?";
 			return this._url + separator + instanceString;
 		}
 		get username() {
-			usernameMatch = this._url.match(/^https?:\/\/([^:@]+)(?::[^@]*)?@/);
+			const usernameMatch = this._url.match(/^https?:\/\/([^:@]+)(?::[^@]*)?@/);
 			return usernameMatch ? usernameMatch[1] : "";
 		}
 	};
@@ -29191,20 +29191,20 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 			if (Platform.OS === "ios") {
 				Alert.prompt(title, message, buttons, "default", undefined, undefined, options);
 			} else if (Platform.OS === "android") {
-				NativeDialogManagerAndroid = (init_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid(), __toCommonJS(exports_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid)).default;
+				const NativeDialogManagerAndroid = (init_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid(), __toCommonJS(exports_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid)).default;
 				if (!NativeDialogManagerAndroid) {
 					return;
 				}
-				constants = NativeDialogManagerAndroid.getConstants();
-				config = { title: title || "", message: message || "", cancelable: false };
+				const constants = NativeDialogManagerAndroid.getConstants();
+				const config = { title: title || "", message: message || "", cancelable: false };
 				if (options && options.cancelable) {
 					config.cancelable = options.cancelable;
 				}
-				defaultPositiveText = "OK";
-				validButtons = buttons ? buttons.slice(0, 3) : [{ text: defaultPositiveText }];
-				buttonPositive = validButtons.pop();
-				buttonNegative = validButtons.pop();
-				buttonNeutral = validButtons.pop();
+				const defaultPositiveText = "OK";
+				const validButtons = buttons ? buttons.slice(0, 3) : [{ text: defaultPositiveText }];
+				const buttonPositive = validButtons.pop();
+				const buttonNegative = validButtons.pop();
+				const buttonNeutral = validButtons.pop();
 				if (buttonNeutral) {
 					config.buttonNeutral = buttonNeutral.text || "";
 				}
@@ -29214,7 +29214,7 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 				if (buttonPositive) {
 					config.buttonPositive = buttonPositive.text || defaultPositiveText;
 				}
-				onAction = (action,buttonKey) => {
+				const onAction = (action,buttonKey) => {
 					if (action === constants.buttonClicked) {
 						if (buttonKey === constants.buttonNeutral) {
 							buttonNeutral.onPress && buttonNeutral.onPress();
@@ -29227,17 +29227,17 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 						options && options.onDismiss && options.onDismiss();
 					}
 				};
-				onError = (errorMessage) => console.warn(errorMessage);
+				const onError = (errorMessage) => console.warn(errorMessage);
 				NativeDialogManagerAndroid.showAlert(config, onError, onAction);
 			}
 		}
 		static prompt(title,message,callbackOrButtons,type="plain-text",defaultValue,keyboardType,options) {
 			if (Platform.OS === "ios") {
-				callbacks = [];
-				buttons = [];
-				
-				
-				
+				let callbacks = [];
+				const buttons = [];
+				let cancelButtonKey;
+				let destructiveButtonKey;
+				let preferredButtonKey;
 				if (typeof callbackOrButtons === "function") {
 					callbacks = [callbackOrButtons];
 				} else if (Array.isArray(callbackOrButtons)) {
@@ -29252,14 +29252,14 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 							preferredButtonKey = String(index);
 						}
 						if (btn.text || index < (callbackOrButtons || []).length - 1) {
-							btnDef = {};
+							const btnDef = {};
 							btnDef[index] = btn.text || "";
 							buttons.push(btnDef);
 						}
 					});
 				}
 				alertWithArgs({ title: title || "", message: message || undefined, buttons, type: type || undefined, defaultValue, cancelButtonKey, destructiveButtonKey, preferredButtonKey, keyboardType, userInterfaceStyle: options?.userInterfaceStyle || undefined }, (id,value) => {
-					cb = callbacks[id];
+					const cb = callbacks[id];
 					cb && cb(value);
 				});
 			}
@@ -29350,10 +29350,10 @@ var init_react_native_Libraries_Utilities_DevSettings = __esm({
 	}, onFastRefresh() {
 	} };
 	if (false) {
-		emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$11);
-		subscriptions = new Map();
+		const emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$11);
+		const subscriptions = new Map();
 		DevSettings = { addMenuItem(title,handler) {
-			subscription = subscriptions.get(title);
+			let subscription = subscriptions.get(title);
 			if (subscription != null) {
 				subscription.remove();
 			} else {
@@ -29838,10 +29838,10 @@ var init_react_native_Libraries_Utilities_DevLoadingView = __esm({
 	COLOR_SCHEME = { dark: { load: { backgroundColor: "#fafafa", textColor: "#242526" }, refresh: { backgroundColor: "#2584e8", textColor: "#ffffff" }, error: { backgroundColor: "#1065AF", textColor: "#ffffff" } }, default: { load: { backgroundColor: "#404040", textColor: "#ffffff" }, refresh: { backgroundColor: "#2584e8", textColor: "#ffffff" }, error: { backgroundColor: "#1065AF", textColor: "#ffffff" } } };
 	_default$58={ showMessage(message,type) {
 		if (_default$56) {
-			colorScheme = getColorScheme() === "dark" ? COLOR_SCHEME.dark : COLOR_SCHEME.default;
-			colorSet = colorScheme[type];
-			
-			
+			const colorScheme = getColorScheme() === "dark" ? COLOR_SCHEME.dark : COLOR_SCHEME.default;
+			const colorSet = colorScheme[type];
+			let backgroundColor;
+			let textColor;
 			if (colorSet) {
 				backgroundColor = processColor(colorSet.backgroundColor);
 				textColor = processColor(colorSet.textColor);
@@ -29937,9 +29937,9 @@ var init_react_native_Libraries_Utilities_HMRClient = __esm({
 			throw new Error(hmrUnavailableReason);
 		}
 		invariant$20(hmrClient, "Expected HMRClient.setup() call at startup.");
-		DevLoadingView = (init_react_native_Libraries_Utilities_DevLoadingView(), __toCommonJS(exports_react_native_Libraries_Utilities_DevLoadingView)).default;
+		const DevLoadingView = (init_react_native_Libraries_Utilities_DevLoadingView(), __toCommonJS(exports_react_native_Libraries_Utilities_DevLoadingView)).default;
 		hmrClient.send(JSON.stringify({ type: "log-opt-in" }));
-		hasUpdates = hmrClient.hasPendingUpdates();
+		const hasUpdates = hmrClient.hasPendingUpdates();
 		if (hasUpdates) {
 			DevLoadingView.showMessage("Refreshing...", "refresh");
 		}
@@ -29978,17 +29978,17 @@ var init_react_native_Libraries_Utilities_HMRClient = __esm({
 		invariant$20(bundleEntry, "Missing required parameter `bundleEntry`");
 		invariant$20(host, "Missing required parameter `host`");
 		invariant$20(!hmrClient, "Cannot initialize hmrClient twice");
-		DevLoadingView = (init_react_native_Libraries_Utilities_DevLoadingView(), __toCommonJS(exports_react_native_Libraries_Utilities_DevLoadingView)).default;
-		serverHost = port !== null && port !== "" ? `${host}:${port}` : host;
-		serverScheme = scheme;
-		origin = `${serverScheme}://${serverHost}`;
-		client = new MetroHMRClient(`${origin}/hot`);
+		const DevLoadingView = (init_react_native_Libraries_Utilities_DevLoadingView(), __toCommonJS(exports_react_native_Libraries_Utilities_DevLoadingView)).default;
+		const serverHost = port !== null && port !== "" ? `${host}:${port}` : host;
+		const serverScheme = scheme;
+		const origin = `${serverScheme}://${serverHost}`;
+		const client = new MetroHMRClient(`${origin}/hot`);
 		hmrOrigin = origin;
 		hmrClient = client;
 		const { fullBundleUrl:fullBundleUrl } = getDevServer();
 		pendingEntryPoints.push(fullBundleUrl ?? `${serverScheme}://${serverHost}/hot?bundleEntry=${bundleEntry}&platform=${platform}`);
 		client.on("connection-error", (e) => {
-			error = `Cannot connect to Metro.
+			let error = `Cannot connect to Metro.
 	
 	Try the following to fix the issue:
 	- Ensure that Metro is running and available on the same network`;
@@ -30008,7 +30008,7 @@ var init_react_native_Libraries_Utilities_HMRClient = __esm({
 	Error: ${e.message}`;
 			setHMRUnavailableReason(error);
 		});
-		pendingUpdatesCount = 0;
+		let pendingUpdatesCount = 0;
 		client.on("update-start", ({ isInitialUpdate:isInitialUpdate }) => {
 			pendingUpdatesCount++;
 			currentCompileErrorMessage = null;
@@ -30044,7 +30044,7 @@ var init_react_native_Libraries_Utilities_HMRClient = __esm({
 			}
 		});
 		client.on("close", (closeEvent) => {
-			isNormalOrUnsetCloseReason = closeEvent == null || closeEvent.code === 1000 || closeEvent.code === 1005 || closeEvent.code == null;
+			const isNormalOrUnsetCloseReason = closeEvent == null || closeEvent.code === 1000 || closeEvent.code === 1005 || closeEvent.code == null;
 			setHMRUnavailableReason(`${isNormalOrUnsetCloseReason ? "Disconnected from Metro." : `Disconnected from Metro (${closeEvent.code}: "${closeEvent.reason}").`}
 	
 	To reconnect:
@@ -30831,10 +30831,10 @@ var init_react_native_Libraries_Core_setUpDeveloperTools = __esm({
 		
 	if (false) {
 		if (!Platform.isTesting) {
-			HMRClient = (init_react_native_Libraries_Utilities_HMRClient(), __toCommonJS(exports_react_native_Libraries_Utilities_HMRClient)).default;
+			const HMRClient = (init_react_native_Libraries_Utilities_HMRClient(), __toCommonJS(exports_react_native_Libraries_Utilities_HMRClient)).default;
 			if (console._isPolyfilled) {
 				["trace", "info", "warn", "error", "log", "group", "groupCollapsed", "groupEnd", "debug"].forEach((level) => {
-					originalFunction = console[level];
+					const originalFunction = console[level];
 					console[level] = function(...args) {
 						HMRClient.log(level, args);
 						originalFunction.apply(console, args);
@@ -30917,9 +30917,9 @@ var init_react_native_Libraries_ReactNative_HeadlessJsTaskError = __esm({
 
 // --- PerformanceLoggerContext.js ---
 var exports_react_native_Libraries_Utilities_PerformanceLoggerContext = {};
-var React$6, createContext$1, PerformanceLoggerContext, __ns_331_0;
+var React$6, createContext$1, PerformanceLoggerContext, __ns_422_0;
 function usePerformanceLogger() {
-	return __ns_331_0.useContext(PerformanceLoggerContext);
+	return __ns_422_0.useContext(PerformanceLoggerContext);
 }
 __export(exports_react_native_Libraries_Utilities_PerformanceLoggerContext, {
 	usePerformanceLogger: function() { return usePerformanceLogger; },
@@ -30928,10 +30928,10 @@ __export(exports_react_native_Libraries_Utilities_PerformanceLoggerContext, {
 var init_react_native_Libraries_Utilities_PerformanceLoggerContext = __esm({
 	"PerformanceLoggerContext.js"() {
 	init_react_native_Libraries_Utilities_GlobalPerformanceLogger();
-	__ns_331_0 = __toESM(require_react_index());
+	__ns_422_0 = __toESM(require_react_index());
 		
 	React$6=__toESM(require_react_index());
-	({createContext:createContext$1,useContext:__ns_331_0.useContext}=require_react_index());
+	({createContext:createContext$1,useContext:__ns_422_0.useContext}=require_react_index());
 	PerformanceLoggerContext = createContext$1(GlobalPerformanceLogger);
 	if (false) {
 		PerformanceLoggerContext.displayName = "PerformanceLoggerContext";
@@ -30943,13 +30943,13 @@ var init_react_native_Libraries_Utilities_PerformanceLoggerContext = __esm({
 
 // --- createReactNativeComponentClass.js ---
 var exports_react_native_Libraries_Renderer_shims_createReactNativeComponentClass = {};
-var ReactNativeViewConfigRegistry$1, createReactNativeComponentClass, __ns_163_0;
+var ReactNativeViewConfigRegistry$1, createReactNativeComponentClass, __ns_151_0;
 __export(exports_react_native_Libraries_Renderer_shims_createReactNativeComponentClass, {
 	"default": function() { return createReactNativeComponentClass; },
 });
 var init_react_native_Libraries_Renderer_shims_createReactNativeComponentClass = __esm({
 	"createReactNativeComponentClass.js"() {
-	__ns_163_0 = __toESM(require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
+	__ns_151_0 = __toESM(require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
 		"use strict";
 	({ReactNativeViewConfigRegistry:ReactNativeViewConfigRegistry$1}=require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
 	
@@ -31110,7 +31110,7 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			this.#registry.add(subscriber);
 		}
 		unsubscribe(subscriber) {
-			wasPresent = this.#registry.delete(subscriber);
+			const wasPresent = this.#registry.delete(subscriber);
 			if (!wasPresent) {
 				console.error("[DebuggingOverlayRegistry] Unexpected argument for unsubscription, which was not previously subscribed:", subscriber);
 			}
@@ -31134,7 +31134,7 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			return null;
 		};
 		#findLowestParentFromRegistryForInstance(instance) {
-			iterator = instance;
+			let iterator = instance;
 			while (iterator != null) {
 				for (const subscriber of this.#registry) {
 					if (subscriber.rootViewRef.current === iterator) {
@@ -31146,7 +31146,7 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			return null;
 		}
 		#findLowestParentFromRegistryForInstanceLegacy(instance) {
-			candidates = [];
+			const candidates = [];
 			for (const subscriber of this.#registry) {
 				if (subscriber.rootViewRef.current != null && isChildPublicInstance$1(subscriber.rootViewRef.current, instance)) {
 					candidates.push(subscriber);
@@ -31158,9 +31158,9 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			if (candidates.length === 1) {
 				return candidates[0];
 			}
-			candidatesWithNoChildren = [];
+			const candidatesWithNoChildren = [];
 			for (const potentialParent of candidates) {
-				shouldSkipThisParent = false;
+				let shouldSkipThisParent = false;
 				if (potentialParent.rootViewRef.current == null) {
 					continue;
 				}
@@ -31190,18 +31190,18 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			return candidatesWithNoChildren[0];
 		}
 		#onDrawTraceUpdates = (traceUpdates) => {
-			modernNodesUpdates = [];
-			legacyNodesUpdates = [];
+			const modernNodesUpdates = [];
+			const legacyNodesUpdates = [];
 			for (const { node:node, color:color } of traceUpdates) {
-				publicInstance = this.#getPublicInstanceFromInstance(node);
+				const publicInstance = this.#getPublicInstanceFromInstance(node);
 				if (publicInstance == null) {
 					return;
 				}
-				instanceReactTag = findNodeHandle$7(node);
+				const instanceReactTag = findNodeHandle$7(node);
 				if (instanceReactTag == null) {
 					return;
 				}
-				ReactNativeElementClass = (init_react_native_src_private_webapis_dom_nodes_ReactNativeElement(), __toCommonJS(exports_react_native_src_private_webapis_dom_nodes_ReactNativeElement)).default;
+				const ReactNativeElementClass = (init_react_native_src_private_webapis_dom_nodes_ReactNativeElement(), __toCommonJS(exports_react_native_src_private_webapis_dom_nodes_ReactNativeElement)).default;
 				if (publicInstance instanceof ReactNativeElementClass) {
 					modernNodesUpdates.push({ id: instanceReactTag, instance: publicInstance, color });
 				} else {
@@ -31216,19 +31216,19 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			}
 		};
 		#drawTraceUpdatesModern(updates) {
-			parentToTraceUpdatesMap = new Map();
+			const parentToTraceUpdatesMap = new Map();
 			for (const { id:id, instance:instance, color:color } of updates) {
-				parent = this.#findLowestParentFromRegistryForInstance(instance);
+				const parent = this.#findLowestParentFromRegistryForInstance(instance);
 				if (parent == null) {
 					continue;
 				}
-				traceUpdatesForParent = parentToTraceUpdatesMap.get(parent);
+				let traceUpdatesForParent = parentToTraceUpdatesMap.get(parent);
 				if (traceUpdatesForParent == null) {
 					traceUpdatesForParent = [];
 					parentToTraceUpdatesMap.set(parent, traceUpdatesForParent);
 				}
 				const { x:x, y:y, width:width, height:height } = instance.getBoundingClientRect();
-				rootViewInstance = parent.rootViewRef.current;
+				const rootViewInstance = parent.rootViewRef.current;
 				if (rootViewInstance == null) {
 					continue;
 				}
@@ -31241,18 +31241,18 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			}
 		}
 		#drawTraceUpdatesLegacy(updates) {
-			parentToTraceUpdatesPromisesMap = new Map();
+			const parentToTraceUpdatesPromisesMap = new Map();
 			for (const { id:id, instance:instance, color:color } of updates) {
-				parent = this.#findLowestParentFromRegistryForInstanceLegacy(instance);
+				const parent = this.#findLowestParentFromRegistryForInstanceLegacy(instance);
 				if (parent == null) {
 					continue;
 				}
-				traceUpdatesPromisesForParent = parentToTraceUpdatesPromisesMap.get(parent);
+				let traceUpdatesPromisesForParent = parentToTraceUpdatesPromisesMap.get(parent);
 				if (traceUpdatesPromisesForParent == null) {
 					traceUpdatesPromisesForParent = [];
 					parentToTraceUpdatesPromisesMap.set(parent, traceUpdatesPromisesForParent);
 				}
-				frameToDrawPromise = new Promise((resolve,reject) => {
+				const frameToDrawPromise = new Promise((resolve,reject) => {
 					instance.measure((x,y,width,height,left,top) => {
 						if (left == null || top == null || width == null || height == null) {
 							reject(new Error("Unexpectedly failed to call measure on an instance."));
@@ -31271,11 +31271,11 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			for (const subscriber of this.#registry) {
 				subscriber.debuggingOverlayRef.current?.clearElementsHighlight();
 			}
-			ReactNativeElementClass = (init_react_native_src_private_webapis_dom_nodes_ReactNativeElement(), __toCommonJS(exports_react_native_src_private_webapis_dom_nodes_ReactNativeElement)).default;
-			reactNativeElements = [];
-			legacyPublicInstances = [];
+			const ReactNativeElementClass = (init_react_native_src_private_webapis_dom_nodes_ReactNativeElement(), __toCommonJS(exports_react_native_src_private_webapis_dom_nodes_ReactNativeElement)).default;
+			const reactNativeElements = [];
+			const legacyPublicInstances = [];
 			for (const node of nodes) {
-				publicInstance = this.#getPublicInstanceFromInstance(node);
+				const publicInstance = this.#getPublicInstanceFromInstance(node);
 				if (publicInstance == null) {
 					continue;
 				}
@@ -31293,13 +31293,13 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			}
 		};
 		#onHighlightElementsModern(elements) {
-			parentToElementsMap = new Map();
+			const parentToElementsMap = new Map();
 			for (const element of elements) {
-				parent = this.#findLowestParentFromRegistryForInstance(element);
+				const parent = this.#findLowestParentFromRegistryForInstance(element);
 				if (parent == null) {
 					continue;
 				}
-				childElementOfAParent = parentToElementsMap.get(parent);
+				let childElementOfAParent = parentToElementsMap.get(parent);
 				if (childElementOfAParent == null) {
 					childElementOfAParent = [];
 					parentToElementsMap.set(parent, childElementOfAParent);
@@ -31307,12 +31307,12 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 				childElementOfAParent.push(element);
 			}
 			for (const [parent, elementsToHighlight] of parentToElementsMap.entries()) {
-				rootViewInstance = parent.rootViewRef.current;
+				const rootViewInstance = parent.rootViewRef.current;
 				if (rootViewInstance == null) {
 					return;
 				}
 				const { x:parentX, y:parentY } = rootViewInstance.getBoundingClientRect();
-				elementsRectangles = elementsToHighlight.map((element) => {
+				const elementsRectangles = elementsToHighlight.map((element) => {
 					const { x:x, y:y, width:width, height:height } = element.getBoundingClientRect();
 					return { x: x - parentX, y: y - parentY, width, height };
 				});
@@ -31320,13 +31320,13 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			}
 		}
 		#onHighlightElementsLegacy(elements) {
-			parentToElementsMap = new Map();
+			const parentToElementsMap = new Map();
 			for (const element of elements) {
-				parent = this.#findLowestParentFromRegistryForInstanceLegacy(element);
+				const parent = this.#findLowestParentFromRegistryForInstanceLegacy(element);
 				if (parent == null) {
 					continue;
 				}
-				childElementOfAParent = parentToElementsMap.get(parent);
+				let childElementOfAParent = parentToElementsMap.get(parent);
 				if (childElementOfAParent == null) {
 					childElementOfAParent = [];
 					parentToElementsMap.set(parent, childElementOfAParent);
@@ -31334,7 +31334,7 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 				childElementOfAParent.push(element);
 			}
 			for (const [parent, elementsToHighlight] of parentToElementsMap.entries()) {
-				promises = elementsToHighlight.map((element) => new Promise((resolve,reject) => {
+				const promises = elementsToHighlight.map((element) => new Promise((resolve,reject) => {
 					element.measure((x,y,width,height,left,top) => {
 						if (left == null || top == null || width == null || height == null) {
 							reject(new Error("Unexpectedly failed to call measure on an instance."));
@@ -31360,19 +31360,19 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 
 // --- useSubscribeToDebuggingOverlayRegistry.js ---
 var exports_react_native_Libraries_Debugging_useSubscribeToDebuggingOverlayRegistry = {};
-var useSubscribeToDebuggingOverlayRegistry, __ns_372_0;
+var useSubscribeToDebuggingOverlayRegistry, __ns_265_0;
 __export(exports_react_native_Libraries_Debugging_useSubscribeToDebuggingOverlayRegistry, {
 	"default": function() { return useSubscribeToDebuggingOverlayRegistry; },
 });
 var init_react_native_Libraries_Debugging_useSubscribeToDebuggingOverlayRegistry = __esm({
 	"useSubscribeToDebuggingOverlayRegistry.js"() {
 	init_react_native_Libraries_Debugging_DebuggingOverlayRegistry();
-	__ns_372_0 = __toESM(require_react_index());
+	__ns_265_0 = __toESM(require_react_index());
 		
 	
 	useSubscribeToDebuggingOverlayRegistry = (rootViewRef, debuggingOverlayRef) => {
-		__ns_372_0.useEffect(() => {
-			subscriber = { rootViewRef, debuggingOverlayRef };
+		__ns_265_0.useEffect(() => {
+			const subscriber = { rootViewRef, debuggingOverlayRef };
 			debuggingOverlayRegistryInstance.subscribe(subscriber);
 			return () => debuggingOverlayRegistryInstance.unsubscribe(subscriber);
 		}, [rootViewRef, debuggingOverlayRef]);
@@ -31564,17 +31564,17 @@ var init_react_native_Libraries_Pressability_HoverState = __esm({
 		
 	isEnabled$2 = false;
 	if (Platform.OS === "web") {
-		canUseDOM = Boolean(typeof window !== "undefined" && window.document && window.document.createElement);
+		const canUseDOM = Boolean(typeof window !== "undefined" && window.document && window.document.createElement);
 		if (canUseDOM) {
-			HOVER_THRESHOLD_MS = 1000;
-			lastTouchTimestamp = 0;
-			enableHover = () => {
+			const HOVER_THRESHOLD_MS = 1000;
+			let lastTouchTimestamp = 0;
+			const enableHover = () => {
 				if (isEnabled$2 || Date.now() - lastTouchTimestamp < HOVER_THRESHOLD_MS) {
 					return;
 				}
 				isEnabled$2 = true;
 			};
-			disableHover = () => {
+			const disableHover = () => {
 				lastTouchTimestamp = Date.now();
 				if (isEnabled$2) {
 					isEnabled$2 = false;
@@ -31613,7 +31613,7 @@ var init_react_native_Libraries_Pressability_PressabilityPerformanceEventEmitter
 			this._listeners.push(listener);
 		}
 		removeListener(listener) {
-			index = this._listeners.indexOf(listener);
+			const index = this._listeners.indexOf(listener);
 			if (index > -1) {
 				this._listeners.splice(index, 1);
 			}
@@ -31622,7 +31622,7 @@ var init_react_native_Libraries_Pressability_PressabilityPerformanceEventEmitter
 			if (this._listeners.length === 0) {
 				return;
 			}
-			event = constructEvent();
+			const event = constructEvent();
 			this._listeners.forEach((listener) => listener(event));
 		}
 	};
@@ -31712,7 +31712,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 			longPressDeactivationDistance = distance;
 		}
 		_createEventHandlers() {
-			focusEventHandlers = { onBlur: (event) => {
+			const focusEventHandlers = { onBlur: (event) => {
 				const { onBlur:onBlur } = this._config;
 				if (onBlur != null) {
 					onBlur(event);
@@ -31723,7 +31723,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 					onFocus(event);
 				}
 			} };
-			responderEventHandlers = { onStartShouldSetResponder: () => {
+			const responderEventHandlers = { onStartShouldSetResponder: () => {
 				const { disabled:disabled } = this._config;
 				return !disabled ?? true;
 			}, onResponderGrant: (event) => {
@@ -31732,7 +31732,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				this._responderID = event.currentTarget;
 				this._touchState = "NOT_RESPONDER";
 				this._receiveSignal("RESPONDER_GRANT", event);
-				delayPressIn = normalizeDelay(this._config.delayPressIn);
+				const delayPressIn = normalizeDelay(this._config.delayPressIn);
 				if (delayPressIn > 0) {
 					this._pressDelayTimeout = setTimeout(() => {
 						this._receiveSignal("DELAY", event);
@@ -31740,7 +31740,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				} else {
 					this._receiveSignal("DELAY", event);
 				}
-				delayLongPress = normalizeDelay(this._config.delayLongPress, 10, DEFAULT_LONG_PRESS_DELAY_MS - delayPressIn);
+				const delayLongPress = normalizeDelay(this._config.delayLongPress, 10, DEFAULT_LONG_PRESS_DELAY_MS - delayPressIn);
 				this._longPressDelayTimeout = setTimeout(() => {
 					this._handleLongPress(event);
 				}, delayLongPress + delayPressIn);
@@ -31750,19 +31750,19 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				if (onPressMove != null) {
 					onPressMove(event);
 				}
-				responderRegion = this._responderRegion;
+				const responderRegion = this._responderRegion;
 				if (responderRegion == null) {
 					return;
 				}
-				touch = getTouchFromPressEvent(event);
+				const touch = getTouchFromPressEvent(event);
 				if (touch == null) {
 					this._cancelLongPressDelayTimeout();
 					this._receiveSignal("LEAVE_PRESS_RECT", event);
 					return;
 				}
 				if (this._touchActivatePosition != null) {
-					deltaX = this._touchActivatePosition.pageX - touch.pageX;
-					deltaY = this._touchActivatePosition.pageY - touch.pageY;
+					const deltaX = this._touchActivatePosition.pageX - touch.pageX;
+					const deltaY = this._touchActivatePosition.pageY - touch.pageY;
 					if (Math.hypot(deltaX, deltaY) > longPressDeactivationDistance) {
 						this._cancelLongPressDelayTimeout();
 					}
@@ -31797,14 +31797,14 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				responderEventHandlers.onStartShouldSetResponder.testOnly_pressabilityConfig = () => this._config;
 			}
 			if (shouldPressibilityUseW3CPointerEventsForHover()) {
-				hoverPointerEvents = { onPointerEnter: undefined, onPointerLeave: undefined };
+				const hoverPointerEvents = { onPointerEnter: undefined, onPointerLeave: undefined };
 				const { onHoverIn:onHoverIn, onHoverOut:onHoverOut } = this._config;
 				if (onHoverIn != null) {
 					hoverPointerEvents.onPointerEnter = (event) => {
 						this._isHovered = true;
 						this._cancelHoverOutDelayTimeout();
 						if (onHoverIn != null) {
-							delayHoverIn = normalizeDelay(this._config.delayHoverIn);
+							const delayHoverIn = normalizeDelay(this._config.delayHoverIn);
 							if (delayHoverIn > 0) {
 								event.persist();
 								this._hoverInDelayTimeout = setTimeout(() => {
@@ -31822,7 +31822,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 							this._isHovered = false;
 							this._cancelHoverInDelayTimeout();
 							if (onHoverOut != null) {
-								delayHoverOut = normalizeDelay(this._config.delayHoverOut);
+								const delayHoverOut = normalizeDelay(this._config.delayHoverOut);
 								if (delayHoverOut > 0) {
 									event.persist();
 									this._hoverOutDelayTimeout = setTimeout(() => {
@@ -31837,13 +31837,13 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				}
 				return { ...focusEventHandlers, ...responderEventHandlers, ...hoverPointerEvents };
 			} else {
-				mouseEventHandlers = Platform.OS === "ios" || Platform.OS === "android" ? null : { onMouseEnter: (event) => {
+				const mouseEventHandlers = Platform.OS === "ios" || Platform.OS === "android" ? null : { onMouseEnter: (event) => {
 					if (isHoverEnabled()) {
 						this._isHovered = true;
 						this._cancelHoverOutDelayTimeout();
 						const { onHoverIn:onHoverIn } = this._config;
 						if (onHoverIn != null) {
-							delayHoverIn = normalizeDelay(this._config.delayHoverIn);
+							const delayHoverIn = normalizeDelay(this._config.delayHoverIn);
 							if (delayHoverIn > 0) {
 								event.persist();
 								this._hoverInDelayTimeout = setTimeout(() => {
@@ -31860,7 +31860,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 						this._cancelHoverInDelayTimeout();
 						const { onHoverOut:onHoverOut } = this._config;
 						if (onHoverOut != null) {
-							delayHoverOut = normalizeDelay(this._config.delayHoverOut);
+							const delayHoverOut = normalizeDelay(this._config.delayHoverOut);
 							if (delayHoverOut > 0) {
 								event.persist();
 								this._hoverInDelayTimeout = setTimeout(() => {
@@ -31881,8 +31881,8 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 					return { signal, nativeTimestamp: event.nativeEvent.timestamp };
 				});
 			}
-			prevState = this._touchState;
-			nextState = Transitions[prevState]?.[signal];
+			const prevState = this._touchState;
+			const nextState = Transitions[prevState]?.[signal];
 			if (this._responderID == null && signal === "RESPONDER_RELEASE") {
 				return;
 			}
@@ -31897,8 +31897,8 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				this._touchActivatePosition = null;
 				this._cancelLongPressDelayTimeout();
 			}
-			isInitialTransition = prevState === "NOT_RESPONDER" && nextState === "RESPONDER_INACTIVE_PRESS_IN";
-			isActivationTransition = !isActivationSignal(prevState) && isActivationSignal(nextState);
+			const isInitialTransition = prevState === "NOT_RESPONDER" && nextState === "RESPONDER_INACTIVE_PRESS_IN";
+			const isActivationTransition = !isActivationSignal(prevState) && isActivationSignal(nextState);
 			if (isInitialTransition || isActivationTransition) {
 				this._measureResponderRegion();
 			}
@@ -31908,8 +31908,8 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 					onLongPress(event);
 				}
 			}
-			isPrevActive = isActiveSignal(prevState);
-			isNextActive = isActiveSignal(nextState);
+			const isPrevActive = isActiveSignal(prevState);
+			const isNextActive = isActiveSignal(nextState);
 			if (!isPrevActive && isNextActive) {
 				this._activate(event);
 			} else if (isPrevActive && !isNextActive) {
@@ -31922,7 +31922,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 				}
 				const { onLongPress:onLongPress, onPress:onPress, android_disableSound:android_disableSound } = this._config;
 				if (onPress != null) {
-					isPressCanceledByLongPress = onLongPress != null && prevState === "RESPONDER_ACTIVE_LONG_PRESS_IN";
+					const isPressCanceledByLongPress = onLongPress != null && prevState === "RESPONDER_ACTIVE_LONG_PRESS_IN";
 					if (!isPressCanceledByLongPress) {
 						if (Platform.OS === "android" && android_disableSound !== true) {
 							SoundManager.playTouchSound();
@@ -31945,9 +31945,9 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 		_deactivate(event) {
 			const { onPressOut:onPressOut } = this._config;
 			if (onPressOut != null) {
-				minPressDuration = normalizeDelay(this._config.minPressDuration, 0, DEFAULT_MIN_PRESS_DURATION);
-				pressDuration = Date.now() - (this._touchActivateTime ?? 0);
-				delayPressOut = Math.max(minPressDuration - pressDuration, normalizeDelay(this._config.delayPressOut));
+				const minPressDuration = normalizeDelay(this._config.minPressDuration, 0, DEFAULT_MIN_PRESS_DURATION);
+				const pressDuration = Date.now() - (this._touchActivateTime ?? 0);
+				const delayPressOut = Math.max(minPressDuration - pressDuration, normalizeDelay(this._config.delayPressOut));
 				if (delayPressOut > 0) {
 					event.persist();
 					this._pressOutDelayTimeout = setTimeout(() => {
@@ -31976,12 +31976,12 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 			this._responderRegion = { bottom: pageY + height, left: pageX, right: pageX + width, top: pageY };
 		};
 		_isTouchWithinResponderRegion(touch,responderRegion) {
-			hitSlop = normalizeRect(this._config.hitSlop);
-			pressRectOffset = normalizeRect(this._config.pressRectOffset);
-			regionBottom = responderRegion.bottom;
-			regionLeft = responderRegion.left;
-			regionRight = responderRegion.right;
-			regionTop = responderRegion.top;
+			const hitSlop = normalizeRect(this._config.hitSlop);
+			const pressRectOffset = normalizeRect(this._config.pressRectOffset);
+			let regionBottom = responderRegion.bottom;
+			let regionLeft = responderRegion.left;
+			let regionRight = responderRegion.right;
+			let regionTop = responderRegion.top;
 			if (hitSlop != null) {
 				if (hitSlop.bottom != null) {
 					regionBottom += hitSlop.bottom;
@@ -32054,7 +32054,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 
 // --- usePressability.js ---
 var exports_react_native_Libraries_Pressability_usePressability = {};
-var ReactNativeFeatureFlags$5, useEffect$1, useRef$1, useConfigurationEffect, __ns_212_0;
+var ReactNativeFeatureFlags$5, useEffect$1, useRef$1, useConfigurationEffect, __ns_200_0;
 function usePressability(config) {
 	const pressabilityRef = useRef$1(null);
 	if (config != null && pressabilityRef.current == null) {
@@ -32082,11 +32082,11 @@ var init_react_native_Libraries_Pressability_usePressability = __esm({
 	"usePressability.js"() {
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_Libraries_Pressability_Pressability();
-	__ns_212_0 = __toESM(require_react_index());
+	__ns_200_0 = __toESM(require_react_index());
 		ReactNativeFeatureFlags$5=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
-	({useEffect:useEffect$1,useInsertionEffect:__ns_212_0.useInsertionEffect,useRef:useRef$1}=require_react_index());
-	useConfigurationEffect = configurePressabilityDuringInsertion() ? __ns_212_0.useInsertionEffect : useEffect$1;
+	({useEffect:useEffect$1,useInsertionEffect:__ns_200_0.useInsertionEffect,useRef:useRef$1}=require_react_index());
+	useConfigurationEffect = configurePressabilityDuringInsertion() ? __ns_200_0.useInsertionEffect : useEffect$1;
 	
 	}
 });
@@ -32205,9 +32205,9 @@ var init_react_native_Libraries_LogBox_UI_LogBoxStyle = __esm({
 
 // --- LogBoxButton.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxButton = {};
-var LogBoxStyle, React$12, LogBoxButton, __ns_413_0;
+var LogBoxStyle, React$12, LogBoxButton, __ns_454_0;
 function LogBoxButton(props) {
-	const [pressed, setPressed] = __ns_413_0.useState(false);
+	const [pressed, setPressed] = __ns_454_0.useState(false);
 	let backgroundColor = props.backgroundColor;
 	if (!backgroundColor) {
 		backgroundColor = { default: getBackgroundColor(0.95), pressed: getBackgroundColor(0.6) };
@@ -32224,7 +32224,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxButton = __esm({
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_413_0 = __toESM(require_react_index());
+	__ns_454_0 = __toESM(require_react_index());
 		
 	
 	
@@ -32329,10 +32329,10 @@ var init_react_native_Libraries_Text_Text = __esm({
 	({useContext:useContext$1,useMemo:useMemo$1,useState:useState$1}=require_react_index());
 	
 	if (reduceDefaultPropsInText()) {
-		TextImplNoDefaultProps = ({ ref:forwardedRef, accessible:accessible, accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, allowFontScaling:allowFontScaling, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, children:children, ellipsizeMode:ellipsizeMode, disabled:disabled, id:id, nativeID:nativeID, numberOfLines:numberOfLines, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, onResponderGrant:onResponderGrant, onResponderMove:onResponderMove, onResponderRelease:onResponderRelease, onResponderTerminate:onResponderTerminate, onResponderTerminationRequest:onResponderTerminationRequest, onStartShouldSetResponder:onStartShouldSetResponder, pressRetentionOffset:pressRetentionOffset, selectable:selectable, selectionColor:selectionColor, suppressHighlighting:suppressHighlighting, style:style, ...restProps }) => {
-			processedProps = restProps;
-			_accessibilityLabel = ariaLabel ?? accessibilityLabel;
-			_accessibilityState = accessibilityState;
+		const TextImplNoDefaultProps = ({ ref:forwardedRef, accessible:accessible, accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, allowFontScaling:allowFontScaling, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, children:children, ellipsizeMode:ellipsizeMode, disabled:disabled, id:id, nativeID:nativeID, numberOfLines:numberOfLines, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, onResponderGrant:onResponderGrant, onResponderMove:onResponderMove, onResponderRelease:onResponderRelease, onResponderTerminate:onResponderTerminate, onResponderTerminationRequest:onResponderTerminationRequest, onStartShouldSetResponder:onStartShouldSetResponder, pressRetentionOffset:pressRetentionOffset, selectable:selectable, selectionColor:selectionColor, suppressHighlighting:suppressHighlighting, style:style, ...restProps }) => {
+			const processedProps = restProps;
+			const _accessibilityLabel = ariaLabel ?? accessibilityLabel;
+			let _accessibilityState = accessibilityState;
 			if (ariaBusy != null || ariaChecked != null || ariaDisabled != null || ariaExpanded != null || ariaSelected != null) {
 				if (_accessibilityState != null) {
 					_accessibilityState = { busy: ariaBusy ?? _accessibilityState.busy, checked: ariaChecked ?? _accessibilityState.checked, disabled: ariaDisabled ?? _accessibilityState.disabled, expanded: ariaExpanded ?? _accessibilityState.expanded, selected: ariaSelected ?? _accessibilityState.selected };
@@ -32340,8 +32340,8 @@ var init_react_native_Libraries_Text_Text = __esm({
 					_accessibilityState = { busy: ariaBusy, checked: ariaChecked, disabled: ariaDisabled, expanded: ariaExpanded, selected: ariaSelected };
 				}
 			}
-			_accessibilityStateDisabled = _accessibilityState?.disabled;
-			_disabled = disabled ?? _accessibilityStateDisabled;
+			const _accessibilityStateDisabled = _accessibilityState?.disabled;
+			const _disabled = disabled ?? _accessibilityStateDisabled;
 			if (_accessibilityState != null && _disabled !== _accessibilityStateDisabled && ((_disabled != null && _disabled !== false) || (_accessibilityStateDisabled != null && _accessibilityStateDisabled !== false))) {
 				_accessibilityState.disabled = _disabled;
 			}
@@ -32351,26 +32351,26 @@ var init_react_native_Libraries_Text_Text = __esm({
 					processedProps.importantForAccessibility = "no-hide-descendants";
 				}
 			}
-			_accessible = Platform.select({ ios: accessible !== false, android: accessible == null ? onPress != null || onLongPress != null : accessible, default: accessible });
-			isPressable = (onPress != null || onLongPress != null || onStartShouldSetResponder != null) && _disabled !== true;
-			_selectionColor = selectionColor != null ? processColor(selectionColor) : undefined;
-			_style = style;
+			const _accessible = Platform.select({ ios: accessible !== false, android: accessible == null ? onPress != null || onLongPress != null : accessible, default: accessible });
+			const isPressable = (onPress != null || onLongPress != null || onStartShouldSetResponder != null) && _disabled !== true;
+			const _selectionColor = selectionColor != null ? processColor(selectionColor) : undefined;
+			let _style = style;
 			if (false) {
 				if (isEnabled$1() && onPress != null) {
 					_style = [style, { color: "magenta" }];
 				}
 			}
-			_numberOfLines = numberOfLines;
+			let _numberOfLines = numberOfLines;
 			if (_numberOfLines != null && !(_numberOfLines >= 0)) {
 				if (false) {
 					console.error(`'numberOfLines' in <Text> must be a non-negative number, received: ${_numberOfLines}. The value will be set to 0.`);
 				}
 				_numberOfLines = 0;
 			}
-			_selectable = selectable;
-			processedStyle = flattenStyle(_style);
+			let _selectable = selectable;
+			let processedStyle = flattenStyle(_style);
 			if (processedStyle != null) {
-				overrides = null;
+				let overrides = null;
 				if (typeof processedStyle.fontWeight === "number") {
 					overrides = overrides || {};
 					overrides.fontWeight = String(processedStyle.fontWeight);
@@ -32389,7 +32389,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 					_style = [_style, overrides];
 				}
 			}
-			_nativeID = id ?? nativeID;
+			const _nativeID = id ?? nativeID;
 			if (_accessibilityLabel !== undefined) {
 				processedProps.accessibilityLabel = _accessibilityLabel;
 			}
@@ -32411,11 +32411,11 @@ var init_react_native_Libraries_Text_Text = __esm({
 			if (_selectionColor !== undefined) {
 				processedProps.selectionColor = _selectionColor;
 			}
-			
+			let textPressabilityProps;
 			if (isPressable) {
 				textPressabilityProps = { onLongPress, onPress, onPressIn, onPressOut, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder, pressRetentionOffset, suppressHighlighting };
 			}
-			hasTextAncestor = useContext$1(TextAncestorContext);
+			const hasTextAncestor = useContext$1(TextAncestorContext);
 			if (hasTextAncestor) {
 				processedProps.disabled = disabled;
 				processedProps.children = children;
@@ -32424,7 +32424,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				}
 				return /* @__PURE__ */ React.createElement(NativeVirtualText, { ...processedProps, ref: forwardedRef });
 			}
-			nativeText = null;
+			let nativeText = null;
 			processedProps.accessible = _accessible;
 			processedProps.allowFontScaling = allowFontScaling !== false;
 			processedProps.disabled = _disabled;
@@ -32439,7 +32439,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				return nativeText;
 			}
 			if (Array.isArray(children) && children.length <= 3) {
-				hasNonTextChild = false;
+				let hasNonTextChild = false;
 				for (let child of children) {
 					if (child != null && typeof child === "object") {
 						hasNonTextChild = true;
@@ -32456,9 +32456,9 @@ var init_react_native_Libraries_Text_Text = __esm({
 		};
 		_TextImpl = TextImplNoDefaultProps;
 	} else {
-		TextImplLegacy = ({ ref:forwardedRef, accessible:accessible, accessibilityElementsHidden:accessibilityElementsHidden, importantForAccessibility:importantForAccessibility, accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, allowFontScaling:allowFontScaling, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, children:children, ellipsizeMode:ellipsizeMode, disabled:disabled, id:id, nativeID:nativeID, numberOfLines:numberOfLines, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, onResponderGrant:onResponderGrant, onResponderMove:onResponderMove, onResponderRelease:onResponderRelease, onResponderTerminate:onResponderTerminate, onResponderTerminationRequest:onResponderTerminationRequest, onStartShouldSetResponder:onStartShouldSetResponder, pressRetentionOffset:pressRetentionOffset, selectable:selectable, selectionColor:selectionColor, suppressHighlighting:suppressHighlighting, style:style, ...restProps }) => {
-			_accessibilityLabel = ariaLabel ?? accessibilityLabel;
-			_accessibilityState = accessibilityState;
+		const TextImplLegacy = ({ ref:forwardedRef, accessible:accessible, accessibilityElementsHidden:accessibilityElementsHidden, importantForAccessibility:importantForAccessibility, accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, allowFontScaling:allowFontScaling, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-hidden':ariaHidden, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, children:children, ellipsizeMode:ellipsizeMode, disabled:disabled, id:id, nativeID:nativeID, numberOfLines:numberOfLines, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, onResponderGrant:onResponderGrant, onResponderMove:onResponderMove, onResponderRelease:onResponderRelease, onResponderTerminate:onResponderTerminate, onResponderTerminationRequest:onResponderTerminationRequest, onStartShouldSetResponder:onStartShouldSetResponder, pressRetentionOffset:pressRetentionOffset, selectable:selectable, selectionColor:selectionColor, suppressHighlighting:suppressHighlighting, style:style, ...restProps }) => {
+			const _accessibilityLabel = ariaLabel ?? accessibilityLabel;
+			let _accessibilityState = accessibilityState;
 			if (ariaBusy != null || ariaChecked != null || ariaDisabled != null || ariaExpanded != null || ariaSelected != null) {
 				if (_accessibilityState != null) {
 					_accessibilityState = { busy: ariaBusy ?? _accessibilityState.busy, checked: ariaChecked ?? _accessibilityState.checked, disabled: ariaDisabled ?? _accessibilityState.disabled, expanded: ariaExpanded ?? _accessibilityState.expanded, selected: ariaSelected ?? _accessibilityState.selected };
@@ -32466,32 +32466,32 @@ var init_react_native_Libraries_Text_Text = __esm({
 					_accessibilityState = { busy: ariaBusy, checked: ariaChecked, disabled: ariaDisabled, expanded: ariaExpanded, selected: ariaSelected };
 				}
 			}
-			_accessibilityStateDisabled = _accessibilityState?.disabled;
-			_disabled = disabled ?? _accessibilityStateDisabled;
-			_accessibilityElementsHidden = ariaHidden ?? accessibilityElementsHidden;
-			_importantForAccessibility = importantForAccessibility;
+			const _accessibilityStateDisabled = _accessibilityState?.disabled;
+			const _disabled = disabled ?? _accessibilityStateDisabled;
+			let _accessibilityElementsHidden = ariaHidden ?? accessibilityElementsHidden;
+			let _importantForAccessibility = importantForAccessibility;
 			if (ariaHidden === true) {
 				_importantForAccessibility = "no-hide-descendants";
 			}
-			isPressable = (onPress != null || onLongPress != null || onStartShouldSetResponder != null) && _disabled !== true;
-			_selectionColor = selectionColor != null ? processColor(selectionColor) : undefined;
-			_style = style;
+			const isPressable = (onPress != null || onLongPress != null || onStartShouldSetResponder != null) && _disabled !== true;
+			const _selectionColor = selectionColor != null ? processColor(selectionColor) : undefined;
+			let _style = style;
 			if (false) {
 				if (isEnabled$1() && onPress != null) {
 					_style = [style, { color: "magenta" }];
 				}
 			}
-			_numberOfLines = numberOfLines;
+			let _numberOfLines = numberOfLines;
 			if (_numberOfLines != null && !(_numberOfLines >= 0)) {
 				if (false) {
 					console.error(`'numberOfLines' in <Text> must be a non-negative number, received: ${_numberOfLines}. The value will be set to 0.`);
 				}
 				_numberOfLines = 0;
 			}
-			_selectable = selectable;
-			processedStyle = flattenStyle(_style);
+			let _selectable = selectable;
+			let processedStyle = flattenStyle(_style);
 			if (processedStyle != null) {
-				overrides = null;
+				let overrides = null;
 				if (typeof processedStyle.fontWeight === "number") {
 					overrides = overrides || {};
 					overrides.fontWeight = processedStyle.fontWeight.toString();
@@ -32510,8 +32510,8 @@ var init_react_native_Libraries_Text_Text = __esm({
 					_style = [_style, overrides];
 				}
 			}
-			_nativeID = id ?? nativeID;
-			hasTextAncestor = useContext$1(TextAncestorContext);
+			const _nativeID = id ?? nativeID;
+			const hasTextAncestor = useContext$1(TextAncestorContext);
 			if (hasTextAncestor) {
 				if (isPressable) {
 					return (/* @__PURE__ */ React.createElement(NativePressableVirtualText, { ref: forwardedRef, textProps: { ...restProps, accessibilityElementsHidden: _accessibilityElementsHidden, accessibilityLabel: _accessibilityLabel, accessibilityState: _accessibilityState, importantForAccessibility: _importantForAccessibility, nativeID: _nativeID, numberOfLines: _numberOfLines, selectable: _selectable, selectionColor: _selectionColor, style: _style, disabled: disabled, children }, textPressabilityProps: { onLongPress, onPress, onPressIn, onPressOut, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder, pressRetentionOffset, suppressHighlighting } }));
@@ -32521,8 +32521,8 @@ var init_react_native_Libraries_Text_Text = __esm({
 			if (_disabled !== _accessibilityStateDisabled && ((_disabled != null && _disabled !== false) || (_accessibilityStateDisabled != null && _accessibilityStateDisabled !== false))) {
 				_accessibilityState = { ..._accessibilityState, disabled: _disabled };
 			}
-			_accessible = Platform.select({ ios: accessible !== false, android: accessible == null ? onPress != null || onLongPress != null : accessible, default: accessible });
-			nativeText = null;
+			const _accessible = Platform.select({ ios: accessible !== false, android: accessible == null ? onPress != null || onLongPress != null : accessible, default: accessible });
+			let nativeText = null;
 			if (isPressable) {
 				nativeText = (/* @__PURE__ */ React.createElement(NativePressableText, { ref: forwardedRef, textProps: { ...restProps, accessibilityElementsHidden: _accessibilityElementsHidden, accessibilityLabel: _accessibilityLabel, accessibilityState: _accessibilityState, accessible: _accessible, allowFontScaling: allowFontScaling !== false, disabled: _disabled, ellipsizeMode: ellipsizeMode ?? "tail", importantForAccessibility: _importantForAccessibility, nativeID: _nativeID, numberOfLines: _numberOfLines, selectable: _selectable, selectionColor: _selectionColor, style: _style, children }, textPressabilityProps: { onLongPress, onPress, onPressIn, onPressOut, onResponderGrant, onResponderMove, onResponderRelease, onResponderTerminate, onResponderTerminationRequest, onStartShouldSetResponder, pressRetentionOffset, suppressHighlighting } }));
 			} else {
@@ -32532,7 +32532,7 @@ var init_react_native_Libraries_Text_Text = __esm({
 				return nativeText;
 			}
 			if (Array.isArray(children) && children.length <= 3) {
-				hasNonTextChild = false;
+				let hasNonTextChild = false;
 				for (let child of children) {
 					if (child != null && typeof child === "object") {
 						hasNonTextChild = true;
@@ -32616,13 +32616,13 @@ var init_react_native_Libraries_ReactNative_RootTag = __esm({
 
 // --- ImageAnalyticsTagContext.js ---
 var exports_react_native_Libraries_Image_ImageAnalyticsTagContext = {};
-var React$16, createContext$3, Context, __ns_118_0;
+var React$16, createContext$3, Context, __ns_115_0;
 __export(exports_react_native_Libraries_Image_ImageAnalyticsTagContext, {
 	"default": function() { return Context; },
 });
 var init_react_native_Libraries_Image_ImageAnalyticsTagContext = __esm({
 	"ImageAnalyticsTagContext.js"() {
-	__ns_118_0 = __toESM(require_react_index());
+	__ns_115_0 = __toESM(require_react_index());
 		React$16=__toESM(require_react_index());
 	({createContext:createContext$3}=require_react_index());
 	Context = createContext$3(null);
@@ -32636,10 +32636,10 @@ var init_react_native_Libraries_Image_ImageAnalyticsTagContext = __esm({
 
 // --- useRefEffect.js ---
 var exports_react_native_Libraries_Utilities_useRefEffect = {};
-var useRef$2, __ns_352_0;
+var useRef$2, __ns_238_0;
 function useRefEffect(effect) {
 	const cleanupRef = useRef$2(undefined);
-	return __ns_352_0.useCallback((instance) => {
+	return __ns_238_0.useCallback((instance) => {
 		if (cleanupRef.current) {
 			cleanupRef.current();
 			cleanupRef.current = undefined;
@@ -32654,15 +32654,15 @@ __export(exports_react_native_Libraries_Utilities_useRefEffect, {
 });
 var init_react_native_Libraries_Utilities_useRefEffect = __esm({
 	"useRefEffect.js"() {
-	__ns_352_0 = __toESM(require_react_index());
-		({useCallback:__ns_352_0.useCallback,useRef:useRef$2}=require_react_index());
+	__ns_238_0 = __toESM(require_react_index());
+		({useCallback:__ns_238_0.useCallback,useRef:useRef$2}=require_react_index());
 	
 	}
 });
 
 // --- useMergeRefs.js ---
 var exports_react_native_Libraries_Utilities_useMergeRefs = {};
-var React$17, useCallback$1, __ns_149_0;
+var React$17, useCallback$1, __ns_136_0;
 function useMergeRefs(...refs) {
 	const refEffect = useCallback$1((current) => {
 		const cleanups = refs.map((ref) => {
@@ -32696,7 +32696,7 @@ __export(exports_react_native_Libraries_Utilities_useMergeRefs, {
 var init_react_native_Libraries_Utilities_useMergeRefs = __esm({
 	"useMergeRefs.js"() {
 	init_react_native_Libraries_Utilities_useRefEffect();
-	__ns_149_0 = __toESM(require_react_index());
+	__ns_136_0 = __toESM(require_react_index());
 		
 	React$17=__toESM(require_react_index());
 	({useCallback:useCallback$1}=require_react_index());
@@ -32706,7 +32706,7 @@ var init_react_native_Libraries_Utilities_useMergeRefs = __esm({
 
 // --- ImageInjection.js ---
 var exports_react_native_Libraries_Image_ImageInjection = {};
-var React$18, useRef$3, injectedImageComponentDecorator, imageAttachedCallbacks, __ns_119_0;
+var React$18, useRef$3, injectedImageComponentDecorator, imageAttachedCallbacks, __ns_116_0;
 function unstable_setImageComponentDecorator(imageComponentDecorator) {
 	injectedImageComponentDecorator = imageComponentDecorator;
 }
@@ -32751,7 +32751,7 @@ __export(exports_react_native_Libraries_Image_ImageInjection, {
 var init_react_native_Libraries_Image_ImageInjection = __esm({
 	"ImageInjection.js"() {
 	init_react_native_Libraries_Utilities_useMergeRefs();
-	__ns_119_0 = __toESM(require_react_index());
+	__ns_116_0 = __toESM(require_react_index());
 		
 	React$18=__toESM(require_react_index());
 	({useRef:useRef$3}=require_react_index());
@@ -32954,9 +32954,9 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 	
 	React$19=__toESM(require_react_index());
 	BaseImage = ({ ref:forwardedRef, ...props }) => {
-		source = getImageSourcesFromImageProps(props) || { uri: undefined, width: undefined, height: undefined };
-		
-		
+		const source = getImageSourcesFromImageProps(props) || { uri: undefined, width: undefined, height: undefined };
+		let style;
+		let sources;
 		if (Array.isArray(source)) {
 			style = [styles$2.base, props.style];
 			sources = source;
@@ -32965,23 +32965,23 @@ var init_react_native_Libraries_Image_Image_ios = __esm({
 			if (uri === "") {
 				console.warn("source.uri should not be an empty string");
 			}
-			width = source.width ?? props.width;
-			height = source.height ?? props.height;
+			const width = source.width ?? props.width;
+			const height = source.height ?? props.height;
 			style = [{ width, height }, styles$2.base, props.style];
 			sources = [source];
 		}
-		flattenedStyle = flattenStyle(style);
-		objectFit = convertObjectFitToResizeMode(flattenedStyle?.objectFit);
-		resizeMode = objectFit || props.resizeMode || flattenedStyle?.resizeMode || "cover";
-		tintColor = props.tintColor ?? flattenedStyle?.tintColor;
+		const flattenedStyle = flattenStyle(style);
+		const objectFit = convertObjectFitToResizeMode(flattenedStyle?.objectFit);
+		const resizeMode = objectFit || props.resizeMode || flattenedStyle?.resizeMode || "cover";
+		const tintColor = props.tintColor ?? flattenedStyle?.tintColor;
 		if (props.children != null) {
 			throw new Error("The <Image> component cannot contain children. If you want to render content on top of the image, consider using the <ImageBackground> component or absolute positioning.");
 		}
 		const { 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-selected':ariaSelected, 'aria-hidden':ariaHidden, src:src, ...restProps } = props;
-		_accessibilityState = { busy: ariaBusy ?? props.accessibilityState?.busy, checked: ariaChecked ?? props.accessibilityState?.checked, disabled: ariaDisabled ?? props.accessibilityState?.disabled, expanded: ariaExpanded ?? props.accessibilityState?.expanded, selected: ariaSelected ?? props.accessibilityState?.selected };
-		accessible = ariaHidden !== true && (props.alt !== undefined ? true : props.accessible);
-		accessibilityLabel = props["aria-label"] ?? props.accessibilityLabel;
-		actualRef = useWrapRefWithImageAttachedCallbacks(forwardedRef);
+		const _accessibilityState = { busy: ariaBusy ?? props.accessibilityState?.busy, checked: ariaChecked ?? props.accessibilityState?.checked, disabled: ariaDisabled ?? props.accessibilityState?.disabled, expanded: ariaExpanded ?? props.accessibilityState?.expanded, selected: ariaSelected ?? props.accessibilityState?.selected };
+		const accessible = ariaHidden !== true && (props.alt !== undefined ? true : props.accessible);
+		const accessibilityLabel = props["aria-label"] ?? props.accessibilityLabel;
+		const actualRef = useWrapRefWithImageAttachedCallbacks(forwardedRef);
 		return (/* @__PURE__ */ React.createElement(Context.Consumer, null, (analyticTag) => {
 			return (/* @__PURE__ */ React.createElement(ImageViewNativeComponent, { accessibilityState: _accessibilityState, ...restProps, accessible: accessible, accessibilityLabel: accessibilityLabel ?? props.alt, ref: actualRef, style: style, resizeMode: resizeMode, tintColor: tintColor, source: sources, internal_analyticTag: analyticTag }));
 		}));
@@ -33295,7 +33295,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxNotificationMessage = __esm({
 
 // --- LogBoxNotification.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxNotification = {};
-var LogBoxData, LogBoxStyle$4, React$23, useEffect$2, styles$6, __ns_396_0;
+var LogBoxData, LogBoxStyle$4, React$23, useEffect$2, styles$6, __ns_310_0;
 function LogBoxNotification(props) {
 	const { totalLogCount:totalLogCount, level:level, log:log } = props;
 	useEffect$2(() => {
@@ -33317,7 +33317,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxNotification = __esm({
 	init_react_native_Libraries_LogBox_UI_LogBoxNotificationDismissButton();
 	init_react_native_Libraries_LogBox_UI_LogBoxNotificationMessage();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_396_0 = __toESM(require_react_index());
+	__ns_310_0 = __toESM(require_react_index());
 		
 	
 	LogBoxData=__toESM((init_react_native_Libraries_LogBox_Data_LogBoxData(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxData)));
@@ -34126,7 +34126,7 @@ var init_react_native_src_private_animated_NativeAnimatedHelper = __esm({
 	}, disableQueue() {
 		invariant$24(NativeAnimatedModule$1, "Native animated module is not available");
 		if (animatedShouldDebounceQueueFlush()) {
-			prevImmediate = flushQueueImmediate;
+			const prevImmediate = flushQueueImmediate;
 			clearImmediate(prevImmediate);
 			flushQueueImmediate = setImmediate(API.flushQueue);
 		} else {
@@ -34433,7 +34433,7 @@ var init_react_native_Libraries_Animated_Easing = __esm({
 	}, exp(t) {
 		return Math.pow(2, 10 * (t - 1));
 	}, elastic(bounciness=1) {
-		p = bounciness * Math.PI;
+		const p = bounciness * Math.PI;
 		return (t) => 1 - Math.pow(Math.cos((t * Math.PI) / 2), 3) * Math.cos(t * p);
 	}, back(s=1.70158) {
 		return (t) => t * t * ((s + 1) * t - s);
@@ -34442,17 +34442,17 @@ var init_react_native_Libraries_Animated_Easing = __esm({
 			return 7.5625 * t * t;
 		}
 		if (t < 2 / 2.75) {
-			t2 = t - 1.5 / 2.75;
+			const t2 = t - 1.5 / 2.75;
 			return 7.5625 * t2 * t2 + 0.75;
 		}
 		if (t < 2.5 / 2.75) {
-			t2 = t - 2.25 / 2.75;
+			const t2 = t - 2.25 / 2.75;
 			return 7.5625 * t2 * t2 + 0.9375;
 		}
-		t2 = t - 2.625 / 2.75;
+		const t2 = t - 2.625 / 2.75;
 		return 7.5625 * t2 * t2 + 0.984375;
 	}, bezier(x1,y1,x2,y2) {
-		_bezier = (init_react_native_Libraries_Animated_bezier(), __toCommonJS(exports_react_native_Libraries_Animated_bezier)).default;
+		const _bezier = (init_react_native_Libraries_Animated_bezier(), __toCommonJS(exports_react_native_Libraries_Animated_bezier)).default;
 		return _bezier(x1, y1, x2, y2);
 	}, in(easing) {
 		return easing;
@@ -34526,7 +34526,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedNode = __esm({
 			this._platformConfig = platformConfig;
 		}
 		addListener(callback) {
-			id = String(_uniqueId++);
+			const id = String(_uniqueId++);
 			this._listeners.set(id, callback);
 			return id;
 		}
@@ -34543,19 +34543,19 @@ var init_react_native_Libraries_Animated_nodes_AnimatedNode = __esm({
 			this.__callListeners(value + offset);
 		}
 		__callListeners(value) {
-			event = { value };
+			const event = { value };
 			this._listeners.forEach((listener) => {
 				listener(event);
 			});
 		}
 		__getNativeTag() {
-			nativeTag = this.__nativeTag;
+			let nativeTag = this.__nativeTag;
 			if (nativeTag == null) {
 				_assertNativeAnimatedModule?.();
 				invariant$25(this.__isNative, "Attempt to get native tag from node not marked as \"native\"");
 				nativeTag = _default$80.generateNewNodeTag();
 				this.__nativeTag = nativeTag;
-				config = this.__getNativeConfig();
+				const config = this.__getNativeConfig();
 				if (this._platformConfig) {
 					config.platformConfig = this._platformConfig;
 				}
@@ -34609,11 +34609,11 @@ var init_react_native_Libraries_Animated_nodes_AnimatedWithChildren = __esm({
 		__makeNative(platformConfig) {
 			if (!this.__isNative) {
 				this.__isNative = true;
-				children = this._children;
-				length = children.length;
+				const children = this._children;
+				let length = children.length;
 				if (length > 0) {
 					for (let ii = 0; ii < length; ii++) {
-						child = children[ii];
+						const child = children[ii];
 						child.__makeNative(platformConfig);
 						connectAnimatedNodes(this.__getNativeTag(), child.__getNativeTag());
 					}
@@ -34632,7 +34632,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedWithChildren = __esm({
 			}
 		}
 		__removeChild(child) {
-			index = this._children.indexOf(child);
+			const index = this._children.indexOf(child);
 			if (index === -1) {
 				console.warn("Trying to remove a child that doesn't exist");
 				return;
@@ -34651,9 +34651,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedWithChildren = __esm({
 		__callListeners(value) {
 			super.__callListeners(value);
 			if (!this.__isNative) {
-				children = this._children;
+				const children = this._children;
 				for (let ii = 0,length = children.length; ii < length; ii++) {
-					child = children[ii];
+					const child = children[ii];
 					if (child.__getValue) {
 						child.__callListeners(child.__getValue());
 					}
@@ -34851,7 +34851,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 		}
 		_getInterpolation() {
 			if (!this._interpolation) {
-				config = this._config;
+				const config = this._config;
 				if (config.outputRange && typeof config.outputRange[0] === "string") {
 					this._interpolation = createStringInterpolation(config);
 				} else {
@@ -34865,7 +34865,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 			super.__makeNative(platformConfig);
 		}
 		__getValue() {
-			parentValue = this._parent.__getValue();
+			const parentValue = this._parent.__getValue();
 			invariant$26(typeof parentValue === "number", "Cannot interpolate an input which is not a number.");
 			return this._getInterpolation()(parentValue);
 		}
@@ -34884,11 +34884,11 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 			if (false) {
 				validateInterpolation(this._config);
 			}
-			outputRange = this._config.outputRange;
-			outputType = null;
+			let outputRange = this._config.outputRange;
+			let outputType = null;
 			if (typeof outputRange[0] === "string") {
 				outputRange = outputRange.map((value) => {
-					processedColor = processColor(value);
+					const processedColor = processColor(value);
 					if (typeof processedColor === "number") {
 						outputType = "color";
 						return processedColor;
@@ -34978,7 +34978,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 			}
 		}
 		addListener(callback) {
-			id = super.addListener(callback);
+			const id = super.addListener(callback);
 			this._listenerCount++;
 			if (this.__isNative) {
 				this.__ensureUpdateSubscriptionExists();
@@ -35003,9 +35003,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 			if (this._updateSubscription != null) {
 				return;
 			}
-			nativeTag = this.__getNativeTag();
+			const nativeTag = this.__getNativeTag();
 			NativeAnimatedAPI.startListeningToAnimatedNodeValue(nativeTag);
-			subscription = _default$80.nativeEventEmitter.addListener("onAnimatedValueUpdate", (data) => {
+			const subscription = _default$80.nativeEventEmitter.addListener("onAnimatedValueUpdate", (data) => {
 				if (data.tag === nativeTag) {
 					this.__onAnimatedValueUpdateReceived(data.value, data.offset);
 				}
@@ -35078,7 +35078,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 			return new AnimatedInterpolation(this, config);
 		}
 		animate(animation,callback) {
-			previousAnimation = this._animation;
+			const previousAnimation = this._animation;
 			this._animation && this._animation.stop();
 			this._animation = animation;
 			animation.start(this._value, (value) => {
@@ -35136,7 +35136,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 		_listeners;
 		constructor(valueIn,config) {
 			super(config);
-			value = valueIn || { x: 0, y: 0 };
+			const value = valueIn || { x: 0, y: 0 };
 			if (typeof value.x === "number" && typeof value.y === "number") {
 				this.x = new AnimatedValue(value.x);
 				this.y = new AnimatedValue(value.y);
@@ -35180,8 +35180,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 			callback && callback(this.__getValue());
 		}
 		addListener(callback) {
-			id = String(_uniqueId$1++);
-			jointCallback = ({ value:number }) => {
+			const id = String(_uniqueId$1++);
+			const jointCallback = ({ value:number }) => {
 				callback(this.__getValue());
 			};
 			this._listeners[id] = { x: this.x.addListener(jointCallback), y: this.y.addListener(jointCallback) };
@@ -35334,7 +35334,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 		__getHandler() {
 			if (this.__isNative) {
 				if (false) {
-					validatedMapping = false;
+					let validatedMapping = false;
 					return (...args) => {
 						if (!validatedMapping) {
 							validateMapping(this._argMapping, args);
@@ -35346,13 +35346,13 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 					return this._callListeners;
 				}
 			}
-			validatedMapping = false;
+			let validatedMapping = false;
 			return (...args) => {
 				if (false && !validatedMapping) {
 					validateMapping(this._argMapping, args);
 					validatedMapping = true;
 				}
-				traverse = (recMapping, recEvt) => {
+				const traverse = (recMapping, recEvt) => {
 					if (recMapping instanceof AnimatedValue) {
 						if (typeof recEvt === "number") {
 							recMapping.setValue(recEvt);
@@ -35384,7 +35384,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 
 // --- AnimatedObject.js ---
 var exports_react_native_Libraries_Animated_nodes_AnimatedObject = {};
-var isValidElement$1, MAX_DEPTH, AnimatedObject, __ns_405_0;
+var isValidElement$1, MAX_DEPTH, AnimatedObject, __ns_403_0;
 function isPlainObject$1(value) {
 	return (value !== null && typeof value === "object" && Object.getPrototypeOf(value).isPrototypeOf(Object) && !isValidElement$1(value));
 }
@@ -35436,7 +35436,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 	"AnimatedObject.js"() {
 	init_react_native_Libraries_Animated_nodes_AnimatedNode();
 	init_react_native_Libraries_Animated_nodes_AnimatedWithChildren();
-	__ns_405_0 = __toESM(require_react_index());
+	__ns_403_0 = __toESM(require_react_index());
 		"use strict";
 	
 	
@@ -35446,7 +35446,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 		_nodes;
 		_value;
 		static from(value) {
-			nodes = flatAnimatedNodes(value);
+			const nodes = flatAnimatedNodes(value);
 			if (nodes.length === 0) {
 				return null;
 			}
@@ -35463,8 +35463,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 			});
 		}
 		__getValueWithStaticObject(staticObject) {
-			nodes = this._nodes;
-			index = 0;
+			const nodes = this._nodes;
+			let index = 0;
 			return mapAnimatedNodes(staticObject, () => nodes[index++].__getValue());
 		}
 		__getAnimatedValue() {
@@ -35473,25 +35473,25 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 			});
 		}
 		__attach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__addChild(this);
 			}
 			super.__attach();
 		}
 		__detach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__removeChild(this);
 			}
 			super.__detach();
 		}
 		__makeNative(platformConfig) {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 			}
 			super.__makeNative(platformConfig);
@@ -35563,7 +35563,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 		_nodes;
 		_transforms;
 		static from(transforms) {
-			nodes = flatAnimatedNodes$1(Array.isArray(transforms) ? transforms : []);
+			const nodes = flatAnimatedNodes$1(Array.isArray(transforms) ? transforms : []);
 			if (nodes.length === 0) {
 				return null;
 			}
@@ -35575,9 +35575,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 			this._transforms = transforms;
 		}
 		__makeNative(platformConfig) {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 			}
 			super.__makeNative(platformConfig);
@@ -35586,7 +35586,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 			return mapTransforms(this._transforms, (animatedNode) => animatedNode.__getValue());
 		}
 		__getValueWithStaticTransforms(staticTransforms) {
-			values = [];
+			const values = [];
 			mapTransforms(this._transforms, (node) => {
 				values.push(node.__getValue());
 			});
@@ -35596,28 +35596,28 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 			return mapTransforms(this._transforms, (animatedNode) => animatedNode.__getAnimatedValue());
 		}
 		__attach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__addChild(this);
 			}
 			super.__attach();
 		}
 		__detach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__removeChild(this);
 			}
 			super.__detach();
 		}
 		__getNativeConfig() {
-			transformsConfig = [];
-			transforms = this._transforms;
+			const transformsConfig = [];
+			const transforms = this._transforms;
 			for (let ii = 0,length = transforms.length; ii < length; ii++) {
-				transform = transforms[ii];
+				const transform = transforms[ii];
 				for (const key in transform) {
-					value = transform[key];
+					const value = transform[key];
 					if (value instanceof AnimatedNode) {
 						transformsConfig.push({ type: "animated", property: key, nodeTag: value.__getNativeTag() });
 					} else {
@@ -35721,11 +35721,11 @@ var init_react_native_Libraries_Animated_nodes_AnimatedStyle = __esm({
 			}
 		}
 		__getValue() {
-			style = {};
-			keys = Object.keys(this._style);
+			const style = {};
+			const keys = Object.keys(this._style);
 			for (let ii = 0,length = keys.length; ii < length; ii++) {
-				key = keys[ii];
-				value = this._style[key];
+				const key = keys[ii];
+				const value = this._style[key];
 				if (value instanceof AnimatedNode) {
 					style[key] = value.__getValue();
 				} else {
@@ -35738,10 +35738,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedStyle = __esm({
 			return style;
 		}
 		__replaceAnimatedNodeWithValues(style) {
-			keys = Object.keys(style);
+			const keys = Object.keys(style);
 			for (let ii = 0,length = keys.length; ii < length; ii++) {
-				key = keys[ii];
-				maybeNode = this._style[key];
+				const key = keys[ii];
+				const maybeNode = this._style[key];
 				if (key === "transform" && maybeNode instanceof AnimatedTransform) {
 					style[key] = maybeNode.__getValueWithStaticTransforms(Array.isArray(style[key]) ? style[key] : []);
 				} else if (maybeNode instanceof AnimatedObject) {
@@ -35752,48 +35752,48 @@ var init_react_native_Libraries_Animated_nodes_AnimatedStyle = __esm({
 			}
 		}
 		__getAnimatedValue() {
-			style = {};
-			nodeKeys = this._nodeKeys;
-			nodes = this._nodes;
+			const style = {};
+			const nodeKeys = this._nodeKeys;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				key = nodeKeys[ii];
-				node = nodes[ii];
+				const key = nodeKeys[ii];
+				const node = nodes[ii];
 				style[key] = node.__getAnimatedValue();
 			}
 			return style;
 		}
 		__attach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__addChild(this);
 			}
 			super.__attach();
 		}
 		__detach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__removeChild(this);
 			}
 			super.__detach();
 		}
 		__makeNative(platformConfig) {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 			}
 			super.__makeNative(platformConfig);
 		}
 		__getNativeConfig() {
-			platformConfig = this.__getPlatformConfig();
-			styleConfig = {};
-			nodeKeys = this._nodeKeys;
-			nodes = this._nodes;
+			const platformConfig = this.__getPlatformConfig();
+			const styleConfig = {};
+			const nodeKeys = this._nodeKeys;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				key = nodeKeys[ii];
-				node = nodes[ii];
+				const key = nodeKeys[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 				styleConfig[key] = node.__getNativeTag();
 			}
@@ -35887,11 +35887,11 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			this._callback = callback;
 		}
 		__getValue() {
-			props = {};
-			keys = Object.keys(this._props);
+			const props = {};
+			const keys = Object.keys(this._props);
 			for (let ii = 0,length = keys.length; ii < length; ii++) {
-				key = keys[ii];
-				value = this._props[key];
+				const key = keys[ii];
+				const value = this._props[key];
 				if (value instanceof AnimatedNode) {
 					props[key] = value.__getValue();
 				} else if (value instanceof AnimatedEvent) {
@@ -35903,16 +35903,16 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			return props;
 		}
 		__getValueWithStaticProps(staticProps) {
-			props = { ...staticProps };
-			keys = Object.keys(staticProps);
+			const props = { ...staticProps };
+			const keys = Object.keys(staticProps);
 			for (let ii = 0,length = keys.length; ii < length; ii++) {
-				key = keys[ii];
-				maybeNode = this._props[key];
+				const key = keys[ii];
+				const maybeNode = this._props[key];
 				if (key === "style") {
-					staticStyle = staticProps.style;
-					flatStaticStyle = flattenStyle(staticStyle);
+					const staticStyle = staticProps.style;
+					const flatStaticStyle = flattenStyle(staticStyle);
 					if (maybeNode instanceof AnimatedStyle) {
-						mutableStyle = flatStaticStyle == null ? {} : flatStaticStyle === staticStyle ? { ...flatStaticStyle } : flatStaticStyle;
+						const mutableStyle = flatStaticStyle == null ? {} : flatStaticStyle === staticStyle ? { ...flatStaticStyle } : flatStaticStyle;
 						maybeNode.__replaceAnimatedNodeWithValues(mutableStyle);
 						props[key] = maybeNode.__getValueForStyle(mutableStyle);
 					} else {
@@ -35927,11 +35927,11 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			return props;
 		}
 		__getNativeAnimatedEventTuples() {
-			tuples = [];
-			keys = Object.keys(this._props);
+			const tuples = [];
+			const keys = Object.keys(this._props);
 			for (let ii = 0,length = keys.length; ii < length; ii++) {
-				key = keys[ii];
-				value = this._props[key];
+				const key = keys[ii];
+				const value = this._props[key];
 				if (value instanceof AnimatedEvent && value.__isNative) {
 					tuples.push([key, value]);
 				}
@@ -35939,20 +35939,20 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			return tuples;
 		}
 		__getAnimatedValue() {
-			props = {};
-			nodeKeys = this._nodeKeys;
-			nodes = this._nodes;
+			const props = {};
+			const nodeKeys = this._nodeKeys;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				key = nodeKeys[ii];
-				node = nodes[ii];
+				const key = nodeKeys[ii];
+				const node = nodes[ii];
 				props[key] = node.__getAnimatedValue();
 			}
 			return props;
 		}
 		__attach() {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__addChild(this);
 			}
 			super.__attach();
@@ -35962,9 +35962,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 				this.#disconnectAnimatedView(this._target);
 			}
 			this._target = null;
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__removeChild(this);
 			}
 			super.__detach();
@@ -35973,9 +35973,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			this._callback();
 		}
 		__makeNative(platformConfig) {
-			nodes = this._nodes;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				node = nodes[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 			}
 			if (!this.__isNative) {
@@ -35997,7 +35997,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 		}
 		#connectAnimatedView(target) {
 			invariant$29(this.__isNative, "Expected node to be marked as \"native\"");
-			viewTag = findNodeHandle$7(target.instance);
+			let viewTag = findNodeHandle$7(target.instance);
 			if (viewTag == null) {
 				if ("production" === "test") {
 					viewTag = -1;
@@ -36010,7 +36010,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 		}
 		#disconnectAnimatedView(target) {
 			invariant$29(this.__isNative, "Expected node to be marked as \"native\"");
-			viewTag = target.connectedViewTag;
+			const viewTag = target.connectedViewTag;
 			if (viewTag == null) {
 				return;
 			}
@@ -36023,13 +36023,13 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			}
 		}
 		__getNativeConfig() {
-			platformConfig = this.__getPlatformConfig();
-			propsConfig = {};
-			nodeKeys = this._nodeKeys;
-			nodes = this._nodes;
+			const platformConfig = this.__getPlatformConfig();
+			const propsConfig = {};
+			const nodeKeys = this._nodeKeys;
+			const nodes = this._nodes;
 			for (let ii = 0,length = nodes.length; ii < length; ii++) {
-				key = nodeKeys[ii];
-				node = nodes[ii];
+				const key = nodeKeys[ii];
+				const node = nodes[ii];
 				node.__makeNative(platformConfig);
 				propsConfig[key] = node.__getNativeTag();
 			}
@@ -36085,8 +36085,8 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 		}
 		stop() {
 			if (this._nativeID != null) {
-				nativeID = this._nativeID;
-				identifier = `${nativeID}:stopAnimation`;
+				const nativeID = this._nativeID;
+				const identifier = `${nativeID}:stopAnimation`;
 				try {
 					_default$80.API.setWaitingForIdentifier(identifier);
 					_default$80.API.stopAnimation(nativeID);
@@ -36100,7 +36100,7 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 			throw new Error("This animation type cannot be offloaded to native");
 		}
 		__findAnimatedPropsNodes(node) {
-			result = [];
+			const result = [];
 			if (node instanceof AnimatedProps) {
 				result.push(node);
 				return result;
@@ -36114,11 +36114,11 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 			if (!this._useNativeDriver) {
 				return false;
 			}
-			startNativeAnimationWaitId = `${startNativeAnimationNextId}:startAnimation`;
+			const startNativeAnimationWaitId = `${startNativeAnimationNextId}:startAnimation`;
 			startNativeAnimationNextId += 1;
 			_default$80.API.setWaitingForIdentifier(startNativeAnimationWaitId);
 			try {
-				config = this.__getNativeAnimationConfig();
+				const config = this.__getNativeAnimationConfig();
 				animatedValue.__makeNative(config.platformConfig);
 				this._nativeID = _default$80.generateNewAnimationId();
 				_default$80.API.startAnimatingNode(this._nativeID, animatedValue.__getNativeTag(), config, (result) => {
@@ -36126,7 +36126,7 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 					const { value:value, offset:offset } = result;
 					if (value != null) {
 						animatedValue.__onAnimatedValueUpdateReceived(value, offset);
-						isJsSyncRemoved = cxxNativeAnimatedEnabled() && !disableFabricCommitInCXXAnimated() && cxxNativeAnimatedRemoveJsSync();
+						const isJsSyncRemoved = cxxNativeAnimatedEnabled() && !disableFabricCommitInCXXAnimated() && cxxNativeAnimatedRemoveJsSync();
 						if (!isJsSyncRemoved) {
 							if (this.__isLooping === true) {
 								return;
@@ -36143,7 +36143,7 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 			}
 		}
 		__notifyAnimationEnd(result) {
-			callback = this._onEnd;
+			const callback = this._onEnd;
 			if (callback != null) {
 				this._onEnd = null;
 				callback(result);
@@ -36194,14 +36194,14 @@ var init_react_native_Libraries_Animated_animations_DecayAnimation = __esm({
 			this._fromValue = fromValue;
 			this._onUpdate = onUpdate;
 			this._startTime = Date.now();
-			useNativeDriver = this.__startAnimationIfNative(animatedValue);
+			const useNativeDriver = this.__startAnimationIfNative(animatedValue);
 			if (!useNativeDriver) {
 				this._animationFrame = requestAnimationFrame(() => this.onUpdate());
 			}
 		}
 		onUpdate() {
-			now = Date.now();
-			value = this._fromValue + (this._velocity / (1 - this._deceleration)) * (1 - Math.exp(-(1 - this._deceleration) * (now - this._startTime)));
+			const now = Date.now();
+			const value = this._fromValue + (this._velocity / (1 - this._deceleration)) * (1 - Math.exp(-(1 - this._deceleration) * (now - this._startTime)));
 			this._onUpdate(value);
 			if (Math.abs(this._lastValue - value) < 0.1) {
 				this.__notifyAnimationEnd({ finished: true });
@@ -36294,9 +36294,9 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 		_suspendCallbacks = 0;
 		constructor(valueIn,config) {
 			super(config);
-			value = valueIn ?? defaultColor;
+			let value = valueIn ?? defaultColor;
 			if (isRgbaAnimatedValue(value)) {
-				rgbaAnimatedValue = value;
+				const rgbaAnimatedValue = value;
 				this.r = rgbaAnimatedValue.r;
 				this.g = rgbaAnimatedValue.g;
 				this.b = rgbaAnimatedValue.b;
@@ -36316,15 +36316,15 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 			}
 		}
 		setValue(value) {
-			shouldUpdateNodeConfig = false;
+			let shouldUpdateNodeConfig = false;
 			if (this.__isNative) {
-				nativeTag = this.__getNativeTag();
+				const nativeTag = this.__getNativeTag();
 				NativeAnimatedAPI$1.setWaitingForIdentifier(nativeTag.toString());
 			}
-			processedColor = processColor$11(value) ?? defaultColor;
+			const processedColor = processColor$11(value) ?? defaultColor;
 			this._withSuspendedCallbacks(() => {
 				if (isRgbaValue(processedColor)) {
-					rgbaValue = processedColor;
+					const rgbaValue = processedColor;
 					this.r.setValue(rgbaValue.r);
 					this.g.setValue(rgbaValue.g);
 					this.b.setValue(rgbaValue.b);
@@ -36334,7 +36334,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 						shouldUpdateNodeConfig = true;
 					}
 				} else {
-					nativeColor = processedColor;
+					const nativeColor = processedColor;
 					if (this.nativeColor !== nativeColor) {
 						this.nativeColor = nativeColor;
 						shouldUpdateNodeConfig = true;
@@ -36342,7 +36342,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 				}
 			});
 			if (this.__isNative) {
-				nativeTag = this.__getNativeTag();
+				const nativeTag = this.__getNativeTag();
 				if (shouldUpdateNodeConfig) {
 					NativeAnimatedAPI$1.updateAnimatedNodeConfig(nativeTag, this.__getNativeConfig());
 				}
@@ -36543,12 +36543,12 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 				this._mass = config.mass ?? 1;
 			} else if (config.bounciness !== undefined || config.speed !== undefined) {
 				invariant$30(config.tension === undefined && config.friction === undefined && config.stiffness === undefined && config.damping === undefined && config.mass === undefined, "You can define one of bounciness/speed, tension/friction, or stiffness/damping/mass, but not more than one");
-				springConfig = fromBouncinessAndSpeed(config.bounciness ?? 8, config.speed ?? 12);
+				const springConfig = fromBouncinessAndSpeed(config.bounciness ?? 8, config.speed ?? 12);
 				this._stiffness = springConfig.stiffness;
 				this._damping = springConfig.damping;
 				this._mass = 1;
 			} else {
-				springConfig = fromOrigamiTensionAndFriction(config.tension ?? 40, config.friction ?? 7);
+				const springConfig = fromOrigamiTensionAndFriction(config.tension ?? 40, config.friction ?? 7);
 				this._stiffness = springConfig.stiffness;
 				this._damping = springConfig.damping;
 				this._mass = 1;
@@ -36568,14 +36568,14 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 			this._lastTime = Date.now();
 			this._frameTime = 0.0;
 			if (previousAnimation instanceof SpringAnimation) {
-				internalState = previousAnimation.getInternalState();
+				const internalState = previousAnimation.getInternalState();
 				this._lastPosition = internalState.lastPosition;
 				this._lastVelocity = internalState.lastVelocity;
 				this._initialVelocity = this._lastVelocity;
 				this._lastTime = internalState.lastTime;
 			}
-			start = () => {
-				useNativeDriver = this.__startAnimationIfNative(animatedValue);
+			const start = () => {
+				const useNativeDriver = this.__startAnimationIfNative(animatedValue);
 				if (!useNativeDriver) {
 					this.onUpdate();
 				}
@@ -36590,30 +36590,30 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 			return { lastPosition: this._lastPosition, lastVelocity: this._lastVelocity, lastTime: this._lastTime };
 		}
 		onUpdate() {
-			MAX_STEPS = 64;
-			now = Date.now();
+			const MAX_STEPS = 64;
+			let now = Date.now();
 			if (now > this._lastTime + MAX_STEPS) {
 				now = this._lastTime + MAX_STEPS;
 			}
-			deltaTime = (now - this._lastTime) / 1000;
+			const deltaTime = (now - this._lastTime) / 1000;
 			this._frameTime += deltaTime;
-			c = this._damping;
-			m = this._mass;
-			k = this._stiffness;
-			v0 = -this._initialVelocity;
-			zeta = c / (2 * Math.sqrt(k * m));
-			omega0 = Math.sqrt(k / m);
-			omega1 = omega0 * Math.sqrt(1.0 - zeta * zeta);
-			x0 = this._toValue - this._startPosition;
-			position = 0.0;
-			velocity = 0.0;
-			t = this._frameTime;
+			const c = this._damping;
+			const m = this._mass;
+			const k = this._stiffness;
+			const v0 = -this._initialVelocity;
+			const zeta = c / (2 * Math.sqrt(k * m));
+			const omega0 = Math.sqrt(k / m);
+			const omega1 = omega0 * Math.sqrt(1.0 - zeta * zeta);
+			const x0 = this._toValue - this._startPosition;
+			let position = 0.0;
+			let velocity = 0.0;
+			const t = this._frameTime;
 			if (zeta < 1) {
-				envelope = Math.exp(-zeta * omega0 * t);
+				const envelope = Math.exp(-zeta * omega0 * t);
 				position = this._toValue - envelope * (((v0 + zeta * omega0 * x0) / omega1) * Math.sin(omega1 * t) + x0 * Math.cos(omega1 * t));
 				velocity = zeta * omega0 * envelope * ((Math.sin(omega1 * t) * (v0 + zeta * omega0 * x0)) / omega1 + x0 * Math.cos(omega1 * t)) - envelope * (Math.cos(omega1 * t) * (v0 + zeta * omega0 * x0) - omega1 * x0 * Math.sin(omega1 * t));
 			} else {
-				envelope = Math.exp(-omega0 * t);
+				const envelope = Math.exp(-omega0 * t);
 				position = this._toValue - envelope * (x0 + (v0 + omega0 * x0) * t);
 				velocity = envelope * (v0 * (t * omega0 - 1) + t * x0 * (omega0 * omega0));
 			}
@@ -36624,7 +36624,7 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 			if (!this.__active) {
 				return;
 			}
-			isOvershooting = false;
+			let isOvershooting = false;
 			if (this._overshootClamping && this._stiffness !== 0) {
 				if (this._startPosition < this._toValue) {
 					isOvershooting = position > this._toValue;
@@ -36632,8 +36632,8 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 					isOvershooting = position < this._toValue;
 				}
 			}
-			isVelocity = Math.abs(velocity) <= this._restSpeedThreshold;
-			isDisplacement = true;
+			const isVelocity = Math.abs(velocity) <= this._restSpeedThreshold;
+			let isDisplacement = true;
 			if (this._stiffness !== 0) {
 				isDisplacement = Math.abs(this._toValue - position) <= this._restDisplacementThreshold;
 			}
@@ -36701,9 +36701,9 @@ var init_react_native_Libraries_Animated_animations_TimingAnimation = __esm({
 			this._platformConfig = config.platformConfig;
 		}
 		__getNativeAnimationConfig() {
-			frameDuration = 1000.0 / 60.0;
-			frames = [];
-			numFrames = Math.round(this._duration / frameDuration);
+			const frameDuration = 1000.0 / 60.0;
+			const frames = [];
+			const numFrames = Math.round(this._duration / frameDuration);
 			for (let frame = 0; frame < numFrames; frame++) {
 				frames.push(this._easing(frame / numFrames));
 			}
@@ -36714,9 +36714,9 @@ var init_react_native_Libraries_Animated_animations_TimingAnimation = __esm({
 			super.start(fromValue, onUpdate, onEnd, previousAnimation, animatedValue);
 			this._fromValue = fromValue;
 			this._onUpdate = onUpdate;
-			start = () => {
+			const start = () => {
 				this._startTime = Date.now();
-				useNativeDriver = this.__startAnimationIfNative(animatedValue);
+				const useNativeDriver = this.__startAnimationIfNative(animatedValue);
 				if (!useNativeDriver) {
 					if (this._duration === 0) {
 						this._onUpdate(this._toValue);
@@ -36733,7 +36733,7 @@ var init_react_native_Libraries_Animated_animations_TimingAnimation = __esm({
 			}
 		}
 		onUpdate() {
-			now = Date.now();
+			const now = Date.now();
 			if (now >= this._startTime + this._duration) {
 				if (this._duration === 0) {
 					this._onUpdate(this._toValue);
@@ -36780,7 +36780,7 @@ var init_react_native_Libraries_ReactNative_ReactFabricPublicInstance_ReactFabri
 
 // --- createAnimatedPropsMemoHook.js ---
 var exports_react_native_src_private_animated_createAnimatedPropsMemoHook = {};
-var nullthrows$10, useInsertionEffect$1, useMemo$2, useRef$4, _hasOwnProp$2, hasOwn$2, __ns_403_0;
+var nullthrows$10, useInsertionEffect$1, useMemo$2, useRef$4, _hasOwnProp$2, hasOwn$2, __ns_462_0;
 function createAnimatedPropsMemoHook(allowlist) {
 	return function useAnimatedPropsMemo(create,props) {
 		const compositeKey = useMemo$2(() => createCompositeKeyForProps(props, allowlist), [props]);
@@ -36964,7 +36964,7 @@ var init_react_native_src_private_animated_createAnimatedPropsMemoHook = __esm({
 	init_react_native_Libraries_Animated_nodes_AnimatedNode();
 	init_react_native_Libraries_Animated_nodes_AnimatedObject();
 	init_react_native_Libraries_StyleSheet_flattenStyle();
-	__ns_403_0 = __toESM(require_react_index());
+	__ns_462_0 = __toESM(require_react_index());
 		
 	
 	
@@ -36979,12 +36979,12 @@ var init_react_native_src_private_animated_createAnimatedPropsMemoHook = __esm({
 
 // --- createAnimatedPropsHook.js ---
 var exports_react_native_src_private_animated_createAnimatedPropsHook = {};
-var ReactNativeFeatureFlags$12, useCallback$2, useEffect$3, useInsertionEffect$2, useRef$5, __ns_393_0;
+var ReactNativeFeatureFlags$12, useCallback$2, useEffect$3, useInsertionEffect$2, useRef$5, __ns_308_0;
 function createAnimatedPropsHook(allowlist) {
 	const useAnimatedPropsMemo = createAnimatedPropsMemoHook(allowlist);
 	const useNativePropsInFabric = shouldUseSetNativePropsInFabric();
 	return function useAnimatedProps(props) {
-		const [, scheduleUpdate] = __ns_393_0.useReducer((count) => count + 1, 0);
+		const [, scheduleUpdate] = __ns_308_0.useReducer((count) => count + 1, 0);
 		const onUpdateRef = useRef$5(null);
 		const timerRef = useRef$5(null);
 		const node = useAnimatedPropsMemo(() => new AnimatedProps(props, () => onUpdateRef.current?.(), allowlist), props);
@@ -37113,7 +37113,7 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_src_private_animated_createAnimatedPropsMemoHook();
 	init_react_native_src_private_animated_NativeAnimatedHelper();
-	__ns_393_0 = __toESM(require_react_index());
+	__ns_308_0 = __toESM(require_react_index());
 		
 	
 	
@@ -37122,7 +37122,7 @@ var init_react_native_src_private_animated_createAnimatedPropsHook = __esm({
 	ReactNativeFeatureFlags$12=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
 	
-	({useCallback:useCallback$2,useEffect:useEffect$3,useInsertionEffect:useInsertionEffect$2,useReducer:__ns_393_0.useReducer,useRef:useRef$5}=require_react_index());
+	({useCallback:useCallback$2,useEffect:useEffect$3,useInsertionEffect:useInsertionEffect$2,useReducer:__ns_308_0.useReducer,useRef:useRef$5}=require_react_index());
 	
 	}
 });
@@ -37140,7 +37140,7 @@ var init_react_native_Libraries_Components_View_ViewPropTypes = __esm({
 
 // --- createAnimatedComponent.js ---
 var exports_react_native_Libraries_Animated_createAnimatedComponent = {};
-var React$30, useMemo$3, __ns_314_0;
+var React$30, useMemo$3, __ns_280_0;
 function createAnimatedComponent(Component) {
 	return unstable_createAnimatedComponentWithAllowlist(Component, null);
 }
@@ -37166,7 +37166,7 @@ var init_react_native_Libraries_Animated_createAnimatedComponent = __esm({
 	init_react_native_src_private_animated_createAnimatedPropsHook();
 	init_react_native_src_private_styles_composeStyles();
 	init_react_native_Libraries_Utilities_useMergeRefs();
-	__ns_314_0 = __toESM(require_react_index());
+	__ns_280_0 = __toESM(require_react_index());
 		
 	
 	
@@ -37263,8 +37263,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDiffClamp = __esm({
 			return new AnimatedInterpolation(this, config);
 		}
 		__getValue() {
-			value = this._a.__getValue();
-			diff = value - this._lastValue;
+			const value = this._a.__getValue();
+			const diff = value - this._lastValue;
 			this._lastValue = value;
 			this._value = Math.min(Math.max(this._value + diff, this._min), this._max);
 			return this._value;
@@ -37320,8 +37320,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDivision = __esm({
 			super.__makeNative(platformConfig);
 		}
 		__getValue() {
-			a = this._a.__getValue();
-			b = this._b.__getValue();
+			const a = this._a.__getValue();
+			const b = this._b.__getValue();
 			if (b === 0) {
 				if (!this._warnedAboutDivideByZero) {
 					console.error("Detected division by zero in AnimatedDivision");
@@ -37559,8 +37559,8 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTracking = __esm({
 			this._value.animate(new this._animationClass({ ...this._animationConfig, toValue: this._animationConfig.toValue.__getValue() }), this._callback);
 		}
 		__getNativeConfig() {
-			animation = new this._animationClass({ ...this._animationConfig, toValue: undefined });
-			animationConfig = animation.__getNativeAnimationConfig();
+			const animation = new this._animationClass({ ...this._animationConfig, toValue: undefined });
+			const animationConfig = animation.__getNativeAnimationConfig();
 			return { type: "tracking", animationId: _default$80.generateNewAnimationId(), animationConfig, toValue: this._parent.__getNativeTag(), value: this._value.__getNativeTag(), debugID: this.__getDebugID() };
 		}
 	};
@@ -37659,8 +37659,8 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 	};
 	maybeVectorAnim = function(value,config,anim) {
 		if (value instanceof AnimatedValueXY) {
-			configX = { ...config };
-			configY = { ...config };
+			const configX = { ...config };
+			const configY = { ...config };
 			for (const key in config) {
 				const { x:x, y:y } = config[key];
 				if (x !== undefined && y !== undefined) {
@@ -37668,14 +37668,14 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 					configY[key] = y;
 				}
 			}
-			aX = anim(value.x, configX);
-			aY = anim(value.y, configY);
+			const aX = anim(value.x, configX);
+			const aY = anim(value.y, configY);
 			return parallelImpl([aX, aY], { stopTogether: false });
 		} else if (value instanceof AnimatedColor) {
-			configR = { ...config };
-			configG = { ...config };
-			configB = { ...config };
-			configA = { ...config };
+			const configR = { ...config };
+			const configG = { ...config };
+			const configB = { ...config };
+			const configA = { ...config };
 			for (const key in config) {
 				const { r:r, g:g, b:b, a:a } = config[key];
 				if (r !== undefined && g !== undefined && b !== undefined && a !== undefined) {
@@ -37685,19 +37685,19 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 					configA[key] = a;
 				}
 			}
-			aR = anim(value.r, configR);
-			aG = anim(value.g, configG);
-			aB = anim(value.b, configB);
-			aA = anim(value.a, configA);
+			const aR = anim(value.r, configR);
+			const aG = anim(value.g, configG);
+			const aB = anim(value.b, configB);
+			const aA = anim(value.a, configA);
 			return parallelImpl([aR, aG, aB, aA], { stopTogether: false });
 		}
 		return null;
 	};
 	springImpl = function(value,config) {
-		start = function(animatedValue,configuration,callback) {
+		const start = function(animatedValue,configuration,callback) {
 			callback = _combineCallbacks(callback, configuration);
-			singleValue = animatedValue;
-			singleConfig = configuration;
+			const singleValue = animatedValue;
+			const singleConfig = configuration;
 			singleValue.stopTracking();
 			if (configuration.toValue instanceof AnimatedNode) {
 				singleValue.track(new AnimatedTracking(singleValue, configuration.toValue, SpringAnimation, singleConfig, callback));
@@ -37712,17 +37712,17 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		}, reset: function() {
 			value.resetAnimation();
 		}, _startNativeLoop: function(iterations) {
-			singleConfig = { ...config, iterations };
+			const singleConfig = { ...config, iterations };
 			start(value, singleConfig);
 		}, _isUsingNativeDriver: function() {
 			return config.useNativeDriver || false;
 		} });
 	};
 	timingImpl = function(value,config) {
-		start = function(animatedValue,configuration,callback) {
+		const start = function(animatedValue,configuration,callback) {
 			callback = _combineCallbacks(callback, configuration);
-			singleValue = animatedValue;
-			singleConfig = configuration;
+			const singleValue = animatedValue;
+			const singleConfig = configuration;
 			singleValue.stopTracking();
 			if (configuration.toValue instanceof AnimatedNode) {
 				singleValue.track(new AnimatedTracking(singleValue, configuration.toValue, TimingAnimation, singleConfig, callback));
@@ -37737,17 +37737,17 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		}, reset: function() {
 			value.resetAnimation();
 		}, _startNativeLoop: function(iterations) {
-			singleConfig = { ...config, iterations };
+			const singleConfig = { ...config, iterations };
 			start(value, singleConfig);
 		}, _isUsingNativeDriver: function() {
 			return config.useNativeDriver || false;
 		} });
 	};
 	decayImpl = function(value,config) {
-		start = function(animatedValue,configuration,callback) {
+		const start = function(animatedValue,configuration,callback) {
 			callback = _combineCallbacks(callback, configuration);
-			singleValue = animatedValue;
-			singleConfig = configuration;
+			const singleValue = animatedValue;
+			const singleConfig = configuration;
 			singleValue.stopTracking();
 			singleValue.animate(new DecayAnimation(singleConfig), callback);
 		};
@@ -37758,16 +37758,16 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		}, reset: function() {
 			value.resetAnimation();
 		}, _startNativeLoop: function(iterations) {
-			singleConfig = { ...config, iterations };
+			const singleConfig = { ...config, iterations };
 			start(value, singleConfig);
 		}, _isUsingNativeDriver: function() {
 			return config.useNativeDriver || false;
 		} });
 	};
 	sequenceImpl = function(animations) {
-		current = 0;
+		let current = 0;
 		return { start: function(callback,isLooping) {
-			onComplete = function(result) {
+			const onComplete = function(result) {
 				if (!result.finished) {
 					callback && callback(result);
 					return;
@@ -37803,16 +37803,16 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		} };
 	};
 	parallelImpl = function(animations,config) {
-		doneCount = 0;
-		hasEnded = {};
-		stopTogether = !(config && config.stopTogether === false);
-		result = { start: function(callback,isLooping) {
+		let doneCount = 0;
+		const hasEnded = {};
+		const stopTogether = !(config && config.stopTogether === false);
+		const result = { start: function(callback,isLooping) {
 			if (doneCount === animations.length) {
 				callback && callback({ finished: true });
 				return;
 			}
 			animations.forEach((animation,idx) => {
-				cb = function(endResult) {
+				const cb = function(endResult) {
 					hasEnded[idx] = true;
 					doneCount++;
 					if (doneCount === animations.length) {
@@ -37857,10 +37857,10 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		}));
 	};
 	loopImpl = function(animation,{ iterations:iterations=-1, resetBeforeIteration:resetBeforeIteration=true }={}) {
-		isFinished = false;
-		iterationsSoFar = 0;
+		let isFinished = false;
+		let iterationsSoFar = 0;
 		return { start: function(callback) {
-			restart = function(result={ finished: true }) {
+			const restart = function(result={ finished: true }) {
 				if (isFinished || iterationsSoFar === iterations || result.finished === false) {
 					callback && callback(result);
 				} else {
@@ -37892,7 +37892,7 @@ var init_react_native_Libraries_Animated_AnimatedImplementation = __esm({
 		} };
 	};
 	eventImpl = function(argMapping,config) {
-		animatedEvent = new AnimatedEvent(argMapping, config);
+		const animatedEvent = new AnimatedEvent(argMapping, config);
 		if (animatedEvent.__isNative) {
 			return animatedEvent;
 		} else {
@@ -38230,7 +38230,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewCommands = __esm
 
 // --- ScrollViewContext.js ---
 var exports_react_native_Libraries_Components_ScrollView_ScrollViewContext = {};
-var React$32, createContext$4, ScrollViewContext, HORIZONTAL, VERTICAL, __ns_240_0;
+var React$32, createContext$4, ScrollViewContext, HORIZONTAL, VERTICAL, __ns_230_0;
 __export(exports_react_native_Libraries_Components_ScrollView_ScrollViewContext, {
 	"default": function() { return ScrollViewContext; },
 	HORIZONTAL: function() { return HORIZONTAL; },
@@ -38238,7 +38238,7 @@ __export(exports_react_native_Libraries_Components_ScrollView_ScrollViewContext,
 });
 var init_react_native_Libraries_Components_ScrollView_ScrollViewContext = __esm({
 	"ScrollViewContext.js"() {
-	__ns_240_0 = __toESM(require_react_index());
+	__ns_230_0 = __toESM(require_react_index());
 		React$32=__toESM(require_react_index());
 	({createContext:createContext$4}=require_react_index());
 	ScrollViewContext = createContext$4(null);
@@ -38307,14 +38307,14 @@ var init_react_native_Libraries_Animated_AnimatedMock = __esm({
 		callback?.({ finished: true });
 	}) });
 	spring = function(value,config) {
-		anyValue = value;
+		const anyValue = value;
 		return { ...emptyAnimation, start: mockAnimationStart((callback) => {
 			anyValue.setValue(config.toValue);
 			callback?.({ finished: true });
 		}) };
 	};
 	timing = function(value,config) {
-		anyValue = value;
+		const anyValue = value;
 		return { ...emptyAnimation, start: mockAnimationStart((callback) => {
 			anyValue.setValue(config.toValue);
 			callback?.({ finished: true });
@@ -38345,7 +38345,7 @@ var init_react_native_Libraries_Animated_AnimatedMock = __esm({
 
 // --- VirtualizedListContext.js ---
 var exports__react_native_virtualized_lists_Lists_VirtualizedListContext = {};
-var React$33, createContext$5, useContext$2, useMemo$4, VirtualizedListContext, __ns_172_0;
+var React$33, createContext$5, useContext$2, useMemo$4, VirtualizedListContext, __ns_335_0;
 function VirtualizedListContextResetter({ children:children }) {
 	return (/* @__PURE__ */ React.createElement(VirtualizedListContext.Provider, { value: null }, children));
 }
@@ -38366,7 +38366,7 @@ __export(exports__react_native_virtualized_lists_Lists_VirtualizedListContext, {
 });
 var init__react_native_virtualized_lists_Lists_VirtualizedListContext = __esm({
 	"VirtualizedListContext.js"() {
-	__ns_172_0 = __toESM(require_react_index());
+	__ns_335_0 = __toESM(require_react_index());
 		React$33=__toESM(require_react_index());
 	({createContext:createContext$5,useContext:useContext$2,useMemo:useMemo$4}=require_react_index());
 	VirtualizedListContext = createContext$5(null);
@@ -38566,9 +38566,9 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 			if (firstIntersectIdx === lastIntersectIdx && !firstIntersect.isSpacer) {
 				return;
 			}
-			newLeadRegion = [];
-			newTailRegion = [];
-			newMainRegion = { ...cells, isSpacer: false };
+			const newLeadRegion = [];
+			const newTailRegion = [];
+			const newMainRegion = { ...cells, isSpacer: false };
 			if (firstIntersect.first < newMainRegion.first) {
 				if (firstIntersect.isSpacer) {
 					newLeadRegion.push({ first: firstIntersect.first, last: newMainRegion.first - 1, isSpacer: true });
@@ -38583,8 +38583,8 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 					newMainRegion.last = lastIntersect.last;
 				}
 			}
-			replacementRegions = [...newLeadRegion, newMainRegion, ...newTailRegion];
-			numRegionsToDelete = lastIntersectIdx - firstIntersectIdx + 1;
+			const replacementRegions = [...newLeadRegion, newMainRegion, ...newTailRegion];
+			const numRegionsToDelete = lastIntersectIdx - firstIntersectIdx + 1;
 			this._regions.splice(firstIntersectIdx, numRegionsToDelete, ...replacementRegions);
 		}
 		numCells() {
@@ -38594,11 +38594,11 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 			return (this._numCells === other._numCells && this._regions.length === other._regions.length && this._regions.every((region,i) => region.first === other._regions[i].first && region.last === other._regions[i].last && region.isSpacer === other._regions[i].isSpacer));
 		}
 		_findRegion(cellIdx) {
-			firstIdx = 0;
-			lastIdx = this._regions.length - 1;
+			let firstIdx = 0;
+			let lastIdx = this._regions.length - 1;
 			while (firstIdx <= lastIdx) {
-				middleIdx = Math.floor((firstIdx + lastIdx) / 2);
-				middleRegion = this._regions[middleIdx];
+				const middleIdx = Math.floor((firstIdx + lastIdx) / 2);
+				const middleRegion = this._regions[middleIdx];
 				if (cellIdx >= middleRegion.first && cellIdx <= middleRegion.last) {
 					return [middleRegion, middleIdx];
 				} else if (cellIdx < middleRegion.first) {
@@ -38628,16 +38628,16 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 		_childrenToCellKey = new Map();
 		add(list,cellKey) {
 			invariant$33(!this._childrenToCellKey.has(list), "Trying to add already present child list");
-			cellLists = this._cellKeyToChildren.get(cellKey) ?? new Set();
+			const cellLists = this._cellKeyToChildren.get(cellKey) ?? new Set();
 			cellLists.add(list);
 			this._cellKeyToChildren.set(cellKey, cellLists);
 			this._childrenToCellKey.set(list, cellKey);
 		}
 		remove(list) {
-			cellKey = this._childrenToCellKey.get(list);
+			const cellKey = this._childrenToCellKey.get(list);
 			invariant$33(cellKey != null, "Trying to remove non-present child list");
 			this._childrenToCellKey.delete(list);
-			cellLists = this._cellKeyToChildren.get(cellKey);
+			const cellLists = this._cellKeyToChildren.get(cellKey);
 			invariant$33(cellLists, "_cellKeyToChildren should contain cellKey");
 			cellLists.delete(list);
 			if (cellLists.size === 0) {
@@ -38652,13 +38652,13 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 			}
 		}
 		forEachInCell(cellKey,fn) {
-			listSet = this._cellKeyToChildren.get(cellKey) ?? [];
+			const listSet = this._cellKeyToChildren.get(cellKey) ?? [];
 			for (const list of listSet) {
 				fn(list);
 			}
 		}
 		anyInCell(cellKey,fn) {
-			listSet = this._cellKeyToChildren.get(cellKey) ?? [];
+			const listSet = this._cellKeyToChildren.get(cellKey) ?? [];
 			for (const list of listSet) {
 				if (fn(list)) {
 					return true;
@@ -38695,11 +38695,11 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 		_orientation = { horizontal: false, rtl: false };
 		notifyCellLayout({ cellIndex:cellIndex, cellKey:cellKey, orientation:orientation, layout:layout }) {
 			this._invalidateIfOrientationChanged(orientation);
-			next = { index: cellIndex, length: this._selectLength(layout), isMounted: true, offset: this.flowRelativeOffset(layout) };
-			curr = this._cellMetrics.get(cellKey);
+			const next = { index: cellIndex, length: this._selectLength(layout), isMounted: true, offset: this.flowRelativeOffset(layout) };
+			const curr = this._cellMetrics.get(cellKey);
 			if (!curr || next.offset !== curr.offset || next.length !== curr.length) {
 				if (curr) {
-					dLength = next.length - curr.length;
+					const dLength = next.length - curr.length;
 					this._measuredCellsLength += dLength;
 				} else {
 					this._measuredCellsLength += next.length;
@@ -38715,7 +38715,7 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 			}
 		}
 		notifyCellUnmounted(cellKey) {
-			curr = this._cellMetrics.get(cellKey);
+			const curr = this._cellMetrics.get(cellKey);
 			if (curr) {
 				curr.isMounted = false;
 			}
@@ -38731,14 +38731,14 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 			return this._highestMeasuredCellIndex;
 		}
 		getCellMetricsApprox(index,props) {
-			frame = this.getCellMetrics(index, props);
+			const frame = this.getCellMetrics(index, props);
 			if (frame && frame.index === index) {
 				return frame;
 			} else {
-				
-				highestMeasuredCellIndex = this.getHighestMeasuredCellIndex();
+				let offset;
+				const highestMeasuredCellIndex = this.getHighestMeasuredCellIndex();
 				if (highestMeasuredCellIndex < index) {
-					highestMeasuredCellFrame = this.getCellMetrics(highestMeasuredCellIndex, props);
+					const highestMeasuredCellFrame = this.getCellMetrics(highestMeasuredCellIndex, props);
 					if (highestMeasuredCellFrame) {
 						offset = highestMeasuredCellFrame.offset + highestMeasuredCellFrame.length + this._averageCellLength * (index - highestMeasuredCellIndex - 1);
 					}
@@ -38754,8 +38754,8 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 		getCellMetrics(index,props) {
 			const { data:data, getItem:getItem, getItemCount:getItemCount, getItemLayout:getItemLayout } = props;
 			invariant$34(index >= 0 && index < getItemCount(data), "Tried to get metrics for out of range cell index " + index);
-			keyExtractor = props.keyExtractor ?? keyExtractor$3;
-			frame = this._cellMetrics.get(keyExtractor(getItem(data, index), index));
+			const keyExtractor = props.keyExtractor ?? keyExtractor$3;
+			const frame = this._cellMetrics.get(keyExtractor(getItem(data, index), index));
 			if (frame && frame.index === index) {
 				return frame;
 			}
@@ -38769,8 +38769,8 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 			if (Number.isInteger(index)) {
 				return this.getCellMetricsApprox(index, props).offset;
 			} else {
-				frameMetrics = this.getCellMetricsApprox(Math.floor(index), props);
-				remainder = index - Math.floor(index);
+				const frameMetrics = this.getCellMetricsApprox(Math.floor(index), props);
+				const remainder = index - Math.floor(index);
 				return frameMetrics.offset + remainder * frameMetrics.length;
 			}
 		}
@@ -38783,7 +38783,7 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 		flowRelativeOffset(layout,referenceContentLength) {
 			const { horizontal:horizontal, rtl:rtl } = this._orientation;
 			if (horizontal && rtl) {
-				contentLength = referenceContentLength ?? this._contentLength;
+				const contentLength = referenceContentLength ?? this._contentLength;
 				invariant$34(contentLength != null, "ListMetricsAggregator must be notified of list content layout before resolving offsets");
 				return (contentLength - (this._selectOffset(layout) + this._selectLength(layout)));
 			} else {
@@ -38886,7 +38886,7 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 			if (!this._enabled) {
 				return;
 			}
-			start = this._samplesStartTime;
+			const start = this._samplesStartTime;
 			if (start == null) {
 				DEBUG && console.debug("FillRateHelper: bail on deactivate with no start time");
 				return;
@@ -38895,10 +38895,10 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 				this._resetData();
 				return;
 			}
-			total_time_spent = global.performance.now() - start;
-			info = { ...this._info, total_time_spent };
+			const total_time_spent = global.performance.now() - start;
+			const info = { ...this._info, total_time_spent };
 			if (DEBUG) {
-				derived = { avg_blankness: this._info.pixels_blank / this._info.pixels_sampled, avg_speed: this._info.pixels_scrolled / (total_time_spent / 1000), avg_speed_when_any_blank: this._info.any_blank_speed_sum / this._info.any_blank_count, any_blank_per_min: this._info.any_blank_count / (total_time_spent / 1000 / 60), any_blank_time_frac: this._info.any_blank_ms / total_time_spent, mostly_blank_per_min: this._info.mostly_blank_count / (total_time_spent / 1000 / 60), mostly_blank_time_frac: this._info.mostly_blank_ms / total_time_spent };
+				const derived = { avg_blankness: this._info.pixels_blank / this._info.pixels_sampled, avg_speed: this._info.pixels_scrolled / (total_time_spent / 1000), avg_speed_when_any_blank: this._info.any_blank_speed_sum / this._info.any_blank_count, any_blank_per_min: this._info.any_blank_count / (total_time_spent / 1000 / 60), any_blank_time_frac: this._info.any_blank_ms / total_time_spent, mostly_blank_per_min: this._info.mostly_blank_count / (total_time_spent / 1000 / 60), mostly_blank_time_frac: this._info.mostly_blank_ms / total_time_spent };
 				for (const key in derived) {
 					derived[key] = Math.round(1000 * derived[key]) / 1000;
 				}
@@ -38915,8 +38915,8 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 			this._info.sample_count++;
 			this._info.pixels_sampled += Math.round(visibleLength);
 			this._info.pixels_scrolled += Math.round(Math.abs(dOffset));
-			scrollSpeed = Math.round(Math.abs(velocity) * 1000);
-			now = global.performance.now();
+			const scrollSpeed = Math.round(Math.abs(velocity) * 1000);
+			const now = global.performance.now();
 			if (this._anyBlankStartTime != null) {
 				this._info.any_blank_ms += now - this._anyBlankStartTime;
 			}
@@ -38925,9 +38925,9 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 				this._info.mostly_blank_ms += now - this._mostlyBlankStartTime;
 			}
 			this._mostlyBlankStartTime = null;
-			blankTop = 0;
-			first = cellsAroundViewport.first;
-			firstFrame = this._listMetrics.getCellMetrics(first, props);
+			let blankTop = 0;
+			let first = cellsAroundViewport.first;
+			let firstFrame = this._listMetrics.getCellMetrics(first, props);
 			while (first <= cellsAroundViewport.last && (!firstFrame || !firstFrame.isMounted)) {
 				firstFrame = this._listMetrics.getCellMetrics(first, props);
 				first++;
@@ -38935,19 +38935,19 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 			if (firstFrame && first > 0) {
 				blankTop = Math.min(visibleLength, Math.max(0, firstFrame.offset - offset));
 			}
-			blankBottom = 0;
-			last = cellsAroundViewport.last;
-			lastFrame = this._listMetrics.getCellMetrics(last, props);
+			let blankBottom = 0;
+			let last = cellsAroundViewport.last;
+			let lastFrame = this._listMetrics.getCellMetrics(last, props);
 			while (last >= cellsAroundViewport.first && (!lastFrame || !lastFrame.isMounted)) {
 				lastFrame = this._listMetrics.getCellMetrics(last, props);
 				last--;
 			}
 			if (lastFrame && last < props.getItemCount(props.data) - 1) {
-				bottomEdge = lastFrame.offset + lastFrame.length;
+				const bottomEdge = lastFrame.offset + lastFrame.length;
 				blankBottom = Math.min(visibleLength, Math.max(0, offset + visibleLength - bottomEdge));
 			}
-			pixels_blank = Math.round(blankTop + blankBottom);
-			blankness = pixels_blank / visibleLength;
+			const pixels_blank = Math.round(blankTop + blankBottom);
+			const blankness = pixels_blank / visibleLength;
 			if (blankness > 0) {
 				this._anyBlankStartTime = now;
 				this._info.any_blank_speed_sum += scrollSpeed;
@@ -38997,7 +38997,7 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 			if (typeof partialState === "function") {
 				super.setState((state,props) => {
 					this._inAsyncStateUpdate = true;
-					
+					let ret;
 					try {
 						ret = partialState(state, props);
 					} catch (err) {
@@ -39012,7 +39012,7 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 			}
 		}
 		_installSetStateHooks() {
-			that = this;
+			const that = this;
 			let { props:props, state:state } = this;
 			Object.defineProperty(this, "props", { get() {
 				invariant$35(!that._inAsyncStateUpdate, "\"this.props\" should not be accessed during state updates");
@@ -39073,28 +39073,28 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 			this._timers.forEach(clearTimeout);
 		}
 		computeViewableItems(props,scrollOffset,viewportHeight,listMetrics,renderRange) {
-			itemCount = props.getItemCount(props.data);
+			const itemCount = props.getItemCount(props.data);
 			const { itemVisiblePercentThreshold:itemVisiblePercentThreshold, viewAreaCoveragePercentThreshold:viewAreaCoveragePercentThreshold } = this._config;
-			viewAreaMode = viewAreaCoveragePercentThreshold != null;
-			viewablePercentThreshold = viewAreaMode ? viewAreaCoveragePercentThreshold : itemVisiblePercentThreshold;
+			const viewAreaMode = viewAreaCoveragePercentThreshold != null;
+			const viewablePercentThreshold = viewAreaMode ? viewAreaCoveragePercentThreshold : itemVisiblePercentThreshold;
 			invariant$36(viewablePercentThreshold != null && (itemVisiblePercentThreshold != null) !== (viewAreaCoveragePercentThreshold != null), "Must set exactly one of itemVisiblePercentThreshold or viewAreaCoveragePercentThreshold");
-			viewableIndices = [];
+			const viewableIndices = [];
 			if (itemCount === 0) {
 				return viewableIndices;
 			}
-			firstVisible = -1;
+			let firstVisible = -1;
 			const { first:first, last:last } = renderRange || { first: 0, last: itemCount - 1 };
 			if (last >= itemCount) {
 				console.warn("Invalid render range computing viewability " + JSON.stringify({ renderRange, itemCount }));
 				return [];
 			}
 			for (let idx = first; idx <= last; idx++) {
-				metrics = listMetrics.getCellMetrics(idx, props);
+				const metrics = listMetrics.getCellMetrics(idx, props);
 				if (!metrics) {
 					continue;
 				}
-				top = Math.floor(metrics.offset - scrollOffset);
-				bottom = Math.floor(top + metrics.length);
+				const top = Math.floor(metrics.offset - scrollOffset);
+				const bottom = Math.floor(top + metrics.length);
 				if (top < viewportHeight && bottom > 0) {
 					firstVisible = idx;
 					if (_isViewable(viewAreaMode, viewablePercentThreshold, top, bottom, viewportHeight, metrics.length)) {
@@ -39107,11 +39107,11 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 			return viewableIndices;
 		}
 		onUpdate(props,scrollOffset,viewportHeight,listMetrics,createViewToken,onViewableItemsChanged,renderRange) {
-			itemCount = props.getItemCount(props.data);
+			const itemCount = props.getItemCount(props.data);
 			if ((this._config.waitForInteraction && !this._hasInteracted) || itemCount === 0 || !listMetrics.getCellMetrics(0, props)) {
 				return;
 			}
-			viewableIndices = [];
+			let viewableIndices = [];
 			if (itemCount) {
 				viewableIndices = this.computeViewableItems(props, scrollOffset, viewportHeight, listMetrics, renderRange);
 			}
@@ -39120,7 +39120,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 			}
 			this._viewableIndices = viewableIndices;
 			if (this._config.minimumViewTime) {
-				handle = setTimeout(() => {
+				const handle = setTimeout(() => {
 					this._timers.delete(handle);
 					this._onUpdateSync(props, viewableIndices, onViewableItemsChanged, createViewToken);
 				}, this._config.minimumViewTime);
@@ -39137,12 +39137,12 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 		}
 		_onUpdateSync(props,viewableIndicesToCheck,onViewableItemsChanged,createViewToken) {
 			viewableIndicesToCheck = viewableIndicesToCheck.filter((ii) => this._viewableIndices.includes(ii));
-			prevItems = this._viewableItems;
-			nextItems = new Map(viewableIndicesToCheck.map((ii) => {
-				viewable = createViewToken(ii, true, props);
+			const prevItems = this._viewableItems;
+			const nextItems = new Map(viewableIndicesToCheck.map((ii) => {
+				const viewable = createViewToken(ii, true, props);
 				return [viewable.key, viewable];
 			}));
-			changed = [];
+			const changed = [];
 			for (const [key, viewable] of nextItems) {
 				if (!prevItems.has(key)) {
 					changed.push(viewable);
@@ -39166,15 +39166,15 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 
 // --- VirtualizedListCellRenderer.js ---
 var exports__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = {};
-var invariant$37, React$35, isValidElement$2, StyleSheet$12, View$16, CellRenderer, styles$10, __ns_369_0, __ns_369_1;
+var invariant$37, React$35, isValidElement$2, StyleSheet$12, View$16, CellRenderer, styles$10, __ns_438_0, __ns_438_1;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer, {
 	"default": function() { return CellRenderer; },
 });
 var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __esm({
 	"VirtualizedListCellRenderer.js"() {
 	init__react_native_virtualized_lists_Lists_VirtualizedListContext();
-	__ns_369_0 = __toESM(require_react_index());
-	__ns_369_1 = __toESM(require_react_native_index());
+	__ns_438_0 = __toESM(require_react_index());
+	__ns_438_1 = __toESM(require_react_native_index());
 		
 	invariant$37=__toESM(require_invariant_browser()).default;
 	React$35=__toESM(require_react_index());
@@ -39224,10 +39224,10 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __e
 		}
 		render() {
 			const { CellRendererComponent:CellRendererComponent, ItemSeparatorComponent:ItemSeparatorComponent, ListItemComponent:ListItemComponent, cellKey:cellKey, horizontal:horizontal, item:item, index:index, inversionStyle:inversionStyle, onCellLayout:onCellLayout, renderItem:renderItem } = this.props;
-			element = this._renderElement(renderItem, ListItemComponent, item, index);
-			itemSeparator = isValidElement$2(ItemSeparatorComponent) ? ItemSeparatorComponent : ItemSeparatorComponent && (/* @__PURE__ */ React.createElement(ItemSeparatorComponent, { ...this.state.separatorProps }));
-			cellStyle = inversionStyle ? horizontal ? [styles$10.rowReverse, inversionStyle] : [styles$10.columnReverse, inversionStyle] : horizontal ? [styles$10.row, inversionStyle] : inversionStyle;
-			result = !CellRendererComponent ? (/* @__PURE__ */ React.createElement(View$16, { style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator)) : (/* @__PURE__ */ React.createElement(CellRendererComponent, { cellKey: cellKey, index: index, item: item, style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator));
+			const element = this._renderElement(renderItem, ListItemComponent, item, index);
+			const itemSeparator = isValidElement$2(ItemSeparatorComponent) ? ItemSeparatorComponent : ItemSeparatorComponent && (/* @__PURE__ */ React.createElement(ItemSeparatorComponent, { ...this.state.separatorProps }));
+			const cellStyle = inversionStyle ? horizontal ? [styles$10.rowReverse, inversionStyle] : [styles$10.columnReverse, inversionStyle] : horizontal ? [styles$10.row, inversionStyle] : inversionStyle;
+			const result = !CellRendererComponent ? (/* @__PURE__ */ React.createElement(View$16, { style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator)) : (/* @__PURE__ */ React.createElement(CellRendererComponent, { cellKey: cellKey, index: index, item: item, style: cellStyle, onFocusCapture: this._onCellFocusCapture, ...(onCellLayout && { onLayout: this._onLayout }) }, element, itemSeparator));
 			return (/* @__PURE__ */ React.createElement(VirtualizedListCellContextProvider, { cellKey: this.props.cellKey }, result));
 		}
 	};
@@ -39274,7 +39274,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListProps = __esm({
 
 // --- VirtualizedList.js ---
 var exports__react_native_virtualized_lists_Lists_VirtualizedList = {};
-var invariant$38, nullthrows$11, React$37, cloneElement$1, isValidElement$3, I18nManager$1, Platform$33, StyleSheet$13, View$17, findNodeHandle$4, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, VirtualizedList, styles$11, __ns_174_0, __ns_174_1;
+var invariant$38, nullthrows$11, React$37, cloneElement$1, isValidElement$3, I18nManager$1, Platform$33, StyleSheet$13, View$17, findNodeHandle$4, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, VirtualizedList, styles$11, __ns_337_0, __ns_337_1;
 function getScrollingThreshold(threshold,visibleLength) {
 	return (threshold * visibleLength) / 2;
 }
@@ -39295,8 +39295,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	init__react_native_virtualized_lists_Lists_VirtualizedListContext();
 	init__react_native_virtualized_lists_Lists_VirtualizedListProps();
 	init__react_native_virtualized_lists_Lists_VirtualizeUtils();
-	__ns_174_0 = __toESM(require_react_index());
-	__ns_174_1 = __toESM(require_react_native_index());
+	__ns_337_0 = __toESM(require_react_index());
+	__ns_337_1 = __toESM(require_react_native_index());
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 		
 	
@@ -39314,7 +39314,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	nullthrows$11=__toESM(require_nullthrows_nullthrows()).default;
 	React$37=__toESM(require_react_index());
 	({cloneElement:cloneElement$1,isValidElement:isValidElement$3}=require_react_index());
-	({I18nManager:I18nManager$1,Platform:Platform$33,RefreshControl:__ns_174_1.RefreshControl,ScrollView:__ns_174_1.ScrollView,StyleSheet:StyleSheet$13,View:View$17,findNodeHandle:findNodeHandle$4}=require_react_native_index());
+	({I18nManager:I18nManager$1,Platform:Platform$33,RefreshControl:__ns_337_1.RefreshControl,ScrollView:__ns_337_1.ScrollView,StyleSheet:StyleSheet$13,View:View$17,findNodeHandle:findNodeHandle$4}=require_react_native_index());
 	ReactNativeFeatureFlags$15=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	ON_EDGE_REACHED_EPSILON = 0.001;
 	_usedIndexForKey = false;
@@ -39322,13 +39322,13 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	VirtualizedList = class VirtualizedList extends StateSafePureComponent {
 		static contextType = VirtualizedListContext;
 		scrollToEnd(params) {
-			animated = params ? params.animated : true;
-			veryLast = this.props.getItemCount(this.props.data) - 1;
+			const animated = params ? params.animated : true;
+			const veryLast = this.props.getItemCount(this.props.data) - 1;
 			if (veryLast < 0) {
 				return;
 			}
-			frame = this._listMetrics.getCellMetricsApprox(veryLast, this.props);
-			offset = Math.max(0, frame.offset + frame.length + this._footerLength - this._scrollMetrics.visibleLength);
+			const frame = this._listMetrics.getCellMetricsApprox(veryLast, this.props);
+			const offset = Math.max(0, frame.offset + frame.length + this._footerLength - this._scrollMetrics.visibleLength);
 			this.scrollToOffset({ animated, offset });
 		}
 		scrollToIndex(params) {
@@ -39342,14 +39342,14 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				onScrollToIndexFailed({ averageItemLength: this._listMetrics.getAverageCellLength(), highestMeasuredFrameIndex: this._listMetrics.getHighestMeasuredCellIndex(), index });
 				return;
 			}
-			frame = this._listMetrics.getCellMetricsApprox(Math.floor(index), this.props);
-			offset = Math.max(0, this._listMetrics.getCellOffsetApprox(index, this.props) - (viewPosition || 0) * (this._scrollMetrics.visibleLength - frame.length)) - (viewOffset || 0);
+			const frame = this._listMetrics.getCellMetricsApprox(Math.floor(index), this.props);
+			const offset = Math.max(0, this._listMetrics.getCellOffsetApprox(index, this.props) - (viewPosition || 0) * (this._scrollMetrics.visibleLength - frame.length)) - (viewOffset || 0);
 			this.scrollToOffset({ offset, animated });
 		}
 		scrollToItem(params) {
 			const { item:item } = params;
 			const { data:data, getItem:getItem, getItemCount:getItemCount } = this.props;
-			itemCount = getItemCount(data);
+			const itemCount = getItemCount(data);
 			for (let index = 0; index < itemCount; index++) {
 				if (getItem(data, index) === item) {
 					this.scrollToIndex({ ...params, index });
@@ -39359,7 +39359,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		}
 		scrollToOffset(params) {
 			const { animated:animated, offset:offset } = params;
-			scrollRef = this._scrollRef;
+			const scrollRef = this._scrollRef;
 			if (scrollRef == null) {
 				return;
 			}
@@ -39377,7 +39377,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		_scrollToParamsFromOffset(offset) {
 			const { horizontal:horizontal, rtl:rtl } = this._orientation();
 			if (horizontal && rtl) {
-				cartOffset = this._listMetrics.cartesianOffset(offset + this._scrollMetrics.visibleLength);
+				const cartOffset = this._listMetrics.cartesianOffset(offset + this._scrollMetrics.visibleLength);
 				return horizontal ? { x: cartOffset } : { y: cartOffset };
 			} else {
 				return horizontal ? { x: offset } : { y: offset };
@@ -39460,8 +39460,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 					this._viewabilityTuples.push({ viewabilityHelper: new ViewabilityHelper(viewabilityConfig), onViewableItemsChanged: onViewableItemsChanged });
 				}
 			}
-			initialRenderRegion = VirtualizedList._initialRenderRegion(props);
-			minIndexForVisible = this.props.maintainVisibleContentPosition?.minIndexForVisible ?? 0;
+			const initialRenderRegion = VirtualizedList._initialRenderRegion(props);
+			const minIndexForVisible = this.props.maintainVisibleContentPosition?.minIndexForVisible ?? 0;
 			this.state = { cellsAroundViewport: initialRenderRegion, renderMask: VirtualizedList._createRenderMask(props, initialRenderRegion), firstVisibleItemKey: this.props.getItemCount(this.props.data) > minIndexForVisible ? VirtualizedList._getItemKey(this.props, minIndexForVisible) : null, pendingScrollUpdateCount: this.props.initialScrollIndex != null && this.props.initialScrollIndex > 0 ? 1 : 0 };
 		}
 		_checkProps(props) {
@@ -39469,13 +39469,13 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			invariant$38(!onScroll || !onScroll.__isNative, "Components based on VirtualizedList must be wrapped with Animated.createAnimatedComponent " + "to support native onScroll events with useNativeDriver");
 			invariant$38(windowSizeOrDefault(windowSize) > 0, "VirtualizedList: The windowSize prop must be present and set to a value greater than 0.");
 			invariant$38(getItemCount, "VirtualizedList: The \"getItemCount\" prop must be provided");
-			itemCount = getItemCount(data);
+			const itemCount = getItemCount(data);
 			if (initialScrollIndex != null && !this._hasTriggeredInitialScrollToIndex && (initialScrollIndex < 0 || (itemCount > 0 && initialScrollIndex >= itemCount)) && !this._hasWarned.initialScrollIndex) {
 				console.warn(`initialScrollIndex "${initialScrollIndex}" is not valid (list has ${itemCount} items)`);
 				this._hasWarned.initialScrollIndex = true;
 			}
 			if (false && !this._hasWarned.flexWrap) {
-				flatStyles = StyleSheet$13.flatten(this.props.contentContainerStyle);
+				const flatStyles = StyleSheet$13.flatten(this.props.contentContainerStyle);
 				if (flatStyles != null && flatStyles.flexWrap === "wrap") {
 					console.warn("`flexWrap: `wrap`` is not supported with the `VirtualizedList` components." + "Consider using `numColumns` with `FlatList` instead.");
 					this._hasWarned.flexWrap = true;
@@ -39483,15 +39483,15 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			}
 		}
 		static _findItemIndexWithKey(props,key,hint) {
-			itemCount = props.getItemCount(props.data);
+			const itemCount = props.getItemCount(props.data);
 			if (hint != null && hint >= 0 && hint < itemCount) {
-				curKey = VirtualizedList._getItemKey(props, hint);
+				const curKey = VirtualizedList._getItemKey(props, hint);
 				if (curKey === key) {
 					return hint;
 				}
 			}
 			for (let ii = 0; ii < itemCount; ii++) {
-				curKey = VirtualizedList._getItemKey(props, ii);
+				const curKey = VirtualizedList._getItemKey(props, ii);
 				if (curKey === key) {
 					return ii;
 				}
@@ -39499,35 +39499,35 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			return null;
 		}
 		static _getItemKey(props,index) {
-			item = props.getItem(props.data, index);
+			const item = props.getItem(props.data, index);
 			return VirtualizedList._keyExtractor(item, index, props);
 		}
 		static _createRenderMask(props,cellsAroundViewport,additionalRegions) {
-			itemCount = props.getItemCount(props.data);
+			const itemCount = props.getItemCount(props.data);
 			invariant$38(cellsAroundViewport.first >= 0 && cellsAroundViewport.last >= cellsAroundViewport.first - 1 && cellsAroundViewport.last < itemCount, `Invalid cells around viewport "[${cellsAroundViewport.first}, ${cellsAroundViewport.last}]" was passed to VirtualizedList._createRenderMask`);
-			renderMask = new CellRenderMask(itemCount);
+			const renderMask = new CellRenderMask(itemCount);
 			if (itemCount > 0) {
-				allRegions = [cellsAroundViewport, ...(additionalRegions ?? [])];
+				const allRegions = [cellsAroundViewport, ...(additionalRegions ?? [])];
 				for (const region of allRegions) {
 					renderMask.addCells(region);
 				}
 				if (props.initialScrollIndex == null || props.initialScrollIndex <= 0) {
-					initialRegion = VirtualizedList._initialRenderRegion(props);
+					const initialRegion = VirtualizedList._initialRenderRegion(props);
 					renderMask.addCells(initialRegion);
 				}
-				stickyIndicesSet = new Set(props.stickyHeaderIndices);
+				const stickyIndicesSet = new Set(props.stickyHeaderIndices);
 				VirtualizedList._ensureClosestStickyHeader(props, stickyIndicesSet, renderMask, cellsAroundViewport.first);
 			}
 			return renderMask;
 		}
 		static _initialRenderRegion(props) {
-			itemCount = props.getItemCount(props.data);
-			firstCellIndex = Math.max(0, Math.min(itemCount - 1, Math.floor(props.initialScrollIndex ?? 0)));
-			lastCellIndex = Math.min(itemCount, firstCellIndex + initialNumToRenderOrDefault(props.initialNumToRender)) - 1;
+			const itemCount = props.getItemCount(props.data);
+			const firstCellIndex = Math.max(0, Math.min(itemCount - 1, Math.floor(props.initialScrollIndex ?? 0)));
+			const lastCellIndex = Math.min(itemCount, firstCellIndex + initialNumToRenderOrDefault(props.initialNumToRender)) - 1;
 			return { first: firstCellIndex, last: lastCellIndex };
 		}
 		static _ensureClosestStickyHeader(props,stickyIndicesSet,renderMask,cellIdx) {
-			stickyOffset = props.ListHeaderComponent ? 1 : 0;
+			const stickyOffset = props.ListHeaderComponent ? 1 : 0;
 			for (let itemIdx = cellIdx - 1; itemIdx >= 0; itemIdx--) {
 				if (stickyIndicesSet.has(itemIdx + stickyOffset)) {
 					renderMask.addCells({ first: itemIdx, last: itemIdx });
@@ -39537,16 +39537,16 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		}
 		_adjustCellsAroundViewport(props,cellsAroundViewport,pendingScrollUpdateCount) {
 			const { data:data, getItemCount:getItemCount } = props;
-			onEndReachedThreshold = onEndReachedThresholdOrDefault(props.onEndReachedThreshold);
+			const onEndReachedThreshold = onEndReachedThresholdOrDefault(props.onEndReachedThreshold);
 			const { offset:offset, visibleLength:visibleLength } = this._scrollMetrics;
-			contentLength = this._listMetrics.getContentLength();
-			distanceFromEnd = contentLength - visibleLength - offset;
+			const contentLength = this._listMetrics.getContentLength();
+			const distanceFromEnd = contentLength - visibleLength - offset;
 			if (visibleLength <= 0 || contentLength <= 0) {
 				return cellsAroundViewport.last >= getItemCount(data) ? VirtualizedList._constrainToItemCount(cellsAroundViewport, props) : cellsAroundViewport;
 			}
-			
+			let newCellsAroundViewport;
 			if (props.disableVirtualization) {
-				renderAhead = distanceFromEnd < onEndReachedThreshold * visibleLength ? maxToRenderPerBatchOrDefault(props.maxToRenderPerBatch) : 0;
+				const renderAhead = distanceFromEnd < onEndReachedThreshold * visibleLength ? maxToRenderPerBatchOrDefault(props.maxToRenderPerBatch) : 0;
 				newCellsAroundViewport = { first: 0, last: Math.min(cellsAroundViewport.last + renderAhead, getItemCount(data) - 1) };
 			} else {
 				if (pendingScrollUpdateCount > 0) {
@@ -39556,14 +39556,14 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				invariant$38(newCellsAroundViewport.last < getItemCount(data), "computeWindowedRenderLimits() should return range in-bounds");
 			}
 			if (this._nestedChildLists.size() > 0) {
-				childIdx = this._findFirstChildWithMore(newCellsAroundViewport.first, newCellsAroundViewport.last);
+				const childIdx = this._findFirstChildWithMore(newCellsAroundViewport.first, newCellsAroundViewport.last);
 				newCellsAroundViewport.last = childIdx ?? newCellsAroundViewport.last;
 			}
 			return newCellsAroundViewport;
 		}
 		_findFirstChildWithMore(first,last) {
 			for (let ii = first; ii <= last; ii++) {
-				cellKeyForIndex = this._indicesToKeys.get(ii);
+				const cellKeyForIndex = this._indicesToKeys.get(ii);
 				if (cellKeyForIndex != null && this._nestedChildLists.anyInCell(cellKeyForIndex, (childList) => childList.hasMore())) {
 					return ii;
 				}
@@ -39586,40 +39586,40 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			this._fillRateHelper.deactivateAndFlush();
 		}
 		static getDerivedStateFromProps(newProps,prevState) {
-			itemCount = newProps.getItemCount(newProps.data);
+			const itemCount = newProps.getItemCount(newProps.data);
 			if (itemCount === prevState.renderMask.numCells()) {
 				return prevState;
 			}
-			maintainVisibleContentPositionAdjustment = null;
-			prevFirstVisibleItemKey = prevState.firstVisibleItemKey;
-			minIndexForVisible = newProps.maintainVisibleContentPosition?.minIndexForVisible ?? 0;
-			newFirstVisibleItemKey = newProps.getItemCount(newProps.data) > minIndexForVisible ? VirtualizedList._getItemKey(newProps, minIndexForVisible) : null;
+			let maintainVisibleContentPositionAdjustment = null;
+			const prevFirstVisibleItemKey = prevState.firstVisibleItemKey;
+			const minIndexForVisible = newProps.maintainVisibleContentPosition?.minIndexForVisible ?? 0;
+			const newFirstVisibleItemKey = newProps.getItemCount(newProps.data) > minIndexForVisible ? VirtualizedList._getItemKey(newProps, minIndexForVisible) : null;
 			if (newProps.maintainVisibleContentPosition != null && prevFirstVisibleItemKey != null && newFirstVisibleItemKey != null) {
 				if (newFirstVisibleItemKey !== prevFirstVisibleItemKey) {
-					hint = itemCount - prevState.renderMask.numCells() + minIndexForVisible;
-					firstVisibleItemIndex = VirtualizedList._findItemIndexWithKey(newProps, prevFirstVisibleItemKey, hint);
+					const hint = itemCount - prevState.renderMask.numCells() + minIndexForVisible;
+					const firstVisibleItemIndex = VirtualizedList._findItemIndexWithKey(newProps, prevFirstVisibleItemKey, hint);
 					maintainVisibleContentPositionAdjustment = firstVisibleItemIndex != null ? firstVisibleItemIndex - minIndexForVisible : null;
 				} else {
 					maintainVisibleContentPositionAdjustment = null;
 				}
 			}
-			constrainedCells = VirtualizedList._constrainToItemCount(maintainVisibleContentPositionAdjustment != null ? { first: prevState.cellsAroundViewport.first + maintainVisibleContentPositionAdjustment, last: prevState.cellsAroundViewport.last + maintainVisibleContentPositionAdjustment } : prevState.cellsAroundViewport, newProps);
+			const constrainedCells = VirtualizedList._constrainToItemCount(maintainVisibleContentPositionAdjustment != null ? { first: prevState.cellsAroundViewport.first + maintainVisibleContentPositionAdjustment, last: prevState.cellsAroundViewport.last + maintainVisibleContentPositionAdjustment } : prevState.cellsAroundViewport, newProps);
 			return { cellsAroundViewport: constrainedCells, renderMask: VirtualizedList._createRenderMask(newProps, constrainedCells), firstVisibleItemKey: newFirstVisibleItemKey, pendingScrollUpdateCount: maintainVisibleContentPositionAdjustment != null ? prevState.pendingScrollUpdateCount + 1 : prevState.pendingScrollUpdateCount };
 		}
 		_pushCells(cells,stickyHeaderIndices,stickyIndicesFromProps,first,last,inversionStyle) {
 			const { CellRendererComponent:CellRendererComponent, ItemSeparatorComponent:ItemSeparatorComponent, ListHeaderComponent:ListHeaderComponent, ListItemComponent:ListItemComponent, data:data, debug:debug, getItem:getItem, getItemCount:getItemCount, getItemLayout:getItemLayout, horizontal:horizontal, renderItem:renderItem } = this.props;
-			stickyOffset = ListHeaderComponent ? 1 : 0;
-			end = getItemCount(data) - 1;
-			
+			const stickyOffset = ListHeaderComponent ? 1 : 0;
+			const end = getItemCount(data) - 1;
+			let prevCellKey;
 			last = Math.min(end, last);
 			for (let ii = first; ii <= last; ii++) {
-				item = getItem(data, ii);
-				key = VirtualizedList._keyExtractor(item, ii, this.props);
+				const item = getItem(data, ii);
+				const key = VirtualizedList._keyExtractor(item, ii, this.props);
 				this._indicesToKeys.set(ii, key);
 				if (stickyIndicesFromProps.has(ii + stickyOffset)) {
 					stickyHeaderIndices.push(cells.length);
 				}
-				shouldListenForLayout = getItemLayout == null || debug || this._fillRateHelper.enabled();
+				const shouldListenForLayout = getItemLayout == null || debug || this._fillRateHelper.enabled();
 				cells.push(/* @__PURE__ */ React.createElement(CellRenderer, { CellRendererComponent: CellRendererComponent, ItemSeparatorComponent: ii < end ? ItemSeparatorComponent : undefined, ListItemComponent: ListItemComponent, cellKey: key, horizontal: horizontal, index: ii, inversionStyle: inversionStyle, item: item, key: key, prevCellKey: prevCellKey, onUpdateSeparators: this._onUpdateSeparators, onCellFocusCapture: this._onCellFocusCapture, onUnmount: this._onCellUnmount, ref: (ref) => {
 					this._cellRefs[key] = ref;
 				}, renderItem: renderItem, ...(shouldListenForLayout && { onCellLayout: this._onCellLayout }) }));
@@ -39627,20 +39627,20 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			}
 		}
 		static _constrainToItemCount(cells,props) {
-			itemCount = props.getItemCount(props.data);
-			lastPossibleCellIndex = itemCount - 1;
-			maxToRenderPerBatch = maxToRenderPerBatchOrDefault(props.maxToRenderPerBatch);
-			maxFirst = Math.max(0, lastPossibleCellIndex - maxToRenderPerBatch);
+			const itemCount = props.getItemCount(props.data);
+			const lastPossibleCellIndex = itemCount - 1;
+			const maxToRenderPerBatch = maxToRenderPerBatchOrDefault(props.maxToRenderPerBatch);
+			const maxFirst = Math.max(0, lastPossibleCellIndex - maxToRenderPerBatch);
 			return { first: clamp(0, cells.first, maxFirst), last: Math.min(lastPossibleCellIndex, cells.last) };
 		}
 		_onUpdateSeparators = (keys, newProps) => {
 			keys.forEach((key) => {
-				ref = key != null && this._cellRefs[key];
+				const ref = key != null && this._cellRefs[key];
 				ref && ref.updateSeparatorProps(newProps);
 			});
 		};
 		_isNestedWithSameOrientation() {
-			nestedContext = this.context;
+			const nestedContext = this.context;
 			return !!(nestedContext && !!nestedContext.horizontal === horizontalOrDefault(this.props.horizontal));
 		}
 		_getSpacerKey = (isVertical) => isVertical ? "height" : "width";
@@ -39648,7 +39648,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			if (props.keyExtractor != null) {
 				return props.keyExtractor(item, index);
 			}
-			key = keyExtractor$3(item, index);
+			const key = keyExtractor$3(item, index);
 			if (key === String(index)) {
 				_usedIndexForKey = true;
 				if (item.type && item.type.displayName) {
@@ -39658,7 +39658,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			return key;
 		}
 		_renderEmptyComponent(element,inversionStyle) {
-			isFragment = element.type === React$37.Fragment;
+			const isFragment = element.type === React$37.Fragment;
 			if (isFragment) {
 				return element;
 			}
@@ -39673,40 +39673,40 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			this._checkProps(this.props);
 			const { ListEmptyComponent:ListEmptyComponent, ListFooterComponent:ListFooterComponent, ListHeaderComponent:ListHeaderComponent } = this.props;
 			const { data:data, horizontal:horizontal } = this.props;
-			inversionStyle = this.props.inverted ? horizontalOrDefault(this.props.horizontal) ? styles$11.horizontallyInverted : styles$11.verticallyInverted : null;
-			cells = [];
-			stickyIndicesFromProps = new Set(this.props.stickyHeaderIndices);
-			stickyHeaderIndices = [];
+			const inversionStyle = this.props.inverted ? horizontalOrDefault(this.props.horizontal) ? styles$11.horizontallyInverted : styles$11.verticallyInverted : null;
+			const cells = [];
+			const stickyIndicesFromProps = new Set(this.props.stickyHeaderIndices);
+			const stickyHeaderIndices = [];
 			if (ListHeaderComponent) {
 				if (stickyIndicesFromProps.has(0)) {
 					stickyHeaderIndices.push(0);
 				}
-				element = isValidElement$3(ListHeaderComponent) ? (ListHeaderComponent) : (/* @__PURE__ */ React.createElement(ListHeaderComponent, null));
+				const element = isValidElement$3(ListHeaderComponent) ? (ListHeaderComponent) : (/* @__PURE__ */ React.createElement(ListHeaderComponent, null));
 				cells.push(/* @__PURE__ */ React.createElement(VirtualizedListCellContextProvider, { cellKey: this._getCellKey() + "-header", key: "$header" }, /* @__PURE__ */ React.createElement(View$17, { collapsable: false, onLayout: this._onLayoutHeader, style: StyleSheet$13.compose(inversionStyle, this.props.ListHeaderComponentStyle) }, element)));
 			}
-			itemCount = this.props.getItemCount(data);
+			const itemCount = this.props.getItemCount(data);
 			if (itemCount === 0 && ListEmptyComponent) {
-				element = (isValidElement$3(ListEmptyComponent) ? (ListEmptyComponent) : (/* @__PURE__ */ React.createElement(ListEmptyComponent, null)));
+				const element = (isValidElement$3(ListEmptyComponent) ? (ListEmptyComponent) : (/* @__PURE__ */ React.createElement(ListEmptyComponent, null)));
 				cells.push(/* @__PURE__ */ React.createElement(VirtualizedListCellContextProvider, { cellKey: this._getCellKey() + "-empty", key: "$empty" }, this._renderEmptyComponent(element, inversionStyle)));
 			}
 			if (itemCount > 0) {
 				_usedIndexForKey = false;
 				_keylessItemComponentName = "";
-				spacerKey = this._getSpacerKey(!horizontal);
-				renderRegions = this.state.renderMask.enumerateRegions();
-				lastRegion = renderRegions[renderRegions.length - 1];
-				lastSpacer = lastRegion?.isSpacer ? lastRegion : null;
+				const spacerKey = this._getSpacerKey(!horizontal);
+				const renderRegions = this.state.renderMask.enumerateRegions();
+				const lastRegion = renderRegions[renderRegions.length - 1];
+				const lastSpacer = lastRegion?.isSpacer ? lastRegion : null;
 				for (const section of renderRegions) {
 					if (section.isSpacer) {
 						if (this.props.disableVirtualization) {
 							continue;
 						}
-						isLastSpacer = section === lastSpacer;
-						constrainToMeasured = isLastSpacer && !this.props.getItemLayout;
-						last = constrainToMeasured ? clamp(section.first - 1, section.last, this._listMetrics.getHighestMeasuredCellIndex()) : section.last;
-						firstMetrics = this._listMetrics.getCellMetricsApprox(section.first, this.props);
-						lastMetrics = this._listMetrics.getCellMetricsApprox(last, this.props);
-						spacerSize = lastMetrics.offset + lastMetrics.length - firstMetrics.offset;
+						const isLastSpacer = section === lastSpacer;
+						const constrainToMeasured = isLastSpacer && !this.props.getItemLayout;
+						const last = constrainToMeasured ? clamp(section.first - 1, section.last, this._listMetrics.getHighestMeasuredCellIndex()) : section.last;
+						const firstMetrics = this._listMetrics.getCellMetricsApprox(section.first, this.props);
+						const lastMetrics = this._listMetrics.getCellMetricsApprox(last, this.props);
+						const spacerSize = lastMetrics.offset + lastMetrics.length - firstMetrics.offset;
 						cells.push(/* @__PURE__ */ React.createElement(View$17, { key: `$spacer-${section.first}`, style: { [spacerKey]: spacerSize } }));
 					} else {
 						this._pushCells(cells, stickyHeaderIndices, stickyIndicesFromProps, section.first, section.last, inversionStyle);
@@ -39718,15 +39718,15 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				}
 			}
 			if (ListFooterComponent) {
-				element = isValidElement$3(ListFooterComponent) ? (ListFooterComponent) : (/* @__PURE__ */ React.createElement(ListFooterComponent, null));
+				const element = isValidElement$3(ListFooterComponent) ? (ListFooterComponent) : (/* @__PURE__ */ React.createElement(ListFooterComponent, null));
 				cells.push(/* @__PURE__ */ React.createElement(VirtualizedListCellContextProvider, { cellKey: this._getFooterCellKey(), key: "$footer" }, /* @__PURE__ */ React.createElement(View$17, { onLayout: this._onLayoutFooter, style: StyleSheet$13.compose(inversionStyle, this.props.ListFooterComponentStyle) }, element)));
 			}
-			scrollProps = { ...this.props, onContentSizeChange: this._onContentSizeChange, onLayout: this._onLayout, onScroll: this._onScroll, onScrollBeginDrag: this._onScrollBeginDrag, onScrollEndDrag: this._onScrollEndDrag, onMomentumScrollBegin: this._onMomentumScrollBegin, onMomentumScrollEnd: this._onMomentumScrollEnd, scrollEventThrottle: this.props.scrollEventThrottle ?? 0.0001, invertStickyHeaders: this.props.invertStickyHeaders !== undefined ? this.props.invertStickyHeaders : this.props.inverted, stickyHeaderIndices, style: inversionStyle ? [inversionStyle, this.props.style] : this.props.style, isInvertedVirtualizedList: this.props.inverted, maintainVisibleContentPosition: this.props.maintainVisibleContentPosition != null ? { ...this.props.maintainVisibleContentPosition, minIndexForVisible: this.props.maintainVisibleContentPosition.minIndexForVisible + (this.props.ListHeaderComponent ? 1 : 0) } : undefined };
+			const scrollProps = { ...this.props, onContentSizeChange: this._onContentSizeChange, onLayout: this._onLayout, onScroll: this._onScroll, onScrollBeginDrag: this._onScrollBeginDrag, onScrollEndDrag: this._onScrollEndDrag, onMomentumScrollBegin: this._onMomentumScrollBegin, onMomentumScrollEnd: this._onMomentumScrollEnd, scrollEventThrottle: this.props.scrollEventThrottle ?? 0.0001, invertStickyHeaders: this.props.invertStickyHeaders !== undefined ? this.props.invertStickyHeaders : this.props.inverted, stickyHeaderIndices, style: inversionStyle ? [inversionStyle, this.props.style] : this.props.style, isInvertedVirtualizedList: this.props.inverted, maintainVisibleContentPosition: this.props.maintainVisibleContentPosition != null ? { ...this.props.maintainVisibleContentPosition, minIndexForVisible: this.props.maintainVisibleContentPosition.minIndexForVisible + (this.props.ListHeaderComponent ? 1 : 0) } : undefined };
 			this._hasMore = this.state.cellsAroundViewport.last < itemCount - 1;
-			innerRet = (/* @__PURE__ */ React.createElement(VirtualizedListContextProvider, { value: { cellKey: null, getScrollMetrics: this._getScrollMetrics, horizontal: horizontalOrDefault(this.props.horizontal), getOutermostParentListRef: this._getOutermostParentListRef, registerAsNestedChild: this._registerAsNestedChild, unregisterAsNestedChild: this._unregisterAsNestedChild } }, cloneElement$1((this.props.renderScrollComponent || this._defaultRenderScrollComponent)(scrollProps), { ref: this._captureScrollRef }, cells)));
-			ret = innerRet;
+			const innerRet = (/* @__PURE__ */ React.createElement(VirtualizedListContextProvider, { value: { cellKey: null, getScrollMetrics: this._getScrollMetrics, horizontal: horizontalOrDefault(this.props.horizontal), getOutermostParentListRef: this._getOutermostParentListRef, registerAsNestedChild: this._registerAsNestedChild, unregisterAsNestedChild: this._unregisterAsNestedChild } }, cloneElement$1((this.props.renderScrollComponent || this._defaultRenderScrollComponent)(scrollProps), { ref: this._captureScrollRef }, cells)));
+			let ret = innerRet;
 			if (false) {
-				ret = (/* @__PURE__ */ React.createElement(__ns_174_1.ScrollView.Context.Consumer, null, (scrollContext) => {
+				ret = (/* @__PURE__ */ React.createElement(__ns_337_1.ScrollView.Context.Consumer, null, (scrollContext) => {
 					if (scrollContext != null && !scrollContext.horizontal === !horizontalOrDefault(this.props.horizontal) && !this._hasWarned.nesting && this.context == null && this.props.scrollEnabled !== false) {
 						console.error("VirtualizedLists should never be nested inside plain ScrollViews with the same " + "orientation because it can break windowing and other functionality - use another " + "VirtualizedList-backed container instead.");
 						this._hasWarned.nesting = true;
@@ -39747,7 +39747,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 					tuple.viewabilityHelper.resetViewableIndices();
 				});
 			}
-			hiPriInProgress = this._hiPriInProgress;
+			const hiPriInProgress = this._hiPriInProgress;
 			this._scheduleCellsToRenderUpdate();
 			if (hiPriInProgress) {
 				this._hiPriInProgress = false;
@@ -39785,19 +39785,19 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			this._fillRateHelper.computeBlankness(this.props, this.state.cellsAroundViewport, this._scrollMetrics);
 		}
 		_defaultRenderScrollComponent = (props) => {
-			onRefresh = props.onRefresh;
+			const onRefresh = props.onRefresh;
 			if (this._isNestedWithSameOrientation()) {
 				const { onContentSizeChange:onContentSizeChange, ...otherProps } = props;
 				return /* @__PURE__ */ React.createElement(View$17, { ...otherProps });
 			} else if (onRefresh) {
 				invariant$38(typeof props.refreshing === "boolean", "`refreshing` prop must be set as a boolean in order to use `onRefresh`, but got `" + JSON.stringify(props.refreshing ?? "undefined") + "`");
-				return (/* @__PURE__ */ React.createElement(__ns_174_1.ScrollView, { ...props, refreshControl: props.refreshControl == null ? (/* @__PURE__ */ React.createElement(__ns_174_1.RefreshControl, { refreshing: props.refreshing, onRefresh: onRefresh, progressViewOffset: props.progressViewOffset })) : (props.refreshControl) }));
+				return (/* @__PURE__ */ React.createElement(__ns_337_1.ScrollView, { ...props, refreshControl: props.refreshControl == null ? (/* @__PURE__ */ React.createElement(__ns_337_1.RefreshControl, { refreshing: props.refreshing, onRefresh: onRefresh, progressViewOffset: props.progressViewOffset })) : (props.refreshControl) }));
 			} else {
-				return /* @__PURE__ */ React.createElement(__ns_174_1.ScrollView, { ...props });
+				return /* @__PURE__ */ React.createElement(__ns_337_1.ScrollView, { ...props });
 			}
 		};
 		_onCellLayout = (e, cellKey, cellIndex) => {
-			layoutHasChanged = this._listMetrics.notifyCellLayout({ cellIndex, cellKey, layout: e.nativeEvent.layout, orientation: this._orientation() });
+			const layoutHasChanged = this._listMetrics.notifyCellLayout({ cellIndex, cellKey, layout: e.nativeEvent.layout, orientation: this._orientation() });
 			if (layoutHasChanged) {
 				this._scheduleCellsToRenderUpdate();
 			}
@@ -39830,8 +39830,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				this._scrollRef.measureLayout(this.context.getOutermostParentListRef().getScrollRef(), (x,y,width,height) => {
 					this._offsetFromParentVirtualizedList = this._selectOffset({ x, y });
 					this._listMetrics.notifyListContentLayout({ layout: { width, height }, orientation: this._orientation() });
-					scrollMetrics = this._convertParentScrollMetrics(this.context.getScrollMetrics());
-					metricsChanged = this._scrollMetrics.visibleLength !== scrollMetrics.visibleLength || this._scrollMetrics.offset !== scrollMetrics.offset;
+					const scrollMetrics = this._convertParentScrollMetrics(this.context.getScrollMetrics());
+					const metricsChanged = this._scrollMetrics.visibleLength !== scrollMetrics.visibleLength || this._scrollMetrics.offset !== scrollMetrics.offset;
 					if (metricsChanged) {
 						this._scrollMetrics.visibleLength = scrollMetrics.visibleLength;
 						this._scrollMetrics.offset = scrollMetrics.offset;
@@ -39870,20 +39870,20 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			this._headerLength = this._selectLength(e.nativeEvent.layout);
 		};
 		_renderDebugOverlay() {
-			normalize = this._scrollMetrics.visibleLength / (this._listMetrics.getContentLength() || 1);
-			framesInLayout = [];
-			itemCount = this.props.getItemCount(this.props.data);
+			const normalize = this._scrollMetrics.visibleLength / (this._listMetrics.getContentLength() || 1);
+			const framesInLayout = [];
+			const itemCount = this.props.getItemCount(this.props.data);
 			for (let ii = 0; ii < itemCount; ii++) {
-				frame = this._listMetrics.getCellMetricsApprox(ii, this.props);
+				const frame = this._listMetrics.getCellMetricsApprox(ii, this.props);
 				if (frame.isMounted) {
 					framesInLayout.push(frame);
 				}
 			}
-			windowTop = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.first, this.props).offset;
-			frameLast = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.last, this.props);
-			windowLen = frameLast.offset + frameLast.length - windowTop;
-			visTop = this._scrollMetrics.offset;
-			visLen = this._scrollMetrics.visibleLength;
+			const windowTop = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.first, this.props).offset;
+			const frameLast = this._listMetrics.getCellMetricsApprox(this.state.cellsAroundViewport.last, this.props);
+			const windowLen = frameLast.offset + frameLast.length - windowTop;
+			const visTop = this._scrollMetrics.offset;
+			const visLen = this._scrollMetrics.visibleLength;
 			return (/* @__PURE__ */ React.createElement(View$17, { style: [styles$11.debugOverlayBase, styles$11.debugOverlay] }, framesInLayout.map((f,ii) => (/* @__PURE__ */ React.createElement(View$17, { key: "f" + ii, style: [styles$11.debugOverlayBase, styles$11.debugOverlayFrame, { top: f.offset * normalize, height: f.length * normalize }] }))), /* @__PURE__ */ React.createElement(View$17, { style: [styles$11.debugOverlayBase, styles$11.debugOverlayFrameLast, { top: windowTop * normalize, height: windowLen * normalize }] }), /* @__PURE__ */ React.createElement(View$17, { style: [styles$11.debugOverlayBase, styles$11.debugOverlayFrameVis, { top: visTop * normalize, height: visLen * normalize }] })));
 		}
 		_selectLength(metrics) {
@@ -39904,19 +39904,19 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 				return;
 			}
 			const { visibleLength:visibleLength, offset:offset } = this._scrollMetrics;
-			distanceFromStart = offset;
-			distanceFromEnd = this._listMetrics.getContentLength() - visibleLength - offset;
+			let distanceFromStart = offset;
+			let distanceFromEnd = this._listMetrics.getContentLength() - visibleLength - offset;
 			if (distanceFromStart < ON_EDGE_REACHED_EPSILON) {
 				distanceFromStart = 0;
 			}
 			if (distanceFromEnd < ON_EDGE_REACHED_EPSILON) {
 				distanceFromEnd = 0;
 			}
-			DEFAULT_THRESHOLD_PX = 2;
-			startThreshold = onStartReachedThreshold != null ? onStartReachedThreshold * visibleLength : DEFAULT_THRESHOLD_PX;
-			endThreshold = onEndReachedThreshold != null ? onEndReachedThreshold * visibleLength : DEFAULT_THRESHOLD_PX;
-			isWithinStartThreshold = distanceFromStart <= startThreshold;
-			isWithinEndThreshold = distanceFromEnd <= endThreshold;
+			const DEFAULT_THRESHOLD_PX = 2;
+			const startThreshold = onStartReachedThreshold != null ? onStartReachedThreshold * visibleLength : DEFAULT_THRESHOLD_PX;
+			const endThreshold = onEndReachedThreshold != null ? onEndReachedThreshold * visibleLength : DEFAULT_THRESHOLD_PX;
+			const isWithinStartThreshold = distanceFromStart <= startThreshold;
+			const isWithinEndThreshold = distanceFromEnd <= endThreshold;
 			if (onEndReached && this.state.cellsAroundViewport.last === getItemCount(data) - 1 && isWithinEndThreshold && this._listMetrics.getContentLength() !== this._sentEndForContentLength) {
 				this._sentEndForContentLength = this._listMetrics.getContentLength();
 				onEndReached({ distanceFromEnd });
@@ -39954,10 +39954,10 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			}
 		}
 		_convertParentScrollMetrics = (metrics) => {
-			offset = metrics.offset - this._offsetFromParentVirtualizedList;
-			visibleLength = metrics.visibleLength;
-			dOffset = offset - this._scrollMetrics.offset;
-			contentLength = this._listMetrics.getContentLength();
+			const offset = metrics.offset - this._offsetFromParentVirtualizedList;
+			const visibleLength = metrics.visibleLength;
+			const dOffset = offset - this._scrollMetrics.offset;
+			const contentLength = this._listMetrics.getContentLength();
 			return { visibleLength, contentLength, offset, dOffset };
 		};
 		unstable_onScroll(e) {
@@ -39970,24 +39970,24 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			if (this.props.onScroll) {
 				this.props.onScroll(e);
 			}
-			timestamp = e.timeStamp;
-			visibleLength = this._selectLength(e.nativeEvent.layoutMeasurement);
-			contentLength = this._selectLength(e.nativeEvent.contentSize);
-			offset = this._offsetFromScrollEvent(e);
-			dOffset = offset - this._scrollMetrics.offset;
+			const timestamp = e.timeStamp;
+			let visibleLength = this._selectLength(e.nativeEvent.layoutMeasurement);
+			let contentLength = this._selectLength(e.nativeEvent.contentSize);
+			let offset = this._offsetFromScrollEvent(e);
+			let dOffset = offset - this._scrollMetrics.offset;
 			if (this._isNestedWithSameOrientation()) {
 				if (this._listMetrics.getContentLength() === 0) {
 					return;
 				}
 				({ visibleLength, contentLength, offset, dOffset } = this._convertParentScrollMetrics({ visibleLength, offset }));
 			}
-			dt = this._scrollMetrics.timestamp ? Math.max(1, timestamp - this._scrollMetrics.timestamp) : 1;
-			velocity = dOffset / dt;
+			const dt = this._scrollMetrics.timestamp ? Math.max(1, timestamp - this._scrollMetrics.timestamp) : 1;
+			const velocity = dOffset / dt;
 			if (dt > 500 && this._scrollMetrics.dt > 500 && contentLength > 5 * visibleLength && !this._hasWarned.perf) {
 				infoLog("VirtualizedList: You have a large list that is slow to update - make sure your " + "renderItem function renders components that follow React performance best practices " + "like PureComponent, shouldComponentUpdate, etc.", { dt, prevDt: this._scrollMetrics.dt, contentLength });
 				this._hasWarned.perf = true;
 			}
-			zoomScale = e.nativeEvent.zoomScale < 0 ? 1 : e.nativeEvent.zoomScale;
+			const zoomScale = e.nativeEvent.zoomScale < 0 ? 1 : e.nativeEvent.zoomScale;
 			this._scrollMetrics = { dt, dOffset, offset, timestamp, velocity, visibleLength, zoomScale };
 			if (this.state.pendingScrollUpdateCount > 0) {
 				this.setState((state) => ({ pendingScrollUpdateCount: state.pendingScrollUpdateCount - 1 }));
@@ -40033,16 +40033,16 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		_shouldRenderWithPriority() {
 			const { first:first, last:last } = this.state.cellsAroundViewport;
 			const { offset:offset, visibleLength:visibleLength, velocity:velocity } = this._scrollMetrics;
-			itemCount = this.props.getItemCount(this.props.data);
-			hiPri = false;
-			onStartReachedThreshold = onStartReachedThresholdOrDefault(this.props.onStartReachedThreshold);
-			onEndReachedThreshold = onEndReachedThresholdOrDefault(this.props.onEndReachedThreshold);
+			const itemCount = this.props.getItemCount(this.props.data);
+			let hiPri = false;
+			const onStartReachedThreshold = onStartReachedThresholdOrDefault(this.props.onStartReachedThreshold);
+			const onEndReachedThreshold = onEndReachedThresholdOrDefault(this.props.onEndReachedThreshold);
 			if (first > 0) {
-				distTop = offset - this._listMetrics.getCellMetricsApprox(first, this.props).offset;
+				const distTop = offset - this._listMetrics.getCellMetricsApprox(first, this.props).offset;
 				hiPri = distTop < 0 || (velocity < -2 && distTop < getScrollingThreshold(onStartReachedThreshold, visibleLength));
 			}
 			if (!hiPri && last >= 0 && last < itemCount - 1) {
-				distBottom = this._listMetrics.getCellMetricsApprox(last, this.props).offset - (offset + visibleLength);
+				const distBottom = this._listMetrics.getCellMetricsApprox(last, this.props).offset - (offset + visibleLength);
 				hiPri = distBottom < 0 || (velocity > 2 && distBottom < getScrollingThreshold(onEndReachedThreshold, visibleLength));
 			}
 			return hiPri;
@@ -40097,8 +40097,8 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		_updateCellsToRender = () => {
 			this._updateViewableItems(this.props, this.state.cellsAroundViewport);
 			this.setState((state,props) => {
-				cellsAroundViewport = this._adjustCellsAroundViewport(props, state.cellsAroundViewport, state.pendingScrollUpdateCount);
-				renderMask = VirtualizedList._createRenderMask(props, cellsAroundViewport, this._getNonViewportRenderRegions(props));
+				const cellsAroundViewport = this._adjustCellsAroundViewport(props, state.cellsAroundViewport, state.pendingScrollUpdateCount);
+				const renderMask = VirtualizedList._createRenderMask(props, cellsAroundViewport, this._getNonViewportRenderRegions(props));
 				if (cellsAroundViewport.first === state.cellsAroundViewport.first && cellsAroundViewport.last === state.cellsAroundViewport.last && renderMask.equals(state.renderMask)) {
 					return null;
 				}
@@ -40107,7 +40107,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 		};
 		_createViewToken = (index, isViewable, props) => {
 			const { data:data, getItem:getItem } = props;
-			item = getItem(data, index);
+			const item = getItem(data, index);
 			return { index, item, key: VirtualizedList._keyExtractor(item, index, props), isViewable };
 		};
 		__getListMetrics() {
@@ -40117,20 +40117,20 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 			if (!(this._lastFocusedCellKey && this._cellRefs[this._lastFocusedCellKey])) {
 				return [];
 			}
-			lastFocusedCellRenderer = this._cellRefs[this._lastFocusedCellKey];
-			focusedCellIndex = lastFocusedCellRenderer.props.index;
-			itemCount = props.getItemCount(props.data);
+			const lastFocusedCellRenderer = this._cellRefs[this._lastFocusedCellKey];
+			const focusedCellIndex = lastFocusedCellRenderer.props.index;
+			const itemCount = props.getItemCount(props.data);
 			if (focusedCellIndex >= itemCount || VirtualizedList._getItemKey(props, focusedCellIndex) !== this._lastFocusedCellKey) {
 				return [];
 			}
-			first = focusedCellIndex;
-			heightOfCellsBeforeFocused = 0;
+			let first = focusedCellIndex;
+			let heightOfCellsBeforeFocused = 0;
 			for (let i = first - 1; i >= 0 && heightOfCellsBeforeFocused < this._scrollMetrics.visibleLength; i--) {
 				first--;
 				heightOfCellsBeforeFocused += this._listMetrics.getCellMetricsApprox(i, props).length;
 			}
-			last = focusedCellIndex;
-			heightOfCellsAfterFocused = 0;
+			let last = focusedCellIndex;
+			let heightOfCellsAfterFocused = 0;
 			for (let i = last + 1; i < itemCount && heightOfCellsAfterFocused < this._scrollMetrics.visibleLength; i++) {
 				last++;
 				heightOfCellsAfterFocused += this._listMetrics.getCellMetricsApprox(i, props).length;
@@ -40154,7 +40154,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 
 // --- VirtualizedSectionList.js ---
 var exports__react_native_virtualized_lists_Lists_VirtualizedSectionList = {};
-var invariant$39, React$38, useEffect$4, useState$2, VirtualizedSectionList, VirtualizedSectionListComponent, __ns_175_0;
+var invariant$39, React$38, useEffect$4, useState$2, VirtualizedSectionList, VirtualizedSectionListComponent, __ns_338_0;
 function ItemWithSeparator(props) {
 	const { LeadingSeparatorComponent:LeadingSeparatorComponent, SeparatorComponent:SeparatorComponent, cellKey:cellKey, prevCellKey:prevCellKey, setSelfHighlightCallback:setSelfHighlightCallback, updateHighlightFor:updateHighlightFor, setSelfUpdatePropsCallback:setSelfUpdatePropsCallback, updatePropsFor:updatePropsFor, item:item, index:index, section:section, inverted:inverted } = props;
 	const [leadingSeparatorHiglighted, setLeadingSeparatorHighlighted] = useState$2(false);
@@ -40207,7 +40207,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 	"VirtualizedSectionList.js"() {
 	init__react_native_virtualized_lists_Lists_VirtualizedList();
 	init__react_native_virtualized_lists_Lists_VirtualizeUtils();
-	__ns_175_0 = __toESM(require_react_index());
+	__ns_338_0 = __toESM(require_react_index());
 		
 	
 	invariant$39=__toESM(require_invariant_browser()).default;
@@ -40215,20 +40215,20 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 	({useEffect:useEffect$4,useState:useState$2}=require_react_index());
 	VirtualizedSectionList = class VirtualizedSectionList extends React$38.PureComponent {
 		scrollToLocation(params) {
-			index = params.itemIndex;
+			let index = params.itemIndex;
 			for (let i = 0; i < params.sectionIndex; i++) {
 				index += this.props.getItemCount(this.props.sections[i].data) + 2;
 			}
-			viewOffset = params.viewOffset || 0;
+			let viewOffset = params.viewOffset || 0;
 			if (this._listRef == null) {
 				return;
 			}
-			listRef = this._listRef;
+			const listRef = this._listRef;
 			if (params.itemIndex > 0 && this.props.stickySectionHeadersEnabled) {
-				frame = listRef.__getListMetrics().getCellMetricsApprox(index - params.itemIndex, listRef.props);
+				const frame = listRef.__getListMetrics().getCellMetricsApprox(index - params.itemIndex, listRef.props);
 				viewOffset += frame.length;
 			}
-			toIndexParams = { ...params, viewOffset, index };
+			const toIndexParams = { ...params, viewOffset, index };
 			this._listRef.scrollToIndex(toIndexParams);
 		}
 		getListRef() {
@@ -40236,9 +40236,9 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 		}
 		render() {
 			const { ItemSeparatorComponent:ItemSeparatorComponent, SectionSeparatorComponent:SectionSeparatorComponent, renderItem:_renderItem, renderSectionFooter:renderSectionFooter, renderSectionHeader:renderSectionHeader, sections:_sections, stickySectionHeadersEnabled:stickySectionHeadersEnabled, ...passThroughProps } = this.props;
-			listHeaderOffset = this.props.ListHeaderComponent ? 1 : 0;
-			stickyHeaderIndices = this.props.stickySectionHeadersEnabled ? [] : undefined;
-			itemCount = 0;
+			const listHeaderOffset = this.props.ListHeaderComponent ? 1 : 0;
+			const stickyHeaderIndices = this.props.stickySectionHeadersEnabled ? [] : undefined;
+			let itemCount = 0;
 			for (const section of this.props.sections) {
 				if (stickyHeaderIndices != null) {
 					stickyHeaderIndices.push(itemCount + listHeaderOffset);
@@ -40246,18 +40246,18 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 				itemCount += 2;
 				itemCount += this.props.getItemCount(section.data);
 			}
-			renderItem = this._renderItem(itemCount);
+			const renderItem = this._renderItem(itemCount);
 			return (/* @__PURE__ */ React.createElement(VirtualizedList, { ...passThroughProps, keyExtractor: this._keyExtractor, stickyHeaderIndices: stickyHeaderIndices, renderItem: renderItem, data: this.props.sections, getItem: (sections,index) => this._getItem(this.props, sections, index), getItemCount: () => itemCount, onViewableItemsChanged: this.props.onViewableItemsChanged ? this._onViewableItemsChanged : undefined, ref: this._captureRef }));
 		}
 		_getItem(props,sections,index) {
 			if (!sections) {
 				return null;
 			}
-			itemIdx = index - 1;
+			let itemIdx = index - 1;
 			for (let i = 0; i < sections.length; i++) {
-				section = sections[i];
-				sectionData = section.data;
-				itemCount = props.getItemCount(sectionData);
+				const section = sections[i];
+				const sectionData = section.data;
+				const itemCount = props.getItemCount(sectionData);
 				if (itemIdx === -1 || itemIdx === itemCount) {
 					return section;
 				} else if (itemIdx < itemCount) {
@@ -40269,16 +40269,16 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 			return null;
 		}
 		_keyExtractor = (item, index) => {
-			info = this._subExtractor(index);
+			const info = this._subExtractor(index);
 			return (info && info.key) || String(index);
 		};
 		_subExtractor(index) {
-			itemIndex = index;
+			let itemIndex = index;
 			const { getItem:getItem, getItemCount:getItemCount, keyExtractor:keyExtractor, sections:sections } = this.props;
 			for (let i = 0; i < sections.length; i++) {
-				section = sections[i];
-				sectionData = section.data;
-				key = section.key || String(i);
+				const section = sections[i];
+				const sectionData = section.data;
+				const key = section.key || String(i);
 				itemIndex -= 1;
 				if (itemIndex >= getItemCount(sectionData) + 1) {
 					itemIndex -= getItemCount(sectionData) + 1;
@@ -40287,34 +40287,34 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 				} else if (itemIndex === getItemCount(sectionData)) {
 					return { section, key: key + ":footer", index: null, header: false, trailingSection: sections[i + 1] };
 				} else {
-					extractor = section.keyExtractor || keyExtractor || keyExtractor$3;
+					const extractor = section.keyExtractor || keyExtractor || keyExtractor$3;
 					return { section, key: key + ":" + extractor(getItem(sectionData, itemIndex), itemIndex), index: itemIndex, leadingItem: getItem(sectionData, itemIndex - 1), leadingSection: sections[i - 1], trailingItem: getItem(sectionData, itemIndex + 1), trailingSection: sections[i + 1] };
 				}
 			}
 		}
 		_convertViewable = (viewable) => {
 			invariant$39(viewable.index != null, "Received a broken ViewToken");
-			info = this._subExtractor(viewable.index);
+			const info = this._subExtractor(viewable.index);
 			if (!info) {
 				return null;
 			}
-			keyExtractorWithNullableIndex = info.section.keyExtractor;
-			keyExtractorWithNonNullableIndex = this.props.keyExtractor || keyExtractor$3;
-			key = keyExtractorWithNullableIndex != null ? keyExtractorWithNullableIndex(viewable.item, info.index) : keyExtractorWithNonNullableIndex(viewable.item, info.index ?? 0);
+			const keyExtractorWithNullableIndex = info.section.keyExtractor;
+			const keyExtractorWithNonNullableIndex = this.props.keyExtractor || keyExtractor$3;
+			const key = keyExtractorWithNullableIndex != null ? keyExtractorWithNullableIndex(viewable.item, info.index) : keyExtractorWithNonNullableIndex(viewable.item, info.index ?? 0);
 			return { ...viewable, index: info.index, key, section: info.section };
 		};
 		_onViewableItemsChanged = ({ viewableItems:viewableItems, changed:changed }) => {
-			onViewableItemsChanged = this.props.onViewableItemsChanged;
+			const onViewableItemsChanged = this.props.onViewableItemsChanged;
 			if (onViewableItemsChanged != null) {
 				onViewableItemsChanged({ viewableItems: viewableItems.map(this._convertViewable, this).filter(Boolean), changed: changed.map(this._convertViewable, this).filter(Boolean) });
 			}
 		};
 		_renderItem = (listItemCount) => ({ item:item, index:index }) => {
-			info = this._subExtractor(index);
+			const info = this._subExtractor(index);
 			if (!info) {
 				return null;
 			}
-			infoIndex = info.index;
+			const infoIndex = info.index;
 			if (infoIndex == null) {
 				const { section:section } = info;
 				if (info.header === true) {
@@ -40325,20 +40325,20 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 					return renderSectionFooter ? renderSectionFooter({ section }) : null;
 				}
 			} else {
-				renderItem = info.section.renderItem || this.props.renderItem;
-				SeparatorComponent = this._getSeparatorComponent(index, info, listItemCount);
+				const renderItem = info.section.renderItem || this.props.renderItem;
+				const SeparatorComponent = this._getSeparatorComponent(index, info, listItemCount);
 				invariant$39(renderItem, "no renderItem!");
 				return (/* @__PURE__ */ React.createElement(ItemWithSeparator, { SeparatorComponent: SeparatorComponent, LeadingSeparatorComponent: infoIndex === 0 ? this.props.SectionSeparatorComponent : undefined, cellKey: info.key, index: infoIndex, item: item, leadingItem: info.leadingItem, leadingSection: info.leadingSection, prevCellKey: (this._subExtractor(index - 1) || {}).key, setSelfHighlightCallback: this._setUpdateHighlightFor, setSelfUpdatePropsCallback: this._setUpdatePropsFor, updateHighlightFor: this._updateHighlightFor, updatePropsFor: this._updatePropsFor, renderItem: renderItem, section: info.section, trailingItem: info.trailingItem, trailingSection: info.trailingSection, inverted: !!this.props.inverted }));
 			}
 		};
 		_updatePropsFor = (cellKey, value) => {
-			updateProps = this._updatePropsMap[cellKey];
+			const updateProps = this._updatePropsMap[cellKey];
 			if (updateProps != null) {
 				updateProps(value);
 			}
 		};
 		_updateHighlightFor = (cellKey, value) => {
-			updateHighlight = this._updateHighlightMap[cellKey];
+			const updateHighlight = this._updateHighlightMap[cellKey];
 			if (updateHighlight != null) {
 				updateHighlight(value);
 			}
@@ -40362,10 +40362,10 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 			if (!info) {
 				return null;
 			}
-			ItemSeparatorComponent = info.section.ItemSeparatorComponent || this.props.ItemSeparatorComponent;
+			const ItemSeparatorComponent = info.section.ItemSeparatorComponent || this.props.ItemSeparatorComponent;
 			const { SectionSeparatorComponent:SectionSeparatorComponent } = this.props;
-			isLastItemInList = index === listItemCount - 1;
-			isLastItemInSection = info.index === this.props.getItemCount(info.section.data) - 1;
+			const isLastItemInList = index === listItemCount - 1;
+			const isLastItemInSection = info.index === this.props.getItemCount(info.section.data) - 1;
 			if (SectionSeparatorComponent && isLastItemInSection) {
 				return SectionSeparatorComponent;
 			}
@@ -40404,7 +40404,7 @@ var init__react_native_virtualized_lists_index = __esm({
 	}, get VirtualizedSectionList() {
 		return (init__react_native_virtualized_lists_Lists_VirtualizedSectionList(), __toCommonJS(exports__react_native_virtualized_lists_Lists_VirtualizedSectionList)).default;
 	}, get VirtualizedListContextResetter() {
-		VirtualizedListContext = (init__react_native_virtualized_lists_Lists_VirtualizedListContext(), __toCommonJS(exports__react_native_virtualized_lists_Lists_VirtualizedListContext));
+		const VirtualizedListContext = (init__react_native_virtualized_lists_Lists_VirtualizedListContext(), __toCommonJS(exports__react_native_virtualized_lists_Lists_VirtualizedListContext));
 		return VirtualizedListContext.VirtualizedListContextResetter;
 	}, get ViewabilityHelper() {
 		return (init__react_native_virtualized_lists_Lists_ViewabilityHelper(), __toCommonJS(exports__react_native_virtualized_lists_Lists_ViewabilityHelper)).default;
@@ -40589,7 +40589,7 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 		};
 		_checkProps(props) {
 			const { getItem:getItem, getItemCount:getItemCount, horizontal:horizontal, columnWrapperStyle:columnWrapperStyle, onViewableItemsChanged:onViewableItemsChanged, viewabilityConfigCallbackPairs:viewabilityConfigCallbackPairs } = props;
-			numColumns = numColumnsOrDefault(this.props.numColumns);
+			const numColumns = numColumnsOrDefault(this.props.numColumns);
 			invariant$40(!getItem && !getItemCount, "FlatList does not support custom data formats.");
 			if (numColumns > 1) {
 				invariant$40(!horizontal, "numColumns does not support horizontal.");
@@ -40599,13 +40599,13 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 			invariant$40(!(onViewableItemsChanged && viewabilityConfigCallbackPairs), "FlatList does not support setting both onViewableItemsChanged and " + "viewabilityConfigCallbackPairs.");
 		}
 		_getItem = (data, index) => {
-			numColumns = numColumnsOrDefault(this.props.numColumns);
+			const numColumns = numColumnsOrDefault(this.props.numColumns);
 			if (numColumns > 1) {
-				ret = [];
+				const ret = [];
 				for (let kk = 0; kk < numColumns; kk++) {
-					itemIndex = index * numColumns + kk;
+					const itemIndex = index * numColumns + kk;
 					if (itemIndex < data.length) {
-						item = data[itemIndex];
+						const item = data[itemIndex];
 						ret.push(item);
 					}
 				}
@@ -40616,15 +40616,15 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 		};
 		_getItemCount = (data) => {
 			if (data != null && isArrayLike(data)) {
-				numColumns = numColumnsOrDefault(this.props.numColumns);
+				const numColumns = numColumnsOrDefault(this.props.numColumns);
 				return numColumns > 1 ? Math.ceil(data.length / numColumns) : data.length;
 			} else {
 				return 0;
 			}
 		};
 		_keyExtractor = (items, index) => {
-			numColumns = numColumnsOrDefault(this.props.numColumns);
-			keyExtractor = this.props.keyExtractor ?? defaultKeyExtractor$3;
+			const numColumns = numColumnsOrDefault(this.props.numColumns);
+			const keyExtractor = this.props.keyExtractor ?? defaultKeyExtractor$3;
 			if (numColumns > 1) {
 				invariant$40(Array.isArray(items), "FlatList: Encountered internal consistency error, expected each item to consist of an " + "array with 1-%s columns; instead, received a single item.", numColumns);
 				return items.map((item,kk) => keyExtractor(item, index * numColumns + kk)).join(":");
@@ -40632,21 +40632,21 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 			return keyExtractor(items, index);
 		};
 		_pushMultiColumnViewable(arr,v) {
-			numColumns = numColumnsOrDefault(this.props.numColumns);
-			keyExtractor = this.props.keyExtractor ?? defaultKeyExtractor$3;
+			const numColumns = numColumnsOrDefault(this.props.numColumns);
+			const keyExtractor = this.props.keyExtractor ?? defaultKeyExtractor$3;
 			v.item.forEach((item,ii) => {
 				invariant$40(v.index != null, "Missing index!");
-				index = v.index * numColumns + ii;
+				const index = v.index * numColumns + ii;
 				arr.push({ ...v, item, key: keyExtractor(item, index), index });
 			});
 		}
 		_createOnViewableItemsChanged(onViewableItemsChanged) {
 			return (info) => {
-				numColumns = numColumnsOrDefault(this.props.numColumns);
+				const numColumns = numColumnsOrDefault(this.props.numColumns);
 				if (onViewableItemsChanged) {
 					if (numColumns > 1) {
-						changed = [];
-						viewableItems = [];
+						const changed = [];
+						const viewableItems = [];
 						info.viewableItems.forEach((v) => this._pushMultiColumnViewable(viewableItems, v));
 						info.changed.forEach((v) => this._pushMultiColumnViewable(changed, v));
 						onViewableItemsChanged({ viewableItems, changed });
@@ -40657,8 +40657,8 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 			};
 		}
 		_renderer = (ListItemComponent, renderItem, columnWrapperStyle, numColumns, extraData) => {
-			cols = numColumnsOrDefault(numColumns);
-			render = (props) => {
+			const cols = numColumnsOrDefault(numColumns);
+			const render = (props) => {
 				if (ListItemComponent) {
 					return /* @__PURE__ */ React.createElement(ListItemComponent, { ...props });
 				} else if (renderItem) {
@@ -40667,12 +40667,12 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 					return null;
 				}
 			};
-			renderProp = (info) => {
+			const renderProp = (info) => {
 				if (cols > 1) {
 					const { item:item, index:index } = info;
 					invariant$40(Array.isArray(item), "Expected array of items with numColumns > 1");
 					return (/* @__PURE__ */ React.createElement(View$44, { style: StyleSheet$14.compose(styles$12.row, columnWrapperStyle) }, item.map((it,kk) => {
-						element = render({ item: it, index: index * cols + kk, separators: info.separators });
+						const element = render({ item: it, index: index * cols + kk, separators: info.separators });
 						return element != null ? (/* @__PURE__ */ React.createElement(React$39.Fragment, { key: kk }, element)) : null;
 					})));
 				} else {
@@ -40684,7 +40684,7 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 		_memoizedRenderer = memoizeOne(this._renderer);
 		render() {
 			const { numColumns:numColumns, columnWrapperStyle:columnWrapperStyle, removeClippedSubviews:_removeClippedSubviews, strictMode:strictMode=false, ...restProps } = this.props;
-			renderer = strictMode ? this._memoizedRenderer : this._renderer;
+			const renderer = strictMode ? this._memoizedRenderer : this._renderer;
 			return (/* @__PURE__ */ React.createElement(VirtualizedList$2, { ...restProps, getItem: this._getItem, getItemCount: this._getItemCount, keyExtractor: this._keyExtractor, ref: this._captureRef, viewabilityConfigCallbackPairs: this._virtualizedListPairs, removeClippedSubviews: removeClippedSubviewsOrDefault(_removeClippedSubviews), ...renderer(this.props.ListItemComponent, this.props.renderItem, columnWrapperStyle, numColumns, this.props.extraData) }));
 		}
 	};
@@ -40878,7 +40878,7 @@ var init_react_native_Libraries_Animated_useAnimatedProps = __esm({
 
 // --- AnimatedScrollView.js ---
 var exports_react_native_Libraries_Animated_components_AnimatedScrollView = {};
-var React$45, cloneElement$2, useMemo$5, AnimatedScrollView, AnimatedScrollViewWithInvertedRefreshControl, AnimatedScrollViewWithoutInvertedRefreshControl, __ns_294_0;
+var React$45, cloneElement$2, useMemo$5, AnimatedScrollView, AnimatedScrollViewWithInvertedRefreshControl, AnimatedScrollViewWithoutInvertedRefreshControl, __ns_330_0;
 __export(exports_react_native_Libraries_Animated_components_AnimatedScrollView, {
 	"default": function() { return AnimatedScrollView; },
 });
@@ -40893,7 +40893,7 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 	init_react_native_Libraries_Utilities_useMergeRefs();
 	init_react_native_Libraries_Animated_createAnimatedComponent();
 	init_react_native_Libraries_Animated_useAnimatedProps();
-	__ns_294_0 = __toESM(require_react_index());
+	__ns_330_0 = __toESM(require_react_index());
 		
 	
 	
@@ -40918,9 +40918,9 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 			return { intermediatePropsForRefreshControl: { style: outer }, intermediatePropsForScrollView: { ...props, style: inner } };
 		}, [props]);
 		const [refreshControlAnimatedProps, refreshControlRef] = _default$96(intermediatePropsForRefreshControl);
-		refreshControl = cloneElement$2(props.refreshControl, { ...refreshControlAnimatedProps, ref: refreshControlRef });
+		const refreshControl = cloneElement$2(props.refreshControl, { ...refreshControlAnimatedProps, ref: refreshControlRef });
 		const [scrollViewAnimatedProps, scrollViewRef] = _default$96(intermediatePropsForScrollView);
-		ref = useMergeRefs(scrollViewRef, forwardedRef);
+		const ref = useMergeRefs(scrollViewRef, forwardedRef);
 		return (/* @__PURE__ */ React.createElement(_default$101, { ...scrollViewAnimatedProps, ref: ref, refreshControl: refreshControl, style: StyleSheet.compose(scrollViewAnimatedProps.style, refreshControlAnimatedProps.style) }));
 	};
 	AnimatedScrollViewWithoutInvertedRefreshControl = createAnimatedComponent(_default$101);
@@ -40952,34 +40952,34 @@ var init_react_native_Libraries_Lists_SectionList = __esm({
 			}
 		}
 		recordInteraction() {
-			listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
+			const listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
 			listRef && listRef.recordInteraction();
 		}
 		flashScrollIndicators() {
-			listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
+			const listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
 			listRef && listRef.flashScrollIndicators();
 		}
 		getScrollResponder() {
-			listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
+			const listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
 			if (listRef) {
 				return listRef.getScrollResponder();
 			}
 		}
 		getScrollableNode() {
-			listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
+			const listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
 			if (listRef) {
 				return listRef.getScrollableNode();
 			}
 		}
 		setNativeProps(props) {
-			listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
+			const listRef = this._wrapperListRef && this._wrapperListRef.getListRef();
 			if (listRef) {
 				listRef.setNativeProps(props);
 			}
 		}
 		render() {
 			const { stickySectionHeadersEnabled:_stickySectionHeadersEnabled, ...restProps } = this.props;
-			stickySectionHeadersEnabled = _stickySectionHeadersEnabled ?? Platform.OS === "ios";
+			const stickySectionHeadersEnabled = _stickySectionHeadersEnabled ?? Platform.OS === "ios";
 			return (/* @__PURE__ */ React.createElement(VirtualizedSectionList$1, { ...restProps, stickySectionHeadersEnabled: stickySectionHeadersEnabled, ref: this._captureRef, getItemCount: (items) => items.length, getItem: (items,index) => items[index] }));
 		}
 		_wrapperListRef;
@@ -41093,7 +41093,7 @@ var init_react_native_Libraries_Animated_Animated = __esm({
 
 // --- ScrollViewStickyHeader.js ---
 var exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = {};
-var React$50, cloneElement$3, useCallback$3, useEffect$5, useMemo$6, useRef$6, useState$3, ScrollViewStickyHeader, styles$13, __ns_241_0;
+var React$50, cloneElement$3, useCallback$3, useEffect$5, useMemo$6, useRef$6, useState$3, ScrollViewStickyHeader, styles$13, __ns_231_0;
 __export(exports_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader, {
 	"default": function() { return ScrollViewStickyHeader; },
 });
@@ -41104,7 +41104,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Utilities_useMergeRefs();
-	__ns_241_0 = __toESM(require_react_index());
+	__ns_231_0 = __toESM(require_react_index());
 		
 	
 	
@@ -41120,33 +41120,33 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 		const [translateY, setTranslateY] = useState$3(null);
 		const [nextHeaderLayoutY, setNextHeaderLayoutY] = useState$3(_nextHeaderLayoutY);
 		const [isFabric, setIsFabric] = useState$3(false);
-		callbackRef = useCallback$3((ref) => {
+		const callbackRef = useCallback$3((ref) => {
 			if (ref == null) {
 				return;
 			}
 			ref.setNextHeaderY = setNextHeaderLayoutY;
 			setIsFabric(isPublicInstance(ref));
 		}, []);
-		ref = useMergeRefs(callbackRef, forwardedRef);
-		offset = useMemo$6(() => hiddenOnScroll === true ? Animated$1.diffClamp(scrollAnimatedValue.interpolate({ extrapolateLeft: "clamp", inputRange: [layoutY, layoutY + 1], outputRange: [0, 1] }).interpolate({ inputRange: [0, 1], outputRange: [0, -1] }), -layoutHeight, 0) : null, [scrollAnimatedValue, layoutHeight, layoutY, hiddenOnScroll]);
+		const ref = useMergeRefs(callbackRef, forwardedRef);
+		const offset = useMemo$6(() => hiddenOnScroll === true ? Animated$1.diffClamp(scrollAnimatedValue.interpolate({ extrapolateLeft: "clamp", inputRange: [layoutY, layoutY + 1], outputRange: [0, 1] }).interpolate({ inputRange: [0, 1], outputRange: [0, -1] }), -layoutHeight, 0) : null, [scrollAnimatedValue, layoutHeight, layoutY, hiddenOnScroll]);
 		const [animatedTranslateY, setAnimatedTranslateY] = useState$3(() => {
-			inputRange = [-1, 0];
-			outputRange = [0, 0];
-			initialTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
+			const inputRange = [-1, 0];
+			const outputRange = [0, 0];
+			const initialTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
 			if (offset != null) {
 				return Animated$1.add(initialTranslateY, offset);
 			}
 			return initialTranslateY;
 		});
-		haveReceivedInitialZeroTranslateY = useRef$6(true);
-		translateYDebounceTimer = useRef$6(null);
+		const haveReceivedInitialZeroTranslateY = useRef$6(true);
+		const translateYDebounceTimer = useRef$6(null);
 		useEffect$5(() => {
 			if (translateY !== 0 && translateY != null) {
 				haveReceivedInitialZeroTranslateY.current = false;
 			}
 		}, [translateY]);
-		animatedValueListener = useCallback$3(({ value:value }) => {
-			debounceTimeout = Platform.OS === "android" ? 15 : 64;
+		const animatedValueListener = useCallback$3(({ value:value }) => {
+			const debounceTimeout = Platform.OS === "android" ? 15 : 64;
 			if (value === 0 && !haveReceivedInitialZeroTranslateY.current) {
 				haveReceivedInitialZeroTranslateY.current = true;
 				return;
@@ -41157,18 +41157,18 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 			translateYDebounceTimer.current = setTimeout(() => setTranslateY(value), debounceTimeout);
 		}, []);
 		useEffect$5(() => {
-			inputRange = [-1, 0];
-			outputRange = [0, 0];
+			const inputRange = [-1, 0];
+			const outputRange = [0, 0];
 			if (measured) {
 				if (inverted === true) {
 					if (scrollViewHeight != null) {
-						stickStartPoint = layoutY + layoutHeight - scrollViewHeight;
+						const stickStartPoint = layoutY + layoutHeight - scrollViewHeight;
 						if (stickStartPoint > 0) {
 							inputRange.push(stickStartPoint);
 							outputRange.push(0);
 							inputRange.push(stickStartPoint + 1);
 							outputRange.push(1);
-							collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight - scrollViewHeight;
+							const collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight - scrollViewHeight;
 							if (collisionPoint > stickStartPoint) {
 								inputRange.push(collisionPoint, collisionPoint + 1);
 								outputRange.push(collisionPoint - stickStartPoint, collisionPoint - stickStartPoint);
@@ -41178,7 +41178,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 				} else {
 					inputRange.push(layoutY);
 					outputRange.push(0);
-					collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight;
+					const collisionPoint = (nextHeaderLayoutY || 0) - layoutHeight;
 					if (collisionPoint >= layoutY) {
 						inputRange.push(collisionPoint, collisionPoint + 1);
 						outputRange.push(collisionPoint - layoutY, collisionPoint - layoutY);
@@ -41188,11 +41188,11 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 					}
 				}
 			}
-			newAnimatedTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
+			let newAnimatedTranslateY = scrollAnimatedValue.interpolate({ inputRange, outputRange });
 			if (offset != null) {
 				newAnimatedTranslateY = Animated$1.add(newAnimatedTranslateY, offset);
 			}
-			
+			let animatedListenerId;
 			if (isFabric) {
 				animatedListenerId = newAnimatedTranslateY.addListener(animatedValueListener);
 			}
@@ -41206,18 +41206,18 @@ var init_react_native_Libraries_Components_ScrollView_ScrollViewStickyHeader = _
 				}
 			};
 		}, [nextHeaderLayoutY, measured, layoutHeight, layoutY, scrollViewHeight, scrollAnimatedValue, inverted, offset, animatedValueListener, isFabric]);
-		_onLayout = (event) => {
+		const _onLayout = (event) => {
 			setLayoutY(event.nativeEvent.layout.y);
 			setLayoutHeight(event.nativeEvent.layout.height);
 			setMeasured(true);
 			props.onLayout(event);
-			child = React$50.Children.only(props.children);
+			const child = React$50.Children.only(props.children);
 			if (child.props.onLayout) {
 				child.props.onLayout(event);
 			}
 		};
-		child = React$50.Children.only(props.children);
-		passthroughAnimatedPropExplicitValues = isFabric && translateY != null ? { style: { transform: [{ translateY }] } } : null;
+		const child = React$50.Children.only(props.children);
+		const passthroughAnimatedPropExplicitValues = isFabric && translateY != null ? { style: { transform: [{ translateY }] } } : null;
 		return (/* @__PURE__ */ React.createElement(Animated$1.View, { collapsable: false, nativeID: props.nativeID, onLayout: _onLayout, ref: ref, style: [child.props.style, styles$13.header, { transform: [{ translateY: animatedTranslateY }] }], passthroughAnimatedPropExplicitValues: passthroughAnimatedPropExplicitValues }, cloneElement$3(child, { onLayout: undefined, style: styles$13.fill })));
 	};
 	styles$13 = StyleSheet.create({ fill: { flex: 1 }, header: { zIndex: 10 } });
@@ -41337,8 +41337,8 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			this._updateAnimatedNodeAttachment();
 		}
 		componentDidUpdate(prevProps) {
-			prevContentInsetTop = prevProps.contentInset ? prevProps.contentInset.top : 0;
-			newContentInsetTop = this.props.contentInset ? this.props.contentInset.top : 0;
+			const prevContentInsetTop = prevProps.contentInset ? prevProps.contentInset.top : 0;
+			const newContentInsetTop = this.props.contentInset ? this.props.contentInset.top : 0;
 			if (prevContentInsetTop !== newContentInsetTop) {
 				this._scrollAnimatedValue.setOffset(newContentInsetTop || 0);
 			}
@@ -41377,7 +41377,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			return this._scrollView.nativeInstance;
 		};
 		scrollTo = (options,deprecatedX,deprecatedAnimated) => {
-			
+			let x,y,animated;
 			if (typeof options === "number") {
 				console.warn("`scrollTo(y, x, animated)` is deprecated. Use `scrollTo({x: 5, y: 5, " + "animated: true})` instead.");
 				y = options;
@@ -41388,22 +41388,22 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 				x = options.x;
 				animated = options.animated;
 			}
-			component = this.getNativeScrollRef();
+			const component = this.getNativeScrollRef();
 			if (component == null) {
 				return;
 			}
 			_default$87.scrollTo(component, x || 0, y || 0, animated !== false);
 		};
 		scrollToEnd = (options) => {
-			animated = (options && options.animated) !== false;
-			component = this.getNativeScrollRef();
+			const animated = (options && options.animated) !== false;
+			const component = this.getNativeScrollRef();
 			if (component == null) {
 				return;
 			}
 			_default$87.scrollToEnd(component, animated);
 		};
 		flashScrollIndicators = () => {
-			component = this.getNativeScrollRef();
+			const component = this.getNativeScrollRef();
 			if (component == null) {
 				return;
 			}
@@ -41429,7 +41429,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			} else if (typeof animated !== "undefined") {
 				console.warn("`scrollResponderZoomTo` `animated` argument is deprecated. Use `options.animated` instead");
 			}
-			component = this.getNativeScrollRef();
+			const component = this.getNativeScrollRef();
 			if (component == null) {
 				return;
 			}
@@ -41439,12 +41439,12 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			console.warn("Error measuring text field.");
 		}
 		_inputMeasureAndScrollToKeyboard = (left, top, width, height) => {
-			keyboardScreenY = Dimensions.get("window").height;
-			scrollTextInputIntoVisibleRect = () => {
+			let keyboardScreenY = Dimensions.get("window").height;
+			const scrollTextInputIntoVisibleRect = () => {
 				if (this._keyboardMetrics != null) {
 					keyboardScreenY = this._keyboardMetrics.screenY;
 				}
-				scrollOffsetY = top - keyboardScreenY + height + this._additionalScrollOffset;
+				let scrollOffsetY = top - keyboardScreenY + height + this._additionalScrollOffset;
 				if (this._preventNegativeScrollOffset === true) {
 					scrollOffsetY = Math.max(0, scrollOffsetY);
 				}
@@ -41461,7 +41461,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			}
 		};
 		_getKeyForIndex(index,childArray) {
-			child = childArray[index];
+			const child = childArray[index];
 			return child && child.key;
 		}
 		_updateAnimatedNodeAttachment() {
@@ -41484,16 +41484,16 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			if (!stickyHeaderIndices) {
 				return;
 			}
-			childArray = React$51.Children.toArray(this.props.children);
+			const childArray = React$51.Children.toArray(this.props.children);
 			if (key !== this._getKeyForIndex(index, childArray)) {
 				return;
 			}
-			layoutY = event.nativeEvent.layout.y;
+			const layoutY = event.nativeEvent.layout.y;
 			this._headerLayoutYs.set(key, layoutY);
-			indexOfIndex = stickyHeaderIndices.indexOf(index);
-			previousHeaderIndex = stickyHeaderIndices[indexOfIndex - 1];
+			const indexOfIndex = stickyHeaderIndices.indexOf(index);
+			const previousHeaderIndex = stickyHeaderIndices[indexOfIndex - 1];
 			if (previousHeaderIndex != null) {
-				previousHeader = this._stickyHeaderRefs.get(this._getKeyForIndex(previousHeaderIndex, childArray));
+				const previousHeader = this._stickyHeaderRefs.get(this._getKeyForIndex(previousHeaderIndex, childArray));
 				previousHeader && previousHeader.setNextHeaderY && previousHeader.setNextHeaderY(layoutY);
 			}
 		}
@@ -41515,7 +41515,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 		};
 		_innerView = createRefForwarder((instance) => instance);
 		_scrollView = createRefForwarder((nativeInstance) => {
-			publicInstance = Object.assign(nativeInstance, { getScrollResponder: this.getScrollResponder, getScrollableNode: this.getScrollableNode, getInnerViewNode: this.getInnerViewNode, getInnerViewRef: this.getInnerViewRef, getNativeScrollRef: this.getNativeScrollRef, scrollTo: this.scrollTo, scrollToEnd: this.scrollToEnd, flashScrollIndicators: this.flashScrollIndicators, scrollResponderZoomTo: this.scrollResponderZoomTo, scrollResponderScrollNativeHandleToKeyboard: this.scrollResponderScrollNativeHandleToKeyboard });
+			const publicInstance = Object.assign(nativeInstance, { getScrollResponder: this.getScrollResponder, getScrollableNode: this.getScrollableNode, getInnerViewNode: this.getInnerViewNode, getInnerViewRef: this.getInnerViewRef, getNativeScrollRef: this.getNativeScrollRef, scrollTo: this.scrollTo, scrollToEnd: this.scrollToEnd, flashScrollIndicators: this.flashScrollIndicators, scrollResponderZoomTo: this.scrollResponderZoomTo, scrollResponderScrollNativeHandleToKeyboard: this.scrollResponderScrollNativeHandleToKeyboard });
 			return publicInstance;
 		});
 		scrollResponderKeyboardWillShow = (e) => {
@@ -41558,9 +41558,9 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			this.props.onScrollEndDrag && this.props.onScrollEndDrag(e);
 		};
 		_isAnimating = () => {
-			now = global.performance.now();
-			timeSinceLastMomentumScrollEnd = now - this._lastMomentumScrollEndTime;
-			isAnimating = timeSinceLastMomentumScrollEnd < IS_ANIMATING_TOUCH_START_THRESHOLD_MS || this._lastMomentumScrollEndTime < this._lastMomentumScrollBeginTime;
+			const now = global.performance.now();
+			const timeSinceLastMomentumScrollEnd = now - this._lastMomentumScrollEndTime;
+			const isAnimating = timeSinceLastMomentumScrollEnd < IS_ANIMATING_TOUCH_START_THRESHOLD_MS || this._lastMomentumScrollEndTime < this._lastMomentumScrollBeginTime;
 			return isAnimating;
 		};
 		_handleResponderGrant = (e) => {
@@ -41579,7 +41579,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 				}
 				return;
 			}
-			currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
+			const currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
 			if (currentlyFocusedTextInput != null && this.props.keyboardShouldPersistTaps !== true && this.props.keyboardShouldPersistTaps !== "always" && this._keyboardIsDismissible() && e.target !== currentlyFocusedTextInput && !this._observedScrollSinceBecomingResponder && !this._becameResponderWhileAnimating) {
 				TextInputState.blurTextInput(currentlyFocusedTextInput);
 			}
@@ -41597,7 +41597,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			if (this.props.disableScrollViewPanResponder === true) {
 				return false;
 			}
-			currentlyFocusedInput = TextInputState.currentlyFocusedInput();
+			const currentlyFocusedInput = TextInputState.currentlyFocusedInput();
 			if (this.props.keyboardShouldPersistTaps === "handled" && this._keyboardIsDismissible() && e.target !== currentlyFocusedInput) {
 				return true;
 			}
@@ -41611,7 +41611,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 				return false;
 			}
 			const { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = this.props;
-			keyboardNeverPersistTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
+			const keyboardNeverPersistTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
 			if (typeof e.target === "number") {
 				if (false) {
 					console.error("Did not expect event target to be a number. Should have been a native component");
@@ -41627,9 +41627,9 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			return false;
 		};
 		_keyboardIsDismissible = () => {
-			currentlyFocusedInput = TextInputState.currentlyFocusedInput();
-			hasFocusedTextInput = currentlyFocusedInput != null && TextInputState.isTextInput(currentlyFocusedInput);
-			softKeyboardMayBeOpen = this._keyboardMetrics != null || this._keyboardEventsAreUnreliable();
+			const currentlyFocusedInput = TextInputState.currentlyFocusedInput();
+			const hasFocusedTextInput = currentlyFocusedInput != null && TextInputState.isTextInput(currentlyFocusedInput);
+			const softKeyboardMayBeOpen = this._keyboardMetrics != null || this._keyboardEventsAreUnreliable();
 			return hasFocusedTextInput && softKeyboardMayBeOpen;
 		};
 		_softKeyboardIsDetached = () => {
@@ -41639,11 +41639,11 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			return Platform.OS === "android" && Platform.Version < 30;
 		};
 		_handleTouchEnd = (e) => {
-			nativeEvent = e.nativeEvent;
+			const nativeEvent = e.nativeEvent;
 			this._isTouching = nativeEvent.touches.length !== 0;
 			const { keyboardShouldPersistTaps:keyboardShouldPersistTaps } = this.props;
-			keyboardNeverPersistsTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
-			currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
+			const keyboardNeverPersistsTaps = !keyboardShouldPersistTaps || keyboardShouldPersistTaps === "never";
+			const currentlyFocusedTextInput = TextInputState.currentlyFocusedInput();
 			if (currentlyFocusedTextInput != null && e.target !== currentlyFocusedTextInput && this._softKeyboardIsDetached() && this._keyboardIsDismissible() && keyboardNeverPersistsTaps) {
 				TextInputState.blurTextInput(currentlyFocusedTextInput);
 			}
@@ -41661,26 +41661,26 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 			this.props.onTouchMove && this.props.onTouchMove(e);
 		};
 		render() {
-			horizontal = this.props.horizontal === true;
-			NativeScrollView = horizontal ? HScrollViewNativeComponent : VScrollViewNativeComponent;
-			NativeScrollContentView = horizontal ? HScrollContentViewNativeComponent : VScrollContentViewNativeComponent;
-			contentContainerStyle = [horizontal && styles$14.contentContainerHorizontal, this.props.contentContainerStyle];
+			const horizontal = this.props.horizontal === true;
+			const NativeScrollView = horizontal ? HScrollViewNativeComponent : VScrollViewNativeComponent;
+			const NativeScrollContentView = horizontal ? HScrollContentViewNativeComponent : VScrollContentViewNativeComponent;
+			const contentContainerStyle = [horizontal && styles$14.contentContainerHorizontal, this.props.contentContainerStyle];
 			if (false && this.props.style !== undefined) {
-				style = flattenStyle(this.props.style);
-				childLayoutProps = ["alignItems", "justifyContent"].filter((prop) => style && style[prop] !== undefined);
+				const style = flattenStyle(this.props.style);
+				const childLayoutProps = ["alignItems", "justifyContent"].filter((prop) => style && style[prop] !== undefined);
 				invariant$41(childLayoutProps.length === 0, "ScrollView child layout (" + JSON.stringify(childLayoutProps) + ") must be applied through the contentContainerStyle prop.");
 			}
-			contentSizeChangeProps = this.props.onContentSizeChange == null ? null : { onLayout: this._handleContentOnLayout };
+			const contentSizeChangeProps = this.props.onContentSizeChange == null ? null : { onLayout: this._handleContentOnLayout };
 			const { stickyHeaderIndices:stickyHeaderIndices } = this.props;
-			children = this.props.children;
+			let children = this.props.children;
 			children = React$51.Children.toArray(children);
 			if (stickyHeaderIndices != null && stickyHeaderIndices.length > 0) {
 				children = children.map((child,index) => {
-					indexOfIndex = child ? stickyHeaderIndices.indexOf(index) : -1;
+					const indexOfIndex = child ? stickyHeaderIndices.indexOf(index) : -1;
 					if (indexOfIndex > -1) {
-						key = child.key;
-						nextIndex = stickyHeaderIndices[indexOfIndex + 1];
-						StickyHeaderComponent = this.props.StickyHeaderComponent || ScrollViewStickyHeader;
+						const key = child.key;
+						const nextIndex = stickyHeaderIndices[indexOfIndex + 1];
+						const StickyHeaderComponent = this.props.StickyHeaderComponent || ScrollViewStickyHeader;
 						return (/* @__PURE__ */ React.createElement(StickyHeaderComponent, { key: key, ref: (ref) => this._setStickyHeaderRef(key, ref), nextHeaderLayoutY: this._headerLayoutYs.get(this._getKeyForIndex(nextIndex, children)), onLayout: (event) => this._onStickyHeaderLayout(index, event, key), scrollAnimatedValue: this._scrollAnimatedValue, inverted: this.props.invertStickyHeaders, hiddenOnScroll: this.props.stickyHeaderHiddenOnScroll, scrollViewHeight: this.state.layoutHeight }, child));
 					} else {
 						return child;
@@ -41688,20 +41688,20 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 				});
 			}
 			children = (/* @__PURE__ */ React.createElement(ScrollViewContext.Provider, { value: horizontal ? HORIZONTAL : VERTICAL }, children));
-			hasStickyHeaders = Array.isArray(stickyHeaderIndices) && stickyHeaderIndices.length > 0;
-			preserveChildren = this.props.maintainVisibleContentPosition != null || (Platform.OS === "android" && this.props.snapToAlignment != null);
-			contentContainer = (/* @__PURE__ */ React.createElement(NativeScrollContentView, { ...contentSizeChangeProps, ref: this._innerView.getForwardingRef(this.props.innerViewRef), style: contentContainerStyle, removeClippedSubviews: Platform.OS === "android" && hasStickyHeaders ? false : this.props.removeClippedSubviews, collapsable: false, collapsableChildren: !preserveChildren }, children));
-			alwaysBounceHorizontal = this.props.alwaysBounceHorizontal !== undefined ? this.props.alwaysBounceHorizontal : this.props.horizontal;
-			alwaysBounceVertical = this.props.alwaysBounceVertical !== undefined ? this.props.alwaysBounceVertical : !this.props.horizontal;
-			baseStyle = horizontal ? styles$14.baseHorizontal : styles$14.baseVertical;
+			const hasStickyHeaders = Array.isArray(stickyHeaderIndices) && stickyHeaderIndices.length > 0;
+			const preserveChildren = this.props.maintainVisibleContentPosition != null || (Platform.OS === "android" && this.props.snapToAlignment != null);
+			const contentContainer = (/* @__PURE__ */ React.createElement(NativeScrollContentView, { ...contentSizeChangeProps, ref: this._innerView.getForwardingRef(this.props.innerViewRef), style: contentContainerStyle, removeClippedSubviews: Platform.OS === "android" && hasStickyHeaders ? false : this.props.removeClippedSubviews, collapsable: false, collapsableChildren: !preserveChildren }, children));
+			const alwaysBounceHorizontal = this.props.alwaysBounceHorizontal !== undefined ? this.props.alwaysBounceHorizontal : this.props.horizontal;
+			const alwaysBounceVertical = this.props.alwaysBounceVertical !== undefined ? this.props.alwaysBounceVertical : !this.props.horizontal;
+			const baseStyle = horizontal ? styles$14.baseHorizontal : styles$14.baseVertical;
 			const { experimental_endDraggingSensitivityMultiplier:experimental_endDraggingSensitivityMultiplier, maintainVisibleContentPosition:maintainVisibleContentPosition, ...otherProps } = this.props;
-			props = { ...otherProps, alwaysBounceHorizontal, alwaysBounceVertical, style: StyleSheet.compose(baseStyle, this.props.style), onContentSizeChange: null, onLayout: this._handleLayout, onMomentumScrollBegin: this._handleMomentumScrollBegin, onMomentumScrollEnd: this._handleMomentumScrollEnd, onResponderGrant: this._handleResponderGrant, onResponderReject: this._handleResponderReject, onResponderRelease: this._handleResponderRelease, onResponderTerminationRequest: this._handleResponderTerminationRequest, onScrollBeginDrag: this._handleScrollBeginDrag, onScrollEndDrag: this._handleScrollEndDrag, onScrollShouldSetResponder: this._handleScrollShouldSetResponder, onStartShouldSetResponder: this._handleStartShouldSetResponder, onStartShouldSetResponderCapture: this._handleStartShouldSetResponderCapture, onTouchEnd: this._handleTouchEnd, onTouchMove: this._handleTouchMove, onTouchStart: this._handleTouchStart, onTouchCancel: this._handleTouchCancel, onScroll: this._handleScroll, endDraggingSensitivityMultiplier: experimental_endDraggingSensitivityMultiplier, scrollEventThrottle: hasStickyHeaders ? 1 : this.props.scrollEventThrottle, sendMomentumEvents: this.props.onMomentumScrollBegin || this.props.onMomentumScrollEnd ? true : false, snapToStart: this.props.snapToStart !== false, snapToEnd: this.props.snapToEnd !== false, pagingEnabled: Platform.select({ ios: this.props.pagingEnabled === true && this.props.snapToInterval == null && this.props.snapToOffsets == null, android: this.props.pagingEnabled === true || this.props.snapToInterval != null || this.props.snapToOffsets != null }), maintainVisibleContentPosition: disableMaintainVisibleContentPosition() ? undefined : this.props.maintainVisibleContentPosition };
+			const props = { ...otherProps, alwaysBounceHorizontal, alwaysBounceVertical, style: StyleSheet.compose(baseStyle, this.props.style), onContentSizeChange: null, onLayout: this._handleLayout, onMomentumScrollBegin: this._handleMomentumScrollBegin, onMomentumScrollEnd: this._handleMomentumScrollEnd, onResponderGrant: this._handleResponderGrant, onResponderReject: this._handleResponderReject, onResponderRelease: this._handleResponderRelease, onResponderTerminationRequest: this._handleResponderTerminationRequest, onScrollBeginDrag: this._handleScrollBeginDrag, onScrollEndDrag: this._handleScrollEndDrag, onScrollShouldSetResponder: this._handleScrollShouldSetResponder, onStartShouldSetResponder: this._handleStartShouldSetResponder, onStartShouldSetResponderCapture: this._handleStartShouldSetResponderCapture, onTouchEnd: this._handleTouchEnd, onTouchMove: this._handleTouchMove, onTouchStart: this._handleTouchStart, onTouchCancel: this._handleTouchCancel, onScroll: this._handleScroll, endDraggingSensitivityMultiplier: experimental_endDraggingSensitivityMultiplier, scrollEventThrottle: hasStickyHeaders ? 1 : this.props.scrollEventThrottle, sendMomentumEvents: this.props.onMomentumScrollBegin || this.props.onMomentumScrollEnd ? true : false, snapToStart: this.props.snapToStart !== false, snapToEnd: this.props.snapToEnd !== false, pagingEnabled: Platform.select({ ios: this.props.pagingEnabled === true && this.props.snapToInterval == null && this.props.snapToOffsets == null, android: this.props.pagingEnabled === true || this.props.snapToInterval != null || this.props.snapToOffsets != null }), maintainVisibleContentPosition: disableMaintainVisibleContentPosition() ? undefined : this.props.maintainVisibleContentPosition };
 			const { decelerationRate:decelerationRate } = this.props;
 			if (decelerationRate != null) {
 				props.decelerationRate = processDecelerationRate(decelerationRate);
 			}
-			refreshControl = this.props.refreshControl;
-			scrollViewRef = this._scrollView.getForwardingRef(this.props.scrollViewRef);
+			const refreshControl = this.props.refreshControl;
+			const scrollViewRef = this._scrollView.getForwardingRef(this.props.scrollViewRef);
 			if (refreshControl != null) {
 				if (Platform.OS === "ios") {
 					return (/* @__PURE__ */ React.createElement(NativeScrollView, { ...props, ref: scrollViewRef }, refreshControl, contentContainer));
@@ -41826,12 +41826,12 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 			return (this.props.onPress != null || this.props.onPressIn != null || this.props.onPressOut != null || this.props.onLongPress != null);
 		}
 		render() {
-			child = React$52.Children.only(this.props.children);
+			const child = React$52.Children.only(this.props.children);
 			const { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers();
-			accessibilityState = this.props.disabled != null ? { ...this.props.accessibilityState, disabled: this.props.disabled } : this.props.accessibilityState;
-			accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
-			accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
-			accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
+			const accessibilityState = this.props.disabled != null ? { ...this.props.accessibilityState, disabled: this.props.disabled } : this.props.accessibilityState;
+			const accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
+			const accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
+			const accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
 			return (/* @__PURE__ */ React.createElement(View$44, { accessible: this.props.accessible !== false, accessibilityLabel: accessibilityLabel, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityRole: this.props.accessibilityRole, accessibilityState: accessibilityState, accessibilityValue: accessibilityValue, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, style: StyleSheet.compose(this.props.style, this.state.extraStyles?.underlay), onLayout: this.props.onLayout, hitSlop: this.props.hitSlop, hasTVPreferredFocus: this.props.hasTVPreferredFocus, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, testID: this.props.testID, ref: this.props.hostRef, ...eventHandlersWithoutBlurAndFocus }, cloneElement$5(child, { style: StyleSheet.compose(child.props.style, this.state.extraStyles?.child) }), false ? (/* @__PURE__ */ React.createElement(PressabilityDebugView, { color: "green", hitSlop: this.props.hitSlop })) : null));
 		}
 		componentDidMount() {
@@ -41872,11 +41872,11 @@ var init_react_native_src_private_devsupport_devmenu_perfmonitor_PerformanceOver
 	PerformanceLogger$1 = (init_react_native_Libraries_Utilities_GlobalPerformanceLogger(), __toCommonJS(exports_react_native_Libraries_Utilities_GlobalPerformanceLogger)).default;
 	PerformanceOverlay = class PerformanceOverlay extends React$53.Component {
 		render() {
-			perfLogs = PerformanceLogger$1.getTimespans();
-			items = [];
+			const perfLogs = PerformanceLogger$1.getTimespans();
+			const items = [];
 			for (const key in perfLogs) {
 				if (perfLogs[key]?.totalTime) {
-					unit = key === "BundleSize" ? "b" : "ms";
+					const unit = key === "BundleSize" ? "b" : "ms";
 					items.push(/* @__PURE__ */ React.createElement(View$22, { style: styles$15.row, key: key }, /* @__PURE__ */ React.createElement(Text$4, { style: [styles$15.text, styles$15.label] }, key), /* @__PURE__ */ React.createElement(Text$4, { style: [styles$15.text, styles$15.totalTime] }, perfLogs[key].totalTime + unit)));
 				}
 			}
@@ -41992,8 +41992,8 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_ElementPro
 	StyleInspector$1 = (init_react_native_src_private_devsupport_devmenu_elementinspector_StyleInspector(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_StyleInspector)).default;
 	ElementProperties = class ElementProperties extends React$56.Component {
 		render() {
-			style = flattenStyle$9(this.props.style);
-			selection = this.props.selection;
+			const style = flattenStyle$9(this.props.style);
+			const selection = this.props.selection;
 			return (/* @__PURE__ */ React.createElement(TouchableWithoutFeedback$2, null, /* @__PURE__ */ React.createElement(View$25, { style: styles$18.info }, /* @__PURE__ */ React.createElement(View$25, { style: styles$18.breadcrumb }, this.props.hierarchy != null && mapWithSeparator$1(this.props.hierarchy, (hierarchyItem, i) => (/* @__PURE__ */ React.createElement(TouchableHighlight$1, { key: "item-" + i, style: [styles$18.breadItem, i === selection && styles$18.selected], onPress: () => this.props.setSelection(i) }, /* @__PURE__ */ React.createElement(Text$7, { style: styles$18.breadItemText }, hierarchyItem.name))), (i) => (/* @__PURE__ */ React.createElement(Text$7, { key: "sep-" + i, style: styles$18.breadSep }, "▸")))), /* @__PURE__ */ React.createElement(View$25, { style: styles$18.row }, /* @__PURE__ */ React.createElement(View$25, { style: styles$18.col }, /* @__PURE__ */ React.createElement(StyleInspector$1, { style: style })), /* @__PURE__ */ React.createElement(BoxInspector$1, { style: style, frame: this.props.frame })))));
 		}
 	};
@@ -42105,7 +42105,7 @@ var init_react_native_Libraries_WebSocket_WebSocketInterceptor = __esm({
 		};
 		isInterceptorEnabled = true;
 	}, _arrayBufferToString(data) {
-		value = base64$3.toByteArray(data).buffer;
+		const value = base64$3.toByteArray(data).buffer;
 		if (value === undefined || value === null) {
 			return "(no value)";
 		}
@@ -42193,9 +42193,9 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_XHRInterce
 						return;
 					}
 					if (this.readyState === this.HEADERS_RECEIVED) {
-						contentTypeString = this.getResponseHeader("Content-Type");
-						contentLengthString = this.getResponseHeader("Content-Length");
-						
+						const contentTypeString = this.getResponseHeader("Content-Type");
+						const contentLengthString = this.getResponseHeader("Content-Length");
+						let responseContentType,responseSize;
 						if (contentTypeString) {
 							responseContentType = contentTypeString.split(";")[0];
 						}
@@ -42299,18 +42299,18 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 			}
 			XHRInterceptor$1.setOpenCallback((method,url,xhr) => {
 				setXHRId(xhr, nextXHRId++);
-				xhrIndex = this.state.requests.length;
+				const xhrIndex = this.state.requests.length;
 				this._xhrIdMap[getXHRId(xhr)] = xhrIndex;
-				_xhr = { id: xhrIndex, type: "XMLHttpRequest", method: method, url: url };
+				const _xhr = { id: xhrIndex, type: "XMLHttpRequest", method: method, url: url };
 				this.setState({ requests: this.state.requests.concat(_xhr) }, this._indicateAdditionalRequests);
 			});
 			XHRInterceptor$1.setRequestHeaderCallback((header,value,xhr) => {
-				xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
+				const xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
 				if (xhrIndex === -1) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[xhrIndex];
+					const networkRequestInfo = requests[xhrIndex];
 					if (!networkRequestInfo.requestHeaders) {
 						networkRequestInfo.requestHeaders = {};
 					}
@@ -42319,23 +42319,23 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				});
 			});
 			XHRInterceptor$1.setSendCallback((data,xhr) => {
-				xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
+				const xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
 				if (xhrIndex === -1) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[xhrIndex];
+					const networkRequestInfo = requests[xhrIndex];
 					networkRequestInfo.dataSent = data;
 					return { requests };
 				});
 			});
 			XHRInterceptor$1.setHeaderReceivedCallback((type,size,responseHeaders,xhr) => {
-				xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
+				const xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
 				if (xhrIndex === -1) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[xhrIndex];
+					const networkRequestInfo = requests[xhrIndex];
 					networkRequestInfo.responseContentType = type;
 					networkRequestInfo.responseSize = size;
 					networkRequestInfo.responseHeaders = responseHeaders;
@@ -42343,12 +42343,12 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				});
 			});
 			XHRInterceptor$1.setResponseCallback((status,timeout,response,responseURL,responseType,xhr) => {
-				xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
+				const xhrIndex = this._getRequestIndexByXHRID(getXHRId(xhr));
 				if (xhrIndex === -1) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[xhrIndex];
+					const networkRequestInfo = requests[xhrIndex];
 					networkRequestInfo.status = status;
 					networkRequestInfo.timeout = timeout;
 					networkRequestInfo.response = response;
@@ -42364,19 +42364,19 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				return;
 			}
 			WebSocketInterceptor$1.setConnectCallback((url,protocols,options,socketId) => {
-				socketIndex = this.state.requests.length;
+				const socketIndex = this.state.requests.length;
 				this._socketIdMap[socketId] = socketIndex;
-				_webSocket = { id: socketIndex, type: "WebSocket", url: url, protocols: protocols };
+				const _webSocket = { id: socketIndex, type: "WebSocket", url: url, protocols: protocols };
 				this.setState({ requests: this.state.requests.concat(_webSocket) }, this._indicateAdditionalRequests);
 			});
 			WebSocketInterceptor$1.setCloseCallback((statusCode,closeReason,socketId) => {
-				socketIndex = this._socketIdMap[socketId];
+				const socketIndex = this._socketIdMap[socketId];
 				if (socketIndex === undefined) {
 					return;
 				}
 				if (statusCode !== null && closeReason !== null) {
 					this.setState(({ requests:requests }) => {
-						networkRequestInfo = requests[socketIndex];
+						const networkRequestInfo = requests[socketIndex];
 						networkRequestInfo.status = statusCode;
 						networkRequestInfo.closeReason = closeReason;
 						return { requests };
@@ -42384,12 +42384,12 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				}
 			});
 			WebSocketInterceptor$1.setSendCallback((data,socketId) => {
-				socketIndex = this._socketIdMap[socketId];
+				const socketIndex = this._socketIdMap[socketId];
 				if (socketIndex === undefined) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[socketIndex];
+					const networkRequestInfo = requests[socketIndex];
 					if (!networkRequestInfo.messages) {
 						networkRequestInfo.messages = "";
 					}
@@ -42398,12 +42398,12 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				});
 			});
 			WebSocketInterceptor$1.setOnMessageCallback((message,socketId) => {
-				socketIndex = this._socketIdMap[socketId];
+				const socketIndex = this._socketIdMap[socketId];
 				if (socketIndex === undefined) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[socketIndex];
+					const networkRequestInfo = requests[socketIndex];
 					if (!networkRequestInfo.messages) {
 						networkRequestInfo.messages = "";
 					}
@@ -42412,23 +42412,23 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 				});
 			});
 			WebSocketInterceptor$1.setOnCloseCallback((message,socketId) => {
-				socketIndex = this._socketIdMap[socketId];
+				const socketIndex = this._socketIdMap[socketId];
 				if (socketIndex === undefined) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[socketIndex];
+					const networkRequestInfo = requests[socketIndex];
 					networkRequestInfo.serverClose = message;
 					return { requests };
 				});
 			});
 			WebSocketInterceptor$1.setOnErrorCallback((message,socketId) => {
-				socketIndex = this._socketIdMap[socketId];
+				const socketIndex = this._socketIdMap[socketId];
 				if (socketIndex === undefined) {
 					return;
 				}
 				this.setState(({ requests:requests }) => {
-					networkRequestInfo = requests[socketIndex];
+					const networkRequestInfo = requests[socketIndex];
 					networkRequestInfo.serverError = message;
 					return { requests };
 				});
@@ -42444,16 +42444,16 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 			WebSocketInterceptor$1.disableInterception();
 		}
 		_renderItem = ({ item:item, index:index }) => {
-			tableRowViewStyle = [styles$19.tableRow, index % 2 === 1 ? styles$19.tableRowOdd : styles$19.tableRowEven, index === this.state.detailRowId && styles$19.tableRowPressed];
-			urlCellViewStyle = styles$19.urlCellView;
-			methodCellViewStyle = styles$19.methodCellView;
+			const tableRowViewStyle = [styles$19.tableRow, index % 2 === 1 ? styles$19.tableRowOdd : styles$19.tableRowEven, index === this.state.detailRowId && styles$19.tableRowPressed];
+			const urlCellViewStyle = styles$19.urlCellView;
+			const methodCellViewStyle = styles$19.methodCellView;
 			return (/* @__PURE__ */ React.createElement(TouchableHighlight$2, { onPress: () => {
 				this._pressRow(index);
 			} }, /* @__PURE__ */ React.createElement(View$26, null, /* @__PURE__ */ React.createElement(View$26, { style: tableRowViewStyle }, /* @__PURE__ */ React.createElement(View$26, { style: urlCellViewStyle }, /* @__PURE__ */ React.createElement(Text$8, { style: styles$19.cellText, numberOfLines: 1 }, item.url)), /* @__PURE__ */ React.createElement(View$26, { style: methodCellViewStyle }, /* @__PURE__ */ React.createElement(Text$8, { style: styles$19.cellText, numberOfLines: 1 }, getTypeShortName(item.type)))))));
 		};
 		_renderItemDetail(id) {
-			requestItem = this.state.requests[id];
-			details = Object.keys(requestItem).map((key) => {
+			const requestItem = this.state.requests[id];
+			const details = Object.keys(requestItem).map((key) => {
 				if (key === "id") {
 					return;
 				}
@@ -42463,10 +42463,10 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 		}
 		_indicateAdditionalRequests = () => {
 			if (this._requestsListView) {
-				distanceFromEndThreshold = LISTVIEW_CELL_HEIGHT * 2;
+				const distanceFromEndThreshold = LISTVIEW_CELL_HEIGHT * 2;
 				const { offset:offset, visibleLength:visibleLength, contentLength:contentLength } = this._requestsListViewScrollMetrics;
-				distanceFromEnd = contentLength - visibleLength - offset;
-				isCloseToEnd = distanceFromEnd <= distanceFromEndThreshold;
+				const distanceFromEnd = contentLength - visibleLength - offset;
+				const isCloseToEnd = distanceFromEnd <= distanceFromEndThreshold;
 				if (isCloseToEnd) {
 					this._requestsListView.scrollToEnd();
 				} else {
@@ -42497,7 +42497,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 			if (index === undefined) {
 				return -1;
 			}
-			xhrIndex = this._xhrIdMap[index];
+			const xhrIndex = this._xhrIdMap[index];
 			if (xhrIndex === undefined) {
 				return -1;
 			} else {
@@ -42543,7 +42543,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_InspectorP
 			return /* @__PURE__ */ React.createElement(Text$9, { style: styles$20.waitingText }, "Nothing is inspected");
 		}
 		render() {
-			
+			let contents;
 			if (this.props.inspected) {
 				contents = (/* @__PURE__ */ React.createElement(ScrollView$4, { style: styles$20.properties }, /* @__PURE__ */ React.createElement(ElementProperties$1, { style: this.props.inspected.style, frame: this.props.inspected.frame, hierarchy: this.props.hierarchy, selection: this.props.selection, setSelection: this.props.setSelection })));
 			} else if (this.props.perfing) {
@@ -42729,7 +42729,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_ReactDevTo
 
 // --- AppContainer-dev.js ---
 var exports_react_native_Libraries_ReactNative_AppContainer_dev = {};
-var React$61, useRef$7, reactDevToolsHook$2, InspectorDeferred, ReactDevToolsOverlayDeferred, AppContainer, styles$23, __ns_139_0;
+var React$61, useRef$7, reactDevToolsHook$2, InspectorDeferred, ReactDevToolsOverlayDeferred, AppContainer, styles$23, __ns_236_0;
 __export(exports_react_native_Libraries_ReactNative_AppContainer_dev, {
 	"default": function() { return AppContainer; },
 });
@@ -42743,7 +42743,7 @@ var init_react_native_Libraries_ReactNative_AppContainer_dev = __esm({
 	init_react_native_Libraries_LogBox_LogBoxNotificationContainer();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_ReactNative_RootTag();
-	__ns_139_0 = __toESM(require_react_index());
+	__ns_236_0 = __toESM(require_react_index());
 		
 	
 	
@@ -42761,27 +42761,27 @@ var init_react_native_Libraries_ReactNative_AppContainer_dev = __esm({
 		reactDevToolsHook$2.nativeStyleEditorValidAttributes = Object.keys(ReactNativeStyleAttributes);
 	}
 	InspectorDeferred = ({ inspectedViewRef:inspectedViewRef, onInspectedViewRerenderRequest:onInspectedViewRerenderRequest, reactDevToolsAgent:reactDevToolsAgent }) => {
-		Inspector = (init_react_native_src_private_devsupport_devmenu_elementinspector_Inspector(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_Inspector)).default;
+		const Inspector = (init_react_native_src_private_devsupport_devmenu_elementinspector_Inspector(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_Inspector)).default;
 		return (/* @__PURE__ */ React.createElement(Inspector, { inspectedViewRef: inspectedViewRef, onRequestRerenderApp: onInspectedViewRerenderRequest, reactDevToolsAgent: reactDevToolsAgent }));
 	};
 	ReactDevToolsOverlayDeferred = ({ inspectedViewRef:inspectedViewRef, reactDevToolsAgent:reactDevToolsAgent }) => {
-		ReactDevToolsOverlay = (init_react_native_src_private_devsupport_devmenu_elementinspector_ReactDevToolsOverlay(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_ReactDevToolsOverlay)).default;
+		const ReactDevToolsOverlay = (init_react_native_src_private_devsupport_devmenu_elementinspector_ReactDevToolsOverlay(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_ReactDevToolsOverlay)).default;
 		return (/* @__PURE__ */ React.createElement(ReactDevToolsOverlay, { inspectedViewRef: inspectedViewRef, reactDevToolsAgent: reactDevToolsAgent }));
 	};
 	AppContainer = ({ children:children, fabric:fabric, initialProps:initialProps, internal_excludeInspector:internal_excludeInspector=false, internal_excludeLogBox:internal_excludeLogBox=false, rootTag:rootTag, WrapperComponent:WrapperComponent, rootViewStyle:rootViewStyle }) => {
-		appContainerRootViewRef = useRef$7(null);
-		innerViewRef = useRef$7(null);
-		debuggingOverlayRef = useRef$7(null);
+		const appContainerRootViewRef = useRef$7(null);
+		const innerViewRef = useRef$7(null);
+		const debuggingOverlayRef = useRef$7(null);
 		useSubscribeToDebuggingOverlayRegistry(appContainerRootViewRef, debuggingOverlayRef);
 		const [key, setKey] = useState$6(0);
 		const [shouldRenderInspector, setShouldRenderInspector] = useState$6(false);
 		const [reactDevToolsAgent, setReactDevToolsAgent] = useState$6(reactDevToolsHook$2?.reactDevtoolsAgent);
 		useEffect$7(() => {
-			inspectorSubscription = null;
+			let inspectorSubscription = null;
 			if (!internal_excludeInspector) {
 				inspectorSubscription = _default$3.addListener("toggleElementInspector", () => setShouldRenderInspector((value) => !value));
 			}
-			reactDevToolsAgentListener = null;
+			let reactDevToolsAgentListener = null;
 			if (reactDevToolsHook$2 != null && reactDevToolsAgent == null) {
 				reactDevToolsAgentListener = setReactDevToolsAgent;
 				reactDevToolsHook$2.on?.("react-devtools", reactDevToolsAgentListener);
@@ -42793,11 +42793,11 @@ var init_react_native_Libraries_ReactNative_AppContainer_dev = __esm({
 				}
 			};
 		}, []);
-		innerView = (/* @__PURE__ */ React.createElement(View$44, { collapsable: reactDevToolsAgent == null && !shouldRenderInspector, pointerEvents: "box-none", key: key, style: rootViewStyle || styles$23.container, ref: innerViewRef }, children));
+		let innerView = (/* @__PURE__ */ React.createElement(View$44, { collapsable: reactDevToolsAgent == null && !shouldRenderInspector, pointerEvents: "box-none", key: key, style: rootViewStyle || styles$23.container, ref: innerViewRef }, children));
 		if (WrapperComponent != null) {
 			innerView = (/* @__PURE__ */ React.createElement(WrapperComponent, { initialProps: initialProps, fabric: fabric === true }, innerView));
 		}
-		onInspectedViewRerenderRequest = useCallback$5(() => setKey((k) => k + 1), []);
+		const onInspectedViewRerenderRequest = useCallback$5(() => setKey((k) => k + 1), []);
 		return (/* @__PURE__ */ React.createElement(RootTagContext.Provider, { value: createRootTag(rootTag) }, /* @__PURE__ */ React.createElement(View$44, { ref: appContainerRootViewRef, style: rootViewStyle || styles$23.container, pointerEvents: "box-none" }, innerView, /* @__PURE__ */ React.createElement(_default$62, { ref: debuggingOverlayRef }), reactDevToolsAgent != null && (/* @__PURE__ */ React.createElement(ReactDevToolsOverlayDeferred, { inspectedViewRef: innerViewRef, reactDevToolsAgent: reactDevToolsAgent })), shouldRenderInspector && (/* @__PURE__ */ React.createElement(InspectorDeferred, { inspectedViewRef: innerViewRef, onInspectedViewRerenderRequest: onInspectedViewRerenderRequest, reactDevToolsAgent: reactDevToolsAgent })), !internal_excludeLogBox && /* @__PURE__ */ React.createElement(_default$72, null))));
 	};
 	styles$23 = StyleSheet.create({ container: { flex: 1 } });
@@ -42822,7 +42822,7 @@ var init_react_native_Libraries_ReactNative_AppContainer_prod = __esm({
 	
 	React$62=__toESM(require_react_index());
 	AppContainer$1 = ({ children:children, fabric:fabric, initialProps:initialProps, rootTag:rootTag, WrapperComponent:WrapperComponent, rootViewStyle:rootViewStyle }) => {
-		innerView = children;
+		let innerView = children;
 		if (WrapperComponent != null) {
 			innerView = (/* @__PURE__ */ React.createElement(WrapperComponent, { initialProps: initialProps, fabric: fabric === true }, innerView));
 		}
@@ -43469,10 +43469,10 @@ var require_anser_lib_index = __commonJS({
 
 // --- AnsiHighlight.js ---
 var exports_react_native_Libraries_LogBox_UI_AnsiHighlight = {};
-var React$66, COLORS, LRM, styles$25, __ns_486_0;
+var React$66, COLORS, LRM, styles$25, __ns_484_0;
 function Ansi({ text:text, style:style }) {
 	let commonWhitespaceLength = Infinity;
-	const parsedLines = text.split(/\n/).map((line) => __ns_486_0.ansiToJson(line, { json: true, remove_empty: true, use_classes: true }));
+	const parsedLines = text.split(/\n/).map((line) => __ns_484_0.ansiToJson(line, { json: true, remove_empty: true, use_classes: true }));
 	parsedLines.map((lines) => {
 		const match = lines[2] && lines[2]?.content?.match(/^ +/);
 		const whitespaceLength = (match && match[0]?.length) || 0;
@@ -43504,7 +43504,7 @@ var init_react_native_Libraries_LogBox_UI_AnsiHighlight = __esm({
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_StyleSheet_StyleSheet();
 	init_react_native_Libraries_Text_Text();
-	__ns_486_0 = __toESM(require_anser_lib_index());
+	__ns_484_0 = __toESM(require_anser_lib_index());
 		
 	
 	
@@ -43658,7 +43658,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorMessageHeader = __esm({
 
 // --- LogBoxInspectorReactFrames.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxInspectorReactFrames = {};
-var LogBoxStyle$8, React$70, useState$7, BEFORE_SLASH_RE, componentStyles, LogBoxInspectorReactFrames, __ns_481_0;
+var LogBoxStyle$8, React$70, useState$7, BEFORE_SLASH_RE, componentStyles, LogBoxInspectorReactFrames, __ns_479_0;
 function getPrettyFileName(path) {
 	let fileName = path.replace(BEFORE_SLASH_RE, "");
 	if (/^index\./.test(fileName)) {
@@ -43711,7 +43711,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorReactFrames = __esm({
 	init_react_native_Libraries_LogBox_UI_LogBoxButton();
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorSection();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_481_0 = __toESM(require_react_index());
+	__ns_479_0 = __toESM(require_react_index());
 		
 	
 	
@@ -43745,7 +43745,7 @@ module.exports="./loader-279127f6.png";
 
 // --- LogBoxInspectorSourceMapStatus.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxInspectorSourceMapStatus = {};
-var LogBoxStyle$9, React$71, useEffect$8, useState$8, styles$28, LogBoxInspectorSourceMapStatus, __ns_487_0;
+var LogBoxStyle$9, React$71, useEffect$8, useState$8, styles$28, LogBoxInspectorSourceMapStatus, __ns_486_0;
 function LogBoxInspectorSourceMapStatus(props) {
 	const [state, setState] = useState$8({ animation: null, rotate: null });
 	useEffect$8(() => {
@@ -43796,7 +43796,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorSourceMapStatus = __esm
 	init_react_native_Libraries_Text_Text();
 	init_react_native_Libraries_LogBox_UI_LogBoxButton();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_487_0 = __toESM(require_react_index());
+	__ns_486_0 = __toESM(require_react_index());
 		
 	
 	
@@ -43853,7 +43853,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrame = __esm({
 
 // --- LogBoxInspectorStackFrames.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrames = {};
-var LogBoxStyle$11, React$73, useState$9, stackStyles, LogBoxInspectorStackFrames, __ns_482_0;
+var LogBoxStyle$11, React$73, useState$9, stackStyles, LogBoxInspectorStackFrames, __ns_480_0;
 function getCollapseMessage(stackFrames,collapsed) {
 	if (stackFrames.length === 0) {
 		return "No frames to show";
@@ -43914,7 +43914,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrames = __esm({
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorSourceMapStatus();
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrame();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_482_0 = __toESM(require_react_index());
+	__ns_480_0 = __toESM(require_react_index());
 		
 	
 	
@@ -43934,7 +43934,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrames = __esm({
 
 // --- LogBoxInspectorBody.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxInspectorBody = {};
-var LogBoxStyle$12, React$74, useEffect$9, useState$10, headerTitleMap, styles$30, __ns_305_0;
+var LogBoxStyle$12, React$74, useEffect$9, useState$10, headerTitleMap, styles$30, __ns_446_0;
 function LogBoxInspectorBody(props) {
 	const [collapsed, setCollapsed] = useState$10(true);
 	useEffect$9(() => {
@@ -43959,7 +43959,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorBody = __esm({
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorReactFrames();
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorStackFrames();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_305_0 = __toESM(require_react_index());
+	__ns_446_0 = __toESM(require_react_index());
 		
 	
 	
@@ -44115,7 +44115,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorHeader = __esm({
 
 // --- LogBoxInspector.js ---
 var exports_react_native_Libraries_LogBox_UI_LogBoxInspector = {};
-var LogBoxData$3, LogBoxStyle$17, React$79, useEffect$10, styles$35, __ns_272_0;
+var LogBoxData$3, LogBoxStyle$17, React$79, useEffect$10, styles$35, __ns_317_0;
 function LogBoxInspector(props) {
 	const { logs:logs, selectedIndex:selectedIndex } = props;
 	let log = logs[selectedIndex];
@@ -44159,7 +44159,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspector = __esm({
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorFooter();
 	init_react_native_Libraries_LogBox_UI_LogBoxInspectorHeader();
 	init_react_native_Libraries_LogBox_UI_LogBoxStyle();
-	__ns_272_0 = __toESM(require_react_index());
+	__ns_317_0 = __toESM(require_react_index());
 		
 	
 	
@@ -44200,7 +44200,7 @@ var init_react_native_Libraries_LogBox_LogBoxInspectorContainer = __esm({
 		}
 		_handleDismiss = () => {
 			const { selectedLogIndex:selectedLogIndex, logs:logs } = this.props;
-			logsArray = Array.from(logs);
+			const logsArray = Array.from(logs);
 			if (selectedLogIndex != null) {
 				if (logsArray.length - 1 <= 0) {
 					setSelectedLog(-1);
@@ -44276,30 +44276,30 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			this._target = target;
 		}
 		get boundingClientRect() {
-			targetRect = this._nativeEntry.targetRect;
+			const targetRect = this._nativeEntry.targetRect;
 			return new DOMRectReadOnly(targetRect[0], targetRect[1], targetRect[2], targetRect[3]);
 		}
 		get intersectionRatio() {
-			intersectionRect = this.intersectionRect;
-			boundingClientRect = this.boundingClientRect;
+			const intersectionRect = this.intersectionRect;
+			const boundingClientRect = this.boundingClientRect;
 			if (boundingClientRect.width === 0 || boundingClientRect.height === 0) {
 				return 0;
 			}
-			ratio = (intersectionRect.width * intersectionRect.height) / (boundingClientRect.width * boundingClientRect.height);
+			const ratio = (intersectionRect.width * intersectionRect.height) / (boundingClientRect.width * boundingClientRect.height);
 			return Math.min(ratio, 1);
 		}
 		get rnRootIntersectionRatio() {
-			intersectionRect = this.intersectionRect;
-			rootRect = this._nativeEntry.rootRect;
-			boundingRootRect = new DOMRectReadOnly(rootRect[0], rootRect[1], rootRect[2], rootRect[3]);
+			const intersectionRect = this.intersectionRect;
+			const rootRect = this._nativeEntry.rootRect;
+			const boundingRootRect = new DOMRectReadOnly(rootRect[0], rootRect[1], rootRect[2], rootRect[3]);
 			if (boundingRootRect.width === 0 || boundingRootRect.height === 0) {
 				return 0;
 			}
-			ratio = (intersectionRect.width * intersectionRect.height) / (boundingRootRect.width * boundingRootRect.height);
+			const ratio = (intersectionRect.width * intersectionRect.height) / (boundingRootRect.width * boundingRootRect.height);
 			return Math.min(ratio, 1);
 		}
 		get intersectionRect() {
-			intersectionRect = this._nativeEntry.intersectionRect;
+			const intersectionRect = this._nativeEntry.intersectionRect;
 			if (intersectionRect == null) {
 				return new DOMRectReadOnly();
 			}
@@ -44309,7 +44309,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			return this._nativeEntry.isIntersectingAboveThresholds;
 		}
 		get rootBounds() {
-			rootRect = this._nativeEntry.rootRect;
+			const rootRect = this._nativeEntry.rootRect;
 			return new DOMRectReadOnly(rootRect[0], rootRect[1], rootRect[2], rootRect[3]);
 		}
 		get target() {
@@ -44622,7 +44622,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			if (this._observationTargets.has(target)) {
 				return;
 			}
-			didStartObserving = observe$1({ intersectionObserverId: this._getOrCreateIntersectionObserverId(), root: this._root, target });
+			const didStartObserving = observe$1({ intersectionObserverId: this._getOrCreateIntersectionObserverId(), root: this._root, target });
 			if (didStartObserving) {
 				this._observationTargets.add(target);
 			}
@@ -44634,7 +44634,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			if (!this._observationTargets.has(target)) {
 				return;
 			}
-			intersectionObserverId = this._intersectionObserverId;
+			const intersectionObserverId = this._intersectionObserverId;
 			if (intersectionObserverId == null) {
 				console.error("Unexpected state in 'IntersectionObserver': could not find observer ID to unobserve target.");
 				return;
@@ -44652,7 +44652,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 			}
 		}
 		_getOrCreateIntersectionObserverId() {
-			intersectionObserverId = this._intersectionObserverId;
+			let intersectionObserverId = this._intersectionObserverId;
 			if (intersectionObserverId == null) {
 				intersectionObserverId = registerObserver(this, this._callback);
 				this._intersectionObserverId = intersectionObserverId;
@@ -59080,13 +59080,13 @@ var require_react_native_Libraries_Renderer_implementations_ReactFabric_prod = _
 
 // --- ReactFabric.js ---
 var exports_react_native_Libraries_Renderer_shims_ReactFabric = {};
-var BatchedBridge$3, ReactFabric, __ns_347_0;
+var BatchedBridge$3, ReactFabric, __ns_351_0;
 __export(exports_react_native_Libraries_Renderer_shims_ReactFabric, {
 	"default": function() { return ReactFabric; },
 });
 var init_react_native_Libraries_Renderer_shims_ReactFabric = __esm({
 	"ReactFabric.js"() {
-	__ns_347_0 = __toESM(require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
+	__ns_351_0 = __toESM(require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
 		"use strict";
 	({BatchedBridge:BatchedBridge$3}=require_react_native_Libraries_ReactPrivate_ReactNativePrivateInterface());
 	
@@ -73536,7 +73536,7 @@ var init_react_native_Libraries_ReactNative_RendererImplementation = __esm({
 	
 	
 	getMethod = (getRenderer,methodName) => {
-		
+		let cachedImpl;
 		return function(arg1,arg2,arg3,arg4,arg5,arg6) {
 			if (cachedImpl == null) {
 				cachedImpl = getRenderer()[methodName];
@@ -73703,7 +73703,7 @@ var init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView 
 	React$85=__toESM(require_react_index());
 	UnimplementedView = class UnimplementedView extends React$85.Component {
 		render() {
-			View = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default;
+			const View = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default;
 			return (/* @__PURE__ */ React.createElement(View, { style: [styles$36.unimplementedView, this.props.style] }, this.props.children));
 		}
 	};
@@ -73785,8 +73785,8 @@ var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator =
 	PlatformActivityIndicator = Platform.OS === "android" ? (init_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid(), __toCommonJS(exports_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid)).default : (init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent)).default;
 	GRAY = "#999999";
 	ActivityIndicator = ({ ref:forwardedRef, animating:animating=true, color:color=Platform.OS === "ios" ? GRAY : null, hidesWhenStopped:hidesWhenStopped=true, onLayout:onLayout, size:size="small", style:style, ...restProps }) => {
-		
-		
+		let sizeStyle;
+		let sizeProp;
 		switch (size) {
 			case "small":
 				sizeStyle = styles$37.sizeSmall;
@@ -73800,8 +73800,8 @@ var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator =
 				sizeStyle = { height: size, width: size };
 				break;
 		}
-		nativeProps = { animating, color, hidesWhenStopped, ...restProps, ref: forwardedRef, style: sizeStyle, size: sizeProp };
-		androidProps = { styleAttr: "Normal", indeterminate: true };
+		const nativeProps = { animating, color, hidesWhenStopped, ...restProps, ref: forwardedRef, style: sizeStyle, size: sizeProp };
+		const androidProps = { styleAttr: "Normal", indeterminate: true };
 		return (/* @__PURE__ */ React.createElement(View$44, { onLayout: onLayout, style: StyleSheet.compose(styles$37.container, style) }, Platform.OS === "android" ? (/* @__PURE__ */ React.createElement(PlatformActivityIndicator, { ...nativeProps, ...androidProps })) : (/* @__PURE__ */ React.createElement(PlatformActivityIndicator, { ...nativeProps }))));
 	};
 	ActivityIndicator.displayName = "ActivityIndicator";
@@ -73841,14 +73841,14 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 		static SelectableBackground = (rippleRadius) => ({ type: "ThemeAttrAndroid", attribute: "selectableItemBackground", rippleRadius });
 		static SelectableBackgroundBorderless = (rippleRadius) => ({ type: "ThemeAttrAndroid", attribute: "selectableItemBackgroundBorderless", rippleRadius });
 		static Ripple = (color, borderless, rippleRadius) => {
-			processedColor = processColor(color);
+			const processedColor = processColor(color);
 			invariant$44(processedColor == null || typeof processedColor === "number", "Unexpected color given for Ripple color");
 			return { type: "RippleAndroid", color: processedColor, borderless, rippleRadius };
 		};
 		static canUseNativeForeground = () => Platform.OS === "android";
 		state = { pressability: new Pressability(this._createPressabilityConfig()) };
 		_createPressabilityConfig() {
-			accessibilityStateDisabled = this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled;
+			const accessibilityStateDisabled = this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled;
 			return { cancelable: !this.props.rejectResponderTermination, disabled: this.props.disabled != null ? this.props.disabled : accessibilityStateDisabled, hitSlop: this.props.hitSlop, delayLongPress: this.props.delayLongPress, delayPressIn: this.props.delayPressIn, delayPressOut: this.props.delayPressOut, minPressDuration: 0, pressRectOffset: this.props.pressRetentionOffset, android_disableSound: this.props.touchSoundDisabled, onLongPress: this.props.onLongPress, onPress: this.props.onPress, onPressIn: (event) => {
 				if (Platform.OS === "android") {
 					this._dispatchHotspotUpdate(event);
@@ -73872,7 +73872,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 		}
 		_dispatchPressedStateChange(pressed) {
 			if (Platform.OS === "android") {
-				hostComponentRef = findHostInstance_DEPRECATED(this);
+				const hostComponentRef = findHostInstance_DEPRECATED(this);
 				if (hostComponentRef == null) {
 					console.warn("Touchable: Unable to find HostComponent instance. " + "Has your Touchable component been unmounted?");
 				} else {
@@ -73883,7 +73883,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 		_dispatchHotspotUpdate(event) {
 			if (Platform.OS === "android") {
 				const { locationX:locationX, locationY:locationY } = event.nativeEvent;
-				hostComponentRef = findHostInstance_DEPRECATED(this);
+				const hostComponentRef = findHostInstance_DEPRECATED(this);
 				if (hostComponentRef == null) {
 					console.warn("Touchable: Unable to find HostComponent instance. " + "Has your Touchable component been unmounted?");
 				} else {
@@ -73892,19 +73892,19 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 			}
 		}
 		render() {
-			element = React$87.Children.only(this.props.children);
-			children = [element.props.children];
+			const element = React$87.Children.only(this.props.children);
+			const children = [element.props.children];
 			if (false) {
 				if (element.type === View$44) {
 					children.push(/* @__PURE__ */ React.createElement(PressabilityDebugView, { color: "brown", hitSlop: this.props.hitSlop }));
 				}
 			}
 			const { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers();
-			_accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
+			let _accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
 			_accessibilityState = this.props.disabled != null ? { ..._accessibilityState, disabled: this.props.disabled } : _accessibilityState;
-			accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
-			accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
-			accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
+			const accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
+			const accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
+			const accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
 			return cloneElement$6(element, { ...eventHandlersWithoutBlurAndFocus, ...getBackgroundProp(this.props.background === undefined ? TouchableNativeFeedback.SelectableBackground() : this.props.background, this.props.useForeground === true), accessible: this.props.accessible !== false, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityLabel: accessibilityLabel, accessibilityRole: this.props.accessibilityRole, accessibilityState: _accessibilityState, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, accessibilityValue: accessibilityValue, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, hasTVPreferredFocus: this.props.hasTVPreferredFocus, hitSlop: this.props.hitSlop, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, onLayout: this.props.onLayout, testID: this.props.testID }, ...children);
 		}
 		componentDidUpdate(prevProps,prevState) {
@@ -73984,16 +73984,16 @@ var init_react_native_Libraries_Components_Touchable_TouchableOpacity = __esm({
 			this._setOpacityTo(this._getChildStyleOpacityWithDefault(), duration);
 		}
 		_getChildStyleOpacityWithDefault() {
-			opacity = flattenStyle(this.props.style)?.opacity;
+			const opacity = flattenStyle(this.props.style)?.opacity;
 			return typeof opacity === "number" ? opacity : 1;
 		}
 		render() {
 			const { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers();
-			_accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
+			let _accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
 			_accessibilityState = this.props.disabled != null ? { ..._accessibilityState, disabled: this.props.disabled } : _accessibilityState;
-			accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
-			accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
-			accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
+			const accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text };
+			const accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion);
+			const accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
 			return (/* @__PURE__ */ React.createElement(Animated$1.View, { accessible: this.props.accessible !== false, accessibilityLabel: accessibilityLabel, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityRole: this.props.accessibilityRole, accessibilityState: _accessibilityState, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, accessibilityValue: accessibilityValue, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, style: [this.props.style, { opacity: this.state.anim }], nativeID: this.props.id ?? this.props.nativeID, testID: this.props.testID, onLayout: this.props.onLayout, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, hasTVPreferredFocus: this.props.hasTVPreferredFocus, hitSlop: this.props.hitSlop, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, ref: this.props.hostRef, ...eventHandlersWithoutBlurAndFocus }, this.props.children, false ? (/* @__PURE__ */ React.createElement(PressabilityDebugView, { color: "cyan", hitSlop: this.props.hitSlop })) : null));
 		}
 		componentDidUpdate(prevProps,prevState) {
@@ -74043,8 +74043,8 @@ var init_react_native_Libraries_Components_Button = __esm({
 	NativeTouchable = Platform.OS === "android" ? TouchableNativeFeedback : Touchable;
 	Button = ({ ref:ref, ...props }) => {
 		const { accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, importantForAccessibility:importantForAccessibility, color:color, onPress:onPress, touchSoundDisabled:touchSoundDisabled, title:title, hasTVPreferredFocus:hasTVPreferredFocus, nextFocusDown:nextFocusDown, nextFocusForward:nextFocusForward, nextFocusLeft:nextFocusLeft, nextFocusRight:nextFocusRight, nextFocusUp:nextFocusUp, testID:testID, accessible:accessible, accessibilityActions:accessibilityActions, accessibilityHint:accessibilityHint, accessibilityLanguage:accessibilityLanguage, onAccessibilityAction:onAccessibilityAction } = props;
-		buttonStyles = [styles$38.button];
-		textStyles = [styles$38.text];
+		const buttonStyles = [styles$38.button];
+		const textStyles = [styles$38.text];
 		if (color) {
 			if (Platform.OS === "ios") {
 				textStyles.push({ color: color });
@@ -74052,16 +74052,16 @@ var init_react_native_Libraries_Components_Button = __esm({
 				buttonStyles.push({ backgroundColor: color });
 			}
 		}
-		_accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
-		disabled = props.disabled != null ? props.disabled : _accessibilityState?.disabled;
+		let _accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
+		const disabled = props.disabled != null ? props.disabled : _accessibilityState?.disabled;
 		_accessibilityState = disabled !== _accessibilityState?.disabled ? { ..._accessibilityState, disabled } : _accessibilityState;
 		if (disabled) {
 			buttonStyles.push(styles$38.buttonDisabled);
 			textStyles.push(styles$38.textDisabled);
 		}
 		invariant$45(typeof title === "string", "The title prop of a Button must be a string");
-		formattedTitle = Platform.OS === "android" ? title.toUpperCase() : title;
-		_importantForAccessibility = importantForAccessibility === "no" ? "no-hide-descendants" : importantForAccessibility;
+		const formattedTitle = Platform.OS === "android" ? title.toUpperCase() : title;
+		const _importantForAccessibility = importantForAccessibility === "no" ? "no-hide-descendants" : importantForAccessibility;
 		return (/* @__PURE__ */ React.createElement(NativeTouchable, { accessible: accessible, accessibilityActions: accessibilityActions, onAccessibilityAction: onAccessibilityAction, accessibilityLabel: ariaLabel || accessibilityLabel, accessibilityHint: accessibilityHint, accessibilityLanguage: accessibilityLanguage, accessibilityRole: "button", accessibilityState: _accessibilityState, importantForAccessibility: _importantForAccessibility, hasTVPreferredFocus: hasTVPreferredFocus, nextFocusDown: nextFocusDown, nextFocusForward: nextFocusForward, nextFocusLeft: nextFocusLeft, nextFocusRight: nextFocusRight, nextFocusUp: nextFocusUp, testID: testID, disabled: disabled, onPress: onPress, touchSoundDisabled: touchSoundDisabled, ref: ref }, /* @__PURE__ */ React.createElement(View$44, { style: buttonStyles }, /* @__PURE__ */ React.createElement(TextImpl, { style: textStyles, disabled: disabled }, formattedTitle))));
 	};
 	Button.displayName = "Button";
@@ -74153,7 +74153,7 @@ var init_react_native_Libraries_Image_ImageBackground = __esm({
 	React$91=__toESM(require_react_index());
 	ImageBackground = class ImageBackground extends React$91.Component {
 		setNativeProps(props) {
-			viewRef = this._viewRef;
+			const viewRef = this._viewRef;
 			if (viewRef) {
 				viewRef.setNativeProps(props);
 			}
@@ -74164,7 +74164,7 @@ var init_react_native_Libraries_Image_ImageBackground = __esm({
 		};
 		render() {
 			const { children:children, style:style, imageStyle:imageStyle, imageRef:imageRef, importantForAccessibility:importantForAccessibility, ...props } = this.props;
-			flattenedStyle = flattenStyle(style);
+			const flattenedStyle = flattenStyle(style);
 			return (/* @__PURE__ */ React.createElement(View$44, { accessibilityIgnoresInvertColors: true, importantForAccessibility: importantForAccessibility, style: style, ref: this._captureRef }, /* @__PURE__ */ React.createElement(Image, { ...props, importantForAccessibility: importantForAccessibility, style: [StyleSheet.absoluteFill, { width: flattenedStyle?.width, height: flattenedStyle?.height }, imageStyle], ref: imageRef }), children));
 		}
 	};
@@ -74467,7 +74467,7 @@ var init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo =
 			}
 		});
 	}, addEventListener(eventName,handler) {
-		deviceEventName = EventNames.get(eventName);
+		const deviceEventName = EventNames.get(eventName);
 		return deviceEventName == null ? { remove() {
 		} } : _default$3.addListener(deviceEventName, handler);
 	}, setAccessibilityFocus(reactTag) {
@@ -74548,14 +74548,14 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 			this.viewRef = __ns_13_0.createRef();
 		}
 		async _relativeKeyboardHeight(keyboardFrame) {
-			frame = this._frame;
+			const frame = this._frame;
 			if (!frame || !keyboardFrame) {
 				return 0;
 			}
 			if (Platform.OS === "ios" && keyboardFrame.screenY === 0 && (await AccessibilityInfo.prefersCrossFadeTransitions())) {
 				return 0;
 			}
-			keyboardY = keyboardFrame.screenY - (this.props.keyboardVerticalOffset ?? 0);
+			const keyboardY = keyboardFrame.screenY - (this.props.keyboardVerticalOffset ?? 0);
 			if (this.props.behavior === "height") {
 				return Math.max(this.state.bottom + frame.y + frame.height - keyboardY, 0);
 			}
@@ -74571,7 +74571,7 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 		};
 		_onLayout = async (event) => {
 			event.persist();
-			oldFrame = this._frame;
+			const oldFrame = this._frame;
 			this._frame = event.nativeEvent.layout;
 			if (!this._initialFrameHeight) {
 				this._initialFrameHeight = this._frame.height;
@@ -74584,7 +74584,7 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 			}
 		};
 		_setBottom = (value) => {
-			enabled = this.props.enabled ?? true;
+			const enabled = this.props.enabled ?? true;
 			this._bottom = value;
 			if (enabled) {
 				this.setState({ bottom: value });
@@ -74596,18 +74596,18 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 				return;
 			}
 			const { duration:duration, easing:easing, endCoordinates:endCoordinates } = this._keyboardEvent;
-			height = await this._relativeKeyboardHeight(endCoordinates);
+			const height = await this._relativeKeyboardHeight(endCoordinates);
 			if (this._bottom === height) {
 				return;
 			}
 			this._setBottom(height);
-			enabled = this.props.enabled ?? true;
+			const enabled = this.props.enabled ?? true;
 			if (enabled && duration && easing) {
 				LayoutAnimation.configureNext({ duration: duration > 10 ? duration : 10, update: { duration: duration > 10 ? duration : 10, type: LayoutAnimation.Types[easing] || "keyboard" } });
 			}
 		};
 		componentDidUpdate(_,prevState) {
-			enabled = this.props.enabled ?? true;
+			const enabled = this.props.enabled ?? true;
 			if (enabled && this._bottom !== prevState.bottom) {
 				this.setState({ bottom: this._bottom });
 			}
@@ -74630,10 +74630,10 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 		}
 		render() {
 			const { behavior:behavior, children:children, contentContainerStyle:contentContainerStyle, enabled:enabled=true, keyboardVerticalOffset:keyboardVerticalOffset=0, style:style, onLayout:onLayout, ...props } = this.props;
-			bottomHeight = enabled === true ? this.state.bottom : 0;
+			const bottomHeight = enabled === true ? this.state.bottom : 0;
 			switch (behavior) {
 				case "height":
-					
+					let heightStyle;
 					if (this._frame != null && this.state.bottom > 0) {
 						heightStyle = { height: this._initialFrameHeight - bottomHeight, flex: 0 };
 					}
@@ -74859,17 +74859,17 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 			if (!this._shouldShowModal()) {
 				return null;
 			}
-			containerStyles = { backgroundColor: this.props.transparent === true ? "transparent" : (this.props.backdropColor ?? "white") };
-			animationType = this.props.animationType || "none";
-			presentationStyle = this.props.presentationStyle;
+			const containerStyles = { backgroundColor: this.props.transparent === true ? "transparent" : (this.props.backdropColor ?? "white") };
+			let animationType = this.props.animationType || "none";
+			let presentationStyle = this.props.presentationStyle;
 			if (!presentationStyle) {
 				presentationStyle = "fullScreen";
 				if (this.props.transparent === true) {
 					presentationStyle = "overFullScreen";
 				}
 			}
-			innerChildren = false ? (/* @__PURE__ */ React.createElement(AppContainer$4, { rootTag: this.context }, this.props.children)) : (this.props.children);
-			onDismiss = () => {
+			const innerChildren = false ? (/* @__PURE__ */ React.createElement(AppContainer$4, { rootTag: this.context }, this.props.children)) : (this.props.children);
+			const onDismiss = () => {
 				if (Platform$56.OS === "ios") {
 					this.setState({ isRendered: false }, () => {
 						if (this.props.onDismiss) {
@@ -74895,7 +74895,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 
 // --- useAndroidRippleForView.js ---
 var exports_react_native_Libraries_Components_Pressable_useAndroidRippleForView = {};
-var invariant$46, React$96, useMemo$7, __ns_232_0;
+var invariant$46, React$96, useMemo$7, __ns_219_0;
 function useAndroidRippleForView(rippleConfig,viewRef) {
 	const { color:color, borderless:borderless, radius:radius, foreground:foreground } = rippleConfig ?? {};
 	return useMemo$7(() => {
@@ -74933,7 +74933,7 @@ var init_react_native_Libraries_Components_Pressable_useAndroidRippleForView = _
 	init_react_native_Libraries_Utilities_Platform_ios();
 	init_react_native_Libraries_Components_View_View();
 	init_react_native_Libraries_Components_View_ViewNativeComponent();
-	__ns_232_0 = __toESM(require_react_index());
+	__ns_219_0 = __toESM(require_react_index());
 		
 	
 	
@@ -75186,7 +75186,7 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 			}
 			animated = animated || false;
 			StatusBar._defaultProps.backgroundColor.value = color;
-			processedColor = processColor(color);
+			const processedColor = processColor(color);
 			if (processedColor == null) {
 				console.warn(`\`StatusBar.setBackgroundColor\`: Color ${String(color)} parsed to null or undefined`);
 				return;
@@ -75203,21 +75203,21 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 			NativeStatusBarManager.setTranslucent(translucent);
 		}
 		static pushStackEntry(props) {
-			entry = createStackEntry(props);
+			const entry = createStackEntry(props);
 			StatusBar._propsStack.push(entry);
 			StatusBar._updatePropsStack();
 			return entry;
 		}
 		static popStackEntry(entry) {
-			index = StatusBar._propsStack.indexOf(entry);
+			const index = StatusBar._propsStack.indexOf(entry);
 			if (index !== -1) {
 				StatusBar._propsStack.splice(index, 1);
 			}
 			StatusBar._updatePropsStack();
 		}
 		static replaceStackEntry(entry,props) {
-			newEntry = createStackEntry(props);
-			index = StatusBar._propsStack.indexOf(entry);
+			const newEntry = createStackEntry(props);
+			const index = StatusBar._propsStack.indexOf(entry);
 			if (index !== -1) {
 				StatusBar._propsStack[index] = newEntry;
 			}
@@ -75241,8 +75241,8 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 		static _updatePropsStack = () => {
 			clearImmediate(StatusBar._updateImmediate);
 			StatusBar._updateImmediate = setImmediate(() => {
-				oldProps = StatusBar._currentValues;
-				mergedProps = mergePropsStack(StatusBar._propsStack, StatusBar._defaultProps);
+				const oldProps = StatusBar._currentValues;
+				const mergedProps = mergePropsStack(StatusBar._propsStack, StatusBar._defaultProps);
 				if (Platform.OS === "ios") {
 					if (!oldProps || oldProps.barStyle?.value !== mergedProps.barStyle.value) {
 						NativeStatusBarManager$1.setStyle(mergedProps.barStyle.value, mergedProps.barStyle.animated || false);
@@ -75255,7 +75255,7 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 					}
 				} else if (Platform.OS === "android") {
 					NativeStatusBarManager.setStyle(mergedProps.barStyle.value);
-					processedColor = processColor(mergedProps.backgroundColor.value);
+					const processedColor = processColor(mergedProps.backgroundColor.value);
 					if (processedColor == null) {
 						console.warn(`\`StatusBar._updatePropsStack\`: Color ${mergedProps.backgroundColor.value} parsed to null or undefined`);
 					} else {
@@ -75380,19 +75380,19 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 	returnsTrue = () => true;
 	Switch = function({ ref:forwardedRef, ...props }) {
 		const { disabled:disabled, ios_backgroundColor:ios_backgroundColor, onChange:onChange, onValueChange:onValueChange, style:style, thumbColor:thumbColor, trackColor:trackColor, value:value, ...restProps } = props;
-		trackColorForFalse = trackColor?.false;
-		trackColorForTrue = trackColor?.true;
-		nativeSwitchRef = useRef$9(null);
-		ref = useMergeRefs(nativeSwitchRef, forwardedRef);
+		const trackColorForFalse = trackColor?.false;
+		const trackColorForTrue = trackColor?.true;
+		const nativeSwitchRef = useRef$9(null);
+		const ref = useMergeRefs(nativeSwitchRef, forwardedRef);
 		const [native, setNative] = useState$13({ value: null });
-		handleChange = (event) => {
+		const handleChange = (event) => {
 			onChange?.(event);
 			onValueChange?.(event.nativeEvent.value);
 			setNative({ value: event.nativeEvent.value });
 		};
 		__ns_25_0.useLayoutEffect(() => {
-			jsValue = value === true;
-			shouldUpdateNativeSwitch = native.value != null && native.value !== jsValue;
+			const jsValue = value === true;
+			const shouldUpdateNativeSwitch = native.value != null && native.value !== jsValue;
 			if (shouldUpdateNativeSwitch && nativeSwitchRef.current?.setNativeProps != null) {
 				if (Platform.OS === "android") {
 					Commands$11.setNativeValue(nativeSwitchRef.current, jsValue);
@@ -75404,12 +75404,12 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 		if (Platform.OS === "android") {
 			const { onTintColor:onTintColor, tintColor:tintColor, ...androidProps } = restProps;
 			const { accessibilityState:accessibilityState } = androidProps;
-			_disabled = disabled != null ? disabled : accessibilityState?.disabled;
-			_accessibilityState = _disabled !== accessibilityState?.disabled ? { ...accessibilityState, disabled: _disabled } : accessibilityState;
-			platformProps = { accessibilityState: _accessibilityState, enabled: _disabled !== true, on: value === true, style, thumbTintColor: thumbColor, trackColorForFalse: trackColorForFalse, trackColorForTrue: trackColorForTrue, trackTintColor: value === true ? trackColorForTrue : trackColorForFalse };
+			const _disabled = disabled != null ? disabled : accessibilityState?.disabled;
+			const _accessibilityState = _disabled !== accessibilityState?.disabled ? { ...accessibilityState, disabled: _disabled } : accessibilityState;
+			const platformProps = { accessibilityState: _accessibilityState, enabled: _disabled !== true, on: value === true, style, thumbTintColor: thumbColor, trackColorForFalse: trackColorForFalse, trackColorForTrue: trackColorForTrue, trackTintColor: value === true ? trackColorForTrue : trackColorForFalse };
 			return (/* @__PURE__ */ React.createElement(_default$121, { ...androidProps, ...platformProps, accessibilityRole: props.accessibilityRole ?? "switch", onChange: handleChange, onResponderTerminationRequest: returnsFalse, onStartShouldSetResponder: returnsTrue, ref: ref }));
 		} else {
-			platformProps = { disabled, onTintColor: trackColorForTrue, style: StyleSheet.compose({ alignSelf: "flex-start" }, StyleSheet.compose(style, ios_backgroundColor == null ? null : { backgroundColor: ios_backgroundColor, borderRadius: 16 })), thumbTintColor: thumbColor, tintColor: trackColorForFalse, value: value === true };
+			const platformProps = { disabled, onTintColor: trackColorForTrue, style: StyleSheet.compose({ alignSelf: "flex-start" }, StyleSheet.compose(style, ios_backgroundColor == null ? null : { backgroundColor: ios_backgroundColor, borderRadius: 16 })), thumbTintColor: thumbColor, tintColor: trackColorForFalse, value: value === true };
 			return (/* @__PURE__ */ React.createElement(_default$123, { ...restProps, ...platformProps, accessibilityRole: props.accessibilityRole ?? "switch", onChange: handleChange, onResponderTerminationRequest: returnsFalse, onStartShouldSetResponder: returnsTrue, ref: ref }));
 		}
 	};
@@ -75690,9 +75690,9 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 	"use strict";
 	invariant$49=__toESM(require_invariant_browser()).default;
 	oneArgumentPooler = function(copyFieldsFrom) {
-		Klass = this;
+		const Klass = this;
 		if (Klass.instancePool.length) {
-			instance = Klass.instancePool.pop();
+			const instance = Klass.instancePool.pop();
 			Klass.call(instance, copyFieldsFrom);
 			return instance;
 		} else {
@@ -75700,9 +75700,9 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 		}
 	};
 	twoArgumentPooler = function(a1,a2) {
-		Klass = this;
+		const Klass = this;
 		if (Klass.instancePool.length) {
-			instance = Klass.instancePool.pop();
+			const instance = Klass.instancePool.pop();
 			Klass.call(instance, a1, a2);
 			return instance;
 		} else {
@@ -75710,9 +75710,9 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 		}
 	};
 	threeArgumentPooler = function(a1,a2,a3) {
-		Klass = this;
+		const Klass = this;
 		if (Klass.instancePool.length) {
-			instance = Klass.instancePool.pop();
+			const instance = Klass.instancePool.pop();
 			Klass.call(instance, a1, a2, a3);
 			return instance;
 		} else {
@@ -75720,9 +75720,9 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 		}
 	};
 	fourArgumentPooler = function(a1,a2,a3,a4) {
-		Klass = this;
+		const Klass = this;
 		if (Klass.instancePool.length) {
-			instance = Klass.instancePool.pop();
+			const instance = Klass.instancePool.pop();
 			Klass.call(instance, a1, a2, a3, a4);
 			return instance;
 		} else {
@@ -75730,7 +75730,7 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 		}
 	};
 	standardReleaser = function(instance) {
-		Klass = this;
+		const Klass = this;
 		invariant$49(instance instanceof Klass, "Trying to release an instance into a pool of a different type.");
 		instance.destructor();
 		if (Klass.instancePool.length < Klass.poolSize) {
@@ -75740,7 +75740,7 @@ var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
 	DEFAULT_POOL_SIZE = 10;
 	DEFAULT_POOLER = oneArgumentPooler;
 	addPoolingTo = function(CopyConstructor,pooler) {
-		NewKlass = CopyConstructor;
+		const NewKlass = CopyConstructor;
 		NewKlass.instancePool = [];
 		NewKlass.getPooled = pooler || DEFAULT_POOLER;
 		if (!NewKlass.poolSize) {
@@ -75832,10 +75832,10 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 	
 	React$103=__toESM(require_react_index());
 	extractSingleTouch = (nativeEvent) => {
-		touches = nativeEvent.touches;
-		changedTouches = nativeEvent.changedTouches;
-		hasTouches = touches && touches.length > 0;
-		hasChangedTouches = changedTouches && changedTouches.length > 0;
+		const touches = nativeEvent.touches;
+		const changedTouches = nativeEvent.changedTouches;
+		const hasTouches = touches && touches.length > 0;
+		const hasChangedTouches = changedTouches && changedTouches.length > 0;
 		return !hasTouches && hasChangedTouches ? changedTouches[0] : hasTouches ? touches[0] : nativeEvent;
 	};
 	States = { NOT_RESPONDER: "NOT_RESPONDER", RESPONDER_INACTIVE_PRESS_IN: "RESPONDER_INACTIVE_PRESS_IN", RESPONDER_INACTIVE_PRESS_OUT: "RESPONDER_INACTIVE_PRESS_OUT", RESPONDER_ACTIVE_PRESS_IN: "RESPONDER_ACTIVE_PRESS_IN", RESPONDER_ACTIVE_PRESS_OUT: "RESPONDER_ACTIVE_PRESS_OUT", RESPONDER_ACTIVE_LONG_PRESS_IN: "RESPONDER_ACTIVE_LONG_PRESS_IN", RESPONDER_ACTIVE_LONG_PRESS_OUT: "RESPONDER_ACTIVE_LONG_PRESS_OUT", ERROR: "ERROR" };
@@ -75867,21 +75867,21 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 	}, touchableLongPressCancelsPress: function() {
 		return true;
 	}, touchableHandleResponderGrant: function(e) {
-		dispatchID = e.currentTarget;
+		const dispatchID = e.currentTarget;
 		e.persist();
 		this.pressOutDelayTimeout && clearTimeout(this.pressOutDelayTimeout);
 		this.pressOutDelayTimeout = null;
 		this.state.touchable.touchState = States.NOT_RESPONDER;
 		this.state.touchable.responderID = dispatchID;
 		this._receiveSignal(Signals.RESPONDER_GRANT, e);
-		delayMS = this.touchableGetHighlightDelayMS !== undefined ? Math.max(this.touchableGetHighlightDelayMS(), 0) : HIGHLIGHT_DELAY_MS;
+		let delayMS = this.touchableGetHighlightDelayMS !== undefined ? Math.max(this.touchableGetHighlightDelayMS(), 0) : HIGHLIGHT_DELAY_MS;
 		delayMS = isNaN(delayMS) ? HIGHLIGHT_DELAY_MS : delayMS;
 		if (delayMS !== 0) {
 			this.touchableDelayTimeout = setTimeout(this._handleDelay.bind(this, e), delayMS);
 		} else {
 			this._handleDelay(e);
 		}
-		longDelayMS = this.touchableGetLongPressDelayMS !== undefined ? Math.max(this.touchableGetLongPressDelayMS(), 10) : LONG_PRESS_DELAY_MS;
+		let longDelayMS = this.touchableGetLongPressDelayMS !== undefined ? Math.max(this.touchableGetLongPressDelayMS(), 10) : LONG_PRESS_DELAY_MS;
 		longDelayMS = isNaN(longDelayMS) ? LONG_PRESS_DELAY_MS : longDelayMS;
 		this.longPressDelayTimeout = setTimeout(this._handleLongDelay.bind(this, e), longDelayMS + delayMS);
 	}, touchableHandleResponderRelease: function(e) {
@@ -75894,34 +75894,34 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 		if (!this.state.touchable.positionOnActivate) {
 			return;
 		}
-		positionOnActivate = this.state.touchable.positionOnActivate;
-		dimensionsOnActivate = this.state.touchable.dimensionsOnActivate;
-		pressRectOffset = this.touchableGetPressRectOffset ? this.touchableGetPressRectOffset() : { left: PRESS_EXPAND_PX, right: PRESS_EXPAND_PX, top: PRESS_EXPAND_PX, bottom: PRESS_EXPAND_PX };
-		pressExpandLeft = pressRectOffset.left;
-		pressExpandTop = pressRectOffset.top;
-		pressExpandRight = pressRectOffset.right;
-		pressExpandBottom = pressRectOffset.bottom;
-		hitSlop = this.touchableGetHitSlop ? this.touchableGetHitSlop() : null;
+		const positionOnActivate = this.state.touchable.positionOnActivate;
+		const dimensionsOnActivate = this.state.touchable.dimensionsOnActivate;
+		const pressRectOffset = this.touchableGetPressRectOffset ? this.touchableGetPressRectOffset() : { left: PRESS_EXPAND_PX, right: PRESS_EXPAND_PX, top: PRESS_EXPAND_PX, bottom: PRESS_EXPAND_PX };
+		let pressExpandLeft = pressRectOffset.left;
+		let pressExpandTop = pressRectOffset.top;
+		let pressExpandRight = pressRectOffset.right;
+		let pressExpandBottom = pressRectOffset.bottom;
+		const hitSlop = this.touchableGetHitSlop ? this.touchableGetHitSlop() : null;
 		if (hitSlop) {
 			pressExpandLeft += hitSlop.left || 0;
 			pressExpandTop += hitSlop.top || 0;
 			pressExpandRight += hitSlop.right || 0;
 			pressExpandBottom += hitSlop.bottom || 0;
 		}
-		touch = extractSingleTouch(e.nativeEvent);
-		pageX = touch && touch.pageX;
-		pageY = touch && touch.pageY;
+		const touch = extractSingleTouch(e.nativeEvent);
+		const pageX = touch && touch.pageX;
+		const pageY = touch && touch.pageY;
 		if (this.pressInLocation) {
-			movedDistance = this._getDistanceBetweenPoints(pageX, pageY, this.pressInLocation.pageX, this.pressInLocation.pageY);
+			const movedDistance = this._getDistanceBetweenPoints(pageX, pageY, this.pressInLocation.pageX, this.pressInLocation.pageY);
 			if (movedDistance > LONG_PRESS_ALLOWED_MOVEMENT) {
 				this._cancelLongPressDelayTimeout();
 			}
 		}
-		isTouchWithinActive = pageX > positionOnActivate.left - pressExpandLeft && pageY > positionOnActivate.top - pressExpandTop && pageX < positionOnActivate.left + dimensionsOnActivate.width + pressExpandRight && pageY < positionOnActivate.top + dimensionsOnActivate.height + pressExpandBottom;
+		const isTouchWithinActive = pageX > positionOnActivate.left - pressExpandLeft && pageY > positionOnActivate.top - pressExpandTop && pageX < positionOnActivate.left + dimensionsOnActivate.width + pressExpandRight && pageY < positionOnActivate.top + dimensionsOnActivate.height + pressExpandBottom;
 		if (isTouchWithinActive) {
-			prevState = this.state.touchable.touchState;
+			const prevState = this.state.touchable.touchState;
 			this._receiveSignal(Signals.ENTER_PRESS_RECT, e);
-			curState = this.state.touchable.touchState;
+			const curState = this.state.touchable.touchState;
 			if (curState === States.RESPONDER_INACTIVE_PRESS_IN && prevState !== States.RESPONDER_INACTIVE_PRESS_IN) {
 				this._cancelLongPressDelayTimeout();
 			}
@@ -75934,7 +75934,7 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 	}, touchableHandleBlur: function(e) {
 		this.props.onBlur && this.props.onBlur(e);
 	}, _remeasureMetricsOnActivation: function() {
-		responderID = this.state.touchable.responderID;
+		const responderID = this.state.touchable.responderID;
 		if (responderID == null) {
 			return;
 		}
@@ -75956,14 +75956,14 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 		this._receiveSignal(Signals.DELAY, e);
 	}, _handleLongDelay: function(e) {
 		this.longPressDelayTimeout = null;
-		curState = this.state.touchable.touchState;
+		const curState = this.state.touchable.touchState;
 		if (curState === States.RESPONDER_ACTIVE_PRESS_IN || curState === States.RESPONDER_ACTIVE_LONG_PRESS_IN) {
 			this._receiveSignal(Signals.LONG_PRESS_DETECTED, e);
 		}
 	}, _receiveSignal: function(signal,e) {
-		responderID = this.state.touchable.responderID;
-		curState = this.state.touchable.touchState;
-		nextState = Transitions$1[curState] && Transitions$1[curState][signal];
+		const responderID = this.state.touchable.responderID;
+		const curState = this.state.touchable.touchState;
+		const nextState = Transitions$1[curState] && Transitions$1[curState][signal];
 		if (!responderID && signal === Signals.RESPONDER_RELEASE) {
 			return;
 		}
@@ -75983,25 +75983,25 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 	}, _isHighlight: function(state) {
 		return (state === States.RESPONDER_ACTIVE_PRESS_IN || state === States.RESPONDER_ACTIVE_LONG_PRESS_IN);
 	}, _savePressInLocation: function(e) {
-		touch = extractSingleTouch(e.nativeEvent);
-		pageX = touch && touch.pageX;
-		pageY = touch && touch.pageY;
-		locationX = touch && touch.locationX;
-		locationY = touch && touch.locationY;
+		const touch = extractSingleTouch(e.nativeEvent);
+		const pageX = touch && touch.pageX;
+		const pageY = touch && touch.pageY;
+		const locationX = touch && touch.locationX;
+		const locationY = touch && touch.locationY;
 		this.pressInLocation = { pageX, pageY, locationX, locationY };
 	}, _getDistanceBetweenPoints: function(aX,aY,bX,bY) {
-		deltaX = aX - bX;
-		deltaY = aY - bY;
+		const deltaX = aX - bX;
+		const deltaY = aY - bY;
 		return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 	}, _performSideEffectsForTransition: function(curState,nextState,signal,e) {
-		curIsHighlight = this._isHighlight(curState);
-		newIsHighlight = this._isHighlight(nextState);
-		isFinalSignal = signal === Signals.RESPONDER_TERMINATED || signal === Signals.RESPONDER_RELEASE;
+		const curIsHighlight = this._isHighlight(curState);
+		const newIsHighlight = this._isHighlight(nextState);
+		const isFinalSignal = signal === Signals.RESPONDER_TERMINATED || signal === Signals.RESPONDER_RELEASE;
 		if (isFinalSignal) {
 			this._cancelLongPressDelayTimeout();
 		}
-		isInitialTransition = curState === States.NOT_RESPONDER && nextState === States.RESPONDER_INACTIVE_PRESS_IN;
-		isActiveTransition = !IsActive[curState] && IsActive[nextState];
+		const isInitialTransition = curState === States.NOT_RESPONDER && nextState === States.RESPONDER_INACTIVE_PRESS_IN;
+		const isActiveTransition = !IsActive[curState] && IsActive[nextState];
 		if (isInitialTransition || isActiveTransition) {
 			this._remeasureMetricsOnActivation();
 		}
@@ -76014,9 +76014,9 @@ var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
 			this._endHighlight(e);
 		}
 		if (IsPressingIn[curState] && signal === Signals.RESPONDER_RELEASE) {
-			hasLongPressHandler = !!this.props.onLongPress;
-			pressIsLongButStillCallOnPress = IsLongPressingIn[curState] && (!hasLongPressHandler || !this.touchableLongPressCancelsPress());
-			shouldInvokePress = !IsLongPressingIn[curState] || pressIsLongButStillCallOnPress;
+			const hasLongPressHandler = !!this.props.onLongPress;
+			const pressIsLongButStillCallOnPress = IsLongPressingIn[curState] && (!hasLongPressHandler || !this.touchableLongPressCancelsPress());
+			const shouldInvokePress = !IsLongPressingIn[curState] || pressIsLongButStillCallOnPress;
 			if (shouldInvokePress && this.touchableHandlePress) {
 				if (!newIsHighlight && !curIsHighlight) {
 					this._startHighlight(e);
@@ -76253,15 +76253,15 @@ var init_react_native_Libraries_ActionSheetIOS_ActionSheetIOS = __esm({
 		invariant$50(typeof callback === "function", "Must provide a valid callback");
 		invariant$50(_default$130, "ActionSheetManager doesn't exist");
 		const { tintColor:tintColor, cancelButtonTintColor:cancelButtonTintColor, disabledButtonTintColor:disabledButtonTintColor, destructiveButtonIndex:destructiveButtonIndex, ...remainingOptions } = options;
-		destructiveButtonIndices = null;
+		let destructiveButtonIndices = null;
 		if (Array.isArray(destructiveButtonIndex)) {
 			destructiveButtonIndices = destructiveButtonIndex;
 		} else if (typeof destructiveButtonIndex === "number") {
 			destructiveButtonIndices = [destructiveButtonIndex];
 		}
-		processedTintColor = processColor$15(tintColor);
-		processedCancelButtonTintColor = processColor$15(cancelButtonTintColor);
-		processedDisabledButtonTintColor = processColor$15(disabledButtonTintColor);
+		const processedTintColor = processColor$15(tintColor);
+		const processedCancelButtonTintColor = processColor$15(cancelButtonTintColor);
+		const processedDisabledButtonTintColor = processColor$15(disabledButtonTintColor);
 		invariant$50(processedTintColor == null || typeof processedTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions tintColor");
 		invariant$50(processedCancelButtonTintColor == null || typeof processedCancelButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions cancelButtonTintColor");
 		invariant$50(processedDisabledButtonTintColor == null || typeof processedDisabledButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions disabledButtonTintColor");
@@ -76417,8 +76417,8 @@ var init_react_native_Libraries_Interaction_InteractionManager = __esm({
 	"InteractionManager.js"() {
 	invariant$51 = require_invariant_browser();
 	InteractionManagerStub = { Events: { interactionStart: "interactionStart", interactionComplete: "interactionComplete" }, runAfterInteractions(task) {
-		
-		promise = new Promise((resolve) => {
+		let immediateID;
+		const promise = new Promise((resolve) => {
 			immediateID = setImmediate(() => {
 				if (typeof task === "object" && task !== null) {
 					if (typeof task.gen === "function") {
@@ -76471,10 +76471,10 @@ __export(exports_react_native_Libraries_Interaction_TouchHistoryMath, {
 var init_react_native_Libraries_Interaction_TouchHistoryMath = __esm({
 	"TouchHistoryMath.js"() {
 	TouchHistoryMath = { centroidDimension: function(touchHistory,touchesChangedAfter,isXAxis,ofCurrent) {
-		touchBank = touchHistory.touchBank;
-		total = 0;
-		count = 0;
-		oneTouchData = touchHistory.numberActiveTouches === 1 ? touchHistory.touchBank[touchHistory.indexOfSingleActiveTouch] : null;
+		const touchBank = touchHistory.touchBank;
+		let total = 0;
+		let count = 0;
+		const oneTouchData = touchHistory.numberActiveTouches === 1 ? touchHistory.touchBank[touchHistory.indexOfSingleActiveTouch] : null;
 		if (oneTouchData !== null) {
 			if (oneTouchData.touchActive && oneTouchData.currentTimeStamp > touchesChangedAfter) {
 				total += ofCurrent && isXAxis ? oneTouchData.currentPageX : ofCurrent && !isXAxis ? oneTouchData.currentPageY : !ofCurrent && isXAxis ? oneTouchData.previousPageX : oneTouchData.previousPageY;
@@ -76482,9 +76482,9 @@ var init_react_native_Libraries_Interaction_TouchHistoryMath = __esm({
 			}
 		} else {
 			for (let i = 0; i < touchBank.length; i++) {
-				touchTrack = touchBank[i];
+				const touchTrack = touchBank[i];
 				if (touchTrack !== null && touchTrack !== undefined && touchTrack.touchActive && touchTrack.currentTimeStamp >= touchesChangedAfter) {
-					
+					let toAdd;
 					if (ofCurrent && isXAxis) {
 						toAdd = touchTrack.currentPageX;
 					} else if (ofCurrent && !isXAxis) {
@@ -76549,22 +76549,22 @@ var init_react_native_Libraries_Interaction_PanResponder = __esm({
 		gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
 		gestureState.moveX = currentCentroidXOfTouchesChangedAfter(touchHistory, gestureState._accountsForMovesUpTo);
 		gestureState.moveY = currentCentroidYOfTouchesChangedAfter(touchHistory, gestureState._accountsForMovesUpTo);
-		movedAfter = gestureState._accountsForMovesUpTo;
-		prevX = previousCentroidXOfTouchesChangedAfter(touchHistory, movedAfter);
-		x = currentCentroidXOfTouchesChangedAfter(touchHistory, movedAfter);
-		prevY = previousCentroidYOfTouchesChangedAfter(touchHistory, movedAfter);
-		y = currentCentroidYOfTouchesChangedAfter(touchHistory, movedAfter);
-		nextDX = gestureState.dx + (x - prevX);
-		nextDY = gestureState.dy + (y - prevY);
-		dt = touchHistory.mostRecentTimeStamp - gestureState._accountsForMovesUpTo;
+		const movedAfter = gestureState._accountsForMovesUpTo;
+		const prevX = previousCentroidXOfTouchesChangedAfter(touchHistory, movedAfter);
+		const x = currentCentroidXOfTouchesChangedAfter(touchHistory, movedAfter);
+		const prevY = previousCentroidYOfTouchesChangedAfter(touchHistory, movedAfter);
+		const y = currentCentroidYOfTouchesChangedAfter(touchHistory, movedAfter);
+		const nextDX = gestureState.dx + (x - prevX);
+		const nextDY = gestureState.dy + (y - prevY);
+		const dt = touchHistory.mostRecentTimeStamp - gestureState._accountsForMovesUpTo;
 		gestureState.vx = (nextDX - gestureState.dx) / dt;
 		gestureState.vy = (nextDY - gestureState.dy) / dt;
 		gestureState.dx = nextDX;
 		gestureState.dy = nextDY;
 		gestureState._accountsForMovesUpTo = touchHistory.mostRecentTimeStamp;
 	}, create(config) {
-		gestureState = { stateID: Math.random(), moveX: 0, moveY: 0, x0: 0, y0: 0, dx: 0, dy: 0, vx: 0, vy: 0, numberActiveTouches: 0, _accountsForMovesUpTo: 0 };
-		panHandlers = { onStartShouldSetResponder(event) {
+		const gestureState = { stateID: Math.random(), moveX: 0, moveY: 0, x0: 0, y0: 0, dx: 0, dy: 0, vx: 0, vy: 0, numberActiveTouches: 0, _accountsForMovesUpTo: 0 };
+		const panHandlers = { onStartShouldSetResponder(event) {
 			return config.onStartShouldSetPanResponder == null ? false : config.onStartShouldSetPanResponder(event, gestureState);
 		}, onMoveShouldSetResponder(event) {
 			return config.onMoveShouldSetPanResponder == null ? false : config.onMoveShouldSetPanResponder(event, gestureState);
@@ -76575,7 +76575,7 @@ var init_react_native_Libraries_Interaction_PanResponder = __esm({
 			gestureState.numberActiveTouches = event.touchHistory.numberActiveTouches;
 			return config.onStartShouldSetPanResponderCapture != null ? config.onStartShouldSetPanResponderCapture(event, gestureState) : false;
 		}, onMoveShouldSetResponderCapture(event) {
-			touchHistory = event.touchHistory;
+			const touchHistory = event.touchHistory;
 			if (gestureState._accountsForMovesUpTo === touchHistory.mostRecentTimeStamp) {
 				return false;
 			}
@@ -76596,13 +76596,13 @@ var init_react_native_Libraries_Interaction_PanResponder = __esm({
 			config.onPanResponderRelease?.call(undefined, event, gestureState);
 			PanResponder._initializeGestureState(gestureState);
 		}, onResponderStart(event) {
-			touchHistory = event.touchHistory;
+			const touchHistory = event.touchHistory;
 			gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
 			if (config.onPanResponderStart) {
 				config.onPanResponderStart(event, gestureState);
 			}
 		}, onResponderMove(event) {
-			touchHistory = event.touchHistory;
+			const touchHistory = event.touchHistory;
 			if (gestureState._accountsForMovesUpTo === touchHistory.mostRecentTimeStamp) {
 				return;
 			}
@@ -76611,7 +76611,7 @@ var init_react_native_Libraries_Interaction_PanResponder = __esm({
 				config.onPanResponderMove(event, gestureState);
 			}
 		}, onResponderEnd(event) {
-			touchHistory = event.touchHistory;
+			const touchHistory = event.touchHistory;
 			gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
 			config.onPanResponderEnd?.call(undefined, event, gestureState);
 		}, onResponderTerminate(event) {
@@ -76704,7 +76704,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
 				return Promise.resolve(false);
 			}
-			response = await this.request(permission, rationale);
+			const response = await this.request(permission, rationale);
 			return response === this.RESULTS.GRANTED;
 		}
 		async request(permission,rationale) {
@@ -76714,10 +76714,10 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 			}
 			invariant$52(_default$137, "PermissionsAndroid is not installed correctly.");
 			if (rationale) {
-				shouldShowRationale = await _default$137.shouldShowRequestPermissionRationale(permission);
+				const shouldShowRationale = await _default$137.shouldShowRequestPermissionRationale(permission);
 				if (shouldShowRationale && !!_default$50) {
 					return new Promise((resolve,reject) => {
-						options = { ...rationale };
+						const options = { ...rationale };
 						_default$50.showAlert(options, () => reject(new Error("Error showing rationale")), () => resolve(_default$137.requestPermission(permission)));
 					});
 				}
@@ -76847,7 +76847,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 		}
 		static addEventListener(type,handler) {
 			invariant$53(type === "notification" || type === "register" || type === "registrationError" || type === "localNotification", "PushNotificationIOS only supports `notification`, `register`, `registrationError`, and `localNotification` events");
-			
+			let listener;
 			if (type === "notification") {
 				listener = PushNotificationEmitter.addListener(DEVICE_NOTIF_EVENT, (notifData) => {
 					handler(new PushNotificationIOS(notifData));
@@ -76869,7 +76869,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 		}
 		static removeEventListener(type) {
 			invariant$53(type === "notification" || type === "register" || type === "registrationError" || type === "localNotification", "PushNotificationIOS only supports `notification`, `register`, `registrationError`, and `localNotification` events");
-			listener = _notifHandlers.get(type);
+			const listener = _notifHandlers.get(type);
 			if (!listener) {
 				return;
 			}
@@ -76877,7 +76877,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 			_notifHandlers.delete(type);
 		}
 		static requestPermissions(permissions) {
-			requestedPermissions = { alert: true, badge: true, sound: true };
+			let requestedPermissions = { alert: true, badge: true, sound: true };
 			if (permissions) {
 				requestedPermissions = { alert: !!permissions.alert, badge: !!permissions.badge, sound: !!permissions.sound };
 			}
@@ -76912,7 +76912,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 			}
 			if (nativeNotif.remote) {
 				Object.keys(nativeNotif).forEach((notifKey) => {
-					notifVal = nativeNotif[notifKey];
+					const notifVal = nativeNotif[notifKey];
 					if (notifKey === "aps") {
 						this._alert = notifVal.alert;
 						this._sound = notifVal.sound;
@@ -77026,11 +77026,11 @@ var init_react_native_Libraries_Share_Share = __esm({
 			if (Platform$64.OS === "android") {
 				invariant$54(_default$141, "ShareModule should be registered on Android.");
 				invariant$54(content.title == null || typeof content.title === "string", "Invalid title: title should be a string.");
-				newContent = { title: content.title, message: typeof content.message === "string" ? content.message : undefined };
+				const newContent = { title: content.title, message: typeof content.message === "string" ? content.message : undefined };
 				return _default$141.share(newContent, options.dialogTitle).then((result) => ({ activityType: null, ...result }));
 			} else if (Platform$64.OS === "ios") {
 				return new Promise((resolve,reject) => {
-					tintColor = processColor$16(options.tintColor);
+					const tintColor = processColor$16(options.tintColor);
 					invariant$54(tintColor == null || typeof tintColor === "number", "Unexpected color given for options.tintColor");
 					invariant$54(_default$130, "NativeActionSheetManager is not registered on iOS, but it should be.");
 					_default$130.showShareActionSheetWithOptions({ message: typeof content.message === "string" ? content.message : undefined, url: typeof content.url === "string" ? content.url : undefined, subject: options.subject, tintColor: typeof tintColor === "number" ? tintColor : undefined, anchor: typeof options.anchor === "number" ? options.anchor : undefined, excludedActivityTypes: options.excludedActivityTypes }, (error) => reject(error), (success,activityType) => {
@@ -77131,7 +77131,7 @@ var init_react_native_Libraries_Utilities_useColorScheme = __esm({
 	
 	
 	subscribe = (onStoreChange) => {
-		appearanceSubscription = addChangeListener(onStoreChange);
+		const appearanceSubscription = addChangeListener(onStoreChange);
 		return () => appearanceSubscription.remove();
 	};
 	
@@ -77474,7 +77474,7 @@ var init__react_native_new_app_screen_src_Links = __esm({
 
 // --- Theme.js ---
 var exports__react_native_new_app_screen_src_Theme = {};
-var React$105, Text$23, useColorScheme$1, COLORS$1, __ns_132_0;
+var React$105, Text$23, useColorScheme$1, COLORS$1, __ns_147_0;
 function useTheme() {
 	const colorScheme = useColorScheme$1();
 	return { colors: COLORS$1[colorScheme === "dark" ? "dark" : "light"] };
@@ -77489,7 +77489,7 @@ __export(exports__react_native_new_app_screen_src_Theme, {
 });
 var init__react_native_new_app_screen_src_Theme = __esm({
 	"Theme.js"() {
-	__ns_132_0 = __toESM(require_react_native_index());
+	__ns_147_0 = __toESM(require_react_native_index());
 		React$105=__toESM(require_react_index());
 	({Text:Text$23,useColorScheme:useColorScheme$1}=require_react_native_index());
 	COLORS$1 = { light: { background: "#f3f3f3", backgroundHighlight: "#cfe6ee", cardBackground: "#fff", cardOutline: "#dae1e7", textPrimary: "#000", textSecondary: "#404756" }, dark: { background: "#000", backgroundHighlight: "#193c47", cardBackground: "#222", cardOutline: "#444", textPrimary: "#fff", textSecondary: "#c0c1c4" } };
@@ -77530,7 +77530,7 @@ module.exports="./react-light-3e6c31e2.png";
 
 // --- NewAppScreen.js ---
 var exports__react_native_new_app_screen_src_NewAppScreen = {};
-var React$106, Image$5, ReactNativeVersion$2, ScrollView$8, StyleSheet$55, Text$24, TouchableHighlight$4, View$53, useColorScheme$2, useWindowDimensions$2, styles$43, __ns_96_0;
+var React$106, Image$5, ReactNativeVersion$2, ScrollView$8, StyleSheet$55, Text$24, TouchableHighlight$4, View$53, useColorScheme$2, useWindowDimensions$2, styles$43, __ns_97_0;
 function NewAppScreen({ templateFileName:templateFileName="App.tsx", safeAreaInsets:safeAreaInsets={ top: 0, bottom: 0, left: 0, right: 0 } }) {
 	const { colors:colors } = useTheme();
 	const isDarkMode = useColorScheme$2() === "dark";
@@ -77553,7 +77553,7 @@ var init__react_native_new_app_screen_src_NewAppScreen = __esm({
 	"NewAppScreen.js"() {
 	init__react_native_new_app_screen_src_Links();
 	init__react_native_new_app_screen_src_Theme();
-	__ns_96_0 = __toESM(require_react_native_index());
+	__ns_97_0 = __toESM(require_react_native_index());
 	init_react_native_Libraries_Core_Devtools_openURLInBrowser();
 		
 	
@@ -77623,7 +77623,7 @@ var init_react_native_safe_area_context_src_NativeSafeAreaProvider = __esm({
 
 // --- SafeAreaContext.tsx ---
 var exports_react_native_safe_area_context_src_SafeAreaContext = {};
-var React$107, Dimensions$6, StyleSheet$56, isDev, SafeAreaInsetsContext, SafeAreaFrameContext, styles$44, NO_INSETS_ERROR, SafeAreaConsumer, SafeAreaContext, __ns_104_0;
+var React$107, Dimensions$6, StyleSheet$56, isDev, SafeAreaInsetsContext, SafeAreaFrameContext, styles$44, NO_INSETS_ERROR, SafeAreaConsumer, SafeAreaContext, __ns_101_0;
 function SafeAreaProvider({ children:children, initialMetrics:initialMetrics, initialSafeAreaInsets:initialSafeAreaInsets, style:style, ...others }) {
 	const parentInsets = useParentSafeAreaInsets();
 	const parentFrame = useParentSafeAreaFrame();
@@ -77696,7 +77696,7 @@ __export(exports_react_native_safe_area_context_src_SafeAreaContext, {
 });
 var init_react_native_safe_area_context_src_SafeAreaContext = __esm({
 	"SafeAreaContext.tsx"() {
-	__ns_104_0 = __toESM(require_react_native_index());
+	__ns_101_0 = __toESM(require_react_native_index());
 	init_react_native_safe_area_context_src_NativeSafeAreaProvider();
 		React$107=__toESM(require_react_index());
 	({Dimensions:Dimensions$6,StyleSheet:StyleSheet$56}=require_react_native_index());
@@ -77735,28 +77735,28 @@ var init_react_native_safe_area_context_src_specs_NativeSafeAreaView = __esm({
 
 // --- SafeAreaView.tsx ---
 var exports_react_native_safe_area_context_src_SafeAreaView = {};
-var React$108, useMemo$10, defaultEdges, SafeAreaView$7, __ns_105_0;
+var React$108, useMemo$10, defaultEdges, SafeAreaView$7, __ns_102_0;
 __export(exports_react_native_safe_area_context_src_SafeAreaView, {
 	SafeAreaView: function() { return SafeAreaView$7; },
 });
 var init_react_native_safe_area_context_src_SafeAreaView = __esm({
 	"SafeAreaView.tsx"() {
 	init_react_native_safe_area_context_src_specs_NativeSafeAreaView();
-	__ns_105_0 = __toESM(require_react_index());
+	__ns_102_0 = __toESM(require_react_index());
 		React$108=__toESM(require_react_index());
 	
 	({useMemo:useMemo$10}=require_react_index());
 	defaultEdges = { top: "additive", left: "additive", bottom: "additive", right: "additive" };
 	SafeAreaView$7 = React$108.forwardRef(({ edges:edges, ...props }, ref) => {
-		nativeEdges = useMemo$10(() => {
+		const nativeEdges = useMemo$10(() => {
 			if (edges == null) {
 				return defaultEdges;
 			}
-			edgesObj = Array.isArray(edges) ? edges.reduce((acc, edge) => {
+			const edgesObj = Array.isArray(edges) ? edges.reduce((acc, edge) => {
 				acc[edge] = "additive";
 				return acc;
 			}, {}) : edges;
-			requiredEdges = { top: edgesObj.top ?? "off", right: edgesObj.right ?? "off", bottom: edgesObj.bottom ?? "off", left: edgesObj.left ?? "off" };
+			const requiredEdges = { top: edgesObj.top ?? "off", right: edgesObj.right ?? "off", bottom: edgesObj.bottom ?? "off", left: edgesObj.left ?? "off" };
 			return requiredEdges;
 		}, [edges]);
 		return /* @__PURE__ */ React.createElement(_default$149, { ...props, edges: nativeEdges, ref: ref });
@@ -77767,14 +77767,14 @@ var init_react_native_safe_area_context_src_SafeAreaView = __esm({
 
 // --- NativeSafeAreaContext.ts ---
 var exports_react_native_safe_area_context_src_specs_NativeSafeAreaContext = {};
-var TurboModuleRegistry$49, _default$150, __ns_115_0;
+var TurboModuleRegistry$49, _default$150, __ns_122_0;
 __export(exports_react_native_safe_area_context_src_specs_NativeSafeAreaContext, {
 	"default": function() { return _default$150; },
 });
 var init_react_native_safe_area_context_src_specs_NativeSafeAreaContext = __esm({
 	"NativeSafeAreaContext.ts"() {
-	__ns_115_0 = __toESM(require_react_native_index());
-		({TurboModule:__ns_115_0.TurboModule,TurboModuleRegistry:TurboModuleRegistry$49}=require_react_native_index());
+	__ns_122_0 = __toESM(require_react_native_index());
+		({TurboModule:__ns_122_0.TurboModule,TurboModuleRegistry:TurboModuleRegistry$49}=require_react_native_index());
 	_default$150=TurboModuleRegistry$49.get("RNCSafeAreaContext");
 	
 	}

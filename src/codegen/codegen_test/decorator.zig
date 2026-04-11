@@ -711,6 +711,64 @@ test "stage3: class-only decorator has no instance extra initializers" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_instanceExtraInitializers") == null);
 }
 
+// --- Initializer chaining (TypeScript 패턴 호환) ---
+
+test "stage3: getter with existing constructor → __runInitializers injected" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Store {
+        \\  @dec get fullName() { return "hello"; }
+        \\  constructor() { console.log("hi"); }
+        \\}
+    );
+    defer r.deinit();
+    // constructor에 _instanceExtraInitializers가 삽입되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _instanceExtraInitializers)") != null);
+    // 원본 constructor body도 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(\"hi\")") != null);
+}
+
+test "stage3: accessor + getter → initializer chaining" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Store {
+        \\  @dec accessor x = 1;
+        \\  @dec get fullName() { return "hello"; }
+        \\  constructor() { console.log("hi"); }
+        \\}
+    );
+    defer r.deinit();
+    // 첫 accessor에 _instanceExtraInitializers piggyback
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _instanceExtraInitializers)") != null);
+    // constructor에 마지막 field의 _extraInitializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _x_extraInitializers)") != null);
+}
+
+test "stage3: multiple accessors → chained initializers" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Store {
+        \\  @dec accessor x = 1;
+        \\  @dec accessor y = 2;
+        \\}
+    );
+    defer r.deinit();
+    // 첫 accessor: _instanceExtraInitializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _instanceExtraInitializers)") != null);
+    // 둘째 accessor: _x_extraInitializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _x_extraInitializers)") != null);
+    // constructor에 _y_extraInitializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _y_extraInitializers)") != null);
+}
+
+test "stage3: getter only (no field) with no constructor → constructor created with _instanceExtraInitializers" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec get x() { return 1; }
+        \\}
+    );
+    defer r.deinit();
+    // constructor에 _instanceExtraInitializers가 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers(this, _instanceExtraInitializers)") != null);
+}
+
 // --- Class expression ---
 
 test "stage3: class expression decorator → IIFE as expression" {
