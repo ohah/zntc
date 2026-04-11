@@ -706,6 +706,29 @@ pub const USING_RUNTIME_ES5 =
 pub const USING_RUNTIME_ES5_MIN = "var __using=function(stack,value,async){if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var __callDispose=function(stack,error,hasError){var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=function(e){error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e)};var next=function(it){while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,function(e){fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
 
 // ============================================================
+// Spread Array (ES2015)
+// ============================================================
+
+/// __toConsumableArray: spread 배열 변환 (SWC 호환).
+/// 배열이면 직접 복사, iterable이면 Array.from(), array-like면 수동 복사.
+/// [...map.values()] → [].concat(__toConsumableArray(map.values()))
+pub const SPREAD_ARRAY_RUNTIME =
+    \\var __arrayLikeToArray = function(arr, len) {
+    \\  if (len == null || len > arr.length) len = arr.length;
+    \\  for (var i = 0, arr2 = new Array(len); i < len; i++) arr2[i] = arr[i];
+    \\  return arr2;
+    \\};
+    \\var __toConsumableArray = function(arr) {
+    \\  if (Array.isArray(arr)) return __arrayLikeToArray(arr);
+    \\  if (typeof Symbol !== "undefined" && arr[Symbol.iterator] != null) return Array.from(arr);
+    \\  if (arr && typeof arr.length === "number") return __arrayLikeToArray(arr);
+    \\  throw new TypeError("Invalid attempt to spread non-iterable instance.");
+    \\};
+    \\
+;
+pub const SPREAD_ARRAY_RUNTIME_MIN = "var __arrayLikeToArray=function(arr,len){if(len==null||len>arr.length)len=arr.length;for(var i=0,arr2=new Array(len);i<len;i++)arr2[i]=arr[i];return arr2};var __toConsumableArray=function(arr){if(Array.isArray(arr))return __arrayLikeToArray(arr);if(typeof Symbol!==\"undefined\"&&arr[Symbol.iterator]!=null)return Array.from(arr);if(arr&&typeof arr.length===\"number\")return __arrayLikeToArray(arr);throw new TypeError(\"Invalid attempt to spread non-iterable instance.\")};";
+
+// ============================================================
 // Append Helper
 // ============================================================
 
@@ -761,6 +784,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.es_decorator) {
         try buf.appendSlice(allocator, if (minify) ES_DECORATOR_RUNTIME_MIN else ES_DECORATOR_RUNTIME);
+    }
+    if (helpers.spread_array) {
+        try buf.appendSlice(allocator, if (minify) SPREAD_ARRAY_RUNTIME_MIN else SPREAD_ARRAY_RUNTIME);
     }
 }
 
