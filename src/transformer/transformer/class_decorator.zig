@@ -1462,10 +1462,10 @@ pub fn extractTypeFromSource(self: *Transformer, param: Node) Error!NodeIndex {
     return makeTypeofGuard(self, type_name);
 }
 
-/// 이름으로 identifier_reference 노드를 생성하는 헬퍼
+/// 이름으로 identifier_reference 노드를 생성하는 헬퍼.
+/// es_helpers.makeIdentifierRef와 동일 — legacy decorator 코드 호환을 위해 alias 유지.
 fn makeIdentifier(self: *Transformer, name: []const u8) Error!NodeIndex {
-    const span = try self.ast.addString(name);
-    return self.ast.addNode(.{ .tag = .identifier_reference, .span = span, .data = .{ .string_ref = span } });
+    return es_helpers.makeIdentifierRef(self, name);
 }
 
 /// typeof X === "undefined" ? Object : X 조건 표현식 생성 (SWC 호환).
@@ -2245,7 +2245,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
     });
 
-    // let Foo = (() => { ... })();
+    // class expression → IIFE call을 직접 반환 (표현식 위치에서 사용)
+    if (node.tag == .class_expression) {
+        return iife_call;
+    }
+
+    // class declaration → let Foo = (() => { ... })();
     const outer_name_span = if (!name_idx.isNone()) blk: {
         const n = self.ast.getNode(name_idx);
         break :blk n.data.string_ref;
