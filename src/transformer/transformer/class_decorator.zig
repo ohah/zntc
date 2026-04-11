@@ -1942,7 +1942,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // instance field만 initializer 체이닝 적용 (static은 static block에서 처리)
                     if (!is_static) {
                         const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
-                        const result = try buildPiggybackedInitCall(self,prev_extra, init_call);
+                        const result = try buildPiggybackedInitCall(self, prev_extra, init_call);
                         const info = member_infos.items[member_infos.items.len - 1];
                         if (info.extra_initializers_name) |extra_name| {
                             last_instance_field_extra = extra_name;
@@ -2023,7 +2023,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         if (!is_static) {
                             const prev_extra = last_instance_field_extra orelse "_instanceExtraInitializers";
                             last_instance_field_extra = names.extra_name;
-                            break :blk try buildPiggybackedInitCall(self,prev_extra, init_call);
+                            break :blk try buildPiggybackedInitCall(self, prev_extra, init_call);
                         } else {
                             break :blk init_call;
                         }
