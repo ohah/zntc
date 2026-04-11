@@ -402,6 +402,94 @@ describe("CLI: import.meta.glob", () => {
   });
 });
 
+// ─── UMD/AMD 포맷 ───
+
+describe("CLI: UMD/AMD format", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-cli-umd-"));
+    writeFileSync(
+      join(dir, "app.ts"),
+      'import { useState } from "react";\nexport function App() { return useState(0); }',
+    );
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("UMD: external dependency array + factory params", () => {
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      join(dir, "app.ts"),
+      "--format=umd",
+      "--external",
+      "react",
+      "--global-name=MyApp",
+    ]);
+    expect(exitCode).toBe(0);
+    // dependency array에 "react" 포함
+    expect(stdout).toContain('define(["react"]');
+    // factory 매개변수
+    expect(stdout).toContain("function(React)");
+    // CJS require 경로
+    expect(stdout).toContain('require("react")');
+    // IIFE 글로벌
+    expect(stdout).toContain("root.React");
+    // body에 named import → factory param 프로퍼티 접근
+    expect(stdout).toContain("React.useState");
+    // body에 bare require("react") 없음
+    expect(stdout).not.toContain('var React = require("react")');
+  });
+
+  test("AMD: external dependency array + factory params", () => {
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      join(dir, "app.ts"),
+      "--format=amd",
+      "--external",
+      "react",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('define(["react"]');
+    expect(stdout).toContain("function(React)");
+    expect(stdout).toContain("React.useState");
+  });
+
+  test("UMD: Node.js에서 실행 가능", () => {
+    // react mock + UMD 번들을 Node.js에서 실행
+    const mockDir = mkdtempSync(join(tmpdir(), "zts-umd-e2e-"));
+    writeFileSync(
+      join(mockDir, "app.ts"),
+      'import { greet } from "mylib";\nexport const msg = greet("world");',
+    );
+    mkdirSync(join(mockDir, "node_modules", "mylib"), { recursive: true });
+    writeFileSync(
+      join(mockDir, "node_modules", "mylib", "index.js"),
+      'exports.greet = function(n) { return "Hello " + n; };',
+    );
+
+    const outFile = join(mockDir, "bundle.js");
+    const { exitCode } = runCli([
+      "--bundle",
+      join(mockDir, "app.ts"),
+      "--format=umd",
+      "--external",
+      "mylib",
+      "-o",
+      outFile,
+    ]);
+    expect(exitCode).toBe(0);
+
+    // Node.js에서 UMD 번들 require → CJS 경로로 실행
+    const run = spawnSync("node", ["-e", `const m = require("${outFile}"); console.log(m.msg);`], {
+      cwd: mockDir,
+    });
+    expect(run.stdout?.toString().trim()).toBe("Hello world");
+
+    rmSync(mockDir, { recursive: true, force: true });
+  });
+});
+
 // ─── Bundle + Plugin ───
 
 describe("CLI: bundle + plugin", () => {
