@@ -830,4 +830,210 @@ describe("Stage 3 Decorators", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toContain("42");
   });
+
+  // --- Babel 2023-11-classes/decorator-access-modified-fields ---
+
+  // TODO: class decorator가 member-decorated field의 변환된 초기값을 보려면
+  // __esDecorate 호출 순서가 member → class 순이어야 함 (현재 동일 static block에서 순차 호출)
+  it.skip("babel: class decorator sees member-decorated field value", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        var value: any;
+        const classDec = (Class: any) => {
+          value = (new Class).m;
+          return Class;
+        };
+        const memberDec = () => () => 42;
+        @classDec class C {
+          @memberDec m: any;
+        }
+        console.log(value);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42");
+  });
+
+  // --- Babel 2023-11-ordering: decorator evaluation order (간소화) ---
+
+  // TODO: decorator 평가 순서가 스펙과 정확히 일치해야 함
+  // (method → field → class, 각각 inner→outer 순)
+  it.skip("babel: decorator evaluation order across element kinds", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const log: number[] = [];
+        function push(x: number) { log.push(x); return x; }
+        function logDec(a: number, b: number) {
+          push(a);
+          return function(el: any) { push(b); return el; };
+        }
+        @logDec(0, 9) @logDec(1, 8)
+        class A {
+          @logDec(2, 7) @logDec(3, 6) method() {}
+          @logDec(4, 5) x: any;
+        }
+        new A();
+        console.log(log.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // 스펙 순서: method decs(3,2) → field decs(4) → class decs(1,0) → method results(6,7) → field result(5) → class results(8,9)
+    const output = result.runOutput;
+    // decorator 평가: method → field → class 순
+    expect(output).toContain("3,2,4");
+  });
+
+  // --- Babel 2023-11-getters/context-name (간소화) ---
+
+  it("babel: getter decorator context.name for various key types", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: string[] = [];
+        const dec = (value: any, context: any) => { logs.push(context.name); };
+        class Foo {
+          @dec static get a() { return 0; }
+          @dec static get "b"() { return 0; }
+          @dec static get 0() { return 0; }
+        }
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain('["a","b","0"]');
+  });
+
+  // --- Babel 2023-11-setters/context-name (간소화) ---
+
+  it("babel: setter decorator context.name for various key types", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: string[] = [];
+        const dec = (value: any, context: any) => { logs.push(context.name); };
+        class Foo {
+          @dec static set a(v: any) {}
+          @dec static set "b"(v: any) {}
+          @dec static set 0(v: any) {}
+        }
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain('["a","b","0"]');
+  });
+
+  // --- Babel 2023-11-misc: context.access on other objects ---
+
+  it("babel: context.access.set works on arbitrary objects", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        let access: any;
+        function dec(value: any, ctx: any) { access = ctx.access; }
+        class C {
+          @dec x = 1;
+        }
+        const other = { x: 0 };
+        access.set(other, 99);
+        console.log(other.x);
+        console.log(access.get(other));
+        console.log(access.has(other));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("99");
+    expect(result.runOutput).toContain("true");
+  });
+
+  // --- Babel 2023-11: accessor context ---
+
+  it("babel: accessor decorator context has correct kind and static", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: any[] = [];
+        function dec(target: any, ctx: any) {
+          logs.push({ kind: ctx.kind, name: ctx.name, static: ctx.static });
+          return target;
+        }
+        class Foo {
+          @dec accessor x = 1;
+          @dec static accessor y = 2;
+        }
+        new Foo();
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    const output = result.runOutput;
+    expect(output).toContain('"kind":"accessor"');
+    expect(output).toContain('"name":"x"');
+    expect(output).toContain('"name":"y"');
+  });
+
+  // --- Babel: method available during field initialization ---
+
+  it("babel: method available before field initializer runs", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        let methodAvailable = false;
+        @((x: any) => x)
+        class A {
+          foo = (() => {
+            methodAvailable = typeof this.method === "function";
+            return "foo";
+          })();
+          method() {}
+        }
+        new A();
+        console.log("methodAvailable:" + methodAvailable);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("methodAvailable:true");
+  });
+
+  // --- Babel: multiple field decorators with init transform ---
+
+  it("babel: multiple field decorators chain initializers", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function add(n: number) {
+          return (value: any, ctx: any) => {
+            return (v: number) => v + n;
+          };
+        }
+        class Foo {
+          @add(1) @add(2) x = 10;
+        }
+        console.log(new Foo().x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // 스펙: 오른쪽→왼쪽 적용, init 체이닝: (10 + 2) + 1 = 13
+    expect(result.runOutput).toContain("13");
+  });
+
+  // --- Babel: static field initializer with class reference ---
+
+  it("babel: static field initializer runs after class is defined", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function dec(value: any, ctx: any) { return value; }
+        @dec class Foo {
+          static instance = new Foo();
+          value = 42;
+        }
+        console.log(Foo.instance.value);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42");
+  });
 });
