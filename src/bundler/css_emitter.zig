@@ -9,7 +9,6 @@ const Module = @import("module.zig").Module;
 const ModuleIndex = @import("types.zig").ModuleIndex;
 const emitter = @import("emitter.zig");
 const OutputFile = emitter.OutputFile;
-const css_scanner = @import("css_scanner.zig");
 
 /// 엔트리 모듈에서 도달 가능한 CSS 모듈을 수집하여 연결된 CSS 번들을 생성한다.
 /// CSS 모듈이 없으면 null을 반환한다.
@@ -42,7 +41,8 @@ pub fn emitCssBundle(
     defer output.deinit(allocator);
 
     for (css_modules.items) |mod| {
-        const stripped = stripCssImports(allocator, mod.source, if (mod.css_data) |cd| cd.import_count else 0);
+        const strip_end: u32 = if (mod.css_data) |cd| cd.strip_end else 0;
+        const stripped = if (strip_end > 0 and strip_end < mod.source.len) mod.source[strip_end..] else mod.source;
         // 공백만 있는 경우 건너뜀
         const trimmed = std.mem.trim(u8, stripped, " \t\n\r");
         if (trimmed.len == 0) continue;
@@ -94,23 +94,6 @@ fn collectCssModules(
     }
 }
 
-/// CSS 소스에서 상단 @import 규칙을 strip한다.
-/// import_count개의 @import 규칙을 제거하고 나머지를 반환한다.
-fn stripCssImports(allocator: std.mem.Allocator, source: []const u8, import_count: u32) []const u8 {
-    if (import_count == 0) return source;
-
-    // css_scanner와 동일한 로직으로 @import 규칙 위치 찾기
-    const imports = css_scanner.extractCssImports(allocator, source);
-    defer allocator.free(imports);
-    if (imports.len == 0) return source;
-
-    // 마지막 @import의 끝 위치 이후부터 반환
-    const last_idx = @min(import_count, @as(u32, @intCast(imports.len)));
-    const strip_end = imports[last_idx - 1].span.end;
-    if (strip_end >= source.len) return "";
-    return source[strip_end..];
-}
-
 /// CSS 출력 파일명 패턴 적용.
 /// [name] → 엔트리 파일의 basename (확장자 제거) + .css
 fn applyCssNamingPattern(allocator: std.mem.Allocator, pattern: []const u8, entry_path: []const u8) ![]const u8 {
@@ -135,19 +118,6 @@ fn applyCssNamingPattern(allocator: std.mem.Allocator, pattern: []const u8, entr
 // ============================================================
 // 테스트
 // ============================================================
-
-test "stripCssImports: strips first import" {
-    const source = "@import \"./a.css\";\nbody { color: red; }";
-    const result = stripCssImports(std.testing.allocator, source, 1);
-    try std.testing.expect(std.mem.indexOf(u8, result, "body") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "@import") == null);
-}
-
-test "stripCssImports: no imports" {
-    const source = "body { color: red; }";
-    const result = stripCssImports(std.testing.allocator, source, 0);
-    try std.testing.expectEqualStrings(source, result);
-}
 
 test "applyCssNamingPattern: default pattern" {
     const result = try applyCssNamingPattern(std.testing.allocator, "[name]", "/app/src/index.ts");
