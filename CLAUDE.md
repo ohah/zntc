@@ -123,6 +123,22 @@ await build({
 > **async 훅 지원**: 모든 Rollup/Vite 훅은 `Promise`를 반환할 수 있다.
 > `async resolveId()`, `async load()`, `async transform()`, `async renderChunk()`, `async generateBundle()` 모두 동작.
 
+### vite-plugin-zts (Vite 플러그인)
+Vite의 esbuild transform을 ZTS로 교체하는 플러그인.
+```typescript
+// vite.config.ts
+import { defineConfig } from "vite";
+import { zts } from "vite-plugin-zts";
+
+export default defineConfig({
+  plugins: [zts()],
+});
+```
+옵션:
+- `include?: RegExp` — 변환할 파일 패턴 (기본: `/\.(tsx?|jsx)$/`)
+- `exclude?: RegExp` — 제외 패턴 (기본: `/node_modules/`)
+- `transpileOptions?: TranspileOptions` — ZTS transpile 옵션
+
 ### define/alias
 ```typescript
 buildSync({
