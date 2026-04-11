@@ -555,8 +555,7 @@ describe("Stage 3 Decorators", () => {
 
   // --- 2023-11-methods/context-name (간소화) ---
 
-  // TODO: string literal ("b") 및 numeric literal (0) 키에 대한 context.name 지원
-  it.skip("babel: method decorator context.name for various key types", async () => {
+  it("babel: method decorator context.name for various key types", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         const logs: string[] = [];
@@ -576,8 +575,7 @@ describe("Stage 3 Decorators", () => {
 
   // --- 2023-11-fields/context-name (간소화) ---
 
-  // TODO: string literal ("b") 및 numeric literal (0) 키에 대한 context.name 지원
-  it.skip("babel: field decorator context.name for various key types", async () => {
+  it("babel: field decorator context.name for various key types", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         const logs: string[] = [];
