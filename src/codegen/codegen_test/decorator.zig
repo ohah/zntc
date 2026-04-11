@@ -3,6 +3,7 @@ const helpers = @import("helpers.zig");
 const e2eDecorator = helpers.e2eDecorator;
 const e2eDecoratorES5 = helpers.e2eDecoratorES5;
 const e2eDecoratorMetadata = helpers.e2eDecoratorMetadata;
+const e2eStage3Decorator = helpers.e2eStage3Decorator;
 const e2eFull = helpers.e2eFull;
 const TransformOptions = helpers.TransformOptions;
 const TestResult = helpers.TestResult;
@@ -394,4 +395,182 @@ test "metadata: mixed primitive + class params" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Number") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "String") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "MyService") != null);
+}
+
+// ============================================================
+// Stage 3 (TC39) Decorator — TypeScript 5.0+ 출력 검증
+// ============================================================
+//
+// experimental_decorators=false(기본값)일 때 Stage 3 변환이 동작해야 한다.
+// TypeScript/Babel/SWC와 동일한 __esDecorate + __runInitializers 패턴.
+
+// --- Class decorator ---
+
+test "stage3: class decorator → __esDecorate + IIFE" {
+    // @dec class Foo {}
+    // → let Foo = (() => { ... __esDecorate(null, _classDescriptor = { value: _classThis }, ...) ... })();
+    var r = try e2eStage3Decorator(std.testing.allocator, "@dec class Foo {}");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers") != null);
+    // IIFE 래핑: (() => { ... })() 또는 (function() { ... })()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let Foo") != null);
+    // class 키워드가 여전히 존재 (내부 var Foo = class { ... })
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class") != null);
+    // kind: "class" context
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
+}
+
+test "stage3: class decorator with extends" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Base {}
+        \\@dec class Child extends Base {}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "extends") != null);
+}
+
+test "stage3: multiple class decorators" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\@dec1
+        \\@dec2
+        \\class Foo {}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "dec1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "dec2") != null);
+}
+
+// --- Method decorator ---
+
+test "stage3: method decorator → __esDecorate with kind method" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  greet() { return "hi"; }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"greet\"") != null);
+    // instance method → __runInitializers in constructor
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers") != null);
+}
+
+test "stage3: static method decorator" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  static create() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static: true") != null);
+}
+
+// --- Getter/Setter decorator ---
+
+test "stage3: getter decorator → kind getter" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  get x() { return 1; }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"getter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\"") != null);
+}
+
+test "stage3: setter decorator → kind setter" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  set x(v: number) {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"setter\"") != null);
+}
+
+// --- Field decorator ---
+
+test "stage3: field decorator → kind field + initializers" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  x = 1;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\"") != null);
+    // field은 per-field initializers를 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers") != null);
+}
+
+test "stage3: static field decorator" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  static x = 42;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static: true") != null);
+}
+
+// --- Auto-accessor decorator ---
+
+test "stage3: accessor decorator → kind accessor + backing field" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  accessor x = 1;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"accessor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\"") != null);
+    // accessor는 getter/setter pair를 생성
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set") != null);
+}
+
+// --- No decorator → passthrough ---
+
+test "stage3: no decorator → class preserved as-is" {
+    var r = try e2eStage3Decorator(std.testing.allocator, "class Foo { greet() {} }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo") != null);
+}
+
+// --- Mixed decorators ---
+
+test "stage3: class + method mixed" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\@classDec
+        \\class Foo {
+        \\  @methodDec
+        \\  greet() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "classDec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "methodDec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
 }

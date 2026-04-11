@@ -247,6 +247,14 @@ pub fn e2eDecoratorMetadata(allocator: std.mem.Allocator, source: []const u8) !T
     }, .{ .minify_whitespace = true }, ".ts");
 }
 
+/// Stage 3 (TC39) decorator e2e: experimental_decorators=false (기본값).
+/// TypeScript 5.0+ 형식의 __esDecorate/__runInitializers 출력을 검증.
+pub fn e2eStage3Decorator(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFull(allocator, source, .{
+        // experimental_decorators 기본값 = false → Stage 3 경로
+    }, .{}, ".ts");
+}
+
 pub fn e2eDecoratorES5(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eFull(allocator, source, .{
         .experimental_decorators = true,
