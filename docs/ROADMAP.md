@@ -47,6 +47,8 @@
 | 34. 플러그인 훅 확장 | renderChunk/generateBundle NAPI 노출 + vitePlugin 매핑 | ✅ |
 | 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
 | 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |
+| 37. Stage 3 decorators | TC39 Stage 3 데코레이터 (method/getter/setter/field/accessor/class, MobX 6 호환) | ✅ |
+| 38. CSS 번들링 | @import 인라이닝, 별도 .css 파일 emit, Lightning CSS minify 연동 | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
@@ -74,11 +76,11 @@
 
 ~~**배치 E (S급 일괄)**~~ — ✅ 완료 (CLI 옵션 13개: outbase, packages=external, drop-labels, pure, line-limit 등)
 
-**CSS 번들링** — 플러그인으로 사용 가능, 자체 파서는 후순위
-- ✅ 현재 가능: Lightning CSS / PostCSS를 JS 플러그인(`--plugin`)으로 연결하여 CSS 처리
-- 후순위: 자체 CSS 파서 (Zig 네이티브 `@import` 그래프 통합, CSS tree-shaking, CSS Modules)
-- 자체 파서가 필요한 이유: subprocess IPC 왕복 비용 제거 + `@import` 체인을 모듈 그래프에 통합
-- 대부분의 프로젝트는 Lightning CSS 플러그인으로 충분
+~~**CSS 번들링**~~ — ✅ Phase 1 완료 (자체 @import 스캐너 + Lightning CSS minify 연동)
+- ✅ `import './style.css'` → 별도 `.css` 파일 자동 생성
+- ✅ CSS `@import` 체이닝 → Zig 네이티브 스캐너로 모듈 그래프에 통합 + 인라이닝
+- ✅ `--minify` 시 Lightning CSS로 CSS minify (optionalDependency)
+- 후순위: CSS Modules (`.module.css`), 코드 스플리팅 시 청크별 CSS 분리
 
 **플러그인 3단계 (N-API)** — XL (2~3주)
 - 현재 subprocess IPC만 (매 모듈마다 JSON 왕복 — 느림)
@@ -137,11 +139,10 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
-- **CSS 번들링** — 현재 플러그인 위임, 자체 구현은 후순위
-  현재: `--loader:.css=text`로 문자열 export 또는 플러그인으로 PostCSS/Lightning CSS 위임.
-  `--loader:.css=empty`로 CSS import 무시 후 별도 빌드 도구 사용도 가능.
-  자체 CSS 파서(Zig 네이티브 `@import` 해석, CSS tree-shaking, CSS Modules)는
-  플러그인만으로 부족할 때 검토. Bun도 자체 CSS 번들링 미지원.
+- ~~**CSS 번들링**~~ — ✅ Phase 1 완료
+  `import './style.css'` → 별도 `.css` 파일 자동 생성. Zig 네이티브 `@import` 스캐너로
+  모듈 그래프에 통합 + 인라이닝. `--minify` 시 Lightning CSS로 CSS minify (optional).
+  후순위: CSS Modules (`.module.css`), 코드 스플리팅 시 청크별 CSS 분리.
 
 - ~~**metafile**~~ — ✅ 완료. `--metafile=meta.json` esbuild 호환 JSON.
 - ~~**analyze**~~ — ✅ 완료. `--analyze` metafile JSON stderr 출력 (향후 트리 포맷 개선 예정).
@@ -170,7 +171,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
 - ~~**import.meta.glob**~~ — ✅ 완료. Vite 호환 `import.meta.glob()` (eager/import 옵션 지원)
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
-- **Stage 3 decorators** — `XL` | TC39 최신 데코레이터 다운레벨링 (현재 legacy만)
+- ~~**Stage 3 decorators**~~ — ✅ 완료. TC39 Stage 3 데코레이터 다운레벨링 (method/getter/setter/field/accessor/class, initializer 체이닝, MobX 6 호환)
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
 - **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
 - **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
@@ -182,13 +183,13 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 | 항목 | 난이도 | esbuild | rolldown | rspack | ZTS | 설명 |
 |------|--------|---------|----------|--------|-----|------|
-| **CSS 번들링** | XL | ✅ | ✅ | ✅ | ❌ | 자체 CSS 파서, @import, CSS Modules |
+| ~~**CSS 번들링**~~ | ✅ | ✅ | ✅ | ✅ | ✅ | @import 인라이닝 + Lightning CSS minify (CSS Modules 후순위) |
 | **manualChunks** | L | ❌ | ✅ advancedChunks | ✅ splitChunks | ❌ | 사용자 정의 청크 분할 규칙 |
 | **innerGraph** | L | ❌ | ✅ | ✅ | ❌ | 변수 할당 추적으로 정밀 DCE |
 | **Persistent caching** | XL | ❌ | ❌ | ✅ | ❌ | 디스크 캐시, 콜드 리빌드 250%↑ |
 | **Module Federation** | XL | ❌ | ❌ | ✅ | ❌ | 마이크로프론트엔드 코드/리소스 공유 |
 | **Lazy compilation** | XL | ❌ | ❌ | ✅ | ❌ | 온디맨드 모듈 컴파일 (dev 시작 가속) |
-| **Stage 3 decorators** | XL | ❌ | ✅ | ✅ | ❌ | TC39 최신 데코레이터 (현재 legacy만) |
+| ~~**Stage 3 decorators**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | TC39 Stage 3 데코레이터 (legacy + Stage 3) |
 | **mangleProps** | XL | ✅ | ❌ | ❌ | ❌ | cross-module 프로퍼티 난독화 |
 | **lazyBarrel** | L | ❌ | ✅ | ❌ | ❌ | barrel re-export 컴파일 생략 |
 | ~~**import.meta.glob**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | Vite 호환 glob import |
@@ -217,13 +218,13 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   shimMissingExports, extensionAlias, sanitizeFileName
 
 단독 XL ────────────────────────────────────────────────────────
-  CSS 번들링 — 현재 플러그인 위임 (자체 CSS 파서는 후순위)
+  CSS 번들링 ✅ Phase 1 완료 — @import 인라이닝 + Lightning CSS minify (CSS Modules 후순위)
   플러그인 API ✅ 1-4단계 완료 — NAPI + Vite 어댑터 + async 훅
   엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
   Web Worker ✅ 완료 — new Worker(new URL(...)) 자동 감지+IIFE 번들 (esbuild 미지원)
   import.meta.glob ✅ 완료 — Vite 호환 glob import (eager/import 옵션)
   mangleProps (1주+) — cross-module 프로퍼티 추적
-  Stage 3 decorators — TC39 최신 데코레이터 (현재 legacy만)
+  Stage 3 decorators ✅ 완료 — TC39 Stage 3 데코레이터 (legacy + Stage 3, MobX 6 호환)
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
   manualChunks (3~5일) — 사용자 정의 청크 분할
   innerGraph (3~5일) — 변수 할당 추적 정밀 DCE
@@ -315,7 +316,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 | 항목 | 난이도 | 현재 상태 | 설명 |
 |------|--------|----------|------|
-| **CSS 번들링 (자체 파서)** | XL (1주+) | Lightning CSS 플러그인으로 사용 가능 | 자체 Zig 파서는 성능 최적화 목적. 대부분 플러그인으로 충분 |
+| ~~**CSS 번들링**~~ | ✅ | Phase 1 완료 (@import 인라이닝 + Lightning CSS minify) | CSS Modules, 청크별 CSS는 후순위 |
 | **npm 배포** | L | 로컬 빌드만 | `npm install zts`로 설치. cross-platform prebuilt binary (macOS/Linux/Windows arm64/x64) |
 | **CI 크로스 플랫폼** | M | 없음 | GitHub Actions: Linux/macOS/Windows × arm64/x64 빌드+테스트 |
 | **릴리즈 자동화** | M | 없음 | 태그 push → 바이너리 빌드 → npm publish → GitHub Release |

@@ -36,6 +36,8 @@ pub const json_to_esm = @import("json_to_esm.zig");
 pub const plugin = @import("plugin.zig");
 pub const subprocess_plugin = @import("subprocess_plugin.zig");
 pub const module_store = @import("module_store.zig");
+pub const css_scanner = @import("css_scanner.zig");
+pub const css_emitter = @import("css_emitter.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;

@@ -415,6 +415,35 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
 }
 
 /**
+ * CSS 출력 파일을 Lightning CSS로 후처리한다 (minify, 프리픽스 등).
+ * lightningcss가 설치되어 있지 않으면 원본 그대로 반환.
+ */
+function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void {
+  if (!options.minify) return;
+
+  let lcss: typeof import("lightningcss") | null = null;
+  try {
+    lcss = require("lightningcss");
+  } catch {
+    return; // lightningcss 미설치 — raw CSS 그대로 반환
+  }
+
+  for (const file of result.outputFiles) {
+    if (!file.path.endsWith(".css")) continue;
+    try {
+      const transformed = lcss.transform({
+        code: Buffer.from(file.text),
+        minify: true,
+        filename: file.path,
+      });
+      file.text = transformed.code.toString();
+    } catch {
+      // CSS 변환 실패 시 원본 유지
+    }
+  }
+}
+
+/**
  * write/outdir/outfile 옵션에 따라 빌드 결과를 디스크에 기록한다.
  */
 function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
@@ -473,6 +502,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
 
   const result: BuildResult = await native.build(napiOptions);
+  postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
   return result;
 }
@@ -492,6 +522,7 @@ export function buildSync(options: BuildOptions): BuildResult {
 
   const napiOptions = prepareNapiOptions(options);
   const result: BuildResult = native.buildSync(napiOptions);
+  postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
   return result;
 }

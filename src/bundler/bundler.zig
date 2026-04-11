@@ -97,6 +97,8 @@ pub const BundleOptions = struct {
     chunk_names: []const u8 = "[name]-[hash]",
     /// 에셋 파일명 패턴 (--asset-names, 기본: "[name]-[hash]")
     asset_names: []const u8 = "[name]-[hash]",
+    /// CSS 출력 파일명 패턴 (--css-names, 기본: "[name]")
+    css_names: []const u8 = "[name]",
     /// 확장자별 로더 오버라이드 (--loader:.png=file)
     loader_overrides: []const types.LoaderOverride = &.{},
     /// legal comments 처리 모드 (--legal-comments)
@@ -891,10 +893,24 @@ pub const Bundler = struct {
             runner.runGenerateBundle(gen_outputs);
         }
 
-        // Worker 출력 파일을 asset_outputs에 합침
-        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null) blk: {
+        // 5.6. CSS 번들 수집 (엔트리별 CSS 모듈 연결)
+        var css_output_files: std.ArrayList(OutputFile) = .empty;
+        defer css_output_files.deinit(self.allocator);
+        {
+            const css_emit = @import("css_emitter.zig");
+            for (self.options.entry_points) |ep| {
+                // 엔트리 경로 → 모듈 인덱스 찾기
+                const resolved = graph.path_to_module.get(ep) orelse continue;
+                if (css_emit.emitCssBundle(self.allocator, graph.modules.items, resolved, self.options.css_names)) |css_out| {
+                    css_output_files.append(self.allocator, css_out) catch {};
+                }
+            }
+        }
+
+        // Worker + CSS 출력 파일을 asset_outputs에 합침
+        const final_asset_outputs: ?[]OutputFile = if (worker_output_files.items.len > 0 or asset_outputs != null or css_output_files.items.len > 0) blk: {
             const existing = if (asset_outputs) |a| a.len else 0;
-            const total = existing + worker_output_files.items.len;
+            const total = existing + worker_output_files.items.len + css_output_files.items.len;
             const merged = try self.allocator.alloc(OutputFile, total);
             if (asset_outputs) |a| {
                 @memcpy(merged[0..a.len], a);
@@ -902,6 +918,10 @@ pub const Bundler = struct {
             }
             for (worker_output_files.items, 0..) |wf, i| {
                 merged[existing + i] = wf;
+            }
+            const css_start = existing + worker_output_files.items.len;
+            for (css_output_files.items, 0..) |cf, i| {
+                merged[css_start + i] = cf;
             }
             break :blk merged;
         } else asset_outputs;
