@@ -256,7 +256,7 @@ pub fn buildMetadataForAst(
 
                     // CJS 모듈별 namespace var 생성 (한 번만)
                     const ns_var = if (cjs_ns_cache.get(@intCast(canonical_mod))) |cached| cached else blk: {
-                        const ns_name = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}", .{cjs_ns_cache.count()});
+                        const ns_name = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}_{d}", .{ module_index, cjs_ns_cache.count() });
                         try cjs_ns_cache.put(@intCast(canonical_mod), ns_name);
                         try ns_var_list.append(self.allocator, ns_name);
                         try preamble.writeCjsImportInner(ns_name, "", req_var, true, interop_mode, true);
@@ -914,7 +914,7 @@ pub fn buildDevMetadataForAst(
         var vi: u32 = 0;
         for (record_infos[0..m.import_records.len], 0..) |info_r, ri| {
             if (info_r.named_count > 0) {
-                vars[vi] = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}", .{vi});
+                vars[vi] = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}_{d}", .{ module_index, vi });
                 ns_var_for_record[ri] = vars[vi];
                 vi += 1;
             }
