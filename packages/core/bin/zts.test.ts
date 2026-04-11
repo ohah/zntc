@@ -6,9 +6,8 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
