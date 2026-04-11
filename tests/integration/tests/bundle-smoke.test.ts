@@ -2237,4 +2237,166 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toContain("99");
   });
+
+  test("ESM 래핑 모듈의 export function이 re-export 시 정상 resolve된다 (#1092)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { isEnabled } from "./re-export";\nconsole.log(typeof isEnabled, isEnabled());`,
+        "re-export.ts": `export { isEnabled } from "./lib";`,
+        "lib.ts": `
+          let called = false;
+          export function isEnabled(): boolean {
+            called = true;
+            return called;
+          }
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("function true");
+  });
+
+  test("ESM 래핑 모듈의 named export function이 undefined가 아니다 (#1092)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { greet, VERSION } from "./lib";\nconsole.log(typeof greet, greet("world"), VERSION);`,
+        "lib.ts": `
+          export function greet(name: string) {
+            return "hello " + name;
+          }
+          export const VERSION = "1.0";
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("function hello world 1.0");
+  });
+
+  test("순환 참조에서 export function이 init 전에 호출되면 undefined가 아니어야 한다 (#1092)", async () => {
+    // EnableNewWebImplementation.ts ↔ utils.ts 순환 참조 재현
+    // A가 B를 import하고, B가 A를 import. A의 export function이 B에서 호출됨.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { result } from "./b";\nconsole.log(result);`,
+        "a.ts": `
+          import { helper } from "./b";
+          export function isEnabled(): boolean {
+            return true;
+          }
+          export const aValue = helper();
+        `,
+        "b.ts": `
+          import { isEnabled } from "./a";
+          export function helper(): string {
+            return "helper";
+          }
+          export const result = typeof isEnabled === "function" ? "ok:" + isEnabled() : "FAIL:undefined";
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("ok:true");
+  });
+
+  test("순환 참조에서 export function이 re-export를 통해 참조되어도 동작한다 (#1092)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { check } from "./consumer";\nconsole.log(check());`,
+        "provider.ts": `
+          import { consumerHelper } from "./consumer";
+          export function isReady(): boolean {
+            return true;
+          }
+          export const providerVal = consumerHelper();
+        `,
+        "re-export.ts": `export { isReady } from "./provider";`,
+        "consumer.ts": `
+          import { isReady } from "./re-export";
+          export function consumerHelper(): string {
+            return "consumed";
+          }
+          export function check(): string {
+            return typeof isReady === "function" ? "ok:" + isReady() : "FAIL:undefined";
+          }
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("ok:true");
+  });
+
+  test("순환 참조 + strict_execution_order에서 export function이 undefined가 아니다 (#1092)", async () => {
+    // RN 플랫폼(strict_execution_order=true)에서 순환 참조 시
+    // preamble이 함수 할당 전에 의존 모듈을 init하면 undefined 발생
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { result } from "./b";\nconsole.log(result);`,
+        "a.ts": `
+          import { helper } from "./b";
+          export function isEnabled(): boolean {
+            return true;
+          }
+          export const aValue = helper();
+        `,
+        "b.ts": `
+          import { isEnabled } from "./a";
+          export function helper(): string {
+            return "helper";
+          }
+          export const result = typeof isEnabled === "function" ? "ok:" + isEnabled() : "FAIL:" + typeof isEnabled;
+        `,
+      },
+      "index.ts",
+      ["--platform=react-native"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("ok:true");
+  });
+
+  test("순환 참조에서 export function이 모듈 init 시점에 즉시 호출되어도 동작한다 (#1092)", async () => {
+    // gesture-handler 실제 패턴: A.ts의 factory가 B.ts를 init하는데,
+    // B.ts가 A.ts의 함수를 top-level에서 즉시 호출
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import { topLevelResult } from "./caller";\nconsole.log(topLevelResult);`,
+        "provider.ts": `
+          import { tagMessage } from "./utils";
+          let useNew = true;
+          let getCalled = false;
+          export function enableLegacy(v = true) {
+            console.warn(tagMessage("legacy deprecated"));
+            useNew = !v;
+          }
+          export function isNewEnabled(): boolean {
+            getCalled = true;
+            return useNew;
+          }
+        `,
+        "utils.ts": `
+          export function tagMessage(msg: string) {
+            return "[GH] " + msg;
+          }
+        `,
+        "caller.ts": `
+          import { isNewEnabled } from "./provider";
+          export const topLevelResult = typeof isNewEnabled === "function"
+            ? "ok:" + isNewEnabled()
+            : "FAIL:" + typeof isNewEnabled;
+        `,
+      },
+      "index.ts",
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("ok:true");
+  });
 });
