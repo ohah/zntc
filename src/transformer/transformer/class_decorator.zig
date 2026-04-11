@@ -1616,6 +1616,9 @@ pub fn appendClassMetadata(
 
 /// Stage 3 decorator가 있는 멤버(method/property/accessor)가 하나라도 있는지 확인.
 /// class_body를 순회하여 decorator가 달린 멤버 존재 여부만 빠르게 판단한다.
+/// 익명/export default class의 IIFE 내부 변수명
+const ANON_CLASS_NAME = "_Class";
+
 pub fn hasAnyMemberDecorators(self: *Transformer, class_extra: u32) bool {
     const body_idx = self.readNodeIdx(class_extra, 2);
     if (body_idx.isNone()) return false;
@@ -1730,11 +1733,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.data.string_ref);
         if (std.mem.eql(u8, name_text, "default")) {
-            break :blk try self.allocator.dupe(u8, "_Class");
+            break :blk try self.allocator.dupe(u8, ANON_CLASS_NAME);
         }
         break :blk try self.allocator.dupe(u8, name_text);
     } else blk: {
-        break :blk try self.allocator.dupe(u8, "_Class");
+        break :blk try self.allocator.dupe(u8, ANON_CLASS_NAME);
     };
     defer self.allocator.free(class_name_text);
 
