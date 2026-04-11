@@ -23,6 +23,16 @@ const es2022 = @import("../es2022.zig");
 pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
 
+    // Stage 3 decorator: experimental_decorators=false이고 decorator가 있으면 TC39 변환.
+    // class/member decorator 존재 여부를 먼저 확인한다.
+    if (!self.options.experimental_decorators) {
+        const class_deco_len = self.readU32(e, 7);
+        const has_member_decos = self.hasAnyMemberDecorators(e);
+        if (class_deco_len > 0 or has_member_decos) {
+            return self.transformStage3Decorators(node);
+        }
+    }
+
     // Fast path: useDefineForClassFields=true AND !experimentalDecorators → 기존 동작
     // 멤버별 분류가 불필요하므로 body를 통째로 방문한다.
     if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
@@ -1595,4 +1605,939 @@ pub fn appendClassMetadata(
     const param_types = try self.buildParamTypesArray(params_start, params_len);
     const meta = try self.buildMetadataCall("design:paramtypes", param_types);
     try deco_list.append(self.allocator, meta);
+}
+
+// ============================================================
+// TC39 Stage 3 Decorator Transform (TypeScript 5.0+ 호환)
+// ============================================================
+//
+// TypeScript/Babel/SWC 공통 출력: __esDecorate + __runInitializers + IIFE 래핑.
+// experimental_decorators=false일 때, class/member에 decorator가 있으면 이 경로를 탄다.
+
+/// Stage 3 decorator가 있는 멤버(method/property/accessor)가 하나라도 있는지 확인.
+/// class_body를 순회하여 decorator가 달린 멤버 존재 여부만 빠르게 판단한다.
+pub fn hasAnyMemberDecorators(self: *Transformer, class_extra: u32) bool {
+    const body_idx = self.readNodeIdx(class_extra, 2);
+    if (body_idx.isNone()) return false;
+    const body_node = self.ast.getNode(body_idx);
+    const start = body_node.data.list.start;
+    const len = body_node.data.list.len;
+
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+        if (member_idx.isNone()) continue;
+        const member = self.ast.getNode(member_idx);
+        const me = member.data.extra;
+
+        if (member.tag == .property_definition or member.tag == .accessor_property) {
+            // extra = [key, init_val, flags, deco_start, deco_len]
+            const deco_len = self.readU32(me, 4);
+            if (deco_len > 0) return true;
+        } else if (member.tag == .method_definition) {
+            // extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+            const deco_len = self.readU32(me, 6);
+            if (deco_len > 0) return true;
+        }
+    }
+    return false;
+}
+
+/// Stage 3 멤버 decorator 정보
+const Stage3MemberInfo = struct {
+    /// "method", "getter", "setter", "field", "accessor"
+    kind: []const u8,
+    /// 멤버 이름 (문자열 리터럴 또는 computed)
+    name: NodeIndex,
+    /// static 여부
+    is_static: bool,
+    /// private 여부
+    is_private: bool,
+    /// decorator 식 배열 (방문 완료)
+    decorators: []const NodeIndex,
+    /// field 초기값 (field/accessor만)
+    init_value: NodeIndex = .none,
+    /// 원본 AST 멤버 인덱스 (class body 내 위치)
+    raw_idx: u32 = 0,
+};
+
+/// TC39 Stage 3 decorator 변환 메인 함수.
+///
+/// 입력: @dec class Foo { @methodDec greet() {} }
+/// 출력 (TypeScript 5.0+ 형식):
+///   let Foo = (() => {
+///     let _classDecorators = [dec];
+///     let _classDescriptor;
+///     let _classExtraInitializers = [];
+///     let _classThis;
+///     let _instanceExtraInitializers = [];
+///     let _greet_decorators;
+///     var Foo = class {
+///       static { _classThis = this; }
+///       static {
+///         const _metadata = typeof Symbol === "function" && Symbol.metadata
+///           ? Object.create(null) : void 0;
+///         _greet_decorators = [methodDec];
+///         __esDecorate(this, null, _greet_decorators, { kind: "method", name: "greet",
+///           static: false, private: false, access: { has: obj => "greet" in obj,
+///           get: obj => obj.greet } }, null, _instanceExtraInitializers);
+///         __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators,
+///           { kind: "class", name: _classThis.name, metadata: _metadata }, null,
+///           _classExtraInitializers);
+///         Foo = _classThis = _classDescriptor.value;
+///         if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, ...);
+///         __runInitializers(_classThis, _classExtraInitializers);
+///       }
+///       constructor() { __runInitializers(this, _instanceExtraInitializers); }
+///       greet() {}
+///     };
+///     return Foo = _classThis;
+///   })();
+pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex {
+    const e = node.data.extra;
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const none = @intFromEnum(NodeIndex.none);
+
+    // 런타임 헬퍼 사용 표시
+    self.runtime_helpers.es_decorator = true;
+
+    // 클래스 이름, super, body, decorator 추출
+    const name_idx = self.readNodeIdx(e, 0);
+    const super_idx = self.readNodeIdx(e, 1);
+    const body_idx = self.readNodeIdx(e, 2);
+    const class_deco_start = self.readU32(e, 6);
+    const class_deco_len = self.readU32(e, 7);
+
+    // 클래스 이름 텍스트 (Foo)
+    const class_name_text = if (!name_idx.isNone()) blk: {
+        const name_node = self.ast.getNode(name_idx);
+        break :blk self.ast.getText(name_node.data.string_ref);
+    } else "default";
+
+    // body 멤버 순회: member decorator 수집
+    var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
+    defer {
+        for (member_infos.items) |info| {
+            self.allocator.free(info.decorators);
+        }
+        member_infos.deinit(self.allocator);
+    }
+
+    var has_instance_decorators = false;
+    var has_static_decorators = false;
+
+    const body_node = self.ast.getNode(body_idx);
+    const body_start = body_node.data.list.start;
+    const body_len = body_node.data.list.len;
+
+    // 새 class body 멤버 (decorator 제거 + 필요 시 constructor 삽입)
+    var new_members: std.ArrayList(NodeIndex) = .empty;
+    defer new_members.deinit(self.allocator);
+
+    var has_constructor = false;
+
+    {
+        var i: u32 = 0;
+        while (i < body_len) : (i += 1) {
+            const raw = self.ast.extra_data.items[body_start + i];
+            const member_idx: NodeIndex = @enumFromInt(raw);
+            if (member_idx.isNone()) continue;
+            const member = self.ast.getNode(member_idx);
+            const me = member.data.extra;
+
+            if (member.tag == .method_definition) {
+                // extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+                const flags = self.readU32(me, 4);
+                const deco_start = self.readU32(me, 5);
+                const deco_len = self.readU32(me, 6);
+                const is_static = (flags & 0x01) != 0;
+                const is_getter = (flags & 0x02) != 0;
+                const is_setter = (flags & 0x04) != 0;
+
+                // constructor 감지
+                if (!is_getter and !is_setter and !is_static) {
+                    const key_idx = self.readNodeIdx(me, 0);
+                    if (!key_idx.isNone()) {
+                        const key_node = self.ast.getNode(key_idx);
+                        if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier) {
+                            const key_text = self.ast.getText(key_node.data.string_ref);
+                            if (std.mem.eql(u8, key_text, "constructor")) {
+                                has_constructor = true;
+                            }
+                        }
+                    }
+                }
+
+                if (deco_len > 0) {
+                    const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
+                    const key_idx = self.readNodeIdx(me, 0);
+                    const new_key = try self.visitNode(key_idx);
+                    // member name을 문자열 리터럴로 변환
+                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+
+                    // decorator 식 수집
+                    const decos = try self.collectStage3Decorators(deco_start, deco_len);
+
+                    if (is_static) has_static_decorators = true else has_instance_decorators = true;
+
+                    try member_infos.append(self.allocator, .{
+                        .kind = kind,
+                        .name = name_node_idx,
+                        .is_static = is_static,
+                        .is_private = false,
+                        .decorators = decos,
+                    });
+                }
+
+                // method를 decorator 없이 body에 추가
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                const new_body = try self.visitNode(self.readNodeIdx(me, 3));
+                const empty_list = try self.ast.addNodeList(&.{});
+                const new_method = try self.addExtraNode(.method_definition, member.span, &.{
+                    @intFromEnum(new_key),
+                    self.readU32(me, 1), // params_start
+                    self.readU32(me, 2), // params_len
+                    @intFromEnum(new_body),
+                    flags,
+                    empty_list.start, empty_list.len, // decorator 제거
+                });
+                try new_members.append(self.allocator, new_method);
+            } else if (member.tag == .property_definition) {
+                // extra = [key, init_val, flags, deco_start, deco_len]
+                const flags = self.readU32(me, 2);
+                const deco_start = self.readU32(me, 3);
+                const deco_len = self.readU32(me, 4);
+                const is_static = (flags & 0x01) != 0;
+
+                if (deco_len > 0) {
+                    const key_idx = self.readNodeIdx(me, 0);
+                    const new_key = try self.visitNode(key_idx);
+                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+                    const decos = try self.collectStage3Decorators(deco_start, deco_len);
+
+                    if (is_static) has_static_decorators = true else has_instance_decorators = true;
+
+                    try member_infos.append(self.allocator, .{
+                        .kind = "field",
+                        .name = name_node_idx,
+                        .is_static = is_static,
+                        .is_private = false,
+                        .decorators = decos,
+                    });
+                }
+
+                // property를 decorator 없이 방문하여 추가
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
+                const empty_list = try self.ast.addNodeList(&.{});
+                const new_prop = try self.addExtraNode(.property_definition, member.span, &.{
+                    @intFromEnum(new_key),
+                    @intFromEnum(new_init),
+                    flags,
+                    empty_list.start, empty_list.len,
+                });
+                try new_members.append(self.allocator, new_prop);
+            } else if (member.tag == .accessor_property) {
+                // extra = [key, init_val, flags, deco_start, deco_len]
+                const flags = self.readU32(me, 2);
+                const deco_start = self.readU32(me, 3);
+                const deco_len = self.readU32(me, 4);
+                const is_static = (flags & 0x01) != 0;
+
+                if (deco_len > 0) {
+                    const key_idx = self.readNodeIdx(me, 0);
+                    const new_key = try self.visitNode(key_idx);
+                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+                    const decos = try self.collectStage3Decorators(deco_start, deco_len);
+
+                    if (is_static) has_static_decorators = true else has_instance_decorators = true;
+
+                    try member_infos.append(self.allocator, .{
+                        .kind = "accessor",
+                        .name = name_node_idx,
+                        .is_static = is_static,
+                        .is_private = false,
+                        .decorators = decos,
+                    });
+                }
+
+                // accessor를 decorator 없이 추가
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
+                const empty_list = try self.ast.addNodeList(&.{});
+                const new_acc = try self.addExtraNode(.accessor_property, member.span, &.{
+                    @intFromEnum(new_key),
+                    @intFromEnum(new_init),
+                    flags,
+                    empty_list.start, empty_list.len,
+                });
+                try new_members.append(self.allocator, new_acc);
+            } else {
+                // static_block 등 그대로 방문하여 추가
+                const visited = try self.visitNode(member_idx);
+                if (!visited.isNone()) {
+                    try new_members.append(self.allocator, visited);
+                }
+            }
+        }
+    }
+
+    // ---- IIFE 구조 생성 ----
+    // 전체 출력:
+    //   let Foo = (() => {
+    //     let _classDecorators = [...]; ...
+    //     var Foo = class [extends Super] { ... };
+    //     return Foo = _classThis;
+    //   })();
+
+    // __esDecorate 호출 목록 (static {} 블록에 넣을 것)
+    var static_block_stmts: std.ArrayList(NodeIndex) = .empty;
+    defer static_block_stmts.deinit(self.allocator);
+
+    // IIFE 내부 let 선언 목록
+    var iife_stmts: std.ArrayList(NodeIndex) = .empty;
+    defer iife_stmts.deinit(self.allocator);
+
+    // _classThis 변수
+    const classThis_span = try self.ast.addString("_classThis");
+
+    // static { _classThis = this; }
+    {
+        const classThis_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = classThis_span,
+            .data = .{ .string_ref = classThis_span },
+        });
+        const this_node = try self.ast.addNode(.{
+            .tag = .this_expression, .span = zero_span,
+            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+        });
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression, .span = zero_span,
+            .data = .{ .binary = .{ .left = classThis_ref, .right = this_node, .flags = 0 } },
+        });
+        const assign_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+        const static_body_list = try self.ast.addNodeList(&.{assign_stmt});
+        const static_body = try self.ast.addNode(.{
+            .tag = .block_statement, .span = zero_span,
+            .data = .{ .list = static_body_list },
+        });
+        const static_block = try self.ast.addNode(.{
+            .tag = .static_block, .span = zero_span,
+            .data = .{ .unary = .{ .operand = static_body, .flags = 0 } },
+        });
+        try new_members.insert(self.allocator, 0, static_block);
+    }
+
+    // _metadata 선언 + member __esDecorate 호출 + class __esDecorate 호출
+    // → 2번째 static { } 블록에 모두 넣기
+
+    // const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+    const metadata_decl = try self.buildMetadataDecl();
+    try static_block_stmts.append(self.allocator, metadata_decl);
+
+    // member decorator __esDecorate 호출
+    for (member_infos.items) |info| {
+        const call = try self.buildEsDecorateCall(info, classThis_span);
+        const call_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
+        try static_block_stmts.append(self.allocator, call_stmt);
+    }
+
+    // class decorator __esDecorate 호출
+    if (class_deco_len > 0) {
+        const class_call = try self.buildClassEsDecorateCall(class_deco_start, class_deco_len, classThis_span, class_name_text);
+        const class_call_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = class_call, .flags = 0 } },
+        });
+        try static_block_stmts.append(self.allocator, class_call_stmt);
+
+        // Foo = _classThis = _classDescriptor.value;
+        const reassign = try self.buildClassReassign(class_name_text, classThis_span);
+        try static_block_stmts.append(self.allocator, reassign);
+    }
+
+    // __runInitializers(_classThis, _classExtraInitializers);
+    if (class_deco_len > 0) {
+        const run_init = try self.buildRunInitializersCall(classThis_span, "_classExtraInitializers");
+        const run_init_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
+        });
+        try static_block_stmts.append(self.allocator, run_init_stmt);
+    }
+
+    // 2번째 static { } 블록 생성
+    if (static_block_stmts.items.len > 0) {
+        const sb_body_list = try self.ast.addNodeList(static_block_stmts.items);
+        const sb_body = try self.ast.addNode(.{
+            .tag = .block_statement, .span = zero_span,
+            .data = .{ .list = sb_body_list },
+        });
+        const sb = try self.ast.addNode(.{
+            .tag = .static_block, .span = zero_span,
+            .data = .{ .unary = .{ .operand = sb_body, .flags = 0 } },
+        });
+        // 첫 static block 뒤에 삽입 (index 1)
+        try new_members.insert(self.allocator, 1, sb);
+    }
+
+    // constructor에 __runInitializers(this, _instanceExtraInitializers) 삽입
+    if (has_instance_decorators and !has_constructor) {
+        // 빈 constructor 생성: constructor() { __runInitializers(this, _instanceExtraInitializers); }
+        const this_node = try self.ast.addNode(.{
+            .tag = .this_expression, .span = zero_span,
+            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+        });
+        const run_init = try self.buildRunInitializersCall2(this_node, "_instanceExtraInitializers");
+        const run_init_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
+        });
+        const ctor_body_list = try self.ast.addNodeList(&.{run_init_stmt});
+        const ctor_body = try self.ast.addNode(.{
+            .tag = .block_statement, .span = zero_span,
+            .data = .{ .list = ctor_body_list },
+        });
+        const ctor_key_span = try self.ast.addString("constructor");
+        const ctor_key = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = ctor_key_span,
+            .data = .{ .string_ref = ctor_key_span },
+        });
+        const empty_params = try self.ast.addNodeList(&.{});
+        const empty_decos = try self.ast.addNodeList(&.{});
+        const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
+            @intFromEnum(ctor_key),
+            empty_params.start, empty_params.len,
+            @intFromEnum(ctor_body),
+            0, // flags (no static/getter/setter)
+            empty_decos.start, empty_decos.len,
+        });
+        try new_members.append(self.allocator, ctor_method);
+    }
+
+    // 새 class body 생성
+    const new_body_list = try self.ast.addNodeList(new_members.items);
+    const new_body = try self.ast.addNode(.{
+        .tag = .class_body, .span = zero_span,
+        .data = .{ .list = new_body_list },
+    });
+
+    // var Foo = class [extends Super] { ... } (decorator 없이)
+    const new_name = try self.visitNode(name_idx);
+    const new_super = try self.visitNode(super_idx);
+    const empty_decos = try self.ast.addNodeList(&.{});
+    const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
+        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+        none, 0, 0,
+        empty_decos.start, empty_decos.len,
+    });
+
+    // IIFE 내부: var Foo = class { ... };
+    const inner_name_span = try self.ast.addString(class_name_text);
+    const inner_binding = try self.ast.addNode(.{
+        .tag = .binding_identifier, .span = inner_name_span,
+        .data = .{ .string_ref = inner_name_span },
+    });
+    const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
+        @intFromEnum(inner_binding), none, @intFromEnum(inner_class),
+    });
+    const inner_decl_list = try self.ast.addNodeList(&.{inner_declarator});
+    const inner_var_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
+        0, inner_decl_list.start, inner_decl_list.len, // 0 = var
+    });
+    try iife_stmts.append(self.allocator, inner_var_decl);
+
+    // return Foo = _classThis;
+    const return_name = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = inner_name_span,
+        .data = .{ .string_ref = inner_name_span },
+    });
+    const classThis_ref2 = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = classThis_span,
+        .data = .{ .string_ref = classThis_span },
+    });
+    const return_assign = try self.ast.addNode(.{
+        .tag = .assignment_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = return_name, .right = classThis_ref2, .flags = 0 } },
+    });
+    const return_stmt = try self.ast.addNode(.{
+        .tag = .return_statement, .span = zero_span,
+        .data = .{ .unary = .{ .operand = return_assign, .flags = 0 } },
+    });
+    try iife_stmts.append(self.allocator, return_stmt);
+
+    // IIFE body: { let _classDecorators = ...; ... var Foo = class { ... }; return ...; }
+    // let 선언들을 iife_stmts 앞에 삽입
+    var all_iife_stmts: std.ArrayList(NodeIndex) = .empty;
+    defer all_iife_stmts.deinit(self.allocator);
+
+    // let 선언 생성
+    const let_decls = try self.buildStage3LetDeclarations(
+        class_deco_start, class_deco_len,
+        member_infos.items, has_instance_decorators, has_static_decorators,
+    );
+    try all_iife_stmts.appendSlice(self.allocator, let_decls);
+    self.allocator.free(let_decls);
+
+    // var Foo = class { ... }; + return ...;
+    try all_iife_stmts.appendSlice(self.allocator, iife_stmts.items);
+
+    const iife_body_list = try self.ast.addNodeList(all_iife_stmts.items);
+    const iife_body = try self.ast.addNode(.{
+        .tag = .block_statement, .span = zero_span,
+        .data = .{ .list = iife_body_list },
+    });
+
+    // () => { ... }
+    // arrow_function_expression: extra = [params(0), body(1), flags]
+    // params = .none → codegen이 "()" 출력
+    const arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
+        none, // params = .none (빈 파라미터)
+        @intFromEnum(iife_body),
+        0, // flags (not async)
+    });
+
+    // (() => { ... })()
+    const paren_arrow = try self.ast.addNode(.{
+        .tag = .parenthesized_expression, .span = zero_span,
+        .data = .{ .unary = .{ .operand = arrow, .flags = 0 } },
+    });
+    const empty_args = try self.ast.addNodeList(&.{});
+    const iife_call = try self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
+    });
+
+    // let Foo = (() => { ... })();
+    const outer_name_span = if (!name_idx.isNone()) blk: {
+        const n = self.ast.getNode(name_idx);
+        break :blk n.data.string_ref;
+    } else try self.ast.addString("default");
+
+    const outer_binding = try self.ast.addNode(.{
+        .tag = .binding_identifier, .span = outer_name_span,
+        .data = .{ .string_ref = outer_name_span },
+    });
+    const outer_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
+        @intFromEnum(outer_binding), none, @intFromEnum(iife_call),
+    });
+    const outer_decl_list = try self.ast.addNodeList(&.{outer_declarator});
+    const outer_var_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
+        1, outer_decl_list.start, outer_decl_list.len, // 1 = let
+    });
+
+    try self.pending_nodes.append(self.allocator, outer_var_decl);
+    return .none;
+}
+
+// ---- Stage 3 헬퍼 함수들 ----
+
+/// member key를 문자열 리터럴 노드로 변환.
+/// identifier "foo" → string literal "\"foo\"", computed → 그대로.
+pub fn memberKeyToStringLiteral(self: *Transformer, key: NodeIndex) Error!NodeIndex {
+    if (key.isNone()) return key;
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier) {
+        const name = self.ast.getText(key_node.data.string_ref);
+        var buf: [256]u8 = undefined;
+        buf[0] = '"';
+        const len = @min(name.len, buf.len - 2);
+        @memcpy(buf[1 .. 1 + len], name[0..len]);
+        buf[1 + len] = '"';
+        const span = try self.ast.addString(buf[0 .. 2 + len]);
+        return self.ast.addNode(.{ .tag = .string_literal, .span = span, .data = .{ .string_ref = span } });
+    }
+    return key;
+}
+
+/// decorator 식들을 방문하여 슬라이스로 반환. caller가 free.
+pub fn collectStage3Decorators(self: *Transformer, deco_start: u32, deco_len: u32) Error![]const NodeIndex {
+    var result: std.ArrayList(NodeIndex) = .empty;
+    defer result.deinit(self.allocator);
+    var i: u32 = 0;
+    while (i < deco_len) : (i += 1) {
+        const raw = self.ast.extra_data.items[deco_start + i];
+        const deco_idx: NodeIndex = @enumFromInt(raw);
+        if (deco_idx.isNone()) continue;
+        const deco_node = self.ast.getNode(deco_idx);
+        // decorator 노드의 operand가 실제 식
+        if (deco_node.tag == .decorator) {
+            const visited = try self.visitNode(deco_node.data.unary.operand);
+            try result.append(self.allocator, visited);
+        } else {
+            const visited = try self.visitNode(deco_idx);
+            try result.append(self.allocator, visited);
+        }
+    }
+    return result.toOwnedSlice(self.allocator);
+}
+
+/// __esDecorate(this, null, _decorators, { kind: "method", name: "...", static: bool, private: bool, access: { ... }, metadata: _metadata }, null, _extraInitializers) 호출 생성.
+pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo, _: Span) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    const callee = try makeIdentifier(self, "__esDecorate");
+
+    // arg1: this (ctor — method/getter/setter) 또는 null (field)
+    const arg1 = if (std.mem.eql(u8, info.kind, "field"))
+        try makeIdentifier(self, "null")
+    else
+        try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+
+    // arg2: null (descriptorIn)
+    const arg2 = try makeIdentifier(self, "null");
+
+    // arg3: [dec1, dec2, ...]
+    const deco_list = try self.ast.addNodeList(info.decorators);
+    const arg3 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+
+    // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
+    const arg4 = try self.buildContextObject(info);
+
+    // arg5: initializers (null for method/getter/setter)
+    const arg5 = try makeIdentifier(self, "null");
+
+    // arg6: extraInitializers
+    const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
+    const arg6 = try makeIdentifier(self, extra_init_name);
+
+    const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
+    return self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(callee), args.start, args.len, 0,
+    });
+}
+
+/// class decorator용 __esDecorate 호출:
+/// __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers)
+pub fn buildClassEsDecorateCall(self: *Transformer, deco_start: u32, deco_len: u32, classThis_span: Span, class_name: []const u8) Error!NodeIndex {
+    _ = class_name;
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    const callee = try makeIdentifier(self, "__esDecorate");
+
+    // arg1: null
+    const arg1 = try makeIdentifier(self, "null");
+
+    // arg2: _classDescriptor = { value: _classThis }
+    const classThis_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = classThis_span,
+        .data = .{ .string_ref = classThis_span },
+    });
+    const value_key_span = try self.ast.addString("value");
+    const value_key = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = value_key_span,
+        .data = .{ .string_ref = value_key_span },
+    });
+    const value_prop = try self.makeObjProp(value_key, classThis_ref);
+    const obj_list = try self.ast.addNodeList(&.{value_prop});
+    const obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = obj_list } });
+
+    const desc_span = try self.ast.addString("_classDescriptor");
+    const desc_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = desc_span,
+        .data = .{ .string_ref = desc_span },
+    });
+    const arg2 = try self.ast.addNode(.{
+        .tag = .assignment_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = desc_ref, .right = obj, .flags = 0 } },
+    });
+
+    // arg3: _classDecorators
+    const decos = try self.collectStage3Decorators(deco_start, deco_len);
+    defer self.allocator.free(decos);
+    const deco_list = try self.ast.addNodeList(decos);
+    const class_deco_span = try self.ast.addString("_classDecorators");
+    _ = class_deco_span;
+    const arg3 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+
+    // arg4: { kind: "class", name: _classThis.name, metadata: _metadata }
+    const kind_key = try makeIdentifier(self, "kind");
+    const kind_val_span = try self.ast.addString("\"class\"");
+    const kind_val = try self.ast.addNode(.{ .tag = .string_literal, .span = kind_val_span, .data = .{ .string_ref = kind_val_span } });
+    const kind_prop = try self.makeObjProp(kind_key, kind_val);
+
+    const name_key = try makeIdentifier(self, "name");
+    // _classThis.name
+    const classThis_ref2 = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = classThis_span,
+        .data = .{ .string_ref = classThis_span },
+    });
+    const name_prop_key = try makeIdentifier(self, "name");
+    const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(classThis_ref2), @intFromEnum(name_prop_key), 0,
+    });
+    const name_prop = try self.makeObjProp(name_key, classThis_name);
+
+    const metadata_key = try makeIdentifier(self, "metadata");
+    const metadata_val = try makeIdentifier(self, "_metadata");
+    const metadata_prop = try self.makeObjProp(metadata_key, metadata_val);
+
+    const ctx_list = try self.ast.addNodeList(&.{ kind_prop, name_prop, metadata_prop });
+    const arg4 = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = ctx_list } });
+
+    // arg5: null
+    const arg5 = try makeIdentifier(self, "null");
+
+    // arg6: _classExtraInitializers
+    const arg6 = try makeIdentifier(self, "_classExtraInitializers");
+
+    const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
+    return self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(callee), args.start, args.len, 0,
+    });
+}
+
+/// context object 생성: { kind: "method", name: "greet", static: false, private: false, access: { has: ..., get: ... }, metadata: _metadata }
+pub fn buildContextObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    var props: std.ArrayList(NodeIndex) = .empty;
+    defer props.deinit(self.allocator);
+
+    // kind
+    var kind_buf: [16]u8 = undefined;
+    kind_buf[0] = '"';
+    const klen = info.kind.len;
+    @memcpy(kind_buf[1 .. 1 + klen], info.kind);
+    kind_buf[1 + klen] = '"';
+    const kind_key = try makeIdentifier(self, "kind");
+    const kind_val_span = try self.ast.addString(kind_buf[0 .. 2 + klen]);
+    const kind_val = try self.ast.addNode(.{ .tag = .string_literal, .span = kind_val_span, .data = .{ .string_ref = kind_val_span } });
+    try props.append(self.allocator, try self.makeObjProp(kind_key, kind_val));
+
+    // name
+    const name_key = try makeIdentifier(self, "name");
+    try props.append(self.allocator, try self.makeObjProp(name_key, info.name));
+
+    // static
+    const static_key = try makeIdentifier(self, "static");
+    const static_val = try makeIdentifier(self, if (info.is_static) "true" else "false");
+    try props.append(self.allocator, try self.makeObjProp(static_key, static_val));
+
+    // private
+    const private_key = try makeIdentifier(self, "private");
+    const private_val = try makeIdentifier(self, if (info.is_private) "true" else "false");
+    try props.append(self.allocator, try self.makeObjProp(private_key, private_val));
+
+    // metadata
+    const metadata_key = try makeIdentifier(self, "metadata");
+    const metadata_val = try makeIdentifier(self, "_metadata");
+    try props.append(self.allocator, try self.makeObjProp(metadata_key, metadata_val));
+
+    const list = try self.ast.addNodeList(props.items);
+    return self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = list } });
+}
+
+/// const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+pub fn buildMetadataDecl(self: *Transformer) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const none = @intFromEnum(NodeIndex.none);
+    const Kind = @import("../../lexer/token.zig").Kind;
+
+    // typeof Symbol === "function"
+    const symbol_ref = try makeIdentifier(self, "Symbol");
+    const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
+        @intFromEnum(symbol_ref), @intFromEnum(Kind.kw_typeof),
+    });
+    const func_str_span = try self.ast.addString("\"function\"");
+    const func_str = try self.ast.addNode(.{ .tag = .string_literal, .span = func_str_span, .data = .{ .string_ref = func_str_span } });
+    const typeof_check = try self.ast.addNode(.{
+        .tag = .binary_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = typeof_expr, .right = func_str, .flags = @intFromEnum(Kind.eq3) } },
+    });
+
+    // Symbol.metadata
+    const symbol_ref2 = try makeIdentifier(self, "Symbol");
+    const metadata_prop = try makeIdentifier(self, "metadata");
+    const symbol_metadata = try self.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(symbol_ref2), @intFromEnum(metadata_prop), 0,
+    });
+
+    // typeof Symbol === "function" && Symbol.metadata
+    const and_expr = try self.ast.addNode(.{
+        .tag = .binary_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = typeof_check, .right = symbol_metadata, .flags = @intFromEnum(Kind.amp2) } },
+    });
+
+    // Object.create(null)
+    const object_ref = try makeIdentifier(self, "Object");
+    const create_key = try makeIdentifier(self, "create");
+    const obj_create = try self.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(object_ref), @intFromEnum(create_key), 0,
+    });
+    const null_arg = try makeIdentifier(self, "null");
+    const null_args = try self.ast.addNodeList(&.{null_arg});
+    const obj_create_call = try self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(obj_create), null_args.start, null_args.len, 0,
+    });
+
+    // void 0
+    const void0 = try makeIdentifier(self, "void 0");
+
+    // ... ? Object.create(null) : void 0
+    const ternary = try self.ast.addNode(.{
+        .tag = .conditional_expression, .span = zero_span,
+        .data = .{ .ternary = .{ .a = and_expr, .b = obj_create_call, .c = void0 } },
+    });
+
+    // const _metadata = ...;
+    const metadata_span = try self.ast.addString("_metadata");
+    const metadata_binding = try self.ast.addNode(.{
+        .tag = .binding_identifier, .span = metadata_span,
+        .data = .{ .string_ref = metadata_span },
+    });
+    const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
+        @intFromEnum(metadata_binding), none, @intFromEnum(ternary),
+    });
+    const decl_list = try self.ast.addNodeList(&.{declarator});
+    return self.addExtraNode(.variable_declaration, zero_span, &.{
+        2, decl_list.start, decl_list.len, // 2 = const
+    });
+}
+
+/// Foo = _classThis = _classDescriptor.value; 문 생성
+pub fn buildClassReassign(self: *Transformer, class_name: []const u8, classThis_span: Span) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    // _classDescriptor.value
+    const desc_ref = try makeIdentifier(self, "_classDescriptor");
+    const value_key = try makeIdentifier(self, "value");
+    const desc_value = try self.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(desc_ref), @intFromEnum(value_key), 0,
+    });
+
+    // _classThis = _classDescriptor.value
+    const classThis_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = classThis_span,
+        .data = .{ .string_ref = classThis_span },
+    });
+    const inner_assign = try self.ast.addNode(.{
+        .tag = .assignment_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = classThis_ref, .right = desc_value, .flags = 0 } },
+    });
+
+    // Foo = _classThis = ...
+    const foo_ref = try makeIdentifier(self, class_name);
+    const outer_assign = try self.ast.addNode(.{
+        .tag = .assignment_expression, .span = zero_span,
+        .data = .{ .binary = .{ .left = foo_ref, .right = inner_assign, .flags = 0 } },
+    });
+
+    return self.ast.addNode(.{
+        .tag = .expression_statement, .span = zero_span,
+        .data = .{ .unary = .{ .operand = outer_assign, .flags = 0 } },
+    });
+}
+
+/// __runInitializers(target_span_ref, name) 호출 생성.
+/// target은 Span(identifier_reference로 변환)
+pub fn buildRunInitializersCall(self: *Transformer, target_span: Span, init_name: []const u8) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const callee = try makeIdentifier(self, "__runInitializers");
+    const target = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = target_span,
+        .data = .{ .string_ref = target_span },
+    });
+    const init_ref = try makeIdentifier(self, init_name);
+    const args = try self.ast.addNodeList(&.{ target, init_ref });
+    return self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(callee), args.start, args.len, 0,
+    });
+}
+
+/// __runInitializers(target_node, name) 호출 생성.
+/// target은 이미 생성된 NodeIndex (예: this)
+pub fn buildRunInitializersCall2(self: *Transformer, target_node: NodeIndex, init_name: []const u8) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const callee = try makeIdentifier(self, "__runInitializers");
+    const init_ref = try makeIdentifier(self, init_name);
+    const args = try self.ast.addNodeList(&.{ target_node, init_ref });
+    return self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(callee), args.start, args.len, 0,
+    });
+}
+
+/// IIFE 내부 let 선언들 생성.
+/// let _classDecorators = [...]; let _classDescriptor; let _classExtraInitializers = []; let _classThis;
+/// let _instanceExtraInitializers = []; (instance decorator 있을 때)
+pub fn buildStage3LetDeclarations(
+    self: *Transformer,
+    class_deco_start: u32,
+    class_deco_len: u32,
+    member_infos: []const Stage3MemberInfo,
+    has_instance: bool,
+    has_static: bool,
+) Error![]NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const none = @intFromEnum(NodeIndex.none);
+    var stmts: std.ArrayList(NodeIndex) = .empty;
+    defer stmts.deinit(self.allocator);
+
+    // class decorator가 있으면
+    if (class_deco_len > 0) {
+        // let _classDecorators = [dec1, dec2];
+        const decos = try self.collectStage3Decorators(class_deco_start, class_deco_len);
+        defer self.allocator.free(decos);
+        const deco_list = try self.ast.addNodeList(decos);
+        const deco_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_classDecorators", deco_arr));
+
+        // let _classDescriptor;
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_classDescriptor", .none));
+
+        // let _classExtraInitializers = [];
+        const empty_arr_list = try self.ast.addNodeList(&.{});
+        const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_classExtraInitializers", empty_arr));
+
+        // let _classThis;
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_classThis", .none));
+    }
+
+    // instance/static extra initializers
+    if (has_instance) {
+        const empty_arr_list = try self.ast.addNodeList(&.{});
+        const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_instanceExtraInitializers", empty_arr));
+    }
+    if (has_static) {
+        const empty_arr_list = try self.ast.addNodeList(&.{});
+        const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
+        try stmts.append(self.allocator, try self.makeLet(zero_span, "_staticExtraInitializers", empty_arr));
+    }
+
+    // member decorator 변수들
+    _ = member_infos;
+    _ = none;
+
+    return stmts.toOwnedSlice(self.allocator);
+}
+
+/// object property { key: value } 노드 생성
+pub fn makeObjProp(self: *Transformer, key: NodeIndex, value: NodeIndex) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    return self.ast.addNode(.{
+        .tag = .object_property, .span = zero_span,
+        .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+    });
+}
+
+/// let name = init; 또는 let name; 선언 생성
+pub fn makeLet(self: *Transformer, span: Span, name: []const u8, init: NodeIndex) Error!NodeIndex {
+    const name_span = try self.ast.addString(name);
+    const binding = try self.ast.addNode(.{
+        .tag = .binding_identifier, .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+    const declarator = try self.addExtraNode(.variable_declarator, span, &.{
+        @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
+    });
+    const decl_list = try self.ast.addNodeList(&.{declarator});
+    return self.addExtraNode(.variable_declaration, span, &.{
+        1, decl_list.start, decl_list.len, // 1 = let
+    });
 }
