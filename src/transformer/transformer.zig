@@ -2678,6 +2678,8 @@ pub const Transformer = struct {
     pub const buildAccessObject = class_deco.buildAccessObject;
     pub const buildFieldInitNames = class_deco.buildFieldInitNames;
     pub const buildMetadataDefineProperty = class_deco.buildMetadataDefineProperty;
+    pub const buildGetterMethod = class_deco.buildGetterMethod;
+    pub const extractCleanVarName = class_deco.extractCleanVarName;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
