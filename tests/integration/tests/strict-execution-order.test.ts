@@ -175,4 +175,30 @@ describe("strict execution order (--dev + scope hoisting)", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("active:inactive");
   });
+
+  test("__esm factory throw does not cascade to unrelated modules", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+        let err = "";
+        try { require("./throws"); } catch(e: any) { err = e.message; }
+        import { value } from "./safe";
+        console.log(err + ":" + value);
+      `,
+        "throws.ts": `
+        export const x = 1;
+        throw new Error("boom");
+      `,
+        "safe.ts": `
+        export const value = "ok";
+      `,
+      },
+      "index.ts",
+      ["--dev", "--platform=react-native"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("boom:ok");
+  });
 });
