@@ -18,6 +18,7 @@ const { init, transpile, build, buildSync } = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 
 // ─── CLI 인자 파싱 ───
 
@@ -94,6 +95,8 @@ function parseArgs(argv) {
     target: undefined,
     emitDecoratorMetadata: false,
     drop: [],
+    certfile: undefined,
+    keyfile: undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -339,6 +342,14 @@ function parseArgs(argv) {
     }
     if (arg === "--host") {
       opts.host = args[++i] || "0.0.0.0";
+      continue;
+    }
+    if (arg === "--certfile") {
+      opts.certfile = args[++i];
+      continue;
+    }
+    if (arg === "--keyfile") {
+      opts.keyfile = args[++i];
       continue;
     }
     if (arg === "-p" || arg === "--project") {
@@ -793,9 +804,11 @@ async function runServe(opts) {
     return { status: 200, body, type };
   }
 
+  const useTls = opts.certfile && opts.keyfile;
+
   if (isBun) {
     // Bun.serve
-    globalThis.Bun.serve({
+    const serveOpts = {
       port: opts.port,
       hostname: opts.host,
       fetch(req) {
@@ -816,12 +829,19 @@ async function runServe(opts) {
           },
         });
       },
-    });
+    };
+    if (useTls) {
+      serveOpts.tls = {
+        cert: globalThis.Bun.file(opts.certfile),
+        key: globalThis.Bun.file(opts.keyfile),
+      };
+    }
+    globalThis.Bun.serve(serveOpts);
   } else {
-    // Node.js http
-    const server = createServer(async (req, res) => {
+    // Node.js http/https
+    const handler = async (req, res) => {
       // 프록시 처리
-      const url = new URL(req.url, `http://${req.headers.host}`);
+      const url = new URL(req.url, `${useTls ? "https" : "http"}://${req.headers.host}`);
       for (const [prefix, target] of Object.entries(opts.proxy)) {
         if (url.pathname.startsWith(prefix)) {
           try {
@@ -846,12 +866,16 @@ async function runServe(opts) {
         "Access-Control-Allow-Origin": "*",
       });
       res.end(body);
-    });
+    };
+    const server = useTls
+      ? createHttpsServer({ cert: readFileSync(opts.certfile), key: readFileSync(opts.keyfile) }, handler)
+      : createServer(handler);
     server.listen(opts.port, opts.host);
   }
 
+  const protocol = useTls ? "https" : "http";
   if (opts.logLevel !== "silent") {
-    console.error(`[serve] http://${opts.host}:${opts.port}`);
+    console.error(`[serve] ${protocol}://${opts.host}:${opts.port}`);
   }
 
   // watch 시작 (번들 모드일 때)
@@ -882,7 +906,7 @@ async function runServe(opts) {
 
   // open browser
   if (opts.open) {
-    const url = `http://${opts.host === "0.0.0.0" ? "localhost" : opts.host}:${opts.port}`;
+    const url = `${protocol}://${opts.host === "0.0.0.0" ? "localhost" : opts.host}:${opts.port}`;
     const { exec } = await import("node:child_process");
     const cmd =
       process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
