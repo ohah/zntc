@@ -712,68 +712,47 @@ pub fn generateInitCode(
     params_len: u32,
     flags: u32,
 ) Error![]const u8 {
-    _ = flags;
-    var buf: std.ArrayList(u8) = .empty;
+    const zero_span = Span{ .start = 0, .end = 0 };
 
-    // function header
-    try buf.appendSlice(self.allocator, "function ");
-    try buf.appendSlice(self.allocator, func_name);
-    try buf.append(self.allocator, '(');
-
-    // parameters (소스에서 추출)
-    var pi: u32 = 0;
-    while (pi < params_len) : (pi += 1) {
-        if (pi > 0) try buf.append(self.allocator, ',');
-        const param_raw = self.ast.extra_data.items[params_start + pi];
-        const param_idx: NodeIndex = @enumFromInt(param_raw);
-        if (!param_idx.isNone()) {
-            const param_node = self.ast.getNode(param_idx);
-            const param_text = self.ast.getText(param_node.span);
-            if (param_text.len > 0) {
-                try buf.appendSlice(self.allocator, param_text);
-            }
-        }
-    }
-
-    try buf.appendSlice(self.allocator, "){");
-
-    // closure destructuring
+    // closure destructuring: const { v1, v2 } = this.__closure;
+    var new_body_idx = body_idx;
     if (closure_vars.len > 0) {
-        try buf.appendSlice(self.allocator, "const{");
-        for (closure_vars, 0..) |v, i| {
-            if (i > 0) try buf.append(self.allocator, ',');
-            try buf.appendSlice(self.allocator, v);
-        }
-        try buf.appendSlice(self.allocator, "}=this.__closure;");
+        const destr_stmt = try buildClosureDestructuring(self, closure_vars, zero_span);
+        new_body_idx = try self.prependStatementsToBody(body_idx, &.{destr_stmt});
     }
 
-    // body statements (소스에서 추출 — worklet 디렉티브 제외)
-    const body = self.ast.getNode(body_idx);
-    if (body.tag == .block_statement or body.tag == .function_body) {
-        const list = body.data.list;
-        var si: u32 = 0;
-        while (si < list.len) : (si += 1) {
-            const stmt_raw = self.ast.extra_data.items[list.start + si];
-            const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
-            if (stmt_idx.isNone()) continue;
-            const stmt_node = self.ast.getNode(stmt_idx);
-            // span이 string_table 비트를 가지면 synthetic 노드 → 건너뜀
-            if (stmt_node.span.start & 0x8000_0000 != 0) continue;
-            if (stmt_node.span.start < stmt_node.span.end and
-                stmt_node.span.end <= @as(u32, @intCast(self.ast.source.len)))
-            {
-                const stmt_text = self.ast.source[stmt_node.span.start..stmt_node.span.end];
-                try buf.appendSlice(self.allocator, stmt_text);
-                // 세미콜론이 없으면 추가
-                if (stmt_text.len > 0 and stmt_text[stmt_text.len - 1] != ';' and stmt_text[stmt_text.len - 1] != '}') {
-                    try buf.append(self.allocator, ';');
-                }
-            }
-        }
-    }
+    // synthetic function: function funcName(params) { ...body... }
+    const name_span = try self.ast.addString(func_name);
+    const name_node = try self.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+    const none = @intFromEnum(NodeIndex.none);
 
-    try buf.append(self.allocator, '}');
-    return buf.toOwnedSlice(self.allocator);
+    const synthetic_func = try self.addExtraNode(.function_declaration, zero_span, &.{
+        @intFromEnum(name_node), params_start, params_len,
+        @intFromEnum(new_body_idx), flags, none,
+    });
+
+    // 단일 문장 프로그램 생성
+    const prog_list = try self.ast.addNodeList(&.{synthetic_func});
+    const program = try self.ast.addNode(.{
+        .tag = .program,
+        .span = zero_span,
+        .data = .{ .list = prog_list },
+    });
+
+    // Codegen으로 code string 생성 (minified, TS 타입 스트리핑 완료된 AST 사용)
+    const codegen_mod = @import("../../codegen/codegen.zig");
+    var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, &self.ast, .{
+        .minify_whitespace = true,
+    });
+    const code = codegen.generate(program) catch return error.OutOfMemory;
+    // codegen의 buf는 codegen이 소유 → 복제 필요
+    const duped = self.allocator.dupe(u8, code) catch return error.OutOfMemory;
+    codegen.deinit();
+    return duped;
 }
 
 /// const { var1, var2, ... } = this.__closure; 문을 생성한다.
