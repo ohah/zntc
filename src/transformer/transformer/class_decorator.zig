@@ -1712,11 +1712,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const class_deco_start = self.readU32(e, 6);
     const class_deco_len = self.readU32(e, 7);
 
-    // 클래스 이름 텍스트 (Foo)
+    // 클래스 이름 텍스트 (Foo). 익명 class expression은 "_a"를 사용.
     const class_name_text = if (!name_idx.isNone()) blk: {
         const name_node = self.ast.getNode(name_idx);
         break :blk self.ast.getText(name_node.data.string_ref);
-    } else "default";
+    } else "_a";
 
     // body 멤버 순회: member decorator 수집
     var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
@@ -2160,12 +2160,13 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         .data = .{ .list = new_body_list },
     });
 
-    // var Foo = class [extends Super] { ... } (decorator 없이)
-    const new_name = try self.visitNode(name_idx);
+    // var Foo = class [extends Super] { ... } (decorator 없이, 이름 제거)
+    // class body 내의 이름 바인딩은 const이므로, static { } 블록에서 Foo = ... 재대입이 불가.
+    // TypeScript와 동일하게 class expression에 이름을 제거하여 외부 var Foo를 참조하게 한다.
     const new_super = try self.visitNode(super_idx);
     const empty_decos = try self.ast.addNodeList(&.{});
     const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
-        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+        none, @intFromEnum(new_super), @intFromEnum(new_body),
         none, 0, 0,
         empty_decos.start, empty_decos.len,
     });
@@ -2763,7 +2764,10 @@ pub fn buildStage3LetDeclarations(
     var stmts: std.ArrayList(NodeIndex) = .empty;
     defer stmts.deinit(self.allocator);
 
-    // class decorator가 있으면
+    // let _classThis; — static { _classThis = this; } 에서 항상 사용
+    try stmts.append(self.allocator, try self.makeLet(zero_span, "_classThis", .none));
+
+    // class decorator가 있으면 추가 변수
     if (class_deco_len > 0) {
         // let _classDecorators = [dec1, dec2];
         const decos = try self.collectStage3Decorators(class_deco_start, class_deco_len);
@@ -2779,9 +2783,6 @@ pub fn buildStage3LetDeclarations(
         const empty_arr_list = try self.ast.addNodeList(&.{});
         const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
         try stmts.append(self.allocator, try self.makeLet(zero_span, "_classExtraInitializers", empty_arr));
-
-        // let _classThis;
-        try stmts.append(self.allocator, try self.makeLet(zero_span, "_classThis", .none));
     }
 
     // instance/static extra initializers
