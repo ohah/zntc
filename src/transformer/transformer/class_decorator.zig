@@ -1661,6 +1661,13 @@ const Stage3MemberInfo = struct {
     initializers_name: ?[]const u8 = null,
     /// field/accessor용 extraInitializers 변수명 (예: "_x_extraInitializers")
     extra_initializers_name: ?[]const u8 = null,
+    /// private method용: descriptor 변수명 (예: "_private_secret_descriptor")
+    descriptor_name: ?[]const u8 = null,
+    /// private method용: 원본 method body (function expression으로 변환에 사용)
+    method_body: NodeIndex = .none,
+    /// private method용: 원본 params_start/params_len
+    method_params_start: u32 = 0,
+    method_params_len: u32 = 0,
     /// 원본 AST 멤버 인덱스 (class body 내 위치)
     raw_idx: u32 = 0,
 };
@@ -1728,6 +1735,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             self.allocator.free(info.decorators);
             if (info.initializers_name) |name| self.allocator.free(name);
             if (info.extra_initializers_name) |name| self.allocator.free(name);
+            if (info.descriptor_name) |name| self.allocator.free(name);
         }
         member_infos.deinit(self.allocator);
     }
@@ -1793,27 +1801,78 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
+                    // private method: descriptor 변수명 + body 저장
+                    var desc_name: ?[]const u8 = null;
+                    var m_body: NodeIndex = .none;
+                    var m_params_start: u32 = 0;
+                    var m_params_len: u32 = 0;
+                    if (is_private and !is_getter and !is_setter) {
+                        const name_node = self.ast.getNode(name_node_idx);
+                        const raw_n = self.ast.getText(name_node.data.string_ref);
+                        const clean_n = if (raw_n.len >= 2 and raw_n[0] == '"') raw_n[1 .. raw_n.len - 1] else raw_n;
+                        const var_n = if (clean_n.len > 0 and clean_n[0] == '#') clean_n[1..] else clean_n;
+                        desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
+                        m_body = try self.visitNode(self.readNodeIdx(me, 3));
+                        m_params_start = self.readU32(me, 1);
+                        m_params_len = self.readU32(me, 2);
+                    }
+
                     try member_infos.append(self.allocator, .{
                         .kind = kind,
                         .name = name_node_idx,
                         .is_static = is_static,
                         .is_private = is_private,
                         .decorators = decos,
+                        .descriptor_name = desc_name,
+                        .method_body = m_body,
+                        .method_params_start = m_params_start,
+                        .method_params_len = m_params_len,
                     });
                 }
 
-                // method를 decorator 없이 body에 추가
-                const new_body = try self.visitNode(self.readNodeIdx(me, 3));
-                const empty_list = try self.ast.addNodeList(&.{});
-                const new_method = try self.addExtraNode(.method_definition, member.span, &.{
-                    @intFromEnum(new_key),
-                    self.readU32(me, 1), // params_start
-                    self.readU32(me, 2), // params_len
-                    @intFromEnum(new_body),
-                    flags,
-                    empty_list.start, empty_list.len, // decorator 제거
-                });
-                try new_members.append(self.allocator, new_method);
+                // private decorated method → getter로 교체
+                if (is_private and deco_len > 0 and !is_getter and !is_setter) {
+                    // get #method() { return _private_method_descriptor.value; }
+                    const last_info = member_infos.items[member_infos.items.len - 1];
+                    if (last_info.descriptor_name) |dname| {
+                        const desc_ref = try makeIdentifier(self, dname);
+                        const val_key = try makeIdentifier(self, "value");
+                        const desc_val = try es_helpers.makeStaticMember(self, desc_ref, val_key, zero_span);
+                        const return_stmt = try self.ast.addNode(.{
+                            .tag = .return_statement, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = desc_val, .flags = 0 } },
+                        });
+                        const body_list = try self.ast.addNodeList(&.{return_stmt});
+                        const getter_body = try self.ast.addNode(.{
+                            .tag = .block_statement, .span = zero_span,
+                            .data = .{ .list = body_list },
+                        });
+                        const empty_params = try self.ast.addNodeList(&.{});
+                        const empty_decos = try self.ast.addNodeList(&.{});
+                        const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
+                        const getter_method = try self.addExtraNode(.method_definition, member.span, &.{
+                            @intFromEnum(new_key),
+                            empty_params.start, empty_params.len,
+                            @intFromEnum(getter_body),
+                            getter_flags,
+                            empty_decos.start, empty_decos.len,
+                        });
+                        try new_members.append(self.allocator, getter_method);
+                    }
+                } else {
+                    // public method 또는 non-decorated → 그대로 추가
+                    const new_body = try self.visitNode(self.readNodeIdx(me, 3));
+                    const empty_list = try self.ast.addNodeList(&.{});
+                    const new_method = try self.addExtraNode(.method_definition, member.span, &.{
+                        @intFromEnum(new_key),
+                        self.readU32(me, 1),
+                        self.readU32(me, 2),
+                        @intFromEnum(new_body),
+                        flags,
+                        empty_list.start, empty_list.len,
+                    });
+                    try new_members.append(self.allocator, new_method);
+                }
             } else if (member.tag == .property_definition) {
                 // extra = [key, init_val, flags, deco_start, deco_len]
                 const flags = self.readU32(me, 2);
@@ -2366,8 +2425,39 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
     else
         try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
 
-    // arg2: null (descriptorIn)
-    const arg2 = try makeIdentifier(self, "null");
+    // arg2: null (public) 또는 _descriptor = { value: __setFunctionName(fn, "#name") } (private method)
+    const arg2 = if (info.descriptor_name) |dname| blk: {
+        // _private_method_descriptor = { value: __setFunctionName(function() { ... }, "#name") }
+        const desc_ref = try makeIdentifier(self, dname);
+
+        // __setFunctionName(function() { ... }, "#name")
+        const setfn_callee = try makeIdentifier(self, "__setFunctionName");
+        // function expression with original body
+        const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
+            @intFromEnum(NodeIndex.none), // name (anonymous)
+            info.method_params_start, info.method_params_len,
+            @intFromEnum(info.method_body),
+            0, // flags
+            @intFromEnum(NodeIndex.none), // ret_type
+        });
+        const name_str = info.name; // "#method" as string_literal
+        const setfn_args = try self.ast.addNodeList(&.{ fn_expr, name_str });
+        const setfn_call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(setfn_callee), setfn_args.start, setfn_args.len, 0,
+        });
+
+        // { value: __setFunctionName(...) }
+        const value_key = try makeIdentifier(self, "value");
+        const value_prop = try self.makeObjProp(value_key, setfn_call);
+        const desc_list = try self.ast.addNodeList(&.{value_prop});
+        const desc_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = desc_list } });
+
+        // _descriptor = { value: ... }
+        break :blk try self.ast.addNode(.{
+            .tag = .assignment_expression, .span = zero_span,
+            .data = .{ .binary = .{ .left = desc_ref, .right = desc_obj, .flags = 0 } },
+        });
+    } else try makeIdentifier(self, "null");
 
     // arg3: [dec1, dec2, ...]
     const deco_list = try self.ast.addNodeList(info.decorators);
@@ -2851,8 +2941,12 @@ pub fn buildStage3LetDeclarations(
         try stmts.append(self.allocator, try self.makeLet(zero_span, "_staticExtraInitializers", empty_arr));
     }
 
-    // field/accessor decorator별 initializers/extraInitializers 변수
+    // field/accessor decorator별 initializers/extraInitializers + private method descriptor 변수
     for (member_infos) |info| {
+        if (info.descriptor_name) |dname| {
+            // let _private_method_descriptor;
+            try stmts.append(self.allocator, try self.makeLet(zero_span, dname, .none));
+        }
         if (info.initializers_name) |init_name| {
             const empty_arr_list = try self.ast.addNodeList(&.{});
             const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });

@@ -284,8 +284,7 @@ describe("Stage 3 Decorators", () => {
 
   // --- Private member decorator ---
 
-  // TODO: private method는 descriptor 래핑 + getter 변환이 필요 (TypeScript: __setFunctionName + get #method())
-  it.skip("private method decorator context", async () => {
+  it("private method decorator context", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         function log(fn: any, ctx: any) {
