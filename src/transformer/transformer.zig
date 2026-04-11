@@ -47,9 +47,10 @@ const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const worklet_mod = @import("transformer/worklet.zig");
 pub const ast_plugin_mod = @import("ast_plugin.zig");
-pub const AstPlugin = ast_plugin_mod.AstPlugin;
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
+const plugin_mod = @import("../bundler/plugin.zig");
+pub const Plugin = plugin_mod.Plugin;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
 pub const DefineEntry = struct {
@@ -100,9 +101,9 @@ pub const TransformOptions = struct {
     /// jsxDEV의 fileName 출력용 파일 경로
     jsx_filename: []const u8 = "",
 
-    /// AST 플러그인 배열. transformer가 AST 노드 방문 시 각 플러그인의 훅을 호출.
-    /// 예: worklet 플러그인, styled-components 플러그인 등.
-    ast_plugins: []const AstPlugin = &.{},
+    /// 플러그인 배열. string-based 훅과 AST 훅을 모두 포함하는 통합 인터페이스.
+    /// transformer는 AST 훅(onFunction 등)만 사용.
+    plugins: []const Plugin = &.{},
 
     pub const compat = @import("compat.zig");
 };
@@ -2055,8 +2056,8 @@ pub const Transformer = struct {
             @intFromEnum(new_body), self.readU32(e, 4),  none,
         });
 
-        // AST Plugin dispatch: onFunction
-        if (self.options.ast_plugins.len > 0) {
+        // Plugin dispatch: onFunction (AST 훅)
+        if (self.options.plugins.len > 0) {
             var api = AstTransformCtx{ .transformer = self, .modified_body = null };
             const func_info = FunctionInfo{
                 .node_idx = result,
@@ -2067,9 +2068,12 @@ pub const Transformer = struct {
                 .flags = self.readU32(e, 4),
                 .source_path = self.options.jsx_filename,
             };
-            for (self.options.ast_plugins) |ast_plugin| {
-                if (ast_plugin.onFunction) |hook| {
-                    try hook(ast_plugin.context, &api, func_info);
+            for (self.options.plugins) |p| {
+                if (p.onFunction) |hook| {
+                    hook(p.context, &api, func_info) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.PluginFailed => {},
+                    };
                 }
             }
             // 플러그인이 body를 수정했으면 result 노드의 extra_data를 패치

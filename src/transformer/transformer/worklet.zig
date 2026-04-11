@@ -686,20 +686,10 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
     });
 }
 
-/// JS 문자열 리터럴 이스케이프 (쌍따옴표 내부용).
+const string_escape = @import("../../string_escape.zig");
+
 fn escapeStringForJs(allocator: std.mem.Allocator, input: []const u8) Error![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    for (input) |c| {
-        switch (c) {
-            '\\' => try buf.appendSlice(allocator, "\\\\"),
-            '"' => try buf.appendSlice(allocator, "\\\""),
-            '\n' => try buf.appendSlice(allocator, "\\n"),
-            '\r' => try buf.appendSlice(allocator, "\\r"),
-            '\t' => try buf.appendSlice(allocator, "\\t"),
-            else => try buf.append(allocator, c),
-        }
-    }
-    return buf.toOwnedSlice(allocator);
+    return string_escape.escapeToOwned(allocator, input);
 }
 
 // ================================================================

@@ -695,21 +695,16 @@ pub fn emitModule(
     // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
     // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
     const jsx_active = ast.has_jsx;
-    const apply_refresh = options.react_refresh and
-        std.mem.indexOf(u8, module.path, "/node_modules/") == null;
-    // AST 플러그인 빌드
-    const worklet_plugin_mod = @import("../transformer/plugins/worklet_plugin.zig");
-    const AstPlugin = @import("../transformer/ast_plugin.zig").AstPlugin;
-    var ast_plugins_buf: [8]AstPlugin = undefined;
-    var ast_plugin_count: usize = 0;
-    if (options.worklet_transform and std.mem.indexOf(u8, module.path, "/node_modules/") == null) {
-        ast_plugins_buf[ast_plugin_count] = worklet_plugin_mod.plugin();
-        ast_plugin_count += 1;
-    }
+    const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
+    const apply_refresh = options.react_refresh and is_user_code;
+    const builtin = @import("../transformer/plugins/builtin.zig");
+    const merged_plugins = builtin.collect(.{
+        .worklet = options.worklet_transform and is_user_code,
+    }, options.plugins, arena_alloc) catch return error.OutOfMemory;
 
     var transformer = try Transformer.init(arena_alloc, ast, .{
         .react_refresh = apply_refresh,
-        .ast_plugins = ast_plugins_buf[0..ast_plugin_count],
+        .plugins = merged_plugins,
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .emit_decorator_metadata = options.emit_decorator_metadata,
