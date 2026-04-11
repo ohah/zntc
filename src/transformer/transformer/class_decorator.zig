@@ -1854,7 +1854,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         self.readU32(me, 2),
                         @intFromEnum(new_body),
                         flags,
-                        empty_list.start, empty_list.len,
+                        empty_list.start,
+                        empty_list.len,
                     });
                     try new_members.append(self.allocator, new_method);
                 }
@@ -1899,7 +1900,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const new_init = if (field_init_name) |init_name| blk: {
                     // field = __runInitializers(this, _x_initializers, originalValue)
                     const this_node = try self.ast.addNode(.{
-                        .tag = .this_expression, .span = zero_span,
+                        .tag = .this_expression,
+                        .span = zero_span,
                         .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
                     });
                     const callee = try makeIdentifier(self, "__runInitializers");
@@ -1923,7 +1925,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     @intFromEnum(new_key),
                     @intFromEnum(new_init),
                     flags,
-                    empty_list.start, empty_list.len,
+                    empty_list.start,
+                    empty_list.len,
                 });
                 try new_members.append(self.allocator, new_prop);
             } else if (member.tag == .accessor_property) {
@@ -1964,13 +1967,15 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     defer self.allocator.free(storage_name);
                     const storage_span = try self.ast.addString(storage_name);
                     const storage_key = try self.ast.addNode(.{
-                        .tag = .private_identifier, .span = storage_span,
+                        .tag = .private_identifier,
+                        .span = storage_span,
                         .data = .{ .string_ref = storage_span },
                     });
                     // 초기값: __runInitializers(this, _x_initializers, originalValue)
                     const init_val = if (!new_init.isNone()) blk: {
                         const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression, .span = zero_span,
+                            .tag = .this_expression,
+                            .span = zero_span,
                             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
                         });
                         const callee = try makeIdentifier(self, "__runInitializers");
@@ -1986,23 +1991,27 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         @intFromEnum(storage_key),
                         @intFromEnum(init_val),
                         flags, // static 플래그 보존
-                        empty_decos.start, empty_decos.len,
+                        empty_decos.start,
+                        empty_decos.len,
                     });
                     try new_members.append(self.allocator, backing_field);
 
                     // get x() { return this.#_x_accessor_storage; }
                     {
                         const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression, .span = zero_span,
+                            .tag = .this_expression,
+                            .span = zero_span,
                             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
                         });
                         const storage_ref = try self.ast.addNode(.{
-                            .tag = .private_identifier, .span = storage_span,
+                            .tag = .private_identifier,
+                            .span = storage_span,
                             .data = .{ .string_ref = storage_span },
                         });
                         const return_expr = try es_helpers.makeStaticMember(self, this_node, storage_ref, zero_span);
                         const getter_key = try self.ast.addNode(.{
-                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
+                            .tag = .identifier_reference,
+                            .span = self.ast.getNode(new_key).data.string_ref,
                             .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
                         });
                         const getter = try self.buildGetterMethod(getter_key, return_expr, is_static, zero_span);
@@ -2012,50 +2021,60 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // set x(value) { this.#_x_accessor_storage = value; }
                     {
                         const setter_key = try self.ast.addNode(.{
-                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
+                            .tag = .identifier_reference,
+                            .span = self.ast.getNode(new_key).data.string_ref,
                             .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
                         });
                         const val_param_span = try self.ast.addString("value");
                         const val_param = try self.ast.addNode(.{
-                            .tag = .binding_identifier, .span = val_param_span,
+                            .tag = .binding_identifier,
+                            .span = val_param_span,
                             .data = .{ .string_ref = val_param_span },
                         });
                         const setter_params = try self.ast.addNodeList(&.{val_param});
                         const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression, .span = zero_span,
+                            .tag = .this_expression,
+                            .span = zero_span,
                             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
                         });
                         const storage_ref = try self.ast.addNode(.{
-                            .tag = .private_identifier, .span = storage_span,
+                            .tag = .private_identifier,
+                            .span = storage_span,
                             .data = .{ .string_ref = storage_span },
                         });
                         const this_storage = try self.addExtraNode(.static_member_expression, zero_span, &.{
                             @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
                         });
                         const val_ref = try self.ast.addNode(.{
-                            .tag = .identifier_reference, .span = val_param_span,
+                            .tag = .identifier_reference,
+                            .span = val_param_span,
                             .data = .{ .string_ref = val_param_span },
                         });
                         const assign = try self.ast.addNode(.{
-                            .tag = .assignment_expression, .span = zero_span,
+                            .tag = .assignment_expression,
+                            .span = zero_span,
                             .data = .{ .binary = .{ .left = this_storage, .right = val_ref, .flags = 0 } },
                         });
                         const assign_stmt = try self.ast.addNode(.{
-                            .tag = .expression_statement, .span = zero_span,
+                            .tag = .expression_statement,
+                            .span = zero_span,
                             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
                         });
                         const body_list = try self.ast.addNodeList(&.{assign_stmt});
                         const body = try self.ast.addNode(.{
-                            .tag = .block_statement, .span = zero_span,
+                            .tag = .block_statement,
+                            .span = zero_span,
                             .data = .{ .list = body_list },
                         });
                         const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0); // setter + static
                         const setter = try self.addExtraNode(.method_definition, zero_span, &.{
                             @intFromEnum(setter_key),
-                            setter_params.start, setter_params.len,
+                            setter_params.start,
+                            setter_params.len,
                             @intFromEnum(body),
                             setter_flags,
-                            empty_decos.start, empty_decos.len,
+                            empty_decos.start,
+                            empty_decos.len,
                         });
                         try new_members.append(self.allocator, setter);
                     }
@@ -2066,7 +2085,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         @intFromEnum(new_key),
                         @intFromEnum(new_init),
                         flags,
-                        empty_list.start, empty_list.len,
+                        empty_list.start,
+                        empty_list.len,
                     });
                     try new_members.append(self.allocator, new_acc);
                 }
@@ -2102,28 +2122,34 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     // static { _classThis = this; }
     {
         const classThis_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = classThis_span,
+            .tag = .identifier_reference,
+            .span = classThis_span,
             .data = .{ .string_ref = classThis_span },
         });
         const this_node = try self.ast.addNode(.{
-            .tag = .this_expression, .span = zero_span,
+            .tag = .this_expression,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
         });
         const assign = try self.ast.addNode(.{
-            .tag = .assignment_expression, .span = zero_span,
+            .tag = .assignment_expression,
+            .span = zero_span,
             .data = .{ .binary = .{ .left = classThis_ref, .right = this_node, .flags = 0 } },
         });
         const assign_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
+            .tag = .expression_statement,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
         });
         const static_body_list = try self.ast.addNodeList(&.{assign_stmt});
         const static_body = try self.ast.addNode(.{
-            .tag = .block_statement, .span = zero_span,
+            .tag = .block_statement,
+            .span = zero_span,
             .data = .{ .list = static_body_list },
         });
         const static_block = try self.ast.addNode(.{
-            .tag = .static_block, .span = zero_span,
+            .tag = .static_block,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = static_body, .flags = 0 } },
         });
         try new_members.insert(self.allocator, 0, static_block);
@@ -2146,11 +2172,14 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         if (info.deco_var_name) |vname| {
             const deco_list = try self.ast.addNodeList(info.decorators);
             const deco_arr = try self.ast.addNode(.{
-                .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list },
+                .tag = .array_expression,
+                .span = zero_span,
+                .data = .{ .list = deco_list },
             });
             const var_ref = try makeIdentifier(self, vname);
             const assign = try self.ast.addNode(.{
-                .tag = .assignment_expression, .span = zero_span,
+                .tag = .assignment_expression,
+                .span = zero_span,
                 .data = .{ .binary = .{ .left = var_ref, .right = deco_arr, .flags = 0 } },
             });
             try static_block_stmts.append(self.allocator, try es_helpers.makeExprStmt(self, assign, zero_span));
@@ -2179,7 +2208,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     if (class_deco_len > 0) {
         const class_call = try self.buildClassEsDecorateCall(classThis_span);
         const class_call_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
+            .tag = .expression_statement,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = class_call, .flags = 0 } },
         });
         try static_block_stmts.append(self.allocator, class_call_stmt);
@@ -2199,7 +2229,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     if (class_deco_len > 0) {
         const run_init = try self.buildRunInitializersCall(classThis_span, "_classExtraInitializers");
         const run_init_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
+            .tag = .expression_statement,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
         });
         try static_block_stmts.append(self.allocator, run_init_stmt);
@@ -2209,11 +2240,13 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     if (static_block_stmts.items.len > 0) {
         const sb_body_list = try self.ast.addNodeList(static_block_stmts.items);
         const sb_body = try self.ast.addNode(.{
-            .tag = .block_statement, .span = zero_span,
+            .tag = .block_statement,
+            .span = zero_span,
             .data = .{ .list = sb_body_list },
         });
         const sb = try self.ast.addNode(.{
-            .tag = .static_block, .span = zero_span,
+            .tag = .static_block,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = sb_body, .flags = 0 } },
         });
         // 첫 static block 뒤에 삽입 (index 1)
@@ -2224,32 +2257,38 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     if (has_instance_decorators and !has_constructor) {
         // 빈 constructor 생성: constructor() { __runInitializers(this, _instanceExtraInitializers); }
         const this_node = try self.ast.addNode(.{
-            .tag = .this_expression, .span = zero_span,
+            .tag = .this_expression,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
         });
         const run_init = try self.buildRunInitializersCall2(this_node, "_instanceExtraInitializers");
         const run_init_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
+            .tag = .expression_statement,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
         });
         const ctor_body_list = try self.ast.addNodeList(&.{run_init_stmt});
         const ctor_body = try self.ast.addNode(.{
-            .tag = .block_statement, .span = zero_span,
+            .tag = .block_statement,
+            .span = zero_span,
             .data = .{ .list = ctor_body_list },
         });
         const ctor_key_span = try self.ast.addString("constructor");
         const ctor_key = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = ctor_key_span,
+            .tag = .identifier_reference,
+            .span = ctor_key_span,
             .data = .{ .string_ref = ctor_key_span },
         });
         const empty_params = try self.ast.addNodeList(&.{});
         const empty_decos = try self.ast.addNodeList(&.{});
         const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
             @intFromEnum(ctor_key),
-            empty_params.start, empty_params.len,
+            empty_params.start,
+            empty_params.len,
             @intFromEnum(ctor_body),
             0, // flags (no static/getter/setter)
-            empty_decos.start, empty_decos.len,
+            empty_decos.start,
+            empty_decos.len,
         });
         try new_members.append(self.allocator, ctor_method);
     }
@@ -2257,7 +2296,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     // 새 class body 생성
     const new_body_list = try self.ast.addNodeList(new_members.items);
     const new_body = try self.ast.addNode(.{
-        .tag = .class_body, .span = zero_span,
+        .tag = .class_body,
+        .span = zero_span,
         .data = .{ .list = new_body_list },
     });
 
@@ -2267,15 +2307,16 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const new_super = try self.visitNode(super_idx);
     const empty_decos = try self.ast.addNodeList(&.{});
     const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
-        none, @intFromEnum(new_super), @intFromEnum(new_body),
-        none, 0, 0,
+        none,              @intFromEnum(new_super), @intFromEnum(new_body),
+        none,              0,                       0,
         empty_decos.start, empty_decos.len,
     });
 
     // IIFE 내부: var Foo = class { ... };
     const inner_name_span = try self.ast.addString(class_name_text);
     const inner_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier, .span = inner_name_span,
+        .tag = .binding_identifier,
+        .span = inner_name_span,
         .data = .{ .string_ref = inner_name_span },
     });
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
@@ -2289,19 +2330,23 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // return Foo = _classThis;
     const return_name = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = inner_name_span,
+        .tag = .identifier_reference,
+        .span = inner_name_span,
         .data = .{ .string_ref = inner_name_span },
     });
     const classThis_ref2 = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = classThis_span,
+        .tag = .identifier_reference,
+        .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
     const return_assign = try self.ast.addNode(.{
-        .tag = .assignment_expression, .span = zero_span,
+        .tag = .assignment_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = return_name, .right = classThis_ref2, .flags = 0 } },
     });
     const return_stmt = try self.ast.addNode(.{
-        .tag = .return_statement, .span = zero_span,
+        .tag = .return_statement,
+        .span = zero_span,
         .data = .{ .unary = .{ .operand = return_assign, .flags = 0 } },
     });
     try iife_stmts.append(self.allocator, return_stmt);
@@ -2313,8 +2358,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // let 선언 생성
     const let_decls = try self.buildStage3LetDeclarations(
-        class_deco_start, class_deco_len,
-        member_infos.items, has_instance_decorators, has_static_decorators,
+        class_deco_start,
+        class_deco_len,
+        member_infos.items,
+        has_instance_decorators,
+        has_static_decorators,
     );
     try all_iife_stmts.appendSlice(self.allocator, let_decls);
     self.allocator.free(let_decls);
@@ -2324,7 +2372,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     const iife_body_list = try self.ast.addNodeList(all_iife_stmts.items);
     const iife_body = try self.ast.addNode(.{
-        .tag = .block_statement, .span = zero_span,
+        .tag = .block_statement,
+        .span = zero_span,
         .data = .{ .list = iife_body_list },
     });
 
@@ -2339,7 +2388,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // (() => { ... })()
     const paren_arrow = try self.ast.addNode(.{
-        .tag = .parenthesized_expression, .span = zero_span,
+        .tag = .parenthesized_expression,
+        .span = zero_span,
         .data = .{ .unary = .{ .operand = arrow, .flags = 0 } },
     });
     const empty_args = try self.ast.addNodeList(&.{});
@@ -2359,7 +2409,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     } else try self.ast.addString("default");
 
     const outer_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier, .span = outer_name_span,
+        .tag = .binding_identifier,
+        .span = outer_name_span,
         .data = .{ .string_ref = outer_name_span },
     });
     const outer_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
@@ -2466,7 +2517,8 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
         // function expression with original body
         const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
-            info.method_params_start, info.method_params_len,
+            info.method_params_start,
+            info.method_params_len,
             @intFromEnum(info.method_body),
             0, // flags
             @intFromEnum(NodeIndex.none), // ret_type
@@ -2485,7 +2537,8 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
 
         // _descriptor = { value: ... }
         break :blk try self.ast.addNode(.{
-            .tag = .assignment_expression, .span = zero_span,
+            .tag = .assignment_expression,
+            .span = zero_span,
             .data = .{ .binary = .{ .left = desc_ref, .right = desc_obj, .flags = 0 } },
         });
     } else try makeIdentifier(self, "null");
@@ -2533,12 +2586,14 @@ pub fn buildClassEsDecorateCall(self: *Transformer, classThis_span: Span) Error!
 
     // arg2: _classDescriptor = { value: _classThis }
     const classThis_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = classThis_span,
+        .tag = .identifier_reference,
+        .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
     const value_key_span = try self.ast.addString("value");
     const value_key = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = value_key_span,
+        .tag = .identifier_reference,
+        .span = value_key_span,
         .data = .{ .string_ref = value_key_span },
     });
     const value_prop = try self.makeObjProp(value_key, classThis_ref);
@@ -2547,11 +2602,13 @@ pub fn buildClassEsDecorateCall(self: *Transformer, classThis_span: Span) Error!
 
     const desc_span = try self.ast.addString("_classDescriptor");
     const desc_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = desc_span,
+        .tag = .identifier_reference,
+        .span = desc_span,
         .data = .{ .string_ref = desc_span },
     });
     const arg2 = try self.ast.addNode(.{
-        .tag = .assignment_expression, .span = zero_span,
+        .tag = .assignment_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = desc_ref, .right = obj, .flags = 0 } },
     });
 
@@ -2567,7 +2624,8 @@ pub fn buildClassEsDecorateCall(self: *Transformer, classThis_span: Span) Error!
     const name_key = try makeIdentifier(self, "name");
     // _classThis.name
     const classThis_ref2 = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = classThis_span,
+        .tag = .identifier_reference,
+        .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
     const name_prop_key = try makeIdentifier(self, "name");
@@ -2680,12 +2738,14 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         const has_key = try makeIdentifier(self, "has");
         const obj_param_span = try self.ast.addString("obj");
         const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier, .span = obj_param_span,
+            .tag = .binding_identifier,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
 
         const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = obj_param_span,
+            .tag = .identifier_reference,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
 
@@ -2693,18 +2753,21 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             // #name (private_identifier)
             const priv_span = try self.ast.addString(member_name);
             break :blk try self.ast.addNode(.{
-                .tag = .private_identifier, .span = priv_span,
+                .tag = .private_identifier,
+                .span = priv_span,
                 .data = .{ .string_ref = priv_span },
             });
         } else blk: {
             // "name" (string_literal)
             break :blk try self.ast.addNode(.{
-                .tag = .string_literal, .span = name_node.data.string_ref,
+                .tag = .string_literal,
+                .span = name_node.data.string_ref,
                 .data = .{ .string_ref = name_node.data.string_ref },
             });
         };
         const in_expr = try self.ast.addNode(.{
-            .tag = .binary_expression, .span = zero_span,
+            .tag = .binary_expression,
+            .span = zero_span,
             .data = .{ .binary = .{ .left = in_left, .right = obj_ref, .flags = @intFromEnum(Kind.kw_in) } },
         });
 
@@ -2720,13 +2783,15 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         const get_key = try makeIdentifier(self, "get");
         const obj_param_span = try self.ast.addString("obj");
         const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier, .span = obj_param_span,
+            .tag = .binding_identifier,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
 
         // obj.name (public) / obj.#name (private) / obj["name"] or obj[0] (computed key)
         const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = obj_param_span,
+            .tag = .identifier_reference,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
         const obj_member = if (needs_computed) blk: {
@@ -2737,7 +2802,8 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             const member_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
             const member_key_span = try self.ast.addString(member_name);
             const member_key_node = try self.ast.addNode(.{
-                .tag = member_key_tag, .span = member_key_span,
+                .tag = member_key_tag,
+                .span = member_key_span,
                 .data = .{ .string_ref = member_key_span },
             });
             break :blk try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
@@ -2760,19 +2826,22 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         // function_expression: extra = [name(0), params_start, params_len, body(3), flags, ret_type(5)]
         const obj_param_span = try self.ast.addString("obj");
         const obj_param = try self.ast.addNode(.{
-            .tag = .binding_identifier, .span = obj_param_span,
+            .tag = .binding_identifier,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
         const val_param_span = try self.ast.addString("value");
         const val_param = try self.ast.addNode(.{
-            .tag = .binding_identifier, .span = val_param_span,
+            .tag = .binding_identifier,
+            .span = val_param_span,
             .data = .{ .string_ref = val_param_span },
         });
         const fn_params = try self.ast.addNodeList(&.{ obj_param, val_param });
 
         // body: { obj.name = value; } / { obj.#name = value; } / { obj["name"] = value; }
         const obj_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = obj_param_span,
+            .tag = .identifier_reference,
+            .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
         const obj_member = if (needs_computed) blk: {
@@ -2781,35 +2850,41 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             const set_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
             const set_key_span = try self.ast.addString(member_name);
             const set_key_node = try self.ast.addNode(.{
-                .tag = set_key_tag, .span = set_key_span,
+                .tag = set_key_tag,
+                .span = set_key_span,
                 .data = .{ .string_ref = set_key_span },
             });
             break :blk try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
         };
         const val_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference, .span = val_param_span,
+            .tag = .identifier_reference,
+            .span = val_param_span,
             .data = .{ .string_ref = val_param_span },
         });
         const assign = try self.ast.addNode(.{
-            .tag = .assignment_expression, .span = zero_span,
+            .tag = .assignment_expression,
+            .span = zero_span,
             .data = .{ .binary = .{ .left = obj_member, .right = val_ref, .flags = 0 } },
         });
         const assign_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
+            .tag = .expression_statement,
+            .span = zero_span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
         });
         const body_list = try self.ast.addNodeList(&.{assign_stmt});
         const fn_body = try self.ast.addNode(.{
-            .tag = .block_statement, .span = zero_span,
+            .tag = .block_statement,
+            .span = zero_span,
             .data = .{ .list = body_list },
         });
 
         const set_fn = try self.addExtraNode(.function_expression, zero_span, &.{
-            none,            // name (anonymous)
-            fn_params.start, fn_params.len,
+            none, // name (anonymous)
+            fn_params.start,
+            fn_params.len,
             @intFromEnum(fn_body),
-            0,               // flags
-            none,            // ret_type
+            0, // flags
+            none, // ret_type
         });
         try access_props.append(self.allocator, try self.makeObjProp(set_key, set_fn));
     }
@@ -2832,7 +2907,8 @@ pub fn buildMetadataDecl(self: *Transformer) Error!NodeIndex {
     const func_str_span = try self.ast.addString("\"function\"");
     const func_str = try self.ast.addNode(.{ .tag = .string_literal, .span = func_str_span, .data = .{ .string_ref = func_str_span } });
     const typeof_check = try self.ast.addNode(.{
-        .tag = .binary_expression, .span = zero_span,
+        .tag = .binary_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = typeof_expr, .right = func_str, .flags = @intFromEnum(Kind.eq3) } },
     });
 
@@ -2845,7 +2921,8 @@ pub fn buildMetadataDecl(self: *Transformer) Error!NodeIndex {
 
     // typeof Symbol === "function" && Symbol.metadata
     const and_expr = try self.ast.addNode(.{
-        .tag = .binary_expression, .span = zero_span,
+        .tag = .binary_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = typeof_check, .right = symbol_metadata, .flags = @intFromEnum(Kind.amp2) } },
     });
 
@@ -2866,14 +2943,16 @@ pub fn buildMetadataDecl(self: *Transformer) Error!NodeIndex {
 
     // ... ? Object.create(null) : void 0
     const ternary = try self.ast.addNode(.{
-        .tag = .conditional_expression, .span = zero_span,
+        .tag = .conditional_expression,
+        .span = zero_span,
         .data = .{ .ternary = .{ .a = and_expr, .b = obj_create_call, .c = void0 } },
     });
 
     // const _metadata = ...;
     const metadata_span = try self.ast.addString("_metadata");
     const metadata_binding = try self.ast.addNode(.{
-        .tag = .binding_identifier, .span = metadata_span,
+        .tag = .binding_identifier,
+        .span = metadata_span,
         .data = .{ .string_ref = metadata_span },
     });
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
@@ -2898,23 +2977,27 @@ pub fn buildClassReassign(self: *Transformer, class_name: []const u8, classThis_
 
     // _classThis = _classDescriptor.value
     const classThis_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = classThis_span,
+        .tag = .identifier_reference,
+        .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
     const inner_assign = try self.ast.addNode(.{
-        .tag = .assignment_expression, .span = zero_span,
+        .tag = .assignment_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = classThis_ref, .right = desc_value, .flags = 0 } },
     });
 
     // Foo = _classThis = ...
     const foo_ref = try makeIdentifier(self, class_name);
     const outer_assign = try self.ast.addNode(.{
-        .tag = .assignment_expression, .span = zero_span,
+        .tag = .assignment_expression,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = foo_ref, .right = inner_assign, .flags = 0 } },
     });
 
     return self.ast.addNode(.{
-        .tag = .expression_statement, .span = zero_span,
+        .tag = .expression_statement,
+        .span = zero_span,
         .data = .{ .unary = .{ .operand = outer_assign, .flags = 0 } },
     });
 }
@@ -2925,7 +3008,8 @@ pub fn buildRunInitializersCall(self: *Transformer, target_span: Span, init_name
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try makeIdentifier(self, "__runInitializers");
     const target = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = target_span,
+        .tag = .identifier_reference,
+        .span = target_span,
         .data = .{ .string_ref = target_span },
     });
     const init_ref = try makeIdentifier(self, init_name);
@@ -3025,7 +3109,8 @@ pub fn buildStage3LetDeclarations(
 pub fn makeObjProp(self: *Transformer, key: NodeIndex, value: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     return self.ast.addNode(.{
-        .tag = .object_property, .span = zero_span,
+        .tag = .object_property,
+        .span = zero_span,
         .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
     });
 }
@@ -3034,7 +3119,8 @@ pub fn makeObjProp(self: *Transformer, key: NodeIndex, value: NodeIndex) Error!N
 pub fn makeLet(self: *Transformer, span: Span, name: []const u8, init: NodeIndex) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
     const binding = try self.ast.addNode(.{
-        .tag = .binding_identifier, .span = name_span,
+        .tag = .binding_identifier,
+        .span = name_span,
         .data = .{ .string_ref = name_span },
     });
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
@@ -3083,7 +3169,8 @@ pub fn buildMetadataDefineProperty(self: *Transformer, classThis_span: Span) Err
 
     // arg1: _classThis
     const ct_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference, .span = classThis_span,
+        .tag = .identifier_reference,
+        .span = classThis_span,
         .data = .{ .string_ref = classThis_span },
     });
 
@@ -3116,17 +3203,20 @@ pub fn buildMetadataDefineProperty(self: *Transformer, classThis_span: Span) Err
 
     // if (_metadata) call;
     const call_stmt = try self.ast.addNode(.{
-        .tag = .expression_statement, .span = zero_span,
+        .tag = .expression_statement,
+        .span = zero_span,
         .data = .{ .unary = .{ .operand = call, .flags = 0 } },
     });
     const body_list = try self.ast.addNodeList(&.{call_stmt});
     const body = try self.ast.addNode(.{
-        .tag = .block_statement, .span = zero_span,
+        .tag = .block_statement,
+        .span = zero_span,
         .data = .{ .list = body_list },
     });
 
     return self.ast.addNode(.{
-        .tag = .if_statement, .span = zero_span,
+        .tag = .if_statement,
+        .span = zero_span,
         .data = .{ .ternary = .{ .a = metadata_cond, .b = body, .c = .none } },
     });
 }
@@ -3136,12 +3226,14 @@ pub fn buildMetadataDefineProperty(self: *Transformer, classThis_span: Span) Err
 pub fn buildGetterMethod(self: *Transformer, key: NodeIndex, return_expr: NodeIndex, is_static: bool, span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const return_stmt = try self.ast.addNode(.{
-        .tag = .return_statement, .span = zero_span,
+        .tag = .return_statement,
+        .span = zero_span,
         .data = .{ .unary = .{ .operand = return_expr, .flags = 0 } },
     });
     const body_list = try self.ast.addNodeList(&.{return_stmt});
     const getter_body = try self.ast.addNode(.{
-        .tag = .block_statement, .span = zero_span,
+        .tag = .block_statement,
+        .span = zero_span,
         .data = .{ .list = body_list },
     });
     const empty_params = try self.ast.addNodeList(&.{});
@@ -3149,10 +3241,12 @@ pub fn buildGetterMethod(self: *Transformer, key: NodeIndex, return_expr: NodeIn
     const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
     return self.addExtraNode(.method_definition, span, &.{
         @intFromEnum(key),
-        empty_params.start, empty_params.len,
+        empty_params.start,
+        empty_params.len,
         @intFromEnum(getter_body),
         getter_flags,
-        empty_decos.start, empty_decos.len,
+        empty_decos.start,
+        empty_decos.len,
     });
 }
 
@@ -3174,4 +3268,3 @@ pub fn appendEsDecorateStmt(self: *Transformer, stmts: *std.ArrayList(NodeIndex)
     const call = try self.buildEsDecorateCall(info);
     try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
 }
-
