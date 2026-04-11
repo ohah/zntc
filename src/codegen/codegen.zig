@@ -1632,10 +1632,36 @@ pub const Codegen = struct {
                     if (i > 0) try self.write(",\n");
                     try self.write("  \"");
                     try self.write(match_path);
-                    // TODO: eager 모드 구현 시 정적 import로 변경
-                    try self.write("\": () => import(\"");
-                    try self.write(match_path);
-                    try self.write("\")");
+                    try self.write("\": ");
+
+                    if (rec.glob_eager) {
+                        if (rec.glob_import_name) |import_name| {
+                            // eager + import: (await import("./a.ts")).setup
+                            try self.write("(await import(\"");
+                            try self.write(match_path);
+                            try self.write("\")).");
+                            try self.write(import_name);
+                        } else {
+                            // eager: await import("./a.ts")
+                            try self.write("await import(\"");
+                            try self.write(match_path);
+                            try self.write("\")");
+                        }
+                    } else {
+                        if (rec.glob_import_name) |import_name| {
+                            // lazy + import: () => import("./a.ts").then(m => m.setup)
+                            try self.write("() => import(\"");
+                            try self.write(match_path);
+                            try self.write("\").then(m => m.");
+                            try self.write(import_name);
+                            try self.write(")");
+                        } else {
+                            // lazy (default): () => import("./a.ts")
+                            try self.write("() => import(\"");
+                            try self.write(match_path);
+                            try self.write("\")");
+                        }
+                    }
                 }
                 try self.write("\n}");
             } else {

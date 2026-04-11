@@ -654,3 +654,54 @@ test "Circular: diamond with shared leaf" {
     const entry_pos = std.mem.indexOf(u8, result.output, "\"entry\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(shared_pos < entry_pos);
 }
+
+test "Bundler: import.meta.glob eager option" {
+    // glob_matches의 기존 메모리 릭 (expandGlob 할당)을 우회하기 위해 arena 사용
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("mods");
+    try writeFile(tmp.dir, "mods/a.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "mods/b.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "entry.ts", "const m = import.meta.glob('./mods/*.ts', { eager: true });\nconsole.log(m);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await import(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "() => import(") == null);
+}
+
+test "Bundler: import.meta.glob import option" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("mods");
+    try writeFile(tmp.dir, "mods/a.ts", "export const setup = () => 1;");
+    try writeFile(tmp.dir, "entry.ts", "const m = import.meta.glob('./mods/*.ts', { import: 'setup' });\nconsole.log(m);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "m.setup") != null);
+}
