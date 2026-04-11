@@ -517,6 +517,8 @@ test "stage3: field decorator → kind field + initializers" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\"") != null);
     // field은 per-field initializers를 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_initializers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_extraInitializers") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__runInitializers") != null);
 }
 

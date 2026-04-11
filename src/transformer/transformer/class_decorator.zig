@@ -1657,6 +1657,10 @@ const Stage3MemberInfo = struct {
     decorators: []const NodeIndex,
     /// field 초기값 (field/accessor만)
     init_value: NodeIndex = .none,
+    /// field/accessor용 initializers 변수명 (예: "_x_initializers")
+    initializers_name: ?[]const u8 = null,
+    /// field/accessor용 extraInitializers 변수명 (예: "_x_extraInitializers")
+    extra_initializers_name: ?[]const u8 = null,
     /// 원본 AST 멤버 인덱스 (class body 내 위치)
     raw_idx: u32 = 0,
 };
@@ -1719,6 +1723,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     defer {
         for (member_infos.items) |info| {
             self.allocator.free(info.decorators);
+            if (info.initializers_name) |name| self.allocator.free(name);
+            if (info.extra_initializers_name) |name| self.allocator.free(name);
         }
         member_infos.deinit(self.allocator);
     }
@@ -1817,12 +1823,24 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
+                    // field용 initializers/extraInitializers 변수명 생성
+                    const name_node = self.ast.getNode(name_node_idx);
+                    const raw_name = self.ast.getText(name_node.data.string_ref);
+                    const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
+                        raw_name[1 .. raw_name.len - 1]
+                    else
+                        raw_name;
+                    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
+                    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
+
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
                         .name = name_node_idx,
                         .is_static = is_static,
                         .is_private = false,
                         .decorators = decos,
+                        .initializers_name = init_name,
+                        .extra_initializers_name = extra_name,
                     });
                 }
 
@@ -2199,12 +2217,19 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo, _: Span) 
     // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
     const arg4 = try self.buildContextObject(info);
 
-    // arg5: initializers (null for method/getter/setter)
-    const arg5 = try makeIdentifier(self, "null");
+    // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
+    const arg5 = if (info.initializers_name) |name|
+        try makeIdentifier(self, name)
+    else
+        try makeIdentifier(self, "null");
 
-    // arg6: extraInitializers
-    const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
-    const arg6 = try makeIdentifier(self, extra_init_name);
+    // arg6: extraInitializers (per-field var for field/accessor, shared var for method/getter/setter)
+    const arg6 = if (info.extra_initializers_name) |name|
+        try makeIdentifier(self, name)
+    else blk: {
+        const extra_init_name = if (info.is_static) "_staticExtraInitializers" else "_instanceExtraInitializers";
+        break :blk try makeIdentifier(self, extra_init_name);
+    };
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
     return self.addExtraNode(.call_expression, zero_span, &.{
@@ -2654,10 +2679,21 @@ pub fn buildStage3LetDeclarations(
         try stmts.append(self.allocator, try self.makeLet(zero_span, "_staticExtraInitializers", empty_arr));
     }
 
-    // member decorator 변수들
-    _ = member_infos;
-    _ = none;
+    // field/accessor decorator별 initializers/extraInitializers 변수
+    for (member_infos) |info| {
+        if (info.initializers_name) |init_name| {
+            const empty_arr_list = try self.ast.addNodeList(&.{});
+            const empty_arr = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list } });
+            try stmts.append(self.allocator, try self.makeLet(zero_span, init_name, empty_arr));
+        }
+        if (info.extra_initializers_name) |extra_name| {
+            const empty_arr_list2 = try self.ast.addNodeList(&.{});
+            const empty_arr2 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = empty_arr_list2 } });
+            try stmts.append(self.allocator, try self.makeLet(zero_span, extra_name, empty_arr2));
+        }
+    }
 
+    _ = none;
     return stmts.toOwnedSlice(self.allocator);
 }
 
