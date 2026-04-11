@@ -1862,13 +1862,25 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const deco_len = self.readU32(me, 4);
                 const is_static = (flags & 0x01) != 0;
 
+                const key_idx = self.readNodeIdx(me, 0);
+                const new_key = try self.visitNode(key_idx);
+                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
+
                 if (deco_len > 0) {
-                    const key_idx = self.readNodeIdx(me, 0);
-                    const new_key = try self.visitNode(key_idx);
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
+
+                    // 멤버 이름 추출
+                    const name_node = self.ast.getNode(name_node_idx);
+                    const raw_name = self.ast.getText(name_node.data.string_ref);
+                    const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
+                        raw_name[1 .. raw_name.len - 1]
+                    else
+                        raw_name;
+                    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
+                    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
 
                     try member_infos.append(self.allocator, .{
                         .kind = "accessor",
@@ -1876,20 +1888,141 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .is_static = is_static,
                         .is_private = false,
                         .decorators = decos,
+                        .initializers_name = init_name,
+                        .extra_initializers_name = extra_name,
                     });
-                }
 
-                // accessor를 decorator 없이 추가
-                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
-                const empty_list = try self.ast.addNodeList(&.{});
-                const new_acc = try self.addExtraNode(.accessor_property, member.span, &.{
-                    @intFromEnum(new_key),
-                    @intFromEnum(new_init),
-                    flags,
-                    empty_list.start, empty_list.len,
-                });
-                try new_members.append(self.allocator, new_acc);
+                    // accessor → private backing field + getter + setter
+                    // #x_accessor_storage (property_definition)
+                    const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{clean_name});
+                    defer self.allocator.free(storage_name);
+                    const storage_span = try self.ast.addString(storage_name);
+                    const storage_key = try self.ast.addNode(.{
+                        .tag = .private_identifier, .span = storage_span,
+                        .data = .{ .string_ref = storage_span },
+                    });
+                    // 초기값: __runInitializers(this, _x_initializers, originalValue)
+                    const init_val = if (!new_init.isNone()) blk: {
+                        const this_node = try self.ast.addNode(.{
+                            .tag = .this_expression, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                        });
+                        const callee = try makeIdentifier(self, "__runInitializers");
+                        const init_arr_ref = try makeIdentifier(self, init_name);
+                        const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
+                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
+                            @intFromEnum(callee), args.start, args.len, 0,
+                        });
+                    } else NodeIndex.none;
+
+                    const empty_decos = try self.ast.addNodeList(&.{});
+                    const backing_field = try self.addExtraNode(.property_definition, member.span, &.{
+                        @intFromEnum(storage_key),
+                        @intFromEnum(init_val),
+                        flags, // static 플래그 보존
+                        empty_decos.start, empty_decos.len,
+                    });
+                    try new_members.append(self.allocator, backing_field);
+
+                    // get x() { return this.#_x_accessor_storage; }
+                    {
+                        const getter_key = try self.ast.addNode(.{
+                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
+                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
+                        });
+                        const this_node = try self.ast.addNode(.{
+                            .tag = .this_expression, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                        });
+                        const storage_ref = try self.ast.addNode(.{
+                            .tag = .private_identifier, .span = storage_span,
+                            .data = .{ .string_ref = storage_span },
+                        });
+                        const this_storage = try self.addExtraNode(.static_member_expression, zero_span, &.{
+                            @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+                        });
+                        const return_stmt = try self.ast.addNode(.{
+                            .tag = .return_statement, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = this_storage, .flags = 0 } },
+                        });
+                        const body_list = try self.ast.addNodeList(&.{return_stmt});
+                        const body = try self.ast.addNode(.{
+                            .tag = .block_statement, .span = zero_span,
+                            .data = .{ .list = body_list },
+                        });
+                        const empty_params = try self.ast.addNodeList(&.{});
+                        const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0); // getter + static
+                        const getter = try self.addExtraNode(.method_definition, zero_span, &.{
+                            @intFromEnum(getter_key),
+                            empty_params.start, empty_params.len,
+                            @intFromEnum(body),
+                            getter_flags,
+                            empty_decos.start, empty_decos.len,
+                        });
+                        try new_members.append(self.allocator, getter);
+                    }
+
+                    // set x(value) { this.#_x_accessor_storage = value; }
+                    {
+                        const setter_key = try self.ast.addNode(.{
+                            .tag = .identifier_reference, .span = self.ast.getNode(new_key).data.string_ref,
+                            .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
+                        });
+                        const val_param_span = try self.ast.addString("value");
+                        const val_param = try self.ast.addNode(.{
+                            .tag = .binding_identifier, .span = val_param_span,
+                            .data = .{ .string_ref = val_param_span },
+                        });
+                        const setter_params = try self.ast.addNodeList(&.{val_param});
+                        const this_node = try self.ast.addNode(.{
+                            .tag = .this_expression, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                        });
+                        const storage_ref = try self.ast.addNode(.{
+                            .tag = .private_identifier, .span = storage_span,
+                            .data = .{ .string_ref = storage_span },
+                        });
+                        const this_storage = try self.addExtraNode(.static_member_expression, zero_span, &.{
+                            @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+                        });
+                        const val_ref = try self.ast.addNode(.{
+                            .tag = .identifier_reference, .span = val_param_span,
+                            .data = .{ .string_ref = val_param_span },
+                        });
+                        const assign = try self.ast.addNode(.{
+                            .tag = .assignment_expression, .span = zero_span,
+                            .data = .{ .binary = .{ .left = this_storage, .right = val_ref, .flags = 0 } },
+                        });
+                        const assign_stmt = try self.ast.addNode(.{
+                            .tag = .expression_statement, .span = zero_span,
+                            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                        });
+                        const body_list = try self.ast.addNodeList(&.{assign_stmt});
+                        const body = try self.ast.addNode(.{
+                            .tag = .block_statement, .span = zero_span,
+                            .data = .{ .list = body_list },
+                        });
+                        const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0); // setter + static
+                        const setter = try self.addExtraNode(.method_definition, zero_span, &.{
+                            @intFromEnum(setter_key),
+                            setter_params.start, setter_params.len,
+                            @intFromEnum(body),
+                            setter_flags,
+                            empty_decos.start, empty_decos.len,
+                        });
+                        try new_members.append(self.allocator, setter);
+                    }
+                } else {
+                    // decorator 없는 accessor → 그대로 유지
+                    const empty_list = try self.ast.addNodeList(&.{});
+                    const new_acc = try self.addExtraNode(.accessor_property, member.span, &.{
+                        @intFromEnum(new_key),
+                        @intFromEnum(new_init),
+                        flags,
+                        empty_list.start, empty_list.len,
+                    });
+                    try new_members.append(self.allocator, new_acc);
+                }
             } else {
                 // static_block 등 그대로 방문하여 추가
                 const visited = try self.visitNode(member_idx);
@@ -2483,7 +2616,7 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         });
         const body_list = try self.ast.addNodeList(&.{assign_stmt});
         const fn_body = try self.ast.addNode(.{
-            .tag = .function_body, .span = zero_span,
+            .tag = .block_statement, .span = zero_span,
             .data = .{ .list = body_list },
         });
 

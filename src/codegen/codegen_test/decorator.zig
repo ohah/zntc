@@ -548,9 +548,12 @@ test "stage3: accessor decorator → kind accessor + backing field" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"accessor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"x\"") != null);
-    // TODO Phase 4: accessor는 getter/setter pair를 생성 (backing field + __privateAdd)
-    // try std.testing.expect(std.mem.indexOf(u8, r.output, "get") != null);
-    // try std.testing.expect(std.mem.indexOf(u8, r.output, "set") != null);
+    // accessor → private backing field + getter/setter pair
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_x_accessor_storage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get x()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set x(") != null);
+    // per-field initializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_initializers") != null);
 }
 
 // --- No decorator → passthrough ---
