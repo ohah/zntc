@@ -20,6 +20,9 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "optionalDependencies": {
+    "lightningcss": "^1.28.0"
+  },
   "scripts": {
     "build:napi": "cd ../.. && zig build napi",
     "build:js": "bun build index.ts --outdir dist --format esm --target node",

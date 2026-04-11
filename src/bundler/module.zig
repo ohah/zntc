@@ -108,6 +108,8 @@ pub const Module = struct {
     state: State,
     /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
     asset_data: ?AssetData = null,
+    /// CSS 번들링 메타데이터. null이면 CSS 모듈이 아님.
+    css_data: ?CssData = null,
 
     /// file/copy 로더용 asset 메타데이터. parse_arena 소유.
     /// emitter가 asset 파일을 출력 디렉토리에 복사할 때 사용.
@@ -120,6 +122,12 @@ pub const Module = struct {
         output_name: []const u8,
         /// 원본 확장자 (dot 포함, 예: ".png")
         ext: []const u8,
+    };
+
+    /// CSS 번들링 메타데이터. parseCssModule에서 설정.
+    pub const CssData = struct {
+        /// @import 규칙 개수. emit 시 소스 상단에서 이 수만큼 @import를 strip한다.
+        import_count: u32,
     };
 
     pub const State = enum {

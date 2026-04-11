@@ -774,6 +774,12 @@ pub const ModuleGraph = struct {
             return;
         }
 
+        // CSS 모듈: @import 추출 → 모듈 그래프에 등록
+        if (module.module_type == .css and module.loader == .css) {
+            self.parseCssModule(module);
+            return;
+        }
+
         if (module.module_type != .javascript) {
             // loader=.none + 알 수 없는 확장자: 빌드 에러 (esbuild 호환)
             if (module.loader == .none and module.module_type != .css) {
@@ -1435,6 +1441,50 @@ pub const ModuleGraph = struct {
                 queue.append(self.allocator, importer_idx) catch return;
             }
         }
+    }
+
+    /// CSS 모듈을 파싱한다.
+    /// 파일을 읽어서 @import 규칙을 추출하고, import_records에 등록한다.
+    /// CSS 소스는 module.source에 보존하여 css_emitter에서 사용한다.
+    fn parseCssModule(self: *ModuleGraph, module: *Module) void {
+        const css_scanner_mod = @import("css_scanner.zig");
+
+        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const arena_alloc = module.parse_arena.?.allocator();
+
+        // 파일 읽기
+        if (module.source.len == 0) {
+            module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
+                self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
+                module.state = .ready;
+                return;
+            };
+        }
+
+        // @import 규칙 추출 (arena에 할당)
+        const raw_imports = css_scanner_mod.extractCssImports(arena_alloc, module.source);
+        const import_count: u32 = @intCast(raw_imports.len);
+
+        if (import_count > 0) {
+            // import_records 생성
+            const records = arena_alloc.alloc(types.ImportRecord, import_count) catch {
+                module.state = .ready;
+                return;
+            };
+            for (raw_imports, 0..) |imp, i| {
+                records[i] = .{
+                    .specifier = imp.specifier,
+                    .kind = .side_effect,
+                    .span = imp.span,
+                };
+            }
+            module.import_records = records;
+        }
+
+        module.css_data = .{ .import_count = import_count };
+        module.exports_kind = .esm; // CSS는 ESM side-effect import로 처리
+        module.side_effects = true; // CSS는 항상 side-effect
+        module.state = .parsed;
     }
 
     /// Asset 로더 모듈을 파싱한다.
