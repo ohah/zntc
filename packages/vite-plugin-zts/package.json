@@ -11,10 +11,10 @@
       "types": "./src/index.ts"
     }
   },
-  "peerDependencies": {
-    "vite": ">=5.0.0"
-  },
   "dependencies": {
     "@zts/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "vite": ">=5.0.0"
   }
 }
