@@ -62,6 +62,10 @@ pub fn emitEsmWrappedModule(
     defer hoisted_stmts.deinit(allocator);
     var body_stmts: std.ArrayList(u32) = .empty;
     defer body_stmts.deinit(allocator);
+    // strict execution order: 함수 선언을 factory body 최상단에 배치.
+    // body_stmts보다 먼저 emit되어 intra-module forward reference 보존.
+    var body_func_stmts: std.ArrayList(u32) = .empty;
+    defer body_func_stmts.deinit(allocator);
     var hoisted_var_names: std.ArrayList([]const u8) = .empty;
     defer hoisted_var_names.deinit(allocator);
 
@@ -104,11 +108,32 @@ pub fn emitEsmWrappedModule(
 
         switch (effective_tag) {
             .function_declaration => {
-                // rolldown 방식: function은 __esm 밖으로 호이스팅.
-                // __export의 lazy getter가 외부 스코프에서 함수명을 참조하므로
-                // function이 외부 스코프에 있어야 함.
-                // function 본문의 import binding은 호출 시점에 init 완료 후이므로 유효.
-                try hoisted_stmts.append(allocator, raw_idx);
+                if (options.strict_execution_order) {
+                    // strict execution order: function을 __esm factory 안에 유지하되,
+                    // factory body 최상단에 배치하여 intra-module forward reference 보존.
+                    // 함수명은 top-level var로 선언 (export getter 접근용).
+                    // codegen이 `function foo(){}` → `foo = function(){}` 로 변환.
+                    const func_node = if (export_inner) |idx|
+                        esm_ast.nodes.items[@intFromEnum(idx)]
+                    else
+                        stmt_node;
+                    const fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[func_node.data.extra]);
+                    if (!fn_name_idx.isNone()) {
+                        const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
+                        if (fn_name_node.tag == .binding_identifier) {
+                            const raw_name = esm_ast.getText(fn_name_node.data.string_ref);
+                            try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
+                        }
+                    }
+                    // body_func_stmts: factory body 최상단에 배치 → forward reference 보존
+                    try body_func_stmts.append(allocator, raw_idx);
+                } else {
+                    // rolldown 방식: function은 __esm 밖으로 호이스팅.
+                    // __export의 lazy getter가 외부 스코프에서 함수명을 참조하므로
+                    // function이 외부 스코프에 있어야 함.
+                    // function 본문의 import binding은 호출 시점에 init 완료 후이므로 유효.
+                    try hoisted_stmts.append(allocator, raw_idx);
+                }
             },
             .class_declaration => {
                 // class는 block-scoped → var 호이스팅 + init 안에서 할당문으로 변환.
@@ -423,6 +448,29 @@ pub fn emitEsmWrappedModule(
         body_cg.line_offsets = module.line_offsets;
         try body_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
     }
+    // strict execution order: 함수 선언을 body 최상단에 배치 (forward reference 보존)
+    var func_code: []const u8 = "";
+    if (body_func_stmts.items.len > 0) {
+        var func_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
+            .minify_whitespace = options.minify_whitespace,
+            .module_format = .cjs,
+            .skip_cjs_exports = true,
+            .use_var_for_imports = true,
+            .esm_var_assign_only = true,
+            .linking_metadata = cg_linking,
+            .replace_import_meta = options.format != .esm,
+            .platform = options.platform,
+            .keep_names = options.keep_names,
+            .sourcemap = options.sourcemap,
+            .source_root = options.source_root orelse "",
+            .sources_content = options.sources_content,
+        });
+        if (options.sourcemap) {
+            func_cg.line_offsets = module.line_offsets;
+            try func_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
+        }
+        func_code = try func_cg.generateStatements(root, body_func_stmts.items);
+    }
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
     // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
@@ -631,6 +679,7 @@ pub fn emitEsmWrappedModule(
         if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
+        if (func_code.len > 0) try wrapped.appendSlice(allocator, func_code);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
@@ -679,6 +728,10 @@ pub fn emitEsmWrappedModule(
         if (star_init_buf.items.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, star_init_buf.items);
+        }
+        if (func_code.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, func_code);
         }
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {

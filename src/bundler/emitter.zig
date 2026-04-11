@@ -124,6 +124,12 @@ pub const EmitOptions = struct {
     run_before_main: []const []const u8 = &.{},
     /// Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환).
     configurable_exports: bool = false,
+    /// strict execution order: __esm factory 밖으로 함수를 호이스팅하지 않음.
+    /// Rolldown의 strictExecutionOrder와 동일. Babel worklet 플러그인 등이
+    /// function declaration을 var assignment(factory 패턴)로 변환하면
+    /// 호이스팅이 깨지므로, 모든 코드를 factory 안에 유지하여 init 순서 보장.
+    /// React Native 빌드에서 기본 활성화 권장.
+    strict_execution_order: bool = false,
     /// preserve-modules: 모듈 1개 = 출력 파일 1개
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로

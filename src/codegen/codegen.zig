@@ -1828,10 +1828,22 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[3]);
         const flags = extras[4];
 
+        // strict execution order: function declaration → 할당식으로 변환.
+        // `function foo() {...}` → `foo = function() {...};`
+        // var foo; 선언은 esm_wrap에서 hoisted_var_names로 이미 top-level에 배치됨.
+        const convert_fn_to_assign = self.options.esm_var_assign_only and
+            node.tag == .function_declaration and !name.isNone() and
+            self.indent_level == 0;
+
+        if (convert_fn_to_assign) {
+            try self.emitNode(name);
+            try self.write(" = ");
+        }
+
         if (flags & 0x01 != 0) try self.write("async ");
         try self.write("function");
         if (flags & 0x02 != 0) try self.writeByte('*');
-        if (!name.isNone()) {
+        if (!name.isNone() and !convert_fn_to_assign) {
             try self.writeByte(' ');
             try self.emitNode(name);
         }
