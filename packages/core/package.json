@@ -20,13 +20,13 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "optionalDependencies": {
-    "lightningcss": "^1.28.0"
-  },
   "scripts": {
     "build:napi": "cd ../.. && zig build napi",
     "build:js": "bun build index.ts --outdir dist --format esm --target node",
     "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js",
     "test": "bun test"
+  },
+  "optionalDependencies": {
+    "lightningcss": "^1.28.0"
   }
 }
