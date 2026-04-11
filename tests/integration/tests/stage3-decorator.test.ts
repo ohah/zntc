@@ -336,4 +336,197 @@ describe("Stage 3 Decorators", () => {
     expect(result.stdout).toContain("__runInitializers");
     expect(result.stdout).toContain('"class"');
   });
+
+  // --- Setter decorator E2E ---
+
+  it("setter decorator works", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function validate(fn: any, ctx: any) {
+          return function(this: any, value: any) {
+            if (typeof value !== "number") throw new Error("not a number");
+            fn.call(this, value);
+          };
+        }
+        class Foo {
+          _x = 0;
+          @validate set x(v: number) { this._x = v; }
+          get x() { return this._x; }
+        }
+        const f = new Foo();
+        f.x = 42;
+        console.log(f.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42");
+  });
+
+  // --- Static field decorator E2E ---
+
+  it("static field decorator", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function log(value: any, ctx: any) {
+          console.log(ctx.kind + ":" + ctx.name + ":static=" + ctx.static);
+        }
+        class Counter {
+          @log static count = 0;
+        }
+        console.log(Counter.count);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("field:count:static=true");
+    expect(result.runOutput).toContain("0");
+  });
+
+  // --- Multiple decorated fields ordering ---
+
+  it("multiple decorated fields order", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const order: string[] = [];
+        function track(value: any, ctx: any) {
+          order.push(ctx.name);
+        }
+        class Foo {
+          @track a = 1;
+          @track b = 2;
+          @track c = 3;
+        }
+        new Foo();
+        console.log(order.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("a,b,c");
+  });
+
+  // --- Decorator factory with chaining ---
+
+  it("decorator factory with arguments", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function tag(name: string) {
+          return function(cls: any, ctx: any) {
+            cls.tag = name;
+            return cls;
+          };
+        }
+        @tag("myComponent")
+        class Component {}
+        console.log((Component as any).tag);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("myComponent");
+  });
+
+  // --- Accessor decorator E2E ---
+
+  it("accessor decorator basic", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function log(target: any, ctx: any) {
+          console.log(ctx.kind + ":" + ctx.name);
+          return target;
+        }
+        class Foo {
+          @log accessor x = 10;
+        }
+        const f = new Foo();
+        console.log(f.x);
+        f.x = 20;
+        console.log(f.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("accessor:x");
+    expect(result.runOutput).toContain("10");
+    expect(result.runOutput).toContain("20");
+  });
+
+  // --- Extends chain ---
+
+  it("decorator on derived class", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function log(cls: any, ctx: any) {
+          console.log("decorated:" + ctx.name);
+          return cls;
+        }
+        class Base {
+          base = true;
+        }
+        @log class Child extends Base {
+          child = true;
+        }
+        const c = new Child();
+        console.log(c.base + "," + c.child);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("decorated:Child");
+    expect(result.runOutput).toContain("true,true");
+  });
+
+  // --- Multiple addInitializer ---
+
+  it("multiple addInitializer calls", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const log: string[] = [];
+        function init1(fn: any, ctx: any) {
+          ctx.addInitializer(function() { log.push("init1"); });
+          return fn;
+        }
+        function init2(fn: any, ctx: any) {
+          ctx.addInitializer(function() { log.push("init2"); });
+          return fn;
+        }
+        class Foo {
+          @init1 @init2 method() {}
+        }
+        new Foo();
+        console.log(log.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // addInitializer는 decorator 적용 순서 (오른쪽→왼쪽)로 등록됨
+    expect(result.runOutput).toContain("init2,init1");
+  });
+
+  // --- Context access.has/get ---
+
+  it("access.has and access.get work correctly", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        let savedAccess: any;
+        function capture(fn: any, ctx: any) {
+          savedAccess = ctx.access;
+          return fn;
+        }
+        class Foo {
+          @capture greet() { return "hello"; }
+        }
+        const obj = new Foo();
+        console.log(savedAccess.has(obj));
+        console.log(savedAccess.get(obj)());
+        console.log(savedAccess.has({}));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("true");
+    expect(result.runOutput).toContain("hello");
+    expect(result.runOutput).toContain("false");
+  });
 });
