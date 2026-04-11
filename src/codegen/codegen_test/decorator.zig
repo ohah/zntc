@@ -710,3 +710,33 @@ test "stage3: class-only decorator has no instance extra initializers" {
     // class-only → _instanceExtraInitializers 불필요
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_instanceExtraInitializers") == null);
 }
+
+// --- Class expression ---
+
+test "stage3: class expression decorator → IIFE as expression" {
+    var r = try e2eStage3Decorator(std.testing.allocator, "const Foo = @dec class {};");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    // class expression → IIFE가 대입의 우변으로 사용됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
+}
+
+test "stage3: named class expression decorator" {
+    var r = try e2eStage3Decorator(std.testing.allocator, "const x = @dec class Foo {};");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo") != null);
+}
+
+test "stage3: class expression with method decorator" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\const Foo = class {
+        \\  @dec
+        \\  greet() {}
+        \\};
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+}
