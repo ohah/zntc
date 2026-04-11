@@ -1182,7 +1182,7 @@ test "preamble: unresolved import generates require()" {
 }
 
 test "preamble: dev mode — named import uses namespace access pattern" {
-    // dev mode에서 named import는 namespace 접근 패턴: __ns_0 = __zts_require("./path")
+    // dev mode에서 named import는 namespace 접근 패턴: __ns_0_0 = __zts_require("./path")
     // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
     // 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다.
     var tmp = std.testing.tmpDir(.{});
@@ -1201,20 +1201,20 @@ test "preamble: dev mode — named import uses namespace access pattern" {
 
     try std.testing.expect(md.cjs_import_preamble != null);
     const preamble = md.cjs_import_preamble.?;
-    // namespace 할당: __ns_0 = __zts_require("./path")
-    try std.testing.expect(std.mem.indexOf(u8, preamble, "__ns_0") != null);
+    // namespace 할당: __ns_0_0 = __zts_require("./path") (module_index=0, local=0)
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__ns_0_0") != null);
     try std.testing.expect(std.mem.indexOf(u8, preamble, "__zts_require(") != null);
     // 구조분해 패턴 없음 (var { add } 형태가 아님)
     try std.testing.expect(std.mem.indexOf(u8, preamble, "{ ") == null);
     // dev_ns_vars가 호이스팅용으로 설정됨
     try std.testing.expect(md.dev_ns_vars != null);
     try std.testing.expectEqual(@as(usize, 1), md.dev_ns_vars.?.len);
-    try std.testing.expectEqualStrings("__ns_0", md.dev_ns_vars.?[0]);
-    // renames에 add → __ns_0.add 매핑 등록 확인
+    try std.testing.expectEqualStrings("__ns_0_0", md.dev_ns_vars.?[0]);
+    // renames에 add → __ns_0_0.add 매핑 등록 확인
     var rename_found = false;
     var it = md.renames.iterator();
     while (it.next()) |entry| {
-        if (std.mem.eql(u8, entry.value_ptr.*, "__ns_0.add")) {
+        if (std.mem.eql(u8, entry.value_ptr.*, "__ns_0_0.add")) {
             rename_found = true;
             break;
         }
