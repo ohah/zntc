@@ -73,15 +73,15 @@ pub const TOESM_RUNTIME_CONFIGURABLE =
 ;
 pub const TOESM_RUNTIME_CONFIGURABLE_MIN = "var __create=Object.create;var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __getOwnPropNames=Object.getOwnPropertyNames;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=function(to,from,except,desc){if(from&&typeof from===\"object\"||typeof from===\"function\"){for(var keys=__getOwnPropNames(from),i=0,n=keys.length,key;i<n;i++){key=keys[i];if(!__hasOwn.call(to,key)&&key!==except)__defProp(to,key,{get:(function(k){return from[k]}).bind(null,key),enumerable:!(desc=__getOwnPropDesc(from,key))||desc.enumerable,configurable:true})}}return to};var __toESM=function(mod,isNodeMode,target){return target=mod!=null?__create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true,configurable:true}):target,mod)};";
 
-/// __esm: ESM 모듈의 지연 초기화 팩토리 (esbuild 호환).
-/// ESM 모듈이 require()로 소비될 때 사용. 한 번만 실행되고 결과를 캐시.
-/// 참고: references/esbuild/internal/runtime/runtime.go:173
-pub const ESM_RUNTIME = "var __esm = (fn, res) => function __init() {\n\treturn fn && (res = (0, fn[Object.keys(fn)[0]])(fn = 0)), res;\n};\n";
-pub const ESM_RUNTIME_MIN = "var __esm=(fn,res)=>function __init(){return fn&&(res=(0,fn[Object.keys(fn)[0]])(fn=0)),res};";
+/// __esm: ESM 모듈의 지연 초기화 팩토리.
+/// factory throw 시 fn을 복원하여 cascade 실패 방지.
+/// circular dep 재진입 시 fn=0(진행 중)이므로 skip.
+pub const ESM_RUNTIME = "var __esm = (fn, res) => function __init() {\n\tif (!fn) return res;\n\tvar f = fn; fn = 0;\n\ttry { res = (0, f[Object.keys(f)[0]])(); }\n\tcatch(e) { fn = f; throw e; }\n\treturn res;\n};\n";
+pub const ESM_RUNTIME_MIN = "var __esm=(fn,res)=>function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res};";
 
 /// __esm ES5 호환: arrow → function.
-pub const ESM_RUNTIME_ES5 = "var __esm = function(fn, res) { return function __init() {\n\treturn fn && (res = (0, fn[Object.keys(fn)[0]])(fn = 0)), res;\n}; };\n";
-pub const ESM_RUNTIME_ES5_MIN = "var __esm=function(fn,res){return function __init(){return fn&&(res=(0,fn[Object.keys(fn)[0]])(fn=0)),res}}";
+pub const ESM_RUNTIME_ES5 = "var __esm = function(fn, res) { return function __init() {\n\tif (!fn) return res;\n\tvar f = fn; fn = 0;\n\ttry { res = (0, f[Object.keys(f)[0]])(); }\n\tcatch(e) { fn = f; throw e; }\n\treturn res;\n}; };\n";
+pub const ESM_RUNTIME_ES5_MIN = "var __esm=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}}";
 
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });

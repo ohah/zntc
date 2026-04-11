@@ -81,7 +81,7 @@ pub fn extractCssImports(allocator: std.mem.Allocator, source: []const u8) []con
         break;
     }
 
-    // allocator로 복사하여 lifetime 안전한 슬라이스 반환
+    if (count == 0) return &.{};
     const owned = allocator.alloc(CssImportRecord, count) catch return &.{};
     @memcpy(owned, results[0..count]);
     return owned;

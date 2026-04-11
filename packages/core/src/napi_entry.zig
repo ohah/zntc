@@ -1899,6 +1899,7 @@ fn parseBuildOptions(
         .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
         .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false),
+        .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false),
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
