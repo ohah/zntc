@@ -234,7 +234,7 @@ test "extractCssImports: no imports" {
 }
 
 test "extractCssImports: empty source" {
-    const imports = extractCssImports(std.testing.allocator,"");
+    const imports = extractCssImports(std.testing.allocator, "");
     try std.testing.expectEqual(@as(usize, 0), imports.len);
 }
 
