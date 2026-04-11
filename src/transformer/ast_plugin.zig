@@ -34,6 +34,8 @@ pub const worklet_mod = @import("transformer/worklet.zig");
 pub const FunctionInfo = struct {
     /// 변환된 함수 노드의 인덱스
     node_idx: NodeIndex,
+    /// 노드 태그 (function_declaration / function_expression / arrow_function_expression)
+    node_tag: Tag,
     /// 함수 이름 (null = 익명 함수/화살표)
     name: ?[]const u8,
     /// 함수 body 노드 인덱스 (block_statement/function_body)

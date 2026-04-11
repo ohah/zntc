@@ -27,9 +27,13 @@ pub fn plugin() Plugin {
 fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) PluginError!void {
     _ = ctx;
 
-    // "worklet" 디렉티브 확인
     if (info.body_idx.isNone()) return;
     if (!api.hasDirective(info.body_idx, "worklet")) return;
+
+    // function_expression/arrow는 인자/할당 위치에 있을 수 있으므로
+    // trailing_nodes로 property assignment를 삽입하면 문법이 깨진다.
+    // function_declaration(statement 위치)만 trailing_nodes 방식 지원.
+    if (info.node_tag != .function_declaration) return;
 
     // 디렉티브 제거
     const stripped_body = try api.stripDirective(info.body_idx);
