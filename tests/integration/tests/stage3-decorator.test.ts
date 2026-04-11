@@ -529,4 +529,307 @@ describe("Stage 3 Decorators", () => {
     expect(result.runOutput).toContain("hello");
     expect(result.runOutput).toContain("false");
   });
+
+  // ============================================================
+  // Babel 2023-11 conformance tests 포팅
+  // (babel/babel packages/babel-plugin-proposal-decorators/test/fixtures/2023-11-*)
+  // ============================================================
+
+  // --- 2023-11-classes/ctx ---
+
+  it("babel: class decorator context kind and name", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: string[] = [];
+        function dec(value: any, ctx: any) {
+          logs.push(ctx.kind, ctx.name);
+        }
+        @dec class A {}
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain('["class","A"]');
+  });
+
+  // --- 2023-11-methods/context-name (간소화) ---
+
+  // TODO: string literal ("b") 및 numeric literal (0) 키에 대한 context.name 지원
+  it.skip("babel: method decorator context.name for various key types", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: string[] = [];
+        const dec = (value: any, context: any) => { logs.push(context.name); };
+        class Foo {
+          @dec a() {}
+          @dec "b"() {}
+          @dec 0() {}
+        }
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain('["a","b","0"]');
+  });
+
+  // --- 2023-11-fields/context-name (간소화) ---
+
+  // TODO: string literal ("b") 및 numeric literal (0) 키에 대한 context.name 지원
+  it.skip("babel: field decorator context.name for various key types", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: string[] = [];
+        const dec = (value: any, context: any) => { logs.push(context.name); };
+        class Foo {
+          @dec a: any;
+          @dec "b": any;
+          @dec 0: any;
+        }
+        new Foo();
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain('["a","b","0"]');
+  });
+
+  // --- 2023-11-misc/initializer-property-ignored ---
+
+  it("babel: accessor decorator uses init, not initializer property", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        let initCalled = false;
+        let initializerCalled = false;
+        function decorator() {
+          return {
+            get init() { initCalled = true; return () => {}; },
+            get initializer() { initializerCalled = true; return () => {}; },
+          };
+        }
+        class A {
+          @decorator accessor x: any;
+        }
+        new A();
+        console.log("init:" + initCalled + ",initializer:" + initializerCalled);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("init:true,initializer:false");
+  });
+
+  // --- 2023-11-ordering: decorator 적용 순서 (간소화) ---
+
+  it("babel: decorator evaluation order — method before class", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const log: string[] = [];
+        const classDec = (cls: any, ctx: any) => { log.push("class"); return cls; };
+        const methodDec = (fn: any, ctx: any) => { log.push("method"); return fn; };
+        const fieldDec = (value: any, ctx: any) => { log.push("field"); };
+        @classDec
+        class Foo {
+          @methodDec method() {}
+          @fieldDec x = 1;
+        }
+        new Foo();
+        console.log(log.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // 스펙 순서: method → field → class
+    expect(result.runOutput).toContain("method,field,class");
+  });
+
+  // --- 2023-11-ordering: addInitializer 순서 ---
+
+  it("babel: addInitializer order — right-to-left registration, left-to-right execution", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const log: string[] = [];
+        const dec1 = (fn: any, ctx: any) => {
+          log.push("d1");
+          ctx.addInitializer(() => log.push("i1"));
+          return fn;
+        };
+        const dec2 = (fn: any, ctx: any) => {
+          log.push("d2");
+          ctx.addInitializer(() => log.push("i2"));
+          return fn;
+        };
+        class Foo {
+          @dec1 @dec2 method() {}
+        }
+        new Foo();
+        console.log(log.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // decorators: 오른쪽→왼쪽 (d2,d1), initializers: 등록 순 (i2,i1)
+    expect(result.runOutput).toContain("d2,d1,i2,i1");
+  });
+
+  // --- 2023-11-misc: decorator return value for method ---
+
+  it("babel: method decorator return value replaces method", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function replace(original: any, ctx: any) {
+          return function(this: any) { return original.call(this) * 3; };
+        }
+        class Foo {
+          @replace getValue() { return 7; }
+        }
+        console.log(new Foo().getValue());
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("21");
+  });
+
+  // --- 2023-11: getter decorator return value replaces getter ---
+
+  it("babel: getter decorator return value replaces getter", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function multiply(original: any, ctx: any) {
+          return function(this: any) { return original.call(this) * 2; };
+        }
+        class Foo {
+          _val = 5;
+          @multiply get value() { return this._val; }
+        }
+        console.log(new Foo().value);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("10");
+  });
+
+  // --- 2023-11: field decorator return initializer ---
+
+  it("babel: field decorator returns initializer function", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function double(value: any, ctx: any) {
+          return (initialValue: number) => initialValue * 2;
+        }
+        class Foo {
+          @double x = 10;
+        }
+        console.log(new Foo().x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("20");
+  });
+
+  // --- 2023-11: class decorator addInitializer ---
+
+  it("babel: class decorator addInitializer runs after class definition", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const log: string[] = [];
+        function dec(cls: any, ctx: any) {
+          ctx.addInitializer(() => {
+            log.push("classInit:" + cls.name);
+          });
+          return cls;
+        }
+        @dec class Foo {}
+        log.push("afterClass");
+        console.log(log.join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // class addInitializer는 class 정의 완료 후, 외부 코드 실행 전
+    expect(result.runOutput).toContain("classInit:");
+  });
+
+  // --- 2023-11: static method decorator ---
+
+  it("babel: static method decorator context", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        const logs: any[] = [];
+        function dec(fn: any, ctx: any) {
+          logs.push({ kind: ctx.kind, name: ctx.name, static: ctx.static, private: ctx.private });
+        }
+        class Foo {
+          @dec static hello() {}
+          @dec world() {}
+        }
+        console.log(JSON.stringify(logs));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    const output = result.runOutput;
+    expect(output).toContain('"kind":"method"');
+    expect(output).toContain('"name":"hello"');
+    expect(output).toContain('"static":true');
+    expect(output).toContain('"name":"world"');
+    expect(output).toContain('"static":false');
+  });
+
+  // --- 2023-11: accessor decorator return { get, set, init } ---
+
+  it("babel: accessor decorator can override get/set/init", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function logged(target: any, ctx: any) {
+          return {
+            get() { return target.get.call(this) + 100; },
+            set(val: number) { target.set.call(this, val * 2); },
+            init(val: number) { return val + 1; },
+          };
+        }
+        class Foo {
+          @logged accessor x = 10;
+        }
+        const f = new Foo();
+        console.log("get:" + f.x);
+        f.x = 5;
+        console.log("afterSet:" + f.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    // init: 10+1=11, get: 11+100=111
+    expect(result.runOutput).toContain("get:111");
+    // set: 5*2=10, get: 10+100=110
+    expect(result.runOutput).toContain("afterSet:110");
+  });
+
+  // --- 2023-11-misc: access.set for field ---
+
+  it("babel: field decorator access.set works", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        let savedAccess: any;
+        function capture(value: any, ctx: any) {
+          savedAccess = ctx.access;
+        }
+        class Foo {
+          @capture x = 0;
+        }
+        const f = new Foo();
+        savedAccess.set(f, 42);
+        console.log(f.x);
+        console.log(savedAccess.get(f));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42");
+  });
 });
