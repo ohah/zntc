@@ -1712,11 +1712,14 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const class_deco_start = self.readU32(e, 6);
     const class_deco_len = self.readU32(e, 7);
 
-    // 클래스 이름 텍스트 (Foo). 익명 class expression은 "_a"를 사용.
+    // 클래스 이름 텍스트 (Foo). 익명 class expression은 고유 임시 변수명 사용.
     const class_name_text = if (!name_idx.isNone()) blk: {
         const name_node = self.ast.getNode(name_idx);
         break :blk self.ast.getText(name_node.data.string_ref);
-    } else "_a";
+    } else blk: {
+        const temp_span = try es_helpers.makeTempVarSpan(self);
+        break :blk self.ast.getText(temp_span);
+    };
 
     // body 멤버 순회: member decorator 수집
     var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
@@ -1815,6 +1818,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 // key를 한 번만 방문
                 const new_key = try self.visitNode(self.readNodeIdx(me, 0));
 
+                var field_init_name: ?[]const u8 = null;
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
@@ -1822,6 +1826,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
                     const names = try self.buildFieldInitNames(name_node_idx);
+                    field_init_name = names.init_name;
 
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
@@ -1834,8 +1839,28 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     });
                 }
 
-                // property를 decorator 없이 추가
-                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
+                // property를 decorator 없이 추가 (decorated면 초기값을 __runInitializers로 래핑)
+                const raw_init = try self.visitNode(self.readNodeIdx(me, 1));
+                const new_init = if (field_init_name) |init_name| blk: {
+                    // field = __runInitializers(this, _x_initializers, originalValue)
+                    const this_node = try self.ast.addNode(.{
+                        .tag = .this_expression, .span = zero_span,
+                        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                    });
+                    const callee = try makeIdentifier(self, "__runInitializers");
+                    const init_arr = try makeIdentifier(self, init_name);
+                    if (!raw_init.isNone()) {
+                        const args = try self.ast.addNodeList(&.{ this_node, init_arr, raw_init });
+                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
+                            @intFromEnum(callee), args.start, args.len, 0,
+                        });
+                    } else {
+                        const args = try self.ast.addNodeList(&.{ this_node, init_arr });
+                        break :blk try self.addExtraNode(.call_expression, zero_span, &.{
+                            @intFromEnum(callee), args.start, args.len, 0,
+                        });
+                    }
+                } else raw_init;
                 const empty_list = try self.ast.addNodeList(&.{});
                 const new_prop = try self.addExtraNode(.property_definition, member.span, &.{
                     @intFromEnum(new_key),
@@ -2092,6 +2117,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         // Foo = _classThis = _classDescriptor.value;
         const reassign = try self.buildClassReassign(class_name_text, classThis_span);
         try static_block_stmts.append(self.allocator, reassign);
+    }
+
+    // if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+    {
+        const metadata_define = try self.buildMetadataDefineProperty(classThis_span);
+        try static_block_stmts.append(self.allocator, metadata_define);
     }
 
     // __runInitializers(_classThis, _classExtraInitializers);
@@ -2859,4 +2890,66 @@ pub fn buildFieldInitNames(self: *Transformer, name_node_idx: NodeIndex) Error!F
     const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
     const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
     return .{ .init_name = init_name, .extra_name = extra_name, .clean_name = clean_name };
+}
+
+/// if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+pub fn buildMetadataDefineProperty(self: *Transformer, classThis_span: Span) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    // _metadata (condition)
+    const metadata_cond = try makeIdentifier(self, "_metadata");
+
+    // Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata })
+    const object_ref = try makeIdentifier(self, "Object");
+    const defprop_key = try makeIdentifier(self, "defineProperty");
+    const obj_defprop = try es_helpers.makeStaticMember(self, object_ref, defprop_key, zero_span);
+
+    // arg1: _classThis
+    const ct_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference, .span = classThis_span,
+        .data = .{ .string_ref = classThis_span },
+    });
+
+    // arg2: Symbol.metadata
+    const sym_ref = try makeIdentifier(self, "Symbol");
+    const meta_key = try makeIdentifier(self, "metadata");
+    const sym_meta = try es_helpers.makeStaticMember(self, sym_ref, meta_key, zero_span);
+
+    // arg3: { enumerable: true, configurable: true, writable: true, value: _metadata }
+    const enum_k = try makeIdentifier(self, "enumerable");
+    const enum_v = try makeIdentifier(self, "true");
+    const conf_k = try makeIdentifier(self, "configurable");
+    const conf_v = try makeIdentifier(self, "true");
+    const writ_k = try makeIdentifier(self, "writable");
+    const writ_v = try makeIdentifier(self, "true");
+    const val_k = try makeIdentifier(self, "value");
+    const val_v = try makeIdentifier(self, "_metadata");
+
+    const p1 = try self.makeObjProp(enum_k, enum_v);
+    const p2 = try self.makeObjProp(conf_k, conf_v);
+    const p3 = try self.makeObjProp(writ_k, writ_v);
+    const p4 = try self.makeObjProp(val_k, val_v);
+    const props_list = try self.ast.addNodeList(&.{ p1, p2, p3, p4 });
+    const desc_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = props_list } });
+
+    const call_args = try self.ast.addNodeList(&.{ ct_ref, sym_meta, desc_obj });
+    const call = try self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(obj_defprop), call_args.start, call_args.len, 0,
+    });
+
+    // if (_metadata) call;
+    const call_stmt = try self.ast.addNode(.{
+        .tag = .expression_statement, .span = zero_span,
+        .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+    });
+    const body_list = try self.ast.addNodeList(&.{call_stmt});
+    const body = try self.ast.addNode(.{
+        .tag = .block_statement, .span = zero_span,
+        .data = .{ .list = body_list },
+    });
+
+    return self.ast.addNode(.{
+        .tag = .if_statement, .span = zero_span,
+        .data = .{ .ternary = .{ .a = metadata_cond, .b = body, .c = .none } },
+    });
 }
