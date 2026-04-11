@@ -88,7 +88,7 @@ pub fn emitChunks(
         }
 
         // 청크별 런타임 헬퍼 주입
-        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, modules, options);
+        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, modules, options, null);
 
         // 크로스 청크 import deconfliction:
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.

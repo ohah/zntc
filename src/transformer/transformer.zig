@@ -101,7 +101,7 @@ pub const TransformOptions = struct {
 /// 런타임 헬퍼 사용 추적 비트맵.
 /// transformer가 각 변환 시 해당 비트를 설정하고,
 /// 번들러 emitter가 필요한 헬퍼만 출력에 주입한다.
-pub const RuntimeHelpers = packed struct(u16) {
+pub const RuntimeHelpers = packed struct(u32) {
     /// __async: async/await → generator wrapper (ES2017)
     async_helper: bool = false,
     /// __extends: class 상속 prototype chain (ES2015)
@@ -132,7 +132,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     using_ctx: bool = false,
     /// __classStaticPrivateFieldSpecGet/Set: static private field accessor
     class_static_private_field: bool = false,
-    _padding: u1 = 0,
+    /// __esDecorate/__runInitializers: TC39 Stage 3 decorator 변환 (TypeScript 5.0+)
+    es_decorator: bool = false,
+    _padding: u16 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -2658,6 +2660,28 @@ pub const Transformer = struct {
     pub const buildParamTypesArray = class_deco.buildParamTypesArray;
     pub const appendMemberMetadata = class_deco.appendMemberMetadata;
     pub const appendClassMetadata = class_deco.appendClassMetadata;
+    // Stage 3 (TC39) decorator
+    pub const hasAnyMemberDecorators = class_deco.hasAnyMemberDecorators;
+    pub const transformStage3Decorators = class_deco.transformStage3Decorators;
+    pub const memberKeyToStringLiteral = class_deco.memberKeyToStringLiteral;
+    pub const collectStage3Decorators = class_deco.collectStage3Decorators;
+    pub const buildEsDecorateCall = class_deco.buildEsDecorateCall;
+    pub const buildClassEsDecorateCall = class_deco.buildClassEsDecorateCall;
+    pub const buildContextObject = class_deco.buildContextObject;
+    pub const buildMetadataDecl = class_deco.buildMetadataDecl;
+    pub const buildClassReassign = class_deco.buildClassReassign;
+    pub const buildRunInitializersCall = class_deco.buildRunInitializersCall;
+    pub const buildRunInitializersCall2 = class_deco.buildRunInitializersCall2;
+    pub const buildStage3LetDeclarations = class_deco.buildStage3LetDeclarations;
+    pub const makeLet = class_deco.makeLet;
+    pub const makeObjProp = class_deco.makeObjProp;
+    pub const buildAccessObject = class_deco.buildAccessObject;
+    pub const buildFieldInitNames = class_deco.buildFieldInitNames;
+    pub const buildMetadataDefineProperty = class_deco.buildMetadataDefineProperty;
+    pub const buildGetterMethod = class_deco.buildGetterMethod;
+    pub const extractCleanVarName = class_deco.extractCleanVarName;
+    pub const appendEsDecorateStmt = class_deco.appendEsDecorateStmt;
+    pub const wrapInStringLiteral = class_deco.wrapInStringLiteral;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {

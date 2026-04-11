@@ -366,7 +366,7 @@ pub fn emitWithTreeShaking(
 
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
-        collected_helpers = @bitCast(@as(u16, @bitCast(collected_helpers)) | @as(u16, @bitCast(results[i].helpers)));
+        collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
 
         const code = results[i].code orelse continue;
 
@@ -719,9 +719,9 @@ pub fn emitModule(
     }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
-    // packed struct(u16)이므로 bitwise OR로 한번에 합친다
+    // packed struct(u32)이므로 bitwise OR로 한번에 합친다
     if (helpers_out) |h| {
-        h.* = @bitCast(@as(u16, @bitCast(h.*)) | @as(u16, @bitCast(transformer.runtime_helpers)));
+        h.* = @bitCast(@as(u32, @bitCast(h.*)) | @as(u32, @bitCast(transformer.runtime_helpers)));
     }
 
     // Linker 메타데이터 생성 (있으면) — ast 기준으로 구축
@@ -1220,6 +1220,7 @@ pub fn emitChunkRuntimeHelpers(
     chunk: *const Chunk,
     modules: []const Module,
     options: EmitOptions,
+    collected_helpers: ?RuntimeHelpers,
 ) !void {
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
@@ -1240,6 +1241,11 @@ pub fn emitChunkRuntimeHelpers(
     }
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
+    }
+    if (collected_helpers) |h| {
+        if (h.es_decorator) {
+            try output.appendSlice(allocator, if (options.minify_whitespace) rt.ES_DECORATOR_RUNTIME_MIN else rt.ES_DECORATOR_RUNTIME);
+        }
     }
     if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
