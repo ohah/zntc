@@ -271,9 +271,11 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, group_arr);
                         non_spread_top = self.scratch.items.len;
                     }
-                    // spread 값을 직접 추가 (concat 인자)
+                    // spread 값을 __toConsumableArray()로 감싸서 concat 인자로 추가.
+                    // Iterator/Iterable(Map.values() 등)을 배열로 안전하게 변환.
                     const visited = try self.visitNode(elem.data.unary.operand);
-                    try self.scratch.append(self.allocator, visited);
+                    const wrapped = try wrapWithToConsumableArray(self, visited, span);
+                    try self.scratch.append(self.allocator, wrapped);
                     non_spread_top = self.scratch.items.len;
                 } else {
                     const visited = try self.visitNode(@enumFromInt(raw_idx));
@@ -342,7 +344,8 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                         has_non_spread = true;
                     }
                     const visited = try self.visitNode(arg.data.unary.operand);
-                    try self.scratch.append(self.allocator, visited);
+                    const wrapped = try wrapWithToConsumableArray(self, visited, span);
+                    try self.scratch.append(self.allocator, wrapped);
                     non_spread_top = self.scratch.items.len;
                     spread_count += 1;
                 } else {
@@ -387,6 +390,22 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         }
 
         /// [].concat(args...) 호출을 생성한다.
+        /// spread 값을 __toConsumableArray(value) 호출로 감싼다.
+        /// Array literal은 이미 배열이므로 그대로 반환 (런타임 헬퍼 주입 방지).
+        fn wrapWithToConsumableArray(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // 배열 리터럴은 런타임 변환 불필요
+            if (!value.isNone() and self.ast.getNode(value).tag == .array_expression) return value;
+
+            self.runtime_helpers.spread_array = true;
+            const fn_span = try self.ast.addString("__toConsumableArray");
+            const callee = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = fn_span,
+                .data = .{ .string_ref = fn_span },
+            });
+            return es_helpers.makeCallExpr(self, callee, &.{value}, span);
+        }
+
         fn buildConcatCall(self: *Transformer, args: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             // []
             const empty_list = try self.ast.addNodeList(&.{});

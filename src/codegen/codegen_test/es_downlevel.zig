@@ -827,20 +827,19 @@ test "ES2015: params no transform on esnext" {
 test "ES2015: spread in call" {
     var r = try e2eTarget(std.testing.allocator, "f(...arr);", .es5);
     defer r.deinit();
-    // 변수 spread: 배열 리터럴이 아니므로 [].concat()으로 래핑 (string 등 non-array 안전)
-    try std.testing.expectEqualStrings("f.apply(void 0,[].concat(arr));", r.output);
+    try std.testing.expectEqualStrings("f.apply(void 0,[].concat(__toConsumableArray(arr)));", r.output);
 }
 
 test "ES2015: spread in call with args" {
     var r = try e2eTarget(std.testing.allocator, "f(a,...arr);", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("f.apply(void 0,[].concat([a],arr));", r.output);
+    try std.testing.expectEqualStrings("f.apply(void 0,[].concat([a],__toConsumableArray(arr)));", r.output);
 }
 
 test "ES2015: spread in array" {
     var r = try e2eTarget(std.testing.allocator, "var x=[...arr,1];", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var x=[].concat(arr,[1]);", r.output);
+    try std.testing.expectEqualStrings("var x=[].concat(__toConsumableArray(arr),[1]);", r.output);
 }
 
 test "ES2015: spread no transform on esnext" {
