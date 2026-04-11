@@ -45,11 +45,14 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
   return {
     name: "vite-plugin-zts",
 
-    // esbuild transform 비활성화 — ZTS가 대신 처리
-    config() {
-      return {
-        esbuild: false,
-      };
+    // Vite 5: esbuild transform 비활성화, Vite 6+: 이미 Rolldown 기반이므로 불필요
+    config(_, env) {
+      // Vite 5 이하에서만 esbuild 비활성화 (Vite 6+는 Rolldown 사용)
+      try {
+        const viteVersion = parseInt(require("vite/package.json").version);
+        if (viteVersion < 6) return { esbuild: false };
+      } catch {}
+      return {};
     },
 
     buildStart() {
