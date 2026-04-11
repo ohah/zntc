@@ -191,6 +191,8 @@ pub const Codegen = struct {
 
     pub fn deinit(self: *Codegen) void {
         self.buf.deinit(self.allocator);
+        self.declared_names.deinit(self.allocator);
+        self.keep_names_entries.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
     }
 

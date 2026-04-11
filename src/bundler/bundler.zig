@@ -151,6 +151,8 @@ pub const BundleOptions = struct {
     /// Babel worklet 등이 function → var로 변환하면 init 순서가 깨지므로,
     /// 모든 코드를 factory 안에 유지. --platform=react-native에서 자동 활성화.
     strict_execution_order: bool = false,
+    /// Reanimated worklet 네이티브 변환. --platform=react-native에서 자동 활성화.
+    worklet_transform: bool = false,
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
@@ -350,6 +352,7 @@ pub const Bundler = struct {
             .run_before_main = self.options.run_before_main,
             .configurable_exports = self.options.configurable_exports,
             .strict_execution_order = self.options.strict_execution_order,
+            .worklet_transform = self.options.worklet_transform,
         };
     }
 
