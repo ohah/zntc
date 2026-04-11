@@ -3214,8 +3214,8 @@ describe("엣지 케이스 + 조합 보강", () => {
       nodePaths: [projectNodeModules],
     });
     expect(result.errors.length).toBe(0);
-    expect(result.outputFiles[0].text).toContain("define([]");
-    expect(result.outputFiles[0].text).toContain("require");
+    expect(result.outputFiles[0].text).toContain('define(["react"]');
+    expect(result.outputFiles[0].text).toContain("function(React)");
   });
 
   // --- minifyIdentifiers + for-in (NAPI 레벨 검증) ---

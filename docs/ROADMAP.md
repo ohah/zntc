@@ -155,7 +155,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   ES 버전 타겟(`--target=es2015~esnext`)도 동일한 UnsupportedFeatures bitmask로 통합.
 
 - ~~**jsx-dev**~~ — ✅ 완료. `--jsx=automatic-dev` / `--jsx-dev` React 개발 모드 `jsxDEV` + `__source`/`__self`
-- **UMD/AMD 포맷** — `M` | `--format=umd` / `--format=amd` 출력 (라이브러리 빌드)
+- ~~**UMD/AMD 포맷**~~ — ✅ 완료. `--format=umd` / `--format=amd` + external dependency array + factory params
 - **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
 - ~~**preserveModules**~~ — ✅ 완료. `--preserve-modules` + `--preserve-modules-root` (Rollup/Rolldown 호환)
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
