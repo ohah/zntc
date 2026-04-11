@@ -9,6 +9,17 @@ import { spawnSync } from "bun";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 
+// CI에서 mobx가 설치되지 않았으면 전체 suite skip
+const hasMobx = await (async () => {
+  try {
+    const { statSync } = await import("node:fs");
+    statSync(join(PROJECT_ROOT, "node_modules/mobx/package.json"));
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 async function mobxSmoke(code: string) {
   const { dir, cleanup } = await createFixture({ "index.ts": code });
 
@@ -32,7 +43,7 @@ async function mobxSmoke(code: string) {
   return { output, stderr, exitCode: run.exitCode, cleanup };
 }
 
-describe("Stage 3 Decorator Smoke — MobX 6", () => {
+describe.skipIf(!hasMobx)("Stage 3 Decorator Smoke — MobX 6", () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
     if (cleanup) {
