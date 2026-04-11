@@ -389,7 +389,7 @@ describe("CSS Bundling", () => {
 
     const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
     // @import가 selector/value 안에 있으면 추출되면 안 됨
-    expect(css).toContain("[data-attr=\"@import\"]");
+    expect(css).toContain('[data-attr="@import"]');
     expect(css).toContain("emoji");
   });
 
@@ -446,7 +446,10 @@ describe("CSS Bundling", () => {
 
   it("large CSS file with many rules", async () => {
     // 1000개 rule 생성
-    const rules = Array.from({ length: 1000 }, (_, i) => `.c${i} { color: hsl(${i}, 50%, 50%); }`).join("\n");
+    const rules = Array.from(
+      { length: 1000 },
+      (_, i) => `.c${i} { color: hsl(${i}, 50%, 50%); }`,
+    ).join("\n");
     const fixture = await createFixture({
       "index.ts": `import './big.css';`,
       "big.css": rules,
