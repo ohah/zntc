@@ -27,7 +27,11 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
 
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
-      "--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--dev",
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--dev",
     ]);
     expect(bundle.exitCode).toBe(0);
 
@@ -38,7 +42,9 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
 
     // Inside factory: assignment only (no "var" keyword before enum IIFE)
     // Find enum IIFE line: "Color = /* @__PURE__ */ ((Color) => ..."
-    const iifeLines = code.split("\n").filter((l) => l.includes("@__PURE__") && l.includes("Color"));
+    const iifeLines = code
+      .split("\n")
+      .filter((l) => l.includes("@__PURE__") && l.includes("Color"));
     expect(iifeLines.length).toBeGreaterThan(0);
     // The IIFE line should NOT start with "var"
     for (const line of iifeLines) {
@@ -47,21 +53,25 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
   });
 
   test("enum value is accessible from other modules' hoisted functions", async () => {
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { getRuntimeKind, RuntimeKind } from "./runtime";
         import { check } from "./checker";
         console.log(getRuntimeKind() + "," + check() + "," + RuntimeKind.UI);
       `,
-      "runtime.ts": `
+        "runtime.ts": `
         export enum RuntimeKind { ReactNative = 1, UI = 2, Worker = 3 }
         export function getRuntimeKind() { return RuntimeKind.ReactNative; }
       `,
-      "checker.ts": `
+        "checker.ts": `
         import { RuntimeKind } from "./runtime";
         export function check() { return RuntimeKind.Worker; }
       `,
-    }, "index.ts", ["--dev"]);
+      },
+      "index.ts",
+      ["--dev"],
+    );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
@@ -69,17 +79,21 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
   });
 
   test("exported enum used at module top level works correctly", async () => {
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { MODE, getMode } from "./config";
         console.log(MODE + "," + getMode());
       `,
-      "config.ts": `
+        "config.ts": `
         export enum AppMode { Dev = "dev", Prod = "prod", Test = "test" }
         export const MODE = AppMode.Dev;
         export function getMode() { return AppMode.Prod; }
       `,
-    }, "index.ts", ["--dev"]);
+      },
+      "index.ts",
+      ["--dev"],
+    );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
@@ -88,15 +102,19 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
 
   test("enum with same-name member (self-reference) works after hoisting", async () => {
     // Edge case: enum member name matches enum name → codegen uses _Name param
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { Status } from "./status";
         console.log(Status.Status + "," + Status.Active);
       `,
-      "status.ts": `
+        "status.ts": `
         export enum Status { Status = "status", Active = "active", Inactive = "inactive" }
       `,
-    }, "index.ts", ["--dev"]);
+      },
+      "index.ts",
+      ["--dev"],
+    );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
@@ -104,22 +122,26 @@ describe("ESM enum hoisting in scope hoisting (__esm wrap)", () => {
   });
 
   test("multiple enums from different modules don't collide", async () => {
-    const result = await bundleAndRun({
-      "index.ts": `
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
         import { Color } from "./colors";
         import { Size } from "./sizes";
         import { getColor, getSize } from "./utils";
         console.log(getColor() + "," + getSize() + "," + Color.Blue + "," + Size.Large);
       `,
-      "colors.ts": `export enum Color { Red = 1, Green = 2, Blue = 3 }`,
-      "sizes.ts": `export enum Size { Small = 10, Medium = 20, Large = 30 }`,
-      "utils.ts": `
+        "colors.ts": `export enum Color { Red = 1, Green = 2, Blue = 3 }`,
+        "sizes.ts": `export enum Size { Small = 10, Medium = 20, Large = 30 }`,
+        "utils.ts": `
         import { Color } from "./colors";
         import { Size } from "./sizes";
         export function getColor() { return Color.Red; }
         export function getSize() { return Size.Medium; }
       `,
-    }, "index.ts", ["--dev"]);
+      },
+      "index.ts",
+      ["--dev"],
+    );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
