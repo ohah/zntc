@@ -290,3 +290,46 @@ test "CJS: multiple require calls" {
     try std.testing.expectEqual(ImportKind.require, result.records[1].kind);
     try std.testing.expect(result.has_cjs_require);
 }
+
+test "glob: import.meta.glob with eager option" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, "const m = import.meta.glob('./dir/*.ts', { eager: true });");
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    const result = try extractImportsWithCjsDetection(alloc, &parser.ast);
+    defer alloc.free(result.records);
+
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqual(ImportKind.glob, result.records[0].kind);
+    try std.testing.expectEqualStrings("./dir/*.ts", result.records[0].specifier);
+    try std.testing.expect(result.records[0].glob_eager);
+}
+
+test "glob: import.meta.glob with import option" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, "const m = import.meta.glob('./dir/*.ts', { import: 'setup' });");
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    const result = try extractImportsWithCjsDetection(alloc, &parser.ast);
+    defer alloc.free(result.records);
+
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqual(ImportKind.glob, result.records[0].kind);
+    try std.testing.expect(result.records[0].glob_import_name != null);
+    try std.testing.expectEqualStrings("setup", result.records[0].glob_import_name.?);
+    try std.testing.expect(!result.records[0].glob_eager);
+}

@@ -461,10 +461,53 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
 
     const pattern = stripQuotes(ast.source[arg0.span.start..arg0.span.end]) orelse return null;
 
+    var glob_eager = false;
+    var glob_import_name: ?[]const u8 = null;
+
+    // args[1]: object_expression (옵션) — { eager: true, import: "setup" }
+    if (args_len > 1 and args_start + 1 < extras.len) {
+        const arg1_idx: NodeIndex = @enumFromInt(extras[args_start + 1]);
+        if (!arg1_idx.isNone() and @intFromEnum(arg1_idx) < ast.nodes.items.len) {
+            const arg1 = ast.getNode(arg1_idx);
+            if (arg1.tag == .object_expression) {
+                const props = arg1.data.list;
+                if (props.start + props.len <= extras.len) {
+                    const prop_indices = extras[props.start .. props.start + props.len];
+                    for (prop_indices) |prop_raw| {
+                        if (prop_raw >= ast.nodes.items.len) continue;
+                        const prop_node = ast.nodes.items[prop_raw];
+                        // property: { key: value } — binary(left=key, right=value)
+                        if (prop_node.tag != .object_property) continue;
+                        const key_idx = prop_node.data.binary.left;
+                        const val_idx = prop_node.data.binary.right;
+                        if (key_idx.isNone() or val_idx.isNone()) continue;
+                        if (@intFromEnum(key_idx) >= ast.nodes.items.len or
+                            @intFromEnum(val_idx) >= ast.nodes.items.len) continue;
+
+                        const key = ast.getNode(key_idx);
+                        const key_text = ast.source[key.span.start..key.span.end];
+                        const val = ast.getNode(val_idx);
+
+                        if (std.mem.eql(u8, key_text, "eager")) {
+                            if (val.tag == .boolean_literal) {
+                                glob_eager = std.mem.eql(u8, ast.source[val.span.start..val.span.end], "true");
+                            }
+                        } else if (std.mem.eql(u8, key_text, "import")) {
+                            if (val.tag == .string_literal) {
+                                glob_import_name = stripQuotes(ast.source[val.span.start..val.span.end]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return ImportRecord{
         .specifier = pattern,
         .kind = .glob,
         .span = node.span,
-        .glob_eager = false,
+        .glob_eager = glob_eager,
+        .glob_import_name = glob_import_name,
     };
 }

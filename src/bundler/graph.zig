@@ -963,6 +963,8 @@ pub const ModuleGraph = struct {
                     .kind = ik,
                     .span = sr.span,
                     .url_span = sr.url_span,
+                    .glob_eager = sr.glob_eager,
+                    .glob_import_name = sr.glob_import_name,
                 };
             }
             module.import_records = records;

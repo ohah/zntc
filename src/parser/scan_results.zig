@@ -30,6 +30,10 @@ pub const ScanImportRecord = struct {
     span: Span,
     /// worker: new URL(...) 전체 범위
     url_span: ?Span = null,
+    /// import.meta.glob: eager 모드
+    glob_eager: bool = false,
+    /// import.meta.glob: named export 추출 (e.g., "setup")
+    glob_import_name: ?[]const u8 = null,
 };
 
 /// import 바인딩 종류.
