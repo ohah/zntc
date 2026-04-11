@@ -2061,6 +2061,7 @@ pub const Transformer = struct {
             var api = AstTransformCtx{ .transformer = self, .modified_body = null };
             const func_info = FunctionInfo{
                 .node_idx = result,
+                .node_tag = node.tag,
                 .name = self.getFunctionName(self.ast.getNode(result)),
                 .body_idx = new_body,
                 .params_start = pp.new_params.start,
