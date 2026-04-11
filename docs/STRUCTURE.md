@@ -142,6 +142,7 @@ src/
     runner.zig              #   메타데이터 파서 + 테스트 실행기
 packages/
   core/                     # N-API 바인딩 (npm 패키지)
+  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체)
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈)
   integration/              # Bun 기반 CLI 통합 테스트
