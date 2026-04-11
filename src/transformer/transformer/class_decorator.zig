@@ -1778,7 +1778,13 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 }
 
                 // key를 한 번만 방문 (decorator info + stripped method 공용)
-                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                const key_idx = self.readNodeIdx(me, 0);
+                const new_key = try self.visitNode(key_idx);
+                // private identifier 감지
+                const is_private = blk: {
+                    const orig_key = self.ast.getNode(key_idx);
+                    break :blk orig_key.tag == .private_identifier;
+                };
 
                 if (deco_len > 0) {
                     const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
@@ -1791,7 +1797,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .kind = kind,
                         .name = name_node_idx,
                         .is_static = is_static,
-                        .is_private = false,
+                        .is_private = is_private,
                         .decorators = decos,
                     });
                 }
@@ -1816,7 +1822,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const is_static = (flags & 0x01) != 0;
 
                 // key를 한 번만 방문
-                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                const key_idx_prop = self.readNodeIdx(me, 0);
+                const new_key = try self.visitNode(key_idx_prop);
+                const is_private_field = self.ast.getNode(key_idx_prop).tag == .private_identifier;
 
                 var field_init_name: ?[]const u8 = null;
                 if (deco_len > 0) {
@@ -1832,7 +1840,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .kind = "field",
                         .name = name_node_idx,
                         .is_static = is_static,
-                        .is_private = false,
+                        .is_private = is_private_field,
                         .decorators = decos,
                         .initializers_name = names.init_name,
                         .extra_initializers_name = names.extra_name,
@@ -2311,7 +2319,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 pub fn memberKeyToStringLiteral(self: *Transformer, key: NodeIndex) Error!NodeIndex {
     if (key.isNone()) return key;
     const key_node = self.ast.getNode(key);
-    if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier) {
+    if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier or key_node.tag == .private_identifier) {
         const name = self.ast.getText(key_node.data.string_ref);
         var buf: [256]u8 = undefined;
         buf[0] = '"';
@@ -2532,7 +2540,7 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
     else
         raw_name;
 
-    // has: obj => "name" in obj
+    // has: obj => "name" in obj (public) 또는 obj => #name in obj (private)
     {
         const has_key = try makeIdentifier(self, "has");
         const obj_param_span = try self.ast.addString("obj");
@@ -2541,21 +2549,30 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             .data = .{ .string_ref = obj_param_span },
         });
 
-        // "name" in obj
-        const name_str = try self.ast.addNode(.{
-            .tag = .string_literal, .span = name_node.data.string_ref,
-            .data = .{ .string_ref = name_node.data.string_ref },
-        });
         const obj_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
+
+        const in_left = if (info.is_private) blk: {
+            // #name (private_identifier)
+            const priv_span = try self.ast.addString(member_name);
+            break :blk try self.ast.addNode(.{
+                .tag = .private_identifier, .span = priv_span,
+                .data = .{ .string_ref = priv_span },
+            });
+        } else blk: {
+            // "name" (string_literal)
+            break :blk try self.ast.addNode(.{
+                .tag = .string_literal, .span = name_node.data.string_ref,
+                .data = .{ .string_ref = name_node.data.string_ref },
+            });
+        };
         const in_expr = try self.ast.addNode(.{
             .tag = .binary_expression, .span = zero_span,
-            .data = .{ .binary = .{ .left = name_str, .right = obj_ref, .flags = @intFromEnum(Kind.kw_in) } },
+            .data = .{ .binary = .{ .left = in_left, .right = obj_ref, .flags = @intFromEnum(Kind.kw_in) } },
         });
 
-        // obj => "name" in obj
         const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(in_expr), 0,
         });
@@ -2572,15 +2589,18 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             .data = .{ .string_ref = obj_param_span },
         });
 
-        // obj.name
+        // obj.name (public) 또는 obj.#name (private)
         const obj_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
-        const member_key = try makeIdentifier(self, member_name);
-        const obj_member = try self.addExtraNode(.static_member_expression, zero_span, &.{
-            @intFromEnum(obj_ref), @intFromEnum(member_key), 0,
+        const member_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
+        const member_key_span = try self.ast.addString(member_name);
+        const member_key_node = try self.ast.addNode(.{
+            .tag = member_key_tag, .span = member_key_span,
+            .data = .{ .string_ref = member_key_span },
         });
+        const obj_member = try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
@@ -2609,15 +2629,18 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         });
         const fn_params = try self.ast.addNodeList(&.{ obj_param, val_param });
 
-        // body: { obj.name = value; }
+        // body: { obj.name = value; } (public) 또는 { obj.#name = value; } (private)
         const obj_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
-        const member_key = try makeIdentifier(self, member_name);
-        const obj_member = try self.addExtraNode(.static_member_expression, zero_span, &.{
-            @intFromEnum(obj_ref), @intFromEnum(member_key), 0,
+        const set_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
+        const set_key_span = try self.ast.addString(member_name);
+        const set_key_node = try self.ast.addNode(.{
+            .tag = set_key_tag, .span = set_key_span,
+            .data = .{ .string_ref = set_key_span },
         });
+        const obj_member = try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
         const val_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = val_param_span,
             .data = .{ .string_ref = val_param_span },
@@ -2883,12 +2906,18 @@ const FieldInitNames = struct {
 pub fn buildFieldInitNames(self: *Transformer, name_node_idx: NodeIndex) Error!FieldInitNames {
     const name_node = self.ast.getNode(name_node_idx);
     const raw_name = self.ast.getText(name_node.data.string_ref);
+    // 따옴표 제거: "\"foo\"" → "foo", "\"#foo\"" → "#foo"
     const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
     else
         raw_name;
-    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
-    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
+    // 변수명에서 # 제거: #foo → foo (JS 변수명에 # 사용 불가)
+    const var_name = if (clean_name.len > 0 and clean_name[0] == '#')
+        clean_name[1..]
+    else
+        clean_name;
+    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{var_name});
+    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{var_name});
     return .{ .init_name = init_name, .extra_name = extra_name, .clean_name = clean_name };
 }
 

@@ -740,3 +740,48 @@ test "stage3: class expression with method decorator" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
 }
+
+// --- Private member decorator ---
+
+test "stage3: private method decorator → private: true" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  #secret() { return 42; }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"#secret\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "private: true") != null);
+}
+
+test "stage3: private field decorator → private: true + initializers" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  #value = 99;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"#value\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "private: true") != null);
+    // private field의 변수명에서 # 제거: _value_initializers
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_value_initializers") != null);
+}
+
+test "stage3: private getter decorator → private: true" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  get #x() { return 1; }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"getter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "private: true") != null);
+}
