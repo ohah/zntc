@@ -36,6 +36,9 @@ cd tests/e2e && bun test             # Playwright E2E (dev server)
 - `tests/integration/tests/watch-json.test.ts` — watch-json NDJSON 이벤트
 - `tests/integration/tests/compat-table.test.ts` — kangax compat-table ES5~ES2022 (237 subtests)
 - `tests/integration/tests/swc-compare.test.ts` — ZTS vs SWC 다운레벨링 비교 (29 cases × 9 targets)
+- `tests/integration/tests/css-bundle.test.ts` — CSS 번들링 (26개: @import 체인, 순환, 중복 제거, BOM, 대용량 등)
+- `tests/integration/tests/css-library-smoke.test.ts` — CSS 라이브러리 스모크 (Emotion, Styled-Components, 네이티브 CSS)
+- `tests/integration/tests/stage3-decorator-smoke.test.ts` — MobX 6 Stage 3 decorator 스모크
 - `tests/e2e/tests/smoke.test.ts` — E2E 스모크 (브라우저 실행)
 - `tests/e2e/tests/browser-smoke.test.ts` — 브라우저 번들 E2E
 

@@ -52,9 +52,11 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
                                                                  ├ 플랫폼 확장자 (.ios/.android)
                                                                  ├ polyfill 주입
                                                                  └ Hermes 타겟 최적화
-                                                                CSS 번들링
-                                                                 ├ 별도 파서
-                                                                 └ CSS modules
+                                                                CSS 번들링 ✅
+                                                                 ├ @import 인라이닝 (css_scanner.zig)
+                                                                 ├ 별도 .css 파일 emit (css_emitter.zig)
+                                                                 ├ Lightning CSS minify (optional)
+                                                                 └ CSS modules (후순위)
 ```
 
 ## 모듈 설계 (책임 분리)
@@ -99,11 +101,21 @@ src/bundler/
   │   책임: 동적 import 분할, 공통 청크 추출
   │   의존: tree_shaker
   │
-  └─ emitter.zig          # 출력 생성
-      입력: 청크 목록 + 링킹 정보
-      출력: JS 파일 + 소스맵
-      책임: exec_index 순서로 코드 배치, 런타임 로더 생성
-      의존: codegen (기존 Phase 4 재사용)
+  ├─ emitter.zig          # 출력 생성
+  │   입력: 청크 목록 + 링킹 정보
+  │   출력: JS 파일 + 소스맵
+  │   책임: exec_index 순서로 코드 배치, 런타임 로더 생성
+  │   의존: codegen (기존 Phase 4 재사용)
+  │
+  ├─ css_scanner.zig      # CSS @import 추출기
+  │   입력: CSS 소스 코드
+  │   출력: CssImportRecord[] (specifier + span)
+  │   책임: @import/@charset/주석 스킵, 첫 non-import 규칙에서 중단
+  │
+  └─ css_emitter.zig      # CSS 번들 생성
+      입력: 모듈 그래프 + 엔트리 인덱스
+      출력: 연결된 CSS OutputFile
+      책임: DFS로 CSS 모듈 수집, exec_index 정렬, @import strip, 파일명 패턴
 ```
 
 설계 원칙:
