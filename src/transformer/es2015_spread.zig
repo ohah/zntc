@@ -389,28 +389,19 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             return buildConcatCall(self, args_slice, span);
         }
 
-        /// [].concat(args...) 호출을 생성한다.
         /// spread 값을 __toConsumableArray(value) 호출로 감싼다.
-        /// Iterator/Iterable/array-like를 안전하게 배열로 변환. (SWC 호환)
+        /// Array literal은 이미 배열이므로 그대로 반환 (런타임 헬퍼 주입 방지).
         fn wrapWithToConsumableArray(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            self.runtime_helpers.spread_array = true;
+            if (!value.isNone() and self.ast.getNode(value).tag == .array_expression) return value;
 
+            self.runtime_helpers.spread_array = true;
             const fn_span = try self.ast.addString("__toConsumableArray");
             const callee = try self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = fn_span,
                 .data = .{ .string_ref = fn_span },
             });
-
-            const args = try self.ast.addNodeList(&.{value});
-            const call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(callee), args.start, args.len, 0,
-            });
-            return self.ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            return es_helpers.makeCallExpr(self, callee, &.{value}, span);
         }
 
         fn buildConcatCall(self: *Transformer, args: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
