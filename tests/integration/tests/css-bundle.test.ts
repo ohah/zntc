@@ -102,13 +102,7 @@ describe("CSS Bundling", () => {
     cleanup = fixture.cleanup;
 
     const outJs = join(fixture.dir, "out.js");
-    await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outJs,
-      "--loader:.css=empty",
-    ]);
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outJs, "--loader:.css=empty"]);
 
     // empty 로더 → CSS 파일 미생성
     let hasCss = true;
