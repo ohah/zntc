@@ -949,7 +949,7 @@ pub const ModuleGraph = struct {
         module.line_offsets = scanner.line_offsets.items;
 
         // import/export 추출: inline scan 결과를 bundler 타입으로 변환
-        if (parser.enable_scan) {
+        {
             // Parser scan records → bundler ImportRecord
             const scan_records = parser.scan_import_records.items;
             const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
@@ -1053,52 +1053,6 @@ pub const ModuleGraph = struct {
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
                 const jsx_record_idx: u32 = @intCast(records.len);
-                module.import_bindings = createJsxImportBindings(
-                    self.jsx_runtime,
-                    arena_alloc,
-                    module.import_bindings,
-                    jsx_record_idx,
-                ) catch module.import_bindings;
-            }
-        } else {
-            // Fallback: post-hoc scanners (inline scan 비활성 경로)
-            const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &parser.ast) catch {
-                module.state = .ready;
-                return;
-            };
-            module.import_records = scan_result.records;
-
-            var jsx_injected = false;
-            if (self.jsx_runtime != .classic) {
-                if (parser.ast.has_jsx) {
-                    if (self.jsx_specifier_cache == null) {
-                        const is_dev = self.jsx_runtime == .automatic_dev;
-                        self.jsx_specifier_cache = std.fmt.allocPrint(
-                            self.allocator,
-                            "{s}/{s}",
-                            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-                        ) catch null;
-                    }
-                    if (self.jsx_specifier_cache) |specifier| {
-                        module.import_records = injectJsxRuntimeImport(
-                            specifier,
-                            arena_alloc,
-                            scan_result.records,
-                        ) catch scan_result.records;
-                        jsx_injected = (module.import_records.len > scan_result.records.len);
-                    }
-                }
-            }
-
-            module.exports_kind = determineExportsKind(scan_result, module.path);
-            module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
-
-            module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &parser.ast, module.import_records) catch &.{};
-            binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
-            module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &parser.ast, module.import_records, module.import_bindings) catch &.{};
-
-            if (jsx_injected) {
-                const jsx_record_idx: u32 = @intCast(scan_result.records.len);
                 module.import_bindings = createJsxImportBindings(
                     self.jsx_runtime,
                     arena_alloc,
