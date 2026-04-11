@@ -698,8 +698,13 @@ pub fn emitModule(
     const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
     const apply_refresh = options.react_refresh and is_user_code;
     const builtin = @import("../transformer/plugins/builtin.zig");
+    // worklet 변환은 react-native/@react-native 코어만 제외, 나머지 node_modules는 포함
+    // (reanimated/worklets 내부에도 "worklet" 디렉티브가 있으므로)
+    const exclude_worklet = options.worklet_transform and
+        (std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
+        std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null);
     const merged_plugins = builtin.collect(.{
-        .worklet = options.worklet_transform and is_user_code,
+        .worklet = options.worklet_transform and !exclude_worklet,
     }, options.plugins, arena_alloc) catch return error.OutOfMemory;
 
     var transformer = try Transformer.init(arena_alloc, ast, .{
