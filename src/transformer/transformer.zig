@@ -2680,6 +2680,7 @@ pub const Transformer = struct {
     pub const buildMetadataDefineProperty = class_deco.buildMetadataDefineProperty;
     pub const buildGetterMethod = class_deco.buildGetterMethod;
     pub const extractCleanVarName = class_deco.extractCleanVarName;
+    pub const appendEsDecorateStmt = class_deco.appendEsDecorateStmt;
     pub const wrapInStringLiteral = class_deco.wrapInStringLiteral;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 

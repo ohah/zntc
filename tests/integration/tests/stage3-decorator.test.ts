@@ -833,9 +833,7 @@ describe("Stage 3 Decorators", () => {
 
   // --- Babel 2023-11-classes/decorator-access-modified-fields ---
 
-  // TODO: class decorator가 member-decorated field의 변환된 초기값을 보려면
-  // __esDecorate 호출 순서가 member → class 순이어야 함 (현재 동일 static block에서 순차 호출)
-  it.skip("babel: class decorator sees member-decorated field value", async () => {
+  it("babel: class decorator sees member-decorated field value", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         var value: any;
@@ -857,9 +855,7 @@ describe("Stage 3 Decorators", () => {
 
   // --- Babel 2023-11-ordering: decorator evaluation order (간소화) ---
 
-  // TODO: decorator 평가 순서가 스펙과 정확히 일치해야 함
-  // (method → field → class, 각각 inner→outer 순)
-  it.skip("babel: decorator evaluation order across element kinds", async () => {
+  it("babel: decorator evaluation order across element kinds", async () => {
     const result = await bundleAndRun({
       "index.ts": `
         const log: number[] = [];
@@ -879,10 +875,11 @@ describe("Stage 3 Decorators", () => {
     });
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
-    // 스펙 순서: method decs(3,2) → field decs(4) → class decs(1,0) → method results(6,7) → field result(5) → class results(8,9)
     const output = result.runOutput;
-    // decorator 평가: method → field → class 순
-    expect(output).toContain("3,2,4");
+    // TC39 스펙 순서:
+    // 식 평가 (소스 순서): class(0,1) → method(2,3) → field(4)
+    // 적용 (스펙 순서): method(6,7) → field(5) → class(8,9)
+    expect(output).toContain("0,1,2,3,4,6,7,5,8,9");
   });
 
   // --- Babel 2023-11-getters/context-name (간소화) ---
