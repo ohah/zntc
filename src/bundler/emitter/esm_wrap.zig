@@ -158,6 +158,23 @@ pub fn emitEsmWrappedModule(
                 // body에 넣어서 할당문으로 변환
                 try body_stmts.append(allocator, raw_idx);
             },
+            .ts_enum_declaration => {
+                // TS enum → IIFE. codegen이 `var Name = ((Name) => {...})(Name || {})` 출력.
+                // __esm factory 밖 top-level에 var Name; 선언 필요.
+                const enum_node_src = if (export_inner) |idx|
+                    esm_ast.nodes.items[@intFromEnum(idx)]
+                else
+                    stmt_node;
+                const enum_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[enum_node_src.data.extra]);
+                if (!enum_name_idx.isNone()) {
+                    const ename_node = esm_ast.nodes.items[@intFromEnum(enum_name_idx)];
+                    if (ename_node.tag == .binding_identifier) {
+                        const raw_name = esm_ast.getText(ename_node.data.string_ref);
+                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(enum_name_idx), raw_name));
+                    }
+                }
+                try body_stmts.append(allocator, raw_idx);
+            },
             else => {
                 // effective_tag는 내부 노드의 태그이므로 export_default_declaration은
                 // 이 분기에 도달한다. stmt_node.tag로 원본 태그를 확인하여 호이스팅.

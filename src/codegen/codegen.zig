@@ -2086,9 +2086,11 @@ pub const Codegen = struct {
         const list_start = extras[1];
         const list_len = extras[2];
 
-        // __esm 호이스팅: top-level 단순 변수 선언만 키워드 제거 (할당문으로 변환).
+        // __esm 호이스팅: 변수 선언에서 키워드 제거 (할당문으로 변환).
+        // indent_level 무관: __esm factory 안에서도 var → assignment 변환 필요.
+        // (var 선언은 이미 __esm 밖 top-level에 hoisted_var_names로 선언됨)
         // destructuring 패턴이 있으면 normal 경로 (키워드 필요).
-        if (self.options.esm_var_assign_only and self.indent_level == 0 and !self.in_for_init) {
+        if (self.options.esm_var_assign_only and !self.in_for_init) {
             const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
             // destructuring 여부 확인: 하나라도 binding_identifier가 아니면 normal 경로
             var has_destructuring = false;
@@ -2807,7 +2809,9 @@ pub const Codegen = struct {
         } else name_text;
 
         // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
-        try self.write("var ");
+        // esm_var_assign_only: var 선언은 이미 __esm 밖 top-level에 hoisted.
+        // factory 안에서는 할당만 출력.
+        if (!self.options.esm_var_assign_only) try self.write("var ");
         try self.write(name_text);
         try self.write(" = /* @__PURE__ */ ((");
         try self.write(param_name);
