@@ -283,6 +283,27 @@ export interface PluginBuild {
     callback: (args: { code: string; chunk: string }) => { code: string } | null | undefined,
   ): void;
   onGenerateBundle(callback: (outputs: OutputFile[]) => void): void;
+  onAstFunction(
+    options: { filter: RegExp },
+    callback: (
+      info: AstFunctionInfo,
+    ) => AstFunctionResult | null | undefined | Promise<AstFunctionResult | null | undefined>,
+  ): void;
+}
+
+export interface AstFunctionInfo {
+  name: string | null;
+  directives: string[];
+  closureVars: string[];
+  params: string[];
+  sourcePath: string;
+  bodyText: string;
+  flags: { async: boolean; generator: boolean };
+}
+
+export interface AstFunctionResult {
+  stripDirective?: string;
+  trailingCode?: string[];
 }
 
 export interface BuildResult {
@@ -305,6 +326,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     renderChunk: [],
   };
   const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void> = [];
+  const astFunctionHooks: HookEntry[] = [];
 
   for (const plugin of plugins) {
     const build: PluginBuild = {
@@ -323,6 +345,9 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       onGenerateBundle(cb) {
         generateBundleCallbacks.push(cb);
       },
+      onAstFunction(opts, cb) {
+        astFunctionHooks.push({ filter: opts.filter, callback: cb });
+      },
     };
     plugin.setup(build);
   }
@@ -339,6 +364,27 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     arg1: string | OutputFile[],
     arg2: string | null,
   ) {
+    // astFunction: arg1이 JSON 직렬화된 FunctionInfo
+    if (hookName === "astFunction") {
+      if (astFunctionHooks.length === 0) return null;
+      try {
+        const info = JSON.parse(arg1 as string) as AstFunctionInfo;
+        for (const h of astFunctionHooks) {
+          if (h.filter.test(info.sourcePath)) {
+            try {
+              const result = await h.callback(info);
+              if (result != null) return result;
+            } catch {
+              // 에러 시 해당 플러그인 건너뛰기
+            }
+          }
+        }
+      } catch {
+        // JSON 파싱 실패
+      }
+      return null;
+    }
+
     // generateBundle: arg1이 OutputFile[] 배열
     if (hookName === "generateBundle") {
       const outputs = arg1 as OutputFile[];

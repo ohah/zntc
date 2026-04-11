@@ -13,6 +13,9 @@ const std = @import("std");
 const resolver_mod = @import("resolver.zig");
 const ResolveResult = resolver_mod.ResolveResult;
 const OutputFile = @import("emitter.zig").OutputFile;
+const ast_plugin_mod = @import("../transformer/ast_plugin.zig");
+pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
+pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.
 /// anyerror를 쓰지 않고 specific error set으로 제한하여
@@ -49,6 +52,12 @@ pub const Plugin = struct {
 
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
     generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
+
+    // ─── AST 훅 (transformer 내부에서 AST 노드 방문 시 호출) ───
+
+    /// 함수 노드 방문 훅. visitFunction 완료 후 호출.
+    /// function_declaration, function_expression, arrow_function_expression 대상.
+    onFunction: ?*const fn (ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void = null,
 };
 
 /// 플러그인 배열을 순회하며 훅을 실행하는 유틸리티.

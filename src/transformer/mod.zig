@@ -16,6 +16,7 @@ pub const transformer = @import("transformer.zig");
 pub const Transformer = transformer.Transformer;
 pub const DefineEntry = transformer.DefineEntry;
 pub const TransformOptions = transformer.TransformOptions;
+pub const ast_plugin_mod = @import("ast_plugin.zig");
 
 /// ES 다운레벨링 모듈 (절충안 구조: 파일 분리 + 단일 패스)
 pub const es2015 = @import("es2015.zig");

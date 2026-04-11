@@ -18,6 +18,10 @@ runs:
       run: zig build -Doptimize=ReleaseFast
       shell: bash
 
+    - name: Build NAPI module
+      run: zig build napi
+      shell: bash
+
     - name: Install dependencies
       run: bun install
       shell: bash

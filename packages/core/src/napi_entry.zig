@@ -174,6 +174,11 @@ fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc
 
 fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const []const u8 {
     const val = getNamedProperty(env, obj, key) orelse return null;
+    return parseStringArray(env, val, alloc);
+}
+
+/// JS 배열 값을 문자열 슬라이스로 변환. (key 없이 직접 배열 값을 받는 버전)
+fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Allocator) ?[]const []const u8 {
     var is_array: bool = false;
     _ = c.napi_is_array(env, val, &is_array);
     if (!is_array) return null;
@@ -429,12 +434,16 @@ const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
 
-    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle };
+    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction };
 
     const PluginResponse = struct {
         resolved_path: ?[]const u8 = null,
         is_external: bool = false,
         code: ?[]const u8 = null,
+        /// AST plugin: 제거할 디렉티브 이름
+        strip_directive: ?[]const u8 = null,
+        /// AST plugin: 함수 뒤에 삽입할 코드 문자열 배열
+        trailing_code: ?[]const []const u8 = null,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -470,6 +479,13 @@ const NapiPlugin = struct {
             if (getObjectString(env, js_result, "code", native_alloc)) |code| {
                 resp.code = code;
             }
+        }
+        // AST plugin 응답 파싱
+        if (getObjectString(env, js_result, "stripDirective", native_alloc)) |sd| {
+            resp.strip_directive = sd;
+        }
+        if (getNamedProperty(env, js_result, "trailingCode")) |tc_val| {
+            resp.trailing_code = parseStringArray(env, tc_val, native_alloc);
         }
         return resp;
     }
@@ -520,6 +536,7 @@ const NapiPlugin = struct {
             .transform => "transform",
             .renderChunk => "renderChunk",
             .generateBundle => "generateBundle",
+            .astFunction => "astFunction",
         };
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
@@ -678,7 +695,48 @@ const NapiPlugin = struct {
             .transform = pluginTransform,
             .renderChunk = pluginRenderChunk,
             .generateBundle = pluginGenerateBundle,
+            .onFunction = pluginAstFunction,
         };
+    }
+
+    // ─── AST 훅 구현 ───
+
+    const AstTransformCtx = zts_lib.transformer.ast_plugin_mod.AstTransformCtx;
+    const FunctionInfo = zts_lib.transformer.ast_plugin_mod.FunctionInfo;
+
+    fn pluginAstFunction(ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+
+        // FunctionInfo를 JSON 문자열로 직렬화
+        const json = serializeFunctionInfo(api, func) catch return;
+        defer native_alloc.free(json);
+
+        // JS 호출
+        const resp = self.callHook(.astFunction, json, null) orelse return;
+        defer {
+            if (resp.strip_directive) |sd| native_alloc.free(sd);
+            if (resp.trailing_code) |tc| {
+                for (tc) |s| native_alloc.free(s);
+                native_alloc.free(tc);
+            }
+            if (resp.resolved_path) |p| native_alloc.free(p);
+            if (resp.code) |co| native_alloc.free(co);
+        }
+
+        if (resp.strip_directive != null) {
+            _ = api.stripDirective(func.body_idx) catch return;
+        }
+
+        // 응답 처리: trailingCode → 파싱하여 trailing statements에 추가
+        if (resp.trailing_code) |codes| {
+            for (codes) |code_str| {
+                // 코드 문자열을 파싱하여 AST 노드로 변환
+                const stmts = api.parseAndInjectStatements(code_str) catch continue;
+                for (stmts) |stmt| {
+                    api.addTrailingStatement(stmt) catch continue;
+                }
+            }
+        }
     }
 
     fn deinit(self: *NapiPlugin) void {
@@ -687,6 +745,129 @@ const NapiPlugin = struct {
         native_alloc.destroy(self);
     }
 };
+
+const appendJsonEscaped = zts_lib.string_escape.appendEscaped;
+
+/// FunctionInfo를 JSON 문자열로 직렬화한다.
+/// JS dispatcher에 arg1로 전달되어 JS 측에서 JSON.parse()로 역직렬화.
+fn serializeFunctionInfo(
+    api: *NapiPlugin.AstTransformCtx,
+    func: NapiPlugin.FunctionInfo,
+) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    const alloc = native_alloc;
+
+    try buf.appendSlice(alloc, "{\"name\":");
+    if (func.name) |name| {
+        try buf.append(alloc, '"');
+        try appendJsonEscaped(&buf, alloc, name);
+        try buf.append(alloc, '"');
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
+
+    // directives: body 첫 문장이 디렉티브(string literal)이면 추출
+    var has_directives = false;
+    try buf.appendSlice(alloc, ",\"directives\":[");
+    if (!func.body_idx.isNone()) {
+        const Ast = zts_lib.parser.ast;
+        const body = api.transformer.ast.getNode(func.body_idx);
+        if ((body.tag == .block_statement or body.tag == .function_body) and body.data.list.len > 0) {
+            const first_raw = api.transformer.ast.extra_data.items[body.data.list.start];
+            const first_idx: Ast.NodeIndex = @enumFromInt(first_raw);
+            if (!first_idx.isNone()) {
+                const first = api.transformer.ast.getNode(first_idx);
+                // directive 태그 또는 expression_statement > string_literal
+                const directive_text: ?[]const u8 = if (first.tag == .directive)
+                    blk: {
+                        const t = api.transformer.ast.getText(first.span);
+                        break :blk if (t.len >= 2) t[1 .. t.len - 1] else null;
+                    }
+                else if (first.tag == .expression_statement) blk: {
+                    const op = api.transformer.ast.getNode(first.data.unary.operand);
+                    if (op.tag == .string_literal) {
+                        const t = api.transformer.ast.getText(op.data.string_ref);
+                        break :blk if (t.len >= 2) t[1 .. t.len - 1] else null;
+                    }
+                    break :blk null;
+                } else null;
+
+                if (directive_text) |dt| {
+                    try buf.append(alloc, '"');
+                    try appendJsonEscaped(&buf, alloc, dt);
+                    try buf.append(alloc, '"');
+                    has_directives = true;
+                }
+            }
+        }
+    }
+    try buf.append(alloc, ']');
+
+    // closureVars: 디렉티브가 있을 때만 계산 (스코프 분석은 비용이 크므로)
+    try buf.appendSlice(alloc, ",\"closureVars\":[");
+    if (has_directives) {
+        const closure_vars = api.getClosureVars(func.body_idx, func.params_start, func.params_len) catch &.{};
+        defer if (closure_vars.len > 0) api.getAllocator().free(closure_vars);
+        for (closure_vars, 0..) |v, i| {
+            if (i > 0) try buf.append(alloc, ',');
+            try buf.append(alloc, '"');
+            try buf.appendSlice(alloc, v);
+            try buf.append(alloc, '"');
+        }
+    }
+    try buf.append(alloc, ']');
+
+    // params
+    try buf.appendSlice(alloc, ",\"params\":[");
+    {
+        var pi: u32 = 0;
+        while (pi < func.params_len) : (pi += 1) {
+            if (pi > 0) try buf.append(alloc, ',');
+            const param_raw = api.transformer.ast.extra_data.items[func.params_start + pi];
+            const param_idx: zts_lib.parser.ast.NodeIndex = @enumFromInt(param_raw);
+            if (!param_idx.isNone()) {
+                const param_node = api.transformer.ast.getNode(param_idx);
+                const param_text = api.transformer.ast.getText(param_node.span);
+                try buf.append(alloc, '"');
+                try buf.appendSlice(alloc, param_text);
+                try buf.append(alloc, '"');
+            }
+        }
+    }
+    try buf.append(alloc, ']');
+
+    // sourcePath
+    try buf.appendSlice(alloc, ",\"sourcePath\":\"");
+    try appendJsonEscaped(&buf, alloc, func.source_path);
+    try buf.append(alloc, '"');
+
+    // flags
+    try buf.appendSlice(alloc, ",\"flags\":{\"async\":");
+    try buf.appendSlice(alloc, if (func.flags & 0x01 != 0) "true" else "false");
+    try buf.appendSlice(alloc, ",\"generator\":");
+    try buf.appendSlice(alloc, if (func.flags & 0x02 != 0) "true" else "false");
+    try buf.append(alloc, '}');
+
+    // bodyText: 소스 원본에서 추출
+    try buf.appendSlice(alloc, ",\"bodyText\":");
+    {
+        const body_node = api.transformer.ast.getNode(func.body_idx);
+        if (body_node.span.start < body_node.span.end and
+            body_node.span.start & 0x8000_0000 == 0 and
+            body_node.span.end <= @as(u32, @intCast(api.transformer.ast.source.len)))
+        {
+            const text = api.transformer.ast.source[body_node.span.start..body_node.span.end];
+            try buf.append(alloc, '"');
+            try appendJsonEscaped(&buf, alloc, text);
+            try buf.append(alloc, '"');
+        } else {
+            try buf.appendSlice(alloc, "\"\"");
+        }
+    }
+
+    try buf.append(alloc, '}');
+    return buf.toOwnedSlice(alloc);
+}
 
 // ─── build() 비동기 (Promise) ───
 

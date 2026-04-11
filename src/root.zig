@@ -21,6 +21,7 @@ pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
 pub const server = @import("server/mod.zig");
 pub const transpile = @import("transpile.zig");
+pub const string_escape = @import("string_escape.zig");
 
 test {
     _ = lexer;
