@@ -46,6 +46,7 @@
 | 33. BuildOptions 확장 | loader, conditions, resolveExtensions, mainFields, target, outdir, outfile, write | ✅ |
 | 34. 플러그인 훅 확장 | renderChunk/generateBundle NAPI 노출 + vitePlugin 매핑 | ✅ |
 | 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
+| 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
@@ -91,8 +92,8 @@
 - `packages/core`에서 `defineConfig()` + `build()` 내보냄
 - CLI `--plugin <path>`로 JS 설정 파일 로드
 
-**import.meta.glob** — M (1~2일)
-- Vite 호환 기능, DX 개선
+~~**import.meta.glob**~~ — ✅ 완료
+- Vite 호환 `import.meta.glob()`, eager/import 옵션 지원
 
 ## ⏳ 미완료
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
@@ -156,7 +157,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 - ~~**jsx-dev**~~ — ✅ 완료. `--jsx=automatic-dev` / `--jsx-dev` React 개발 모드 `jsxDEV` + `__source`/`__self`
 - ~~**UMD/AMD 포맷**~~ — ✅ 완료. `--format=umd` / `--format=amd` + external dependency array + factory params
-- **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks)
+- **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks, rspack splitChunks)
+  프로덕션 청크 최적화 시 벤더/공통 코드 분리 필수. rolldown은 `advancedChunks`, rspack은 webpack의 `splitChunks` 호환.
 - ~~**preserveModules**~~ — ✅ 완료. `--preserve-modules` + `--preserve-modules-root` (Rollup/Rolldown 호환)
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
 - ~~**설정 파일 (zts.config.js)**~~ — ✅ 완료. `packages/core`에서 `defineConfig()` 내보냄.
@@ -166,7 +168,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 ### Nice to Have
 
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
-- **import.meta.glob** — `M` | 선행: 없음 | 배치: 단독
+- ~~**import.meta.glob**~~ — ✅ 완료. Vite 호환 `import.meta.glob()` (eager/import 옵션 지원)
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
 - **Stage 3 decorators** — `XL` | TC39 최신 데코레이터 다운레벨링 (현재 legacy만)
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
@@ -176,16 +178,25 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - ~~**sourcemapDebugIds**~~ — ✅ 완료. `--sourcemap-debug-ids` UUID v4, 번들+소스맵 매칭
 - ~~**shimMissingExports**~~ — ✅ 완료. `--shim-missing-exports` 롤다운 호환
 
-### 번들러 인프라 (미구현)
+### 번들러 인프라 — rolldown/rspack 비교
 
-| 항목 | 난이도 | esbuild | rolldown | rspack | 설명 |
-|------|--------|---------|----------|--------|------|
-| **CSS 번들링** | XL | ✅ | ✅ | ✅ | 자체 CSS 파서, @import, CSS Modules |
-| ~~**플러그인 N-API**~~ | ✅ | ✅ (Go) | ✅ (Rust) | ✅ | in-process NAPI 플러그인 + async 훅 + Vite 어댑터 |
-| ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 구현 완료 |
-| ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/plugin |
-| ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/plugin |
-| ~~**HTTPS dev server**~~ | ✅ | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
+| 항목 | 난이도 | esbuild | rolldown | rspack | ZTS | 설명 |
+|------|--------|---------|----------|--------|-----|------|
+| **CSS 번들링** | XL | ✅ | ✅ | ✅ | ❌ | 자체 CSS 파서, @import, CSS Modules |
+| **manualChunks** | L | ❌ | ✅ advancedChunks | ✅ splitChunks | ❌ | 사용자 정의 청크 분할 규칙 |
+| **innerGraph** | L | ❌ | ✅ | ✅ | ❌ | 변수 할당 추적으로 정밀 DCE |
+| **Persistent caching** | XL | ❌ | ❌ | ✅ | ❌ | 디스크 캐시, 콜드 리빌드 250%↑ |
+| **Module Federation** | XL | ❌ | ❌ | ✅ | ❌ | 마이크로프론트엔드 코드/리소스 공유 |
+| **Lazy compilation** | XL | ❌ | ❌ | ✅ | ❌ | 온디맨드 모듈 컴파일 (dev 시작 가속) |
+| **Stage 3 decorators** | XL | ❌ | ✅ | ✅ | ❌ | TC39 최신 데코레이터 (현재 legacy만) |
+| **mangleProps** | XL | ✅ | ❌ | ❌ | ❌ | cross-module 프로퍼티 난독화 |
+| **lazyBarrel** | L | ❌ | ✅ | ❌ | ❌ | barrel re-export 컴파일 생략 |
+| ~~**import.meta.glob**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | Vite 호환 glob import |
+| ~~**플러그인 N-API**~~ | ✅ | ✅ (Go) | ✅ (Rust) | ✅ | ✅ | in-process NAPI + async 훅 + Vite 어댑터 |
+| ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | `import.meta.hot.accept()` |
+| ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | `defineConfig()` |
+| ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | ✅ | `build()` |
+| ~~**HTTPS dev server**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | `--certfile`/`--keyfile` |
 
 ### 배치 그룹 & 구현 순서
 
@@ -210,9 +221,12 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   플러그인 API ✅ 1-4단계 완료 — NAPI + Vite 어댑터 + async 훅
   엔진 타겟 ✅ 완료 — esbuild compat-table 기반 (8엔진 × 18 feature)
   Web Worker ✅ 완료 — new Worker(new URL(...)) 자동 감지+IIFE 번들 (esbuild 미지원)
+  import.meta.glob ✅ 완료 — Vite 호환 glob import (eager/import 옵션)
   mangleProps (1주+) — cross-module 프로퍼티 추적
   Stage 3 decorators — TC39 최신 데코레이터 (현재 legacy만)
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
+  manualChunks (3~5일) — 사용자 정의 청크 분할
+  innerGraph (3~5일) — 변수 할당 추적 정밀 DCE
 ```
 
 ### 기술부채 & 구조적 제약
@@ -311,7 +325,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | 항목 | 난이도 | 현재 상태 | 설명 |
 |------|--------|----------|------|
 | **플러그인 예제** | S~M | 없음 | PostCSS, Tailwind, SVG, YAML 등 커뮤니티 플러그인 레퍼런스 |
-| **import.meta.glob** | M | 미구현 | Vite 사용자 마이그레이션 핵심 기능 |
+| ~~**import.meta.glob**~~ | ✅ | 완료 | Vite 호환 glob import (eager/import 옵션) |
 | **마이그레이션 가이드** | S | 없음 | esbuild → ZTS, Vite → ZTS 설정 대응표 |
 | **프레임워크 통합** | XL | 없음 | Next.js/Remix/SvelteKit 플러그인 또는 어댑터 |
 | **Vite 호환 모드** | XL | 없음 | `vite.config.js` 읽어서 마이그레이션 비용 제로 (장기 목표) |

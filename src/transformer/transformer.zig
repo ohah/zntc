@@ -101,7 +101,7 @@ pub const TransformOptions = struct {
 /// 런타임 헬퍼 사용 추적 비트맵.
 /// transformer가 각 변환 시 해당 비트를 설정하고,
 /// 번들러 emitter가 필요한 헬퍼만 출력에 주입한다.
-pub const RuntimeHelpers = packed struct(u16) {
+pub const RuntimeHelpers = packed struct(u32) {
     /// __async: async/await → generator wrapper (ES2017)
     async_helper: bool = false,
     /// __extends: class 상속 prototype chain (ES2015)
@@ -132,7 +132,9 @@ pub const RuntimeHelpers = packed struct(u16) {
     using_ctx: bool = false,
     /// __classStaticPrivateFieldSpecGet/Set: static private field accessor
     class_static_private_field: bool = false,
-    _padding: u1 = 0,
+    /// __esDecorate/__runInitializers: TC39 Stage 3 decorator 변환 (TypeScript 5.0+)
+    es_decorator: bool = false,
+    _padding: u16 = 0,
 };
 
 /// 단일 AST append-only 변환기.

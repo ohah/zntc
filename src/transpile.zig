@@ -306,7 +306,7 @@ pub fn transpileWithCallback(
 
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
-    const has_helpers = @as(u16, @bitCast(rh)) != 0;
+    const has_helpers = @as(u32, @bitCast(rh)) != 0;
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
