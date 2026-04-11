@@ -2680,6 +2680,7 @@ pub const Transformer = struct {
     pub const buildMetadataDefineProperty = class_deco.buildMetadataDefineProperty;
     pub const buildGetterMethod = class_deco.buildGetterMethod;
     pub const extractCleanVarName = class_deco.extractCleanVarName;
+    pub const wrapInStringLiteral = class_deco.wrapInStringLiteral;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {

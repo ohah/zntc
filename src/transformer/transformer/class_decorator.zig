@@ -2337,17 +2337,45 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 pub fn memberKeyToStringLiteral(self: *Transformer, key: NodeIndex) Error!NodeIndex {
     if (key.isNone()) return key;
     const key_node = self.ast.getNode(key);
+
+    // identifier/private → "name" 형태의 string literal로 변환
     if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier or key_node.tag == .private_identifier) {
         const name = self.ast.getText(key_node.data.string_ref);
-        var buf: [256]u8 = undefined;
-        buf[0] = '"';
-        const len = @min(name.len, buf.len - 2);
-        @memcpy(buf[1 .. 1 + len], name[0..len]);
-        buf[1 + len] = '"';
-        const span = try self.ast.addString(buf[0 .. 2 + len]);
-        return self.ast.addNode(.{ .tag = .string_literal, .span = span, .data = .{ .string_ref = span } });
+        return self.wrapInStringLiteral(name);
     }
+
+    // string_literal → 이미 따옴표 포함 (codegen이 그대로 출력)
+    if (key_node.tag == .string_literal) {
+        // 소스 텍스트가 "b" 형태 → context.name은 따옴표 없는 "b"
+        // 하지만 우리 string_literal은 이미 따옴표 포함이므로 그대로 반환
+        return key;
+    }
+
+    // numeric_literal → "0" 형태의 string literal로 변환
+    if (key_node.tag == .numeric_literal) {
+        const src = self.ast.source[key_node.span.start..key_node.span.end];
+        return self.wrapInStringLiteral(src);
+    }
+
+    // bigint_literal → "2" 형태로 변환 (끝의 n 제거)
+    if (key_node.tag == .bigint_literal) {
+        const src = self.ast.source[key_node.span.start..key_node.span.end];
+        const without_n = if (src.len > 0 and src[src.len - 1] == 'n') src[0 .. src.len - 1] else src;
+        return self.wrapInStringLiteral(without_n);
+    }
+
     return key;
+}
+
+/// 텍스트를 따옴표로 감싸서 string_literal 노드 생성
+pub fn wrapInStringLiteral(self: *Transformer, text: []const u8) Error!NodeIndex {
+    var buf: [256]u8 = undefined;
+    buf[0] = '"';
+    const len = @min(text.len, buf.len - 2);
+    @memcpy(buf[1 .. 1 + len], text[0..len]);
+    buf[1 + len] = '"';
+    const span = try self.ast.addString(buf[0 .. 2 + len]);
+    return self.ast.addNode(.{ .tag = .string_literal, .span = span, .data = .{ .string_ref = span } });
 }
 
 /// decorator 식들을 방문하여 슬라이스로 반환. caller가 free.
@@ -2589,6 +2617,20 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
     else
         raw_name;
 
+    // identifier-safe 판정: 숫자로 시작하거나 유효하지 않은 식별자면 computed access 사용
+    // obj.name (static) vs obj["name"] or obj[0] (computed)
+    const needs_computed = blk: {
+        if (info.is_private) break :blk false; // private은 항상 obj.#name
+        if (member_name.len == 0) break :blk true;
+        const first = member_name[0];
+        if (first >= '0' and first <= '9') break :blk true; // 숫자로 시작
+        // JS 식별자가 아닌 문자가 있으면 computed
+        for (member_name) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '$') break :blk true;
+        }
+        break :blk false;
+    };
+
     // has: obj => "name" in obj (public) 또는 obj => #name in obj (private)
     {
         const has_key = try makeIdentifier(self, "has");
@@ -2638,18 +2680,24 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             .data = .{ .string_ref = obj_param_span },
         });
 
-        // obj.name (public) 또는 obj.#name (private)
+        // obj.name (public) / obj.#name (private) / obj["name"] or obj[0] (computed key)
         const obj_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
-        const member_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
-        const member_key_span = try self.ast.addString(member_name);
-        const member_key_node = try self.ast.addNode(.{
-            .tag = member_key_tag, .span = member_key_span,
-            .data = .{ .string_ref = member_key_span },
-        });
-        const obj_member = try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
+        const obj_member = if (needs_computed) blk: {
+            // obj["name"] 또는 obj[0]
+            const key_node = info.name; // 이미 string_literal "\"name\"" 형태
+            break :blk try es_helpers.makeComputedMember(self, obj_ref, key_node, zero_span);
+        } else blk: {
+            const member_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
+            const member_key_span = try self.ast.addString(member_name);
+            const member_key_node = try self.ast.addNode(.{
+                .tag = member_key_tag, .span = member_key_span,
+                .data = .{ .string_ref = member_key_span },
+            });
+            break :blk try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
+        };
 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
@@ -2678,18 +2726,22 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
         });
         const fn_params = try self.ast.addNodeList(&.{ obj_param, val_param });
 
-        // body: { obj.name = value; } (public) 또는 { obj.#name = value; } (private)
+        // body: { obj.name = value; } / { obj.#name = value; } / { obj["name"] = value; }
         const obj_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = obj_param_span,
             .data = .{ .string_ref = obj_param_span },
         });
-        const set_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
-        const set_key_span = try self.ast.addString(member_name);
-        const set_key_node = try self.ast.addNode(.{
-            .tag = set_key_tag, .span = set_key_span,
-            .data = .{ .string_ref = set_key_span },
-        });
-        const obj_member = try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
+        const obj_member = if (needs_computed) blk: {
+            break :blk try es_helpers.makeComputedMember(self, obj_ref, info.name, zero_span);
+        } else blk: {
+            const set_key_tag: Tag = if (info.is_private) .private_identifier else .identifier_reference;
+            const set_key_span = try self.ast.addString(member_name);
+            const set_key_node = try self.ast.addNode(.{
+                .tag = set_key_tag, .span = set_key_span,
+                .data = .{ .string_ref = set_key_span },
+            });
+            break :blk try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
+        };
         const val_ref = try self.ast.addNode(.{
             .tag = .identifier_reference, .span = val_param_span,
             .data = .{ .string_ref = val_param_span },
