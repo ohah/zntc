@@ -2615,7 +2615,47 @@ class Derived4 extends Base {
 `;
 
 exports[`TSC: classes derivedClassSuperProperties 1`] = `
-"class Base {
+"var __esDecorate = function(ctor, descriptorIn, decorators, contextIn, initializers, extraInitializers) {
+  function accept(f) { if (f !== void 0 && typeof f !== "function") throw new TypeError("Function expected"); return f; }
+  var kind = contextIn.kind, key = kind === "getter" ? "get" : kind === "setter" ? "set" : "value";
+  var target = !descriptorIn && ctor ? contextIn["static"] ? ctor : ctor.prototype : null;
+  var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
+  var _, done = false;
+  for (var i = decorators.length - 1; i >= 0; i--) {
+    var context = {};
+    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
+    context.addInitializer = function(f) { if (done) throw new TypeError("Cannot add initializers after decoration has completed"); extraInitializers.push(accept(f || null)); };
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    if (kind === "accessor") {
+      if (result === void 0) continue;
+      if (result === null || typeof result !== "object") throw new TypeError("Object expected");
+      if (_ = accept(result.get)) descriptor.get = _;
+      if (_ = accept(result.set)) descriptor.set = _;
+      if (_ = accept(result.init)) initializers.unshift(_);
+    } else if (_ = accept(result)) {
+      if (kind === "field") initializers.unshift(_);
+      else descriptor[key] = _;
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor);
+  done = true;
+};
+var __runInitializers = function(thisArg, initializers, value) {
+  var useValue = arguments.length > 2;
+  for (var i = 0; i < initializers.length; i++) {
+    value = useValue ? initializers[i].call(thisArg, value) : initializers[i].call(thisArg);
+  }
+  return useValue ? value : void 0;
+};
+var __setFunctionName = function(f, name, prefix) {
+  if (typeof name === "symbol") name = name.description ? "[".concat(name.description, "]") : "";
+  return Object.defineProperty(f, "name", { configurable: true, value: prefix ? "".concat(prefix, " ", name) : name });
+};
+var __propKey = function(x) {
+  return typeof x === "symbol" ? x : "".concat(x);
+};
+class Base {
 	constructor(a) {
 	}
 	receivesAnything(param) {
@@ -2695,29 +2735,90 @@ class DerivedWithArrowFunctionParameter extends Base {
 class DerivedWithDecoratorOnClass extends Base {
 	prop = true;
 	constructor() {
-		@decorate(this) class InnerClass {
-		}
+		let InnerClass = (() => {
+			let _classThis;
+			let _classDecorators = [decorate(this)];
+			let _classDescriptor;
+			let _classExtraInitializers = [];
+			var InnerClass = class {
+				static {
+					_classThis = this;
+				}
+				static {
+					const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+					__esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+					InnerClass = _classThis = _classDescriptor.value;
+					if (_metadata) {
+						Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+					}
+					__runInitializers(_classThis, _classExtraInitializers);
+				}
+			};
+			return InnerClass = _classThis;
+		})();
 		super();
 	}
 }
 class DerivedWithDecoratorOnClassMethod extends Base {
 	prop = true;
 	constructor() {
-		class InnerClass {
-			@decorate(this)
-			innerMethod() {
-			}
-		}
+		let InnerClass = (() => {
+			let _classThis;
+			let _instanceExtraInitializers = [];
+			let _innerMethod_decorators;
+			var InnerClass = class {
+				static {
+					_classThis = this;
+				}
+				static {
+					const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+					_innerMethod_decorators = [decorate(this)];
+					__esDecorate(this, null, _innerMethod_decorators, { kind: "method", name: "innerMethod", static: false, private: false, access: { has: (obj) => "innerMethod" in obj, get: (obj) => obj.innerMethod }, metadata: _metadata }, null, _instanceExtraInitializers);
+					if (_metadata) {
+						Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+					}
+				}
+				innerMethod() {
+				}
+				constructor() {
+					__runInitializers(this, _instanceExtraInitializers);
+				}
+			};
+			return InnerClass = _classThis;
+		})();
 		super();
 	}
 }
 class DerivedWithDecoratorOnClassProperty extends Base {
 	prop = true;
 	constructor() {
-		class InnerClass {
-			@decorate(this)
-			innerProp = true;
-		}
+		let InnerClass = (() => {
+			let _classThis;
+			let _instanceExtraInitializers = [];
+			let _innerProp_decorators;
+			let _innerProp_initializers = [];
+			let _innerProp_extraInitializers = [];
+			var InnerClass = class {
+				static {
+					_classThis = this;
+				}
+				static {
+					const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+					_innerProp_decorators = [decorate(this)];
+					__esDecorate(null, null, _innerProp_decorators, { kind: "field", name: "innerProp", static: false, private: false, access: { has: (obj) => "innerProp" in obj, get: (obj) => obj.innerProp, set: function(obj,value) {
+						obj.innerProp = value;
+					} }, metadata: _metadata }, _innerProp_initializers, _innerProp_extraInitializers);
+					if (_metadata) {
+						Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+					}
+				}
+				innerProp = __runInitializers(this, _innerProp_initializers, true);
+				constructor() {
+					__runInitializers(this, _instanceExtraInitializers);
+				}
+			};
+			return InnerClass = _classThis;
+		})();
 		super();
 	}
 }
@@ -5376,28 +5477,106 @@ var r7 = new t2("");
 `;
 
 exports[`TSC: classes typeOfThisInStaticMembers10 1`] = `
-"@foo class C {
-	static a = 1;
-	static b = this.a + 1;
-}
-@foo class D extends C {
-	static c = 2;
-	static d = this.c + 1;
-	static e = super.a + this.c + 1;
-	static f = () => this.c + 1;
-	static ff = function() {
-		this.c + 1;
+"var __esDecorate = function(ctor, descriptorIn, decorators, contextIn, initializers, extraInitializers) {
+  function accept(f) { if (f !== void 0 && typeof f !== "function") throw new TypeError("Function expected"); return f; }
+  var kind = contextIn.kind, key = kind === "getter" ? "get" : kind === "setter" ? "set" : "value";
+  var target = !descriptorIn && ctor ? contextIn["static"] ? ctor : ctor.prototype : null;
+  var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
+  var _, done = false;
+  for (var i = decorators.length - 1; i >= 0; i--) {
+    var context = {};
+    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
+    context.addInitializer = function(f) { if (done) throw new TypeError("Cannot add initializers after decoration has completed"); extraInitializers.push(accept(f || null)); };
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    if (kind === "accessor") {
+      if (result === void 0) continue;
+      if (result === null || typeof result !== "object") throw new TypeError("Object expected");
+      if (_ = accept(result.get)) descriptor.get = _;
+      if (_ = accept(result.set)) descriptor.set = _;
+      if (_ = accept(result.init)) initializers.unshift(_);
+    } else if (_ = accept(result)) {
+      if (kind === "field") initializers.unshift(_);
+      else descriptor[key] = _;
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor);
+  done = true;
+};
+var __runInitializers = function(thisArg, initializers, value) {
+  var useValue = arguments.length > 2;
+  for (var i = 0; i < initializers.length; i++) {
+    value = useValue ? initializers[i].call(thisArg, value) : initializers[i].call(thisArg);
+  }
+  return useValue ? value : void 0;
+};
+var __setFunctionName = function(f, name, prefix) {
+  if (typeof name === "symbol") name = name.description ? "[".concat(name.description, "]") : "";
+  return Object.defineProperty(f, "name", { configurable: true, value: prefix ? "".concat(prefix, " ", name) : name });
+};
+var __propKey = function(x) {
+  return typeof x === "symbol" ? x : "".concat(x);
+};
+let C = (() => {
+	let _classThis;
+	let _classDecorators = [foo];
+	let _classDescriptor;
+	let _classExtraInitializers = [];
+	var C = class {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			__esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+			C = _classThis = _classDescriptor.value;
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
+		static a = 1;
+		static b = this.a + 1;
 	};
-	static foo() {
-		return this.c + 1;
-	}
-	static get fa() {
-		return this.c + 1;
-	}
-	static set fa(v) {
-		this.c = v + 1;
-	}
-}
+	return C = _classThis;
+})();
+let D = (() => {
+	let _classThis;
+	let _classDecorators = [foo];
+	let _classDescriptor;
+	let _classExtraInitializers = [];
+	var D = class extends C {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			__esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+			D = _classThis = _classDescriptor.value;
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
+		static c = 2;
+		static d = this.c + 1;
+		static e = super.a + this.c + 1;
+		static f = () => this.c + 1;
+		static ff = function() {
+			this.c + 1;
+		};
+		static foo() {
+			return this.c + 1;
+		}
+		static get fa() {
+			return this.c + 1;
+		}
+		static set fa(v) {
+			this.c = v + 1;
+		}
+	};
+	return D = _classThis;
+})();
 class CC {
 	static a = 1;
 	static b = this.a + 1;
@@ -5424,28 +5603,106 @@ class DD extends CC {
 `;
 
 exports[`TSC: classes typeOfThisInStaticMembers11 1`] = `
-"@foo class C {
-	static a = 1;
-	static b = this.a + 1;
-}
-@foo class D extends C {
-	static c = 2;
-	static d = this.c + 1;
-	static e = super.a + this.c + 1;
-	static f = () => this.c + 1;
-	static ff = function() {
-		this.c + 1;
+"var __esDecorate = function(ctor, descriptorIn, decorators, contextIn, initializers, extraInitializers) {
+  function accept(f) { if (f !== void 0 && typeof f !== "function") throw new TypeError("Function expected"); return f; }
+  var kind = contextIn.kind, key = kind === "getter" ? "get" : kind === "setter" ? "set" : "value";
+  var target = !descriptorIn && ctor ? contextIn["static"] ? ctor : ctor.prototype : null;
+  var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
+  var _, done = false;
+  for (var i = decorators.length - 1; i >= 0; i--) {
+    var context = {};
+    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
+    context.addInitializer = function(f) { if (done) throw new TypeError("Cannot add initializers after decoration has completed"); extraInitializers.push(accept(f || null)); };
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    if (kind === "accessor") {
+      if (result === void 0) continue;
+      if (result === null || typeof result !== "object") throw new TypeError("Object expected");
+      if (_ = accept(result.get)) descriptor.get = _;
+      if (_ = accept(result.set)) descriptor.set = _;
+      if (_ = accept(result.init)) initializers.unshift(_);
+    } else if (_ = accept(result)) {
+      if (kind === "field") initializers.unshift(_);
+      else descriptor[key] = _;
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor);
+  done = true;
+};
+var __runInitializers = function(thisArg, initializers, value) {
+  var useValue = arguments.length > 2;
+  for (var i = 0; i < initializers.length; i++) {
+    value = useValue ? initializers[i].call(thisArg, value) : initializers[i].call(thisArg);
+  }
+  return useValue ? value : void 0;
+};
+var __setFunctionName = function(f, name, prefix) {
+  if (typeof name === "symbol") name = name.description ? "[".concat(name.description, "]") : "";
+  return Object.defineProperty(f, "name", { configurable: true, value: prefix ? "".concat(prefix, " ", name) : name });
+};
+var __propKey = function(x) {
+  return typeof x === "symbol" ? x : "".concat(x);
+};
+let C = (() => {
+	let _classThis;
+	let _classDecorators = [foo];
+	let _classDescriptor;
+	let _classExtraInitializers = [];
+	var C = class {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			__esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+			C = _classThis = _classDescriptor.value;
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
+		static a = 1;
+		static b = this.a + 1;
 	};
-	static foo() {
-		return this.c + 1;
-	}
-	static get fa() {
-		return this.c + 1;
-	}
-	static set fa(v) {
-		this.c = v + 1;
-	}
-}
+	return C = _classThis;
+})();
+let D = (() => {
+	let _classThis;
+	let _classDecorators = [foo];
+	let _classDescriptor;
+	let _classExtraInitializers = [];
+	var D = class extends C {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			__esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+			D = _classThis = _classDescriptor.value;
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
+		static c = 2;
+		static d = this.c + 1;
+		static e = super.a + this.c + 1;
+		static f = () => this.c + 1;
+		static ff = function() {
+			this.c + 1;
+		};
+		static foo() {
+			return this.c + 1;
+		}
+		static get fa() {
+			return this.c + 1;
+		}
+		static set fa(v) {
+			this.c = v + 1;
+		}
+	};
+	return D = _classThis;
+})();
 class CC {
 	static a = 1;
 	static b = this.a + 1;
@@ -7120,15 +7377,83 @@ console.log(new C().foo());
 `;
 
 exports[`TSC: classes privateNamesAndDecorators 1`] = `
-"class A {
-	@dec
-	// Error
-#foo = 1;
-	@dec
-	// Error
-#bar() {
-	}
-}
+"var __esDecorate = function(ctor, descriptorIn, decorators, contextIn, initializers, extraInitializers) {
+  function accept(f) { if (f !== void 0 && typeof f !== "function") throw new TypeError("Function expected"); return f; }
+  var kind = contextIn.kind, key = kind === "getter" ? "get" : kind === "setter" ? "set" : "value";
+  var target = !descriptorIn && ctor ? contextIn["static"] ? ctor : ctor.prototype : null;
+  var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
+  var _, done = false;
+  for (var i = decorators.length - 1; i >= 0; i--) {
+    var context = {};
+    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
+    context.addInitializer = function(f) { if (done) throw new TypeError("Cannot add initializers after decoration has completed"); extraInitializers.push(accept(f || null)); };
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    if (kind === "accessor") {
+      if (result === void 0) continue;
+      if (result === null || typeof result !== "object") throw new TypeError("Object expected");
+      if (_ = accept(result.get)) descriptor.get = _;
+      if (_ = accept(result.set)) descriptor.set = _;
+      if (_ = accept(result.init)) initializers.unshift(_);
+    } else if (_ = accept(result)) {
+      if (kind === "field") initializers.unshift(_);
+      else descriptor[key] = _;
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor);
+  done = true;
+};
+var __runInitializers = function(thisArg, initializers, value) {
+  var useValue = arguments.length > 2;
+  for (var i = 0; i < initializers.length; i++) {
+    value = useValue ? initializers[i].call(thisArg, value) : initializers[i].call(thisArg);
+  }
+  return useValue ? value : void 0;
+};
+var __setFunctionName = function(f, name, prefix) {
+  if (typeof name === "symbol") name = name.description ? "[".concat(name.description, "]") : "";
+  return Object.defineProperty(f, "name", { configurable: true, value: prefix ? "".concat(prefix, " ", name) : name });
+};
+var __propKey = function(x) {
+  return typeof x === "symbol" ? x : "".concat(x);
+};
+let A = (() => {
+	let _classThis;
+	let _instanceExtraInitializers = [];
+	let _foo_decorators;
+	let _foo_initializers = [];
+	let _foo_extraInitializers = [];
+	let _bar_decorators;
+	let _private_bar_descriptor;
+	var A = class {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			_foo_decorators = [dec];
+			_bar_decorators = [// Error
+dec];
+			__esDecorate(this, _private_bar_descriptor = { value: __setFunctionName(function()// Error
+{
+			}, "#bar") }, _bar_decorators, { kind: "method", name: "#bar", static: false, private: true, access: { has: (obj) => #bar in obj, get: (obj) => obj.#bar }, metadata: _metadata }, null, _instanceExtraInitializers);
+			__esDecorate(null, null, _foo_decorators, { kind: "field", name: "#foo", static: false, private: true, access: { has: (obj) => #foo in obj, get: (obj) => obj.#foo, set: function(obj,value) {
+				obj.#foo = value;
+			} }, metadata: _metadata }, _foo_initializers, _foo_extraInitializers);
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+		}
+		#foo = __runInitializers(this, _foo_initializers, 1);
+		get #bar() {
+			return _private_bar_descriptor.value;
+		}
+		constructor() {
+			__runInitializers(this, _instanceExtraInitializers);
+		}
+	};
+	return A = _classThis;
+})();
 "
 `;
 
@@ -10392,17 +10717,99 @@ accessor y = 2;
 `;
 
 exports[`TSC: classes staticAutoAccessorsWithDecorators 1`] = `
-"// https://github.com/microsoft/TypeScript/issues/53752
-class A {
-	// uses class reference
-@((t,c) => {
-	})
-	static accessor x = 1;
-	// uses 'this'
-@((t,c) => {
-	})
-	accessor y = 2;
-}
+"var __esDecorate = function(ctor, descriptorIn, decorators, contextIn, initializers, extraInitializers) {
+  function accept(f) { if (f !== void 0 && typeof f !== "function") throw new TypeError("Function expected"); return f; }
+  var kind = contextIn.kind, key = kind === "getter" ? "get" : kind === "setter" ? "set" : "value";
+  var target = !descriptorIn && ctor ? contextIn["static"] ? ctor : ctor.prototype : null;
+  var descriptor = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {});
+  var _, done = false;
+  for (var i = decorators.length - 1; i >= 0; i--) {
+    var context = {};
+    for (var p in contextIn) context[p] = p === "access" ? {} : contextIn[p];
+    for (var p in contextIn.access) context.access[p] = contextIn.access[p];
+    context.addInitializer = function(f) { if (done) throw new TypeError("Cannot add initializers after decoration has completed"); extraInitializers.push(accept(f || null)); };
+    var result = (0, decorators[i])(kind === "accessor" ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context);
+    if (kind === "accessor") {
+      if (result === void 0) continue;
+      if (result === null || typeof result !== "object") throw new TypeError("Object expected");
+      if (_ = accept(result.get)) descriptor.get = _;
+      if (_ = accept(result.set)) descriptor.set = _;
+      if (_ = accept(result.init)) initializers.unshift(_);
+    } else if (_ = accept(result)) {
+      if (kind === "field") initializers.unshift(_);
+      else descriptor[key] = _;
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor);
+  done = true;
+};
+var __runInitializers = function(thisArg, initializers, value) {
+  var useValue = arguments.length > 2;
+  for (var i = 0; i < initializers.length; i++) {
+    value = useValue ? initializers[i].call(thisArg, value) : initializers[i].call(thisArg);
+  }
+  return useValue ? value : void 0;
+};
+var __setFunctionName = function(f, name, prefix) {
+  if (typeof name === "symbol") name = name.description ? "[".concat(name.description, "]") : "";
+  return Object.defineProperty(f, "name", { configurable: true, value: prefix ? "".concat(prefix, " ", name) : name });
+};
+var __propKey = function(x) {
+  return typeof x === "symbol" ? x : "".concat(x);
+};
+// https://github.com/microsoft/TypeScript/issues/53752
+let A = (() => {
+	let _classThis;
+	let _instanceExtraInitializers = [];
+	let _staticExtraInitializers = [];
+	let _x_decorators;
+	let _x_initializers = [];
+	let _x_extraInitializers = [];
+	let _y_decorators;
+	let _y_initializers = [];
+	let _y_extraInitializers = [];
+	var A = class {
+		static {
+			_classThis = this;
+		}
+		static {
+			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+			_x_decorators = [// uses class reference
+((t,c) => {
+			})];
+			_y_decorators = [// uses 'this'
+((t,c) => {
+			})];
+			__esDecorate(this, null, _x_decorators, { kind: "accessor", name: "x", static: true, private: false, access: { has: (obj) => "x" in obj, get: (obj) => obj.x, set: function(obj,value) {
+				obj.x = value;
+			} }, metadata: _metadata }, _x_initializers, _x_extraInitializers);
+			__esDecorate(this, null, _y_decorators, { kind: "accessor", name: "y", static: false, private: false, access: { has: (obj) => "y" in obj, get: (obj) => obj.y, set: function(obj,value) {
+				obj.y = value;
+			} }, metadata: _metadata }, _y_initializers, _y_extraInitializers);
+			if (_metadata) {
+				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+			}
+		}
+		static #_x_accessor_storage = __runInitializers(this, _x_initializers, 1);
+		static get x() {
+			return this.#_x_accessor_storage;
+		}
+		static set x(value) {
+			this.#_x_accessor_storage = value;
+		}
+		#_y_accessor_storage = __runInitializers(this, _y_initializers, 2);
+		get y() {
+			return this.#_y_accessor_storage;
+		}
+		set y(value) {
+			this.#_y_accessor_storage = value;
+		}
+		constructor() {
+			__runInitializers(this, _instanceExtraInitializers);
+		}
+	};
+	return A = _classThis;
+})();
 "
 `;
 
