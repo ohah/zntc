@@ -1668,6 +1668,8 @@ const Stage3MemberInfo = struct {
     /// private method용: 원본 params_start/params_len
     method_params_start: u32 = 0,
     method_params_len: u32 = 0,
+    /// decorator 변수명 (예: "_greet_decorators") — 식 평가/적용 분리용
+    deco_var_name: ?[]const u8 = null,
     /// 원본 AST 멤버 인덱스 (class body 내 위치)
     raw_idx: u32 = 0,
 };
@@ -1736,6 +1738,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             if (info.initializers_name) |name| self.allocator.free(name);
             if (info.extra_initializers_name) |name| self.allocator.free(name);
             if (info.descriptor_name) |name| self.allocator.free(name);
+            if (info.deco_var_name) |name| self.allocator.free(name);
         }
         member_infos.deinit(self.allocator);
     }
@@ -1800,6 +1803,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
+                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -1809,7 +1814,6 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     var m_params_start: u32 = 0;
                     var m_params_len: u32 = 0;
                     if (is_private_method) {
-                        const var_n = extractCleanVarName(self, name_node_idx);
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
                         m_body = try self.visitNode(self.readNodeIdx(me, 3));
                         m_params_start = self.readU32(me, 1);
@@ -1826,6 +1830,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .method_body = m_body,
                         .method_params_start = m_params_start,
                         .method_params_len = m_params_len,
+                        .deco_var_name = deco_vname,
                     });
                 }
 
@@ -1867,6 +1872,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
+                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -1881,6 +1888,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .decorators = decos,
                         .initializers_name = names.init_name,
                         .extra_initializers_name = names.extra_name,
+                        .deco_var_name = deco_vname,
                     });
                 }
 
@@ -1900,7 +1908,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             @intFromEnum(callee), args.start, args.len, 0,
                         });
                     } else {
-                        const args = try self.ast.addNodeList(&.{ this_node, init_arr });
+                        // 초기값 없어도 void 0을 명시적으로 전달 — __runInitializers가 arguments.length > 2를 체크
+                        const void0 = try makeIdentifier(self, "void 0");
+                        const args = try self.ast.addNodeList(&.{ this_node, init_arr, void0 });
                         break :blk try self.addExtraNode(.call_expression, zero_span, &.{
                             @intFromEnum(callee), args.start, args.len, 0,
                         });
@@ -1928,6 +1938,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
+                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -1942,6 +1954,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .decorators = decos,
                         .initializers_name = names.init_name,
                         .extra_initializers_name = names.extra_name,
+                        .deco_var_name = deco_vname,
                     });
 
                     // accessor → private backing field + getter + setter
@@ -2121,17 +2134,46 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const metadata_decl = try self.buildMetadataDecl();
     try static_block_stmts.append(self.allocator, metadata_decl);
 
-    // member decorator __esDecorate 호출
+    // TC39 스펙 decorator 순서:
+    // 1단계: 모든 member decorator 식을 **소스 순서**로 평가하여 변수에 저장
+    // 2단계: __esDecorate를 **스펙 순서**로 호출
+    //   (static non-field → instance non-field → static field → instance field)
+
+    // 1단계: 소스 순서로 식 평가 → _name_decorators = [dec1, dec2];
     for (member_infos.items) |info| {
-        const call = try self.buildEsDecorateCall(info);
-        const call_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement, .span = zero_span,
-            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
-        });
-        try static_block_stmts.append(self.allocator, call_stmt);
+        if (info.deco_var_name) |vname| {
+            const deco_list = try self.ast.addNodeList(info.decorators);
+            const deco_arr = try self.ast.addNode(.{
+                .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list },
+            });
+            const var_ref = try makeIdentifier(self, vname);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression, .span = zero_span,
+                .data = .{ .binary = .{ .left = var_ref, .right = deco_arr, .flags = 0 } },
+            });
+            try static_block_stmts.append(self.allocator, try es_helpers.makeExprStmt(self, assign, zero_span));
+        }
     }
 
-    // class decorator __esDecorate 호출
+    // 2단계: 스펙 순서로 __esDecorate 호출
+    const is_non_field = struct {
+        fn check(kind: []const u8) bool {
+            return !std.mem.eql(u8, kind, "field");
+        }
+    }.check;
+    // Pass 1: static non-field → 2: instance non-field → 3: static field → 4: instance field
+    const passes = [_][2]bool{ .{ true, true }, .{ false, true }, .{ true, false }, .{ false, false } };
+    for (passes) |pass| {
+        const want_static = pass[0];
+        const want_non_field = pass[1];
+        for (member_infos.items) |info| {
+            if (info.is_static == want_static and is_non_field(info.kind) == want_non_field) {
+                try self.appendEsDecorateStmt(&static_block_stmts, info);
+            }
+        }
+    }
+
+    // class decorator __esDecorate 호출 (식 평가는 이미 IIFE 최상단 let 선언에서 완료)
     if (class_deco_len > 0) {
         const class_call = try self.buildClassEsDecorateCall(class_deco_start, class_deco_len, classThis_span, class_name_text);
         const class_call_stmt = try self.ast.addNode(.{
@@ -2446,9 +2488,13 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
         });
     } else try makeIdentifier(self, "null");
 
-    // arg3: [dec1, dec2, ...]
-    const deco_list = try self.ast.addNodeList(info.decorators);
-    const arg3 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+    // arg3: decorator 배열 (변수 참조 — 식 평가는 이미 소스 순서로 완료)
+    const arg3 = if (info.deco_var_name) |vname|
+        try makeIdentifier(self, vname)
+    else blk: {
+        const deco_list = try self.ast.addNodeList(info.decorators);
+        break :blk try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+    };
 
     // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
     const arg4 = try self.buildContextObject(info);
@@ -2475,8 +2521,7 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
 
 /// class decorator용 __esDecorate 호출:
 /// __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers)
-pub fn buildClassEsDecorateCall(self: *Transformer, deco_start: u32, deco_len: u32, classThis_span: Span, class_name: []const u8) Error!NodeIndex {
-    _ = class_name;
+pub fn buildClassEsDecorateCall(self: *Transformer, _: u32, _: u32, classThis_span: Span, _: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const callee = try makeIdentifier(self, "__esDecorate");
@@ -2508,11 +2553,8 @@ pub fn buildClassEsDecorateCall(self: *Transformer, deco_start: u32, deco_len: u
         .data = .{ .binary = .{ .left = desc_ref, .right = obj, .flags = 0 } },
     });
 
-    // arg3: _classDecorators
-    const decos = try self.collectStage3Decorators(deco_start, deco_len);
-    defer self.allocator.free(decos);
-    const deco_list = try self.ast.addNodeList(decos);
-    const arg3 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
+    // arg3: _classDecorators (이미 static block에서 할당됨)
+    const arg3 = try makeIdentifier(self, "_classDecorators");
 
     // arg4: { kind: "class", name: _classThis.name, metadata: _metadata }
     const kind_key = try makeIdentifier(self, "kind");
@@ -2922,9 +2964,9 @@ pub fn buildStage3LetDeclarations(
     // let _classThis; — static { _classThis = this; } 에서 항상 사용
     try stmts.append(self.allocator, try self.makeLet(zero_span, "_classThis", .none));
 
-    // class decorator가 있으면 추가 변수
+    // class decorator가 있으면 추가 변수 (식 평가는 소스 순서 — class body보다 먼저)
     if (class_deco_len > 0) {
-        // let _classDecorators = [dec1, dec2];
+        // let _classDecorators = [dec1, dec2]; (IIFE 최상단에서 평가 — TC39 소스 순서)
         const decos = try self.collectStage3Decorators(class_deco_start, class_deco_len);
         defer self.allocator.free(decos);
         const deco_list = try self.ast.addNodeList(decos);
@@ -2952,8 +2994,11 @@ pub fn buildStage3LetDeclarations(
         try stmts.append(self.allocator, try self.makeLet(zero_span, "_staticExtraInitializers", empty_arr));
     }
 
-    // field/accessor decorator별 initializers/extraInitializers + private method descriptor 변수
+    // member decorator 변수 + initializers + descriptor 변수
     for (member_infos) |info| {
+        if (info.deco_var_name) |vname| {
+            try stmts.append(self.allocator, try self.makeLet(zero_span, vname, .none));
+        }
         if (info.descriptor_name) |dname| {
             // let _private_method_descriptor;
             try stmts.append(self.allocator, try self.makeLet(zero_span, dname, .none));
@@ -3120,3 +3165,15 @@ pub fn extractCleanVarName(self: *Transformer, name_node_idx: NodeIndex) []const
         raw_name;
     return if (clean.len > 0 and clean[0] == '#') clean[1..] else clean;
 }
+
+/// __esDecorate 호출문을 static_block_stmts에 추가하는 헬퍼
+pub fn appendEsDecorateStmt(self: *Transformer, stmts: *std.ArrayList(NodeIndex), info: Stage3MemberInfo) Error!void {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const call = try self.buildEsDecorateCall(info);
+    const call_stmt = try self.ast.addNode(.{
+        .tag = .expression_statement, .span = zero_span,
+        .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+    });
+    try stmts.append(self.allocator, call_stmt);
+}
+
