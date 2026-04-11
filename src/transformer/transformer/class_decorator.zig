@@ -1804,7 +1804,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
                     const var_n = extractCleanVarName(self, name_node_idx);
-                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
+                    // getter/setter는 같은 이름에 다른 kind → kind prefix로 충돌 방지
+                    const kind_prefix = if (is_getter) "get_" else if (is_setter) "set_" else "";
+                    const deco_vname = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
@@ -2161,7 +2163,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             return !std.mem.eql(u8, kind, "field");
         }
     }.check;
-    // Pass 1: static non-field → 2: instance non-field → 3: static field → 4: instance field
+    // [is_static, is_non_field] — 4 pass: static non-field → instance non-field → static field → instance field
     const passes = [_][2]bool{ .{ true, true }, .{ false, true }, .{ true, false }, .{ false, false } };
     for (passes) |pass| {
         const want_static = pass[0];
@@ -2175,7 +2177,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // class decorator __esDecorate 호출 (식 평가는 이미 IIFE 최상단 let 선언에서 완료)
     if (class_deco_len > 0) {
-        const class_call = try self.buildClassEsDecorateCall(class_deco_start, class_deco_len, classThis_span, class_name_text);
+        const class_call = try self.buildClassEsDecorateCall(classThis_span);
         const class_call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement, .span = zero_span,
             .data = .{ .unary = .{ .operand = class_call, .flags = 0 } },
@@ -2521,7 +2523,7 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
 
 /// class decorator용 __esDecorate 호출:
 /// __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers)
-pub fn buildClassEsDecorateCall(self: *Transformer, _: u32, _: u32, classThis_span: Span, _: []const u8) Error!NodeIndex {
+pub fn buildClassEsDecorateCall(self: *Transformer, classThis_span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const callee = try makeIdentifier(self, "__esDecorate");
@@ -3170,10 +3172,6 @@ pub fn extractCleanVarName(self: *Transformer, name_node_idx: NodeIndex) []const
 pub fn appendEsDecorateStmt(self: *Transformer, stmts: *std.ArrayList(NodeIndex), info: Stage3MemberInfo) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
     const call = try self.buildEsDecorateCall(info);
-    const call_stmt = try self.ast.addNode(.{
-        .tag = .expression_statement, .span = zero_span,
-        .data = .{ .unary = .{ .operand = call, .flags = 0 } },
-    });
-    try stmts.append(self.allocator, call_stmt);
+    try stmts.append(self.allocator, try es_helpers.makeExprStmt(self, call, zero_span));
 }
 
