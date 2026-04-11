@@ -23,6 +23,7 @@ const getOrCreateRequireVar = linker_mod.getOrCreateRequireVar;
 const isNamespaceUsedAsValue = Linker.isNamespaceUsedAsValue;
 const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
+const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 
 pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
     const node_count = ast.nodes.items.len;
@@ -231,20 +232,13 @@ pub fn buildMetadataForAst(
 
                     // CJS 모듈별 namespace var 생성 (한 번만)
                     const ns_var = if (cjs_ns_cache.get(@intCast(canonical_mod))) |cached| cached else blk: {
-                        const ns_name = try std.fmt.allocPrint(self.allocator, "__ns_{d}", .{cjs_ns_cache.count()});
+                        const ns_name = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}", .{cjs_ns_cache.count()});
                         try cjs_ns_cache.put(@intCast(canonical_mod), ns_name);
                         try ns_var_list.append(self.allocator, ns_name);
-                        // preamble: ns_var = __toESM(require_xxx()) (assign-only)
-                        const toesm_suffix: []const u8 = if (interop_mode == .node) "(), 1)" else "())";
-                        try preamble.write(ns_name);
-                        try preamble.write(" = __toESM(");
-                        try preamble.write(req_var);
-                        try preamble.write(toesm_suffix);
-                        try preamble.write(";\n");
+                        try preamble.writeCjsImportInner(ns_name, "", req_var, true, interop_mode, true);
                         break :blk ns_name;
                     };
 
-                    // rename: symbol_id → "ns_var.imported_name"
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
                         try owned_nested_renames.append(self.allocator, rename);
@@ -555,13 +549,11 @@ pub fn buildMetadataForAst(
     // 내부 require() 호출도 require_xxx()로 치환해야 함.
     const require_rewrites = try self.buildRequireRewrites(&m);
 
-    // ns_var_list → dev_ns_vars: 소유권 이전
+    // ns_var_list → dev_ns_vars: backing slice 소유권 이전 (복사 없음)
     const dev_ns_vars: ?[]const []const u8 = if (ns_var_list.items.len > 0)
-        try self.allocator.dupe([]const u8, ns_var_list.items)
+        try ns_var_list.toOwnedSlice(self.allocator)
     else
         null;
-    // dupe 후 list는 해제하되 개별 문자열은 유지 (dev_ns_vars가 소유)
-    ns_var_list.deinit(self.allocator);
 
     return .{
         .skip_nodes = skip_nodes,
@@ -885,7 +877,7 @@ pub fn buildDevMetadataForAst(
         var vi: u32 = 0;
         for (record_infos[0..m.import_records.len], 0..) |info_r, ri| {
             if (info_r.named_count > 0) {
-                vars[vi] = try std.fmt.allocPrint(self.allocator, "__ns_{d}", .{vi});
+                vars[vi] = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}", .{vi});
                 ns_var_for_record[ri] = vars[vi];
                 vi += 1;
             }
@@ -936,19 +928,15 @@ pub fn buildDevMetadataForAst(
         const is_cjs_target = resolved_mod < self.modules.len and self.modules[resolved_mod].wrap_kind == .cjs;
 
         if (info.namespace_local) |ns_local| {
-            // CJS: var ns = __toESM(__zts_require("path"));
-            // ESM: var ns = __zts_require("path");
-            try dev_preamble.writeDevRequireInterop(ns_local, resolved_path, null, is_cjs_target);
+            try dev_preamble.writeDevRequireInterop(ns_local, resolved_path, null, is_cjs_target, false);
         }
         if (info.default_local) |def_local| {
-            // CJS: var def = __toESM(__zts_require("path")).default;
-            // ESM: var def = __zts_require("path").default;
-            try dev_preamble.writeDevRequireInterop(def_local, resolved_path, ".default", is_cjs_target);
+            try dev_preamble.writeDevRequireInterop(def_local, resolved_path, ".default", is_cjs_target, false);
         }
         if (info.named_count > 0) {
-            // namespace 접근 패턴: __ns_N = [__toESM(]__zts_require("path")[)];
+            // namespace 접근 패턴: assign-only (var는 esm_wrap에서 호이스팅)
             if (ns_var_for_record[i]) |ns_var| {
-                try dev_preamble.writeDevRequireNamespace(ns_var, resolved_path, is_cjs_target);
+                try dev_preamble.writeDevRequireInterop(ns_var, resolved_path, null, is_cjs_target, true);
             }
         }
     }

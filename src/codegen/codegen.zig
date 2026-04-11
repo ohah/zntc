@@ -47,7 +47,8 @@ pub const IndentChar = enum {
 
 /// 번들러 linker가 생성하는 per-module 메타데이터.
 /// codegen이 import 스킵 + 식별자 리네임에 사용.
-pub const LinkingMetadata = @import("../bundler/linker.zig").LinkingMetadata;
+const linker_mod = @import("../bundler/linker.zig");
+pub const LinkingMetadata = linker_mod.LinkingMetadata;
 
 pub const QuoteStyle = enum {
     double, // " (기본, esbuild/oxc/SWC 호환)
@@ -2267,7 +2268,7 @@ pub const Codegen = struct {
                 if (!local_idx.isNone()) {
                     if (self.resolveSymbolId(local_idx, meta)) |sid| {
                         if (meta.renames.get(sid)) |rename| {
-                            if (!std.mem.startsWith(u8, rename, "__ns_")) {
+                            if (!std.mem.startsWith(u8, rename, linker_mod.NS_VAR_PREFIX)) {
                                 all_ns_renamed = false;
                                 break;
                             }
