@@ -93,24 +93,23 @@ pub fn stripWorkletDirective(self: *Transformer, body_idx: NodeIndex) Error!Node
 
 /// JS 글로벌 식별자 — closure 변수에서 제외. comptime HashMap으로 O(1) 조회.
 const JS_GLOBALS = std.StaticStringMap(void).initComptime(.{
-    .{ "undefined", {} },      .{ "NaN", {} },            .{ "Infinity", {} },       .{ "console", {} },
-    .{ "Math", {} },           .{ "JSON", {} },           .{ "Object", {} },         .{ "Array", {} },
-    .{ "String", {} },         .{ "Number", {} },         .{ "Boolean", {} },        .{ "Symbol", {} },
-    .{ "Promise", {} },        .{ "Error", {} },          .{ "Map", {} },            .{ "Set", {} },
-    .{ "WeakMap", {} },        .{ "WeakSet", {} },        .{ "Date", {} },           .{ "RegExp", {} },
-    .{ "parseInt", {} },       .{ "parseFloat", {} },     .{ "isNaN", {} },          .{ "isFinite", {} },
-    .{ "globalThis", {} },     .{ "null", {} },           .{ "true", {} },           .{ "false", {} },
-    .{ "require", {} },        .{ "module", {} },         .{ "exports", {} },        .{ "__dirname", {} },
-    .{ "setTimeout", {} },     .{ "setInterval", {} },    .{ "clearTimeout", {} },   .{ "clearInterval", {} },
-    .{ "requestAnimationFrame", {} },                     .{ "cancelAnimationFrame", {} },
-    .{ "queueMicrotask", {} },                            .{ "structuredClone", {} },
-    .{ "fetch", {} },          .{ "AbortController", {} }, .{ "URL", {} },           .{ "URLSearchParams", {} },
-    .{ "TextEncoder", {} },    .{ "TextDecoder", {} },    .{ "Proxy", {} },          .{ "Reflect", {} },
-    .{ "ArrayBuffer", {} },    .{ "SharedArrayBuffer", {} },                         .{ "DataView", {} },
-    .{ "Uint8Array", {} },     .{ "Int8Array", {} },      .{ "Uint16Array", {} },    .{ "Int16Array", {} },
-    .{ "Uint32Array", {} },    .{ "Int32Array", {} },     .{ "Float32Array", {} },   .{ "Float64Array", {} },
-    .{ "BigInt64Array", {} },  .{ "BigUint64Array", {} },
-    .{ "Intl", {} },           .{ "eval", {} },           .{ "arguments", {} },      .{ "this", {} },
+    .{ "undefined", {} },             .{ "NaN", {} },                  .{ "Infinity", {} },       .{ "console", {} },
+    .{ "Math", {} },                  .{ "JSON", {} },                 .{ "Object", {} },         .{ "Array", {} },
+    .{ "String", {} },                .{ "Number", {} },               .{ "Boolean", {} },        .{ "Symbol", {} },
+    .{ "Promise", {} },               .{ "Error", {} },                .{ "Map", {} },            .{ "Set", {} },
+    .{ "WeakMap", {} },               .{ "WeakSet", {} },              .{ "Date", {} },           .{ "RegExp", {} },
+    .{ "parseInt", {} },              .{ "parseFloat", {} },           .{ "isNaN", {} },          .{ "isFinite", {} },
+    .{ "globalThis", {} },            .{ "null", {} },                 .{ "true", {} },           .{ "false", {} },
+    .{ "require", {} },               .{ "module", {} },               .{ "exports", {} },        .{ "__dirname", {} },
+    .{ "setTimeout", {} },            .{ "setInterval", {} },          .{ "clearTimeout", {} },   .{ "clearInterval", {} },
+    .{ "requestAnimationFrame", {} }, .{ "cancelAnimationFrame", {} }, .{ "queueMicrotask", {} }, .{ "structuredClone", {} },
+    .{ "fetch", {} },                 .{ "AbortController", {} },      .{ "URL", {} },            .{ "URLSearchParams", {} },
+    .{ "TextEncoder", {} },           .{ "TextDecoder", {} },          .{ "Proxy", {} },          .{ "Reflect", {} },
+    .{ "ArrayBuffer", {} },           .{ "SharedArrayBuffer", {} },    .{ "DataView", {} },       .{ "Uint8Array", {} },
+    .{ "Int8Array", {} },             .{ "Uint16Array", {} },          .{ "Int16Array", {} },     .{ "Uint32Array", {} },
+    .{ "Int32Array", {} },            .{ "Float32Array", {} },         .{ "Float64Array", {} },   .{ "BigInt64Array", {} },
+    .{ "BigUint64Array", {} },        .{ "Intl", {} },                 .{ "eval", {} },           .{ "arguments", {} },
+    .{ "this", {} },
 });
 
 /// 함수 body와 파라미터로부터 closure 변수(외부 참조)를 추출한다.
@@ -291,17 +290,27 @@ fn walkBodyForClosureAnalysis(
         },
 
         // 단항 노드
-        .expression_statement, .return_statement, .throw_statement,
-        .spread_element, .parenthesized_expression, .await_expression,
-        .yield_expression, .rest_element, .chain_expression,
+        .expression_statement,
+        .return_statement,
+        .throw_statement,
+        .spread_element,
+        .parenthesized_expression,
+        .await_expression,
+        .yield_expression,
+        .rest_element,
+        .chain_expression,
         .import_expression,
         => {
             try walkBodyForClosureAnalysis(self, node.data.unary.operand, locals, refs, depth + 1);
         },
 
         // 이항 노드
-        .binary_expression, .logical_expression, .assignment_expression,
-        .while_statement, .do_while_statement, .labeled_statement,
+        .binary_expression,
+        .logical_expression,
+        .assignment_expression,
+        .while_statement,
+        .do_while_statement,
+        .labeled_statement,
         => {
             try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
             try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
@@ -470,10 +479,18 @@ fn walkBodyForClosureAnalysis(
         },
 
         // 리프 노드 (순회 불필요)
-        .string_literal, .numeric_literal, .boolean_literal,
-        .null_literal, .bigint_literal, .regexp_literal,
-        .this_expression, .super_expression, .directive,
-        .break_statement, .continue_statement, .debugger_statement,
+        .string_literal,
+        .numeric_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .this_expression,
+        .super_expression,
+        .directive,
+        .break_statement,
+        .continue_statement,
+        .debugger_statement,
         .empty_statement,
         => {},
 
