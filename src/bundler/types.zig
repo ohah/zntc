@@ -497,7 +497,7 @@ pub fn specifierToParamName(allocator: std.mem.Allocator, specifier: []const u8)
         }
     }
     if (buf.items.len == 0) return try allocator.dupe(u8, specifier);
-    return try allocator.dupe(u8, buf.items);
+    return try buf.toOwnedSlice(allocator);
 }
 
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
