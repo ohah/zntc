@@ -2213,49 +2213,21 @@ fn scanGlobCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
     const specifier = import_scanner.stripQuotes(raw) orelse raw;
 
-    var glob_eager = false;
-    var glob_import_name: ?[]const u8 = null;
-
-    // args[1]: object_expression (옵션) — { eager: true, import: "setup" }
-    if (arg_list.len > 1 and arg_list.start + 1 < extras.len) {
-        const opt_idx: NodeIndex = @enumFromInt(extras[arg_list.start + 1]);
-        if (!opt_idx.isNone() and @intFromEnum(opt_idx) < self.ast.nodes.items.len) {
-            const opt_node = self.ast.nodes.items[@intFromEnum(opt_idx)];
-            if (opt_node.tag == .object_expression) {
-                const props = opt_node.data.list;
-                if (props.start + props.len <= extras.len) {
-                    const prop_indices = extras[props.start .. props.start + props.len];
-                    for (prop_indices) |prop_raw| {
-                        if (prop_raw >= self.ast.nodes.items.len) continue;
-                        const p = self.ast.nodes.items[prop_raw];
-                        if (p.tag != .object_property) continue;
-                        const key_idx = p.data.binary.left;
-                        const val_idx = p.data.binary.right;
-                        if (key_idx.isNone() or val_idx.isNone()) continue;
-                        if (@intFromEnum(key_idx) >= self.ast.nodes.items.len or
-                            @intFromEnum(val_idx) >= self.ast.nodes.items.len) continue;
-                        const key = self.ast.nodes.items[@intFromEnum(key_idx)];
-                        const key_text = self.ast.source[key.span.start..key.span.end];
-                        const val = self.ast.nodes.items[@intFromEnum(val_idx)];
-                        if (std.mem.eql(u8, key_text, "eager")) {
-                            if (val.tag == .boolean_literal)
-                                glob_eager = std.mem.eql(u8, self.ast.source[val.span.start..val.span.end], "true");
-                        } else if (std.mem.eql(u8, key_text, "import")) {
-                            if (val.tag == .string_literal)
-                                glob_import_name = import_scanner.stripQuotes(self.ast.source[val.span.start..val.span.end]);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    const opts = import_scanner.parseGlobOptions(
+        self.ast.nodes.items,
+        self.ast.extra_data.items,
+        self.ast.source,
+        extras,
+        arg_list.start,
+        arg_list.len,
+    );
 
     self.scan_import_records.append(self.allocator, .{
         .specifier = specifier,
         .kind = .glob,
         .span = callee_node.span,
-        .glob_eager = glob_eager,
-        .glob_import_name = glob_import_name,
+        .glob_eager = opts.eager,
+        .glob_import_name = opts.import_name,
     }) catch {};
 }
 

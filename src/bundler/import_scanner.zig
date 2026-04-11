@@ -461,53 +461,61 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
 
     const pattern = stripQuotes(ast.source[arg0.span.start..arg0.span.end]) orelse return null;
 
-    var glob_eager = false;
-    var glob_import_name: ?[]const u8 = null;
-
-    // args[1]: object_expression (옵션) — { eager: true, import: "setup" }
-    if (args_len > 1 and args_start + 1 < extras.len) {
-        const arg1_idx: NodeIndex = @enumFromInt(extras[args_start + 1]);
-        if (!arg1_idx.isNone() and @intFromEnum(arg1_idx) < ast.nodes.items.len) {
-            const arg1 = ast.getNode(arg1_idx);
-            if (arg1.tag == .object_expression) {
-                const props = arg1.data.list;
-                if (props.start + props.len <= extras.len) {
-                    const prop_indices = extras[props.start .. props.start + props.len];
-                    for (prop_indices) |prop_raw| {
-                        if (prop_raw >= ast.nodes.items.len) continue;
-                        const prop_node = ast.nodes.items[prop_raw];
-                        // property: { key: value } — binary(left=key, right=value)
-                        if (prop_node.tag != .object_property) continue;
-                        const key_idx = prop_node.data.binary.left;
-                        const val_idx = prop_node.data.binary.right;
-                        if (key_idx.isNone() or val_idx.isNone()) continue;
-                        if (@intFromEnum(key_idx) >= ast.nodes.items.len or
-                            @intFromEnum(val_idx) >= ast.nodes.items.len) continue;
-
-                        const key = ast.getNode(key_idx);
-                        const key_text = ast.source[key.span.start..key.span.end];
-                        const val = ast.getNode(val_idx);
-
-                        if (std.mem.eql(u8, key_text, "eager")) {
-                            if (val.tag == .boolean_literal) {
-                                glob_eager = std.mem.eql(u8, ast.source[val.span.start..val.span.end], "true");
-                            }
-                        } else if (std.mem.eql(u8, key_text, "import")) {
-                            if (val.tag == .string_literal) {
-                                glob_import_name = stripQuotes(ast.source[val.span.start..val.span.end]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    const opts = parseGlobOptions(ast.nodes.items, ast.extra_data.items, ast.source, extras, args_start, args_len);
 
     return ImportRecord{
         .specifier = pattern,
         .kind = .glob,
         .span = node.span,
-        .glob_eager = glob_eager,
-        .glob_import_name = glob_import_name,
+        .glob_eager = opts.eager,
+        .glob_import_name = opts.import_name,
     };
+}
+
+/// import.meta.glob의 두 번째 인수 (object_expression)에서 eager/import 옵션을 추출한다.
+/// scanGlobCall (expression.zig)과 tryExtractGlob 양쪽에서 공유.
+pub const GlobOptions = struct { eager: bool = false, import_name: ?[]const u8 = null };
+
+pub fn parseGlobOptions(
+    nodes: []const @import("../parser/ast.zig").Node,
+    extra_data: []const u32,
+    source: []const u8,
+    extras: []const u32,
+    args_start: u32,
+    args_len: u32,
+) GlobOptions {
+    var result = GlobOptions{};
+    if (args_len <= 1 or args_start + 1 >= extras.len) return result;
+
+    const arg1_raw = extras[args_start + 1];
+    if (arg1_raw >= nodes.len) return result;
+    const arg1 = nodes[arg1_raw];
+    if (arg1.tag != .object_expression) return result;
+
+    const props = arg1.data.list;
+    if (props.start + props.len > extra_data.len) return result;
+    const prop_indices = extra_data[props.start .. props.start + props.len];
+
+    for (prop_indices) |prop_raw| {
+        if (prop_raw >= nodes.len) continue;
+        const prop_node = nodes[prop_raw];
+        if (prop_node.tag != .object_property) continue;
+        const key_idx = prop_node.data.binary.left;
+        const val_idx = prop_node.data.binary.right;
+        if (key_idx.isNone() or val_idx.isNone()) continue;
+        if (@intFromEnum(key_idx) >= nodes.len or @intFromEnum(val_idx) >= nodes.len) continue;
+
+        const key = nodes[@intFromEnum(key_idx)];
+        const key_text = source[key.span.start..key.span.end];
+        const val = nodes[@intFromEnum(val_idx)];
+
+        if (std.mem.eql(u8, key_text, "eager")) {
+            if (val.tag == .boolean_literal)
+                result.eager = std.mem.eql(u8, source[val.span.start..val.span.end], "true");
+        } else if (std.mem.eql(u8, key_text, "import")) {
+            if (val.tag == .string_literal)
+                result.import_name = stripQuotes(source[val.span.start..val.span.end]);
+        }
+    }
+    return result;
 }
