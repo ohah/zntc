@@ -1774,14 +1774,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     }
                 }
 
+                // key를 한 번만 방문 (decorator info + stripped method 공용)
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+
                 if (deco_len > 0) {
                     const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
-                    const key_idx = self.readNodeIdx(me, 0);
-                    const new_key = try self.visitNode(key_idx);
-                    // member name을 문자열 리터럴로 변환
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
-
-                    // decorator 식 수집
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
@@ -1796,7 +1794,6 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 }
 
                 // method를 decorator 없이 body에 추가
-                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
                 const new_body = try self.visitNode(self.readNodeIdx(me, 3));
                 const empty_list = try self.ast.addNodeList(&.{});
                 const new_method = try self.addExtraNode(.method_definition, member.span, &.{
@@ -1815,23 +1812,16 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const deco_len = self.readU32(me, 4);
                 const is_static = (flags & 0x01) != 0;
 
+                // key를 한 번만 방문
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+
                 if (deco_len > 0) {
-                    const key_idx = self.readNodeIdx(me, 0);
-                    const new_key = try self.visitNode(key_idx);
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
-                    // field용 initializers/extraInitializers 변수명 생성
-                    const name_node = self.ast.getNode(name_node_idx);
-                    const raw_name = self.ast.getText(name_node.data.string_ref);
-                    const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
-                        raw_name[1 .. raw_name.len - 1]
-                    else
-                        raw_name;
-                    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
-                    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
+                    const names = try self.buildFieldInitNames(name_node_idx);
 
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
@@ -1839,13 +1829,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .is_static = is_static,
                         .is_private = false,
                         .decorators = decos,
-                        .initializers_name = init_name,
-                        .extra_initializers_name = extra_name,
+                        .initializers_name = names.init_name,
+                        .extra_initializers_name = names.extra_name,
                     });
                 }
 
-                // property를 decorator 없이 방문하여 추가
-                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                // property를 decorator 없이 추가
                 const new_init = try self.visitNode(self.readNodeIdx(me, 1));
                 const empty_list = try self.ast.addNodeList(&.{});
                 const new_prop = try self.addExtraNode(.property_definition, member.span, &.{
@@ -1872,15 +1861,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
 
-                    // 멤버 이름 추출
-                    const name_node = self.ast.getNode(name_node_idx);
-                    const raw_name = self.ast.getText(name_node.data.string_ref);
-                    const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
-                        raw_name[1 .. raw_name.len - 1]
-                    else
-                        raw_name;
-                    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
-                    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
+                    const names = try self.buildFieldInitNames(name_node_idx);
+                    const clean_name = names.clean_name;
 
                     try member_infos.append(self.allocator, .{
                         .kind = "accessor",
@@ -1888,12 +1870,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .is_static = is_static,
                         .is_private = false,
                         .decorators = decos,
-                        .initializers_name = init_name,
-                        .extra_initializers_name = extra_name,
+                        .initializers_name = names.init_name,
+                        .extra_initializers_name = names.extra_name,
                     });
 
                     // accessor → private backing field + getter + setter
-                    // #x_accessor_storage (property_definition)
                     const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{clean_name});
                     defer self.allocator.free(storage_name);
                     const storage_span = try self.ast.addString(storage_name);
@@ -1908,7 +1889,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
                         });
                         const callee = try makeIdentifier(self, "__runInitializers");
-                        const init_arr_ref = try makeIdentifier(self, init_name);
+                        const init_arr_ref = try makeIdentifier(self, names.init_name);
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
                         break :blk try self.addExtraNode(.call_expression, zero_span, &.{
                             @intFromEnum(callee), args.start, args.len, 0,
@@ -2091,7 +2072,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
 
     // member decorator __esDecorate 호출
     for (member_infos.items) |info| {
-        const call = try self.buildEsDecorateCall(info, classThis_span);
+        const call = try self.buildEsDecorateCall(info);
         const call_stmt = try self.ast.addNode(.{
             .tag = .expression_statement, .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
@@ -2329,7 +2310,7 @@ pub fn collectStage3Decorators(self: *Transformer, deco_start: u32, deco_len: u3
 }
 
 /// __esDecorate(this, null, _decorators, { kind: "method", name: "...", static: bool, private: bool, access: { ... }, metadata: _metadata }, null, _extraInitializers) 호출 생성.
-pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo, _: Span) Error!NodeIndex {
+pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     const callee = try makeIdentifier(self, "__esDecorate");
@@ -2409,8 +2390,6 @@ pub fn buildClassEsDecorateCall(self: *Transformer, deco_start: u32, deco_len: u
     const decos = try self.collectStage3Decorators(deco_start, deco_len);
     defer self.allocator.free(decos);
     const deco_list = try self.ast.addNodeList(decos);
-    const class_deco_span = try self.ast.addString("_classDecorators");
-    _ = class_deco_span;
     const arg3 = try self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = deco_list } });
 
     // arg4: { kind: "class", name: _classThis.name, metadata: _metadata }
@@ -2853,4 +2832,25 @@ pub fn makeLet(self: *Transformer, span: Span, name: []const u8, init: NodeIndex
     return self.addExtraNode(.variable_declaration, span, &.{
         1, decl_list.start, decl_list.len, // 1 = let
     });
+}
+
+/// field/accessor decorator용 initializers 변수명 생성 헬퍼.
+/// 따옴표 포함된 string_literal 노드에서 clean name을 추출하고
+/// _name_initializers / _name_extraInitializers 문자열을 할당한다.
+const FieldInitNames = struct {
+    init_name: []const u8,
+    extra_name: []const u8,
+    clean_name: []const u8,
+};
+
+pub fn buildFieldInitNames(self: *Transformer, name_node_idx: NodeIndex) Error!FieldInitNames {
+    const name_node = self.ast.getNode(name_node_idx);
+    const raw_name = self.ast.getText(name_node.data.string_ref);
+    const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
+        raw_name[1 .. raw_name.len - 1]
+    else
+        raw_name;
+    const init_name = try std.fmt.allocPrint(self.allocator, "_{s}_initializers", .{clean_name});
+    const extra_name = try std.fmt.allocPrint(self.allocator, "_{s}_extraInitializers", .{clean_name});
+    return .{ .init_name = init_name, .extra_name = extra_name, .clean_name = clean_name };
 }
