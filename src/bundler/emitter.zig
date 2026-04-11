@@ -213,8 +213,34 @@ pub fn emitWithTreeShaking(
     };
     const factory_fn = if (has_tla) "(async function() {\n" else "(function() {\n";
 
+    // UMD/AMD: external specifier 수집 (dependency array + factory params 생성용)
+    var ext_specifiers: std.ArrayList([]const u8) = .empty;
+    defer ext_specifiers.deinit(allocator);
+    if (options.format == .umd or options.format == .amd) {
+        var seen = std.StringHashMap(void).init(allocator);
+        defer seen.deinit();
+        for (sorted.items) |m| {
+            for (m.import_records) |rec| {
+                if (rec.is_external and !seen.contains(rec.specifier)) {
+                    try seen.put(rec.specifier, {});
+                    try ext_specifiers.append(allocator, rec.specifier);
+                }
+            }
+        }
+    }
+
+    // UMD/AMD: specifier → factory 매개변수명 precompute
+    var ext_param_names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ext_param_names.items) |n| allocator.free(n);
+        ext_param_names.deinit(allocator);
+    }
+    for (ext_specifiers.items) |spec| {
+        try ext_param_names.append(allocator, try types.specifierToParamName(allocator, spec));
+    }
+
     // 포맷별 prologue
-    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, has_tla);
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, has_tla, ext_specifiers.items, ext_param_names.items);
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
@@ -1332,6 +1358,8 @@ fn emitFormatPrologue(
     global_name: ?[]const u8,
     factory_fn: []const u8,
     has_tla: bool,
+    external_specifiers: []const []const u8,
+    ext_param_names: []const []const u8,
 ) !void {
     switch (format) {
         .iife => {
@@ -1359,22 +1387,64 @@ fn emitFormatPrologue(
                 try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
             }
             try output.appendSlice(allocator, "(function(root, factory) {\n");
-            try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([], factory);\n");
-            try output.appendSlice(allocator, "  else if (typeof module === \"object\" && module.exports) module.exports = factory();\n");
+            // AMD 경로: define(["react", "react-dom"], factory)
+            try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([");
+            for (external_specifiers, 0..) |spec, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.append(allocator, '"');
+                try output.appendSlice(allocator, spec);
+                try output.append(allocator, '"');
+            }
+            try output.appendSlice(allocator, "], factory);\n");
+            // CJS 경로: factory(require("react"), require("react-dom"))
+            try output.appendSlice(allocator, "  else if (typeof module === \"object\" && module.exports) module.exports = factory(");
+            for (external_specifiers, 0..) |spec, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.appendSlice(allocator, "require(\"");
+                try output.appendSlice(allocator, spec);
+                try output.appendSlice(allocator, "\")");
+            }
+            try output.appendSlice(allocator, ");\n");
+            // IIFE 경로: root.globalName = factory(root.React, root.ReactDOM)
             if (global_name) |gn| {
                 try output.appendSlice(allocator, "  else root.");
                 try output.appendSlice(allocator, gn);
-                try output.appendSlice(allocator, " = factory();\n");
+                try output.appendSlice(allocator, " = factory(");
             } else {
-                try output.appendSlice(allocator, "  else factory();\n");
+                try output.appendSlice(allocator, "  else factory(");
             }
-            try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function() {\n");
+            for (ext_param_names, 0..) |name, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.appendSlice(allocator, "root.");
+                try output.appendSlice(allocator, name);
+            }
+            try output.appendSlice(allocator, ");\n");
+            // factory 함수 시작: function(React, ReactDOM) {
+            try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function(");
+            for (ext_param_names, 0..) |name, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.appendSlice(allocator, name);
+            }
+            try output.appendSlice(allocator, ") {\n");
         },
         .amd => {
             if (has_tla) {
                 try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
             }
-            try output.appendSlice(allocator, "define([], function() {\n");
+            // define(["react", "react-dom"], function(React, ReactDOM) {
+            try output.appendSlice(allocator, "define([");
+            for (external_specifiers, 0..) |spec, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.append(allocator, '"');
+                try output.appendSlice(allocator, spec);
+                try output.append(allocator, '"');
+            }
+            try output.appendSlice(allocator, "], function(");
+            for (ext_param_names, 0..) |name, i| {
+                if (i > 0) try output.appendSlice(allocator, ", ");
+                try output.appendSlice(allocator, name);
+            }
+            try output.appendSlice(allocator, ") {\n");
         },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},

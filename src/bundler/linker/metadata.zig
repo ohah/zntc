@@ -201,12 +201,36 @@ pub fn buildMetadataForAst(
             const rec = m.import_records[ib.import_record_index];
 
             // resolve 미완료: external 또는 resolve 실패.
-            // 모든 포맷에서 require() preamble 생성.
-            // ESM 번들도 import 구문 없이 출력되므로 Node가 CJS로 파싱 (esbuild 동일).
             if (rec.resolved.isNone()) {
                 if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
-                    try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                    if (rec.is_external and (self.format == .umd or self.format == .amd)) {
+                        // UMD/AMD: factory 매개변수에서 직접 참조
+                        const param_name = try types.specifierToParamName(self.allocator, rec.specifier);
+                        defer self.allocator.free(param_name);
+                        if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
+                            // import * as React / import React → factory param 직접 사용
+                            if (!std.mem.eql(u8, preamble_name, param_name)) {
+                                try preamble.write("var ");
+                                try preamble.write(preamble_name);
+                                try preamble.write(" = ");
+                                try preamble.write(param_name);
+                                try preamble.write(";\n");
+                            }
+                        } else {
+                            // import { useState } → var useState = React.useState
+                            try preamble.write("var ");
+                            try preamble.write(preamble_name);
+                            try preamble.write(" = ");
+                            try preamble.write(param_name);
+                            try preamble.write(".");
+                            try preamble.write(ib.imported_name);
+                            try preamble.write(";\n");
+                        }
+                    } else {
+                        // ESM/CJS/IIFE: require() preamble 생성
+                        try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                    }
                 }
                 continue;
             }
@@ -579,7 +603,20 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
     var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
     const self_idx = @intFromEnum(m.index);
     for (m.import_records) |rec| {
-        if (rec.resolved.isNone()) continue;
+        if (rec.resolved.isNone()) {
+            // UMD/AMD: external require → factory 매개변수 참조.
+            // require("react") → React (factory params에서 주입)
+            if (rec.is_external and (self.format == .umd or self.format == .amd)) {
+                if (!require_rewrites.contains(rec.specifier)) {
+                    const param = try types.specifierToParamName(self.allocator, rec.specifier);
+                    defer self.allocator.free(param);
+                    // "(React)" 형태로 저장 — emitRewriteValue가 '('로 시작하면 ()를 붙이지 않음
+                    const owned = try std.fmt.allocPrint(self.allocator, "({s})", .{param});
+                    try require_rewrites.put(self.allocator, rec.specifier, owned);
+                }
+            }
+            continue;
+        }
         const target = @intFromEnum(rec.resolved);
         if (target >= self.modules.len) continue;
         const target_mod = &self.modules[target];

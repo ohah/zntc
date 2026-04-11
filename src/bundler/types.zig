@@ -469,6 +469,37 @@ pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]co
     return std.fmt.allocPrint(allocator, "(__zts_modules[\"{s}\"].fn(), __toCommonJS(__zts_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
 }
 
+/// npm 패키지 specifier를 UMD/AMD factory 매개변수명으로 변환.
+/// "react" → "React", "react-dom" → "ReactDOM", "lodash/fp" → "LodashFp"
+/// PascalCase 변환 + 특수문자 제거. 호출자가 반환값을 소유.
+pub fn specifierToParamName(allocator: std.mem.Allocator, specifier: []const u8) ![]const u8 {
+    // 스코프 패키지: @scope/name → name 부분만 사용
+    const base = if (std.mem.indexOfScalar(u8, specifier, '/')) |slash| blk: {
+        if (specifier.len > 0 and specifier[0] == '@') {
+            break :blk specifier[slash + 1 ..];
+        }
+        break :blk specifier;
+    } else specifier;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    var capitalize_next = true; // PascalCase: 첫 글자 대문자
+    for (base) |c| {
+        if (c == '-' or c == '/' or c == '.' or c == '@') {
+            capitalize_next = true;
+            continue;
+        }
+        if (capitalize_next) {
+            try buf.append(allocator, std.ascii.toUpper(c));
+            capitalize_next = false;
+        } else {
+            try buf.append(allocator, c);
+        }
+    }
+    if (buf.items.len == 0) return try allocator.dupe(u8, specifier);
+    return try allocator.dupe(u8, buf.items);
+}
+
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
 /// binding_scanner, linker 등에서 동일 함수를 공유하여 키 불일치 방지.
 pub fn spanKey(span: Span) u64 {

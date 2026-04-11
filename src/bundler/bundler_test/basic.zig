@@ -705,3 +705,64 @@ test "Bundler: import.meta.glob import option" {
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "m.setup") != null);
 }
+
+test "Bundler: UMD external dependencies in wrapper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.ts", "import { useState } from 'react';\nconsole.log(useState);");
+
+    const entry = try absPath(&tmp, "app.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .umd,
+        .external = &.{"react"},
+        .global_name = "MyApp",
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+
+    // UMD wrapper에 dependency array 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "define([\"react\"]") != null);
+    // factory 매개변수 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "function(React)") != null);
+    // CJS 경로에 require("react") 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "require(\"react\")") != null);
+    // IIFE 글로벌 경로
+    try std.testing.expect(std.mem.indexOf(u8, output, "root.React") != null);
+    // body에 bare require("react") 없음 (factory param으로 대체됨)
+    try std.testing.expect(std.mem.indexOf(u8, output, "var React = require(\"react\")") == null);
+    // named import → factory param 프로퍼티 접근
+    try std.testing.expect(std.mem.indexOf(u8, output, "React.useState") != null);
+}
+
+test "Bundler: AMD external dependencies in wrapper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.ts", "import lodash from 'lodash';\nexport const x = lodash.get;");
+
+    const entry = try absPath(&tmp, "lib.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .amd,
+        .external = &.{"lodash"},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+
+    // AMD wrapper에 dependency array 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "define([\"lodash\"]") != null);
+    // factory 매개변수 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "function(Lodash)") != null);
+}
