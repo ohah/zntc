@@ -1387,25 +1387,12 @@ fn emitFormatPrologue(
                 try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
             }
             try output.appendSlice(allocator, "(function(root, factory) {\n");
-            // AMD 경로: define(["react", "react-dom"], factory)
             try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([");
-            for (external_specifiers, 0..) |spec, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.append(allocator, '"');
-                try output.appendSlice(allocator, spec);
-                try output.append(allocator, '"');
-            }
+            try writeDepArray(output, allocator, external_specifiers);
             try output.appendSlice(allocator, "], factory);\n");
-            // CJS 경로: factory(require("react"), require("react-dom"))
             try output.appendSlice(allocator, "  else if (typeof module === \"object\" && module.exports) module.exports = factory(");
-            for (external_specifiers, 0..) |spec, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, "require(\"");
-                try output.appendSlice(allocator, spec);
-                try output.appendSlice(allocator, "\")");
-            }
+            try writeCjsRequireList(output, allocator, external_specifiers);
             try output.appendSlice(allocator, ");\n");
-            // IIFE 경로: root.globalName = factory(root.React, root.ReactDOM)
             if (global_name) |gn| {
                 try output.appendSlice(allocator, "  else root.");
                 try output.appendSlice(allocator, gn);
@@ -1413,41 +1400,59 @@ fn emitFormatPrologue(
             } else {
                 try output.appendSlice(allocator, "  else factory(");
             }
-            for (ext_param_names, 0..) |name, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, "root.");
-                try output.appendSlice(allocator, name);
-            }
+            try writeGlobalsList(output, allocator, ext_param_names);
             try output.appendSlice(allocator, ");\n");
-            // factory 함수 시작: function(React, ReactDOM) {
             try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function(");
-            for (ext_param_names, 0..) |name, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, name);
-            }
+            try writeParamList(output, allocator, ext_param_names);
             try output.appendSlice(allocator, ") {\n");
         },
         .amd => {
             if (has_tla) {
                 try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
             }
-            // define(["react", "react-dom"], function(React, ReactDOM) {
             try output.appendSlice(allocator, "define([");
-            for (external_specifiers, 0..) |spec, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.append(allocator, '"');
-                try output.appendSlice(allocator, spec);
-                try output.append(allocator, '"');
-            }
+            try writeDepArray(output, allocator, external_specifiers);
             try output.appendSlice(allocator, "], function(");
-            for (ext_param_names, 0..) |name, i| {
-                if (i > 0) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, name);
-            }
+            try writeParamList(output, allocator, ext_param_names);
             try output.appendSlice(allocator, ") {\n");
         },
         .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},
+    }
+}
+
+// UMD/AMD prologue 헬퍼: 반복되는 리스트 출력을 공유.
+
+fn writeDepArray(output: *std.ArrayList(u8), allocator: std.mem.Allocator, specifiers: []const []const u8) !void {
+    for (specifiers, 0..) |spec, i| {
+        if (i > 0) try output.appendSlice(allocator, ", ");
+        try output.append(allocator, '"');
+        try output.appendSlice(allocator, spec);
+        try output.append(allocator, '"');
+    }
+}
+
+fn writeCjsRequireList(output: *std.ArrayList(u8), allocator: std.mem.Allocator, specifiers: []const []const u8) !void {
+    for (specifiers, 0..) |spec, i| {
+        if (i > 0) try output.appendSlice(allocator, ", ");
+        try output.appendSlice(allocator, "require(\"");
+        try output.appendSlice(allocator, spec);
+        try output.appendSlice(allocator, "\")");
+    }
+}
+
+fn writeGlobalsList(output: *std.ArrayList(u8), allocator: std.mem.Allocator, names: []const []const u8) !void {
+    for (names, 0..) |name, i| {
+        if (i > 0) try output.appendSlice(allocator, ", ");
+        try output.appendSlice(allocator, "root.");
+        try output.appendSlice(allocator, name);
+    }
+}
+
+fn writeParamList(output: *std.ArrayList(u8), allocator: std.mem.Allocator, names: []const []const u8) !void {
+    for (names, 0..) |name, i| {
+        if (i > 0) try output.appendSlice(allocator, ", ");
+        try output.appendSlice(allocator, name);
     }
 }
 
