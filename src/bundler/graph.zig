@@ -1481,7 +1481,8 @@ pub const ModuleGraph = struct {
             module.import_records = records;
         }
 
-        module.css_data = .{ .import_count = import_count };
+        const strip_end: u32 = if (import_count > 0) raw_imports[import_count - 1].span.end else 0;
+        module.css_data = .{ .import_count = import_count, .strip_end = strip_end };
         module.exports_kind = .esm; // CSS는 ESM side-effect import로 처리
         module.side_effects = true; // CSS는 항상 side-effect
         module.state = .parsed;

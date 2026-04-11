@@ -126,8 +126,10 @@ pub const Module = struct {
 
     /// CSS 번들링 메타데이터. parseCssModule에서 설정.
     pub const CssData = struct {
-        /// @import 규칙 개수. emit 시 소스 상단에서 이 수만큼 @import를 strip한다.
+        /// @import 규칙 개수.
         import_count: u32,
+        /// 마지막 @import 규칙 끝의 byte offset. emit 시 이 위치 이후부터 출력.
+        strip_end: u32 = 0,
     };
 
     pub const State = enum {
