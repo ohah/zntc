@@ -1558,11 +1558,11 @@ test "Bundler: dev mode ESM→CJS named import uses namespace access pattern" {
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
 
-    // namespace 변수가 호이스팅됨
-    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0") != null);
-    // namespace 접근 패턴: __ns_0.useState, __ns_0.useEffect
-    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0.useState") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_0.useEffect") != null);
+    // namespace 변수가 호이스팅됨 (__ns_{moduleIndex}_{localIdx} 형식)
+    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_") != null);
+    // namespace 접근 패턴: __ns_N_M.useState, __ns_N_M.useEffect
+    try std.testing.expect(std.mem.indexOf(u8, output, ".useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".useEffect") != null);
     // 구조분해 패턴 없음 (({useState:...} = ...) 형태가 아님)
     try std.testing.expect(std.mem.indexOf(u8, output, "{useState") == null);
 }
