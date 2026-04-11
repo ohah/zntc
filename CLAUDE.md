@@ -174,7 +174,7 @@ zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
 
 ### 공통 옵션
 ```
---format=esm|cjs|iife            모듈 포맷 (기본: esm, --platform=browser 시 iife)
+--format=esm|cjs|iife|umd|amd    모듈 포맷 (기본: esm, --platform=browser 시 iife)
 --platform=browser|node|neutral|react-native  타겟 플랫폼 (기본: browser)
 --minify                         출력 압축
 --sourcemap                      소스맵 생성 (.js.map)
