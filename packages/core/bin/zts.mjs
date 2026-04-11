@@ -868,7 +868,10 @@ async function runServe(opts) {
       res.end(body);
     };
     const server = useTls
-      ? createHttpsServer({ cert: readFileSync(opts.certfile), key: readFileSync(opts.keyfile) }, handler)
+      ? createHttpsServer(
+          { cert: readFileSync(opts.certfile), key: readFileSync(opts.keyfile) },
+          handler,
+        )
       : createServer(handler);
     server.listen(opts.port, opts.host);
   }
