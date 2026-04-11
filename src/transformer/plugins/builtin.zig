@@ -21,8 +21,6 @@ pub fn collect(
 ) ![]const Plugin {
     var count: usize = 0;
     if (options.worklet) count += 1;
-    // 향후: if (options.nativewind) count += 1;
-    // 향후: if (options.styled_components) count += 1;
 
     if (count == 0) return base_plugins;
 

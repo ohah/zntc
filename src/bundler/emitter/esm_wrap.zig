@@ -128,10 +128,20 @@ pub fn emitEsmWrappedModule(
                     // body_func_stmts: factory body 최상단에 배치 → forward reference 보존
                     try body_func_stmts.append(allocator, raw_idx);
                 } else {
-                    // rolldown 방식: function은 __esm 밖으로 호이스팅.
-                    // __export의 lazy getter가 외부 스코프에서 함수명을 참조하므로
-                    // function이 외부 스코프에 있어야 함.
-                    // function 본문의 import binding은 호출 시점에 init 완료 후이므로 유효.
+                    // strictExecutionOrder=false: function을 __esm factory 밖으로 호이스팅.
+                    // 함수명을 hoisted_var_names에 추가하여 var 선언 생성 (export getter 접근용).
+                    const func_node = if (export_inner) |idx|
+                        esm_ast.nodes.items[@intFromEnum(idx)]
+                    else
+                        stmt_node;
+                    const fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[func_node.data.extra]);
+                    if (!fn_name_idx.isNone()) {
+                        const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
+                        if (fn_name_node.tag == .binding_identifier) {
+                            const raw_name = esm_ast.getText(fn_name_node.data.string_ref);
+                            try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
+                        }
+                    }
                     try hoisted_stmts.append(allocator, raw_idx);
                 }
             },
@@ -677,9 +687,9 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
         if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
+        if (func_code.len > 0) try wrapped.appendSlice(allocator, func_code);
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
-        if (func_code.len > 0) try wrapped.appendSlice(allocator, func_code);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
@@ -721,6 +731,12 @@ pub fn emitEsmWrappedModule(
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, rbm_code.items);
         }
+        // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
+        // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
+        if (func_code.len > 0) {
+            try wrapped.append(allocator, '\t');
+            try appendIndented(&wrapped, allocator, func_code);
+        }
         if (preamble_code) |p| {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, p);
@@ -728,10 +744,6 @@ pub fn emitEsmWrappedModule(
         if (star_init_buf.items.len > 0) {
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, star_init_buf.items);
-        }
-        if (func_code.len > 0) {
-            try wrapped.append(allocator, '\t');
-            try appendIndented(&wrapped, allocator, func_code);
         }
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
