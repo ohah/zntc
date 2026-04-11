@@ -2323,12 +2323,156 @@ pub fn buildContextObject(self: *Transformer, info: Stage3MemberInfo) Error!Node
     const private_val = try makeIdentifier(self, if (info.is_private) "true" else "false");
     try props.append(self.allocator, try self.makeObjProp(private_key, private_val));
 
+    // access: { has: obj => "name" in obj, get: obj => obj.name, ... }
+    const access_key = try makeIdentifier(self, "access");
+    const access_obj = try self.buildAccessObject(info);
+    try props.append(self.allocator, try self.makeObjProp(access_key, access_obj));
+
     // metadata
     const metadata_key = try makeIdentifier(self, "metadata");
     const metadata_val = try makeIdentifier(self, "_metadata");
     try props.append(self.allocator, try self.makeObjProp(metadata_key, metadata_val));
 
     const list = try self.ast.addNodeList(props.items);
+    return self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = list } });
+}
+
+/// access 객체 생성: { has: obj => "name" in obj, get: obj => obj.name, set: (obj, value) => { obj.name = value; } }
+/// kind에 따라 has/get/set 조합이 다르다:
+/// - method/getter: has + get
+/// - setter: has + set
+/// - field/accessor: has + get + set
+pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const none = @intFromEnum(NodeIndex.none);
+    const Kind = @import("../../lexer/token.zig").Kind;
+    var access_props: std.ArrayList(NodeIndex) = .empty;
+    defer access_props.deinit(self.allocator);
+
+    // 멤버 이름 텍스트 추출 (string_literal "\"name\"" → "name")
+    const name_node = self.ast.getNode(info.name);
+    const raw_name = self.ast.getText(name_node.data.string_ref);
+    // 따옴표 제거: "\"foo\"" → "foo"
+    const member_name = if (raw_name.len >= 2 and raw_name[0] == '"')
+        raw_name[1 .. raw_name.len - 1]
+    else
+        raw_name;
+
+    // has: obj => "name" in obj
+    {
+        const has_key = try makeIdentifier(self, "has");
+        const obj_param_span = try self.ast.addString("obj");
+        const obj_param = try self.ast.addNode(.{
+            .tag = .binding_identifier, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+
+        // "name" in obj
+        const name_str = try self.ast.addNode(.{
+            .tag = .string_literal, .span = name_node.data.string_ref,
+            .data = .{ .string_ref = name_node.data.string_ref },
+        });
+        const obj_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+        const in_expr = try self.ast.addNode(.{
+            .tag = .binary_expression, .span = zero_span,
+            .data = .{ .binary = .{ .left = name_str, .right = obj_ref, .flags = @intFromEnum(Kind.kw_in) } },
+        });
+
+        // obj => "name" in obj
+        const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
+            @intFromEnum(obj_param), @intFromEnum(in_expr), 0,
+        });
+        try access_props.append(self.allocator, try self.makeObjProp(has_key, has_arrow));
+    }
+
+    // get: obj => obj.name (method, getter, field, accessor — not setter)
+    const is_setter_only = std.mem.eql(u8, info.kind, "setter");
+    if (!is_setter_only) {
+        const get_key = try makeIdentifier(self, "get");
+        const obj_param_span = try self.ast.addString("obj");
+        const obj_param = try self.ast.addNode(.{
+            .tag = .binding_identifier, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+
+        // obj.name
+        const obj_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+        const member_key = try makeIdentifier(self, member_name);
+        const obj_member = try self.addExtraNode(.static_member_expression, zero_span, &.{
+            @intFromEnum(obj_ref), @intFromEnum(member_key), 0,
+        });
+
+        const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
+            @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
+        });
+        try access_props.append(self.allocator, try self.makeObjProp(get_key, get_arrow));
+    }
+
+    // set: (obj, value) => { obj.name = value; } (setter, field, accessor — not method/getter)
+    const needs_set = std.mem.eql(u8, info.kind, "setter") or
+        std.mem.eql(u8, info.kind, "field") or
+        std.mem.eql(u8, info.kind, "accessor");
+    if (needs_set) {
+        const set_key = try makeIdentifier(self, "set");
+
+        // function(obj, value) { obj.name = value; }
+        // function_expression: extra = [name(0), params_start, params_len, body(3), flags, ret_type(5)]
+        const obj_param_span = try self.ast.addString("obj");
+        const obj_param = try self.ast.addNode(.{
+            .tag = .binding_identifier, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+        const val_param_span = try self.ast.addString("value");
+        const val_param = try self.ast.addNode(.{
+            .tag = .binding_identifier, .span = val_param_span,
+            .data = .{ .string_ref = val_param_span },
+        });
+        const fn_params = try self.ast.addNodeList(&.{ obj_param, val_param });
+
+        // body: { obj.name = value; }
+        const obj_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = obj_param_span,
+            .data = .{ .string_ref = obj_param_span },
+        });
+        const member_key = try makeIdentifier(self, member_name);
+        const obj_member = try self.addExtraNode(.static_member_expression, zero_span, &.{
+            @intFromEnum(obj_ref), @intFromEnum(member_key), 0,
+        });
+        const val_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference, .span = val_param_span,
+            .data = .{ .string_ref = val_param_span },
+        });
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression, .span = zero_span,
+            .data = .{ .binary = .{ .left = obj_member, .right = val_ref, .flags = 0 } },
+        });
+        const assign_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement, .span = zero_span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+        const body_list = try self.ast.addNodeList(&.{assign_stmt});
+        const fn_body = try self.ast.addNode(.{
+            .tag = .function_body, .span = zero_span,
+            .data = .{ .list = body_list },
+        });
+
+        const set_fn = try self.addExtraNode(.function_expression, zero_span, &.{
+            none,            // name (anonymous)
+            fn_params.start, fn_params.len,
+            @intFromEnum(fn_body),
+            0,               // flags
+            none,            // ret_type
+        });
+        try access_props.append(self.allocator, try self.makeObjProp(set_key, set_fn));
+    }
+
+    const list = try self.ast.addNodeList(access_props.items);
     return self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = list } });
 }
 

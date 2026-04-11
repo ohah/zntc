@@ -2675,6 +2675,7 @@ pub const Transformer = struct {
     pub const buildStage3LetDeclarations = class_deco.buildStage3LetDeclarations;
     pub const makeLet = class_deco.makeLet;
     pub const makeObjProp = class_deco.makeObjProp;
+    pub const buildAccessObject = class_deco.buildAccessObject;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
