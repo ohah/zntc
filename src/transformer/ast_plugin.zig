@@ -64,6 +64,10 @@ pub const AstTransformCtx = struct {
     /// dispatcher가 이 값을 확인하여 result 노드의 extra_data를 패치한다.
     modified_body: ?NodeIndex = null,
 
+    /// 플러그인이 함수 노드 전체를 교체한 경우 새 노드 인덱스.
+    /// function_expression worklet → IIFE factory 변환 등에 사용.
+    replaced_node: ?NodeIndex = null,
+
     // --- 디렉티브 ---
 
     /// 함수 body의 첫 문장이 지정된 디렉티브인지 확인.

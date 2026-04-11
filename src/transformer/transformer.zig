@@ -2082,6 +2082,10 @@ pub const Transformer = struct {
                 const result_extra = self.ast.getNode(result).data.extra;
                 self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
             }
+            // 플러그인이 함수 노드 전체를 교체했으면 (function_expression → IIFE 등)
+            if (api.replaced_node) |replacement| {
+                return replacement;
+            }
         }
 
         // React Fast Refresh: PascalCase 함수 → 컴포넌트 등록
