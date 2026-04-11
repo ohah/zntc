@@ -161,7 +161,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
 - ~~**설정 파일 (zts.config.js)**~~ — ✅ 완료. `packages/core`에서 `defineConfig()` 내보냄.
 - ~~**JS Build API**~~ — ✅ 완료. `packages/core`에서 `build()` 함수 내보냄 (subprocess 기반).
-- **HTTPS dev server** — `M` | `--certfile`/`--keyfile` TLS 지원
+- ~~**HTTPS dev server**~~ — ✅ 완료. `--certfile`/`--keyfile` TLS 지원 (Node.js/Bun CLI)
 
 ### Nice to Have
 
@@ -185,7 +185,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 | ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | `import.meta.hot.accept()` 구현 완료 |
 | ~~**설정 파일**~~ | ✅ | ❌ | ✅ | ✅ | `defineConfig()` in @zts/plugin |
 | ~~**JS Build API**~~ | ✅ | ✅ | ✅ | ✅ | `build()` in @zts/plugin |
-| **HTTPS dev server** | M | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
+| ~~**HTTPS dev server**~~ | ✅ | ❌ | ✅ | ✅ | `--certfile`/`--keyfile` |
 
 ### 배치 그룹 & 구현 순서
 
