@@ -41,12 +41,11 @@ var __setFunctionName = function(f, name, prefix) {
 var __propKey = function(x) {
   return typeof x === "symbol" ? x : "".concat(x);
 };
-var _a;
-let default = (() => {
+export default (() => {
 	let _classThis;
 	let _instanceExtraInitializers = [];
 	let _get_accessor_decorators;
-	var �� = class {
+	var _Class = class {
 		static {
 			_classThis = this;
 		}
@@ -65,9 +64,8 @@ let default = (() => {
 			__runInitializers(this, _instanceExtraInitializers);
 		}
 	};
-	return �� = _classThis;
+	return _Class = _classThis;
 })();
-export default _Class;
 "
 `;
 
@@ -297,12 +295,11 @@ var __setFunctionName = function(f, name, prefix) {
 var __propKey = function(x) {
   return typeof x === "symbol" ? x : "".concat(x);
 };
-var _a;
-let default = (() => {
+export default (() => {
 	let _classThis;
 	let _instanceExtraInitializers = [];
 	let _method_decorators;
-	var �� = class {
+	var _Class = class {
 		static {
 			_classThis = this;
 		}
@@ -320,9 +317,8 @@ let default = (() => {
 			__runInitializers(this, _instanceExtraInitializers);
 		}
 	};
-	return �� = _classThis;
+	return _Class = _classThis;
 })();
-export default _Class;
 "
 `;
 
@@ -375,14 +371,13 @@ var __setFunctionName = function(f, name, prefix) {
 var __propKey = function(x) {
   return typeof x === "symbol" ? x : "".concat(x);
 };
-var _a;
-let default = (() => {
+export default (() => {
 	let _classThis;
 	let _instanceExtraInitializers = [];
 	let _prop_decorators;
 	let _prop_initializers = [];
 	let _prop_extraInitializers = [];
-	var �� = class {
+	var _Class = class {
 		static {
 			_classThis = this;
 		}
@@ -401,8 +396,7 @@ let default = (() => {
 			__runInitializers(this, _instanceExtraInitializers);
 		}
 	};
-	return �� = _classThis;
+	return _Class = _classThis;
 })();
-export default _Class;
 "
 `;

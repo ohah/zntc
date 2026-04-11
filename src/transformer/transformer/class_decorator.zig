@@ -1721,14 +1721,22 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const class_deco_start = self.readU32(e, 6);
     const class_deco_len = self.readU32(e, 7);
 
-    // 클래스 이름 텍스트 (Foo). 익명 class expression은 고유 임시 변수명 사용.
+    // 클래스 이름 텍스트 (Foo). 익명/default class는 "_Class"를 사용.
+    // "default"는 JS 예약어이므로 변수명으로 사용 불가.
+    // 주의: getText 반환값은 string table 내부 포인터이므로 addString 후 무효화될 수 있음.
+    // allocator로 복사하여 안전하게 보관한다.
+    // makeTempVarSpan을 사용하지 않음 — hoistTempVars가 불필요한 var 선언을 추가하므로.
     const class_name_text = if (!name_idx.isNone()) blk: {
         const name_node = self.ast.getNode(name_idx);
-        break :blk self.ast.getText(name_node.data.string_ref);
+        const name_text = self.ast.getText(name_node.data.string_ref);
+        if (std.mem.eql(u8, name_text, "default")) {
+            break :blk try self.allocator.dupe(u8, "_Class");
+        }
+        break :blk try self.allocator.dupe(u8, name_text);
     } else blk: {
-        const temp_span = try es_helpers.makeTempVarSpan(self);
-        break :blk self.ast.getText(temp_span);
+        break :blk try self.allocator.dupe(u8, "_Class");
     };
+    defer self.allocator.free(class_name_text);
 
     // body 멤버 순회: member decorator 수집
     var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
@@ -2397,16 +2405,22 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
     });
 
-    // class expression → IIFE call을 직접 반환 (표현식 위치에서 사용)
-    if (node.tag == .class_expression) {
+    // class expression / 익명 class / export default class → IIFE call 직접 반환
+    // 이름 있는 class declaration만 `let Foo = (...)` 선언을 사용.
+    // - class_expression: 표현식 위치에서 사용
+    // - name_idx.isNone(): 익명 class (export default class {} 등)
+    // - name == "default": export default class (JS 예약어)
+    const has_named_binding = if (!name_idx.isNone()) blk: {
+        break :blk !std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default");
+    } else false;
+
+    if (node.tag == .class_expression or !has_named_binding) {
         return iife_call;
     }
 
     // class declaration → let Foo = (() => { ... })();
-    const outer_name_span = if (!name_idx.isNone()) blk: {
-        const n = self.ast.getNode(name_idx);
-        break :blk n.data.string_ref;
-    } else try self.ast.addString("default");
+    // "default" 이름은 IIFE 내부 var에서 사용한 temp var name을 재사용
+    const outer_name_span = try self.ast.addString(class_name_text);
 
     const outer_binding = try self.ast.addNode(.{
         .tag = .binding_identifier,
