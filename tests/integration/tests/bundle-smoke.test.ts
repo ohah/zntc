@@ -2399,4 +2399,60 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toContain("ok:true");
   });
+
+  test("ES5: [...map.values()] spread가 Iterator를 배열로 펼친다 (#1095)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          const m = new Map();
+          m.set("a", { test: () => true });
+          m.set("b", { test: () => true });
+          const arr = [...m.values()];
+          console.log("len:" + arr.length, "type:" + typeof arr[0].test);
+        `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("len:2");
+    expect(result.runOutput).toContain("type:function");
+  });
+
+  test("ES5: [...set.values()] spread가 Iterator를 배열로 펼친다 (#1095)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          const s = new Set([10, 20, 30]);
+          const arr = [...s.values()];
+          console.log("len:" + arr.length, "sum:" + arr.reduce((a: number, b: number) => a + b, 0));
+        `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("len:3");
+    expect(result.runOutput).toContain("sum:60");
+  });
+
+  test("ES5: [...generator()] spread가 Generator를 배열로 펼친다 (#1095)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          function* gen() { yield 1; yield 2; yield 3; }
+          const arr = [...gen()];
+          console.log("len:" + arr.length, "vals:" + arr.join(","));
+        `,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("len:3");
+    expect(result.runOutput).toContain("vals:1,2,3");
+  });
 });
