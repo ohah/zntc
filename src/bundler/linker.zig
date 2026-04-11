@@ -22,6 +22,10 @@ const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
 
+/// namespace 접근 패턴에서 생성되는 변수 prefix.
+/// metadata.zig, codegen.zig, emitter.zig에서 공유.
+pub const NS_VAR_PREFIX = "__ns_";
+
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
 /// codegen에 전달하는 per-module 메타데이터.
 /// AST를 수정하지 않고 codegen이 출력 시 참조.
@@ -1647,12 +1651,13 @@ pub const PreambleWriter = struct {
     }
 
     pub fn writeDevRequire(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8) !void {
-        return self.writeDevRequireInterop(local_name, path, suffix, false);
+        return self.writeDevRequireInterop(local_name, path, suffix, false, false);
     }
 
-    /// CJS interop 포함: var x = __toESM(__zts_require("path")).default;
-    pub fn writeDevRequireInterop(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8, to_esm: bool) !void {
-        try self.write("var ");
+    /// CJS interop 포함: [var ]x = [__toESM(]__zts_require("path")[)][.default];
+    /// assign_only=true 일 때 var 키워드 생략 (namespace 패턴에서 호이스팅된 변수에 할당만).
+    pub fn writeDevRequireInterop(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8, to_esm: bool, assign_only: bool) !void {
+        if (!assign_only) try self.write("var ");
         try self.write(local_name);
         try self.write(" = ");
         if (to_esm) try self.write("__toESM(");
@@ -1685,20 +1690,6 @@ pub const PreambleWriter = struct {
         try self.write(" } = __zts_require(\"");
         try self.write(path);
         try self.write("\");\n");
-    }
-
-    /// dev 모드 namespace 할당 (assign-only, var 없음).
-    /// __esm init 안에서: __ns_0 = __zts_require("path");
-    /// CJS 타겟이면: __ns_0 = __toESM(__zts_require("path"));
-    pub fn writeDevRequireNamespace(self: *PreambleWriter, ns_var: []const u8, path: []const u8, to_esm: bool) !void {
-        try self.write(ns_var);
-        try self.write(" = ");
-        if (to_esm) try self.write("__toESM(");
-        try self.write("__zts_require(\"");
-        try self.write(path);
-        try self.write("\")");
-        if (to_esm) try self.write(")");
-        try self.write(";\n");
     }
 
     pub fn writeNamespaceObject(self: *PreambleWriter, var_name: []const u8, object_literal: []const u8) !void {
