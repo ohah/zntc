@@ -890,3 +890,57 @@ test "Worklet: worklet transform disabled when no plugins" {
     // plugins가 없으므로 worklet 변환 없음 — statement 1개 (함수만)
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
+
+test "Worklet: rest params are not included in closure (#1104)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "function guard(fn, ...args) { \"worklet\"; return fn(...args); }",
+        .{
+            .plugins = &plugins,
+            .jsx_filename = "test.ts",
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // rest param 'args'는 closure에 포함되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: directive found after rest params transform (#1102)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "function guard(fn, ...args) { \"worklet\"; return fn(...args); }",
+        .{
+            .plugins = &plugins,
+            .jsx_filename = "test.ts",
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // worklet 변환이 적용되어야 함 (디렉티브가 rest params 뒤로 밀려도)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    // "worklet" 디렉티브가 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\"") == null);
+}
+
+test "Worklet: function_expression worklet produces IIFE factory (#1100)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var x = wrap(function myWorklet() { \"worklet\"; return 42; });",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // IIFE factory로 감싸져야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    // 원본 함수가 IIFE 안에서 var로 할당
+    try std.testing.expect(std.mem.indexOf(u8, code, "var myWorklet") != null);
+    // return으로 반환
+    try std.testing.expect(std.mem.indexOf(u8, code, "return myWorklet") != null);
+}

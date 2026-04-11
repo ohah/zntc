@@ -151,16 +151,53 @@ pub fn collectClosureVars(
         }
     }
 
+    // 1.5. body 직접 자식의 var/let/const 이름 수집 (synthetic 노드 포함)
+    // transformer가 생성한 노드(rest params 변환 등)의 extra_data가
+    // walkBodyForClosureAnalysis에서 정상 파싱되지 않을 수 있으므로 별도 수집.
+    {
+        const body = self.ast.getNode(body_idx);
+        if (body.tag == .block_statement or body.tag == .function_body) {
+            const list = body.data.list;
+            var bi: u32 = 0;
+            while (bi < list.len) : (bi += 1) {
+                const stmt_raw = self.ast.extra_data.items[list.start + bi];
+                const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
+                if (stmt_idx.isNone()) continue;
+                const stmt = self.ast.getNode(stmt_idx);
+                if (stmt.tag == .variable_declaration) {
+                    const ve = stmt.data.extra;
+                    if (self.ast.hasExtra(ve, 3)) {
+                        const vl_start = self.ast.extra_data.items[ve + 1];
+                        const vl_len = self.ast.extra_data.items[ve + 2];
+                        var vi: u32 = 0;
+                        while (vi < vl_len) : (vi += 1) {
+                            if (vl_start + vi >= self.ast.extra_data.items.len) break;
+                            const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[vl_start + vi]);
+                            if (decl_idx.isNone()) continue;
+                            const decl = self.ast.getNode(decl_idx);
+                            if (decl.tag == .variable_declarator and self.ast.hasExtra(decl.data.extra, 3)) {
+                                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                                try collectBindingNames(self, name_idx, &locals);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 2-3. body 순회: 지역 선언 → locals, 식별자 참조 → refs
     try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
 
-    // 4. refs - locals - globals = closure vars
+    // 4. refs - locals - globals - runtime helpers = closure vars
     var result: std.ArrayList([]const u8) = .empty;
     var iter = refs.iterator();
     while (iter.next()) |entry| {
         const name = entry.key_ptr.*;
         if (locals.contains(name)) continue;
         if (isGlobal(name)) continue;
+        // 런타임 헬퍼(__toConsumableArray, __classCallCheck 등) 제외
+        if (name.len >= 2 and name[0] == '_' and name[1] == '_') continue;
         try result.append(self.allocator, name);
     }
 
@@ -217,7 +254,7 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
                 }
             }
         },
-        .rest_element => {
+        .rest_element, .spread_element => {
             try collectBindingNames(self, node.data.unary.operand, locals);
         },
         .assignment_pattern => {

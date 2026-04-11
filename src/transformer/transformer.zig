@@ -2066,6 +2066,8 @@ pub const Transformer = struct {
                 .body_idx = new_body,
                 .params_start = pp.new_params.start,
                 .params_len = pp.new_params.len,
+                .original_params_start = params_start,
+                .original_params_len = params_len,
                 .flags = self.readU32(e, 4),
                 .source_path = self.options.jsx_filename,
             };

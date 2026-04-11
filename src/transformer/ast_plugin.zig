@@ -40,10 +40,13 @@ pub const FunctionInfo = struct {
     name: ?[]const u8,
     /// 함수 body 노드 인덱스 (block_statement/function_body)
     body_idx: NodeIndex,
-    /// 파라미터 extra_data 시작 위치
+    /// 파라미터 extra_data 시작 위치 (변환 후)
     params_start: u32,
-    /// 파라미터 수
+    /// 파라미터 수 (변환 후)
     params_len: u32,
+    /// 원본 파라미터 (변환 전, rest params 등 포함)
+    original_params_start: u32,
+    original_params_len: u32,
     /// 함수 플래그 (bit 0=async, bit 1=generator)
     flags: u32,
     /// 소스 파일 경로 (__initData.location 등에 사용)
