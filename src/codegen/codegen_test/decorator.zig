@@ -582,3 +582,131 @@ test "stage3: class + method mixed" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
 }
+
+// --- Decorator factory @dec(arg) ---
+
+test "stage3: decorator factory call expression" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\@Component({ selector: "app" })
+        \\class AppComponent {}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Component") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "selector") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
+}
+
+// --- Multiple decorators on same member ---
+
+test "stage3: multiple decorators on method" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Ctrl {
+        \\  @Get("/")
+        \\  @Auth("admin")
+        \\  index() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+    // 두 decorator 모두 출력에 포함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Get") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Auth") != null);
+}
+
+// --- extends + member decorator ---
+
+test "stage3: derived class with member decorators" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Base {}
+        \\class Child extends Base {
+        \\  @log
+        \\  method() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "extends") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+}
+
+// --- Field without initializer ---
+
+test "stage3: field decorator without initializer" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  x;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_initializers") != null);
+}
+
+// --- Multiple fields with decorators ---
+
+test "stage3: multiple decorated fields" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec x = 1;
+        \\  @dec y = 2;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x_initializers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_y_initializers") != null);
+}
+
+// --- All member kinds mixed ---
+
+test "stage3: method + getter + setter + field mixed" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec method() {}
+        \\  @dec get prop() { return 1; }
+        \\  @dec set prop(v: number) {}
+        \\  @dec field = 42;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"method\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"getter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"setter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"field\"") != null);
+}
+
+// --- Static accessor ---
+
+test "stage3: static accessor decorator" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\class Foo {
+        \\  @dec
+        \\  static accessor count = 0;
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"accessor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#_count_accessor_storage") != null);
+}
+
+// --- Class decorator only, no member decorators → IIFE but no _instanceExtraInitializers ---
+
+test "stage3: class-only decorator has no instance extra initializers" {
+    var r = try e2eStage3Decorator(std.testing.allocator,
+        \\@sealed
+        \\class Foo {
+        \\  method() {}
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__esDecorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"class\"") != null);
+    // class-only → _instanceExtraInitializers 불필요
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_instanceExtraInitializers") == null);
+}

@@ -2676,6 +2676,7 @@ pub const Transformer = struct {
     pub const makeLet = class_deco.makeLet;
     pub const makeObjProp = class_deco.makeObjProp;
     pub const buildAccessObject = class_deco.buildAccessObject;
+    pub const buildFieldInitNames = class_deco.buildFieldInitNames;
     pub const extractTypeFromSource = class_deco.extractTypeFromSource;
 
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
