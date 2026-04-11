@@ -2455,4 +2455,10 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(result.runOutput).toContain("len:3");
     expect(result.runOutput).toContain("vals:1,2,3");
   });
+
+  // TODO: rest params + worklet 조합 테스트 (#1104)
+  // TODO: function_expression worklet IIFE 테스트 (#1100)
+  // TODO: worklet closure TS 타입 제외 테스트 (#1102)
+  // --platform=react-native 번들은 bun으로 직접 실행 불가 (RN 런타임 필요)
+  // Hermes validation CI에서 검증
 });

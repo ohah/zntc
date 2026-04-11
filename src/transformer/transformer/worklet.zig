@@ -27,54 +27,65 @@ const Error = Transformer.Error;
 // ================================================================
 
 /// 함수 body의 첫 문장이 지정된 디렉티브인지 확인한다 (범용).
-pub fn isWorkletDirectiveGeneric(self: *Transformer, body_idx: NodeIndex, directive: []const u8) bool {
-    if (body_idx.isNone()) return false;
+/// 함수 body에서 지정된 디렉티브를 찾는다.
+/// ES5 변환(rest params 등)이 body 앞에 문장을 삽입할 수 있으므로,
+/// 첫 문장뿐 아니라 앞쪽 몇 문장 내에서 탐색한다.
+/// 발견 시 해당 문장의 리스트 내 오프셋을 반환, 없으면 null.
+pub fn findDirectiveOffset(self: *Transformer, body_idx: NodeIndex, directive: []const u8) ?u32 {
+    if (body_idx.isNone()) return null;
     const body = self.ast.getNode(body_idx);
-    if (body.tag != .block_statement and body.tag != .function_body) return false;
+    if (body.tag != .block_statement and body.tag != .function_body) return null;
 
     const list = body.data.list;
-    if (list.len == 0) return false;
+    // 앞쪽 최대 5문장 내에서 탐색 (rest params, default params 등이 삽입될 수 있음)
+    const search_len = @min(list.len, 5);
+    var si: u32 = 0;
+    while (si < search_len) : (si += 1) {
+        const stmt_raw = self.ast.extra_data.items[list.start + si];
+        const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
+        if (stmt_idx.isNone()) continue;
 
-    const first_stmt_raw = self.ast.extra_data.items[list.start];
-    const first_stmt_idx: NodeIndex = @enumFromInt(first_stmt_raw);
-    if (first_stmt_idx.isNone()) return false;
+        const stmt = self.ast.getNode(stmt_idx);
 
-    const first_stmt = self.ast.getNode(first_stmt_idx);
-
-    if (first_stmt.tag == .directive) {
-        const text = self.ast.getText(first_stmt.span);
-        if (text.len >= 2) {
-            const inner = text[1 .. text.len - 1];
-            return std.mem.eql(u8, inner, directive);
+        if (stmt.tag == .directive) {
+            const text = self.ast.getText(stmt.span);
+            if (text.len >= 2 and std.mem.eql(u8, text[1 .. text.len - 1], directive)) {
+                return si;
+            }
+        } else if (stmt.tag == .expression_statement) {
+            const operand_idx = stmt.data.unary.operand;
+            if (!operand_idx.isNone()) {
+                const operand = self.ast.getNode(operand_idx);
+                if (operand.tag == .string_literal) {
+                    const text = self.ast.getText(operand.data.string_ref);
+                    if (text.len >= 2 and std.mem.eql(u8, text[1 .. text.len - 1], directive)) {
+                        return si;
+                    }
+                }
+            }
         }
-        return false;
     }
-
-    if (first_stmt.tag != .expression_statement) return false;
-    const operand_idx = first_stmt.data.unary.operand;
-    if (operand_idx.isNone()) return false;
-
-    const operand = self.ast.getNode(operand_idx);
-    if (operand.tag != .string_literal) return false;
-
-    const text = self.ast.getText(operand.data.string_ref);
-    if (text.len < 2) return false;
-    const inner = text[1 .. text.len - 1];
-    return std.mem.eql(u8, inner, directive);
+    return null;
 }
 
-/// 함수 body에서 첫 디렉티브 문장을 제거한 새 body를 반환한다.
-/// isWorkletDirectiveGeneric()가 true인 경우에만 호출해야 한다.
+pub fn isWorkletDirectiveGeneric(self: *Transformer, body_idx: NodeIndex, directive: []const u8) bool {
+    return findDirectiveOffset(self, body_idx, directive) != null;
+}
+
+/// 함수 body에서 worklet 디렉티브 문장을 제거한 새 body를 반환한다.
+/// findDirectiveOffset()으로 위치를 찾아 해당 문장만 제거.
 pub fn stripWorkletDirective(self: *Transformer, body_idx: NodeIndex) Error!NodeIndex {
     const body = self.ast.getNode(body_idx);
     const list = body.data.list;
 
-    // 첫 문장 제외한 나머지 복사
+    const dir_offset = findDirectiveOffset(self, body_idx, "worklet") orelse return body_idx;
+
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-    var i: u32 = 1; // 첫 문장(worklet 디렉티브) 건너뜀
+    var i: u32 = 0;
     while (i < list.len) : (i += 1) {
+        if (i == dir_offset) continue; // 디렉티브 문장 건너뜀
         const raw_idx = self.ast.extra_data.items[list.start + i];
         try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
     }
