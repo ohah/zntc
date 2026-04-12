@@ -514,15 +514,21 @@ fn isGlobal(name: []const u8) bool {
 // ================================================================
 
 /// funcName.__propName = value 형태의 assignment expression statement를 생성한다.
-fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []const u8, value: NodeIndex) Error!NodeIndex {
+fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []const u8, value: NodeIndex, func_name_node_idx: NodeIndex) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    // funcName
+    // funcName (원본 binding_identifier의 symbol_id를 복사하여 scope hoisting rename 지원)
     const obj_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = func_name_span,
         .data = .{ .string_ref = func_name_span },
     });
+    if (!func_name_node_idx.isNone()) {
+        // 원본 함수의 binding_identifier에서 symbol_id 복사
+        const func_node = self.ast.getNode(func_name_node_idx);
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
+        self.copySymbolId(name_idx, obj_ref);
+    }
 
     // .__propName
     const prop_span = try self.ast.addString(prop_name);
@@ -594,15 +600,15 @@ pub fn buildWorkletPropertyAssignments(
         .span = hash_span,
         .data = .{ .string_ref = hash_span },
     });
-    const hash_stmt = try buildPropAssignment(self, func_name_span, "__workletHash", hash_node);
+    const hash_stmt = try buildPropAssignment(self, func_name_span, "__workletHash", hash_node, func_node_idx);
 
     // 2. funcName.__closure = { var1: var1, var2: var2, ... };
     const closure_obj = try buildClosureObject(self, closure_vars);
-    const closure_stmt = try buildPropAssignment(self, func_name_span, "__closure", closure_obj);
+    const closure_stmt = try buildPropAssignment(self, func_name_span, "__closure", closure_obj, func_node_idx);
 
     // 3. funcName.__initData = { code: "...", location: "..." };
     const init_data_obj = try buildInitDataObject(self, init_code, source_location, zero_span);
-    const init_data_stmt = try buildPropAssignment(self, func_name_span, "__initData", init_data_obj);
+    const init_data_stmt = try buildPropAssignment(self, func_name_span, "__initData", init_data_obj, func_node_idx);
 
     return .{ hash_stmt, closure_stmt, init_data_stmt };
 }
