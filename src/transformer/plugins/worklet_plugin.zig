@@ -82,14 +82,13 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     const has_directive = api.hasDirective(info.body_idx, "worklet");
     if (!has_directive and !info.is_auto_worklet) return;
 
-    // JS thread 실행용 body: 방문 완료된 body에서 디렉티브 strip.
-    // (auto-worklet 등 inner 변환이 보존됨)
+    // 두 body를 별도 strip해야 함 (각각 다른 AST):
+    // 1) visited body (info.body_idx): JS thread 실행용. inner 변환(auto-worklet 등) 보존.
+    //    반환값은 불필요 — side effect(modified_body 패치)만 사용.
+    // 2) original body (info.original_body_idx): __initData.code용 (TS 포함/ES5 미적용).
     if (has_directive) {
         _ = try api.stripDirective(info.body_idx);
     }
-
-    // __initData.code용: pre-visit body 사용 (TS 포함/ES5 미적용).
-    // codegen이 TS 자동 스트리핑. ES5 헬퍼가 없으므로 UI thread deadlock 방지.
     const code_body = if (has_directive)
         try worklet_mod.stripWorkletDirective(api.transformer, info.original_body_idx)
     else
