@@ -29,6 +29,9 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
+const ast_plugin = @import("ast_plugin.zig");
+const AstTransformCtx = ast_plugin.AstTransformCtx;
+const FunctionInfo = ast_plugin.FunctionInfo;
 
 pub fn ES2015Arrow(comptime Transformer: type) type {
     return struct {
@@ -87,11 +90,47 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 none, // return_type
             });
 
-            return self.ast.addNode(.{
+            const result = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = node.span,
                 .data = .{ .extra = new_extra },
             });
+
+            // Plugin dispatch: arrow → function_expression 변환 후 worklet 등 AST 플러그인 적용.
+            // visitFunction과 동일한 onFunction 훅 호출.
+            if (self.options.plugins.len > 0) {
+                var api = AstTransformCtx{ .transformer = self, .modified_body = null };
+                const func_info = FunctionInfo{
+                    .node_idx = result,
+                    .node_tag = .function_expression,
+                    .name = null, // arrow는 항상 익명
+                    .body_idx = func_body,
+                    .params_start = param_list.start,
+                    .params_len = param_list.len,
+                    .original_params_start = param_list.start,
+                    .original_params_len = param_list.len,
+                    .original_body_idx = func_body,
+                    .flags = func_flags,
+                    .source_path = self.options.jsx_filename,
+                };
+                for (self.options.plugins) |p| {
+                    if (p.onFunction) |hook| {
+                        hook(p.context, &api, func_info) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.PluginFailed => {},
+                        };
+                    }
+                }
+                if (api.modified_body) |new_body_idx| {
+                    const result_extra = self.ast.getNode(result).data.extra;
+                    self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
+                }
+                if (api.replaced_node) |replacement| {
+                    return replacement;
+                }
+            }
+
+            return result;
         }
 
         /// arrow params (단일 NodeIndex) → function params (NodeList) 변환.
