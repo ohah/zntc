@@ -115,6 +115,9 @@ pub const CodegenOptions = struct {
     dev_module_id: ?[]const u8 = null,
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
     import_records: []const @import("../bundler/types.zig").ImportRecord = &.{},
+    /// object literal method shorthand (`{ foo() {} }`)를 `{ foo: function() {} }`로 확장.
+    /// Reanimated worklet __initData.code 직렬화용 — getter/setter는 제외.
+    expand_object_method_shorthand: bool = false,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -152,6 +155,8 @@ pub const Codegen = struct {
     next_comment_idx: usize = 0,
     /// for문 init 위치에서 variable_declaration 출력 시 세미콜론 생략
     in_for_init: bool = false,
+    /// object_expression 리터럴을 출력 중인지 추적 (method shorthand 확장용).
+    in_object_expression: bool = false,
     /// for-in var initializer hoisting: emitVariableDeclarator에서 init 스킵
     skip_var_init: bool = false,
     /// namespace IIFE 내부에서 export된 변수의 참조를 ns.name으로 치환하기 위한 상태.
@@ -1357,6 +1362,12 @@ pub const Codegen = struct {
             try self.write("{}");
             return;
         }
+        const is_obj_expr = node.tag == .object_expression;
+        const prev_in_obj = self.in_object_expression;
+        if (is_obj_expr) self.in_object_expression = true;
+        defer if (is_obj_expr) {
+            self.in_object_expression = prev_in_obj;
+        };
         if (self.options.minify_whitespace) {
             try self.writeByte('{');
             try self.emitList(node, ",");
@@ -1997,11 +2008,34 @@ pub const Codegen = struct {
         try self.emitMemberDecorators(deco_start, deco_len);
 
         // flags: bit0=static, bit1=getter, bit2=setter, bit3=async, bit4=generator(*)
+        const is_getter = flags & 0x02 != 0;
+        const is_setter = flags & 0x04 != 0;
+        const expand_shorthand = self.options.expand_object_method_shorthand and
+            self.in_object_expression and !is_getter and !is_setter;
+
+        if (expand_shorthand) {
+            // `{ foo() {} }` → `{ foo: function() {} }` (Reanimated worklet 호환)
+            try self.emitNode(key);
+            if (self.options.minify_whitespace) {
+                try self.writeByte(':');
+            } else {
+                try self.write(": ");
+            }
+            if (flags & 0x08 != 0) try self.write("async ");
+            try self.write("function");
+            if (flags & 0x10 != 0) try self.writeByte('*');
+            try self.writeByte('(');
+            try self.emitNodeList(params_start, params_len, ",");
+            try self.writeByte(')');
+            try self.emitNode(body);
+            return;
+        }
+
         if (flags & 0x01 != 0) try self.write("static ");
         if (flags & 0x08 != 0) try self.write("async ");
-        if (flags & 0x02 != 0) {
+        if (is_getter) {
             try self.write("get ");
-        } else if (flags & 0x04 != 0) {
+        } else if (is_setter) {
             try self.write("set ");
         }
         if (flags & 0x10 != 0) try self.writeByte('*');

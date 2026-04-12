@@ -1479,6 +1479,26 @@ test "Worklet: closure analysis includes refs inside object getters/setters/meth
     try std.testing.expect(std.mem.indexOf(u8, code, "outerFn:outerFn}=this.__closure") != null);
 }
 
+test "Worklet: __initData.code expands object method shorthand to `key: function`" {
+    // Reanimated worklet runtime은 method shorthand를 인식하지 못하므로
+    // __initData.code 내부의 object literal은 longhand(function expression)로 직렬화되어야 함.
+    var r = try transformWorklet(std.testing.allocator,
+        \\function w() {
+        \\  "worklet";
+        \\  return { start(tag, type) { return tag; }, stop(tag) { return tag; } };
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // __initData.code의 직렬화된 바디에 `start:function(` / `stop:function(`가 포함되어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, code, "start:function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "stop:function(") != null);
+    // 원본 shorthand (`start(tag,type){`)는 __initData.code 안에는 남지 않아야 함.
+    // (원본 함수 본문 자체는 visit 후 ES5 다운레벨이 적용되지 않으면 남을 수 있으므로
+    // 존재 검사만으로 충분히 회귀 감지 가능.)
+}
+
 test "Worklet: recursive function self-reference excluded from __closure" {
     var r = try transformWorklet(std.testing.allocator,
         \\function recurse(n) {

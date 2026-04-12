@@ -831,6 +831,9 @@ pub fn generateInitCode(
     const codegen_mod = @import("../../codegen/codegen.zig");
     var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, &self.ast, .{
         .minify_whitespace = true,
+        // Reanimated worklet runtime은 object method shorthand를 인식하지 못하므로
+        // `{ foo() {} }` → `{ foo: function() {} }`로 확장. Metro/Babel과 동일한 출력.
+        .expand_object_method_shorthand = true,
     });
     const code = codegen.generate(program) catch return error.OutOfMemory;
     // codegen의 buf는 codegen이 소유 → 복제 필요
