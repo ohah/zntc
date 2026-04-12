@@ -235,8 +235,8 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
         .rest_element, .spread_element => {
             try collectBindingNames(self, node.data.unary.operand, locals);
         },
-        .assignment_pattern => {
-            // default value: left = pattern, right = default
+        .assignment_pattern, .assignment_expression => {
+            // default value: left = pattern/identifier, right = default
             try collectBindingNames(self, node.data.binary.left, locals);
         },
         else => {},
