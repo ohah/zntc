@@ -344,15 +344,19 @@ pub fn buildMetadataForAst(
                 continue;
             }
 
-            // export * from CJS 패턴: canonical이 CJS 모듈을 가리키면
+            // re-export → CJS 패턴: canonical이 CJS 모듈을 가리키면
             // rename 대신 CJS preamble을 생성한다.
+            // canonical.export_name을 사용하여 re-export 체인을 올바르게 추적:
+            // import fn from './reexport' (default) → reexport: import { x } from 'cjs'; export default x
+            // → canonical = { cjs, "x" } → req_cjs().x (not .default)
             if (resolved) |rb| {
                 const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                 if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                     const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                    try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, false, interop_mode2);
+                    const effective_name = rb.canonical.export_name;
+                    try preamble.writeCjsImport(preamble_name, effective_name, req_var, false, interop_mode2);
                     continue;
                 }
             }

@@ -2796,4 +2796,29 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(closureMatch![1]).not.toContain(" x");
     expect(closureMatch![1]).not.toContain(" y");
   });
+
+  test("default re-export from CJS: import fn from './reexport' resolves to named export (#1152)", async () => {
+    // import { findNodeHandle } from 'cjs-module'; export default findNodeHandle;
+    // → consumer: import fn from './reexport' → should resolve to cjs.findNodeHandle, not cjs.default
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+import myFn from "./reexport";
+console.log(typeof myFn + ":" + myFn());
+`,
+        "reexport.ts": `
+import { helper } from "./cjs-lib";
+export default helper;
+`,
+        "cjs-lib.ts": `
+module.exports = { helper: function() { return "ok"; } };
+`,
+      },
+      "index.ts",
+      [],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("function:ok");
+  });
 });
