@@ -58,6 +58,21 @@ pub const Plugin = struct {
     /// 함수 노드 방문 훅. visitFunction 완료 후 호출.
     /// function_declaration, function_expression, arrow_function_expression 대상.
     onFunction: ?*const fn (ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void = null,
+
+    /// Auto-workletization: 특정 함수 호출의 인자를 자동으로 worklet 변환.
+    /// transformer가 call_expression을 방문할 때 callee 이름을 매칭하여
+    /// 해당 인자 위치의 function을 worklet으로 처리한다.
+    autoWorkletCallees: []const AutoWorkletCallee = &.{},
+};
+
+/// Auto-workletization 대상 함수 정의.
+/// call_expression의 callee 이름이 매칭되면 지정된 인자 위치의 함수를 worklet으로 변환.
+pub const AutoWorkletCallee = struct {
+    name: []const u8,
+    /// worklet으로 변환할 인자 인덱스 (0-based). 최대 4개.
+    arg_indices: [4]u8 = .{ 0, 0xFF, 0xFF, 0xFF },
+    /// true이면 obj.method() 형태의 method call도 매칭 (callee가 static_member_expression)
+    is_method: bool = false,
 };
 
 /// 플러그인 배열을 순회하며 훅을 실행하는 유틸리티.

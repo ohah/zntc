@@ -1326,3 +1326,84 @@ test "Worklet: scope hoisting rename reflected in closure value" {
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "helper:") != null);
 }
+
+test "Worklet: auto-workletization for scheduleOnUI argument" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function scheduleOnUI(fn) {}
+        \\scheduleOnUI(() => {
+        \\  console.log("auto worklet");
+        \\});
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // auto-worklet 변환: __workletHash가 주입되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__initData") != null);
+}
+
+test "Worklet: auto-workletization for runOnUI argument" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function runOnUI(fn) { return fn; }
+        \\runOnUI(() => {
+        \\  return 42;
+        \\})();
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "Worklet: auto-workletization skips non-function args" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function scheduleOnUI(fn) {}
+        \\var x = 1;
+        \\scheduleOnUI(x);
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 인자가 함수가 아니면 worklet 변환 없음
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "Worklet: auto-workletization with correct arg index (withDecay arg 1)" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function withDecay(config, callback) {}
+        \\withDecay({}, () => {
+        \\  console.log("done");
+        \\});
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // withDecay의 두 번째 인자(index 1)가 worklet화
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "Worklet: auto-workletization does not affect wrong arg index" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function withDecay(config, callback) {}
+        \\withDecay(() => { return 1; }, null);
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // withDecay의 첫 번째 인자(index 0)는 auto-worklet 대상 아님
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "Worklet: method auto-workletization for gesture handler onBegin" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var gesture = {};
+        \\gesture.onBegin((e) => {
+        \\  console.log(e);
+        \\});
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // obj.onBegin() 메서드 호출의 첫 번째 인자가 worklet화
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}

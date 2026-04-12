@@ -252,6 +252,11 @@ pub const Transformer = struct {
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
 
+    /// auto-workletization 플래그.
+    /// visitCallExpression에서 callee 매칭 시 true로 설정하고,
+    /// dispatchFunctionPlugins에서 FunctionInfo.is_auto_worklet로 전달 후 false로 리셋.
+    auto_worklet_next: bool = false,
+
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
@@ -2057,6 +2062,7 @@ pub const Transformer = struct {
         });
 
         // Plugin dispatch: onFunction (AST 훅)
+        const is_auto_worklet = self.auto_worklet_next;
         if (try self.dispatchFunctionPlugins(result, .{
             .node_idx = result,
             .node_tag = node.tag,
@@ -2069,6 +2075,7 @@ pub const Transformer = struct {
             .original_body_idx = old_body_idx,
             .flags = self.readU32(e, 4),
             .source_path = self.options.jsx_filename,
+            .is_auto_worklet = is_auto_worklet,
         })) |replacement| {
             return replacement;
         }
@@ -2665,7 +2672,7 @@ pub const Transformer = struct {
         return self.prependStatementsToBody(body_idx, &.{var_decl});
     }
 
-    /// arrow_function_expression: extra = [params, body, flags]
+    /// arrow_function_expression: extra = [params_list, body, flags]
     /// flags: 0x01 = async
     fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
@@ -2676,7 +2683,51 @@ pub const Transformer = struct {
         const new_params = try self.visitNode(params_idx);
         const new_body = try self.visitNode(body_idx);
         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
-        return self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
+        const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
+
+        // Plugin dispatch: auto-workletization 등 AST 플러그인 적용
+        const is_auto_worklet = self.auto_worklet_next;
+        if (is_auto_worklet or self.options.plugins.len > 0) {
+            // arrow params는 formal_parameters (list) 또는 none일 수 있다.
+            var orig_p_start: u32 = 0;
+            var orig_p_len: u32 = 0;
+            var new_p_start: u32 = 0;
+            var new_p_len: u32 = 0;
+
+            if (!params_idx.isNone()) {
+                const orig_params_node = self.ast.getNode(params_idx);
+                if (orig_params_node.tag == .formal_parameters) {
+                    orig_p_start = orig_params_node.data.list.start;
+                    orig_p_len = orig_params_node.data.list.len;
+                }
+            }
+            if (!new_params.isNone()) {
+                const new_params_node = self.ast.getNode(new_params);
+                if (new_params_node.tag == .formal_parameters) {
+                    new_p_start = new_params_node.data.list.start;
+                    new_p_len = new_params_node.data.list.len;
+                }
+            }
+
+            if (try self.dispatchFunctionPlugins(result, .{
+                .node_idx = result,
+                .node_tag = .arrow_function_expression,
+                .name = null,
+                .body_idx = new_body,
+                .params_start = new_p_start,
+                .params_len = new_p_len,
+                .original_params_start = orig_p_start,
+                .original_params_len = orig_p_len,
+                .original_body_idx = body_idx,
+                .flags = flags,
+                .source_path = self.options.jsx_filename,
+                .is_auto_worklet = is_auto_worklet,
+            })) |replacement| {
+                return replacement;
+            }
+        }
+
+        return result;
     }
 
     // ================================================================
@@ -2829,7 +2880,15 @@ pub const Transformer = struct {
         const args_len = self.readU32(e, 2);
         const flags = self.readU32(e, 3);
         const new_callee = try self.visitNode(callee_idx);
-        const new_args = try self.visitExtraList(args_start, args_len);
+
+        // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면
+        // 해당 인자 위치의 function/arrow에 auto_worklet_next 플래그를 설정.
+        const auto_callee = self.matchAutoWorkletCallee(callee_idx);
+        const new_args = if (auto_callee != null)
+            try self.visitCallArgsWithAutoWorklet(args_start, args_len, auto_callee.?)
+        else
+            try self.visitExtraList(args_start, args_len);
+
         const new_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_callee), new_args.start, new_args.len, flags,
         });
@@ -3259,6 +3318,104 @@ pub const Transformer = struct {
     pub const makeSigHandle = refresh.makeSigHandle;
     pub const maybeRegisterRefreshSignature = refresh.maybeRegisterRefreshSignature;
     pub const insertSigCallAtBodyStart = refresh.insertSigCallAtBodyStart;
+
+    // ================================================================
+    // Auto-workletization helpers
+    // ================================================================
+
+    const AutoWorkletCallee = @import("../bundler/plugin.zig").AutoWorkletCallee;
+
+    /// call_expression의 callee가 auto-workletization 대상 함수인지 매칭.
+    /// identifier_reference(직접 호출) 또는 static_member_expression(메서드 호출) 지원.
+    fn matchAutoWorkletCallee(self: *Transformer, callee_idx: NodeIndex) ?AutoWorkletCallee {
+        if (self.options.plugins.len == 0) return null;
+        if (callee_idx.isNone()) return null;
+
+        const callee_node = self.ast.getNode(callee_idx);
+        const callee_name: []const u8 = switch (callee_node.tag) {
+            // scheduleOnUI(...) 형태
+            .identifier_reference => self.ast.source[callee_node.span.start..callee_node.span.end],
+            // obj.onBegin(...) 형태 — 프로퍼티 이름만 추출
+            .static_member_expression => blk: {
+                const me = callee_node.data.extra;
+                if (me + 1 >= self.ast.extra_data.items.len) break :blk "";
+                const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+                if (prop_idx.isNone()) break :blk "";
+                const prop = self.ast.getNode(prop_idx);
+                break :blk self.ast.source[prop.span.start..prop.span.end];
+            },
+            else => return null,
+        };
+        if (callee_name.len == 0) return null;
+
+        const is_method = callee_node.tag == .static_member_expression;
+        for (self.options.plugins) |p| {
+            for (p.autoWorkletCallees) |entry| {
+                if (entry.is_method == is_method and std.mem.eql(u8, entry.name, callee_name)) {
+                    return entry;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// auto-workletization이 필요한 call expression의 인자를 개별 방문.
+    /// 대상 인자 위치의 function/arrow 방문 전에 auto_worklet_next 플래그를 설정.
+    fn visitCallArgsWithAutoWorklet(self: *Transformer, args_start: u32, args_len: u32, callee: AutoWorkletCallee) Error!NodeList {
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const pending_top = self.pending_nodes.items.len;
+        defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
+
+        const trailing_top = self.trailing_nodes.items.len;
+        defer self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+
+        var i: u32 = 0;
+        while (i < args_len) : (i += 1) {
+            const raw_idx = self.ast.extra_data.items[args_start + i];
+            const arg_idx: NodeIndex = @enumFromInt(raw_idx);
+
+            // 이 인자가 auto-worklet 대상인지 확인
+            const should_auto = blk: {
+                for (callee.arg_indices) |idx| {
+                    if (idx == 0xFF) break;
+                    if (idx == @as(u8, @intCast(i))) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (should_auto and !arg_idx.isNone()) {
+                const arg_node = self.ast.getNode(arg_idx);
+                if (arg_node.tag == .function_expression or
+                    arg_node.tag == .arrow_function_expression)
+                {
+                    self.auto_worklet_next = true;
+                }
+            }
+
+            const new_child = try self.visitNode(arg_idx);
+            self.auto_worklet_next = false;
+
+            // pending_nodes 드레인
+            if (self.pending_nodes.items.len > pending_top) {
+                try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
+                self.pending_nodes.shrinkRetainingCapacity(pending_top);
+            }
+
+            if (!new_child.isNone()) {
+                try self.scratch.append(self.allocator, new_child);
+            }
+
+            // trailing_nodes 드레인
+            if (self.trailing_nodes.items.len > trailing_top) {
+                try self.scratch.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
+                self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+            }
+        }
+
+        return self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    }
 
     // ================================================================
     // Plugin dispatch helper

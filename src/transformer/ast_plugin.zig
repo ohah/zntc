@@ -52,6 +52,9 @@ pub const FunctionInfo = struct {
     flags: u32,
     /// 소스 파일 경로 (__initData.location 등에 사용)
     source_path: []const u8,
+    /// auto-workletization으로 활성화된 경우 true.
+    /// 'worklet' 디렉티브 없이도 worklet 변환이 필요한 함수.
+    is_auto_worklet: bool = false,
 };
 
 // ================================================================
