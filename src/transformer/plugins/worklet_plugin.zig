@@ -129,22 +129,67 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         for (stmts) |stmt| {
             try api.addTrailingStatement(stmt);
         }
+    } else if (info.node_tag == .method_definition) {
+        // object method: { build(props) { 'worklet'; ... } }
+        // → { build: (function() { var build = function(props) { ... }; build.__workletHash = ...; return build; })() }
+        // method_definition을 object_property(key: IIFE)로 교체.
+        const func_expr = try buildFunctionExprFromMethod(api, info);
+        const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
+
+        // object_property: binary = [key, value]
+        // method_definition의 key를 재사용
+        const t = api.transformer;
+        const method_node = t.ast.getNode(info.node_idx);
+        const me = method_node.data.extra;
+        const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+        const prop = try t.ast.addNode(.{
+            .tag = .object_property,
+            .span = method_node.span,
+            .data = .{ .binary = .{ .left = key_idx, .right = iife, .flags = 0 } },
+        });
+        api.replaced_node = prop;
     } else {
         // expression 위치 (function_expression/arrow): IIFE factory로 감싸서 교체
-        //
-        // 변환:
-        //   function fn() { "worklet"; body }
-        // →
-        //   (function() {
-        //     var fn = function fn() { body };
-        //     fn.__workletHash = 123;
-        //     fn.__closure = {};
-        //     fn.__initData = { code: "...", location: "..." };
-        //     return fn;
-        //   })()
         const iife = try buildWorkletIIFE(api, info.node_idx, func_name, stmts);
         api.replaced_node = iife;
     }
+}
+
+/// method_definition에서 function_expression을 추출한다.
+/// { build(props) { body } } → function build(props) { body }
+fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo) PluginError!NodeIndex {
+    const t = api.transformer;
+    const method_node = t.ast.getNode(info.node_idx);
+    const me = method_node.data.extra;
+
+    // method_definition extra = [key(0), params_start(1), params_len(2), body(3), flags(4), ...]
+    const name_span = if (info.name) |n| (t.ast.addString(n) catch return error.OutOfMemory) else Span{ .start = 0, .end = 0 };
+    const name_node = if (info.name != null) (t.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    }) catch return error.OutOfMemory) else NodeIndex.none;
+
+    // method flags → function flags (async=bit0 of method flags bit3, generator=bit4)
+    const method_flags = t.ast.extra_data.items[me + 4];
+    var func_flags: u32 = 0;
+    if ((method_flags & 0x08) != 0) func_flags |= 0x01; // async
+    if ((method_flags & 0x10) != 0) func_flags |= 0x02; // generator
+
+    const none = @intFromEnum(NodeIndex.none);
+    const func_extra = t.ast.addExtras(&.{
+        @intFromEnum(name_node),
+        info.params_start,
+        info.params_len,
+        @intFromEnum(info.body_idx),
+        func_flags,
+        none, // return type
+    }) catch return error.OutOfMemory;
+    return t.ast.addNode(.{
+        .tag = .function_expression,
+        .span = method_node.span,
+        .data = .{ .extra = func_extra },
+    }) catch return error.OutOfMemory;
 }
 
 /// function_expression worklet을 IIFE factory로 감싼다.

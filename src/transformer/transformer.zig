@@ -3011,10 +3011,45 @@ pub const Transformer = struct {
             NodeList{ .start = 0, .len = 0 }
         else
             try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
-        return self.addExtraNode(.method_definition, node.span, &.{
+        const old_body_idx = self.readNodeIdx(e, 3);
+        const result = try self.addExtraNode(.method_definition, node.span, &.{
             @intFromEnum(new_key), pp.new_params.start, pp.new_params.len, @intFromEnum(new_body),
             self.readU32(e, 4),    new_decos.start,     new_decos.len,
         });
+
+        // Plugin dispatch: worklet 등 AST 플러그인 적용
+        // method_definition은 object/class 내부에 있으므로 IIFE 교체는 불가.
+        // 대신 워크릿 플러그인이 method body 기반으로 function_expression을 생성하여
+        // object_property value로 교체할 수 있도록 정보를 전달한다.
+        const is_auto_worklet = self.auto_worklet_next;
+        // method 이름 추출 (key가 identifier인 경우)
+        const method_name: ?[]const u8 = blk: {
+            const key_idx = self.readNodeIdx(e, 0);
+            if (key_idx.isNone()) break :blk null;
+            const key_node = self.ast.getNode(key_idx);
+            if (key_node.tag == .identifier_reference) {
+                break :blk self.ast.source[key_node.span.start..key_node.span.end];
+            }
+            break :blk null;
+        };
+        if (try self.dispatchFunctionPlugins(result, .{
+            .node_idx = result,
+            .node_tag = .method_definition,
+            .name = method_name,
+            .body_idx = new_body,
+            .params_start = pp.new_params.start,
+            .params_len = pp.new_params.len,
+            .original_params_start = params_start,
+            .original_params_len = params_len,
+            .original_body_idx = old_body_idx,
+            .flags = flags,
+            .source_path = self.options.jsx_filename,
+            .is_auto_worklet = is_auto_worklet,
+        })) |replacement| {
+            return replacement;
+        }
+
+        return result;
     }
 
     // property_definition: extra = [key, init_val, flags, deco_start, deco_len]

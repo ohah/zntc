@@ -1295,7 +1295,7 @@ test "Worklet: computed property access in worklet body" {
     try std.testing.expect(std.mem.indexOf(u8, code, "obj: obj") != null);
 }
 
-test "Worklet: object method worklet directive remains (known limitation)" {
+test "Worklet: object method with worklet directive is transformed" {
     var r = try transformWorklet(std.testing.allocator,
         \\var logger = { warn(msg) {
         \\  "worklet";
@@ -1305,10 +1305,26 @@ test "Worklet: object method worklet directive remains (known limitation)" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // object method worklet은 현재 미변환 — "worklet" 디렉티브가 남아있음
-    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\"") != null);
-    // __workletHash는 없어야 함 (미변환)
-    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+    // object method worklet → object_property + IIFE로 변환
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__initData") != null);
+    // method가 object_property value로 변환됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "warn:") != null);
+}
+
+test "Worklet: object method with outer closure vars captured" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var config = {};
+        \\var obj = { build(props) {
+        \\  "worklet";
+        \\  return config[props];
+        \\} };
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "config:config}=this.__closure") != null);
 }
 
 test "Worklet: scope hoisting rename reflected in closure value" {
