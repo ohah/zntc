@@ -102,12 +102,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 .body_idx = func_body,
                 .params_start = param_list.start,
                 .params_len = param_list.len,
-                // post-visit body 사용: ES5 변환(spread → __toConsumableArray 등)이
-                // 주입한 헬퍼를 closure 분석에서 캡처하기 위함.
-                // __initData.code도 post-visit body로 생성되므로 일관성 유지.
+                // pre-visit body 사용: __initData.code는 ES5 헬퍼 없이 생성되어야 함.
+                // Hermes UI runtime이 spread/rest를 네이티브 지원하므로 ES5 변환 불필요.
+                // ES5 헬퍼(예: __toConsumableArray)는 worklet이 아닌 일반 함수라
+                // UI thread에서 remote function으로 직렬화되어 동기 호출 불가.
                 .original_params_start = param_list.start,
                 .original_params_len = param_list.len,
-                .original_body_idx = func_body,
+                .original_body_idx = body_idx,
                 .flags = func_flags,
                 .source_path = self.options.jsx_filename,
             })) |replacement| {
