@@ -564,8 +564,25 @@ pub fn buildWorkletPropertyAssignments(
     init_code: []const u8,
     hash: u32,
     source_location: []const u8,
+    /// 원본 함수 노드 인덱스. 이 노드의 name span을 사용하면
+    /// codegen의 scope hoisting rename이 자동 적용된다.
+    func_node_idx: NodeIndex,
 ) Error![3]NodeIndex {
-    const func_name_span = try self.ast.addString(func_name);
+    // 원본 함수의 binding_identifier span 사용 (scope hoisting rename 호환)
+    const func_name_span = blk: {
+        if (!func_node_idx.isNone()) {
+            const func_node = self.ast.getNode(func_node_idx);
+            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
+            if (!name_idx.isNone()) {
+                const name_node = self.ast.getNode(name_idx);
+                if (name_node.tag == .binding_identifier) {
+                    break :blk name_node.data.string_ref;
+                }
+            }
+        }
+        // fallback: 새 span 생성
+        break :blk try self.ast.addString(func_name);
+    };
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // 1. funcName.__workletHash = <hash>;

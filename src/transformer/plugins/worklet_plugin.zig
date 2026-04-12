@@ -59,6 +59,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         init_code,
         hash,
         info.source_path,
+        info.node_idx,
     );
 
     if (info.node_tag == .function_declaration) {
