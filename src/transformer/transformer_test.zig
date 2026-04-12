@@ -1112,24 +1112,20 @@ test "Worklet: nested function spread captures __toConsumableArray (ES5)" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // nested function의 spread가 __toConsumableArray를 사용 — closure에 캡처되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, code, "__toConsumableArray") != null);
-    const closure_start = std.mem.indexOf(u8, code, "__closure = {") orelse unreachable;
-    const closure_end = std.mem.indexOfPos(u8, code, closure_start, "}") orelse unreachable;
-    const closure = code[closure_start..closure_end];
-    try std.testing.expect(std.mem.indexOf(u8, closure, "__toConsumableArray") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { __toConsumableArray: __toConsumableArray }") != null);
 }
 
 test "Worklet: nested function params do not leak into outer closure" {
-    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
-        "var ext = 1; export function w() { \"worklet\"; function inner(x: number) { return x + ext; } return inner(1); }",
-        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    var r = try transformWorklet(std.testing.allocator,
+        \\var ext = 1;
+        \\export function w() {
+        \\  "worklet";
+        \\  function inner(x) { return x + ext; }
+        \\  return inner(1);
+        \\}
     );
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // ext는 외부 참조 → closure에 포함
-    // inner의 param x는 nested locals → closure에 미포함
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
 }
