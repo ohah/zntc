@@ -2036,8 +2036,8 @@ fn parseBuildOptions(
         .metafile = getObjectBool(env, opts_obj, "metafile", false),
         .keep_names = getObjectBool(env, opts_obj, "keepNames", false),
         .shim_missing_exports = getObjectBool(env, opts_obj, "shimMissingExports", false),
-        .flow = getObjectBool(env, opts_obj, "flow", false),
-        .jsx_in_js = getObjectBool(env, opts_obj, "jsxInJs", false),
+        .flow = getObjectBool(env, opts_obj, "flow", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.flow),
+        .jsx_in_js = getObjectBool(env, opts_obj, "jsxInJs", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.jsx_in_js),
         .charset_utf8 = getObjectBool(env, opts_obj, "charsetUtf8", false),
         .use_define_for_class_fields = getObjectBool(env, opts_obj, "useDefineForClassFields", true),
         .experimental_decorators = getObjectBool(env, opts_obj, "experimentalDecorators", false),
@@ -2082,13 +2082,13 @@ fn parseBuildOptions(
         .root_dir = root_dir,
         .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
-        .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false),
-        // RN 프리셋: platform=react-native이면 CLI와 동일하게 auto-enable.
-        // (CLI main.zig의 --platform=react-native 분기 참조 — worklet transform 없이는
-        // react-native-reanimated/worklets 내부 worklet 함수들이 serialize되지 않아
-        // LayoutAnimation 등에서 JSI getObject assert 실패로 크래시 발생.)
-        .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false) or platform == .react_native,
-        .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or platform == .react_native,
+        // RN 프리셋(bundler.zig의 RN_BOOL_PRESET 단일 소스): platform=react-native이면
+        // 사용자가 명시하지 않아도 CLI와 동일하게 auto-enable. worklet_transform 없이는
+        // node_modules/react-native-reanimated의 'worklet' directive가 serialize되지
+        // 않아 LayoutAnimation 등에서 JSI getObject assert 실패로 크래시 발생.
+        .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.configurable_exports),
+        .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.strict_execution_order),
+        .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.worklet_transform),
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
