@@ -46,19 +46,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
             const param_list = try arrowParamsToList(self, params_idx);
 
-            // worklet directive가 있으면 ES5 lowering 비활성화
-            const is_worklet = self.options.plugins.len > 0 and
-                @import("transformer/worklet.zig").isWorkletDirectiveGeneric(self, body_idx, "worklet");
-            const saved_unsupported = self.options.unsupported;
-            if (is_worklet) self.options.unsupported = .{};
-
             // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
             // visitNode에서 this → _this, arguments → _arguments로 치환된다.
             self.arrow_this_depth += 1;
             var new_body = try self.visitNode(body_idx);
             self.arrow_this_depth -= 1;
-
-            if (is_worklet) self.options.unsupported = saved_unsupported;
 
             // expression body → { return expr; }
             const func_body = blk: {
