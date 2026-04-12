@@ -94,14 +94,16 @@ pub const AstTransformCtx = struct {
     // --- 스코프 분석 ---
 
     /// 함수 body에서 closure 변수(외부 참조)를 추출.
+    /// func_name: 함수 이름 (자기 참조 제외용). null이면 무시.
     /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
     pub fn getClosureVars(
         self: *AstTransformCtx,
         body_idx: NodeIndex,
         params_start: u32,
         params_len: u32,
+        func_name: ?[]const u8,
     ) Error![]const worklet_mod.ClosureVar {
-        return worklet_mod.collectClosureVars(self.transformer, body_idx, params_start, params_len);
+        return worklet_mod.collectClosureVars(self.transformer, body_idx, params_start, params_len, func_name);
     }
 
     // --- AST 노드 생성 (Transformer/Ast 위임) ---
