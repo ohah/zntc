@@ -1457,6 +1457,91 @@ test "Worklet: recursive function self-reference excluded from __closure" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // 자기 참조는 closure에 포함되면 안 됨 (순환 참조 방지)
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: TS type assertion (as) does not break closure analysis" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var outer = {} as any;
+        \\function w() {
+        \\  "worklet";
+        \\  return (outer as any).value;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "outer:outer}=this.__closure") != null);
+}
+
+test "Worklet: closure captures through ternary, template literal, array, spread" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var a = 1, b = 2, c = 3, d = [4];
+        \\function w() {
+        \\  "worklet";
+        \\  var x = a ? b : c;
+        \\  var y = `${a}`;
+        \\  var z = [...d, a];
+        \\  return x + y + z;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "a:a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "b:b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "c:c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "d:d") != null);
+}
+
+test "Worklet: closure captures through switch, for-in, try-catch" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var val = 1, obj = {}, fn2 = () => {};
+        \\function w() {
+        \\  "worklet";
+        \\  switch (val) { case 1: break; }
+        \\  for (var k in obj) {}
+        \\  try { fn2(); } catch (e) {}
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "val:val") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "obj:obj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "fn2:fn2") != null);
+    // catch param 'e'는 closure가 아닌 로컬
+    try std.testing.expect(std.mem.indexOf(u8, code, "e:e") == null);
+}
+
+test "Worklet: method param shadowing does not leak to outer closure" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var x = 1;
+        \\function w() {
+        \\  "worklet";
+        \\  var x = 2;
+        \\  return { set v(x) { console.log(x); } };
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // x는 worklet 내부 로컬이므로 closure에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: nested object with computed property and new expression" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var key = "a", Cls = class {};
+        \\function w() {
+        \\  "worklet";
+        \\  var o = { [key]: new Cls() };
+        \\  return o;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "key:key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Cls:Cls") != null);
 }
