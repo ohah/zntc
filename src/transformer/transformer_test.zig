@@ -1102,3 +1102,34 @@ test "Worklet: arrow function with typed var params not in closure (ES5 lowering
     // type annotation이 변수에 있고 params에는 없는 경우에도 params는 제외되어야 함
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
 }
+
+test "Worklet: nested function spread captures __toConsumableArray (ES5)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "export function setup() { \"worklet\"; const f = (cb: any, ...args: any[]) => { cb(...args); }; globalThis.setTimeout = f as any; }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // nested function의 spread가 __toConsumableArray를 사용 — closure에 캡처되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__toConsumableArray") != null);
+    const closure_start = std.mem.indexOf(u8, code, "__closure = {") orelse unreachable;
+    const closure_end = std.mem.indexOfPos(u8, code, closure_start, "}") orelse unreachable;
+    const closure = code[closure_start..closure_end];
+    try std.testing.expect(std.mem.indexOf(u8, closure, "__toConsumableArray") != null);
+}
+
+test "Worklet: nested function params do not leak into outer closure" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var ext = 1; export function w() { \"worklet\"; function inner(x: number) { return x + ext; } return inner(1); }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // ext는 외부 참조 → closure에 포함
+    // inner의 param x는 nested locals → closure에 미포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+}
