@@ -97,7 +97,7 @@ pub const AstTransformCtx = struct {
         body_idx: NodeIndex,
         params_start: u32,
         params_len: u32,
-    ) Error![]const []const u8 {
+    ) Error![]const worklet_mod.ClosureVar {
         return worklet_mod.collectClosureVars(self.transformer, body_idx, params_start, params_len);
     }
 
@@ -313,7 +313,7 @@ pub const AstTransformCtx = struct {
         self: *AstTransformCtx,
         func_name: []const u8,
         body_idx: NodeIndex,
-        closure_vars: []const []const u8,
+        closure_vars: []const worklet_mod.ClosureVar,
         params_start: u32,
         params_len: u32,
         flags: u32,

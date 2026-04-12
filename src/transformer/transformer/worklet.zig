@@ -22,6 +22,14 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
+/// Closure 변수 정보. name + 원본 identifier_reference NodeIndex (scope hoisting rename용).
+pub const ClosureVar = struct {
+    name: []const u8,
+    /// 원본 identifier_reference 노드 인덱스.
+    /// buildClosureObject에서 symbol_id를 복사하여 scope hoisting rename을 지원.
+    ref_idx: NodeIndex,
+};
+
 // ================================================================
 // Phase 1: "worklet" 디렉티브 감지 + 제거
 // ================================================================
@@ -135,10 +143,10 @@ pub fn collectClosureVars(
     body_idx: NodeIndex,
     params_start: u32,
     params_len: u32,
-) Error![]const []const u8 {
+) Error![]const ClosureVar {
     var locals = std.StringHashMap(void).init(self.allocator);
     defer locals.deinit();
-    var refs = std.StringHashMap(void).init(self.allocator);
+    var refs = std.StringHashMap(NodeIndex).init(self.allocator);
     defer refs.deinit();
 
     // 1. 파라미터 이름 수집
@@ -151,24 +159,23 @@ pub fn collectClosureVars(
         }
     }
 
-    // 2-3. body 순회: 지역 선언 → locals, 식별자 참조 → refs
+    // 2-3. body 순회: 지역 선언 → locals, 식별자 참조 → refs (NodeIndex 포함)
     try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
 
     // 4. refs - locals - globals = closure vars
-    // 4. refs - locals - globals = closure vars
-    var result: std.ArrayList([]const u8) = .empty;
+    var result: std.ArrayList(ClosureVar) = .empty;
     var iter = refs.iterator();
     while (iter.next()) |entry| {
         const name = entry.key_ptr.*;
         if (locals.contains(name)) continue;
         if (isGlobal(name)) continue;
-        try result.append(self.allocator, name);
+        try result.append(self.allocator, .{ .name = name, .ref_idx = entry.value_ptr.* });
     }
 
     // 정렬 (결정론적 출력)
-    std.mem.sort([]const u8, result.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
+    std.mem.sort(ClosureVar, result.items, {}, struct {
+        fn lessThan(_: void, a: ClosureVar, b: ClosureVar) bool {
+            return std.mem.order(u8, a.name, b.name) == .lt;
         }
     }.lessThan);
 
@@ -234,7 +241,7 @@ fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
     locals: *std.StringHashMap(void),
-    refs: *std.StringHashMap(void),
+    refs: *std.StringHashMap(NodeIndex),
     depth: u32,
 ) Error!void {
     if (idx.isNone()) return;
@@ -244,11 +251,11 @@ fn walkBodyForClosureAnalysis(
     const node = self.ast.getNode(idx);
 
     switch (node.tag) {
-        // 식별자 참조 수집
+        // 식별자 참조 수집 (NodeIndex 포함 — scope hoisting rename용)
         .identifier_reference => {
             const name = self.ast.getText(node.data.string_ref);
             if (name.len > 0) {
-                refs.put(name, {}) catch return error.OutOfMemory;
+                refs.put(name, idx) catch return error.OutOfMemory;
             }
         },
 
@@ -570,7 +577,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
 pub fn buildWorkletPropertyAssignments(
     self: *Transformer,
     func_name: []const u8,
-    closure_vars: []const []const u8,
+    closure_vars: []const ClosureVar,
     init_code: []const u8,
     hash: u32,
     source_location: []const u8,
@@ -618,24 +625,36 @@ pub fn buildWorkletPropertyAssignments(
 }
 
 /// { var1: var1, var2: var2, ... } 객체 리터럴 노드를 생성한다.
-fn buildClosureObject(self: *Transformer, closure_vars: []const []const u8) Error!NodeIndex {
+/// explicit key-value 형식으로 생성하고, value의 identifier_reference에
+/// 원본 참조의 symbol_id를 복사하여 scope hoisting rename을 지원한다.
+fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    for (closure_vars) |var_name| {
-        const name_span = try self.ast.addString(var_name);
-        // key: identifier (shorthand { x } — right = .none)
+    for (closure_vars) |cv| {
+        const name_span = try self.ast.addString(cv.name);
+        // key: identifier (property name — rename 대상 아님)
         const key = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = name_span,
             .data = .{ .string_ref = name_span },
         });
-        // shorthand object_property: { x } → left=key, right=.none
+        // value: identifier_reference (scope hoisting rename 대상)
+        const value = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = name_span,
+            .data = .{ .string_ref = name_span },
+        });
+        // 원본 참조의 symbol_id 복사 → scope hoisting rename 시 자동 갱신
+        if (!cv.ref_idx.isNone()) {
+            self.copySymbolId(cv.ref_idx, value);
+        }
+        // explicit key-value: { hue2rgb: hue2rgb } → rename 시 { hue2rgb: hue2rgb$1 }
         const prop = try self.ast.addNode(.{
             .tag = .object_property,
             .span = zero_span,
-            .data = .{ .binary = .{ .left = key, .right = .none, .flags = 0 } },
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
         });
         try self.scratch.append(self.allocator, prop);
     }
@@ -739,7 +758,7 @@ pub fn generateInitCode(
     self: *Transformer,
     func_name: []const u8,
     body_idx: NodeIndex,
-    closure_vars: []const []const u8,
+    closure_vars: []const ClosureVar,
     params_start: u32,
     params_len: u32,
     flags: u32,
@@ -788,14 +807,14 @@ pub fn generateInitCode(
 }
 
 /// const { var1, var2, ... } = this.__closure; 문을 생성한다.
-fn buildClosureDestructuring(self: *Transformer, closure_vars: []const []const u8, zero_span: Span) Error!NodeIndex {
+fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVar, zero_span: Span) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     const none = @intFromEnum(NodeIndex.none);
 
     // object binding pattern: { var1, var2, ... }
-    for (closure_vars) |var_name| {
-        const name_span = try self.ast.addString(var_name);
+    for (closure_vars) |cv| {
+        const name_span = try self.ast.addString(cv.name);
         const key = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = name_span,

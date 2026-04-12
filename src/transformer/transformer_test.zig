@@ -829,7 +829,7 @@ test "Worklet: parameters are not closure vars" {
     defer std.testing.allocator.free(code);
     // x, y는 파라미터이므로 closure에 포함되지 않아야 함
     // __closure에 offset만 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { offset }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { offset: offset }") != null);
 }
 
 test "Worklet: initData contains code and location" {
@@ -989,7 +989,7 @@ test "Worklet: external variable captured, property excluded" {
     defer std.testing.allocator.free(code);
     // config → closure, speed → property 제외
     try std.testing.expect(std.mem.indexOf(u8, code, "config") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { config }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { config: config }") != null);
 }
 
 test "Worklet: try-catch body member access excludes property" {
@@ -1045,7 +1045,7 @@ test "Worklet: inner function declaration is local" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     // inner → local function. cb → external closure var.
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { cb }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { cb: cb }") != null);
 }
 
 test "Worklet: globalThis property not collected as closure var (unary_expression extra)" {
@@ -1059,5 +1059,5 @@ test "Worklet: globalThis property not collected as closure var (unary_expressio
     defer std.testing.allocator.free(code);
     // __myProp는 globalThis의 property이므로 closure에 포함되면 안 됨
     // fn만 closure에 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { fn }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { fn: fn }") != null);
 }
