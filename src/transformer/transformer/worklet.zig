@@ -647,9 +647,8 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
             .data = .{ .string_ref = name_span },
         });
         // 원본 참조의 symbol_id 복사 → scope hoisting rename 시 자동 갱신
-        if (!cv.ref_idx.isNone()) {
-            self.copySymbolId(cv.ref_idx, value);
-        }
+        // (ref_idx는 walkBodyForClosureAnalysis에서 항상 유효한 identifier_reference 노드)
+        self.copySymbolId(cv.ref_idx, value);
         // explicit key-value: { hue2rgb: hue2rgb } → rename 시 { hue2rgb: hue2rgb$1 }
         const prop = try self.ast.addNode(.{
             .tag = .object_property,
