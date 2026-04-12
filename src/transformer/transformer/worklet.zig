@@ -288,6 +288,99 @@ fn walkScopedBody(
     }
 }
 
+/// arrow function용 scoped body walker.
+/// params 노드의 모든 identifier를 inner locals로 수집하여 body의 free variable만 전파.
+fn walkScopedBodyWithParamNode(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    params_idx: NodeIndex,
+    outer_locals: *std.StringHashMap(void),
+    outer_refs: *std.StringHashMap(NodeIndex),
+    depth: u32,
+) Error!void {
+    var inner_locals = std.StringHashMap(void).init(self.allocator);
+    defer inner_locals.deinit();
+
+    // params의 모든 identifier를 locals로 수집.
+    // cover grammar 결과에 따라 formal_parameters, formal_parameter,
+    // identifier_reference, binding_identifier 등 다양한 형태 가능.
+    // generic walker로 params 트리를 순회하여 모든 identifier를 수집.
+    if (!params_idx.isNone()) {
+        try collectAllIdentifiers(self, params_idx, &inner_locals, 0);
+    }
+
+    var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
+    defer inner_refs.deinit();
+    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, depth + 1);
+
+    var iter = inner_refs.iterator();
+    while (iter.next()) |entry| {
+        if (!inner_locals.contains(entry.key_ptr.*) and !outer_locals.contains(entry.key_ptr.*)) {
+            outer_refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+        }
+    }
+}
+
+/// 노드 트리에서 모든 identifier (identifier_reference, binding_identifier 등)를 수집.
+/// params에서 binding names를 추출하는 용도. generic 순회.
+fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void), depth: u32) Error!void {
+    if (idx.isNone()) return;
+    if (depth > 32) return;
+    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+
+    const node = self.ast.getNode(idx);
+    switch (node.tag) {
+        .identifier_reference, .binding_identifier, .assignment_target_identifier => {
+            const name = self.ast.getText(node.data.string_ref);
+            if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+            return;
+        },
+        else => {},
+    }
+    // generic 순회
+    const kind = node.tag.dataKind();
+    switch (kind) {
+        .leaf => {},
+        .unary => {
+            if (!node.data.unary.operand.isNone()) try collectAllIdentifiers(self, node.data.unary.operand, locals, depth + 1);
+        },
+        .binary => {
+            try collectAllIdentifiers(self, node.data.binary.left, locals, depth + 1);
+            try collectAllIdentifiers(self, node.data.binary.right, locals, depth + 1);
+        },
+        .ternary => {
+            try collectAllIdentifiers(self, node.data.ternary.a, locals, depth + 1);
+            try collectAllIdentifiers(self, node.data.ternary.b, locals, depth + 1);
+            try collectAllIdentifiers(self, node.data.ternary.c, locals, depth + 1);
+        },
+        .list => {
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                if (list.start + i < self.ast.extra_data.items.len)
+                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), locals, depth + 1);
+            }
+        },
+        .extra => {
+            const e = node.data.extra;
+            for (node.tag.extraChildOffsets()) |offset| {
+                if (self.ast.hasExtra(e, @as(u32, offset) + 1))
+                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e + offset]), locals, depth + 1);
+            }
+            for (node.tag.extraListOffsets()) |lo| {
+                if (!self.ast.hasExtra(e, @as(u32, lo[1]) + 1)) continue;
+                const ls = self.ast.extra_data.items[e + lo[0]];
+                const ll = self.ast.extra_data.items[e + lo[1]];
+                var li: u32 = 0;
+                while (li < ll) : (li += 1) {
+                    if (ls + li < self.ast.extra_data.items.len)
+                        try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[ls + li]), locals, depth + 1);
+                }
+            }
+        },
+    }
+}
+
 /// body를 재귀 순회하여 지역 선언(locals)과 식별자 참조(refs)를 수집한다.
 ///
 /// Generic AST walker: nodeLayout() 메타데이터를 사용하여 모든 노드 타입을 자동 순회.
@@ -340,16 +433,9 @@ fn walkBodyForClosureAnalysis(
             if (!self.ast.hasExtra(e, 2)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
             if (body_idx.isNone()) return;
-            // arrow params (formal_parameters 노드에서 추출)
+            // arrow params → inner locals (formal_parameters list 직접 전달)
             const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (!params_idx.isNone()) {
-                const pn = self.ast.getNode(params_idx);
-                if (pn.tag == .formal_parameters) {
-                    try walkScopedBody(self, body_idx, &.{}, pn.data.list.start, pn.data.list.len, locals, refs, depth);
-                    return;
-                }
-            }
-            try walkScopedBody(self, body_idx, &.{}, 0, 0, locals, refs, depth);
+            try walkScopedBodyWithParamNode(self, body_idx, params_idx, locals, refs, depth);
             return;
         },
         .method_definition => {

@@ -1570,3 +1570,32 @@ test "Worklet: nested function and arrow capture outer imports" {
     // extract의 param x는 closure에 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, code, " x:x") == null);
 }
+
+test "Worklet: arrow callback param does not leak into outer closure (cover grammar)" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function w() {
+        \\  "worklet";
+        \\  var arr = [];
+        \\  arr.forEach((item) => item());
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // arrow param 'item'은 closure에 없어야 함 (cover grammar 파라미터)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: arrow with destructured param does not leak" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function w() {
+        \\  "worklet";
+        \\  var fn = ({ a, b }) => a + b;
+        \\  return fn;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
