@@ -702,7 +702,7 @@ pub fn emitModule(
     // (reanimated/worklets 내부에도 "worklet" 디렉티브가 있으므로)
     const exclude_worklet = options.worklet_transform and
         (std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
-        std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null);
+            std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null);
     const merged_plugins = builtin.collect(.{
         .worklet = options.worklet_transform and !exclude_worklet,
     }, options.plugins, arena_alloc) catch return error.OutOfMemory;

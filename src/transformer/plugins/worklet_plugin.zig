@@ -129,7 +129,7 @@ fn buildWorkletIIFE(
 
     // factory body: [var_decl, prop_stmts[0], prop_stmts[1], prop_stmts[2], return_stmt]
     const body_list = try t.ast.addNodeList(&.{
-        var_decl,     prop_stmts[0],
+        var_decl,      prop_stmts[0],
         prop_stmts[1], prop_stmts[2],
         return_stmt,
     });
@@ -143,7 +143,8 @@ fn buildWorkletIIFE(
     const empty_params = try t.ast.addNodeList(&.{});
     const wrapper_func = try t.addExtraNode(.function_expression, zero_span, &.{
         none, // name (anonymous)
-        empty_params.start, empty_params.len,
+        empty_params.start,
+        empty_params.len,
         @intFromEnum(body),
         0, // flags
         none, // return type
