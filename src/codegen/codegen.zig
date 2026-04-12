@@ -778,13 +778,15 @@ pub const Codegen = struct {
             .ts_enum_declaration => try self.emitEnumIIFE(node),
             .ts_module_declaration => try self.emitNamespaceIIFE(node),
 
-            // TS expression 노드: operand만 출력 (type 부분 스트리핑).
-            // worklet __initData.code가 pre-visit body를 사용하므로 TS 노드가 남아있을 수 있음.
+            // TS/Flow expression 노드: operand만 출력 (type 부분 스트리핑).
+            // pre-visit body를 codegen할 때 (e.g. worklet __initData.code) TS/Flow 노드가 남아있을 수 있음.
             .ts_as_expression,
             .ts_satisfies_expression,
             .ts_non_null_expression,
             .ts_type_assertion,
             .ts_instantiation_expression,
+            .flow_as_expression,
+            .flow_type_cast_expression,
             => try self.emitNode(node.data.unary.operand),
 
             // TS 타입 전용 노드: 출력 안 함
