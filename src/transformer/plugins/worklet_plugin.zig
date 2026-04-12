@@ -31,24 +31,24 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     if (info.body_idx.isNone()) return;
     if (!api.hasDirective(info.body_idx, "worklet")) return;
 
-    // 디렉티브 제거 (원본 body에서 — ES5 헬퍼 없는 pre-visit body)
-    const stripped_body = try api.stripDirective(info.original_body_idx);
+    // 디렉티브 제거 (post-visit body — TS 스트리핑 완료)
+    const stripped_body = try api.stripDirective(info.body_idx);
 
-    // Closure 변수 추출 (원본 body + params 사용 — Babel과 동일하게 변환 전 AST 분석)
-    const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
+    // Closure 변수 추출 (post-visit body — ES5 변환 포함된 실제 body)
+    const closure_vars = try api.getClosureVars(info.body_idx, info.params_start, info.params_len);
     defer {
         for (closure_vars) |cv| api.getAllocator().free(cv.name);
         api.getAllocator().free(closure_vars);
     }
 
-    // Init code 생성 (pre-visit body — Hermes가 spread/rest 네이티브 지원)
+    // Init code 생성 (post-visit body — TS 스트리핑 완료)
     const func_name = info.name orelse "anonymous";
     const init_code = try api.generateCode(
         func_name,
         stripped_body,
         closure_vars,
-        info.original_params_start,
-        info.original_params_len,
+        info.params_start,
+        info.params_len,
         info.flags,
     );
     defer api.getAllocator().free(init_code);
