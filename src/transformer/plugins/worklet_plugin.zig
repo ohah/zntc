@@ -31,17 +31,18 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     if (info.body_idx.isNone()) return;
     if (!api.hasDirective(info.body_idx, "worklet")) return;
 
-    // 디렉티브 제거 (pre-visit body — ES5 헬퍼 없는 원본)
+    // 디렉티브 제거 + closure 분석 + init code 생성: 모두 pre-visit body 사용.
+    // pre-visit body는 TS 포함/ES5 미적용 → codegen이 TS 자동 스트리핑.
+    // ES5 헬퍼가 없으므로 UI thread에서 remote function deadlock 방지.
+    // define 치환 전 식별자(global, __DEV__, process)는 JS_GLOBALS에 등록되어 제외됨.
     const stripped_body = try api.stripDirective(info.original_body_idx);
 
-    // Closure 변수 추출 (pre-visit body — ES5 헬퍼가 아닌 원본 참조만 캡처)
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
     defer {
         for (closure_vars) |cv| api.getAllocator().free(cv.name);
         api.getAllocator().free(closure_vars);
     }
 
-    // Init code 생성 (pre-visit body — codegen이 TS 노드를 자동 스트리핑)
     const func_name = info.name orelse "anonymous";
     const init_code = try api.generateCode(
         func_name,
