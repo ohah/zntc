@@ -163,13 +163,15 @@ pub fn collectClosureVars(
     try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
 
     // 4. refs - locals - globals = closure vars
+    // name을 복제: string_table 슬라이스는 이후 addString 호출로 무효화될 수 있음
     var result: std.ArrayList(ClosureVar) = .empty;
     var iter = refs.iterator();
     while (iter.next()) |entry| {
         const name = entry.key_ptr.*;
         if (locals.contains(name)) continue;
         if (isGlobal(name)) continue;
-        try result.append(self.allocator, .{ .name = name, .ref_idx = entry.value_ptr.* });
+        const duped = self.allocator.dupe(u8, name) catch return error.OutOfMemory;
+        try result.append(self.allocator, .{ .name = duped, .ref_idx = entry.value_ptr.* });
     }
 
     // 정렬 (결정론적 출력)
