@@ -2083,8 +2083,12 @@ fn parseBuildOptions(
         .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
         .configurable_exports = getObjectBool(env, opts_obj, "configurableExports", false),
-        .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false),
-        .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false),
+        // RN 프리셋: platform=react-native이면 CLI와 동일하게 auto-enable.
+        // (CLI main.zig의 --platform=react-native 분기 참조 — worklet transform 없이는
+        // react-native-reanimated/worklets 내부 worklet 함수들이 serialize되지 않아
+        // LayoutAnimation 등에서 JSI getObject assert 실패로 크래시 발생.)
+        .strict_execution_order = getObjectBool(env, opts_obj, "strictExecutionOrder", false) or platform == .react_native,
+        .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or platform == .react_native,
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
