@@ -1997,8 +1997,17 @@ pub const Transformer = struct {
         const pp = try self.visitParamsCollectProperties(params_start, params_len);
 
         // 바디 방문
+        // worklet directive가 있으면 ES5 lowering 비활성화 — Hermes UI runtime이
+        // spread/rest/arrow를 네이티브 지원하므로 ES5 헬퍼 주입 불필요.
+        // ES5 헬퍼는 worklet이 아닌 일반 함수라 UI thread에서 remote function으로
+        // 직렬화되어 동기 호출 시 deadlock 발생.
         const old_body_idx = self.readNodeIdx(e, 3);
+        const is_worklet = self.options.plugins.len > 0 and
+            worklet_mod.isWorkletDirectiveGeneric(self, old_body_idx, "worklet");
+        const saved_unsupported = self.options.unsupported;
+        if (is_worklet) self.options.unsupported = .{};
         var new_body = try self.visitNode(old_body_idx);
+        if (is_worklet) self.options.unsupported = saved_unsupported;
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
