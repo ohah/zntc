@@ -38,15 +38,16 @@ pub const FunctionInfo = struct {
     node_tag: Tag,
     /// 함수 이름 (null = 익명 함수/화살표)
     name: ?[]const u8,
-    /// 함수 body 노드 인덱스 (block_statement/function_body)
+    /// 함수 body 노드 인덱스 (변환 후)
     body_idx: NodeIndex,
     /// 파라미터 extra_data 시작 위치 (변환 후)
     params_start: u32,
     /// 파라미터 수 (변환 후)
     params_len: u32,
-    /// 원본 파라미터 (변환 전, rest params 등 포함)
+    /// 원본 (변환 전) — Babel과 동일하게 변환 전 AST로 closure 분석
     original_params_start: u32,
     original_params_len: u32,
+    original_body_idx: NodeIndex,
     /// 함수 플래그 (bit 0=async, bit 1=generator)
     flags: u32,
     /// 소스 파일 경로 (__initData.location 등에 사용)
