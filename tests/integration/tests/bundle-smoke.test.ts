@@ -2476,7 +2476,14 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
@@ -2488,7 +2495,9 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(code).toMatch(/move\S*\.__closure\s*=\s*\{[^}]*offset/);
     // "worklet" 디렉티브는 제거되어야 함 (__initData.code 안은 제외)
     const lines = code.split("\n");
-    const directiveLines = lines.filter(l => /^\s*"worklet"/.test(l) && !l.includes("__initData"));
+    const directiveLines = lines.filter(
+      (l) => /^\s*"worklet"/.test(l) && !l.includes("__initData"),
+    );
     expect(directiveLines.length).toBe(0);
   });
 
@@ -2509,7 +2518,14 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
@@ -2517,7 +2533,9 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(code).toContain("__workletHash");
     expect(code).toContain("__initData");
     // "worklet" 디렉티브가 남아있으면 안 됨 (__initData.code 제외)
-    const rawLines = code.split("\n").filter(l => /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:"));
+    const rawLines = code
+      .split("\n")
+      .filter((l) => /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:"));
     expect(rawLines.length).toBe(0);
   });
 
@@ -2548,7 +2566,14 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
@@ -2588,16 +2613,23 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
     // inline arrow worklet도 __workletHash가 주입되어야 함
     expect(code).toContain("__workletHash");
     // "worklet" 디렉티브가 변환 안 된 채 남아있으면 안 됨
-    const untransformed = code.split("\n").filter(l =>
-      /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:")
-    );
+    const untransformed = code
+      .split("\n")
+      .filter((l) => /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:"));
     expect(untransformed.length).toBe(0);
   });
 
@@ -2618,7 +2650,14 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
@@ -2645,7 +2684,14 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, "out.js");
-    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--platform=react-native",
+      "--target=es5",
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, "utf-8");
