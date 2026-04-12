@@ -262,18 +262,45 @@ fn walkBodyForClosureAnalysis(
             }
         },
 
-        // 중첩 함수/화살표 — 내부 body는 별도 스코프이므로 진입하지 않음.
-        // 단, 함수 이름은 외부 스코프에 선언됨 (function_declaration).
+        // 중첩 함수: 함수 이름은 외부 locals, params/body는 재귀 순회.
+        // __initData.code가 중첩 함수를 포함하므로, 중첩 body 안의 외부 참조
+        // (예: ES5 헬퍼 __toConsumableArray)도 캡처해야 한다.
+        // 중첩 함수의 params는 locals에 추가하여 false positive를 방지.
         .function_declaration => {
-            // 함수 이름 → 지역 선언
             const e = node.data.extra;
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             try collectBindingNames(self, name_idx, locals);
-            // 함수 body는 진입하지 않음 (별도 스코프)
+            // params → locals, body → 재귀
+            if (self.ast.hasExtra(e, 4)) {
+                const p_start = self.ast.extra_data.items[e + 1];
+                const p_len = self.ast.extra_data.items[e + 2];
+                var pi: u32 = 0;
+                while (pi < p_len) : (pi += 1) {
+                    try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + pi]), locals);
+                }
+                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 3]), locals, refs, depth + 1);
+            }
         },
-        .function_expression, .arrow_function_expression, .function => {
-            // 중첩 함수 body 진입 안 함
-            return;
+        .function_expression, .function => {
+            const e = node.data.extra;
+            if (self.ast.hasExtra(e, 4)) {
+                const p_start = self.ast.extra_data.items[e + 1];
+                const p_len = self.ast.extra_data.items[e + 2];
+                var pi: u32 = 0;
+                while (pi < p_len) : (pi += 1) {
+                    try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + pi]), locals);
+                }
+                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 3]), locals, refs, depth + 1);
+            }
+        },
+        .arrow_function_expression => {
+            // arrow: extra = [params, body, flags]
+            const e = node.data.extra;
+            if (self.ast.hasExtra(e, 3)) {
+                // params는 단일 NodeIndex(binding_identifier 또는 formal_parameters)
+                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
+                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 1]), locals, refs, depth + 1);
+            }
         },
 
         // 변수 선언: 이름 → locals, 초기값 → refs
