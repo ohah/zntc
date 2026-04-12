@@ -778,7 +778,22 @@ pub const Codegen = struct {
             .ts_enum_declaration => try self.emitEnumIIFE(node),
             .ts_module_declaration => try self.emitNamespaceIIFE(node),
 
-            // TS 노드는 transformer에서 제거됨 — 여기 도달하면 strip_types=false
+            // TS expression 노드: operand만 출력 (type 부분 스트리핑).
+            // worklet __initData.code가 pre-visit body를 사용하므로 TS 노드가 남아있을 수 있음.
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_non_null_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            => try self.emitNode(node.data.unary.operand),
+
+            // TS 타입 전용 노드: 출력 안 함
+            .ts_type_alias_declaration,
+            .ts_interface_declaration,
+            .ts_import_equals_declaration,
+            => {},
+
+            // 그 외 — 소스 텍스트 그대로 출력
             else => try self.writeNodeSpan(node),
         }
     }
