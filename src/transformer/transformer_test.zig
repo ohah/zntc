@@ -780,8 +780,8 @@ test "Worklet: statement count includes property assignments" {
         .{ .plugins = &[_]Plugin{worklet_plugin_mod.plugin()}, .jsx_filename = "test.ts" },
     );
     defer r.deinit();
-    // 1 function declaration + 3 property assignments = 4 statements
-    try std.testing.expectEqual(@as(u32, 5), r.statementCount());
+    // 1 function declaration + 4 property assignments (hash/closure/initData/stackDetails/pluginVersion) = 6 statements
+    try std.testing.expectEqual(@as(u32, 6), r.statementCount());
 }
 
 test "Worklet: no closure vars produces empty closure object" {
@@ -823,8 +823,8 @@ test "Worklet: parameters are not closure vars" {
         \\}
     );
     defer r.deinit();
-    // function + 3 property assignments = 4 statements
-    try std.testing.expectEqual(@as(u32, 5), r.statementCount());
+    // function + 5 property assignments = 6 statements
+    try std.testing.expectEqual(@as(u32, 6), r.statementCount());
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     // x, y는 파라미터이므로 closure에 포함되지 않아야 함
@@ -860,8 +860,8 @@ test "Worklet: non-worklet function mixed with worklet function" {
         \\}
     );
     defer r.deinit();
-    // normal(1) + anim(1) + 3 property assignments = 5 statements
-    try std.testing.expectEqual(@as(u32, 6), r.statementCount());
+    // normal(1) + anim(1) + 5 property assignments = 7 statements
+    try std.testing.expectEqual(@as(u32, 7), r.statementCount());
 }
 
 test "Worklet: globals are excluded from closure vars" {
