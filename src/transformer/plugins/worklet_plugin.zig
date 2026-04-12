@@ -130,9 +130,16 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
             try api.addTrailingStatement(stmt);
         }
     } else if (info.node_tag == .method_definition) {
+        // getter/setter worklet은 지원하지 않음 — 일반 함수로 변환하면 시맨틱이 깨지므로 skip.
+        // (Babel도 동일하게 getter/setter worklet을 지원하지 않음)
+        {
+            const t = api.transformer;
+            const method_flags = t.ast.extra_data.items[t.ast.getNode(info.node_idx).data.extra + 4];
+            if ((method_flags & 0x02) != 0 or (method_flags & 0x04) != 0) return; // getter or setter
+        }
+
         // object method: { build(props) { 'worklet'; ... } }
         // → { build: (function() { var build = function(props) { ... }; build.__workletHash = ...; return build; })() }
-        // method_definition을 object_property(key: IIFE)로 교체.
         const func_expr = try buildFunctionExprFromMethod(api, info);
         const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
 
