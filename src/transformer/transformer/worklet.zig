@@ -605,7 +605,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
 
 /// worklet 함수에 대한 __workletHash, __closure, __initData 프로퍼티 할당문들을 생성한다.
 ///
-/// 반환: 3개의 expression_statement NodeIndex 배열 (caller가 trailing_nodes에 추가)
+/// 반환: 4개의 expression_statement NodeIndex 배열 (caller가 trailing_nodes에 추가)
 pub fn buildWorkletPropertyAssignments(
     self: *Transformer,
     func_name: []const u8,
@@ -616,7 +616,7 @@ pub fn buildWorkletPropertyAssignments(
     /// 원본 함수 노드 인덱스. 이 노드의 name span을 사용하면
     /// codegen의 scope hoisting rename이 자동 적용된다.
     func_node_idx: NodeIndex,
-) Error![3]NodeIndex {
+) Error![4]NodeIndex {
     // 원본 함수의 binding_identifier span 사용 (scope hoisting rename 호환)
     const func_name_span = blk: {
         if (!func_node_idx.isNone()) {
@@ -653,7 +653,17 @@ pub fn buildWorkletPropertyAssignments(
     const init_data_obj = try buildInitDataObject(self, init_code, source_location, zero_span);
     const init_data_stmt = try buildPropAssignment(self, func_name_span, "__initData", init_data_obj, func_node_idx);
 
-    return .{ hash_stmt, closure_stmt, init_data_stmt };
+    // 4. funcName.__stackDetails = [];
+    // Worklets runtime이 __DEV__ 모드에서 registerWorkletStackDetails(hash, __stackDetails)를
+    // 호출하므로, 빈 배열이라도 설정해야 crash 방지.
+    const empty_array = try self.ast.addNode(.{
+        .tag = .array_expression,
+        .span = zero_span,
+        .data = .{ .list = try self.ast.addNodeList(&.{}) },
+    });
+    const stack_stmt = try buildPropAssignment(self, func_name_span, "__stackDetails", empty_array, func_node_idx);
+
+    return .{ hash_stmt, closure_stmt, init_data_stmt, stack_stmt };
 }
 
 /// { var1: var1, var2: var2, ... } 객체 리터럴 노드를 생성한다.
