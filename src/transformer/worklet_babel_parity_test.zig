@@ -575,13 +575,37 @@ test "babel:babel_plugin_for_class_worklets:workletizes_setter" {
 }
 
 test "babel:babel_plugin_for_class_worklets:workletizes_class_field" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\class Foo {
+        \\  bar = (x) => {
+        \\    'worklet';
+        \\    return x + 2;
+        \\  };
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "babel:babel_plugin_for_class_worklets:workletizes_static_class_field" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\class Foo {
+        \\  static bar = (x) => {
+        \\    'worklet';
+        \\    return x + 2;
+        \\  };
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "babel:babel_plugin_for_class_worklets:workletizes_constructor" {
