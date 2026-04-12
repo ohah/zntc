@@ -1047,3 +1047,17 @@ test "Worklet: inner function declaration is local" {
     // inner → local function. cb → external closure var.
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { cb }") != null);
 }
+
+test "Worklet: globalThis property not collected as closure var (unary_expression extra)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var fn = 1; function setup() { \"worklet\"; if (!globalThis.__myProp) { globalThis.__myProp = fn; } }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // __myProp는 globalThis의 property이므로 closure에 포함되면 안 됨
+    // fn만 closure에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { fn }") != null);
+}
