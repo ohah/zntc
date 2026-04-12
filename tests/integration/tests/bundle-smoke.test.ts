@@ -2456,9 +2456,204 @@ describe("dev 모드: re-export 소스 모듈 init", () => {
     expect(result.runOutput).toContain("vals:1,2,3");
   });
 
-  // TODO: rest params + worklet 조합 테스트 (#1104)
-  // TODO: function_expression worklet IIFE 테스트 (#1100)
-  // TODO: worklet closure TS 타입 제외 테스트 (#1102)
   // --platform=react-native 번들은 bun으로 직접 실행 불가 (RN 런타임 필요)
-  // Hermes validation CI에서 검증
+  // 아래 테스트는 번들 출력 내용을 검사하는 방식으로 검증
+
+  test("worklet: function declaration에 __workletHash/__closure/__initData 주입", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        import { move } from "./anim";
+        console.log(typeof move);
+      `,
+      "anim.ts": `
+        export function move(x: number): number {
+          "worklet";
+          return x + offset;
+        }
+        var offset = 10;
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    // __workletHash, __closure, __initData가 주입되어야 함
+    expect(code).toContain("__workletHash");
+    expect(code).toContain("__closure");
+    expect(code).toContain("__initData");
+    // offset이 closure에 포함되어야 함
+    expect(code).toMatch(/move\S*\.__closure\s*=\s*\{[^}]*offset/);
+    // "worklet" 디렉티브는 제거되어야 함 (__initData.code 안은 제외)
+    const lines = code.split("\n");
+    const directiveLines = lines.filter(l => /^\s*"worklet"/.test(l) && !l.includes("__initData"));
+    expect(directiveLines.length).toBe(0);
+  });
+
+  test("worklet: arrow function worklet이 IIFE factory로 변환됨", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        import { run } from "./mod";
+        console.log(typeof run);
+      `,
+      "mod.ts": `
+        export const run = () => {
+          "worklet";
+          return globalValue;
+        };
+        var globalValue = 42;
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    // arrow worklet도 __workletHash가 주입되어야 함
+    expect(code).toContain("__workletHash");
+    expect(code).toContain("__initData");
+    // "worklet" 디렉티브가 남아있으면 안 됨 (__initData.code 제외)
+    const rawLines = code.split("\n").filter(l => /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:"));
+    expect(rawLines.length).toBe(0);
+  });
+
+  test("worklet: scope hoisting rename 시 __closure가 renamed 변수 참조", async () => {
+    // 동일 이름(helper)이 두 모듈에 존재 → scope hoisting이 하나를 rename
+    const fixture = await createFixture({
+      "index.ts": `
+        import { work } from "./a";
+        import { helper } from "./b";
+        console.log(typeof work, typeof helper);
+      `,
+      "a.ts": `
+        function helper(x: number): number {
+          "worklet";
+          return x * 2;
+        }
+        export function work(): number {
+          "worklet";
+          return helper(21);
+        }
+      `,
+      "b.ts": `
+        export function helper(): string {
+          return "other";
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    // __closure는 explicit key-value 형식이어야 함 (shorthand 아님)
+    const closureMatch = code.match(/work\S*\.__closure\s*=\s*\{([^}]*)\}/);
+    expect(closureMatch).not.toBeNull();
+    expect(closureMatch![1]).toContain("helper:");
+
+    // scope hoisting으로 rename된 경우, closure value도 rename된 이름 참조
+    if (code.includes("helper$")) {
+      const valueMatch = closureMatch![1].match(/helper:\s*(\w+)/);
+      expect(valueMatch).not.toBeNull();
+      // renamed 변수가 실제로 선언되어 있는지 확인
+      expect(code).toContain(valueMatch![1] + " = function");
+    }
+  });
+
+  test("worklet: inline arrow worklet (runOnUISync 패턴) 변환", async () => {
+    // Reanimated의 실제 패턴: runOnUISync(() => { 'worklet'; ... })
+    const fixture = await createFixture({
+      "index.ts": `
+        import { setup } from "./init";
+        console.log(typeof setup);
+      `,
+      "init.ts": `
+        function runOnUISync(fn: any) { fn(); }
+        var setupDone = false;
+
+        export function setup() {
+          runOnUISync(() => {
+            "worklet";
+            setupDone = true;
+          });
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    // inline arrow worklet도 __workletHash가 주입되어야 함
+    expect(code).toContain("__workletHash");
+    // "worklet" 디렉티브가 변환 안 된 채 남아있으면 안 됨
+    const untransformed = code.split("\n").filter(l =>
+      /^\s*"worklet"/.test(l) && !l.includes("__initData") && !l.includes("code:")
+    );
+    expect(untransformed.length).toBe(0);
+  });
+
+  test("worklet: function_expression worklet이 IIFE factory로 변환됨", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        import { animate } from "./mod";
+        console.log(typeof animate);
+      `,
+      "mod.ts": `
+        export const animate = function(val: number) {
+          "worklet";
+          return val * speed;
+        };
+        var speed = 2;
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    expect(code).toContain("__workletHash");
+    expect(code).toContain("__closure");
+    // speed가 closure에 포함
+    expect(code).toMatch(/__closure\s*=\s*\{[^}]*speed/);
+  });
+
+  test("worklet: closure에 파라미터가 포함되지 않아야 함", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        import { anim } from "./mod";
+        console.log(typeof anim);
+      `,
+      "mod.ts": `
+        var offset = 10;
+        export function anim(x: number, y: number): number {
+          "worklet";
+          return x + y + offset;
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--platform=react-native", "--target=es5"]);
+    expect(bundle.exitCode).toBe(0);
+
+    const code = readFileSync(outFile, "utf-8");
+    const closureMatch = code.match(/anim\S*\.__closure\s*=\s*\{([^}]*)\}/);
+    expect(closureMatch).not.toBeNull();
+    // offset만 closure에 있고, x/y는 없어야 함
+    expect(closureMatch![1]).toContain("offset");
+    expect(closureMatch![1]).not.toContain(" x");
+    expect(closureMatch![1]).not.toContain(" y");
+  });
 });
