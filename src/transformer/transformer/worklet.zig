@@ -248,6 +248,46 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
     }
 }
 
+/// 별도 스코프로 body를 순회하고, free variable만 outer refs에 병합한다.
+/// function/arrow/method의 공통 "scoped traversal + merge" 패턴.
+fn walkScopedBody(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    extra_local_indices: []const u32,
+    params_start: u32,
+    params_len: u32,
+    outer_locals: *std.StringHashMap(void),
+    outer_refs: *std.StringHashMap(NodeIndex),
+    depth: u32,
+) Error!void {
+    var inner_locals = std.StringHashMap(void).init(self.allocator);
+    defer inner_locals.deinit();
+
+    // extra locals (e.g. function name for self-reference)
+    for (extra_local_indices) |raw| {
+        try collectBindingNames(self, @enumFromInt(raw), &inner_locals);
+    }
+    // params → inner locals
+    var pi: u32 = 0;
+    while (pi < params_len) : (pi += 1) {
+        if (params_start + pi < self.ast.extra_data.items.len) {
+            try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[params_start + pi]), &inner_locals);
+        }
+    }
+
+    var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
+    defer inner_refs.deinit();
+    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, depth + 1);
+
+    // inner_refs - inner_locals - outer_locals = free variables → outer refs
+    var iter = inner_refs.iterator();
+    while (iter.next()) |entry| {
+        if (!inner_locals.contains(entry.key_ptr.*) and !outer_locals.contains(entry.key_ptr.*)) {
+            outer_refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+        }
+    }
+}
+
 /// body를 재귀 순회하여 지역 선언(locals)과 식별자 참조(refs)를 수집한다.
 ///
 /// Generic AST walker: nodeLayout() 메타데이터를 사용하여 모든 노드 타입을 자동 순회.
@@ -278,105 +318,46 @@ fn walkBodyForClosureAnalysis(
             return;
         },
 
-        // 중첩 함수: 별도 스코프로 body를 순회하여 외부 참조를 수집.
-        // __initData.code에 중첩 함수 body가 포함되므로, 그 안의 외부 참조도
-        // worklet closure에 포함해야 함 (Babel과 동일).
-        // function_declaration extra = [name, params_start, params_len, body, flags, ...]
+        // 중첩 함수/arrow/method: 별도 스코프로 body를 순회하여 외부 참조를 수집.
+        // __initData.code에 body가 포함되므로, 그 안의 free variable을
+        // worklet closure에 전파해야 함 (Babel scope chain과 동일).
         .function_declaration, .function_expression, .function => {
             const e = node.data.extra;
-            // function_declaration만 이름을 외부 locals에 추가
             if (tag == .function_declaration) {
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                try collectBindingNames(self, name_idx, locals);
+                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
             }
             if (!self.ast.hasExtra(e, 4)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
             if (body_idx.isNone()) return;
-
-            var fn_locals = std.StringHashMap(void).init(self.allocator);
-            defer fn_locals.deinit();
-            // 함수 이름 자체도 fn scope 로컬 (자기 참조)
-            const fn_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            try collectBindingNames(self, fn_name_idx, &fn_locals);
-            // params → fn scope 로컬
-            const p_start = self.ast.extra_data.items[e + 1];
-            const p_len = self.ast.extra_data.items[e + 2];
-            var pi: u32 = 0;
-            while (pi < p_len) : (pi += 1) {
-                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + pi]), &fn_locals);
-            }
-
-            var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-            defer fn_refs.deinit();
-            try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, depth + 1);
-            var fr_iter = fn_refs.iterator();
-            while (fr_iter.next()) |entry| {
-                if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                }
-            }
+            // 함수 이름(자기 참조) + params → inner locals
+            try walkScopedBody(self, body_idx, &.{
+                self.ast.extra_data.items[e], // name
+            }, self.ast.extra_data.items[e + 1], self.ast.extra_data.items[e + 2], locals, refs, depth);
             return;
         },
-        // arrow: extra = [params_list, body, flags]
         .arrow_function_expression => {
             const e = node.data.extra;
             if (!self.ast.hasExtra(e, 2)) return;
-            const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
             if (body_idx.isNone()) return;
-
-            var fn_locals = std.StringHashMap(void).init(self.allocator);
-            defer fn_locals.deinit();
-            // arrow params → fn scope 로컬
+            // arrow params (formal_parameters 노드에서 추출)
+            const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             if (!params_idx.isNone()) {
-                const params_node = self.ast.getNode(params_idx);
-                if (params_node.tag == .formal_parameters) {
-                    const plist = params_node.data.list;
-                    var pi: u32 = 0;
-                    while (pi < plist.len) : (pi += 1) {
-                        try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[plist.start + pi]), &fn_locals);
-                    }
+                const pn = self.ast.getNode(params_idx);
+                if (pn.tag == .formal_parameters) {
+                    try walkScopedBody(self, body_idx, &.{}, pn.data.list.start, pn.data.list.len, locals, refs, depth);
+                    return;
                 }
             }
-
-            var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-            defer fn_refs.deinit();
-            try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, depth + 1);
-            var fr_iter = fn_refs.iterator();
-            while (fr_iter.next()) |entry| {
-                if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                }
-            }
+            try walkScopedBody(self, body_idx, &.{}, 0, 0, locals, refs, depth);
             return;
         },
-
-        // object method / getter / setter: body를 별도 스코프로 순회.
-        // params는 method 로컬, body 내 외부 참조만 outer refs에 병합.
         .method_definition => {
             const e = node.data.extra;
             if (!self.ast.hasExtra(e, 4)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
             if (body_idx.isNone()) return;
-
-            var method_locals = std.StringHashMap(void).init(self.allocator);
-            defer method_locals.deinit();
-            const p_start = self.ast.extra_data.items[e + 1];
-            const p_len = self.ast.extra_data.items[e + 2];
-            var mi: u32 = 0;
-            while (mi < p_len) : (mi += 1) {
-                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + mi]), &method_locals);
-            }
-
-            var method_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-            defer method_refs.deinit();
-            try walkBodyForClosureAnalysis(self, body_idx, &method_locals, &method_refs, depth + 1);
-            var mr_iter = method_refs.iterator();
-            while (mr_iter.next()) |entry| {
-                if (!method_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                }
-            }
+            try walkScopedBody(self, body_idx, &.{}, self.ast.extra_data.items[e + 1], self.ast.extra_data.items[e + 2], locals, refs, depth);
             return;
         },
 
