@@ -3385,6 +3385,9 @@ pub const Transformer = struct {
                 break :blk false;
             };
 
+            // save/restore: 재귀적 visitNode 내부의 중첩 call_expression이
+            // auto_worklet_next를 오염시키지 않도록 보호.
+            const saved_auto = self.auto_worklet_next;
             if (should_auto and !arg_idx.isNone()) {
                 const arg_node = self.ast.getNode(arg_idx);
                 if (arg_node.tag == .function_expression or
@@ -3395,7 +3398,7 @@ pub const Transformer = struct {
             }
 
             const new_child = try self.visitNode(arg_idx);
-            self.auto_worklet_next = false;
+            self.auto_worklet_next = saved_auto;
 
             // pending_nodes 드레인
             if (self.pending_nodes.items.len > pending_top) {
