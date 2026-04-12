@@ -93,7 +93,7 @@ fn buildWorkletIIFE(
     api: *AstTransformCtx,
     func_node: NodeIndex,
     func_name: []const u8,
-    prop_stmts: [3]NodeIndex,
+    prop_stmts: [4]NodeIndex,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
@@ -130,11 +130,11 @@ fn buildWorkletIIFE(
         .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
     });
 
-    // factory body: [var_decl, prop_stmts[0], prop_stmts[1], prop_stmts[2], return_stmt]
+    // factory body: [var_decl, prop_stmts[0..3], return_stmt]
     const body_list = try t.ast.addNodeList(&.{
         var_decl,      prop_stmts[0],
         prop_stmts[1], prop_stmts[2],
-        return_stmt,
+        prop_stmts[3], return_stmt,
     });
     const body = try t.ast.addNode(.{
         .tag = .block_statement,
