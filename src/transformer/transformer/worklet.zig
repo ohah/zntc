@@ -189,7 +189,10 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
     const node = self.ast.getNode(idx);
 
     switch (node.tag) {
-        .binding_identifier => {
+        // arrow params without type annotations are parsed as expressions then
+        // converted via coverExpressionToAssignmentTarget:
+        //   identifier_reference → assignment_target_identifier
+        .binding_identifier, .identifier_reference, .assignment_target_identifier => {
             const name = self.ast.getText(node.data.string_ref);
             if (name.len > 0) {
                 locals.put(name, {}) catch return error.OutOfMemory;
