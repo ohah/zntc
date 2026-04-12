@@ -550,7 +550,7 @@ test "babel:babel_plugin_for_class_worklets:workletizes_getter" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    // EXPECT: has worklet data (__workletHash present)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
     try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
     // (snapshot — skipped)
@@ -568,7 +568,7 @@ test "babel:babel_plugin_for_class_worklets:workletizes_setter" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    // EXPECT: has worklet data (__workletHash present)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
     try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
     // (snapshot — skipped)
