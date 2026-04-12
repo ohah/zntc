@@ -1327,6 +1327,20 @@ test "Worklet: object method with outer closure vars captured" {
     try std.testing.expect(std.mem.indexOf(u8, code, "config:config}=this.__closure") != null);
 }
 
+test "Worklet: getter/setter with worklet directive is not transformed (unsupported)" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var obj = { get x() {
+        \\  "worklet";
+        \\  return 1;
+        \\} };
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // getter worklet은 지원하지 않으므로 변환 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
 test "Worklet: scope hoisting rename reflected in closure value" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
     var r = try parseAndTransformWithOptions(
