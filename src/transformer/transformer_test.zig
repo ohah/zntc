@@ -1479,6 +1479,24 @@ test "Worklet: closure analysis includes refs inside object getters/setters/meth
     try std.testing.expect(std.mem.indexOf(u8, code, "outerFn:outerFn}=this.__closure") != null);
 }
 
+test "Worklet: object method worklet strips directive from IIFE body" {
+    // method_definition 경로에서 stripped body를 사용하지 않으면
+    // IIFE 내부 function 바디에 `'worklet'` directive가 잔존 (Reanimated runtime 크래시).
+    var r = try transformWorklet(std.testing.allocator,
+        \\var ERROR_MESSAGES = {
+        \\  invalidColor(color) {
+        \\    "worklet";
+        \\    return "Invalid color: " + color;
+        \\  }
+        \\};
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "invalidColor.__workletHash") != null);
+}
+
 test "Worklet: recursive function self-reference excluded from __closure" {
     var r = try transformWorklet(std.testing.allocator,
         \\function recurse(n) {

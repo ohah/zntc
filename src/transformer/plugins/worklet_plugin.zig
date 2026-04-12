@@ -84,11 +84,13 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
     // 두 body를 별도 strip해야 함 (각각 다른 AST):
     // 1) visited body (info.body_idx): JS thread 실행용. inner 변환(auto-worklet 등) 보존.
-    //    반환값은 불필요 — side effect(modified_body 패치)만 사용.
+    //    function_declaration/expression은 dispatcher가 modified_body로 result 노드를 패치하지만,
+    //    method_definition은 직접 function_expression을 새로 빌드하므로 stripped body를 명시 전달.
     // 2) original body (info.original_body_idx): __initData.code용 (TS 포함/ES5 미적용).
-    if (has_directive) {
-        _ = try api.stripDirective(info.body_idx);
-    }
+    const stripped_body = if (has_directive)
+        try api.stripDirective(info.body_idx)
+    else
+        info.body_idx;
     const code_body = if (has_directive)
         try worklet_mod.stripWorkletDirective(api.transformer, info.original_body_idx)
     else
@@ -140,7 +142,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
         // object method: { build(props) { 'worklet'; ... } }
         // → { build: (function() { var build = function(props) { ... }; build.__workletHash = ...; return build; })() }
-        const func_expr = try buildFunctionExprFromMethod(api, info);
+        const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
         const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
 
         // object_property: binary = [key, value]
@@ -164,7 +166,8 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
 /// method_definition에서 function_expression을 추출한다.
 /// { build(props) { body } } → function build(props) { body }
-fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo) PluginError!NodeIndex {
+/// body_idx: directive가 제거된 stripped body (caller가 전달).
+fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_idx: NodeIndex) PluginError!NodeIndex {
     const t = api.transformer;
     const method_node = t.ast.getNode(info.node_idx);
     const me = method_node.data.extra;
@@ -188,7 +191,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo) Plugin
         @intFromEnum(name_node),
         info.params_start,
         info.params_len,
-        @intFromEnum(info.body_idx),
+        @intFromEnum(body_idx),
         func_flags,
         none, // return type
     }) catch return error.OutOfMemory;
