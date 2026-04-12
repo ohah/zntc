@@ -808,10 +808,10 @@ fn serializeFunctionInfo(
     if (has_directives) {
         const closure_vars = api.getClosureVars(func.original_body_idx, func.original_params_start, func.original_params_len) catch &.{};
         defer if (closure_vars.len > 0) api.getAllocator().free(closure_vars);
-        for (closure_vars, 0..) |v, i| {
+        for (closure_vars, 0..) |cv, i| {
             if (i > 0) try buf.append(alloc, ',');
             try buf.append(alloc, '"');
-            try buf.appendSlice(alloc, v);
+            try buf.appendSlice(alloc, cv.name);
             try buf.append(alloc, '"');
         }
     }
