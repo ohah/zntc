@@ -24,6 +24,13 @@ const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
 const AutoWorkletCallee = plugin_mod.AutoWorkletCallee;
 
+// method_definition flags (parser/object.zig와 동일 인코딩).
+const METHOD_FLAG_STATIC = 0x01;
+const METHOD_FLAG_GETTER = 0x02;
+const METHOD_FLAG_SETTER = 0x04;
+const METHOD_FLAG_ASYNC = 0x08;
+const METHOD_FLAG_GENERATOR = 0x10;
+
 pub fn plugin() Plugin {
     return .{
         .name = "reanimated-worklet",
@@ -189,24 +196,22 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
             try api.addTrailingStatement(stmt);
         }
     } else if (info.node_tag == .method_definition) {
-        // getter/setter worklet은 지원하지 않음 — 일반 함수로 변환하면 시맨틱이 깨지므로 skip.
-        // (Babel도 동일하게 getter/setter worklet을 지원하지 않음)
-        {
-            const t = api.transformer;
-            const method_flags = t.ast.extra_data.items[t.ast.getNode(info.node_idx).data.extra + 4];
-            if ((method_flags & 0x02) != 0 or (method_flags & 0x04) != 0) return; // getter or setter
-        }
-
-        // object method: { build(props) { 'worklet'; ... } }
-        // → { build: (function() { var build = function(props) { ... }; build.__workletHash = ...; return build; })() }
-        const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
-        const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
-
-        // object_property: binary = [key, value]
-        // method_definition의 key를 재사용
         const t = api.transformer;
         const method_node = t.ast.getNode(info.node_idx);
         const me = method_node.data.extra;
+        const method_flags = t.ast.extra_data.items[me + 4];
+        const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
+
+        if ((method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0) {
+            // class body의 getter/setter는 IIFE object_property로 교체 불가 (class syntax 제약).
+            // Babel 호환: body를 `var _w=function(){...}; _w.__workletHash=...; return _w;`로 치환.
+            // getter 접근 시 worklet 함수를 반환 (Reanimated runtime 동작과 일치).
+            api.modified_body = try buildFactoryBody(api, func_expr, func_name, stmts);
+            return;
+        }
+
+        // 일반 object method → `{ key: (function(){ var fn=...; fn.__workletHash=...; return fn; })() }`
+        const iife = try buildWorkletIIFE(api, func_expr, func_name, stmts);
         const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
         const prop = try t.ast.addNode(.{
             .tag = .object_property,
@@ -240,8 +245,8 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     // method flags → function flags (async=bit0 of method flags bit3, generator=bit4)
     const method_flags = t.ast.extra_data.items[me + 4];
     var func_flags: u32 = 0;
-    if ((method_flags & 0x08) != 0) func_flags |= 0x01; // async
-    if ((method_flags & 0x10) != 0) func_flags |= 0x02; // generator
+    if ((method_flags & METHOD_FLAG_ASYNC) != 0) func_flags |= 0x01; // function async
+    if ((method_flags & METHOD_FLAG_GENERATOR) != 0) func_flags |= 0x02; // function generator
 
     const none = @intFromEnum(NodeIndex.none);
     const func_extra = t.ast.addExtras(&.{
@@ -259,8 +264,9 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     }) catch return error.OutOfMemory;
 }
 
-/// function_expression worklet을 IIFE factory로 감싼다.
-fn buildWorkletIIFE(
+/// Worklet factory block: `{ var name = func; name.__workletHash=...; ...; return name; }`
+/// IIFE 및 getter/setter 바디 양쪽에서 재사용.
+fn buildFactoryBody(
     api: *AstTransformCtx,
     func_node: NodeIndex,
     func_name: []const u8,
@@ -301,17 +307,31 @@ fn buildWorkletIIFE(
         .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
     });
 
-    // factory body: [var_decl, prop_stmts[0..3], return_stmt]
+    // block: [var_decl, prop_stmts[0..3], return_stmt]
     const body_list = try t.ast.addNodeList(&.{
         var_decl,      prop_stmts[0],
         prop_stmts[1], prop_stmts[2],
         prop_stmts[3], return_stmt,
     });
-    const body = try t.ast.addNode(.{
+    return t.ast.addNode(.{
         .tag = .block_statement,
         .span = zero_span,
         .data = .{ .list = body_list },
     });
+}
+
+/// function_expression worklet을 IIFE factory로 감싼다.
+fn buildWorkletIIFE(
+    api: *AstTransformCtx,
+    func_node: NodeIndex,
+    func_name: []const u8,
+    prop_stmts: [4]NodeIndex,
+) PluginError!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const t = api.transformer;
+    const none = @intFromEnum(NodeIndex.none);
+
+    const body = try buildFactoryBody(api, func_node, func_name, prop_stmts);
 
     // function() { ... } (wrapper — 파라미터 없는 익명 함수)
     const empty_params = try t.ast.addNodeList(&.{});

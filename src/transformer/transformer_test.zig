@@ -1327,7 +1327,10 @@ test "Worklet: object method with outer closure vars captured" {
     try std.testing.expect(std.mem.indexOf(u8, code, "config:config}=this.__closure") != null);
 }
 
-test "Worklet: getter/setter with worklet directive is not transformed (unsupported)" {
+test "Worklet: getter with worklet directive becomes factory body (Babel 호환)" {
+    // getter/setter는 class body에서 IIFE 교체 불가 → body를 factory block으로 치환.
+    // `get x() { var x = function(){...}; x.__workletHash=...; return x; }`
+    // getter 접근 시 worklet 함수를 반환 (Reanimated 런타임과 일치).
     var r = try transformWorklet(std.testing.allocator,
         \\var obj = { get x() {
         \\  "worklet";
@@ -1337,8 +1340,8 @@ test "Worklet: getter/setter with worklet directive is not transformed (unsuppor
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // getter worklet은 지원하지 않으므로 변환 안 됨
-    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "Worklet: scope hoisting rename reflected in closure value" {
