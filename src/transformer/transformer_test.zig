@@ -181,7 +181,7 @@ const TestResult = struct {
     parser: *Parser,
     allocator: std.mem.Allocator,
 
-    fn deinit(self: *TestResult) void {
+    pub fn deinit(self: *TestResult) void {
         self.ast.deinit();
         self.parser.deinit();
         self.allocator.destroy(self.parser);
@@ -720,7 +720,7 @@ const Plugin = transformer_mod.Plugin;
 const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
 
 /// 테스트 헬퍼: 소스 코드를 파싱 → worklet 변환 → codegen으로 JS 출력.
-fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+pub fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
     return parseAndTransformWithOptions(allocator, source, .{
         .plugins = &plugins,
@@ -731,7 +731,7 @@ fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestResul
 /// TestResult에서 codegen 출력을 얻는 헬퍼.
 /// 반환값은 r.allocator로 할당된 복제본 — r.deinit() 후에도 안전하지만 별도 free 필요.
 /// 테스트에서는 allocator가 GPA이므로 검사됨.
-fn generateCode(r: *TestResult) ![]const u8 {
+pub fn generateCode(r: *TestResult) ![]const u8 {
     var codegen = Codegen.init(r.allocator, &r.ast);
     const code = try codegen.generate(r.root);
     // 코드를 복제 후 codegen 해제 (buf 누수 방지)
