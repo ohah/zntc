@@ -303,9 +303,10 @@ fn walkBodyForClosureAnalysis(
             var method_refs = std.StringHashMap(NodeIndex).init(self.allocator);
             defer method_refs.deinit();
             try walkBodyForClosureAnalysis(self, body_idx, &method_locals, &method_refs, depth + 1);
+            // method_refs - method_locals - outer_locals = method의 외부 참조
             var mr_iter = method_refs.iterator();
             while (mr_iter.next()) |entry| {
-                if (!locals.contains(entry.key_ptr.*)) {
+                if (!method_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
                     refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
                 }
             }
