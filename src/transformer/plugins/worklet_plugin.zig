@@ -36,7 +36,10 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
     // Closure 변수 추출 (원본 body + params 사용 — Babel과 동일하게 변환 전 AST 분석)
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
-    defer api.getAllocator().free(closure_vars);
+    defer {
+        for (closure_vars) |cv| api.getAllocator().free(cv.name);
+        api.getAllocator().free(closure_vars);
+    }
 
     // Init code 생성
     const func_name = info.name orelse "anonymous";

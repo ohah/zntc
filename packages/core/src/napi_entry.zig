@@ -807,7 +807,10 @@ fn serializeFunctionInfo(
     try buf.appendSlice(alloc, ",\"closureVars\":[");
     if (has_directives) {
         const closure_vars = api.getClosureVars(func.original_body_idx, func.original_params_start, func.original_params_len) catch &.{};
-        defer if (closure_vars.len > 0) api.getAllocator().free(closure_vars);
+        defer if (closure_vars.len > 0) {
+            for (closure_vars) |cv| api.getAllocator().free(cv.name);
+            api.getAllocator().free(closure_vars);
+        };
         for (closure_vars, 0..) |cv, i| {
             if (i > 0) try buf.append(alloc, ',');
             try buf.append(alloc, '"');
