@@ -277,6 +277,40 @@ fn walkBodyForClosureAnalysis(
             return;
         },
 
+        // object method / getter / setter: __initData.code에 body가 포함되므로
+        // body 내 외부 참조도 closure에 포함해야 함.
+        // 파라미터는 method 자체의 로컬이므로 별도 추적하여 refs에서 제외.
+        // method_definition extra = [key, params_start, params_len, body, flags, ...]
+        .method_definition => {
+            const e = node.data.extra;
+            if (!self.ast.hasExtra(e, 4)) return;
+            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
+            if (body_idx.isNone()) return;
+
+            // method params를 임시 로컬로 수집 (method 스코프 내에서만 유효)
+            var method_locals = std.StringHashMap(void).init(self.allocator);
+            defer method_locals.deinit();
+            const p_start = self.ast.extra_data.items[e + 1];
+            const p_len = self.ast.extra_data.items[e + 2];
+            var mi: u32 = 0;
+            while (mi < p_len) : (mi += 1) {
+                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + mi]), &method_locals);
+            }
+
+            // body를 순회하되, method params를 임시로 outer locals에 추가하여
+            // method 파라미터가 closure 변수로 잘못 포함되지 않도록 함
+            var ml_iter = method_locals.iterator();
+            while (ml_iter.next()) |entry| {
+                locals.put(entry.key_ptr.*, {}) catch return error.OutOfMemory;
+            }
+            try walkBodyForClosureAnalysis(self, body_idx, locals, refs, depth + 1);
+            // method params를 다시 제거 (다른 method에 영향 주지 않도록)
+            var ml_iter2 = method_locals.iterator();
+            while (ml_iter2.next()) |entry| {
+                _ = locals.remove(entry.key_ptr.*);
+            }
+        },
+
         // 변수 선언: 이름 → locals, 초기값 → refs
         .variable_declaration => {
             const e = node.data.extra;

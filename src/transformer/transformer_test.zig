@@ -1428,3 +1428,21 @@ test "Worklet: auto-workletization inside worklet function body" {
     const count = std.mem.count(u8, code, "__workletHash");
     try std.testing.expect(count >= 2); // outer + inner
 }
+
+test "Worklet: closure analysis includes refs inside object getters/setters/methods" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function outerFn() { return 42; }
+        \\function w() {
+        \\  "worklet";
+        \\  return { get v() { return outerFn(); }, set v(x) { outerFn(); }, m() { outerFn(); } };
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // outerFn이 __closure에 포함되어야 함 (getter/setter/method body에서 참조)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "outerFn") != null);
+    // __initData.code에서 this.__closure로 destructure
+    try std.testing.expect(std.mem.indexOf(u8, code, "outerFn:outerFn}=this.__closure") != null);
+}
