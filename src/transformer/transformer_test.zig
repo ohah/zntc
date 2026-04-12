@@ -268,7 +268,7 @@ test "Transformer: isTypeOnlyNode covers all TS type tags" {
 }
 
 /// 테스트 헬퍼: TransformOptions를 지정하여 파싱 → transformer 실행.
-fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8, options: TransformOptions) !TestResult {
+pub fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8, options: TransformOptions) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
     scanner_ptr.* = try Scanner.init(allocator, source);
 

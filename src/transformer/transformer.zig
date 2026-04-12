@@ -105,6 +105,11 @@ pub const TransformOptions = struct {
     /// transformer는 AST 훅(onFunction 등)만 사용.
     plugins: []const Plugin = &.{},
 
+    /// Reanimated worklet plugin의 substituteWebPlatformChecks 옵션 포팅.
+    /// true일 때 `isWeb()` / `shouldBeUseWeb()` 호출을 `true` 리터럴로 정적 치환.
+    /// web build에서 플랫폼 체크 코드가 항상 true로 평가되므로 dead code 제거 효과.
+    substitute_web_platform_checks: bool = false,
+
     pub const compat = @import("compat.zig");
 };
 
@@ -2879,6 +2884,26 @@ pub const Transformer = struct {
         const args_start = self.readU32(e, 1);
         const args_len = self.readU32(e, 2);
         const flags = self.readU32(e, 3);
+
+        // Reanimated web: `isWeb()` / `shouldBeUseWeb()` → `true` (dead code 제거 목적).
+        if (self.options.substitute_web_platform_checks and args_len == 0 and !callee_idx.isNone()) {
+            const callee_node = self.ast.getNode(callee_idx);
+            if (callee_node.tag == .identifier_reference) {
+                const name = self.ast.source[callee_node.span.start..callee_node.span.end];
+                const wp = @import("plugins/worklet_plugin.zig");
+                for (wp.WEB_PLATFORM_CHECK_NAMES) |n| {
+                    if (std.mem.eql(u8, n, name)) {
+                        const true_span = try self.ast.addString("true");
+                        return try self.ast.addNode(.{
+                            .tag = .boolean_literal,
+                            .span = true_span,
+                            .data = .{ .string_ref = true_span },
+                        });
+                    }
+                }
+            }
+        }
+
         const new_callee = try self.visitNode(callee_idx);
 
         // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면

@@ -121,6 +121,9 @@ pub const LAYOUT_ANIMATION_CLASSES = [_][]const u8{
     "EntryExitTransition",
 };
 
+/// Reanimated web 플랫폼 체크 함수 — `substituteWebPlatformChecks` 옵션에서 `true`로 치환 대상.
+pub const WEB_PLATFORM_CHECK_NAMES = [_][]const u8{ "isWeb", "shouldBeUseWeb" };
+
 /// Layout Animation 클래스의 체이닝 메서드 집합.
 /// `FadeIn.duration(300).withCallback(cb)` 같은 체인 추적용.
 pub const LAYOUT_ANIMATION_CHAINABLE_METHODS = [_][]const u8{
