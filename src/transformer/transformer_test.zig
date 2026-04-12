@@ -1070,7 +1070,8 @@ test "Worklet: globalThis property not collected as closure var (unary_expressio
 
 test "Worklet: arrow function params not in closure (ES5 lowering)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var ext = 1; export const pf = (value, context) => { \"worklet\"; return ext + value + context; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1083,7 +1084,8 @@ test "Worklet: arrow function params not in closure (ES5 lowering)" {
 
 test "Worklet: arrow function with typed var params not in closure (ES5 lowering)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "type Fn = any; var ext = 1; export const pf: Fn = (value, context) => { \"worklet\"; return ext + value + context; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
