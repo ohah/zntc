@@ -3517,6 +3517,17 @@ pub const Transformer = struct {
     // Plugin dispatch helper
     // ================================================================
 
+    /// 함수-유사 노드의 body가 extra_data에서 차지하는 슬롯 오프셋.
+    /// parser/ast.zig의 노드 extra 레이아웃 정의와 일치해야 한다.
+    fn functionBodyOffset(tag: @import("../parser/ast.zig").Node.Tag) u32 {
+        return switch (tag) {
+            // arrow: [params(0), body(1), flags]
+            .arrow_function_expression => 1,
+            // function_declaration/expression/method_definition: [name, params_start, params_len, body(3), ...]
+            else => 3,
+        };
+    }
+
     /// onFunction 플러그인 훅을 실행한다.
     /// 플러그인이 함수를 교체하면 새 NodeIndex를 반환, 아니면 null.
     /// body 수정 시 result 노드의 extra_data를 직접 패치한다.
@@ -3533,7 +3544,7 @@ pub const Transformer = struct {
         }
         if (api.modified_body) |new_body_idx| {
             const result_extra = self.ast.getNode(result).data.extra;
-            self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
+            self.ast.extra_data.items[result_extra + functionBodyOffset(func_info.node_tag)] = @intFromEnum(new_body_idx);
         }
         return api.replaced_node;
     }
