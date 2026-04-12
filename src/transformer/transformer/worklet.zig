@@ -297,17 +297,17 @@ fn walkBodyForClosureAnalysis(
                 try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + mi]), &method_locals);
             }
 
-            // body를 순회하되, method params를 임시로 outer locals에 추가하여
-            // method 파라미터가 closure 변수로 잘못 포함되지 않도록 함
-            var ml_iter = method_locals.iterator();
-            while (ml_iter.next()) |entry| {
-                locals.put(entry.key_ptr.*, {}) catch return error.OutOfMemory;
-            }
-            try walkBodyForClosureAnalysis(self, body_idx, locals, refs, depth + 1);
-            // method params를 다시 제거 (다른 method에 영향 주지 않도록)
-            var ml_iter2 = method_locals.iterator();
-            while (ml_iter2.next()) |entry| {
-                _ = locals.remove(entry.key_ptr.*);
+            // body를 별도 refs로 수집한 뒤, method params와 outer locals에
+            // 속하지 않는 참조만 outer refs에 병합.
+            // outer locals를 직접 수정하면 셰도잉 시 원래 로컬이 삭제되는 버그 발생.
+            var method_refs = std.StringHashMap(NodeIndex).init(self.allocator);
+            defer method_refs.deinit();
+            try walkBodyForClosureAnalysis(self, body_idx, &method_locals, &method_refs, depth + 1);
+            var mr_iter = method_refs.iterator();
+            while (mr_iter.next()) |entry| {
+                if (!locals.contains(entry.key_ptr.*)) {
+                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                }
             }
         },
 
