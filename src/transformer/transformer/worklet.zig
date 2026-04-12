@@ -250,12 +250,11 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
 
 /// 별도 스코프로 body를 순회하고, free variable만 outer refs에 병합한다.
 /// function/arrow/method의 공통 "scoped traversal + merge" 패턴.
+/// param_nodes: 파라미터로 처리할 NodeIndex raw 값들 (collectAllIdentifiers로 수집).
 fn walkScopedBody(
     self: *Transformer,
     body_idx: NodeIndex,
-    extra_local_indices: []const u32,
-    params_start: u32,
-    params_len: u32,
+    param_nodes: []const u32,
     outer_locals: *std.StringHashMap(void),
     outer_refs: *std.StringHashMap(NodeIndex),
     depth: u32,
@@ -263,50 +262,8 @@ fn walkScopedBody(
     var inner_locals = std.StringHashMap(void).init(self.allocator);
     defer inner_locals.deinit();
 
-    // extra locals (e.g. function name for self-reference)
-    for (extra_local_indices) |raw| {
-        try collectBindingNames(self, @enumFromInt(raw), &inner_locals);
-    }
-    // params → inner locals
-    var pi: u32 = 0;
-    while (pi < params_len) : (pi += 1) {
-        if (params_start + pi < self.ast.extra_data.items.len) {
-            try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[params_start + pi]), &inner_locals);
-        }
-    }
-
-    var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-    defer inner_refs.deinit();
-    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, depth + 1);
-
-    // inner_refs - inner_locals - outer_locals = free variables → outer refs
-    var iter = inner_refs.iterator();
-    while (iter.next()) |entry| {
-        if (!inner_locals.contains(entry.key_ptr.*) and !outer_locals.contains(entry.key_ptr.*)) {
-            outer_refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-        }
-    }
-}
-
-/// arrow function용 scoped body walker.
-/// params 노드의 모든 identifier를 inner locals로 수집하여 body의 free variable만 전파.
-fn walkScopedBodyWithParamNode(
-    self: *Transformer,
-    body_idx: NodeIndex,
-    params_idx: NodeIndex,
-    outer_locals: *std.StringHashMap(void),
-    outer_refs: *std.StringHashMap(NodeIndex),
-    depth: u32,
-) Error!void {
-    var inner_locals = std.StringHashMap(void).init(self.allocator);
-    defer inner_locals.deinit();
-
-    // params의 모든 identifier를 locals로 수집.
-    // cover grammar 결과에 따라 formal_parameters, formal_parameter,
-    // identifier_reference, binding_identifier 등 다양한 형태 가능.
-    // generic walker로 params 트리를 순회하여 모든 identifier를 수집.
-    if (!params_idx.isNone()) {
-        try collectAllIdentifiers(self, params_idx, &inner_locals, 0);
+    for (param_nodes) |raw| {
+        try collectAllIdentifiers(self, @enumFromInt(raw), &inner_locals, 0);
     }
 
     var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
@@ -422,10 +379,28 @@ fn walkBodyForClosureAnalysis(
             if (!self.ast.hasExtra(e, 4)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
             if (body_idx.isNone()) return;
-            // 함수 이름(자기 참조) + params → inner locals
-            try walkScopedBody(self, body_idx, &.{
-                self.ast.extra_data.items[e], // name
-            }, self.ast.extra_data.items[e + 1], self.ast.extra_data.items[e + 2], locals, refs, depth);
+            // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
+            const p_start = self.ast.extra_data.items[e + 1];
+            const p_len = self.ast.extra_data.items[e + 2];
+            // name(e[0])은 항상 포함, params는 extra_data 슬라이스
+            // 두 소스를 합치기 위해 단일 배열 사용은 불가 → 두 번 호출 대신 inline 처리
+            var fn_locals = std.StringHashMap(void).init(self.allocator);
+            defer fn_locals.deinit();
+            try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e]), &fn_locals, 0); // name
+            var fpi: u32 = 0;
+            while (fpi < p_len) : (fpi += 1) {
+                if (p_start + fpi < self.ast.extra_data.items.len)
+                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[p_start + fpi]), &fn_locals, 0);
+            }
+            var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
+            defer fn_refs.deinit();
+            try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, depth + 1);
+            var fr_iter = fn_refs.iterator();
+            while (fr_iter.next()) |entry| {
+                if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
+                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                }
+            }
             return;
         },
         .arrow_function_expression => {
@@ -433,9 +408,8 @@ fn walkBodyForClosureAnalysis(
             if (!self.ast.hasExtra(e, 2)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
             if (body_idx.isNone()) return;
-            // arrow params → inner locals (formal_parameters list 직접 전달)
-            const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            try walkScopedBodyWithParamNode(self, body_idx, params_idx, locals, refs, depth);
+            // arrow params: formal_parameters 노드를 param_node로 전달
+            try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs, depth);
             return;
         },
         .method_definition => {
@@ -443,7 +417,11 @@ fn walkBodyForClosureAnalysis(
             if (!self.ast.hasExtra(e, 4)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
             if (body_idx.isNone()) return;
-            try walkScopedBody(self, body_idx, &.{}, self.ast.extra_data.items[e + 1], self.ast.extra_data.items[e + 2], locals, refs, depth);
+            const p_start = self.ast.extra_data.items[e + 1];
+            const p_len = self.ast.extra_data.items[e + 2];
+            if (p_start + p_len <= self.ast.extra_data.items.len) {
+                try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs, depth);
+            }
             return;
         },
 
