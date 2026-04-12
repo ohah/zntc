@@ -249,6 +249,10 @@ fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHa
 }
 
 /// body를 재귀 순회하여 지역 선언(locals)과 식별자 참조(refs)를 수집한다.
+///
+/// Generic AST walker: nodeLayout() 메타데이터를 사용하여 모든 노드 타입을 자동 순회.
+/// 특수 처리가 필요한 노드(함수, 변수, catch, method, object_property)만 명시적으로 처리하고,
+/// 나머지는 layout 기반으로 자식 노드를 재귀 순회한다.
 fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
@@ -257,43 +261,41 @@ fn walkBodyForClosureAnalysis(
     depth: u32,
 ) Error!void {
     if (idx.isNone()) return;
-    if (depth > 64) return; // 재귀 깊이 제한
+    if (depth > 64) return;
     if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
 
     const node = self.ast.getNode(idx);
+    const tag = node.tag;
 
-    switch (node.tag) {
-        // 식별자 참조 수집 (NodeIndex 포함 — scope hoisting rename용)
+    // --- 특수 처리 노드 ---
+    switch (tag) {
+        // 식별자 참조 수집
         .identifier_reference => {
             const name = self.ast.getText(node.data.string_ref);
             if (name.len > 0) {
                 refs.put(name, idx) catch return error.OutOfMemory;
             }
+            return;
         },
 
-        // 중첩 함수: pre-visit body를 사용하므로 ES5 변환 전 상태.
-        // 중첩 함수 body는 별도 스코프이므로 진입하지 않음 (Babel 동일).
-        // 함수 이름만 외부 locals에 추가.
+        // 중첩 함수: 별도 스코프이므로 진입하지 않음 (Babel 동일).
+        // function_declaration만 이름을 외부 locals에 추가.
         .function_declaration => {
             const e = node.data.extra;
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             try collectBindingNames(self, name_idx, locals);
-        },
-        .function_expression, .arrow_function_expression, .function => {
             return;
         },
+        .function_expression, .arrow_function_expression, .function => return,
 
-        // object method / getter / setter: __initData.code에 body가 포함되므로
-        // body 내 외부 참조도 closure에 포함해야 함.
-        // 파라미터는 method 자체의 로컬이므로 별도 추적하여 refs에서 제외.
-        // method_definition extra = [key, params_start, params_len, body, flags, ...]
+        // object method / getter / setter: body를 별도 스코프로 순회.
+        // params는 method 로컬, body 내 외부 참조만 outer refs에 병합.
         .method_definition => {
             const e = node.data.extra;
             if (!self.ast.hasExtra(e, 4)) return;
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
             if (body_idx.isNone()) return;
 
-            // method params를 임시 로컬로 수집 (method 스코프 내에서만 유효)
             var method_locals = std.StringHashMap(void).init(self.allocator);
             defer method_locals.deinit();
             const p_start = self.ast.extra_data.items[e + 1];
@@ -303,191 +305,100 @@ fn walkBodyForClosureAnalysis(
                 try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[p_start + mi]), &method_locals);
             }
 
-            // body를 별도 refs로 수집한 뒤, method params와 outer locals에
-            // 속하지 않는 참조만 outer refs에 병합.
-            // outer locals를 직접 수정하면 셰도잉 시 원래 로컬이 삭제되는 버그 발생.
             var method_refs = std.StringHashMap(NodeIndex).init(self.allocator);
             defer method_refs.deinit();
             try walkBodyForClosureAnalysis(self, body_idx, &method_locals, &method_refs, depth + 1);
-            // method_refs - method_locals - outer_locals = method의 외부 참조
             var mr_iter = method_refs.iterator();
             while (mr_iter.next()) |entry| {
                 if (!method_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
                     refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
                 }
             }
+            return;
         },
 
-        // 변수 선언: 이름 → locals, 초기값 → refs
-        .variable_declaration => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            const list_start = self.ast.extra_data.items[e + 1];
-            const list_len = self.ast.extra_data.items[e + 2];
-            if (list_start + list_len > self.ast.extra_data.items.len) return;
-            var i: u32 = 0;
-            while (i < list_len) : (i += 1) {
-                const decl_raw = self.ast.extra_data.items[list_start + i];
-                try walkBodyForClosureAnalysis(self, @enumFromInt(decl_raw), locals, refs, depth + 1);
-            }
-        },
+        // 변수 선언: binding name → locals, init → generic 순회
         .variable_declarator => {
-            // extra = [name, type_ann, init]
             const e = node.data.extra;
             if (!self.ast.hasExtra(e, 3)) return;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            try collectBindingNames(self, name_idx, locals);
-            // init → refs
-            const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-            try walkBodyForClosureAnalysis(self, init_idx, locals, refs, depth + 1);
+            try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
+            // init(offset 2)만 순회 (name은 binding, type_ann은 TS 타입)
+            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
+            return;
         },
 
-        // 블록/리스트 노드: 자식들 순회
-        .block_statement, .function_body, .program, .sequence_expression => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                if (list.start + i >= self.ast.extra_data.items.len) break;
-                const child_raw = self.ast.extra_data.items[list.start + i];
-                try walkBodyForClosureAnalysis(self, @enumFromInt(child_raw), locals, refs, depth + 1);
+        // catch: param → locals, body만 순회
+        .catch_clause => {
+            try collectBindingNames(self, node.data.binary.left, locals);
+            try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
+            return;
+        },
+
+        // object_property: binary = [key, value]
+        // shorthand { x } → key는 참조 (value=none)
+        // long-form { key: value } → value 순회 + computed key도 순회 ([expr]: value)
+        .object_property => {
+            if (node.data.binary.right.isNone()) {
+                try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
+            } else {
+                // computed key [expr] → expr 안의 identifier도 순회
+                const key_idx = node.data.binary.left;
+                if (!key_idx.isNone()) {
+                    const key_node = self.ast.getNode(key_idx);
+                    if (key_node.tag == .computed_property_key) {
+                        try walkBodyForClosureAnalysis(self, key_idx, locals, refs, depth + 1);
+                    }
+                }
+                try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
+            }
+            return;
+        },
+
+        // TS/Flow type expression: 값(left)만 순회, 타입(right) 무시.
+        // parser가 binary(left=expr, right=type)로 저장하지만 layout은 extra로 정의되어
+        // generic walker가 자식을 찾지 못하므로 명시적 처리 필요.
+        .ts_as_expression,
+        .ts_satisfies_expression,
+        .ts_type_assertion,
+        .ts_instantiation_expression,
+        .flow_as_expression,
+        .flow_type_cast_expression,
+        => {
+            try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
+            return;
+        },
+
+        // static member: object만 순회 (property는 외부 참조가 아님)
+        .static_member_expression, .private_field_expression => {
+            const me = node.data.extra;
+            if (self.ast.hasExtra(me, 2)) {
+                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[me]), locals, refs, depth + 1);
+            }
+            return;
+        },
+
+        else => {},
+    }
+
+    // --- Generic 순회: nodeLayout() 기반 ---
+    const kind = tag.dataKind();
+    switch (kind) {
+        .leaf => {},
+        .unary => {
+            if (!node.data.unary.operand.isNone()) {
+                try walkBodyForClosureAnalysis(self, node.data.unary.operand, locals, refs, depth + 1);
             }
         },
-
-        // 단항 노드
-        .expression_statement,
-        .return_statement,
-        .throw_statement,
-        .spread_element,
-        .parenthesized_expression,
-        .await_expression,
-        .yield_expression,
-        .rest_element,
-        .chain_expression,
-        .import_expression,
-        => {
-            try walkBodyForClosureAnalysis(self, node.data.unary.operand, locals, refs, depth + 1);
-        },
-
-        // 이항 노드
-        .binary_expression,
-        .logical_expression,
-        .assignment_expression,
-        .while_statement,
-        .do_while_statement,
-        .labeled_statement,
-        => {
+        .binary => {
             try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
             try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
         },
-
-        // call_expression: extra = [callee, args_start, args_len, flags]
-        .call_expression => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 4)) return;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            try walkBodyForClosureAnalysis(self, callee_idx, locals, refs, depth + 1);
-            const args_start = self.ast.extra_data.items[e + 1];
-            const args_len = self.ast.extra_data.items[e + 2];
-            var ai: u32 = 0;
-            while (ai < args_len) : (ai += 1) {
-                if (args_start + ai >= self.ast.extra_data.items.len) break;
-                const arg_raw = self.ast.extra_data.items[args_start + ai];
-                try walkBodyForClosureAnalysis(self, @enumFromInt(arg_raw), locals, refs, depth + 1);
-            }
-        },
-
-        // member expression: extra = [object(0), property(1), flags]
-        .static_member_expression, .private_field_expression => {
-            // object만 순회 (property는 식별자이지만 외부 참조가 아님)
-            const me = node.data.extra;
-            if (self.ast.hasExtra(me, 2)) {
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[me]), locals, refs, depth + 1);
-            }
-        },
-        .computed_member_expression => {
-            // extra = [object(0), property(1), flags]
-            const me = node.data.extra;
-            if (self.ast.hasExtra(me, 2)) {
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[me]), locals, refs, depth + 1);
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[me + 1]), locals, refs, depth + 1);
-            }
-        },
-
-        // 삼항 연산
-        .conditional_expression => {
+        .ternary => {
             try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
             try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
             try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
         },
-
-        // if 문: ternary = { a: condition, b: consequent, c: alternate }
-        .if_statement => {
-            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
-        },
-
-        // for 문: extra = [init, test, update, body]
-        .for_statement => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 4)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 1]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 3]), locals, refs, depth + 1);
-        },
-
-        // for-in/for-of: ternary = { a: left, b: right, c: body }
-        .for_in_statement, .for_of_statement, .for_await_of_statement => {
-            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
-        },
-
-        // try 문: ternary = { a: block, b: handler, c: finalizer }
-        .try_statement => {
-            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
-        },
-
-        // catch 절: binary = [param, body]
-        .catch_clause => {
-            // param → locals (catch 블록 스코프)
-            try collectBindingNames(self, node.data.binary.left, locals);
-            try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
-        },
-
-        // switch: extra = [discriminant, cases_start, cases_len]
-        .switch_statement => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            const cases_start = self.ast.extra_data.items[e + 1];
-            const cases_len = self.ast.extra_data.items[e + 2];
-            var ci: u32 = 0;
-            while (ci < cases_len) : (ci += 1) {
-                if (cases_start + ci >= self.ast.extra_data.items.len) break;
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[cases_start + ci]), locals, refs, depth + 1);
-            }
-        },
-
-        // switch_case: extra = [test, stmts_start, stmts_len]
-        .switch_case => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            const stmts_start = self.ast.extra_data.items[e + 1];
-            const stmts_len = self.ast.extra_data.items[e + 2];
-            var si: u32 = 0;
-            while (si < stmts_len) : (si += 1) {
-                if (stmts_start + si >= self.ast.extra_data.items.len) break;
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[stmts_start + si]), locals, refs, depth + 1);
-            }
-        },
-
-        // array/object expression: list
-        .array_expression, .object_expression => {
+        .list => {
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
@@ -495,68 +406,28 @@ fn walkBodyForClosureAnalysis(
                 try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), locals, refs, depth + 1);
             }
         },
-
-        // object_property: binary = [key, value] (shorthand: right=.none)
-        .object_property => {
-            if (node.data.binary.right.isNone()) {
-                // shorthand { x } → key(x)는 참조
-                try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
-            } else {
-                // long-form { key: value } → value만 참조
-                try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
-            }
-        },
-
-        // template literal: list (expressions + quasis interleaved)
-        .template_literal => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                if (list.start + i >= self.ast.extra_data.items.len) break;
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), locals, refs, depth + 1);
-            }
-        },
-
-        // new expression: extra = [callee, args_start, args_len]
-        .new_expression => {
+        .extra => {
             const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            const args_start = self.ast.extra_data.items[e + 1];
-            const args_len = self.ast.extra_data.items[e + 2];
-            var ai: u32 = 0;
-            while (ai < args_len) : (ai += 1) {
-                if (args_start + ai >= self.ast.extra_data.items.len) break;
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[args_start + ai]), locals, refs, depth + 1);
+            // child_offsets: 직접 NodeIndex 자식
+            for (tag.extraChildOffsets()) |offset| {
+                if (self.ast.hasExtra(e, @as(u32, offset) + 1)) {
+                    try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + offset]), locals, refs, depth + 1);
+                }
+            }
+            // list_offsets: 간접 NodeIndex 리스트 (e.g. args, statements)
+            for (tag.extraListOffsets()) |lo| {
+                const start_off = lo[0];
+                const len_off = lo[1];
+                if (!self.ast.hasExtra(e, @as(u32, len_off) + 1)) continue;
+                const list_start = self.ast.extra_data.items[e + start_off];
+                const list_len = self.ast.extra_data.items[e + len_off];
+                var li: u32 = 0;
+                while (li < list_len) : (li += 1) {
+                    if (list_start + li >= self.ast.extra_data.items.len) break;
+                    try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[list_start + li]), locals, refs, depth + 1);
+                }
             }
         },
-
-        // update/unary prefix/postfix: extra = [operand, kind]
-        .update_expression, .unary_expression => {
-            const ue = node.data.extra;
-            if (self.ast.hasExtra(ue, 2)) {
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[ue]), locals, refs, depth + 1);
-            }
-        },
-
-        // 리프 노드 (순회 불필요)
-        .string_literal,
-        .numeric_literal,
-        .boolean_literal,
-        .null_literal,
-        .bigint_literal,
-        .regexp_literal,
-        .this_expression,
-        .super_expression,
-        .directive,
-        .break_statement,
-        .continue_statement,
-        .debugger_statement,
-        .empty_statement,
-        => {},
-
-        // 그 외: 안전하게 무시 (TS 타입 노드, JSX 등)
-        else => {},
     }
 }
 
