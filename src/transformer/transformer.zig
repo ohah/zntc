@@ -2057,38 +2057,20 @@ pub const Transformer = struct {
         });
 
         // Plugin dispatch: onFunction (AST 훅)
-        if (self.options.plugins.len > 0) {
-            var api = AstTransformCtx{ .transformer = self, .modified_body = null };
-            const func_info = FunctionInfo{
-                .node_idx = result,
-                .node_tag = node.tag,
-                .name = self.getFunctionName(self.ast.getNode(result)),
-                .body_idx = new_body,
-                .params_start = pp.new_params.start,
-                .params_len = pp.new_params.len,
-                .original_params_start = params_start,
-                .original_params_len = params_len,
-                .original_body_idx = old_body_idx,
-                .flags = self.readU32(e, 4),
-                .source_path = self.options.jsx_filename,
-            };
-            for (self.options.plugins) |p| {
-                if (p.onFunction) |hook| {
-                    hook(p.context, &api, func_info) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.PluginFailed => {},
-                    };
-                }
-            }
-            // 플러그인이 body를 수정했으면 result 노드의 extra_data를 패치
-            if (api.modified_body) |new_body_idx| {
-                const result_extra = self.ast.getNode(result).data.extra;
-                self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
-            }
-            // 플러그인이 함수 노드 전체를 교체했으면 (function_expression → IIFE 등)
-            if (api.replaced_node) |replacement| {
-                return replacement;
-            }
+        if (try self.dispatchFunctionPlugins(result, .{
+            .node_idx = result,
+            .node_tag = node.tag,
+            .name = self.getFunctionName(self.ast.getNode(result)),
+            .body_idx = new_body,
+            .params_start = pp.new_params.start,
+            .params_len = pp.new_params.len,
+            .original_params_start = params_start,
+            .original_params_len = params_len,
+            .original_body_idx = old_body_idx,
+            .flags = self.readU32(e, 4),
+            .source_path = self.options.jsx_filename,
+        })) |replacement| {
+            return replacement;
         }
 
         // React Fast Refresh: PascalCase 함수 → 컴포넌트 등록
@@ -3277,4 +3259,29 @@ pub const Transformer = struct {
     pub const makeSigHandle = refresh.makeSigHandle;
     pub const maybeRegisterRefreshSignature = refresh.maybeRegisterRefreshSignature;
     pub const insertSigCallAtBodyStart = refresh.insertSigCallAtBodyStart;
+
+    // ================================================================
+    // Plugin dispatch helper
+    // ================================================================
+
+    /// onFunction 플러그인 훅을 실행한다.
+    /// 플러그인이 함수를 교체하면 새 NodeIndex를 반환, 아니면 null.
+    /// body 수정 시 result 노드의 extra_data를 직접 패치한다.
+    pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo) Error!?NodeIndex {
+        if (self.options.plugins.len == 0) return null;
+        var api = AstTransformCtx{ .transformer = self, .modified_body = null };
+        for (self.options.plugins) |p| {
+            if (p.onFunction) |hook| {
+                hook(p.context, &api, func_info) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.PluginFailed => {},
+                };
+            }
+        }
+        if (api.modified_body) |new_body_idx| {
+            const result_extra = self.ast.getNode(result).data.extra;
+            self.ast.extra_data.items[result_extra + 3] = @intFromEnum(new_body_idx);
+        }
+        return api.replaced_node;
+    }
 };
