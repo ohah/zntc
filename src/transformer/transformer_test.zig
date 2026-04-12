@@ -1078,10 +1078,6 @@ test "Worklet: arrow function params not in closure (ES5 lowering)" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     // value, context는 파라미터이므로 closure에 포함되면 안 됨
-    // ext만 closure에 있어야 함
-    if (std.mem.indexOf(u8, code, "__closure = { ext: ext }") == null) {
-        std.debug.print("\n=== ACTUAL CODE ===\n{s}\n=== END ===\n", .{code});
-    }
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
 }
 
