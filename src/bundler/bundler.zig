@@ -27,6 +27,18 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const module_store = @import("module_store.zig");
 const transpile_mod = @import("../transpile.zig");
 
+/// `--platform=react-native` 프리셋 부울 플래그.
+/// CLI(main.zig)와 NAPI(napi_entry.zig) 양쪽에서 단일 소스로 참조되어
+/// 향후 플래그 추가/변경 시 한 곳만 수정하면 된다.
+pub const ReactNativeBoolPreset = struct {
+    flow: bool = true, // RN .js 파일은 Flow + JSX 혼용
+    jsx_in_js: bool = true,
+    configurable_exports: bool = true, // RN/Hermes: defineProperty에 configurable: true 필요
+    strict_execution_order: bool = true, // Babel worklet 호환: 함수 호이스팅 방지
+    worklet_transform: bool = true, // Reanimated worklet 네이티브 변환
+};
+pub const RN_BOOL_PRESET: ReactNativeBoolPreset = .{};
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,

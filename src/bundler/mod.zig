@@ -63,6 +63,7 @@ pub const ChunkGraph = chunk.ChunkGraph;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
+pub const RN_BOOL_PRESET = bundler_core.RN_BOOL_PRESET;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
 pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;

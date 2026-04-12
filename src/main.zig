@@ -1247,11 +1247,12 @@ pub fn main() !void {
             if (opts.main_fields_list.items.len == 0) {
                 try opts.main_fields_list.appendSlice(allocator, &.{ "react-native", "browser", "module", "main" });
             }
-            opts.flow = true;
-            opts.jsx_in_js = true; // RN의 .js 파일은 Flow + JSX 혼용
-            opts.configurable_exports = true; // RN/Hermes: defineProperty에 configurable: true 필요
-            opts.strict_execution_order = true; // Babel worklet 변환 호환: 함수 호이스팅 방지
-            opts.worklet_transform = true; // Reanimated worklet 네이티브 변환
+            const rn_preset = lib.bundler.RN_BOOL_PRESET;
+            opts.flow = rn_preset.flow;
+            opts.jsx_in_js = rn_preset.jsx_in_js;
+            opts.configurable_exports = rn_preset.configurable_exports;
+            opts.strict_execution_order = rn_preset.strict_execution_order;
+            opts.worklet_transform = rn_preset.worklet_transform;
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
