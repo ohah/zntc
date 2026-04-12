@@ -905,9 +905,16 @@ test "Worklet: rest params are not included in closure (#1104)" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // rest param 'args'는 closure에 포함되면 안 됨
+    // rest param 'args'와 'fn'은 closure에 포함되면 안 됨
+    // ES5 spread 헬퍼(__toConsumableArray)는 post-visit body에서 감지되어 closure에 포함
     try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__toConsumableArray") != null);
+    // fn, args는 파라미터/지역변수이므로 closure에 포함되면 안 됨
+    const closure_match = std.mem.indexOf(u8, code, "__closure = {") orelse unreachable;
+    const closure_end = std.mem.indexOfPos(u8, code, closure_match, "}") orelse unreachable;
+    const closure_content = code[closure_match..closure_end];
+    try std.testing.expect(std.mem.indexOf(u8, closure_content, " fn") == null);
+    try std.testing.expect(std.mem.indexOf(u8, closure_content, " args") == null);
 }
 
 test "Worklet: directive found after rest params transform (#1102)" {
