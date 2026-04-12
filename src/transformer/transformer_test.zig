@@ -944,3 +944,22 @@ test "Worklet: function_expression worklet produces IIFE factory (#1100)" {
     // return으로 반환
     try std.testing.expect(std.mem.indexOf(u8, code, "return myWorklet") != null);
 }
+
+test "Worklet: property access not collected as closure var (if_statement ternary)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        \\function calc(current, previous) {
+        \\  "worklet";
+        \\  if (previous === undefined) {
+        \\    return current.force;
+        \\  } else {
+        \\    return current.force - previous.force;
+        \\  }
+        \\}
+    , .{ .plugins = &plugins, .jsx_filename = "test.ts" });
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 'force'는 property access이므로 closure에 포함되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
