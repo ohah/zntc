@@ -95,6 +95,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             });
 
             // Plugin dispatch: worklet 등 AST 플러그인 적용
+            const is_auto_worklet = self.auto_worklet_next;
             if (try self.dispatchFunctionPlugins(result, .{
                 .node_idx = result,
                 .node_tag = .function_expression,
@@ -111,6 +112,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 .original_body_idx = body_idx,
                 .flags = func_flags,
                 .source_path = self.options.jsx_filename,
+                .is_auto_worklet = is_auto_worklet,
             })) |replacement| {
                 return replacement;
             }

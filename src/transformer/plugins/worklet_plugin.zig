@@ -5,6 +5,10 @@
 //!
 //! function_declaration (statement 위치) → trailing_nodes로 뒤에 삽입
 //! function_expression (expression 위치) → IIFE factory로 감싸서 교체
+//!
+//! Auto-workletization:
+//!   scheduleOnUI, runOnUI, runOnJS 등 알려진 함수의 인자를 자동 worklet 변환.
+//!   'worklet' 디렉티브 없이도 FunctionInfo.is_auto_worklet == true이면 변환.
 
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
@@ -15,27 +19,76 @@ const ast_plugin = @import("../ast_plugin.zig");
 const AstTransformCtx = ast_plugin.AstTransformCtx;
 const FunctionInfo = ast_plugin.FunctionInfo;
 const worklet_mod = @import("../transformer/worklet.zig");
-const Plugin = @import("../../bundler/plugin.zig").Plugin;
-const PluginError = @import("../../bundler/plugin.zig").PluginError;
+const plugin_mod = @import("../../bundler/plugin.zig");
+const Plugin = plugin_mod.Plugin;
+const PluginError = plugin_mod.PluginError;
+const AutoWorkletCallee = plugin_mod.AutoWorkletCallee;
 
 pub fn plugin() Plugin {
     return .{
         .name = "reanimated-worklet",
         .onFunction = onFunction,
+        .autoWorkletCallees = &auto_worklet_callees,
     };
 }
+
+/// Reanimated/Worklets auto-workletization 대상 함수 목록.
+/// Babel react-native-worklets/plugin과 동일.
+const auto_worklet_callees = [_]AutoWorkletCallee{
+    // Scheduling functions (arg 0)
+    .{ .name = "runOnUI" },
+    .{ .name = "runOnUISync" },
+    .{ .name = "runOnUIAsync" },
+    .{ .name = "scheduleOnUI" },
+    .{ .name = "executeOnUIRuntimeSync" },
+    .{ .name = "runOnJS" },
+    // Scheduling functions (arg 1)
+    .{ .name = "runOnRuntime", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "runOnRuntimeSync", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "runOnRuntimeAsync", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "scheduleOnRuntime", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    // Hooks (arg 0)
+    .{ .name = "useFrameCallback" },
+    .{ .name = "useAnimatedStyle" },
+    .{ .name = "useAnimatedProps" },
+    .{ .name = "createAnimatedPropAdapter" },
+    .{ .name = "useDerivedValue" },
+    .{ .name = "useAnimatedScrollHandler" },
+    // useAnimatedReaction (args 0 and 1)
+    .{ .name = "useAnimatedReaction", .arg_indices = .{ 0, 1, 0xFF, 0xFF } },
+    // Animation callbacks
+    .{ .name = "withTiming", .arg_indices = .{ 2, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "withSpring", .arg_indices = .{ 2, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "withDecay", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "withRepeat", .arg_indices = .{ 3, 0xFF, 0xFF, 0xFF } },
+    // Gesture handler method callbacks (arg 0, method call)
+    .{ .name = "onBegin", .is_method = true },
+    .{ .name = "onStart", .is_method = true },
+    .{ .name = "onEnd", .is_method = true },
+    .{ .name = "onFinalize", .is_method = true },
+    .{ .name = "onUpdate", .is_method = true },
+    .{ .name = "onChange", .is_method = true },
+    .{ .name = "onTouchesDown", .is_method = true },
+    .{ .name = "onTouchesMove", .is_method = true },
+    .{ .name = "onTouchesUp", .is_method = true },
+    .{ .name = "onTouchesCancelled", .is_method = true },
+};
 
 fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) PluginError!void {
     _ = ctx;
 
     if (info.body_idx.isNone()) return;
-    if (!api.hasDirective(info.body_idx, "worklet")) return;
 
-    // 디렉티브 제거 + closure 분석 + init code 생성: 모두 pre-visit body 사용.
-    // pre-visit body는 TS 포함/ES5 미적용 → codegen이 TS 자동 스트리핑.
+    const has_directive = api.hasDirective(info.body_idx, "worklet");
+    if (!has_directive and !info.is_auto_worklet) return;
+
+    // pre-visit body 사용: TS 포함/ES5 미적용 → codegen이 TS 자동 스트리핑.
     // ES5 헬퍼가 없으므로 UI thread에서 remote function deadlock 방지.
     // define 치환 전 식별자(global, __DEV__, process)는 JS_GLOBALS에 등록되어 제외됨.
-    const stripped_body = try api.stripDirective(info.original_body_idx);
+    const stripped_body = if (has_directive)
+        try api.stripDirective(info.original_body_idx)
+    else
+        info.original_body_idx; // auto-worklet: 디렉티브 없으므로 strip 불필요
 
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
     defer {
