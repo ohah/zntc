@@ -1446,3 +1446,17 @@ test "Worklet: closure analysis includes refs inside object getters/setters/meth
     // __initData.code에서 this.__closure로 destructure
     try std.testing.expect(std.mem.indexOf(u8, code, "outerFn:outerFn}=this.__closure") != null);
 }
+
+test "Worklet: recursive function self-reference excluded from __closure" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function recurse(n) {
+        \\  "worklet";
+        \\  if (n > 0) recurse(n - 1);
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 자기 참조는 closure에 포함되면 안 됨 (순환 참조 방지)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
