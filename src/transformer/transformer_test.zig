@@ -1112,7 +1112,7 @@ test "Worklet: pre-visit body used for initData (no ES5 helpers in closure)" {
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
 
-test "Worklet: nested function params do not leak into outer closure" {
+test "Worklet: nested function captures outer refs but params stay local" {
     var r = try transformWorklet(std.testing.allocator,
         \\var ext = 1;
         \\export function w() {
@@ -1124,8 +1124,10 @@ test "Worklet: nested function params do not leak into outer closure" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // inner는 중첩 함수(별도 스코프), ext만 외부 참조
-    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+    // ext는 inner body에서 참조하는 외부 변수 → worklet closure에 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "ext:ext}=this.__closure") != null);
+    // inner의 param x는 closure에 포함되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "x:x") == null);
 }
 
 test "Worklet: default param (c = 0) not in closure" {
@@ -1544,4 +1546,27 @@ test "Worklet: nested object with computed property and new expression" {
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "key:key") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "Cls:Cls") != null);
+}
+
+test "Worklet: nested function and arrow capture outer imports" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var isShared = (v) => v != null;
+        \\var helper = () => 42;
+        \\function w() {
+        \\  "worklet";
+        \\  function extract(x) {
+        \\    if (isShared(x)) return;
+        \\    var fn = () => helper();
+        \\  }
+        \\  return extract;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 중첩 function 안의 isShared와 arrow 안의 helper 모두 worklet closure에 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "isShared:isShared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "helper:helper") != null);
+    // extract의 param x는 closure에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, " x:x") == null);
 }
