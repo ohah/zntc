@@ -20,7 +20,9 @@ function hasPackage(name: string): boolean {
 }
 
 const hasEmotion = hasPackage("@emotion/css");
+const hasEmotionReact = hasPackage("@emotion/react");
 const hasStyledComponents = hasPackage("styled-components");
+const hasTailwind = hasPackage("tailwindcss");
 
 async function linkNodeModules(dir: string, packages: string[]) {
   const nmDir = join(dir, "node_modules");
@@ -163,6 +165,118 @@ describe.skipIf(!hasEmotion)("CSS Library Smoke — Emotion", () => {
     const js = await readFile(outFile, "utf-8");
     // cx 함수가 번들에 포함
     expect(js).toContain("merge");
+  });
+});
+
+// ─── @emotion/react (JSX + css prop) ───
+
+describe.skipIf(!hasEmotionReact)("CSS Library Smoke — @emotion/react", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  it("@emotion/react styled component bundle (React externalized)", async () => {
+    const fixture = await createFixture({
+      "index.tsx": `
+        import styled from "@emotion/styled";
+        import { css } from "@emotion/react";
+        const Box = styled.div\`color: hotpink; padding: 8px;\`;
+        const mixin = css\`background: yellow;\`;
+        console.log(typeof Box, typeof mixin);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    await linkNodeModules(fixture.dir, [
+      "@emotion/react",
+      "@emotion/styled",
+      "@emotion/cache",
+      "@emotion/serialize",
+      "@emotion/sheet",
+      "@emotion/utils",
+      "@emotion/hash",
+      "@emotion/unitless",
+      "@emotion/memoize",
+      "@emotion/use-insertion-effect-with-fallbacks",
+      "@emotion/weak-memoize",
+      "@emotion/is-prop-valid",
+      "@babel/runtime",
+      "hoist-non-react-statics",
+      "react-is",
+      "stylis",
+    ]);
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.tsx"),
+      "-o",
+      outFile,
+      "--external",
+      "react",
+      "--external",
+      "react-dom",
+    ]);
+    expect(bundle.exitCode).toBe(0);
+
+    const js = await readFile(outFile, "utf-8");
+    expect(js).toContain("serializeStyles");
+    expect(js.length).toBeGreaterThan(10000);
+  });
+});
+
+// ─── Tailwind CSS v4 ───
+
+describe.skipIf(!hasTailwind)("CSS Library Smoke — Tailwind CSS v4", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  it("bundles CSS importing tailwindcss/preflight.css", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './app.css';\nconsole.log("tailwind");`,
+      "app.css": `@import "tailwindcss/preflight.css";\n.btn { padding: 0.5rem 1rem; }`,
+    });
+    cleanup = fixture.cleanup;
+
+    await linkNodeModules(fixture.dir, ["tailwindcss"]);
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    // preflight.css는 box-sizing 리셋 포함
+    expect(css).toContain("box-sizing");
+    expect(css).toContain(".btn");
+    expect(css).not.toContain("@import");
+  });
+
+  it("bundles tailwindcss/theme.css (CSS variables)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `import './app.css';`,
+      "app.css": `@import "tailwindcss/theme.css";\n.primary { color: var(--color-blue-500); }`,
+    });
+    cleanup = fixture.cleanup;
+
+    await linkNodeModules(fixture.dir, ["tailwindcss"]);
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const css = await readFile(join(fixture.dir, "index.css"), "utf-8");
+    // theme.css는 --color-* design token 정의
+    expect(css).toContain("--color-");
+    expect(css).toContain("var(--color-blue-500)");
   });
 });
 
