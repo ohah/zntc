@@ -806,7 +806,7 @@ fn serializeFunctionInfo(
     // closureVars: 디렉티브가 있을 때만 계산 (스코프 분석은 비용이 크므로)
     try buf.appendSlice(alloc, ",\"closureVars\":[");
     if (has_directives) {
-        const closure_vars = api.getClosureVars(func.body_idx, func.params_start, func.params_len) catch &.{};
+        const closure_vars = api.getClosureVars(func.original_body_idx, func.original_params_start, func.original_params_len) catch &.{};
         defer if (closure_vars.len > 0) api.getAllocator().free(closure_vars);
         for (closure_vars, 0..) |v, i| {
             if (i > 0) try buf.append(alloc, ',');
