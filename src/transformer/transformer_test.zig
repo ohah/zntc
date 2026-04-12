@@ -1067,3 +1067,33 @@ test "Worklet: globalThis property not collected as closure var (unary_expressio
     // fn만 closure에 있어야 함
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { fn: fn }") != null);
 }
+
+test "Worklet: arrow function params not in closure (ES5 lowering)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var ext = 1; export const pf = (value, context) => { \"worklet\"; return ext + value + context; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // value, context는 파라미터이므로 closure에 포함되면 안 됨
+    // ext만 closure에 있어야 함
+    if (std.mem.indexOf(u8, code, "__closure = { ext: ext }") == null) {
+        std.debug.print("\n=== ACTUAL CODE ===\n{s}\n=== END ===\n", .{code});
+    }
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+}
+
+test "Worklet: arrow function with typed var params not in closure (ES5 lowering)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "type Fn = any; var ext = 1; export const pf: Fn = (value, context) => { \"worklet\"; return ext + value + context; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // type annotation이 변수에 있고 params에는 없는 경우에도 params는 제외되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+}

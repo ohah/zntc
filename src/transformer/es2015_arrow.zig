@@ -95,6 +95,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             });
 
             // Plugin dispatch: worklet 등 AST 플러그인 적용
+            // Plugin dispatch: worklet 등 AST 플러그인 적용
             if (try self.dispatchFunctionPlugins(result, .{
                 .node_idx = result,
                 .node_tag = .function_expression,
