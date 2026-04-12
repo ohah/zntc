@@ -1750,8 +1750,19 @@ test "babel:babel_plugin_for_web_configuration:doesn_3" {
 }
 
 test "babel:babel_plugin_for_generators:makes_a_generator_worklet_factory" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\function* foo() {
+        \\  'worklet';
+        \\  yield 'hello';
+        \\  yield 'world';
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "babel:babel_plugin_for_generators:makes_a_generator_worklet_string" {
@@ -1771,8 +1782,18 @@ test "babel:babel_plugin_for_generators:makes_a_generator_worklet_string" {
 }
 
 test "babel:babel_plugin_for_async_functions:makes_an_async_worklet_factory" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\async function foo() {
+        \\  'worklet';
+        \\  await Promise.resolve();
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "babel:babel_plugin_for_async_functions:makes_an_async_worklet_string" {
