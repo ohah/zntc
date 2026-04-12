@@ -893,7 +893,8 @@ test "Worklet: worklet transform disabled when no plugins" {
 
 test "Worklet: rest params are not included in closure (#1104)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "function guard(fn, ...args) { \"worklet\"; return fn(...args); }",
         .{
             .plugins = &plugins,
@@ -911,7 +912,8 @@ test "Worklet: rest params are not included in closure (#1104)" {
 
 test "Worklet: directive found after rest params transform (#1102)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "function guard(fn, ...args) { \"worklet\"; return fn(...args); }",
         .{
             .plugins = &plugins,
@@ -930,7 +932,8 @@ test "Worklet: directive found after rest params transform (#1102)" {
 
 test "Worklet: function_expression worklet produces IIFE factory (#1100)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var x = wrap(function myWorklet() { \"worklet\"; return 42; });",
         .{ .plugins = &plugins, .jsx_filename = "test.ts" },
     );
@@ -980,7 +983,8 @@ test "Worklet: nested member expression a.b.c excludes property names" {
 
 test "Worklet: external variable captured, property excluded" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var config = { speed: 1 }; function f(x) { \"worklet\"; return x * config.speed; }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts" },
     );
@@ -1037,7 +1041,8 @@ test "Worklet: conditional expression member access" {
 
 test "Worklet: inner function declaration is local" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var cb = 1; function f() { \"worklet\"; function inner() { return 1; } return cb; }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts" },
     );
@@ -1050,7 +1055,8 @@ test "Worklet: inner function declaration is local" {
 
 test "Worklet: globalThis property not collected as closure var (unary_expression extra)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var fn = 1; function setup() { \"worklet\"; if (!globalThis.__myProp) { globalThis.__myProp = fn; } }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts" },
     );
