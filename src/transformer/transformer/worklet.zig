@@ -367,13 +367,11 @@ fn walkBodyForClosureAnalysis(
             try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
         },
 
-        // if 문: extra = [condition, consequent, alternate]
+        // if 문: ternary = { a: condition, b: consequent, c: alternate }
         .if_statement => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 1]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
         },
 
         // for 문: extra = [init, test, update, body]
@@ -386,22 +384,18 @@ fn walkBodyForClosureAnalysis(
             try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 3]), locals, refs, depth + 1);
         },
 
-        // for-in/for-of: extra = [left, right, body]
-        .for_in_statement, .for_of_statement => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 1]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
+        // for-in/for-of: ternary = { a: left, b: right, c: body }
+        .for_in_statement, .for_of_statement, .for_await_of_statement => {
+            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
         },
 
-        // try 문: extra = [block, handler, finalizer]
+        // try 문: ternary = { a: block, b: handler, c: finalizer }
         .try_statement => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 1]), locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
+            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
         },
 
         // catch 절: binary = [param, body]
