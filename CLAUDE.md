@@ -1,328 +1,49 @@
 # ZTS - Zig TypeScript Transpiler
 
-## Project Overview
-Zig로 작성하는 JavaScript/TypeScript/Flow 트랜스파일러 + 번들러. SWC/oxc 수준의 프로덕션 레벨 품질을 목표.
-C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용 가능. Vite/Rollup 플러그인 어댑터 지원.
+Zig로 작성하는 JS/TS/Flow 트랜스파일러 + 번들러 (SWC/oxc 수준 목표).
+C NAPI 바인딩으로 Node.js/Bun에서 in-process 사용, Vite/Rollup 플러그인 어댑터 지원.
 
 ## Tech Stack
-- **Language**: Zig 0.15.2
-- **NAPI**: C NAPI v8 (vendor/node-api-headers/)
-- **JS Runtime**: Node.js 24+ / Bun 1.3+
-- **Version Manager**: mise
-- **Build**: `zig build` (build.zig)
-- **Test**: `zig build test`
-- **Test262**: `zig build test262`
+Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · mise · `zig build`
 
 ## Documentation
-
-- **[docs/STRUCTURE.md](./docs/STRUCTURE.md)** — 프로젝트 디렉토리 구조 (src/, packages/, references/)
-- **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — 파이프라인 아키텍처 + 설계 결정 요약
-- **[docs/ROADMAP.md](./docs/ROADMAP.md)** — Phase 현황, 성능, 미지원 기능, 배치 계획, 기술부채
-- **[docs/TESTING.md](./docs/TESTING.md)** — Test262, 유닛 테스트, 통합 테스트, 스모크 테스트
-
-### 상세 설계 문서
-- **[BUNDLER.md](./BUNDLER.md)** — 번들러 상세 설계 (경쟁 환경, 모듈 설계, tree-shaking, RN 지원, 외부 통합)
-- **[PLUGINS.md](./PLUGINS.md)** — 플러그인 시스템 + 로더 + 특수 기능 + CLI 옵션 추가 계획
-- **[HMR.md](./HMR.md)** — Dev server + HMR 의사결정/아키텍처
-- **[DECISIONS.md](./DECISIONS.md)** — 전체 의사결정 기록
-- **[FLOW.md](./FLOW.md)** — Flow 지원 전략
+- [docs/STRUCTURE.md](./docs/STRUCTURE.md) — 디렉토리 구조
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 파이프라인 아키텍처
+- [docs/ROADMAP.md](./docs/ROADMAP.md) — Phase 현황, 성능, 미지원, 기술부채
+- [docs/TESTING.md](./docs/TESTING.md) — Test262, 유닛/통합/스모크 테스트
+- [BUNDLER.md](./BUNDLER.md), [PLUGINS.md](./PLUGINS.md), [HMR.md](./HMR.md), [DECISIONS.md](./DECISIONS.md), [FLOW.md](./FLOW.md)
+- CLI 옵션 전체: `zts --help` / JS API: `packages/core/index.ts` / README
 
 ## Commands
 ```bash
-zig build          # 빌드
-zig build run      # 실행
-zig build test     # 유닛 테스트
-zig build test262  # Test262 러너 테스트
-zig build napi     # NAPI .node 모듈 빌드 (→ zig-out/lib/zts.node)
-zig build wasm     # WASM 모듈 빌드 (→ zig-out/bin/zts.wasm)
+zig build [test|test262|napi|wasm|run]
 ```
+- NAPI 테스트: `cd packages/core && bun test` (또는 `node --test napi.test.mjs`)
+- 통합 테스트: `cd tests/integration && bun test` (**반드시 이 디렉토리에서 실행** — 루트에서 실행 시 경로 해석 실패)
 
-### NAPI 테스트 (@zts/core)
-```bash
-cd packages/core && bun test index.test.ts    # NAPI 단위 테스트 (83개)
-cd packages/core && bun test bin/zts.test.ts  # Node.js CLI 테스트 (36개)
-node --test packages/core/napi.test.mjs       # Node.js NAPI 직접 테스트 (18개)
-```
+## @zts/core 요약
+`init()` → `transpile(src)` / `buildSync(opts)` / `await build(opts)`.
+플러그인 훅: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGenerateBundle`.
+Rollup/Vite 어댑터: `vitePlugin({...})` (모든 훅 async 지원).
+`vite-plugin-zts`: Vite의 esbuild transform을 ZTS로 교체 (`zts()` 플러그인).
 
-### 통합 테스트 (Bun)
-```bash
-cd tests/integration && bun test              # 전체 통합 테스트
-cd tests/integration && bun test tests/bundle-smoke.test.ts   # 번들 스모크
-cd tests/integration && bun test tests/es5-rn.test.ts         # RN ES5 + Hermes
-```
-**주의**: 통합 테스트는 반드시 `tests/integration/` 디렉토리에서 실행해야 한다. 프로젝트 루트에서 실행하면 경로 해석 문제로 대부분 실패한다.
-
-## @zts/core — NAPI 바인딩 (Node.js/Bun)
-
-### 패키지 구조
-```
-packages/core/
-  ├── bin/zts.mjs          # Node.js/Bun CLI (#!/usr/bin/env node)
-  ├── src/napi_entry.zig   # C NAPI 진입점
-  ├── index.ts             # JS 래퍼 (transpile, build, buildSync)
-  ├── index.test.ts        # Bun 테스트 (83개)
-  ├── napi.test.mjs        # Node.js 테스트 (18개)
-  └── bin/zts.test.ts      # CLI 테스트 (36개)
-```
-
-### JS API
-```typescript
-import { init, transpile, build, buildSync } from "@zts/core";
-
-init(); // .node 모듈 로드
-
-// 트랜스파일
-const { code } = transpile("const x: number = 1;");
-
-// 동기 번들링 (플러그인 미지원)
-const result = buildSync({ entryPoints: ["src/index.ts"] });
-
-// 비동기 번들링 + JS 플러그인
-const result = await build({
-  entryPoints: ["src/index.ts"],
-  target: "es2020",                          // ES 다운레벨 타겟
-  loader: { ".png": "file", ".svg": "text" }, // 확장자별 로더 (.css는 자동 번들링)
-  conditions: ["import", "default"],          // package.json exports 조건
-  resolveExtensions: [".ts", ".tsx", ".js"],  // 확장자 탐색 순서
-  mainFields: ["module", "main"],             // package.json 필드 순서
-  outdir: "./dist",                           // 출력 디렉토리 (자동 write)
-  // outfile: "./dist/bundle.js",             // 단일 파일 출력
-  // write: false,                            // 디스크 쓰기 비활성화
-  plugins: [{
-    name: "css",
-    setup(build) {
-      build.onResolve({ filter: /\.css$/ }, args => ({ path: resolve(args.path) }));
-      build.onLoad({ filter: /\.css$/ }, () => ({ contents: 'export default "red"' }));
-      build.onTransform({ filter: /\.ts$/ }, args => ({ code: args.code.replace(...) }));
-      build.onRenderChunk({ filter: /.*/ }, args => ({ code: `/* banner */\n${args.code}` }));
-      build.onGenerateBundle(outputs => { console.log("files:", outputs.length); });
-    },
-  }],
-});
-```
-
-### Vite/Rollup 플러그인 어댑터
-```typescript
-import { vitePlugin } from "@zts/core";
-
-await build({
-  entryPoints: ["src/index.ts"],
-  plugins: [
-    vitePlugin({
-      name: "json-loader",
-      resolveId(source) { if (source.endsWith(".json")) return resolve(source); },
-      load(id) { if (id.endsWith(".json")) return `export default ${readFileSync(id)}`; },
-      transform(code, id) { return code.replace("import.meta.env.MODE", '"production"'); },
-      renderChunk(code, chunk) { return `/* ${chunk} */\n${code}`; },
-      generateBundle(outputs) { console.log("Generated", outputs.length, "files"); },
-    }),
-  ],
-});
-```
-
-> **async 훅 지원**: 모든 Rollup/Vite 훅은 `Promise`를 반환할 수 있다.
-> `async resolveId()`, `async load()`, `async transform()`, `async renderChunk()`, `async generateBundle()` 모두 동작.
-
-### vite-plugin-zts (Vite 플러그인)
-Vite의 esbuild transform을 ZTS로 교체하는 플러그인.
-```typescript
-// vite.config.ts
-import { defineConfig } from "vite";
-import { zts } from "vite-plugin-zts";
-
-export default defineConfig({
-  plugins: [zts()],
-});
-```
-옵션:
-- `include?: RegExp` — 변환할 파일 패턴 (기본: `/\.(tsx?|jsx)$/`)
-- `exclude?: RegExp` — 제외 패턴 (기본: `/node_modules/`)
-- `transpileOptions?: TranspileOptions` — ZTS transpile 옵션
-
-### define/alias
-```typescript
-buildSync({
-  entryPoints: ["index.ts"],
-  define: { "process.env.NODE_ENV": '"production"', __DEV__: "false" },
-  alias: { "@alias/mod": "./real.ts" },
-});
-```
-
-### ES 다운레벨 타겟
-`es5` ~ `es2025`, `esnext` 지원. tsconfig `target`과 연동.
-ES2023: hashbang (#!) 다운레벨 (strip). ES2025: `using` 선언 다운레벨.
-
-### Node.js CLI (`packages/core/bin/zts.mjs`)
-Zig 독립 바이너리(`zig-out/bin/zts`)를 대체하는 Node.js/Bun 호환 CLI.
-내부적으로 @zts/core NAPI를 사용하여 동일한 코드 경로로 실행.
-```bash
-# 트랜스파일
-node packages/core/bin/zts.mjs input.ts
-echo "const x: number = 1;" | node packages/core/bin/zts.mjs -
-
-# 번들링
-node packages/core/bin/zts.mjs --bundle entry.ts -o out.js
-node packages/core/bin/zts.mjs --bundle entry.ts --plugin zts.config.js
-
-# Watch + Serve
-node packages/core/bin/zts.mjs --bundle entry.ts --watch
-node packages/core/bin/zts.mjs --serve --bundle entry.ts --port 3000
-```
-
-## ZTS CLI 옵션 (현재 지원)
-
-### 트랜스파일
-```bash
-zts <file.ts>                    # 트랜스파일 → stdout
-zts <file.ts> -o <out.js>       # 트랜스파일 → 파일
-zts <dir/> --outdir <out/>      # 디렉토리 재귀 변환
-zts - < input.ts                # stdin 입력
-```
-
-### 번들
-```bash
-zts --bundle <entry.ts>                          # 번들 → stdout
-zts --bundle <entry.ts> -o out.js                # 번들 → 파일
-zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
-zts --bundle <entry.ts> --preserve-modules --outdir dist  # 모듈별 출력 (라이브러리 빌드)
-zts --bundle <entry.ts> --plugin zts.config.js     # JS 플러그인
-```
-
-### 공통 옵션
-```
---format=esm|cjs|iife|umd|amd    모듈 포맷 (기본: esm, --platform=browser 시 iife)
---platform=browser|node|neutral|react-native  타겟 플랫폼 (기본: browser)
---minify                         출력 압축
---sourcemap                      소스맵 생성 (.js.map)
---ascii-only                     non-ASCII를 \uXXXX로 이스케이프
---quotes=<style>                 문자열 따옴표 (double|single|preserve, 기본: double)
---drop=console                   console.* 호출 제거
---drop=debugger                  debugger 문 제거
---define:KEY=VALUE               글로벌 치환 (예: --define:DEBUG=false)
---external <pkg>                 패키지를 번들에서 제외 (반복 가능)
---experimental-decorators        legacy decorator 변환 (tsconfig compilerOptions 지원)
---use-define-for-class-fields=false  class field → constructor this.x = v 변환
---alias:FROM=TO              import 경로 별칭 (--alias:react=preact/compat)
---public-path=<url>          에셋/청크 URL prefix (CDN 배포용)
---banner:js=<text>           출력 파일 앞에 텍스트 삽입
---footer:js=<text>           출력 파일 뒤에 텍스트 삽입
---global-name=<name>         IIFE export 글로벌 변수명
---out-extension:.js=<ext>    출력 파일 확장자 변경 (.mjs, .cjs)
---source-root=<url>          소스맵 sourceRoot
---sources-content=false      소스맵에서 원본 소스 제외
---log-level=<level>          로그 레벨 (silent|error|warning|info)
---charset=utf8               non-ASCII를 이스케이프하지 않음
---preserve-symlinks          심링크를 따라가지 않고 링크 경로로 해석
---preserve-modules           모듈별 개별 파일 출력 (라이브러리 빌드, --outdir 필수)
---preserve-modules-root=<dir> 출력 디렉토리 구조 기준 경로
---entry-names=<pattern>      엔트리 파일명 패턴 (기본: [name], 예: [name]-[hash])
---chunk-names=<pattern>      공통 청크 파일명 패턴 (기본: [name]-[hash], 예: chunks/[name]-[hash])
---asset-names=<pattern>      에셋 파일명 패턴 (기본: [name]-[hash], [dir]/[name]/[hash]/[ext] 지원)
---css-names=<pattern>        CSS 출력 파일명 패턴 (기본: [name])
---loader:.ext=type           확장자별 로더 지정 (file, dataurl, text, binary, copy, empty)
---metafile=<path>            빌드 입출력 JSON (esbuild 호환, 기본: meta.json)
---analyze                    번들 분석 출력 (metafile JSON을 stderr에 출력)
---legal-comments=<mode>      라이센스 주석 처리 (none, inline, eof, linked, external)
---inject:<path>              모든 엔트리에 자동 import (반복 가능)
---keep-names                 minify 시 함수/클래스 .name 프로퍼티 보존
---shim-missing-exports       존재하지 않는 export import 시 undefined 제공 (롤다운 호환)
---resolve-extensions=<exts>  확장자 탐색 순서 (쉼표 구분, 예: .ios.ts,.ts,.js)
---main-fields=<fields>       package.json 필드 순서 (쉼표 구분, 예: react-native,browser,main)
---rn-platform=ios|android    RN 서브 플랫폼 (.ios.*/.android.* + .native.* 확장자 자동 추가)
---flow                       Flow 타입 스트리핑 (@flow pragma 자동 감지)
---jsx=<mode>                 JSX 런타임 (classic|automatic|automatic-dev, tsconfig "jsx" 연동)
---jsx-dev                    JSX 개발 모드 (jsxDEV + source info, --jsx=automatic-dev 단축)
---jsx-factory=<fn>           classic 모드 JSX factory (기본: React.createElement)
---jsx-fragment=<fn>          classic 모드 Fragment factory (기본: React.Fragment)
---jsx-import-source=<pkg>    automatic 모드 import source (기본: react, tsconfig "jsxImportSource" 연동)
---plugin <path>                  JS 플러그인 (subprocess JSON IPC)
--w, --watch                      파일 변경 감시
---watch-json                     --watch + NDJSON 이벤트 stdout 출력 (외부 도구 연동용)
--p, --project <path>             tsconfig.json 경로
-```
-
-### Dev 서버
-```
---serve [dir]                    정적 파일 서버 (기본: .)
---serve --bundle <entry.ts>      번들+서빙 (HMR 지원)
---port <number>                  서버 포트 (기본: 12300)
---host [addr]                    바인딩 주소 (기본: localhost, 생략 시 0.0.0.0)
---open                           브라우저 자동 열기
---proxy /api=http://host:port    API 프록시 (반복 가능)
---certfile <path>                TLS 인증서 파일 (HTTPS dev server)
---keyfile <path>                 TLS 개인키 파일 (HTTPS dev server)
-```
-
-### 자동 동작 (esbuild 호환)
-- `--platform=browser` + `--bundle` → format 기본값 IIFE (글로벌 스코프 오염 방지)
-- `--platform=browser` + `--bundle` → `process.env.NODE_ENV`를 `"production"`으로 자동 define
-- `--platform=browser` → Node 내장 모듈(fs, path, util 등) 빈 모듈로 대체
-- `--platform=browser` → `package.json "browser"` 필드에서 disabled 파일 감지
-- `--platform=node` → Node 내장 모듈 + 서브패스(fs/promises, stream/web) 자동 external
-- `--platform=react-native` → RN 프리셋 자동 적용 (아래 참조)
-- `import.meta` → CJS+node: `require("url").pathToFileURL(__filename).href` / CJS+browser: `""`
-- `--watch` / `--serve` → 증분 빌드 (변경 모듈만 재파싱, 나머지 캐시)
-- `import './style.css'` → 별도 `.css` 파일 자동 생성 (CSS `@import` 인라이닝, `--minify` 시 Lightning CSS minify)
-
-### React Native 프리셋 (`--platform=react-native`)
-- resolve-extensions (사용자 미지정 시):
-  - `--rn-platform=ios`: `.ios.tsx, .ios.ts, .ios.jsx, .ios.js, .native.tsx, .native.ts, .native.jsx, .native.js, .tsx, .ts, .jsx, .js, .json`
-  - `--rn-platform=android`: `.android.tsx, .android.ts, .android.jsx, .android.js, .native.tsx, .native.ts, .native.jsx, .native.js, .tsx, .ts, .jsx, .js, .json`
-  - 미지정: `.tsx, .ts, .jsx, .js, .json`
-- main-fields: `react-native, browser, module, main` (사용자 미지정 시)
-- exports 조건: `react-native, browser, import, module, default`
-- `--flow` 자동 활성화
-- browser와 동일: IIFE 기본, NODE_ENV define, Node 빌트인 빈 모듈, browser disabled
-
-### `--watch-json` (외부 번들러 연동)
-`--watch-json`은 `--watch`와 동일하되, 리빌드 이벤트를 stdout에 NDJSON으로 출력한다.
-번개(bungae) 같은 외부 도구가 stdout을 파싱하여 HMR 메시지를 생성하는 용도.
-
-```jsonl
-{"type":"ready","files":2592,"bytes":123456}
-{"type":"rebuild","success":true,"changed":["/src/app.tsx"],"modules":["/src/app.tsx","/src/util.ts"],"bytes":123456}
-{"type":"rebuild","success":false,"error":"ModuleNotFound"}
-```
-
-사용 예:
-```bash
-zts --bundle index.js -o dist/bundle.js --platform=react-native --watch-json
-```
+## 주요 동작 포인트
+- `--platform=browser` + `--bundle` → IIFE + `NODE_ENV=production` 자동 define, Node 빌트인 빈 모듈
+- `--platform=node` → Node 빌트인 자동 external
+- `--platform=react-native` → RN 프리셋: `.ios.*`/`.android.*`/`.native.*` 확장자, `react-native` main-field/exports 조건, `--flow` 자동
+- `--watch`/`--serve` → 증분 빌드, `--watch-json`은 NDJSON 이벤트 stdout 출력 (외부 HMR 연동)
+- ES 다운레벨: `es5`~`es2025`/`esnext` (ES2023 hashbang strip, ES2025 `using` 다운레벨)
+- `import './x.css'` → 별도 CSS 파일 자동 생성 (Lightning CSS minify)
 
 ## Development Workflow
+1. 작업 단위 작게 (하나의 PR = 하나의 기능)
+2. 독립 작업은 서브에이전트로 병렬
+3. main 직접 push 금지 — feature branch → PR → merge
+4. PR 후 `/simplify` 필수 (파일 간 상호작용까지 검토)
+5. 구현 전 Test262/유닛 테스트 먼저
+6. Zig 초보자에게 설명 포함
 
-### 구현 규칙
-1. **작업 단위를 최대한 작게 나눈다** — 하나의 PR이 하나의 기능/토큰 그룹을 담당
-2. **서브에이전트로 병렬 구현** — 독립적인 작업은 서브에이전트를 활용해 병렬 진행
-3. **PR 단위로 올린다** — main에 직접 push하지 않고 feature branch → PR → merge
-4. **`/simplify` 리뷰** — PR 올린 후 반드시 `/simplify`로 코드 품질 점검
-   - 코드 재사용, 품질, 효율성 검토
-   - 발견된 이슈 수정 후 merge
-5. **테스트 먼저** — 구현 전에 해당 Test262 카테고리 또는 유닛 테스트 작성
-6. **Zig 초보자에게 자세히 설명** — 모든 코드 작성 시 왜 이렇게 하는지 설명
-
-### PR 네이밍 규칙
-```
-feat(lexer): add numeric literal tokenization
-feat(parser): add expression parsing
-fix(lexer): handle edge case in template literal nesting
-```
-
-### 브랜치 전략
-```
-main ← feature/lexer-token-enum
-     ← feature/parser-expression
-     ← fix/bundler-cjs-interop
-     ...
-```
+PR 제목: `feat(lexer): add numeric literal tokenization` 형식.
 
 ## References
-- Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
-- oxc: github.com/oxc-project/oxc (crates/oxc_parser/src/lexer/kind.rs — 토큰 enum 참고)
-- SWC: github.com/swc-project/swc
-- esbuild: github.com/evanw/esbuild
-- Hermes: github.com/facebook/hermes (Flow 파서)
-- Metro: github.com/facebook/metro (RN 번들러)
-- TypeScript: github.com/microsoft/TypeScript (다운레벨링/decorator 테스트케이스)
-- Test262: github.com/tc39/test262
-- ECMAScript Spec: tc39.es/ecma262
+Bun (src/js_parser.zig, js_lexer.zig) · oxc · SWC · esbuild · Hermes (Flow) · Metro (RN) · TypeScript · Test262 · tc39.es/ecma262
