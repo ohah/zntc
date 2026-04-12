@@ -963,3 +963,87 @@ test "Worklet: property access not collected as closure var (if_statement ternar
     // 'force'는 property access이므로 closure에 포함되면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
+
+test "Worklet: nested member expression a.b.c excludes property names" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function f(obj) {
+        \\  "worklet";
+        \\  return obj.a.b.c;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // obj는 param → closure 비어야 함. a, b, c는 property → 제외
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: external variable captured, property excluded" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var config = { speed: 1 }; function f(x) { \"worklet\"; return x * config.speed; }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // config → closure, speed → property 제외
+    try std.testing.expect(std.mem.indexOf(u8, code, "config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { config }") != null);
+}
+
+test "Worklet: try-catch body member access excludes property" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function f(obj) {
+        \\  "worklet";
+        \\  try { return obj.data; } catch(e) { return e.message; }
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // obj, e는 param/catch local → closure 비어야 함. data, message는 property → 제외
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: destructuring locals not in closure" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function f(obj) {
+        \\  "worklet";
+        \\  const { x, y } = obj;
+        \\  return x + y;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // x, y는 destructuring → locals. obj는 param → locals.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: conditional expression member access" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function f(x, flag) {
+        \\  "worklet";
+        \\  return flag ? x.a : x.b;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // a, b는 property → 제외
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: inner function declaration is local" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var cb = 1; function f() { \"worklet\"; function inner() { return 1; } return cb; }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // inner → local function. cb → external closure var.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { cb }") != null);
+}
