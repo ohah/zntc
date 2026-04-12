@@ -82,13 +82,18 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     const has_directive = api.hasDirective(info.body_idx, "worklet");
     if (!has_directive and !info.is_auto_worklet) return;
 
-    // pre-visit body 사용: TS 포함/ES5 미적용 → codegen이 TS 자동 스트리핑.
-    // ES5 헬퍼가 없으므로 UI thread에서 remote function deadlock 방지.
-    // define 치환 전 식별자(global, __DEV__, process)는 JS_GLOBALS에 등록되어 제외됨.
-    const stripped_body = if (has_directive)
-        try api.stripDirective(info.original_body_idx)
+    // JS thread 실행용 body: 방문 완료된 body에서 디렉티브 strip.
+    // (auto-worklet 등 inner 변환이 보존됨)
+    if (has_directive) {
+        _ = try api.stripDirective(info.body_idx);
+    }
+
+    // __initData.code용: pre-visit body 사용 (TS 포함/ES5 미적용).
+    // codegen이 TS 자동 스트리핑. ES5 헬퍼가 없으므로 UI thread deadlock 방지.
+    const code_body = if (has_directive)
+        try worklet_mod.stripWorkletDirective(api.transformer, info.original_body_idx)
     else
-        info.original_body_idx; // auto-worklet: 디렉티브 없으므로 strip 불필요
+        info.original_body_idx;
 
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
     defer {
@@ -99,7 +104,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     const func_name = info.name orelse "anonymous";
     const init_code = try api.generateCode(
         func_name,
-        stripped_body,
+        code_body,
         closure_vars,
         info.original_params_start,
         info.original_params_len,

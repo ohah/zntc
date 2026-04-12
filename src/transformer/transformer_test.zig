@@ -1407,3 +1407,24 @@ test "Worklet: method auto-workletization for gesture handler onBegin" {
     // obj.onBegin() 메서드 호출의 첫 번째 인자가 worklet화
     try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
+
+test "Worklet: auto-workletization inside worklet function body" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function scheduleOnUI(fn) {}
+        \\function outer() {
+        \\  "worklet";
+        \\  scheduleOnUI(() => {
+        \\    console.log("inner");
+        \\  });
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // outer 함수의 __workletHash
+    try std.testing.expect(std.mem.indexOf(u8, code, "outer.__workletHash") != null);
+    // inner arrow도 auto-worklet 변환되어야 함 (IIFE로 wrapping)
+    // 이전 버그: stripDirective가 원본 body로 덮어써서 inner 변환이 손실
+    const count = std.mem.count(u8, code, "__workletHash");
+    try std.testing.expect(count >= 2); // outer + inner
+}
