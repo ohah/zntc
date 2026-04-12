@@ -44,8 +44,16 @@ test "babel:babel_plugin_generally:transforms" {
 }
 
 test "babel:babel_plugin_generally:injects_its_version" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\function foo() {
+        \\  'worklet';
+        \\  var foo = "bar";
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__pluginVersion =") != null);
 }
 
 test "babel:babel_plugin_generally:injects_source_maps" {

@@ -270,7 +270,7 @@ fn buildFactoryBody(
     api: *AstTransformCtx,
     func_node: NodeIndex,
     func_name: []const u8,
-    prop_stmts: [4]NodeIndex,
+    prop_stmts: [5]NodeIndex,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
@@ -307,11 +307,13 @@ fn buildFactoryBody(
         .data = .{ .unary = .{ .operand = return_ref, .flags = 0 } },
     });
 
-    // block: [var_decl, prop_stmts[0..3], return_stmt]
+    // factory body: [var_decl, ...prop_stmts(5), return_stmt]
+    // prop_stmts 크기 변경 시 이 리스트도 함께 업데이트 — 의도적 결합(유지보수 단순성 우선).
     const body_list = try t.ast.addNodeList(&.{
         var_decl,      prop_stmts[0],
         prop_stmts[1], prop_stmts[2],
-        prop_stmts[3], return_stmt,
+        prop_stmts[3], prop_stmts[4],
+        return_stmt,
     });
     return t.ast.addNode(.{
         .tag = .block_statement,
@@ -325,7 +327,7 @@ fn buildWorkletIIFE(
     api: *AstTransformCtx,
     func_node: NodeIndex,
     func_name: []const u8,
-    prop_stmts: [4]NodeIndex,
+    prop_stmts: [5]NodeIndex,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
