@@ -1339,9 +1339,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// super() 호출이 있는 constructor body를 후처리:
         /// 1. body 앞에 var _this; 선언 추가
-        /// 2. body 끝에 return _this; 추가
+        /// 2. super() 직후에 instance fields 삽입
+        /// 3. 나머지 constructor body
+        /// 4. body 끝에 return _this; 추가
+        ///
+        /// ES6 스펙: class fields는 super() 직후, constructor body 이전에 초기화.
         /// lowerSuperCall이 _this = __callSuper(...) 대입식을 생성하므로,
-        /// super()가 if/else 등 어디에 있든 정상 동작한다.
+        /// 해당 대입식을 포함하는 statement를 찾아 그 직후에 fields를 삽입한다.
         fn postProcessSuperCallBody(self: *Transformer, body: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const body_node = self.ast.getNode(body);
             if (body_node.tag != .block_statement) return body;
@@ -1359,14 +1363,35 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // var _this; (초기화 없는 선언) — extra_data grow 가능
             try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
 
-            // 기존 body statements — extra_data grow 후 다시 접근
-            for (self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len]) |raw_idx| {
+            // super() 호출을 포함하는 statement를 찾는다.
+            // lowerSuperCall이 _this = __callSuper(...)로 변환하므로,
+            // expression_statement > assignment_expression(LHS=identifier) 패턴을 탐색.
+            // if/else 안에 있을 수도 있으므로 재귀 탐색.
+            var super_call_end: u32 = stmts_len; // fallback: fields를 body 끝에 배치
+            {
+                var i: u32 = 0;
+                while (i < stmts_len) : (i += 1) {
+                    const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmts_start + i]);
+                    if (containsSuperCallAssignment(self, stmt_idx)) {
+                        super_call_end = i + 1;
+                        break;
+                    }
+                }
+            }
+
+            // body stmts: super() 호출까지 (포함)
+            for (self.ast.extra_data.items[stmts_start .. stmts_start + super_call_end]) |raw_idx| {
                 try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
             }
 
-            // instance fields: _this에 할당 (super() 이후에 실행되어야 함)
+            // instance fields: super() 직후, constructor body 이전
             for (instance_fields) |field_stmt| {
                 try self.scratch.append(self.allocator, try replaceThisWithThisAlias(self, field_stmt, span));
+            }
+
+            // body stmts: super() 이후 나머지 constructor body
+            for (self.ast.extra_data.items[stmts_start + super_call_end .. stmts_start + stmts_len]) |raw_idx| {
+                try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
             }
 
             // return _this;
@@ -1383,6 +1408,42 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = new_list },
             });
+        }
+
+        /// lowerSuperCall이 생성하는 `_this = __callSuper(...)` 대입을 포함하는지 재귀 탐색.
+        /// LHS=bare identifier + RHS=call_expression 패턴으로 매칭.
+        /// (member expression `_this.x = ...` 과 구분)
+        fn containsSuperCallAssignment(self: *Transformer, node_idx: NodeIndex) bool {
+            if (node_idx.isNone()) return false;
+            const node = self.ast.getNode(node_idx);
+
+            switch (node.tag) {
+                .expression_statement => {
+                    const expr_idx = node.data.unary.operand;
+                    if (expr_idx.isNone()) return false;
+                    const expr = self.ast.getNode(expr_idx);
+                    if (expr.tag == .assignment_expression) {
+                        const left = self.ast.getNode(expr.data.binary.left);
+                        if (left.tag != .identifier_reference) return false;
+                        const right = self.ast.getNode(expr.data.binary.right);
+                        return right.tag == .call_expression;
+                    }
+                    return false;
+                },
+                .if_statement, .conditional_expression => {
+                    if (containsSuperCallAssignment(self, node.data.ternary.b)) return true;
+                    if (containsSuperCallAssignment(self, node.data.ternary.c)) return true;
+                    return false;
+                },
+                .block_statement => {
+                    const list = node.data.list;
+                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                else => return false,
+            }
         }
 
         /// 빈 function declaration (constructor가 없는 경우)

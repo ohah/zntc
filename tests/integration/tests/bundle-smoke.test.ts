@@ -1305,6 +1305,100 @@ console.log(new Child(true).v + ":" + new Child(false).v);`,
     expect(result.runOutput).toBe("10:20");
   });
 
+  test("ES5 class fields: super() 직후 초기화되어 constructor body에서 접근 가능", async () => {
+    // class fields는 super() 직후, constructor body 이전에 초기화되어야 함.
+    // 이전 버그: fields가 constructor body 뒤에 배치되어
+    // constructor에서 this.handlers에 접근하면 undefined 에러 발생.
+    // (react-native-gesture-handler BaseGesture 패턴)
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+let nextId = 0;
+class Gesture {}
+class BaseGesture extends Gesture {
+  gestureId = -1;
+  handlerTag = -1;
+  config: Record<string, unknown> = {};
+  handlers = { gestureId: -1, handlerTag: -1, isWorklet: [] as boolean[] };
+
+  constructor() {
+    super();
+    this.gestureId = nextId++;
+    this.handlers.gestureId = this.gestureId;
+  }
+}
+class ContinuousBase extends BaseGesture {}
+class PanGesture extends ContinuousBase {}
+const p = new PanGesture();
+console.log(p.gestureId + ":" + p.handlers.gestureId + ":" + (p instanceof Gesture));
+`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("0:0:true");
+  });
+
+  test("ES5 class fields: conditional super() + fields 올바른 순서", async () => {
+    // if/else 안의 super() 뒤에도 class fields가 올바르게 초기화되어야 함.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+class Base { v: number; constructor(v: number) { this.v = v; } }
+class Child extends Base {
+  items: number[] = [];
+  constructor(x: boolean) {
+    if (x) { super(1); } else { super(2); }
+    this.items.push(this.v);
+  }
+}
+const a = new Child(true);
+const b = new Child(false);
+console.log(a.items.join(",") + ":" + b.items.join(","));
+`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1:2");
+  });
+
+  test("ES5 class fields: 다단계 상속 체인에서 fields + constructor body 순서", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+class A {
+  a = "a";
+}
+class B extends A {
+  b = "b";
+  constructor() {
+    super();
+    this.b = this.b.toUpperCase(); // field 초기화 후 접근
+  }
+}
+class C extends B {
+  c = "c";
+}
+const obj = new C();
+console.log(obj.a + obj.b + obj.c);
+`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("aBc");
+  });
+
   test("ES5 destructuring 파라미터: function({ ref, ...props }) 올바른 변환", async () => {
     const result = await bundleAndRun(
       {
