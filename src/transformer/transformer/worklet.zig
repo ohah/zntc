@@ -155,6 +155,7 @@ pub fn collectClosureVars(
     try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
 
     // 4. refs - locals - globals = closure vars
+    // 4. refs - locals - globals = closure vars
     var result: std.ArrayList([]const u8) = .empty;
     var iter = refs.iterator();
     while (iter.next()) |entry| {
@@ -478,9 +479,12 @@ fn walkBodyForClosureAnalysis(
             }
         },
 
-        // update/unary prefix/postfix: unary
+        // update/unary prefix/postfix: extra = [operand, kind]
         .update_expression, .unary_expression => {
-            try walkBodyForClosureAnalysis(self, node.data.unary.operand, locals, refs, depth + 1);
+            const ue = node.data.extra;
+            if (self.ast.hasExtra(ue, 2)) {
+                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[ue]), locals, refs, depth + 1);
+            }
         },
 
         // 리프 노드 (순회 불필요)
