@@ -102,10 +102,12 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 .body_idx = func_body,
                 .params_start = param_list.start,
                 .params_len = param_list.len,
-                // 변환 전 원본 사용 — worklet closure 분석에 필요
+                // post-visit body 사용: ES5 변환(spread → __toConsumableArray 등)이
+                // 주입한 헬퍼를 closure 분석에서 캡처하기 위함.
+                // __initData.code도 post-visit body로 생성되므로 일관성 유지.
                 .original_params_start = param_list.start,
                 .original_params_len = param_list.len,
-                .original_body_idx = body_idx,
+                .original_body_idx = func_body,
                 .flags = func_flags,
                 .source_path = self.options.jsx_filename,
             })) |replacement| {
