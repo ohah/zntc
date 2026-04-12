@@ -94,32 +94,14 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     else
         info.original_body_idx;
 
-    const all_closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len);
-    defer {
-        for (all_closure_vars) |cv| api.getAllocator().free(cv.name);
-        api.getAllocator().free(all_closure_vars);
-    }
-
     const func_name = info.name orelse "anonymous";
 
-    // 함수 자기 참조 제외: 재귀 함수에서 자신의 이름이 closure에 포함되면 순환 참조 발생.
-    // function_declaration/expression의 이름은 body 내에서 자기 참조 가능 (JS 스펙).
-    var closure_vars_count: usize = 0;
-    for (all_closure_vars) |cv| {
-        if (!std.mem.eql(u8, cv.name, func_name)) closure_vars_count += 1;
+    const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len, info.name);
+    defer {
+        for (closure_vars) |cv| api.getAllocator().free(cv.name);
+        api.getAllocator().free(closure_vars);
     }
-    const closure_vars = if (closure_vars_count < all_closure_vars.len) blk: {
-        const filtered = api.getAllocator().alloc(worklet_mod.ClosureVar, closure_vars_count) catch return error.OutOfMemory;
-        var fi: usize = 0;
-        for (all_closure_vars) |cv| {
-            if (!std.mem.eql(u8, cv.name, func_name)) {
-                filtered[fi] = cv;
-                fi += 1;
-            }
-        }
-        break :blk filtered;
-    } else all_closure_vars;
-    defer if (closure_vars.ptr != all_closure_vars.ptr) api.getAllocator().free(closure_vars);
+
     const init_code = try api.generateCode(
         func_name,
         code_body,

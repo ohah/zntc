@@ -135,7 +135,7 @@ const JS_GLOBALS = std.StaticStringMap(void).initComptime(.{
 /// 함수 body와 파라미터로부터 closure 변수(외부 참조)를 추출한다.
 ///
 /// 알고리즘:
-///   1. 파라미터 이름 → locals 집합에 추가
+///   1. 함수 이름 + 파라미터 이름 → locals 집합에 추가
 ///   2. body 내 지역 선언(var/let/const/function) 이름 → locals 집합에 추가
 ///   3. body 내 identifier_reference 이름 → refs 집합에 추가
 ///   4. refs - locals - JS_GLOBALS = closure 변수
@@ -144,11 +144,17 @@ pub fn collectClosureVars(
     body_idx: NodeIndex,
     params_start: u32,
     params_len: u32,
+    func_name: ?[]const u8,
 ) Error![]const ClosureVar {
     var locals = std.StringHashMap(void).init(self.allocator);
     defer locals.deinit();
     var refs = std.StringHashMap(NodeIndex).init(self.allocator);
     defer refs.deinit();
+
+    // 0. 함수 이름 → locals (자기 참조 제외: JS 스펙상 함수 이름은 body 내에서 접근 가능)
+    if (func_name) |name| {
+        if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+    }
 
     // 1. 파라미터 이름 수집
     var pi: u32 = 0;
