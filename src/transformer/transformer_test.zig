@@ -1126,3 +1126,195 @@ test "Worklet: nested function params do not leak into outer closure" {
     // inner는 중첩 함수(별도 스코프), ext만 외부 참조
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
+
+test "Worklet: default param (c = 0) not in closure" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "export const f = (c = 0) => { \"worklet\"; return c * 2; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // c는 default parameter — closure에 포함되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: default param with external ref" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var scale = 2; export const f = (c = 0) => { \"worklet\"; return c * scale; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // c는 param → 제외, scale은 외부 참조 → 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { scale: scale }") != null);
+}
+
+test "Worklet: __stackDetails property is emitted" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function f() {
+        \\  "worklet";
+        \\  return 1;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__stackDetails = []") != null);
+}
+
+test "Worklet: initData code has no ES5 helpers (spread preserved)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "export function g(fn, ...args) { \"worklet\"; return fn(...args); }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // initData.code에 __toConsumableArray가 없어야 함 (pre-visit body 사용)
+    const init_start = std.mem.indexOf(u8, code, "__initData = { code:") orelse unreachable;
+    const init_end = std.mem.indexOfPos(u8, code, init_start, "location:") orelse unreachable;
+    const init_section = code[init_start..init_end];
+    try std.testing.expect(std.mem.indexOf(u8, init_section, "__toConsumableArray") == null);
+    // 원본 spread 문법이 유지되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, init_section, "...args") != null);
+}
+
+test "Worklet: initData code has no TS syntax (as expression stripped)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "export function g(v: number) { \"worklet\"; return v as any; }",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // initData.code에 TS 'as' 구문이 없어야 함
+    const init_start = std.mem.indexOf(u8, code, "__initData = { code:") orelse unreachable;
+    const init_end = std.mem.indexOfPos(u8, code, init_start, "location:") orelse unreachable;
+    const init_section = code[init_start..init_end];
+    try std.testing.expect(std.mem.indexOf(u8, init_section, " as ") == null);
+}
+
+test "Worklet: global and __DEV__ not captured in closure" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\export function f() {
+        \\  "worklet";
+        \\  if (__DEV__) { console.log(global); }
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // global과 __DEV__는 JS_GLOBALS에 등록 → closure에 포함 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "Worklet: multiple default params not in closure" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var ext = 1; export const f = (a = 0, b = 1) => { \"worklet\"; return a + b + ext; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // a, b는 default params → 제외, ext만 closure에
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+}
+
+test "Worklet: arrow function with worklet directive is transformed (ES5)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        "var ext = 1; export const f = () => { \"worklet\"; return ext; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // arrow worklet이 IIFE factory로 변환되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+    // "worklet" 디렉티브가 제거되어야 함 (__initData 안은 제외)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__initData") != null);
+}
+
+test "Worklet: nested worklet calls another worklet" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\function helper() {
+        \\  "worklet";
+        \\  return 42;
+        \\}
+        \\function main() {
+        \\  "worklet";
+        \\  return helper();
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 둘 다 worklet으로 변환
+    var count: usize = 0;
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, code, search, "__workletHash")) |pos| {
+        count += 1;
+        search = pos + 1;
+    }
+    try std.testing.expect(count >= 2);
+    // main의 closure에 helper가 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "helper: helper") != null);
+}
+
+test "Worklet: computed property access in worklet body" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var obj = {};
+        \\var key = "x";
+        \\function f() {
+        \\  "worklet";
+        \\  return obj[key];
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // obj와 key 모두 closure에 포함 (computed access는 둘 다 외부 참조)
+    try std.testing.expect(std.mem.indexOf(u8, code, "key: key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "obj: obj") != null);
+}
+
+test "Worklet: object method worklet directive remains (known limitation)" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var logger = { warn(msg) {
+        \\  "worklet";
+        \\  return msg;
+        \\} };
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // object method worklet은 현재 미변환 — "worklet" 디렉티브가 남아있음
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\"") != null);
+    // __workletHash는 없어야 함 (미변환)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "Worklet: scope hoisting rename reflected in closure value" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(std.testing.allocator,
+        \\import { helper } from "./a";
+        \\import { helper as h2 } from "./b";
+        \\export function w() { "worklet"; return helper() + h2(); }
+    ,
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // closure에 helper가 포함되어야 함 (explicit key-value)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "helper:") != null);
+}
