@@ -72,6 +72,63 @@ const auto_worklet_callees = [_]AutoWorkletCallee{
     .{ .name = "onTouchesMove", .is_method = true },
     .{ .name = "onTouchesUp", .is_method = true },
     .{ .name = "onTouchesCancelled", .is_method = true },
+    // Layout Animation callback — receiver 검증 필수 (임의 .withCallback() 오인 방지).
+    // `FadeIn.withCallback(cb)`, `new FadeIn().withCallback(cb)`, `FadeIn.build().withCallback(cb)` 등.
+    .{ .name = "withCallback", .is_method = true, .receiver_kind = .layout_animation },
+};
+
+/// Layout Animation 클래스 이름 집합.
+/// Reanimated의 EntryExit 애니메이션 + Layout Transition.
+/// Babel plugin(src/layoutAnimationAutoworkletization.ts)과 동일.
+pub const LAYOUT_ANIMATION_CLASSES = [_][]const u8{
+    // EntryExit animations
+    "BounceIn",            "BounceInDown",      "BounceInLeft",
+    "BounceInRight",       "BounceInUp",        "BounceOut",
+    "BounceOutDown",       "BounceOutLeft",     "BounceOutRight",
+    "BounceOutUp",         "FadeIn",            "FadeInDown",
+    "FadeInLeft",          "FadeInRight",       "FadeInUp",
+    "FadeOut",             "FadeOutDown",       "FadeOutLeft",
+    "FadeOutRight",        "FadeOutUp",         "FlipInEasyX",
+    "FlipInEasyY",         "FlipInXDown",       "FlipInXUp",
+    "FlipInYLeft",         "FlipInYRight",      "FlipOutEasyX",
+    "FlipOutEasyY",        "FlipOutXDown",      "FlipOutXUp",
+    "FlipOutYLeft",        "FlipOutYRight",     "LightSpeedInLeft",
+    "LightSpeedInRight",   "LightSpeedOutLeft", "LightSpeedOutRight",
+    "PinwheelIn",          "PinwheelOut",       "RollInLeft",
+    "RollInRight",         "RollOutLeft",       "RollOutRight",
+    "RotateInDownLeft",    "RotateInDownRight", "RotateInUpLeft",
+    "RotateInUpRight",     "RotateOutDownLeft", "RotateOutDownRight",
+    "RotateOutUpLeft",     "RotateOutUpRight",  "SlideInDown",
+    "SlideInLeft",         "SlideInRight",      "SlideInUp",
+    "SlideOutDown",        "SlideOutLeft",      "SlideOutRight",
+    "SlideOutUp",          "StretchInX",        "StretchInY",
+    "StretchOutX",         "StretchOutY",       "ZoomIn",
+    "ZoomInDown",          "ZoomInEasyDown",    "ZoomInEasyUp",
+    "ZoomInLeft",          "ZoomInRight",       "ZoomInRotate",
+    "ZoomInUp",            "ZoomOut",           "ZoomOutDown",
+    "ZoomOutEasyDown",     "ZoomOutEasyUp",     "ZoomOutLeft",
+    "ZoomOutRight",        "ZoomOutRotate",     "ZoomOutUp",
+    // Layout transitions
+    "Layout",              "LinearTransition",  "SequencedTransition",
+    "FadingTransition",    "JumpingTransition", "CurvedTransition",
+    "EntryExitTransition",
+};
+
+/// Layout Animation 클래스의 체이닝 메서드 집합.
+/// `FadeIn.duration(300).withCallback(cb)` 같은 체인 추적용.
+pub const LAYOUT_ANIMATION_CHAINABLE_METHODS = [_][]const u8{
+    // Base
+    "build",              "duration",          "delay",                 "getDuration",
+    "randomDelay",        "getDelay",          "getDelayFunction",
+    // Complex
+         "easing",
+    "rotate",             "springify",         "damping",               "mass",
+    "stiffness",          "overshootClamping", "energyThreshold",       "restDisplacementThreshold",
+    "restSpeedThreshold", "withInitialValues", "getAnimationAndConfig",
+    // DefaultTransition
+    "easingX",
+    "easingY",            "easingWidth",       "easingHeight",          "entering",
+    "exiting",            "reverse",
 };
 
 fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) PluginError!void {

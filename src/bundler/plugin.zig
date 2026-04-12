@@ -73,6 +73,13 @@ pub const AutoWorkletCallee = struct {
     arg_indices: [4]u8 = .{ 0, 0xFF, 0xFF, 0xFF },
     /// true이면 obj.method() 형태의 method call도 매칭 (callee가 static_member_expression)
     is_method: bool = false,
+    /// 수신자(receiver) 검증 방식.
+    /// - any: 이름만 매칭 (기본)
+    /// - layout_animation: `X.withCallback(cb)` 형태에서 X가 Layout Animation 클래스인지 추가 검증.
+    ///   FadeIn/SlideIn/Bounce* 등의 알려진 클래스 및 new/chain 형태 허용.
+    receiver_kind: ReceiverKind = .any,
+
+    pub const ReceiverKind = enum { any, layout_animation };
 };
 
 /// 플러그인 배열을 순회하며 훅을 실행하는 유틸리티.
