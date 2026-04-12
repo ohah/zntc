@@ -1689,8 +1689,22 @@ test "babel:babel_plugin_for_web_configuration:includes_initData_when_omitNative
 }
 
 test "babel:babel_plugin_for_web_configuration:substitutes_isWeb_and_shouldBeUseWeb_with_true_when_substituteWebPlatformChecks_option_is_set_to_true" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    const Plugin = @import("transformer.zig").Plugin;
+    const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try @import("transformer_test.zig").parseAndTransformWithOptions(std.testing.allocator,
+        \\const x = isWeb();
+        \\const y = shouldBeUseWeb();
+    , .{
+        .plugins = &plugins,
+        .substitute_web_platform_checks = true,
+        .jsx_filename = "test.ts",
+    });
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "const x = true;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "const y = true;") != null);
 }
 
 test "babel:babel_plugin_for_web_configuration:doesn" {
