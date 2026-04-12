@@ -1099,7 +1099,8 @@ test "Worklet: arrow function with typed var params not in closure (ES5 lowering
 
 test "Worklet: pre-visit body used for initData (no ES5 helpers in closure)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "export function setup() { \"worklet\"; const f = (cb: any, ...args: any[]) => { cb(...args); }; globalThis.setTimeout = f as any; }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1129,7 +1130,8 @@ test "Worklet: nested function params do not leak into outer closure" {
 
 test "Worklet: default param (c = 0) not in closure" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "export const f = (c = 0) => { \"worklet\"; return c * 2; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1142,7 +1144,8 @@ test "Worklet: default param (c = 0) not in closure" {
 
 test "Worklet: default param with external ref" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var scale = 2; export const f = (c = 0) => { \"worklet\"; return c * scale; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1168,7 +1171,8 @@ test "Worklet: __stackDetails property is emitted" {
 
 test "Worklet: initData code has no ES5 helpers (spread preserved)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "export function g(fn, ...args) { \"worklet\"; return fn(...args); }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1186,7 +1190,8 @@ test "Worklet: initData code has no ES5 helpers (spread preserved)" {
 
 test "Worklet: initData code has no TS syntax (as expression stripped)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "export function g(v: number) { \"worklet\"; return v as any; }",
         .{ .plugins = &plugins, .jsx_filename = "test.ts" },
     );
@@ -1216,7 +1221,8 @@ test "Worklet: global and __DEV__ not captured in closure" {
 
 test "Worklet: multiple default params not in closure" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var ext = 1; export const f = (a = 0, b = 1) => { \"worklet\"; return a + b + ext; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1229,7 +1235,8 @@ test "Worklet: multiple default params not in closure" {
 
 test "Worklet: arrow function with worklet directive is transformed (ES5)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         "var ext = 1; export const f = () => { \"worklet\"; return ext; };",
         .{ .plugins = &plugins, .jsx_filename = "test.ts", .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
@@ -1304,7 +1311,8 @@ test "Worklet: object method worklet directive remains (known limitation)" {
 
 test "Worklet: scope hoisting rename reflected in closure value" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
-    var r = try parseAndTransformWithOptions(std.testing.allocator,
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
         \\import { helper } from "./a";
         \\import { helper as h2 } from "./b";
         \\export function w() { "worklet"; return helper() + h2(); }
