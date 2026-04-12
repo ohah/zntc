@@ -1227,9 +1227,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_unchained_callback_fu
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_unchained_callback_functions_automatically_with_new_keyword" {
@@ -1241,9 +1239,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_unchained_callback_fu
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn" {
@@ -1255,9 +1251,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_2" {
@@ -1269,9 +1263,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_2" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_known_chained_methods_before" {
@@ -1283,9 +1275,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_known_chained_methods_before_with_new_keyword" {
@@ -1297,9 +1287,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_3" {
@@ -1311,9 +1299,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_3" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_4" {
@@ -1325,9 +1311,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_4" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_known_chained_methods_after" {
@@ -1339,9 +1323,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_known_chained_methods_after_with_new_keyword" {
@@ -1355,9 +1337,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_5" {
@@ -1369,9 +1349,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_5" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_6" {
@@ -1383,9 +1361,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_6" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_7" {
@@ -1397,9 +1373,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_7" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_8" {
@@ -1411,9 +1385,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_8" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_unknown_objects_chained_after" {
@@ -1425,9 +1397,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_unknown_objects_chained_after_with_new_keyword" {
@@ -1441,9 +1411,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_9" {
@@ -1455,9 +1423,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_9" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:doesn_10" {
@@ -1471,9 +1437,7 @@ test "babel:babel_plugin_for_Layout_Animations:doesn_10" {
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 0 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_longer_chains_of_known_objects" {
@@ -1487,9 +1451,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on_longer_chains_of_known_objects_with_new_keyword" {
@@ -1504,9 +1466,7 @@ test "babel:babel_plugin_for_Layout_Animations:workletizes_callback_functions_on
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: 1 worklet(s) — __workletHash count
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_debugging:does_inject_location_for_worklets_in_dev_builds" {

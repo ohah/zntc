@@ -3386,12 +3386,70 @@ pub const Transformer = struct {
         const is_method = callee_node.tag == .static_member_expression;
         for (self.options.plugins) |p| {
             for (p.autoWorkletCallees) |entry| {
-                if (entry.is_method == is_method and std.mem.eql(u8, entry.name, callee_name)) {
-                    return entry;
+                if (entry.is_method != is_method) continue;
+                if (!std.mem.eql(u8, entry.name, callee_name)) continue;
+                // receiver_kind 검증 — layout_animation은 수신자(member.object)가 알려진 LA 클래스여야 함
+                if (entry.receiver_kind == .layout_animation) {
+                    const me = callee_node.data.extra;
+                    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                    if (!self.isLayoutAnimationReceiver(obj_idx)) continue;
                 }
+                return entry;
             }
         }
         return null;
+    }
+
+    /// Layout Animation receiver 여부 판정.
+    /// Babel plugin의 isLayoutAnimationsChainableOrNewOperator 포팅:
+    ///  - identifier가 알려진 LA 클래스명이면 true
+    ///  - new LAClass(...)면 true
+    ///  - LAClass.chainMethod()로 체이닝된 경우 재귀적으로 true (chainMethod는 build/duration 등)
+    fn isLayoutAnimationReceiver(self: *Transformer, node_idx: NodeIndex) bool {
+        if (node_idx.isNone()) return false;
+        const node = self.ast.getNode(node_idx);
+        const wp = @import("plugins/worklet_plugin.zig");
+
+        // Identifier — 클래스 이름 직접 매칭
+        if (node.tag == .identifier_reference) {
+            const name = self.ast.source[node.span.start..node.span.end];
+            for (wp.LAYOUT_ANIMATION_CLASSES) |c| {
+                if (std.mem.eql(u8, c, name)) return true;
+            }
+            return false;
+        }
+
+        // new LAClass(...)
+        if (node.tag == .new_expression) {
+            const ne = node.data.extra;
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
+            return self.isLayoutAnimationReceiver(callee_idx);
+        }
+
+        // LAChain.chainMethod() — 체이닝 메서드 호출
+        if (node.tag == .call_expression) {
+            const ce = node.data.extra;
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+            const callee_node = self.ast.getNode(callee_idx);
+            if (callee_node.tag != .static_member_expression) return false;
+            const me = callee_node.data.extra;
+            const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+            if (prop_idx.isNone()) return false;
+            const prop = self.ast.getNode(prop_idx);
+            const prop_name = self.ast.source[prop.span.start..prop.span.end];
+            var chainable = false;
+            for (wp.LAYOUT_ANIMATION_CHAINABLE_METHODS) |m| {
+                if (std.mem.eql(u8, m, prop_name)) {
+                    chainable = true;
+                    break;
+                }
+            }
+            if (!chainable) return false;
+            const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+            return self.isLayoutAnimationReceiver(obj_idx);
+        }
+
+        return false;
     }
 
     /// auto-workletization이 필요한 call expression의 인자를 개별 방문.
