@@ -110,6 +110,18 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     new_decos.start,        new_decos.len,
                 });
 
+                // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
+                if (node.tag == .class_expression) {
+                    return wrapClassExprInIIFE(
+                        self,
+                        pm_pre_stmts.items,
+                        class_result,
+                        static_block_iifes.items,
+                        new_name,
+                        node.span,
+                    );
+                }
+
                 // pre_stmts (WeakSet + function) → class → static block IIFE
                 for (pm_pre_stmts.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
@@ -131,6 +143,18 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 none,                   0,                       0,
                 new_decos.start,        new_decos.len,
             });
+
+            // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
+            if (node.tag == .class_expression) {
+                return wrapClassExprInIIFE(
+                    self,
+                    pm_pre_stmts.items,
+                    class_result,
+                    &.{},
+                    new_name,
+                    node.span,
+                );
+            }
 
             for (pm_pre_stmts.items) |stmt| {
                 try self.pending_nodes.append(self.allocator, stmt);
@@ -154,10 +178,70 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     return self.visitClassWithAssignSemantics(node);
 }
 
+/// class_expression의 private method / static block 다운레벨 결과를 IIFE로 래핑한다.
+///
+/// class_expression은 statement 컨텍스트가 아니므로 헬퍼 문장들을 pending_nodes로
+/// 흘리면 부모 표현식에 쉼표-stitching되어 문법이 깨진다. declaration으로 태그만
+/// 바꿔 IIFE body에 넣고 이름을 return한다 (extra 레이아웃은 declaration/expression
+/// 동일하므로 재복사 불필요).
+fn wrapClassExprInIIFE(
+    self: *Transformer,
+    pre_stmts: []const NodeIndex,
+    class_expr_node: NodeIndex,
+    post_stmts: []const NodeIndex,
+    new_name: NodeIndex,
+    span: Span,
+) Error!NodeIndex {
+    // 익명 class면 임시 이름을 부여해 return에서 참조할 수 있도록 한다.
+    var decl_name = new_name;
+    const ret_name_span: Span = if (decl_name.isNone()) blk: {
+        const tmp_span = try es_helpers.makeTempVarSpan(self);
+        decl_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        break :blk tmp_span;
+    } else self.ast.getNode(decl_name).data.string_ref;
+
+    // tag만 declaration으로 교체 (extra 레이아웃 동일). name 슬롯은 익명 보정 위해 덮어씀.
+    const ce = self.ast.getNode(class_expr_node).data.extra;
+    const none = @intFromEnum(NodeIndex.none);
+    const class_decl = try self.addExtraNode(.class_declaration, span, &.{
+        @intFromEnum(decl_name), @intFromEnum(self.readNodeIdx(ce, 1)), @intFromEnum(self.readNodeIdx(ce, 2)),
+        none,                    0,                                     0,
+        self.readU32(ce, 6),     self.readU32(ce, 7),
+    });
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    try self.scratch.appendSlice(self.allocator, pre_stmts);
+    try self.scratch.append(self.allocator, class_decl);
+    try self.scratch.appendSlice(self.allocator, post_stmts);
+
+    const ret_ref = try es_helpers.makeIdentifierRefFromSpan(self, ret_name_span);
+    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+        .tag = .return_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = ret_ref, .flags = 0 } },
+    }));
+
+    const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    const body_block = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = body_list },
+    });
+
+    // (() => { ... })()  — params=.none 은 codegen이 "()"로 출력 (es2022.zig 패턴과 동일).
+    const arrow = try self.addExtraNode(.arrow_function_expression, span, &.{
+        none, @intFromEnum(body_block), 0,
+    });
+    const paren = try es_helpers.makeParenExpr(self, arrow, span);
+    return es_helpers.makeCallExpr(self, paren, &.{}, span);
+}
+
 /// useDefineForClassFields=false / experimentalDecorators 처리.
 /// 멤버를 개별 분류하여 instance field를 constructor로 이동하고,
 /// experimental decorator를 __decorateClass 호출로 변환한다.
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
+    // TODO(es2021): apply same IIFE wrapping for class_expression with private methods — see wrapClassExprInIIFE in fast path
     const e = node.data.extra;
     const has_super = !self.readNodeIdx(e, 1).isNone();
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));

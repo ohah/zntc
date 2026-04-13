@@ -106,6 +106,133 @@ test "private method: with extends generates super() (es2021)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_helper)") != null);
 }
 
+test "private method: class expression wrapped in IIFE (es2021)" {
+    // 버그 회귀 방지: class_expression의 private method 다운레벨 시 pre_stmts(WeakSet 선언,
+    // standalone function)가 pending_nodes로 상위 statement에 drain되면 variable_declarator에
+    // 쉼표로 stitching되어 `const W = class A{...},var _m=new WeakSet();,function _m_fn(){...}`
+    // 같은 깨진 코드가 생성되었다. IIFE로 감싸서 해결.
+    var r = try e2eTarget(std.testing.allocator,
+        \\const W = class A {
+        \\  x = 1;
+        \\  #m() { return this.x; }
+        \\};
+    , .es2021);
+    defer r.deinit();
+    // IIFE 래핑
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const W=(()=>{") != null);
+    // 헬퍼가 IIFE 내부에 있음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
+    // class_declaration으로 재작성
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return A") != null);
+    // 쉼표 stitching 없음 (버그 증상)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
+}
+
+test "private method: anonymous class expression gets temp name (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\const W = class {
+        \\  #m() { return 1; }
+        \\};
+    , .es2021);
+    defer r.deinit();
+    // IIFE 래핑
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>{") != null);
+    // 임시 이름(_a 등)으로 class_declaration 생성 + return
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
+    // 쉼표 stitching 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
+}
+
+test "private method: class expression as call argument wrapped in IIFE (es2021)" {
+    // 인자 위치에서도 IIFE가 paren 내부에 정상 배치되고 쉼표 stitching 없음
+    var r = try e2eTarget(std.testing.allocator,
+        \\foo(class { #m() { return 1; } });
+    , .es2021);
+    defer r.deinit();
+    // IIFE 래핑: foo((()=>{...})())
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "foo((()=>{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
+    // 쉼표 stitching 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
+    // IIFE 종료: return X})()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "})())") != null);
+}
+
+test "private method: array of class expressions — each IIFE independent (es2021)" {
+    // 배열의 두 class expression이 각각 독립 IIFE + helper 이름 충돌 없음
+    var r = try e2eTarget(std.testing.allocator,
+        \\const arr = [class { #m() { return 1; } }, class { #n() { return 2; } }];
+    , .es2021);
+    defer r.deinit();
+    // 두 IIFE 모두 존재
+    var iter_idx: usize = 0;
+    var iife_count: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, iter_idx, "(()=>{")) |pos| {
+        iife_count += 1;
+        iter_idx = pos + 1;
+    }
+    try std.testing.expect(iife_count >= 2);
+    // 각각의 WeakSet/standalone function
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _n=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn()") != null);
+    // 쉼표 stitching 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _n") == null);
+}
+
+test "private method: nested class expression inside outer class body (es2021)" {
+    // outer class body 안에서 inner class_expression IIFE가 정상 drain
+    var r = try e2eTarget(std.testing.allocator,
+        \\class A {
+        \\  m() { return class { #n() { return 1; } }; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // outer class 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class A") != null);
+    // inner IIFE 존재
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _n=new WeakSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _n_fn()") != null);
+    // IIFE 종료 + 쉼표 stitching 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "})()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _n") == null);
+}
+
+test "private static method: class expression — no stitching even if passthrough (es2021)" {
+    // 현재 static private method는 다운레벨링 대상이 아니어서 원본 class expression 유지.
+    // 최소한의 회귀 방지: 쉼표 stitching 버그가 재발하지 않는지 확인.
+    // TODO(es2021): static private method 다운레벨링 구현 시 IIFE 래핑도 같이 검증.
+    var r = try e2eTarget(std.testing.allocator,
+        \\const W = class { static #m() { return 1; } };
+    , .es2021);
+    defer r.deinit();
+    // 쉼표 stitching 부재 (버그 증상)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
+}
+
+test "private getter: class expression wrapped in IIFE (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\const W = class { get #x() { return 1; } };
+    , .es2021);
+    defer r.deinit();
+    // IIFE 래핑
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const W=(()=>{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x") != null);
+    // IIFE 종료
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "})()") != null);
+    // 쉼표 stitching 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
+}
+
 test "private method: es2022 target preserves original" {
     var r = try e2eTarget(std.testing.allocator,
         \\class Foo {
