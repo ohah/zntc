@@ -59,6 +59,61 @@ const WsClients = struct {
     }
 };
 
+/// SSE 클라이언트 목록 — `/sse/events`로 연결된 long-lived HTTP 응답 writer들.
+/// WS와 병렬 운영; 빌드 이벤트는 SSE로 전송 (HMR은 WS 유지).
+const SseClients = struct {
+    mutex: std.Thread.Mutex = .{},
+    items: [max_clients]*std.Io.Writer = undefined,
+    len: usize = 0,
+
+    const max_clients = 64;
+
+    fn add(self: *SseClients, writer: *std.Io.Writer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.len < max_clients) {
+            self.items[self.len] = writer;
+            self.len += 1;
+        }
+    }
+
+    fn remove(self: *SseClients, writer: *std.Io.Writer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.items[0..self.len], 0..) |item, i| {
+            if (item == writer) {
+                self.len -= 1;
+                self.items[i] = self.items[self.len];
+                return;
+            }
+        }
+    }
+
+    /// `event: <type>\ndata: <json>\n\n` 형식으로 모든 구독자에 브로드캐스트.
+    fn broadcast(self: *SseClients, event_type: []const u8, data_json: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var i: usize = 0;
+        while (i < self.len) {
+            writeSseFrame(self.items[i], event_type, data_json) catch {
+                self.len -= 1;
+                self.items[i] = self.items[self.len];
+                continue;
+            };
+            i += 1;
+        }
+    }
+};
+
+fn writeSseFrame(writer: *std.Io.Writer, event_type: []const u8, data_json: []const u8) !void {
+    try writer.writeAll("event: ");
+    try writer.writeAll(event_type);
+    try writer.writeAll("\ndata: ");
+    try writer.writeAll(data_json);
+    try writer.writeAll("\n\n");
+    try writer.flush();
+}
+
 /// WebSocket text frame을 직접 인코딩하여 writer에 쓴다.
 /// std.http.Server.WebSocket.writeMessage와 동일한 형식이지만,
 /// WebSocket 구조체 없이 raw writer로 전송할 수 있다.
@@ -104,6 +159,9 @@ pub const DevServer = struct {
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
+    sse_clients: SseClients = .{},
+    /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
+    event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     sourcemap_cache: struct {
@@ -211,6 +269,14 @@ pub const DevServer = struct {
         // --open: 브라우저 자동 열기
         if (self.open) {
             self.openBrowser();
+        }
+
+        // server_ready 이벤트 (SSE 구독자에게 시작 알림)
+        {
+            var buf: [256]u8 = undefined;
+            if (std.fmt.bufPrint(&buf, "{{\"type\":\"server_ready\",\"host\":\"{s}\",\"port\":{d}}}", .{ self.host, self.port })) |json| {
+                self.publishEvent("server_ready", json);
+            } else |_| {}
         }
 
         // entry가 있으면 watch 스레드 시작
@@ -494,6 +560,15 @@ pub const DevServer = struct {
             for (events) |ev| {
                 getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(ev.path)}) catch {};
                 changed_paths.append(self.allocator, ev.path) catch {};
+
+                // SSE: watch_change 이벤트
+                var ev_buf: [1024]u8 = undefined;
+                var fbs = std.io.fixedBufferStream(&ev_buf);
+                const w = fbs.writer();
+                w.writeAll("{\"type\":\"watch_change\",\"file\":\"") catch continue;
+                writeJsonEscaped(w, ev.path) catch continue;
+                w.writeAll("\"}") catch continue;
+                self.publishEvent("watch_change", fbs.getWritten());
             }
 
             // CSS 변경 → 번들 재빌드 없이 css-update 전송
@@ -526,10 +601,27 @@ pub const DevServer = struct {
             }
             if (has_css and !has_non_css) continue;
 
+            // bundle_build_started 이벤트
+            const build_id = self.event_seq.load(.monotonic);
+            {
+                var buf: [128]u8 = undefined;
+                if (std.fmt.bufPrint(&buf, "{{\"type\":\"bundle_build_started\",\"id\":\"{d}\"}}", .{build_id})) |json| {
+                    self.publishEvent("bundle_build_started", json);
+                } else |_| {}
+            }
+
             // 증분 재번들: 변경된 모듈만 diff하여 전송
+            const build_start_ns = std.time.nanoTimestamp();
             const rebuild_result = inc_bundler.rebuild() catch continue;
+            const build_duration_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {
+                    // bundle_build_done 이벤트
+                    var done_buf: [256]u8 = undefined;
+                    if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
+                        self.publishEvent("bundle_build_done", json);
+                    } else |_| {}
+
                     if (result.graph_changed) {
                         // 그래프 구조 변경 → full-reload (새 import 추가 등)
                         self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
@@ -576,6 +668,12 @@ pub const DevServer = struct {
                     defer self.allocator.free(err_msg);
                     self.ws_clients.broadcast(err_msg);
                     getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
+
+                    // bundle_build_failed 이벤트 (err_msg는 이미 JSON)
+                    var fail_buf: [256]u8 = undefined;
+                    if (std.fmt.bufPrint(&fail_buf, "{{\"type\":\"bundle_build_failed\",\"id\":\"{d}\"}}", .{build_id})) |json| {
+                        self.publishEvent("bundle_build_failed", json);
+                    } else |_| {}
                 },
                 .fatal => {},
             }
@@ -625,6 +723,44 @@ pub const DevServer = struct {
         }
     }
 
+    /// `/sse/events` — Server-Sent Events 스트림.
+    /// long-lived HTTP 응답으로 이벤트 수신자 등록, 연결 종료 시 제거.
+    fn handleSse(self: *DevServer, request: *http.Server.Request) !void {
+        const sse_headers = cors_headers ++ [_]http.Header{
+            .{ .name = "Content-Type", .value = "text/event-stream" },
+            .{ .name = "Cache-Control", .value = "no-cache" },
+            .{ .name = "Connection", .value = "keep-alive" },
+            .{ .name = "X-Accel-Buffering", .value = "no" },
+        };
+
+        // respondStreaming으로 body writer를 획득 (keep-alive, chunked 아님 — 서버가 연결 유지)
+        var body_buf: [1024]u8 = undefined;
+        var response = request.respondStreaming(&body_buf, .{
+            .respond_options = .{ .extra_headers = &sse_headers },
+        }) catch return;
+
+        // 초기 ping (프록시 타임아웃 회피 + 클라이언트 연결 확인)
+        response.writer.writeAll(": connected\n\n") catch return;
+        response.writer.flush() catch return;
+
+        self.sse_clients.add(&response.writer);
+        defer self.sse_clients.remove(&response.writer);
+
+        // 연결 유지 루프: 30초마다 keep-alive 주석 전송, 쓰기 실패 시 종료
+        while (true) {
+            std.Thread.sleep(30 * std.time.ns_per_s);
+            response.writer.writeAll(": keep-alive\n\n") catch break;
+            response.writer.flush() catch break;
+        }
+    }
+
+    /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
+    /// `data_json`은 유효한 JSON 오브젝트 문자열이어야 한다 (이스케이프 호출부 책임).
+    pub fn publishEvent(self: *DevServer, event_type: []const u8, data_json: []const u8) void {
+        _ = self.event_seq.fetchAdd(1, .monotonic);
+        self.sse_clients.broadcast(event_type, data_json);
+    }
+
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {
         if (request.head.method == .OPTIONS) {
             try request.respond("", .{
@@ -666,6 +802,12 @@ pub const DevServer = struct {
             });
             return;
         };
+
+        // /sse/events — Server-Sent Events 구독 (모든 platform, entry 유무 무관)
+        if (std.mem.eql(u8, raw_path, "/sse/events")) {
+            self.handleSse(request) catch {};
+            return;
+        }
 
         if (self.entry_point != null) {
             // /@react-refresh — react-refresh/runtime 가상 모듈 (Vite 방식)
