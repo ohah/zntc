@@ -204,6 +204,10 @@ pub fn buildMetadataForAst(
             if (rec.resolved.isNone()) {
                 if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                     const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
+                    // synthetic binding(JSX runtime 등) + ESM-wrapped 모듈 조합에서는
+                    // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.
+                    // init 함수 본문에서 `var`로 재선언하면 outer scope를 shadow → #1209.
+                    const is_synthetic_esm = ib.isSynthetic() and m.wrap_kind == .esm;
                     if (rec.is_external and (self.format == .umd or self.format == .amd)) {
                         // UMD/AMD: factory 매개변수에서 직접 참조
                         const param_name = try types.specifierToParamName(self.allocator, rec.specifier);
@@ -229,7 +233,11 @@ pub fn buildMetadataForAst(
                         }
                     } else {
                         // ESM/CJS/IIFE: require() preamble 생성
-                        try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                        if (is_synthetic_esm) {
+                            try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                        } else {
+                            try preamble.writeUnresolvedRequire(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
+                        }
                     }
                 }
                 continue;
@@ -246,7 +254,7 @@ pub fn buildMetadataForAst(
             // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
             // 개별 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다 (rolldown 방식).
             // preamble에서 ns_var = __toESM(require_xxx()) 생성 + rename 등록.
-            const is_synthetic = ib.local_span.start >= 0xFFFF_0000;
+            const is_synthetic = ib.isSynthetic();
             if (!is_synthetic and m.wrap_kind == .esm and canonical_mod < self.modules.len and
                 (self.modules[canonical_mod].wrap_kind == .cjs or canonical_mod == module_index))
             {

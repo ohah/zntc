@@ -1183,6 +1183,91 @@ test "JSX automatic: ESM-wrapped module with CJS jsx-runtime — synthetic bindi
     try std.testing.expect(std.mem.indexOf(u8, result.output, "react/jsx-dev-runtime") != null);
 }
 
+test "JSX automatic-dev: #1209 — _jsxDEV must be assigned per module (HMR safety)" {
+    // Issue #1209 재현: ESM-wrapped 멀티 모듈 번들에서 각 모듈 init 함수가
+    // `var _jsxDEV, _Fragment;` 선언만 하고 실제 할당이 누락 → HMR 재실행 시
+    // `_jsxDEV is not a function` 에러 발생.
+    //
+    // 검증: _jsxDEV 바인딩 할당이 번들에 존재해야 함 (선언만으로는 부족).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "App.tsx",
+        \\import { Header } from './Header';
+        \\export function App() { return <div><Header /></div>; }
+    );
+    try writeFile(tmp.dir, "Header.tsx",
+        \\export function Header() { return <header>H</header>; }
+    );
+    try writeFile(tmp.dir, "entry.tsx",
+        \\import { App } from './App';
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    // RN 시나리오: platform=react-native + IIFE + external
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .platform = .react_native,
+        .format = .iife,
+        .external = &.{ "react/jsx-dev-runtime", "react" },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxDEV(") != null);
+
+    // 버그 #1209: __esm init 함수 내부에서 `var _jsxDEV = ...`로 emit되면
+    // outer scope의 `var _jsxDEV`를 shadow → Header() 함수에서 항상 undefined.
+    // 올바른 emit: `_jsxDEV = ...` (var 없이, outer 바인딩에 할당).
+    try std.testing.expect(std.mem.indexOf(u8, out, "var _jsxDEV = ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "var _Fragment = ") == null);
+
+    // outer scope의 `var ..., _jsxDEV, _Fragment;` 선언은 존재해야 함
+    // (또는 ESM-wrap가 아닌 평면 스코프면 단일 var로 합쳐질 수 있음)
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxDEV") != null);
+    // init 함수 본문에 `_jsxDEV = ` (var 없이) 할당이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, out, "_jsxDEV = require") != null or
+        std.mem.indexOf(u8, out, "jsxDEV: _jsxDEV") != null);
+}
+
+test "JSX automatic-dev: #1209 — browser platform also affected" {
+    // 웹 환경(browser) + require 소비로 ESM-wrap 강제되는 경우에도 동일 버그.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\export function App() { return <div>hi</div>; }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\const m = require('./app.tsx');
+        \\console.log(m.App());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .platform = .browser,
+        .external = &.{"react/jsx-dev-runtime"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    const out = result.output;
+    // ESM-wrapped 확인
+    try std.testing.expect(std.mem.indexOf(u8, out, "__esm(") != null);
+    // 같은 버그: `var _jsxDEV = ...`로 outer를 shadow하면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, out, "var _jsxDEV = ") == null);
+}
+
 test "JSX automatic: multiple modules sharing same jsx-runtime" {
     // 여러 모듈이 같은 jsx-runtime을 import할 때, 각 모듈에 바인딩이 독립적으로 생성되어야 함.
     var tmp = std.testing.tmpDir(.{});
@@ -1369,13 +1454,15 @@ test "JSX automatic: ESM-wrapped hoisted function can access _jsxDEV (scope test
     try std.testing.expect(!result.hasErrors());
     // __esm으로 래핑됨을 확인
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") != null);
-    // _jsxDEV가 top-level에 var로 선언 (호이스팅된 함수에서 접근 가능)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var _jsxDEV") != null);
+    // _jsxDEV가 top-level에 선언 (호이스팅된 함수에서 접근 가능).
+    // esm_wrap emit은 `var <...>, _jsxDEV, _Fragment;` 형태로 병합 선언하므로
+    // 선언 존재는 `, _jsxDEV` 토큰으로 확인.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV") != null);
     // 호이스팅된 function이 _jsxDEV를 사용 (React.createElement가 아님)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV(\"div\"") != null);
-    // __esm init 안에서는 var 없이 할당만
-    // "var _jsxDEV = " 가 아닌 할당문이 init 블록에 존재해야 함
+    // #1209: __esm init 안에서는 `var` 없이 할당만 (outer scope 재선언 금지)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_jsxDEV = require") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var _jsxDEV = require") == null);
 }
 
 test "JSX automatic: ESM-wrapped with multiple JSX functions (_jsx, _jsxs, _Fragment)" {

@@ -237,7 +237,7 @@ pub fn emitEsmWrappedModule(
     // 호이스팅된 함수에서 접근 불가. var _jsxDEV;를 top-level에 선언하고
     // init 안에서 _jsxDEV = ... (할당만)으로 처리해야 함.
     for (module.import_bindings) |ib| {
-        if (ib.local_span.start >= 0xFFFF_0000) {
+        if (ib.isSynthetic()) {
             try hoisted_var_names.append(allocator, ib.local_name);
         }
     }

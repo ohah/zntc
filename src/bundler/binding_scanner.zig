@@ -38,6 +38,14 @@ pub const ImportBinding = struct {
         named,
         namespace,
     };
+
+    /// Synthetic binding (JSX runtime 등, graph.zig에서 sentinel span으로 주입)
+    /// 감지. 실제 AST import에는 없고 linker/emitter가 인공 생성한 바인딩.
+    pub const SYNTHETIC_SPAN_BASE: u32 = 0xFFFF_0000;
+
+    pub fn isSynthetic(self: ImportBinding) bool {
+        return self.local_span.start >= SYNTHETIC_SPAN_BASE;
+    }
 };
 
 pub const ExportBinding = struct {
