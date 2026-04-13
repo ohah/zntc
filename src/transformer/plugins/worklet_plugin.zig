@@ -572,15 +572,15 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
             continue;
         }
 
-        // `__workletContextObjectFactory: function() { 'worklet'; return null; }` 로 교체.
-        // plugin의 onFunction이 worklet factory IIFE로 감싸줌.
+        // __workletContextObjectFactory: function() { 'worklet'; return { ...methods... }; }
+        // factory가 호출되면 marker 없는 원본 object를 재구성해 반환 (runtime 정확성).
         const factory_name_span = try t.ast.addString("__workletContextObjectFactory");
         const new_key = try t.ast.addNode(.{
             .tag = .identifier_reference,
             .span = factory_name_span,
             .data = .{ .string_ref = factory_name_span },
         });
-        const body = try buildWorkletContextStubBody(t);
+        const body = try buildContextObjectFactoryBody(t, list_start, list_len);
         const empty_params = try t.ast.addNodeList(&.{});
         const none = @intFromEnum(NodeIndex.none);
         const fn_node = try t.addExtraNode(.function_expression, zero_span, &.{
@@ -603,7 +603,64 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
     });
 }
 
-fn buildWorkletContextStubBody(t: *Transformer) !NodeIndex {
+/// Context object factory body — `'worklet'; return { ...non-marker members... };`
+/// 원본 object_expression의 list_start/list_len을 받아 marker(`__workletContextObject`)를
+/// 제외한 멤버들로 반환 object_expression을 재구성.
+/// method_definition(`foo() {...}`)은 object_property + function_expression으로 long-form 변환.
+fn buildContextObjectFactoryBody(t: *Transformer, list_start: u32, list_len: u32) !NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const scratch_top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const child_raw = t.ast.extra_data.items[list_start + i];
+        const child_idx: NodeIndex = @enumFromInt(child_raw);
+        const member = t.ast.getNode(child_idx);
+        if (member.tag == .object_property) {
+            const k = t.ast.getNode(member.data.binary.left);
+            if (k.tag == .identifier_reference) {
+                const name = t.ast.source[k.span.start..k.span.end];
+                if (std.mem.eql(u8, name, "__workletContextObject")) continue;
+            }
+            try t.scratch.append(t.allocator, child_idx);
+        } else if (member.tag == .method_definition) {
+            // method → object_property with function_expression value.
+            const me = member.data.extra;
+            const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+            const params_start = t.ast.extra_data.items[me + 1];
+            const params_len = t.ast.extra_data.items[me + 2];
+            const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me + 3]);
+            const m_flags = t.ast.extra_data.items[me + 4];
+            // method → function expression flags: async/generator만 전파
+            var fn_flags: u32 = 0;
+            if ((m_flags & METHOD_FLAG_ASYNC) != 0) fn_flags |= 0x01;
+            if ((m_flags & METHOD_FLAG_GENERATOR) != 0) fn_flags |= 0x02;
+            const none = @intFromEnum(NodeIndex.none);
+            const fn_expr = try t.addExtraNode(.function_expression, member.span, &.{
+                none, params_start, params_len, @intFromEnum(body_idx), fn_flags, none,
+            });
+            const new_prop = try t.ast.addNode(.{
+                .tag = .object_property,
+                .span = member.span,
+                .data = .{ .binary = .{ .left = key_idx, .right = fn_expr, .flags = 0 } },
+            });
+            try t.scratch.append(t.allocator, new_prop);
+        }
+    }
+
+    const ret_obj_list = try t.ast.addNodeList(t.scratch.items[scratch_top..]);
+    const ret_obj = try t.ast.addNode(.{
+        .tag = .object_expression,
+        .span = zero_span,
+        .data = .{ .list = ret_obj_list },
+    });
+    return buildWorkletReturnBlock(t, ret_obj, &.{});
+}
+
+/// `{ 'worklet'; return <ret_value>; }` block 생성. worklet factory body 공통 구조.
+/// 추가 선언이 필요하면 `extra_stmts`에 var_decl 등을 넘기면 순서대로 삽입.
+fn buildWorkletReturnBlock(t: *Transformer, ret_value: NodeIndex, extra_stmts: []const NodeIndex) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const dir_span = try t.ast.addString("\"worklet\"");
     const dir_str = try t.ast.addNode(.{
@@ -616,23 +673,33 @@ fn buildWorkletContextStubBody(t: *Transformer) !NodeIndex {
         .span = zero_span,
         .data = .{ .unary = .{ .operand = dir_str, .flags = 0 } },
     });
+    const ret_stmt = try t.ast.addNode(.{
+        .tag = .return_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = ret_value, .flags = 0 } },
+    });
+    const top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(top);
+    try t.scratch.append(t.allocator, dir_stmt);
+    try t.scratch.appendSlice(t.allocator, extra_stmts);
+    try t.scratch.append(t.allocator, ret_stmt);
+    const body_list = try t.ast.addNodeList(t.scratch.items[top..]);
+    return t.ast.addNode(.{
+        .tag = .block_statement,
+        .span = zero_span,
+        .data = .{ .list = body_list },
+    });
+}
+
+/// `{ 'worklet'; return null; }` — stub factory body.
+fn buildWorkletContextStubBody(t: *Transformer) !NodeIndex {
     const null_span = try t.ast.addString("null");
     const null_node = try t.ast.addNode(.{
         .tag = .null_literal,
         .span = null_span,
         .data = .{ .none = 0 },
     });
-    const ret_stmt = try t.ast.addNode(.{
-        .tag = .return_statement,
-        .span = zero_span,
-        .data = .{ .unary = .{ .operand = null_node, .flags = 0 } },
-    });
-    const body_list = try t.ast.addNodeList(&.{ dir_stmt, ret_stmt });
-    return t.ast.addNode(.{
-        .tag = .block_statement,
-        .span = zero_span,
-        .data = .{ .list = body_list },
-    });
+    return buildWorkletReturnBlock(t, null_node, &.{});
 }
 
 // ================================================================
@@ -652,9 +719,11 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     if (class_extra + 2 >= t.ast.extra_data.items.len) return null;
     const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[class_extra + 2]);
     if (body_idx.isNone()) return null;
-    const class_name = getClassName(t, node) orelse return null;
 
+    // marker 검사를 먼저 — 없으면 early return (synthetic class_expression의 경우
+    // getClassName이 string_table span을 source로 읽어 panic 유발하는 걸 방지).
     if (!hasWorkletClassMarker(t, body_idx)) return null;
+    const class_name = getClassName(t, node) orelse return null;
 
     // __workletClass property를 strip한 새 body 생성 + default 방문 수행.
     const stripped_body = try stripWorkletClassMarker(t, body_idx);
@@ -671,7 +740,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     });
     // visit은 skip (default 경로가 __workletClass 필드 없는 상태로 이미 완료).
     // Trailing: `Foo.Foo__classFactory = <worklet IIFE>`
-    const factory_stmt = try buildClassFactoryAssignment(t, class_name);
+    const factory_stmt = try buildClassFactoryAssignment(t, class_name, stripped_body);
     // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
     try t.trailing_nodes.append(t.allocator, factory_stmt);
     return new_class;
@@ -743,9 +812,43 @@ fn stripWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) !NodeIndex {
     return t.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = new_list } });
 }
 
-/// `ClassName.ClassName__classFactory = (function() { function ClassName__classFactory() { 'worklet'; return null; } return ClassName__classFactory; })();`
+/// Class factory body — `{ 'worklet'; var <Class> = class { stripped_body }; return <Class>; }`
+/// factory 호출 시 UI 스레드에서 클래스를 재생성해 반환 (runtime 정확성).
+fn buildClassFactoryBody(t: *Transformer, class_name_span: Span, stripped_body: NodeIndex) !NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const none = @intFromEnum(NodeIndex.none);
+
+    const class_binding = try t.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = class_name_span,
+        .data = .{ .string_ref = class_name_span },
+    });
+    const class_expr = try t.addExtraNode(.class_expression, zero_span, &.{
+        @intFromEnum(class_binding), none, @intFromEnum(stripped_body),
+        none,                        0,    0,
+        0,                           0,
+    });
+    // var <Class> = class_expr;
+    const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
+        @intFromEnum(class_binding), none, @intFromEnum(class_expr),
+    });
+    const decl_list = try t.ast.addNodeList(&.{declarator});
+    const var_decl = try t.addExtraNode(.variable_declaration, zero_span, &.{
+        0, // var
+        decl_list.start,
+        decl_list.len,
+    });
+    const return_ref = try t.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = class_name_span,
+        .data = .{ .string_ref = class_name_span },
+    });
+    return buildWorkletReturnBlock(t, return_ref, &.{var_decl});
+}
+
 /// 생성. plugin의 onFunction이 자동으로 함수를 worklet으로 변환.
-fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8) !NodeIndex {
+/// stripped_body: `__workletClass` 마커 제거된 class_body (factory가 클래스 재생성에 사용).
+fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped_body: NodeIndex) !NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // factory 이름: `<ClassName>__classFactory`
@@ -754,13 +857,12 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8) !NodeInd
     const factory_name_span = try t.ast.addString(factory_name);
     const class_name_span = try t.ast.addString(class_name);
 
-    // function <factory_name>() { 'worklet'; return null; }
     const binding_node = try t.ast.addNode(.{
         .tag = .binding_identifier,
         .span = factory_name_span,
         .data = .{ .string_ref = factory_name_span },
     });
-    const body = try buildWorkletContextStubBody(t);
+    const body = try buildClassFactoryBody(t, class_name_span, stripped_body);
     const empty_params = try t.ast.addNodeList(&.{});
     const none = @intFromEnum(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{

@@ -2657,3 +2657,79 @@ test "babel:babel_plugin_for_worklet_classes:is_disabled_via_option" {
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "foo__classFactory") == null);
 }
+
+// ================================================================
+// Functional factory body tests (ZTS 확장 — Babel parity 외)
+// factory가 호출되면 올바른 값을 반환하는지 구조적 검증
+// ================================================================
+
+test "ZTS: context object factory body returns object with methods" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\const foo = {
+        \\  bar() { return 'bar'; },
+        \\  baz() { return 'baz'; },
+        \\  __workletContextObject: true,
+        \\};
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // factory body에 method들이 포함되어야 (return null stub이 아님)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletContextObjectFactory") != null);
+    // factory body는 `return { bar: function() {...}, baz: function() {...} }` 형태
+    // null stub이면 'return null' 패턴이 남음 — 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, code, "return null") == null);
+    // 메서드 이름이 __initData.code string에 포함되어야 (serialize)
+    try std.testing.expect(std.mem.indexOf(u8, code, "bar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "baz") != null);
+}
+
+test "ZTS: context object factory preserves method body semantics" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\const ctx = {
+        \\  computed(x) { return x * 2; },
+        \\  __workletContextObject: true,
+        \\};
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 메서드 본문(return x * 2)이 __initData.code 안에 직렬화되어 있어야
+    try std.testing.expect(std.mem.indexOf(u8, code, "x*2") != null or
+        std.mem.indexOf(u8, code, "x * 2") != null);
+}
+
+test "ZTS: context object factory excludes __workletContextObject marker" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\const ctx = {
+        \\  bar() { return 'bar'; },
+        \\  __workletContextObject: true,
+        \\};
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // factory body의 return object에는 marker가 없어야 함
+    // (marker는 outer object에서도 `__workletContextObjectFactory`로 교체되어 사라짐)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletContextObject:") == null);
+}
+
+test "ZTS: class factory body returns reconstructed class (not stub)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  foo() { return 'bar'; }
+        \\}
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
+    // factory body가 class를 재생성해 반환해야 (return null 스텁이 아님)
+    try std.testing.expect(std.mem.indexOf(u8, code, "return null") == null);
+    // factory body에 class 재구성 코드 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "class Clazz") != null or
+        std.mem.indexOf(u8, code, "class{") != null);
+    // method 이름이 __initData.code에 직렬화
+    try std.testing.expect(std.mem.indexOf(u8, code, "foo") != null);
+}
