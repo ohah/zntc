@@ -269,6 +269,8 @@ export interface WatchRebuildEvent {
     /** 총 리빌드 시간 (detect → delta 합산) */
     total: number;
   };
+  /** 증분 그래프에서 재파싱된 모듈 수. 캐시 미스된 모듈만 카운트. 전체 빌드에서는 미노출. */
+  reparsedModules?: number;
 }
 
 export interface WatchHandle {
