@@ -774,15 +774,14 @@ pub fn buildWorkletPropertyAssignments(
     const init_data_obj = try buildInitDataObject(self, init_code, source_location, zero_span);
     const init_data_stmt = try buildPropAssignment(self, func_name_span, "__initData", init_data_obj, func_node_idx);
 
-    // 4. funcName.__stackDetails = [];
-    // Worklets runtime이 __DEV__ 모드에서 registerWorkletStackDetails(hash, __stackDetails)를
-    // 호출하므로, 빈 배열이라도 설정해야 crash 방지.
-    const empty_array = try self.ast.addNode(.{
-        .tag = .array_expression,
-        .span = zero_span,
-        .data = .{ .list = try self.ast.addNodeList(&.{}) },
-    });
-    const stack_stmt = try buildPropAssignment(self, func_name_span, "__stackDetails", empty_array, func_node_idx);
+    // 4. funcName.__stackDetails = [new global.Error(), lineOffset, -27];
+    // Babel react-native-worklets plugin 포맷 (workletFactory.ts:298-327).
+    // Reanimated runtime이 worklet 예외 처리 시 __stackDetails[0]에서 Error 객체를 읽음.
+    // 빈 배열이면 stack trace 관련 경로에서 silently 실패할 수 있음 (#1203).
+    // lineOffset = 1 - (closure_vars.len + 2) — closure destructuring에 의한 라인 시프트 보정.
+    const line_offset: i32 = if (closure_vars.len > 0) 1 - @as(i32, @intCast(closure_vars.len + 2)) else 1;
+    const stack_array = try buildStackDetailsArray(self, line_offset, zero_span);
+    const stack_stmt = try buildPropAssignment(self, func_name_span, "__stackDetails", stack_array, func_node_idx);
 
     // 5. funcName.__pluginVersion = "<version>";
     // Reanimated dev mode가 jsVersion과 대조 (serializable.native.ts:464) —
@@ -807,6 +806,67 @@ pub const WORKLET_PLUGIN_VERSION = "zts-0.0.1";
 /// { var1: var1, var2: var2, ... } 객체 리터럴 노드를 생성한다.
 /// explicit key-value 형식으로 생성하고, value의 identifier_reference에
 /// 원본 참조의 symbol_id를 복사하여 scope hoisting rename을 지원한다.
+/// __stackDetails 배열 노드 생성: `[new global.Error(), <lineOffset>, -27]`.
+/// Babel workletFactory.ts:298-327 대응. Reanimated가 worklet 예외 발생 시 stack trace 생성에 사용.
+fn buildStackDetailsArray(self: *Transformer, line_offset: i32, zero_span: Span) Error!NodeIndex {
+    // global identifier
+    const global_span = try self.ast.addString("global");
+    const global_id = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = global_span,
+        .data = .{ .string_ref = global_span },
+    });
+    // Error identifier
+    const error_span = try self.ast.addString("Error");
+    const error_id = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = error_span,
+        .data = .{ .string_ref = error_span },
+    });
+    // global.Error member expression
+    const global_error = try self.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(global_id), @intFromEnum(error_id), 0,
+    });
+    // new global.Error()
+    const empty_args = try self.ast.addNodeList(&.{});
+    const new_expr = try self.addExtraNode(.new_expression, zero_span, &.{
+        @intFromEnum(global_error), empty_args.start, empty_args.len, 0,
+    });
+
+    // 숫자 literal 2개 (lineOffset, -27)
+    const line_num = try makeI32Literal(self, line_offset);
+    const neg27 = try makeI32Literal(self, -27);
+
+    const list = try self.ast.addNodeList(&.{ new_expr, line_num, neg27 });
+    return self.ast.addNode(.{
+        .tag = .array_expression,
+        .span = zero_span,
+        .data = .{ .list = list },
+    });
+}
+
+/// 정수 값을 numeric_literal 노드로 변환. 음수면 unary_expression(`-`)으로 감싼다.
+/// (JS 스펙상 음수 리터럴은 unary minus + 양수 리터럴의 조합)
+fn makeI32Literal(self: *Transformer, value: i32) Error!NodeIndex {
+    const abs_val: u32 = if (value >= 0) @intCast(value) else @intCast(-value);
+    var buf: [16]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{abs_val}) catch return error.OutOfMemory;
+    const span = try self.ast.addString(s);
+    const num = try self.ast.addNode(.{
+        .tag = .numeric_literal,
+        .span = span,
+        .data = .{ .string_ref = span },
+    });
+    if (value >= 0) return num;
+    // unary_expression: extra = [operand, operator_kind]
+    const extra = try self.ast.addExtras(&.{ @intFromEnum(num), @intFromEnum(token_mod.Kind.minus) });
+    return self.ast.addNode(.{
+        .tag = .unary_expression,
+        .span = span,
+        .data = .{ .extra = extra },
+    });
+}
+
 fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
