@@ -26,22 +26,9 @@ const watch_debounce_max_ms: u64 = 500;
 /// 파일 내용 해시 최대 크기 (소스 파일 기준 충분).
 const watch_hash_max_bytes: usize = 10 * 1024 * 1024;
 
-/// 파일 내용의 content hash (Wyhash 64-bit, 스트리밍).
-/// 전체 내용을 힙에 올리지 않고 64KB 버퍼로 순회하여 대용량 파일에서도 메모리 부담 없음.
+/// 파일 내용의 content hash (Wyhash 64-bit, 스트리밍). `util.wyhash` 위임.
 fn hashFileContent(path: []const u8) ?u64 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
-    var hasher = std.hash.Wyhash.init(0);
-    var buf: [64 * 1024]u8 = undefined;
-    var total: usize = 0;
-    while (true) {
-        const n = file.read(&buf) catch return null;
-        if (n == 0) break;
-        total += n;
-        if (total > watch_hash_max_bytes) return null;
-        hasher.update(buf[0..n]);
-    }
-    return hasher.final();
+    return zts_lib.util.wyhash.hashFileStreaming(path, watch_hash_max_bytes);
 }
 
 /// FileWatcher에 path를 등록하고 content_hash_map에 해시 엔트리 생성/갱신.

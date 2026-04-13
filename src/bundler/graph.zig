@@ -1710,14 +1710,7 @@ fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
     return buf;
 }
 
-/// 파일 내용의 content hash (Wyhash → 16진수 8자리).
-/// emitter.zig의 content hash와 동일 알고리즘 (Wyhash + 32-bit truncate).
-fn contentHash(data: []const u8) [8]u8 {
-    const hash_val = std.hash.Wyhash.hash(0, data);
-    var buf: [8]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "{x:0>8}", .{@as(u32, @truncate(hash_val))}) catch unreachable;
-    return buf;
-}
+const contentHash = @import("../util/wyhash.zig").hashHex8;
 
 /// asset naming 패턴 적용: [name] [hash] 치환 + 확장자 추가.
 fn applyAssetNamingPattern(

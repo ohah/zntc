@@ -218,7 +218,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     );
     defer api.getAllocator().free(init_code);
 
-    const hash = @as(u32, @truncate(std.hash.Wyhash.hash(0, init_code)));
+    const hash = @as(u32, @truncate(@import("../../util/wyhash.zig").hashU64(init_code)));
 
     const stmts = try worklet_mod.buildWorkletPropertyAssignments(
         api.transformer,

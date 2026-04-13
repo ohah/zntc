@@ -22,6 +22,7 @@ pub const bundler = @import("bundler/mod.zig");
 pub const server = @import("server/mod.zig");
 pub const transpile = @import("transpile.zig");
 pub const string_escape = @import("string_escape.zig");
+pub const util = @import("util/mod.zig");
 
 test {
     _ = lexer;
@@ -34,6 +35,7 @@ test {
     _ = bundler;
     _ = server;
     _ = @import("test_arena.zig");
+    _ = util.wyhash;
 
     // diagnostic system
     _ = ansi_mod;
