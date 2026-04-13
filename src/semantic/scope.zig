@@ -65,6 +65,15 @@ pub const Scope = struct {
     /// 이 스코프가 strict mode인지
     is_strict: bool,
 
+    /// 이 스코프 또는 자손 스코프에 direct `eval(...)` 호출이 있는지.
+    /// true이면 이 스코프에 선언된 바인딩은 mangling되면 안 된다
+    /// (eval이 동적으로 이름을 참조할 수 있음). rolldown/oxc 방식.
+    subtree_has_direct_eval: bool = false,
+
+    /// 이 스코프 또는 자손 스코프에 `with` 문이 있는지.
+    /// true이면 이 스코프 바인딩은 mangling 금지.
+    subtree_has_with: bool = false,
+
     /// 이 스코프에서 선언된 심볼 수 (디버깅/통계용)
     symbol_count: u16 = 0,
 };

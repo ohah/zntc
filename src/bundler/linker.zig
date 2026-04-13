@@ -612,6 +612,12 @@ pub const Linker = struct {
         for (self.modules) |m| {
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
+            // direct eval / with이 이 모듈 내부 어디든 있으면 top-level 바인딩도
+            // 동적으로 참조될 수 있으므로 전체 스킵 (#1258). rolldown/oxc 방식.
+            if (sem.scopes.len > 0) {
+                const root_scope = sem.scopes[0];
+                if (root_scope.subtree_has_direct_eval or root_scope.subtree_has_with) continue;
+            }
             var sit = sem.scope_maps[0].iterator();
             while (sit.next()) |entry| {
                 const sym_name = entry.key_ptr.*;

@@ -975,6 +975,105 @@ test "Minify: nested scope variable not shadowed by mangled name (#494)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ok") != null);
 }
 
+test "Minify: direct eval preserves visible local bindings (#1258)" {
+    // direct eval은 스코프 내 모든 바인딩을 동적으로 참조할 수 있으므로,
+    // eval을 포함한 함수 및 그 상위 스코프의 변수는 mangling되면 안 된다.
+    // rolldown/oxc 방식: ContainsDirectEval 플래그를 상위로 전파.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function run() {
+        \\  const veryLongPasswordVar = "secret";
+        \\  return eval("veryLongPasswordVar");
+        \\}
+        \\console.log(run());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 선언부도 eval 인자와 같은 이름을 유지해야 런타임에 eval("veryLongPasswordVar")가 resolve된다.
+    // 단순 indexOf는 eval 인자 문자열에 걸려 pass되므로, 선언 패턴을 직접 확인.
+    const has_decl = std.mem.indexOf(u8, result.output, "veryLongPasswordVar=") != null or
+        std.mem.indexOf(u8, result.output, "veryLongPasswordVar =") != null;
+    try std.testing.expect(has_decl);
+}
+
+test "Minify: direct eval preserves outer scope bindings too (#1258)" {
+    // direct eval은 포함 함수의 모든 조상 스코프 바인딩을 볼 수 있으므로,
+    // top-level 함수 이름도 eval 발생 시 보존되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\function topLevelFunc() {
+        \\  return eval("topLevelFunc.name");
+        \\}
+        \\console.log(topLevelFunc());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const has_decl = std.mem.indexOf(u8, result.output, "function topLevelFunc") != null;
+    try std.testing.expect(has_decl);
+}
+
+test "Minify: with statement preserves bindings in enclosing scope (#1258)" {
+    // with 블록은 내부 식별자가 객체 속성으로 동적 해석될 수 있으므로,
+    // with을 포함한 스코프와 상위 스코프 변수는 mangling되면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\function run(obj) {
+        \\  var greetingOuter = "hi";
+        \\  with (obj) {
+        \\    console.log(greetingOuter);
+        \\  }
+        \\}
+        \\run({ greetingOuter: "hello" });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const has_decl = std.mem.indexOf(u8, result.output, "greetingOuter=") != null or
+        std.mem.indexOf(u8, result.output, "greetingOuter =") != null;
+    try std.testing.expect(has_decl);
+}
+
 // ============================================================
 // Asset Loader Tests
 // ============================================================
