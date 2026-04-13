@@ -6,7 +6,6 @@ const std = @import("std");
 const h = @import("helpers.zig");
 const Codegen = h.Codegen;
 const Scanner = h.Scanner;
-const Parser = h.Scanner; // 사용 안 함
 const FunctionMapBuilder = @import("../function_map.zig").FunctionMapBuilder;
 
 /// function map 활성화 e2e: x_facebook_sources JSON 반환.
@@ -14,17 +13,16 @@ fn e2eFunctionMap(backing_allocator: std.mem.Allocator, source: []const u8) !str
     json: []const u8,
     arena: std.heap.ArenaAllocator,
 } {
-    const helpers = @import("helpers.zig");
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
-    var scanner = try helpers.Scanner.init(allocator, source);
-    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    var scanner = try Scanner.init(allocator, source);
+    var parser = h.Parser.init(allocator, &scanner);
     parser.configureFromExtension(".ts");
     _ = try parser.parse();
 
-    var t = try helpers.Transformer.init(allocator, &parser.ast, .{});
+    var t = try h.Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
     var cg = Codegen.initWithOptions(allocator, &t.ast, .{
@@ -108,16 +106,15 @@ test "function_map: computed non-literal key — anonymous" {
 
 test "function_map: sourcemap_function_map=false — no x_facebook_sources" {
     // 옵션 비활성화 시 x_facebook_sources 미포함
-    const helpers = @import("helpers.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var scanner = try helpers.Scanner.init(allocator, "function foo() {}");
-    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    var scanner = try Scanner.init(allocator, "function foo() {}");
+    var parser = h.Parser.init(allocator, &scanner);
     parser.configureFromExtension(".ts");
     _ = try parser.parse();
-    var t = try helpers.Transformer.init(allocator, &parser.ast, .{});
+    var t = try h.Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
     var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .sourcemap = true });
     cg.line_offsets = scanner.line_offsets.items;
