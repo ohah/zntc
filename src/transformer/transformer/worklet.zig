@@ -789,7 +789,7 @@ pub fn buildWorkletPropertyAssignments(
     // 불일치 시 WorkletsError throw. 번들러가 사용자 react-native-worklets 버전을
     // 전달하지 않으면 WORKLET_PLUGIN_VERSION fallback.
     // 매 worklet당 allocPrint 방지를 위해 Transformer.init에서 pre-computed span 사용.
-    const version_span = self.worklet_plugin_version_span orelse try self.ast.addString("\"" ++ WORKLET_PLUGIN_VERSION ++ "\"");
+    const version_span = self.plugins.worklet.plugin_version_span orelse try self.ast.addString("\"" ++ WORKLET_PLUGIN_VERSION ++ "\"");
     const version_node = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = version_span,

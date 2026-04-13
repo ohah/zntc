@@ -23,6 +23,8 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const plugin_state = @import("plugin_state.zig");
+const PluginState = plugin_state.PluginState;
 const es2016 = @import("es2016.zig");
 const es2018 = @import("es2018.zig");
 const es2017_mod = @import("es2017.zig");
@@ -208,10 +210,6 @@ pub const Transformer = struct {
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
     define_spans: []Span = &.{},
 
-    /// `__pluginVersion`에 주입할 따옴표로 감싼 문자열 리터럴 span (pre-computed).
-    /// worklet당 매번 allocPrint하는 오버헤드 제거 — init에서 한 번만 생성.
-    worklet_plugin_version_span: ?Span = null,
-
     /// ES 다운레벨링 임시 변수 카운터.
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
     temp_var_counter: u32 = 0,
@@ -274,18 +272,9 @@ pub const Transformer = struct {
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
 
-    /// auto-workletization 플래그.
-    /// visitCallExpression에서 callee 매칭 시 true로 설정하고,
-    /// dispatchFunctionPlugins에서 FunctionInfo.is_auto_worklet로 전달 후 false로 리셋.
-    auto_worklet_next: bool = false,
-
-    /// 익명 worklet 함수 이름 생성 시 사용하는 sequential counter (Babel `null<N>` 호환).
-    /// 같은 파일 내에서 0부터 증가, worklet plugin이 fallback name 만들 때 사용.
-    worklet_anonymous_counter: u32 = 0,
-
-    /// worklet 함수 body 방문 중 깊이. > 0 이면 define 치환(`--define:global=...`) 억제.
-    /// worklet body는 UI 런타임에서 실행되므로 JS 전용 global polyfill 심볼로 치환하면 안 된다.
-    worklet_body_depth: u32 = 0,
+    /// 플러그인별 runtime state. 각 plugin은 자기 sub-struct만 접근.
+    /// 상세 규칙은 `plugin_state.zig` 참조.
+    plugins: PluginState = .{},
 
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
@@ -461,14 +450,14 @@ pub const Transformer = struct {
         if (self.options.worklet_plugin_version) |v| {
             const quoted = std.fmt.allocPrint(self.allocator, "\"{s}\"", .{v}) catch return Error.OutOfMemory;
             defer self.allocator.free(quoted);
-            self.worklet_plugin_version_span = self.ast.addString(quoted) catch return Error.OutOfMemory;
+            self.plugins.worklet.plugin_version_span = self.ast.addString(quoted) catch return Error.OutOfMemory;
         }
 
         // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
         const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
         const saved_temp_counter = self.temp_var_counter;
         // worklet anonymous naming counter — Transformer 인스턴스 재사용 시 매 transform당 0부터 시작.
-        self.worklet_anonymous_counter = 0;
+        self.plugins.worklet.anonymous_counter = 0;
         var root = try self.visitNode(root_idx);
 
         // Pass 2: ES2015 params lowering 일괄 적용
@@ -584,7 +573,7 @@ pub const Transformer = struct {
         // 3단계: define 글로벌 치환
         // --------------------------------------------------------
         // worklet body 내부에서는 억제: UI 런타임은 bundler prelude의 polyfill 심볼을 모름.
-        if (self.options.define.len > 0 and self.worklet_body_depth == 0) {
+        if (self.options.define.len > 0 and self.plugins.worklet.body_depth == 0) {
             if (self.tryDefineReplace(node)) |new_node| {
                 return try new_node;
             }
@@ -1742,11 +1731,11 @@ pub const Transformer = struct {
     /// 함수 body가 worklet이 될 예정이면 `worklet_body_depth`를 올린 상태로 body를 방문한다.
     /// 반환된 body 내부에서는 `--define` 치환이 억제되어 UI 런타임에서도 심볼이 안전하게 유지된다.
     pub fn visitBodyWorkletAware(self: *Transformer, body_idx: NodeIndex) Error!NodeIndex {
-        const is_worklet = self.auto_worklet_next or
+        const is_worklet = self.plugins.worklet.auto_next or
             worklet_mod.isWorkletDirectiveGeneric(self, body_idx, "worklet");
-        if (is_worklet) self.worklet_body_depth += 1;
+        if (is_worklet) self.plugins.worklet.body_depth += 1;
         defer if (is_worklet) {
-            self.worklet_body_depth -= 1;
+            self.plugins.worklet.body_depth -= 1;
         };
         return self.visitNode(body_idx);
     }
@@ -2136,7 +2125,7 @@ pub const Transformer = struct {
         });
 
         // Plugin dispatch: onFunction (AST 훅)
-        const is_auto_worklet = self.auto_worklet_next;
+        const is_auto_worklet = self.plugins.worklet.auto_next;
         if (try self.dispatchFunctionPlugins(result, .{
             .node_idx = result,
             .node_tag = node.tag,
@@ -2760,7 +2749,7 @@ pub const Transformer = struct {
         const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
 
         // Plugin dispatch: auto-workletization 등 AST 플러그인 적용
-        const is_auto_worklet = self.auto_worklet_next;
+        const is_auto_worklet = self.plugins.worklet.auto_next;
         if (is_auto_worklet or self.options.plugins.len > 0) {
             // arrow params는 formal_parameters (list) 또는 none일 수 있다.
             var orig_p_start: u32 = 0;
@@ -3095,7 +3084,7 @@ pub const Transformer = struct {
         // method_definition은 object/class 내부에 있으므로 IIFE 교체는 불가.
         // 대신 워크릿 플러그인이 method body 기반으로 function_expression을 생성하여
         // object_property value로 교체할 수 있도록 정보를 전달한다.
-        const is_auto_worklet = self.auto_worklet_next;
+        const is_auto_worklet = self.plugins.worklet.auto_next;
         // method 이름 추출 (key가 identifier인 경우)
         const method_name: ?[]const u8 = blk: {
             const key_idx = self.readNodeIdx(e, 0);
@@ -3554,18 +3543,18 @@ pub const Transformer = struct {
 
             // save/restore: 재귀적 visitNode 내부의 중첩 call_expression이
             // auto_worklet_next를 오염시키지 않도록 보호.
-            const saved_auto = self.auto_worklet_next;
+            const saved_auto = self.plugins.worklet.auto_next;
             if (should_auto and !arg_idx.isNone()) {
                 const arg_node = self.ast.getNode(arg_idx);
                 if (arg_node.tag == .function_expression or
                     arg_node.tag == .arrow_function_expression)
                 {
-                    self.auto_worklet_next = true;
+                    self.plugins.worklet.auto_next = true;
                 }
             }
 
             const new_child = try self.visitNode(arg_idx);
-            self.auto_worklet_next = saved_auto;
+            self.plugins.worklet.auto_next = saved_auto;
 
             // pending_nodes 드레인
             if (self.pending_nodes.items.len > pending_top) {
