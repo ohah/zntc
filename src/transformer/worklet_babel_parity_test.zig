@@ -2090,9 +2090,7 @@ test "babel:babel_plugin_for_file_workletization:workletizes_FunctionDeclaration
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: has worklet data (__workletHash present)
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_assigned_FunctionDeclaration" {
@@ -2105,9 +2103,7 @@ test "babel:babel_plugin_for_file_workletization:workletizes_assigned_FunctionDe
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: has worklet data (__workletHash present)
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionDeclaration_in_named_export" {
@@ -2130,9 +2126,7 @@ test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression"
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: has worklet data (__workletHash present)
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression_in_named_export" {
@@ -2155,9 +2149,7 @@ test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpres
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
-    _ = &code;
-    // EXPECT: has worklet data (__workletHash present)
-    // (snapshot — skipped)
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpression_in_named_export" {
