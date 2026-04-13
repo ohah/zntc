@@ -226,11 +226,7 @@ pub const TreeShaker = struct {
                     const target = @intFromEnum(rec.resolved);
                     if (target >= self.modules.len) continue;
                     if (self.included.isSet(target)) continue;
-                    // dynamic import()는 정적 import_binding이 없어 심볼 기반 도달성
-                    // 분석에서 누락된다. 모듈 전체를 포함해야 런타임에 해당 청크가 존재
-                    // (code-splitting 미구현 상태에선 동일 번들에 남음). #1260.
-                    if (rec.kind == .require or rec.kind == .dynamic_import or
-                        self.modules[target].side_effects or
+                    if (rec.kind == .require or self.modules[target].side_effects or
                         self.modules[target].wrap_kind.isWrapped())
                     {
                         self.included.set(target);
