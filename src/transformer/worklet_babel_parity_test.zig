@@ -2794,6 +2794,14 @@ test "ZTS: __workletClass with es5 target produces lowered IIFE class" {
     try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
 }
 
+fn containsReturnExpr(code: []const u8) bool {
+    const variants = [_][]const u8{ "return{", "return {", "return(", "return (" };
+    for (variants) |v| {
+        if (std.mem.indexOf(u8, code, v) != null) return true;
+    }
+    return false;
+}
+
 test "ZTS: arrow ExpressionBody preserves implicit return in __initData.code (issue #1191)" {
     // useAnimatedStyle(() => ({ ... })) 같은 arrow + expression body 형태가
     // __initData.code에 return 없이 직렬화되어 UI thread가 undefined를 반환하던 버그 회귀 방지.
@@ -2805,12 +2813,7 @@ test "ZTS: arrow ExpressionBody preserves implicit return in __initData.code (is
     defer r.deinit();
     const code = try tt.generateCode(&r);
     defer std.testing.allocator.free(code);
-    // __initData.code 문자열 안의 function body에 `return{` 또는 `return (` 가 포함되어야 한다.
-    const has_return = std.mem.indexOf(u8, code, "return{") != null or
-        std.mem.indexOf(u8, code, "return {") != null or
-        std.mem.indexOf(u8, code, "return(") != null or
-        std.mem.indexOf(u8, code, "return (") != null;
-    try std.testing.expect(has_return);
+    try std.testing.expect(containsReturnExpr(code));
 }
 
 test "ZTS: arrow ExpressionBody with closure preserves implicit return (issue #1191)" {
@@ -2825,12 +2828,6 @@ test "ZTS: arrow ExpressionBody with closure preserves implicit return (issue #1
     defer r.deinit();
     const code = try tt.generateCode(&r);
     defer std.testing.allocator.free(code);
-    // closure destructuring이 삽입된 뒤에도 return이 살아있어야 함.
-    const has_closure = std.mem.indexOf(u8, code, "this.__closure") != null;
-    const has_return = std.mem.indexOf(u8, code, "return{") != null or
-        std.mem.indexOf(u8, code, "return {") != null or
-        std.mem.indexOf(u8, code, "return(") != null or
-        std.mem.indexOf(u8, code, "return (") != null;
-    try std.testing.expect(has_closure);
-    try std.testing.expect(has_return);
+    try std.testing.expect(std.mem.indexOf(u8, code, "this.__closure") != null);
+    try std.testing.expect(containsReturnExpr(code));
 }
