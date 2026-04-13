@@ -165,6 +165,10 @@ pub const BundleOptions = struct {
     strict_execution_order: bool = false,
     /// Reanimated worklet 네이티브 변환. --platform=react-native에서 자동 활성화.
     worklet_transform: bool = false,
+    /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수 사용.
+    /// Reanimated dev mode runtime이 jsVersion과 대조하므로 사용자의 react-native-worklets
+    /// 패키지 버전을 그대로 전달해야 런타임 mismatch 에러 없음.
+    worklet_plugin_version: ?[]const u8 = null,
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
@@ -365,6 +369,7 @@ pub const Bundler = struct {
             .configurable_exports = self.options.configurable_exports,
             .strict_execution_order = self.options.strict_execution_order,
             .worklet_transform = self.options.worklet_transform,
+            .worklet_plugin_version = self.options.worklet_plugin_version,
         };
     }
 

@@ -227,6 +227,9 @@ export interface BuildOptions {
   collectModuleCodes?: boolean;
   /** Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환) */
   configurableExports?: boolean;
+  /** worklet의 `__pluginVersion` 값 (Reanimated dev mode jsVersion 대조용).
+   * 사용자 환경의 react-native-worklets 패키지 version을 전달해야 런타임 에러 없음. */
+  workletPluginVersion?: string;
   /** scope hoisting 시 예약할 전역 식별자 */
   globalIdentifiers?: string[];
   /** 번들 시작 시 즉시 실행 폴리필 경로 */

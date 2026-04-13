@@ -115,6 +115,13 @@ pub const TransformOptions = struct {
     /// 예: `globals: ['__DEV__']` → worklet 내 `__DEV__` 참조가 __closure에 포함 안 됨.
     worklet_globals: []const []const u8 = &.{},
 
+    /// worklet 함수의 `__pluginVersion` 값. null이면 기본 ZTS 상수 사용.
+    /// Reanimated dev mode (`serializable.native.ts:464`)에서 `jsVersion`과 대조하여
+    /// 불일치 시 throw — 따라서 사용자의 `react-native-worklets` 패키지 버전을
+    /// 맞춰 전달해야 런타임 에러 없음. 번들러가 `node_modules/react-native-worklets/package.json`
+    /// 에서 자동 감지해 전달 권장.
+    worklet_plugin_version: ?[]const u8 = null,
+
     pub const compat = @import("compat.zig");
 };
 
@@ -199,6 +206,10 @@ pub const Transformer = struct {
     /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
     define_spans: []Span = &.{},
+
+    /// `__pluginVersion`에 주입할 따옴표로 감싼 문자열 리터럴 span (pre-computed).
+    /// worklet당 매번 allocPrint하는 오버헤드 제거 — init에서 한 번만 생성.
+    worklet_plugin_version_span: ?Span = null,
 
     /// ES 다운레벨링 임시 변수 카운터.
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
@@ -431,6 +442,13 @@ pub const Transformer = struct {
             for (self.options.define, 0..) |entry, i| {
                 self.define_spans[i] = self.ast.addString(entry.value) catch return Error.OutOfMemory;
             }
+        }
+
+        // worklet __pluginVersion 문자열 리터럴 span 사전 계산 (매 worklet당 할당 방지)
+        if (self.options.worklet_plugin_version) |v| {
+            const quoted = std.fmt.allocPrint(self.allocator, "\"{s}\"", .{v}) catch return Error.OutOfMemory;
+            defer self.allocator.free(quoted);
+            self.worklet_plugin_version_span = self.ast.addString(quoted) catch return Error.OutOfMemory;
         }
 
         // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
