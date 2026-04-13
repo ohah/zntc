@@ -1357,6 +1357,93 @@ test "TreeShaking: class static block side-effect preserved (#1261 edge)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "STATIC_BLOCK_MARKER") != null);
 }
 
+test "TreeShaking: size regression — 1-of-N named imports (#1262)" {
+    // 10개 export 중 1개만 import 시 나머지 9개는 제거되어야 한다.
+    // 회귀 시 번들 크기가 threshold 초과로 실패.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { fn5 } from './lib';
+        \\console.log(fn5());
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export function fn0() { return "PAYLOAD_0"; }
+        \\export function fn1() { return "PAYLOAD_1"; }
+        \\export function fn2() { return "PAYLOAD_2"; }
+        \\export function fn3() { return "PAYLOAD_3"; }
+        \\export function fn4() { return "PAYLOAD_4"; }
+        \\export function fn5() { return "PAYLOAD_5"; }
+        \\export function fn6() { return "PAYLOAD_6"; }
+        \\export function fn7() { return "PAYLOAD_7"; }
+        \\export function fn8() { return "PAYLOAD_8"; }
+        \\export function fn9() { return "PAYLOAD_9"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 사용된 fn5만 남고 나머지 9개는 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PAYLOAD_5") != null);
+    for ([_][]const u8{ "PAYLOAD_0", "PAYLOAD_1", "PAYLOAD_2", "PAYLOAD_3", "PAYLOAD_4", "PAYLOAD_6", "PAYLOAD_7", "PAYLOAD_8", "PAYLOAD_9" }) |marker| {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, marker) == null);
+    }
+}
+
+test "TreeShaking: size regression — deep re-export chain only used exports (#1262)" {
+    // barrel → a,b,c → 각각 2개씩 export. entry는 a.used만. 나머지 5개 제거.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used_a } from './barrel';
+        \\console.log(used_a());
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { used_a, unused_a } from './a';
+        \\export { used_b, unused_b } from './b';
+        \\export { used_c, unused_c } from './c';
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\export function used_a() { return "USED_A_MARKER"; }
+        \\export function unused_a() { return "UNUSED_A_MARKER"; }
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\export function used_b() { return "USED_B_MARKER"; }
+        \\export function unused_b() { return "UNUSED_B_MARKER"; }
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\export function used_c() { return "USED_C_MARKER"; }
+        \\export function unused_c() { return "UNUSED_C_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_A_MARKER") != null);
+    for ([_][]const u8{ "UNUSED_A_MARKER", "USED_B_MARKER", "UNUSED_B_MARKER", "USED_C_MARKER", "UNUSED_C_MARKER" }) |m| {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, m) == null);
+    }
+}
+
 test "TreeShaking: class extends call expression preserved (#1261 edge)" {
     // class Foo extends getBase() — extends call은 side-effect이므로 보존.
     var tmp = std.testing.tmpDir(.{});

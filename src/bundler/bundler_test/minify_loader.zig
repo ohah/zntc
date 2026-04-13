@@ -975,6 +975,132 @@ test "Minify: nested scope variable not shadowed by mangled name (#494)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ok") != null);
 }
 
+test "Minify: TS type params do not collide with runtime vars (#1259)" {
+    // 제네릭 타입 파라미터 T가 runtime에서 변수 이름 충돌을 일으키거나
+    // mangler가 T에 slot을 할당하면 안 된다 (타입은 emit 단계에서 제거됨).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function gen<T>(a: T, b: T): T {
+        \\  const result = a;
+        \\  return result;
+        \\}
+        \\console.log(gen<string>("hi", "world"));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 타입 파라미터 T는 output에 남지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<T>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ": T") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "hi") != null);
+}
+
+test "Minify: type alias / interface do not consume mangler slots (#1259)" {
+    // type, interface 선언은 emit 안 되므로 mangler 대상이 아니어야 한다.
+    // 같은 이름의 runtime 변수가 있을 때 name collision 없이 동작.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\type User = { name: string };
+        \\interface Config { debug: boolean }
+        \\function make(): User {
+        \\  const payload = { name: "alice" };
+        \\  return payload;
+        \\}
+        \\console.log(make().name);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "type ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "interface ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "alice") != null);
+}
+
+test "Minify: generic class type params do not leak into runtime (#1259)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Box<TItem> {
+        \\  item: TItem;
+        \\  constructor(value: TItem) { this.item = value; }
+        \\  get(): TItem { return this.item; }
+        \\}
+        \\const boxed = new Box<number>(42);
+        \\console.log(boxed.get());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TItem") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<number>") == null);
+}
+
+test "Minify: enum member access preserved after mangling (#1259)" {
+    // enum은 값으로 emit되므로 mangling 대상. member 접근이 올바르게 동작해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\enum Color { Red = 1, Green = 2 }
+        \\const picked = Color.Green;
+        \\console.log(picked);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // enum member name은 속성이므로 보존됨, Green 접근 코드가 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Green") != null);
+}
+
 test "Minify: direct eval preserves visible local bindings (#1258)" {
     // direct eval은 스코프 내 모든 바인딩을 동적으로 참조할 수 있으므로,
     // eval을 포함한 함수 및 그 상위 스코프의 변수는 mangling되면 안 된다.
