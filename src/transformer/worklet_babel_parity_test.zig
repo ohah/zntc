@@ -456,8 +456,18 @@ test "babel:babel_plugin_for_explicit_worklets:workletizes_FunctionDeclaration" 
 }
 
 test "babel:babel_plugin_for_explicit_worklets:workletizes_ArrowFunctionExpression" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\const foo = (x) => {
+        \\  'worklet';
+        \\  return x + 2;
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "'worklet';") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"worklet\";") == null);
 }
 
 test "babel:babel_plugin_for_explicit_worklets:workletizes_unnamed_FunctionExpression" {
@@ -2107,13 +2117,29 @@ test "babel:babel_plugin_for_file_workletization:workletizes_assigned_FunctionDe
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionDeclaration_in_named_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export function foo() {
+        \\  return 'bar';
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionDeclaration_in_default_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export default function foo() {
+        \\  return 'bar';
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression" {
@@ -2130,13 +2156,29 @@ test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression"
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression_in_named_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export const foo = function () {
+        \\  return 'bar';
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_FunctionExpression_in_default_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export default (function () {
+        \\  return 'bar';
+        \\});
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpression" {
@@ -2153,13 +2195,29 @@ test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpres
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpression_in_named_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export const foo = () => {
+        \\  return 'bar';
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ArrowFunctionExpression_in_default_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export default () => {
+        \\  return 'bar';
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ObjectMethod" {
