@@ -92,6 +92,15 @@ pub const IncrementalBundler = struct {
         if (self.resolve_cache) |*rc| rc.deinit();
     }
 
+    /// 외부에서 캐시 전체 무효화 (Control API `/reset-cache` 등).
+    /// 다음 rebuild()는 초기 빌드와 동일한 전체 재번들.
+    pub fn reset(self: *IncrementalBundler) void {
+        self.clearCache();
+        self.persistent_store.deinit();
+        self.persistent_store = module_store.PersistentModuleStore.init(self.allocator);
+        self.needs_full_rebuild = true;
+    }
+
     fn clearCache(self: *IncrementalBundler) void {
         var it = self.module_cache.iterator();
         while (it.next()) |entry| {
