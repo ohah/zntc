@@ -1,5 +1,7 @@
 pub const DevServer = @import("dev_server.zig").DevServer;
 pub const FileWatcher = @import("file_watcher.zig").FileWatcher;
+pub const ChangeEvent = @import("file_watcher.zig").ChangeEvent;
+pub const ChangeKind = @import("file_watcher.zig").ChangeKind;
 pub const mime = @import("mime.zig");
 
 test {
