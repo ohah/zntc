@@ -622,6 +622,8 @@ pub const Node = struct {
                 // object_property: binary = { left: key, right: value, flags: prop_flags }
                 .object_property => .{ .kind = .binary },
                 // import_declaration: extra = [specs_start, specs_len, source(2)]
+                // import_declaration: extra = [specs_start, specs_len, source(2), phase_flags, attrs_start, attrs_len]
+                // phase_flags: u32. low 4 bits = ImportPhase (0=none, 1=defer, 2=source)
                 .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
                 // export_named: extra = [decl(0), specs_start, specs_len, source(3)]
                 .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 } },

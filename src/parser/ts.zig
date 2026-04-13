@@ -415,23 +415,47 @@ pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
+/// TS 4.7+ 타입 파라미터 modifier flags (variance + const).
+/// `<const T>`, `<in T>`, `<out T>`, `<in out T>`, `<const in out T>` 등.
+pub const TsTypeParamModifier = packed struct(u8) {
+    const_: bool = false,
+    in: bool = false,
+    out: bool = false,
+    _pad: u5 = 0,
+
+    pub const NONE: TsTypeParamModifier = .{};
+
+    pub fn toU32(self: TsTypeParamModifier) u32 {
+        return @as(u8, @bitCast(self));
+    }
+
+    pub fn fromU32(v: u32) TsTypeParamModifier {
+        return @bitCast(@as(u8, @truncate(v)));
+    }
+};
+
 fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
-    // TS 4.7+ 타입 파라미터 수정자: const, in, out (oxc parse_ts_type_parameter)
-    // <const T>, <in T>, <out T>, <in out T>, <const in out T>
-    // 주의: <in out>에서 out은 수정자가 아닌 이름 — 다음 토큰으로 구분
+    // <in out>에서 out은 수정자가 아닌 이름 — 다음 토큰으로 구분 (oxc parse_ts_type_parameter).
+    var modifiers: TsTypeParamModifier = .{};
     while (true) {
         if (self.current() == .kw_const or self.current() == .kw_in) {
-            // 다음 토큰이 > , extends = 이면 현재가 이름임 (수정자 아님)
             const peek = try self.peekNextKind();
             if (peek == .r_angle or peek == .comma or peek == .kw_extends or peek == .eq) break;
+            if (self.current() == .kw_const) modifiers.const_ = true else modifiers.in = true;
             try self.advance();
         } else if (self.current() == .identifier) {
             const text = self.tokenText();
-            if (std.mem.eql(u8, text, "out") or std.mem.eql(u8, text, "const") or std.mem.eql(u8, text, "in")) {
+            const is_const = std.mem.eql(u8, text, "const");
+            const is_in = std.mem.eql(u8, text, "in");
+            const is_out = std.mem.eql(u8, text, "out");
+            if (is_const or is_in or is_out) {
                 const peek = try self.peekNextKind();
                 if (peek == .r_angle or peek == .comma or peek == .kw_extends or peek == .eq) break;
+                if (is_const) modifiers.const_ = true;
+                if (is_in) modifiers.in = true;
+                if (is_out) modifiers.out = true;
                 try self.advance();
             } else break;
         } else break;
@@ -439,21 +463,18 @@ fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
 
     const name = try self.parseSimpleIdentifier();
 
-    // T extends U
     var constraint = NodeIndex.none;
-    if (try self.eat(.kw_extends)) {
-        constraint = try parseType(self);
-    }
+    if (try self.eat(.kw_extends)) constraint = try parseType(self);
 
-    // T = DefaultType
     var default_type = NodeIndex.none;
-    if (try self.eat(.eq)) {
-        default_type = try parseType(self);
-    }
+    if (try self.eat(.eq)) default_type = try parseType(self);
 
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(constraint));
-    _ = try self.ast.addExtra(@intFromEnum(default_type));
+    const extra_start = try self.ast.addExtras(&.{
+        @intFromEnum(name),
+        @intFromEnum(constraint),
+        @intFromEnum(default_type),
+        modifiers.toU32(),
+    });
 
     return try self.ast.addNode(.{
         .tag = .ts_type_parameter,

@@ -21,6 +21,7 @@ const Data = Node.Data;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
+const module_parser = @import("../parser/module.zig");
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const plugin_state = @import("plugin_state.zig");
@@ -3192,25 +3193,21 @@ pub const Transformer = struct {
         });
     }
 
-    /// import_declaration:
-    ///   모든 import는 extra = [specs_start, specs_len, source_node] 형식.
-    ///   side-effect import (import "module")은 specs_len=0.
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const specs_start = self.readU32(e, 0);
-        const specs_len = self.readU32(e, 1);
+        const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
         // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
-        // side-effect import (import 'foo')는 specifier가 없으므로 제거하지 않음.
-        if (self.symbols.len > 0 and self.symbol_ids.items.len > 0 and specs_len > 0) {
-            const all_unused = self.areAllSpecifiersUnused(specs_start, specs_len);
-            if (all_unused) return .none;
+        // side-effect import는 specifier가 없으므로 제거 불가.
+        if (self.symbols.len > 0 and self.symbol_ids.items.len > 0 and x.specs_len > 0) {
+            if (self.areAllSpecifiersUnused(x.specs_start, x.specs_len)) return .none;
         }
 
-        const new_specs = try self.visitExtraList(specs_start, specs_len);
-        const new_source = try self.visitNode(self.readNodeIdx(e, 2));
+        const new_specs = try self.visitExtraList(x.specs_start, x.specs_len);
+        const new_source = try self.visitNode(x.source);
+        // phase / attributes는 metadata — transform 대상 아님, 그대로 통과.
         return self.addExtraNode(.import_declaration, node.span, &.{
-            new_specs.start, new_specs.len, @intFromEnum(new_source),
+            new_specs.start,       new_specs.len, @intFromEnum(new_source),
+            @intFromEnum(x.phase), x.attrs_start, x.attrs_len,
         });
     }
 

@@ -17,6 +17,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
+const module_parser = @import("../parser/module.zig");
 const Kind = @import("../lexer/token.zig").Kind;
 const Comment = @import("../lexer/scanner.zig").Comment;
 
@@ -2229,27 +2230,45 @@ pub const Codegen = struct {
     // Import/Export 출력
     // ================================================================
 
-    /// import_declaration:
-    ///   모든 import는 extra = [specs_start, specs_len, source_node] 형식.
-    ///   side-effect import (import "module")은 specs_len=0.
     fn emitImport(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 3];
-        const specs_start = extras[0];
-        const specs_len = extras[1];
-        const source: NodeIndex = @enumFromInt(extras[2]);
+        const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
         if (self.options.module_format == .cjs) {
-            return self.emitImportCJS(source, specs_start, specs_len);
+            return self.emitImportCJS(x.source, x.specs_start, x.specs_len);
         }
 
         try self.write("import ");
-        if (specs_len > 0) {
-            try self.emitImportSpecifiers(specs_start, specs_len);
+        switch (x.phase) {
+            .defer_ => try self.write("defer "),
+            .source => try self.write("source "),
+            .none => {},
+        }
+        if (x.specs_len > 0) {
+            try self.emitImportSpecifiers(x.specs_start, x.specs_len);
             try self.write(" from ");
         }
-        try self.emitNode(source);
+        try self.emitNode(x.source);
+        if (x.attrs_len > 0) {
+            try self.write(" with ");
+            try self.emitImportAttributes(x.attrs_start, x.attrs_len);
+        }
         try self.writeByte(';');
+    }
+
+    fn emitImportAttributes(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
+        try self.writeByte('{');
+        const indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
+        for (indices, 0..) |raw_idx, i| {
+            if (i > 0) try self.write(", ");
+            const attr_node = self.ast.getNode(@enumFromInt(raw_idx));
+            // 키는 identifier 또는 string literal — string_literal emit의 quote-strip을 피해 raw span 사용.
+            const key_node = self.ast.getNode(attr_node.data.binary.left);
+            try self.writeNodeSpan(key_node);
+            try self.write(": ");
+            const value = attr_node.data.binary.right;
+            if (!value.isNone()) try self.emitNode(value);
+        }
+        try self.writeByte('}');
     }
 
     /// import specifiers를 타입별로 출력한다.

@@ -22,6 +22,61 @@ const binding_mod = @import("binding.zig");
 const scan_results_mod = @import("scan_results.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
 
+/// `import_declaration` extra slot 3에 저장되는 phase modifier.
+/// Stage 3 proposals: `import defer` / `import source`.
+pub const ImportPhase = enum(u4) {
+    none = 0,
+    defer_ = 1,
+    source = 2,
+};
+
+/// `import_declaration` extra schema의 단일 source of truth.
+/// codegen / transformer 등 read 사이트가 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제.
+pub const ImportDeclExtras = struct {
+    specs_start: u32,
+    specs_len: u32,
+    source: NodeIndex,
+    phase: ImportPhase,
+    attrs_start: u32,
+    attrs_len: u32,
+};
+
+pub fn readImportDeclExtras(ast: anytype, e: u32) ImportDeclExtras {
+    const slots = ast.extra_data.items[e .. e + 6];
+    return .{
+        .specs_start = slots[0],
+        .specs_len = slots[1],
+        .source = @enumFromInt(slots[2]),
+        .phase = @enumFromInt(@as(u4, @truncate(slots[3]))),
+        .attrs_start = slots[4],
+        .attrs_len = slots[5],
+    };
+}
+
+fn finalizeImportDeclaration(
+    self: *Parser,
+    span: token_mod.Span,
+    specs_start: u32,
+    specs_len: u32,
+    source_node: NodeIndex,
+    phase: ImportPhase,
+    attrs: NodeList,
+) ParseError2!NodeIndex {
+    const extra_start = try self.ast.addExtras(&.{
+        specs_start,
+        specs_len,
+        @intFromEnum(source_node),
+        @intFromEnum(phase),
+        attrs.start,
+        attrs.len,
+    });
+    return try self.ast.addNode(.{
+        .tag = .import_declaration,
+        .span = span,
+        .data = .{ .extra = extra_start },
+    });
+}
+
 /// import() / import.source() / import.defer() 호출의 인자를 파싱한다.
 /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
 /// import() 내부에서는 `in` 연산자를 허용 (+In context).
@@ -115,15 +170,14 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // import defer / import source — Stage 3 proposals
-    // defer/source를 스킵하고 나머지는 일반 import로 처리
     // 주의: `import defer from "..."` 는 default import (defer가 로컬 이름)
     // `import defer "..."` 또는 `import defer * as ns from "..."` 가 phase modifier
-    var has_phase_modifier = false;
+    var phase: ImportPhase = .none;
     if (self.current() == .kw_defer or self.current() == .kw_source) {
         const next = try self.peekNextKind();
         // defer/source 뒤에 from 또는 , 가 오면 default import (defer가 binding name)
         if (next != .kw_from and next != .comma) {
-            has_phase_modifier = true;
+            phase = if (self.current() == .kw_defer) .defer_ else .source;
             try self.advance(); // skip defer/source
         }
     }
@@ -133,10 +187,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // unary를 쓰면 extern union의 나머지 바이트가 초기화되지 않아
     // codegen에서 .unary.flags를 읽을 때 플랫폼별 UB 발생 (Linux에서 실패).
     if (self.current() == .string_literal) {
-        if (has_phase_modifier) {
+        if (phase != .none) {
             try self.addErrorCode(self.currentSpan(), "'import defer/source' requires a binding", .import_defer_requires_binding);
         }
         const source_node = try parseModuleSource(self);
+        const attrs = try parseImportAttributes(self);
         _ = try self.eat(.semicolon);
 
         // Inline scan: side-effect import (no bindings)
@@ -148,14 +203,15 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             self.scan_result.has_esm_syntax = true;
         }
 
-        const extra_start = try self.ast.addExtra(0); // specs_start (unused)
-        _ = try self.ast.addExtra(0); // specs_len = 0 (side-effect)
-        _ = try self.ast.addExtra(@intFromEnum(source_node));
-        return try self.ast.addNode(.{
-            .tag = .import_declaration,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .extra = extra_start },
-        });
+        return try finalizeImportDeclaration(
+            self,
+            .{ .start = start, .end = self.currentSpan().start },
+            0, // specs_start
+            0, // specs_len = 0 (side-effect)
+            source_node,
+            phase,
+            attrs,
+        );
     }
 
     // import(...) — dynamic import는 expression. expression statement로 파싱.
@@ -239,6 +295,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 // import default from "module"
                 try self.expect(.kw_from);
                 const source_node = try parseModuleSource(self);
+                const attrs = try parseImportAttributes(self);
                 _ = try self.eat(.semicolon);
 
                 if (is_type_only) {
@@ -258,15 +315,15 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
                 const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
-                const extra_start = try self.ast.addExtra(specifiers.start);
-                _ = try self.ast.addExtra(specifiers.len);
-                _ = try self.ast.addExtra(@intFromEnum(source_node));
-
-                return try self.ast.addNode(.{
-                    .tag = .import_declaration,
-                    .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .extra = extra_start },
-                });
+                return try finalizeImportDeclaration(
+                    self,
+                    .{ .start = start, .end = self.currentSpan().start },
+                    specifiers.start,
+                    specifiers.len,
+                    source_node,
+                    phase,
+                    attrs,
+                );
             }
         }
     }
@@ -305,6 +362,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     try self.expect(.kw_from);
     const source_node = try parseModuleSource(self);
+    const attrs = try parseImportAttributes(self);
     _ = try self.eat(.semicolon);
 
     if (is_type_only) {
@@ -325,15 +383,15 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
 
-    const extra_start = try self.ast.addExtra(specifiers.start);
-    _ = try self.ast.addExtra(specifiers.len);
-    _ = try self.ast.addExtra(@intFromEnum(source_node));
-
-    return try self.ast.addNode(.{
-        .tag = .import_declaration,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .extra = extra_start },
-    });
+    return try finalizeImportDeclaration(
+        self,
+        .{ .start = start, .end = self.currentSpan().start },
+        specifiers.start,
+        specifiers.len,
+        source_node,
+        phase,
+        attrs,
+    );
 }
 
 fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
@@ -558,6 +616,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         }
         try self.expect(.kw_from);
         const source_node = try parseModuleSource(self);
+        // export *에서도 attributes 가능 (parser 진행을 위해 소비, AST 보존은 후속 작업)
+        _ = try parseImportAttributes(self);
         try self.expectSemicolon();
 
         if (is_type_only_export) return NodeIndex.none;
@@ -620,6 +680,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         var source_node = NodeIndex.none;
         if (try self.eat(.kw_from)) {
             source_node = try parseModuleSource(self);
+            // export { x } from "..." with { ... } — attributes 소비 (AST 보존은 후속)
+            _ = try parseImportAttributes(self);
         }
         try self.expectSemicolon();
 
@@ -853,8 +915,6 @@ fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
     if (self.current() == .string_literal) {
         try self.advance();
-        // import attributes: with { type: 'json' } 또는 assert { type: 'json' }
-        try skipImportAttributes(self);
         return try self.ast.addNode(.{
             .tag = .string_literal,
             .span = span,
@@ -865,62 +925,83 @@ fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
     return NodeIndex.none;
 }
 
-/// import attributes (with/assert { ... })를 파싱한다.
-/// AST에 저장하지 않고 소비만 한다 (트랜스포머에서 필요 시 추가).
-/// 중복 키 검사도 수행한다 (ECMAScript: WithClauseToAttributes 중복 에러).
-fn skipImportAttributes(self: *Parser) !void {
+/// import attributes (with/assert { ... })를 파싱하여 NodeList로 반환.
+/// 각 entry는 `import_attribute` Tag, data.binary = { left=key, right=value }.
+/// 키는 identifier 또는 string literal, value는 string literal.
+/// 중복 키는 ECMAScript WithClauseToAttributes 규칙대로 에러.
+fn parseImportAttributes(self: *Parser) ParseError2!NodeList {
     // with { ... }: 줄바꿈 허용 (ECMAScript: AttributesKeyword = with)
     // assert { ... }: 줄바꿈 불허 (ECMAScript: [no LineTerminator here] assert)
     const is_with = self.current() == .kw_with;
     const is_assert = self.isContextual("assert") and !self.scanner.token.has_newline_before;
-    if (!is_with and !is_assert) return;
+    if (!is_with and !is_assert) return NodeList{ .start = 0, .len = 0 };
 
     try self.advance(); // skip with/assert
-    if (self.current() == .l_curly) {
-        try self.advance(); // skip {
 
-        // 중복 키 검사를 위한 키 수집 (최대 16개, 초과 시 검사 생략)
-        var keys: [16][]const u8 = undefined;
-        var key_spans: [16]Span = undefined;
-        var key_count: usize = 0;
+    const scratch_top = self.scratch.items.len;
+    defer self.restoreScratch(scratch_top);
 
-        while (self.current() != .r_curly and self.current() != .eof) {
-            const loop_guard_pos = self.scanner.token.span.start;
-            // key: identifier 또는 string literal
-            const key_span = self.currentSpan();
-            const key_text = self.ast.source[key_span.start..key_span.end];
-            try self.advance(); // key
+    if (self.current() != .l_curly) return NodeList{ .start = 0, .len = 0 };
+    try self.advance(); // skip {
 
-            // 중복 키 검사
-            if (key_count < 16) {
-                // 키 값 결정: string literal은 따옴표 제거 후 escape 해석
-                var decoded_buf: [256]u8 = undefined;
-                const effective_key = if (key_text.len >= 2 and (key_text[0] == '\'' or key_text[0] == '"'))
-                    decodeStringKey(key_text[1 .. key_text.len - 1], &decoded_buf)
-                else
-                    key_text;
+    // 중복 키 검사용 (최대 16개, 초과 시 검사 생략)
+    var keys: [16][]const u8 = undefined;
+    var key_count: usize = 0;
 
-                for (0..key_count) |i| {
-                    if (std.mem.eql(u8, keys[i], effective_key)) {
-                        try self.addErrorCode(key_span, "Duplicate import attribute key", .duplicate_import_attribute);
-                        break;
-                    }
+    while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const key_span = self.currentSpan();
+        const key_text = self.ast.source[key_span.start..key_span.end];
+        const key_node = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = key_span,
+            .data = .{ .string_ref = key_span },
+        });
+        try self.advance(); // key
+
+        // 중복 키 검사
+        if (key_count < 16) {
+            var decoded_buf: [256]u8 = undefined;
+            const effective_key = if (key_text.len >= 2 and (key_text[0] == '\'' or key_text[0] == '"'))
+                decodeStringKey(key_text[1 .. key_text.len - 1], &decoded_buf)
+            else
+                key_text;
+
+            for (0..key_count) |i| {
+                if (std.mem.eql(u8, keys[i], effective_key)) {
+                    try self.addErrorCode(key_span, "Duplicate import attribute key", .duplicate_import_attribute);
+                    break;
                 }
-                keys[key_count] = effective_key;
-                key_spans[key_count] = key_span;
-                key_count += 1;
             }
-
-            _ = try self.eat(.colon);
-            if (self.current() != .r_curly and self.current() != .eof) {
-                try self.advance(); // value
-            }
-            _ = try self.eat(.comma);
-
-            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+            keys[key_count] = effective_key;
+            key_count += 1;
         }
-        _ = try self.eat(.r_curly);
+
+        _ = try self.eat(.colon);
+        var value_node: NodeIndex = NodeIndex.none;
+        const value_span = self.currentSpan();
+        if (self.current() == .string_literal and self.current() != .r_curly and self.current() != .eof) {
+            value_node = try self.ast.addNode(.{
+                .tag = .string_literal,
+                .span = value_span,
+                .data = .{ .string_ref = value_span },
+            });
+            try self.advance();
+        }
+
+        const attr_node = try self.ast.addNode(.{
+            .tag = .import_attribute,
+            .span = .{ .start = key_span.start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = key_node, .right = value_node, .flags = 0 } },
+        });
+        try self.scratch.append(self.allocator, attr_node);
+
+        _ = try self.eat(.comma);
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
+    _ = try self.eat(.r_curly);
+
+    return try self.ast.addNodeList(self.scratch.items[scratch_top..]);
 }
 
 /// import attribute 키의 unicode escape를 해석한다.
