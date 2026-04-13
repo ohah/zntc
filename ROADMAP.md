@@ -3,6 +3,8 @@
 ## Vision
 Zig로 작성된 고성능 JS/TS 트랜스파일러. SWC/oxc 수준의 품질과 성능.
 
+> **현재 상태의 단일 소스는 [docs/ROADMAP.md](./docs/ROADMAP.md)** — 이 파일은 Phase 1–5 초기 기획 문서로, 특정 체크박스는 완료 이후 갱신되지 않았을 수 있음. 기능 상태를 확인할 땐 docs/ROADMAP.md를 참고.
+
 ---
 
 ## Phase 1: Lexer (렉서) ✅ 완료
@@ -163,9 +165,11 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [ ] export = → module.exports =
 - [ ] import x = require("...") → const x = require("...")
 - [ ] import x = Namespace.Value → const x = Namespace.Value
-- [ ] legacy decorator (클래스, 메서드, 프로퍼티, 파라미터)
-- [ ] emitDecoratorMetadata → Reflect.metadata 호출 생성
-- [ ] accessor 키워드 → getter/setter 변환
+- [x] legacy decorator (클래스, 메서드, 프로퍼티, 파라미터)
+- [x] emitDecoratorMetadata → Reflect.metadata 호출 생성
+- [x] accessor 키워드 (Stage 3 decorator용 backing field + getter/setter 자동 생성)
+- [x] Stage 3 decorator (method/getter/setter/field/accessor/class, MobX 6 호환)
+- [x] static block (ES2022, 클래스 정의 시점 1회 실행)
 
 ### JSX
 - [ ] JSX element → React.createElement / jsxs 호출
@@ -194,9 +198,11 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] namespace 변환 (단일, 병합, 중첩, 선언 병합)
 - [ ] 파라미터 프로퍼티 변환
 - [ ] export = / import = 변환
-- [ ] legacy decorator 변환
-- [ ] emitDecoratorMetadata
-- [ ] accessor 변환
+- [x] legacy decorator 변환
+- [x] emitDecoratorMetadata (Reflect.metadata)
+- [x] accessor 변환 (Stage 3 decorator backing)
+- [x] Stage 3 decorator (method/getter/setter/field/accessor/class)
+- [x] static block
 - [ ] JSX 변환 (Classic + Automatic)
 - [ ] define (전역 치환: `process.env.NODE_ENV` → `"production"` 등)
 - [ ] import.meta CJS 변환 (`import.meta.url` → `pathToFileURL(__filename).href`)
@@ -264,6 +270,7 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - **결정**: Stage 3 decorator는 스펙 안정화 후 구현
 - **이유**: TC39 스펙이 Stage 3 도달 후에도 4회 이상 수정됨. oxc도 같은 이유로 구현 중단. SWC는 구현했으나 2년간 버그 수정 지속 중
 - **대안**: Legacy decorator 우선 구현
+- **후속(현재)**: Legacy + Stage 3 decorator 모두 구현 완료 (MobX 6 호환). static block / accessor 키워드 포함.
 
 ### 2026-03-18: 타입 체크 미지원
 - **결정**: 타입 체크를 하지 않음. 타입 스트리핑만
