@@ -74,6 +74,11 @@ pub const Mapping = struct {
     original_line: u32,
     /// 소스 파일의 열 (0-based)
     original_column: u32,
+
+    pub fn lessThan(_: void, a: Mapping, b: Mapping) bool {
+        if (a.generated_line != b.generated_line) return a.generated_line < b.generated_line;
+        return a.generated_column < b.generated_column;
+    }
 };
 
 // ============================================================
@@ -97,6 +102,12 @@ pub const SourceMapBuilder = struct {
     /// x_google_ignoreList: DevTools에서 무시할 소스 인덱스 목록.
     /// 폴리필, node_modules 등 프레임워크 코드를 자동으로 스킵하도록 한다.
     ignored_sources: std.ArrayList(u32) = .empty,
+    /// addMapping 호출 순서가 (generated_line, column) 오름차순인지 추적.
+    /// false면 encodeMappings에서 정렬한다. 일반 모듈 emit은 순차적이지만
+    /// emitter가 prologue 매핑을 모듈 매핑보다 늦게 추가할 수 있다.
+    is_sorted: bool = true,
+    last_gen_line: u32 = 0,
+    last_gen_col: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
@@ -135,6 +146,13 @@ pub const SourceMapBuilder = struct {
 
     /// 매핑 추가.
     pub fn addMapping(self: *SourceMapBuilder, mapping: Mapping) !void {
+        if (self.is_sorted and self.mappings.items.len > 0) {
+            const out_of_order = mapping.generated_line < self.last_gen_line or
+                (mapping.generated_line == self.last_gen_line and mapping.generated_column < self.last_gen_col);
+            if (out_of_order) self.is_sorted = false;
+        }
+        self.last_gen_line = mapping.generated_line;
+        self.last_gen_col = mapping.generated_column;
         try self.mappings.append(self.allocator, mapping);
     }
 
@@ -228,6 +246,10 @@ pub const SourceMapBuilder = struct {
 
     /// mappings 필드를 VLQ 인코딩.
     fn encodeMappings(self: *SourceMapBuilder) !void {
+        if (!self.is_sorted) {
+            std.mem.sort(Mapping, self.mappings.items, {}, Mapping.lessThan);
+        }
+
         var prev_gen_col: i32 = 0;
         var prev_src_idx: i32 = 0;
         var prev_src_line: i32 = 0;
@@ -387,4 +409,39 @@ test "generateUuidV4 — format and version/variant" {
     // variant nibble ∈ {8, 9, a, b}
     const variant = buf[19];
     try std.testing.expect(variant == '8' or variant == '9' or variant == 'a' or variant == 'b');
+}
+
+test "encodeMappings — out-of-order insertions are sorted before VLQ encoding" {
+    // VLQ 스트림은 generated_line/column 오름차순이어야 하므로 호출 순서가 뒤섞이면
+    // 정렬되어야 한다. 정렬이 없으면 작은 line의 매핑이 인코딩 시 누락된다.
+    var sm = SourceMapBuilder.init(std.testing.allocator);
+    defer sm.deinit();
+
+    const a = try sm.addSource("module.js");
+    const b = try sm.addSource("polyfill.js");
+
+    // 모듈 매핑(line 5)을 먼저 추가
+    try sm.addMapping(.{ .generated_line = 5, .generated_column = 0, .source_index = a, .original_line = 0, .original_column = 0 });
+    // prologue identity 매핑(line 0~2)을 나중에 추가 — 정렬 안 되면 누락됨
+    try sm.addMapping(.{ .generated_line = 0, .generated_column = 0, .source_index = b, .original_line = 0, .original_column = 0 });
+    try sm.addMapping(.{ .generated_line = 1, .generated_column = 0, .source_index = b, .original_line = 1, .original_column = 0 });
+    try sm.addMapping(.{ .generated_line = 2, .generated_column = 0, .source_index = b, .original_line = 2, .original_column = 0 });
+
+    const json = try sm.generateJSON("out.js");
+    // mappings 필드 추출
+    const key = "\"mappings\":\"";
+    const start = std.mem.indexOf(u8, json, key).? + key.len;
+    const end = std.mem.indexOfScalarPos(u8, json, start, '"').?;
+    const mappings = json[start..end];
+
+    // 라인 0,1,2,3,4,5 → 첫 라인은 ";" 없이 시작
+    // line 0 mapping이 누락되면 첫 글자가 ";" 가 됨
+    try std.testing.expect(mappings.len > 0);
+    try std.testing.expect(mappings[0] != ';');
+    // 정확히 5개의 ";" 가 있어야 함 (line 5에 매핑 도달까지)
+    var semi: usize = 0;
+    for (mappings) |c| if (c == ';') {
+        semi += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 5), semi);
 }

@@ -643,7 +643,10 @@ pub const Bundler = struct {
         // 2.7. 폴리필 파일 내용 로딩 (--polyfill)
         var polyfill_entries: std.ArrayList(EmitOptions.PolyfillEntry) = .empty;
         defer {
-            for (polyfill_entries.items) |e| self.allocator.free(e.content);
+            for (polyfill_entries.items) |e| {
+                self.allocator.free(e.content);
+                if (e.path) |p| self.allocator.free(p);
+            }
             polyfill_entries.deinit(self.allocator);
         }
         for (self.options.polyfills) |poly_path| {
@@ -665,6 +668,7 @@ pub const Bundler = struct {
             try polyfill_entries.append(self.allocator, .{
                 .name = std.fs.path.basename(poly_path),
                 .content = content,
+                .path = try self.allocator.dupe(u8, poly_path),
             });
         }
 
