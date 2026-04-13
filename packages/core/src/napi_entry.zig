@@ -1230,7 +1230,6 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
         _ = c.napi_create_int64(env, @intCast(event.bytes), &js_bytes);
         _ = c.napi_set_named_property(env, js_event, "bytes", js_bytes);
 
-        // phaseDurations: { detect, parse, semantic, emit, delta, total } (ms)
         if (event.phase_durations) |pd| {
             var js_pd: c.napi_value = undefined;
             _ = c.napi_create_object(env, &js_pd);
@@ -1427,7 +1426,6 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // stop_flag 재확인 (sleep 후)
         if (async_data.stop_flag.load(.acquire)) break;
 
-        // mtime 변경 확인 + 변경 파일 수집 (detect 단계)
         var total_timer = std.time.Timer.start() catch null;
         var detect_timer = std.time.Timer.start() catch null;
         var changed = false;
@@ -1524,7 +1522,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             }
         }
 
-        // dev mode: HMR diff (delta 단계)
+        // dev mode: HMR diff
         var delta_timer = std.time.Timer.start() catch null;
         if (rebuild_result.module_dev_codes) |dev_codes| {
             // 모듈 ID 집합 비교 — graph 변경 감지
@@ -1589,19 +1587,14 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const delta_ns: u64 = if (delta_timer) |*t| t.read() else 0;
         const total_ns: u64 = if (total_timer) |*t| t.read() else 0;
 
-        // 단계별 타이밍 기록 (관측성 — Issue #1223)
-        const ns_to_ms = struct {
-            fn f(ns: u64) f64 {
-                return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            }
-        }.f;
+        const nsToMs = bundler_mod.BundleResult.nsToMs;
         event.phase_durations = .{
-            .detect_ms = ns_to_ms(detect_ns),
-            .parse_ms = ns_to_ms(rebuild_result.timings.graph_ns),
-            .semantic_ms = ns_to_ms(rebuild_result.timings.link_ns + rebuild_result.timings.shake_ns),
-            .emit_ms = ns_to_ms(rebuild_result.timings.emit_ns),
-            .delta_ms = ns_to_ms(delta_ns),
-            .total_ms = ns_to_ms(total_ns),
+            .detect_ms = nsToMs(detect_ns),
+            .parse_ms = nsToMs(rebuild_result.timings.graph_ns),
+            .semantic_ms = nsToMs(rebuild_result.timings.link_ns + rebuild_result.timings.shake_ns),
+            .emit_ms = nsToMs(rebuild_result.timings.emit_ns),
+            .delta_ms = nsToMs(delta_ns),
+            .total_ms = nsToMs(total_ns),
         };
 
         // rebuild 이벤트 전송

@@ -236,6 +236,11 @@ pub const BundleResult = struct {
         emit_ns: u64 = 0,
     };
 
+    /// ns → ms 변환 헬퍼 (타이밍 노출 공용).
+    pub fn nsToMs(ns: u64) f64 {
+        return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+    }
+
     /// dev mode에서 모듈별 HMR 업데이트 코드. types.ModuleDevCode의 별칭.
     pub const ModuleDevCode = types.ModuleDevCode;
 
