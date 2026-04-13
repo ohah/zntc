@@ -966,7 +966,7 @@ pub fn generateInitCode(
     var new_body_idx = blk: {
         if (body_idx.isNone()) break :blk body_idx;
         const body_node = self.ast.getNode(body_idx);
-        if (body_node.tag == .block_statement or body_node.tag == .function_body or body_node.tag == .program) {
+        if (body_node.tag == .block_statement or body_node.tag == .function_body) {
             break :blk body_idx;
         }
         const ret_stmt = try self.ast.addNode(.{
