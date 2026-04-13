@@ -279,6 +279,10 @@ pub const Transformer = struct {
     /// dispatchFunctionPlugins에서 FunctionInfo.is_auto_worklet로 전달 후 false로 리셋.
     auto_worklet_next: bool = false,
 
+    /// 익명 worklet 함수 이름 생성 시 사용하는 sequential counter (Babel `null<N>` 호환).
+    /// 같은 파일 내에서 0부터 증가, worklet plugin이 fallback name 만들 때 사용.
+    worklet_anonymous_counter: u32 = 0,
+
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
@@ -916,14 +920,26 @@ pub const Transformer = struct {
                 return self.visitArrowFunction(node);
             },
             .class_declaration => {
-                if (try self.dispatchVisitor(.on_class_declaration, idx)) |replacement| return replacement;
+                if (try self.dispatchVisitor(.on_class_declaration, idx)) |replacement| {
+                    // Plugin이 새 class node 반환 시 ES5 lowering 후처리 적용 (옵션 활성화된 경우).
+                    // Plugin은 worklet 변환만 책임지고, downlevel은 transformer가 일관 처리.
+                    if (self.options.unsupported.class) {
+                        return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, self.ast.getNode(replacement));
+                    }
+                    return replacement;
+                }
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, node);
                 }
                 return self.visitClass(node);
             },
             .class_expression => {
-                if (try self.dispatchVisitor(.on_class_expression, idx)) |replacement| return replacement;
+                if (try self.dispatchVisitor(.on_class_expression, idx)) |replacement| {
+                    if (self.options.unsupported.class) {
+                        return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, self.ast.getNode(replacement));
+                    }
+                    return replacement;
+                }
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, node);
                 }
