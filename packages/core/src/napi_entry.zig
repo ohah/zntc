@@ -13,7 +13,6 @@ const zts_lib = @import("zts_lib");
 const transpile_mod = zts_lib.transpile;
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
-const FileWatcher = zts_lib.server.FileWatcher;
 const TrackedFileSet = zts_lib.server.TrackedFileSet;
 
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
@@ -1381,7 +1380,6 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     defer persistent_resolve_cache.deinit();
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
-    // TrackedFileSet이 FileWatcher와 내용 해시 캐시를 함께 소유 (#1229 Part 2).
     // 실패 시 워치 스레드 진입 직전에 종료한다.
     var tracked = TrackedFileSet.init(allocator, watch_hash_max_bytes) catch |err| {
         const event = allocator.create(WatchRebuildEvent) catch {
