@@ -114,6 +114,16 @@ fn writeSseFrame(writer: *std.Io.Writer, event_type: []const u8, data_json: []co
     try writer.flush();
 }
 
+/// SSE 이벤트 타입 이름. publishEvent 호출부와 외부 소비자가 공유하는 단일 출처.
+pub const EventType = struct {
+    pub const server_ready = "server_ready";
+    pub const watch_change = "watch_change";
+    pub const bundle_build_started = "bundle_build_started";
+    pub const bundle_build_done = "bundle_build_done";
+    pub const bundle_build_failed = "bundle_build_failed";
+    pub const cache_reset = "cache_reset";
+};
+
 /// 최근 이벤트 순환 버퍼 — MCP `get_build_events`에서 특정 시점 이후 이벤트 조회에 사용.
 /// 고정 용량; 오래된 엔트리는 덮어쓰임. `seq`로 이벤트 순서 추적.
 const EventRing = struct {
@@ -176,9 +186,10 @@ const EventRing = struct {
             }
             out.deinit(alloc);
         }
-        var i: u64 = @max(start, since_seq + 1);
+        var i: u64 = start;
         while (i < total) : (i += 1) {
             const src = self.items[i % capacity];
+            if (src.seq <= since_seq) continue;
             try out.append(alloc, .{
                 .seq = src.seq,
                 .event_type = try alloc.dupe(u8, src.event_type),
@@ -228,8 +239,8 @@ fn writeJsonValue(w: anytype, v: std.json.Value) !void {
     switch (v) {
         .null => try w.writeAll("null"),
         .bool => |b| try w.writeAll(if (b) "true" else "false"),
-        .integer => |n| try std.fmt.format(w, "{d}", .{n}),
-        .float => |f| try std.fmt.format(w, "{d}", .{f}),
+        .integer => |n| try w.print("{d}", .{n}),
+        .float => |f| try w.print("{d}", .{f}),
         .string => |s| {
             try w.writeByte('"');
             try writeJsonEscaped(w, s);
@@ -372,7 +383,7 @@ pub const DevServer = struct {
         {
             var buf: [256]u8 = undefined;
             if (std.fmt.bufPrint(&buf, "{{\"type\":\"server_ready\",\"host\":\"{s}\",\"port\":{d}}}", .{ self.host, self.port })) |json| {
-                self.publishEvent("server_ready", json);
+                self.publishEvent(EventType.server_ready, json);
             } else |_| {}
         }
 
@@ -654,7 +665,7 @@ pub const DevServer = struct {
             // Control API 경유 캐시 리셋 요청 처리 — 파일 변경 없어도 다음 rebuild를 전체 빌드로.
             if (self.cache_reset_requested.swap(false, .acquire)) {
                 inc_bundler.reset();
-                self.publishEvent("cache_reset", "{\"type\":\"cache_reset\"}");
+                self.publishEvent(EventType.cache_reset, "{\"type\":\"cache_reset\"}");
                 getLog().print("  [ctrl] cache reset via /reset-cache\n", .{}) catch {};
             }
 
@@ -673,7 +684,7 @@ pub const DevServer = struct {
                 w.writeAll("{\"type\":\"watch_change\",\"file\":\"") catch continue;
                 writeJsonEscaped(w, ev.path) catch continue;
                 w.writeAll("\"}") catch continue;
-                self.publishEvent("watch_change", fbs.getWritten());
+                self.publishEvent(EventType.watch_change, fbs.getWritten());
             }
 
             // CSS 변경 → 번들 재빌드 없이 css-update 전송
@@ -711,7 +722,7 @@ pub const DevServer = struct {
             {
                 var buf: [128]u8 = undefined;
                 if (std.fmt.bufPrint(&buf, "{{\"type\":\"bundle_build_started\",\"id\":\"{d}\"}}", .{build_id})) |json| {
-                    self.publishEvent("bundle_build_started", json);
+                    self.publishEvent(EventType.bundle_build_started, json);
                 } else |_| {}
             }
 
@@ -724,7 +735,7 @@ pub const DevServer = struct {
                     // bundle_build_done 이벤트
                     var done_buf: [256]u8 = undefined;
                     if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
-                        self.publishEvent("bundle_build_done", json);
+                        self.publishEvent(EventType.bundle_build_done, json);
                     } else |_| {}
 
                     if (result.graph_changed) {
@@ -777,7 +788,7 @@ pub const DevServer = struct {
                     // bundle_build_failed 이벤트 (err_msg는 이미 JSON)
                     var fail_buf: [256]u8 = undefined;
                     if (std.fmt.bufPrint(&fail_buf, "{{\"type\":\"bundle_build_failed\",\"id\":\"{d}\"}}", .{build_id})) |json| {
-                        self.publishEvent("bundle_build_failed", json);
+                        self.publishEvent(EventType.bundle_build_failed, json);
                     } else |_| {}
                 },
                 .fatal => {},
@@ -870,20 +881,26 @@ pub const DevServer = struct {
             return;
         }
 
-        // 요청 body 읽기
-        var body_buf: [64 * 1024]u8 = undefined;
+        // 요청 body 읽기 — 1바이트 추가 버퍼로 초과 감지 후 413 반환.
+        const max_body = 64 * 1024;
         const reader = request.readerExpectContinue(&.{}) catch |err| {
             getLog().print("  [mcp] body reader error: {}\n", .{err}) catch {};
             return;
         };
-        var body_writer_buf: [64 * 1024]u8 = undefined;
-        var body_writer = std.Io.Writer.fixed(&body_writer_buf);
+        var body_buf: [max_body + 1]u8 = undefined;
+        var body_writer = std.Io.Writer.fixed(&body_buf);
         _ = reader.streamRemaining(&body_writer) catch |err| {
             getLog().print("  [mcp] body read error: {}\n", .{err}) catch {};
             return;
         };
         const body_len = body_writer.end;
-        @memcpy(body_buf[0..body_len], body_writer_buf[0..body_len]);
+        if (body_len > max_body) {
+            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
+                .status = .payload_too_large,
+                .extra_headers = &json_headers,
+            }) catch {};
+            return;
+        }
         const body = body_buf[0..body_len];
 
         // JSON 파싱
@@ -1579,4 +1596,163 @@ test "buildHmrUpdateFromModules: 모듈 2개 → 콤마로 구분된 배열" {
 
     // 전체 JSON이 올바르게 닫히는지 확인
     try testing.expect(std.mem.endsWith(u8, json, "]}"));
+}
+
+// ============================================================
+// SSE / EventRing / MCP 헬퍼 테스트
+// ============================================================
+
+test "writeSseFrame: 표준 SSE 형식 (event: + data: + 빈 줄)" {
+    var buf: [256]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writeSseFrame(&w, "build_done", "{\"id\":42}");
+    const out = buf[0..w.end];
+    try std.testing.expectEqualStrings("event: build_done\ndata: {\"id\":42}\n\n", out);
+}
+
+test "writeJsonEscaped: 특수 문자 이스케이프" {
+    var buf: [256]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writeJsonEscaped(&w, "a\"b\\c\nd\rt\te");
+    try std.testing.expectEqualStrings("a\\\"b\\\\c\\nd\\rt\\te", buf[0..w.end]);
+}
+
+test "writeJsonValue: id 필드 (string/integer/null)" {
+    var buf: [256]u8 = undefined;
+
+    var w1 = std.Io.Writer.fixed(&buf);
+    try writeJsonValue(&w1, .{ .integer = 42 });
+    try std.testing.expectEqualStrings("42", buf[0..w1.end]);
+
+    var w2 = std.Io.Writer.fixed(&buf);
+    try writeJsonValue(&w2, .{ .string = "abc" });
+    try std.testing.expectEqualStrings("\"abc\"", buf[0..w2.end]);
+
+    var w3 = std.Io.Writer.fixed(&buf);
+    try writeJsonValue(&w3, .null);
+    try std.testing.expectEqualStrings("null", buf[0..w3.end]);
+}
+
+test "EventRing: push/snapshotSince — since 이후만 반환" {
+    const alloc = std.testing.allocator;
+    var ring = EventRing.init(alloc);
+    defer ring.deinit();
+
+    ring.push(1, "a", "{\"v\":1}");
+    ring.push(2, "b", "{\"v\":2}");
+    ring.push(3, "c", "{\"v\":3}");
+
+    const snap = try ring.snapshotSince(alloc, 1);
+    defer {
+        for (snap) |r| {
+            alloc.free(r.event_type);
+            alloc.free(r.data_json);
+        }
+        alloc.free(snap);
+    }
+    try std.testing.expectEqual(@as(usize, 2), snap.len);
+    try std.testing.expectEqual(@as(u64, 2), snap[0].seq);
+    try std.testing.expectEqualStrings("b", snap[0].event_type);
+    try std.testing.expectEqual(@as(u64, 3), snap[1].seq);
+}
+
+test "EventRing: capacity 초과 시 오래된 항목 덮어쓰기" {
+    const alloc = std.testing.allocator;
+    var ring = EventRing.init(alloc);
+    defer ring.deinit();
+
+    var i: u64 = 0;
+    while (i < EventRing.capacity + 50) : (i += 1) {
+        ring.push(i + 1, "e", "{}");
+    }
+
+    // 가장 최근 capacity개만 보존되어야 함
+    const snap = try ring.snapshotSince(alloc, 0);
+    defer {
+        for (snap) |r| {
+            alloc.free(r.event_type);
+            alloc.free(r.data_json);
+        }
+        alloc.free(snap);
+    }
+    try std.testing.expectEqual(@as(usize, EventRing.capacity), snap.len);
+    // 첫 항목은 잘려나간 만큼 뒤로 밀린 seq
+    try std.testing.expectEqual(@as(u64, 51), snap[0].seq);
+}
+
+test "EventRing: snapshotSince 빈 결과 (since == head)" {
+    const alloc = std.testing.allocator;
+    var ring = EventRing.init(alloc);
+    defer ring.deinit();
+
+    ring.push(1, "a", "{}");
+    ring.push(2, "b", "{}");
+
+    const snap = try ring.snapshotSince(alloc, 2);
+    defer alloc.free(snap);
+    try std.testing.expectEqual(@as(usize, 0), snap.len);
+}
+
+test "SseClients: broadcast — 다수 클라이언트에 SSE 형식으로 전송" {
+    var sse: SseClients = .{};
+
+    var buf1: [256]u8 = undefined;
+    var w1 = std.Io.Writer.fixed(&buf1);
+    var buf2: [256]u8 = undefined;
+    var w2 = std.Io.Writer.fixed(&buf2);
+
+    sse.add(&w1);
+    sse.add(&w2);
+    try std.testing.expectEqual(@as(usize, 2), sse.len);
+
+    sse.broadcast("ping", "{}");
+    try std.testing.expectEqualStrings("event: ping\ndata: {}\n\n", buf1[0..w1.end]);
+    try std.testing.expectEqualStrings("event: ping\ndata: {}\n\n", buf2[0..w2.end]);
+}
+
+test "SseClients: remove — swap-remove로 제거" {
+    var sse: SseClients = .{};
+
+    var buf1: [16]u8 = undefined;
+    var w1 = std.Io.Writer.fixed(&buf1);
+    var buf2: [16]u8 = undefined;
+    var w2 = std.Io.Writer.fixed(&buf2);
+    var buf3: [16]u8 = undefined;
+    var w3 = std.Io.Writer.fixed(&buf3);
+
+    sse.add(&w1);
+    sse.add(&w2);
+    sse.add(&w3);
+    sse.remove(&w2);
+
+    try std.testing.expectEqual(@as(usize, 2), sse.len);
+    // swap-remove → w3가 빈 자리 차지
+    try std.testing.expect(sse.items[0] == &w1);
+    try std.testing.expect(sse.items[1] == &w3);
+}
+
+test "SseClients: broadcast 시 dead client 자동 제거" {
+    var sse: SseClients = .{};
+
+    var buf_ok: [256]u8 = undefined;
+    var w_ok = std.Io.Writer.fixed(&buf_ok);
+    var buf_full: [4]u8 = undefined; // 너무 작아 SSE 프레임 못 씀 → 쓰기 실패
+    var w_full = std.Io.Writer.fixed(&buf_full);
+
+    sse.add(&w_full);
+    sse.add(&w_ok);
+    sse.broadcast("evt", "{}");
+
+    // 실패한 클라이언트가 제거되어야 함
+    try std.testing.expectEqual(@as(usize, 1), sse.len);
+    try std.testing.expect(sse.items[0] == &w_ok);
+}
+
+test "EventType: 상수가 정확한 이벤트 이름 매핑" {
+    try std.testing.expectEqualStrings("server_ready", EventType.server_ready);
+    try std.testing.expectEqualStrings("watch_change", EventType.watch_change);
+    try std.testing.expectEqualStrings("bundle_build_started", EventType.bundle_build_started);
+    try std.testing.expectEqualStrings("bundle_build_done", EventType.bundle_build_done);
+    try std.testing.expectEqualStrings("bundle_build_failed", EventType.bundle_build_failed);
+    try std.testing.expectEqualStrings("cache_reset", EventType.cache_reset);
 }
