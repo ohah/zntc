@@ -144,6 +144,24 @@ pub const TreeShaker = struct {
             }
         }
 
+        // dynamic import()의 target 모듈 집합. 정적 import_binding이 없어 심볼 도달성
+        // 분석에서 누락되므로 별도 추적해 prune 단계에서 보호한다 (#1260).
+        var dyn_import_targets = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        defer dyn_import_targets.deinit();
+        for (self.modules) |m| {
+            for (m.import_records) |rec| {
+                if (rec.kind != .dynamic_import or rec.resolved.isNone()) continue;
+                const target = @intFromEnum(rec.resolved);
+                if (target < self.modules.len) {
+                    dyn_import_targets.set(target);
+                    // dynamic import는 runtime에 임의 export에 접근할 수 있으므로
+                    // 모든 export를 사용으로 마킹 (entry와 동일 취급).
+                    self.included.set(target);
+                    try self.markAllExportsUsed(@intCast(target));
+                }
+            }
+        }
+
         // 모듈별 re-export local name set 사전 구축 (isImportBindingUsed 최적화)
         var re_export_sets = try self.allocator.alloc(?std.StringHashMap(void), self.modules.len);
         defer {
@@ -208,7 +226,11 @@ pub const TreeShaker = struct {
                     const target = @intFromEnum(rec.resolved);
                     if (target >= self.modules.len) continue;
                     if (self.included.isSet(target)) continue;
-                    if (rec.kind == .require or self.modules[target].side_effects or
+                    // dynamic import()는 정적 import_binding이 없어 심볼 기반 도달성
+                    // 분석에서 누락된다. 모듈 전체를 포함해야 런타임에 해당 청크가 존재
+                    // (code-splitting 미구현 상태에선 동일 번들에 남음). #1260.
+                    if (rec.kind == .require or rec.kind == .dynamic_import or
+                        self.modules[target].side_effects or
                         self.modules[target].wrap_kind.isWrapped())
                     {
                         self.included.set(target);
@@ -224,6 +246,7 @@ pub const TreeShaker = struct {
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
+            if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
             if (!self.hasAnyUsedExport(@intCast(i))) {
                 self.included.unset(i);
             }
@@ -274,6 +297,7 @@ pub const TreeShaker = struct {
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
+            if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
                 self.included.unset(i);
             }
