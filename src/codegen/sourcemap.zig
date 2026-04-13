@@ -226,10 +226,14 @@ pub const SourceMapBuilder = struct {
         output_file: []const u8,
         fn_map: *const @import("function_map.zig").FunctionMapBuilder,
     ) ![]const u8 {
-        var json_buf: std.ArrayList(u8) = .empty;
-        defer json_buf.deinit(allocator);
-        try fn_map.appendJson(&json_buf);
-        return self.generateJSONWithPerSourceFunctionMaps(allocator, output_file, &.{json_buf.items});
+        const base = try self.generateJSON(output_file);
+        std.debug.assert(base.len > 0 and base[base.len - 1] == '}');
+        self.buf.shrinkRetainingCapacity(base.len - 1);
+        try self.buf.appendSlice(allocator, ",\"x_facebook_sources\":[[");
+        try fn_map.appendJson(&self.buf);
+        try self.buf.appendSlice(allocator, "]]");
+        try self.buf.append(allocator, '}');
+        return self.buf.items;
     }
 
     /// 소스맵 JSON + x_facebook_sources 배열을 함께 생성한다. 복수 source 지원.
