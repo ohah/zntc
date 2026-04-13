@@ -79,6 +79,8 @@ pub const Visitor = struct {
     on_program: ?VisitHook = null,
     on_object_expression: ?VisitHook = null,
     on_call_expression: ?VisitHook = null,
+    on_class_declaration: ?VisitHook = null,
+    on_class_expression: ?VisitHook = null,
 };
 
 /// 노드 방문 훅 시그니처.

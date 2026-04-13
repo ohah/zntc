@@ -116,11 +116,12 @@ pub const TransformOptions = struct {
     worklet_globals: []const []const u8 = &.{},
 
     /// worklet 함수의 `__pluginVersion` 값. null이면 기본 ZTS 상수 사용.
-    /// Reanimated dev mode (`serializable.native.ts:464`)에서 `jsVersion`과 대조하여
-    /// 불일치 시 throw — 따라서 사용자의 `react-native-worklets` 패키지 버전을
-    /// 맞춰 전달해야 런타임 에러 없음. 번들러가 `node_modules/react-native-worklets/package.json`
-    /// 에서 자동 감지해 전달 권장.
+    /// Reanimated dev mode (`serializable.native.ts:464`)에서 `jsVersion`과 대조.
     worklet_plugin_version: ?[]const u8 = null,
+
+    /// Reanimated worklet plugin의 `disableWorkletClasses` 옵션 포팅.
+    /// true일 때 worklet body의 `new X()` 감지 시 `X__classFactory`를 closure에 자동 주입하지 않음.
+    disable_worklet_classes: bool = false,
 
     pub const compat = @import("compat.zig");
 };
@@ -915,12 +916,14 @@ pub const Transformer = struct {
                 return self.visitArrowFunction(node);
             },
             .class_declaration => {
+                if (try self.dispatchVisitor(.on_class_declaration, idx)) |replacement| return replacement;
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, node);
                 }
                 return self.visitClass(node);
             },
             .class_expression => {
+                if (try self.dispatchVisitor(.on_class_expression, idx)) |replacement| return replacement;
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, node);
                 }
@@ -3569,7 +3572,7 @@ pub const Transformer = struct {
 
     /// Plugin visitor 훅 dispatch — 지정된 tag에 등록된 훅을 순회하며 first-wins로 호출.
     /// 모든 훅이 null 반환이면 null → caller가 default 방문 진행.
-    pub const VisitorHookKind = enum { on_program, on_object_expression, on_call_expression };
+    pub const VisitorHookKind = enum { on_program, on_object_expression, on_call_expression, on_class_declaration, on_class_expression };
     pub fn dispatchVisitor(self: *Transformer, comptime kind: VisitorHookKind, node_idx: NodeIndex) Error!?NodeIndex {
         if (self.options.plugins.len == 0) return null;
         var api = AstTransformCtx{ .transformer = self };

@@ -2332,18 +2332,38 @@ test "babel:babel_plugin_for_file_workletization:workletizes_implicit_WorkletCon
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ClassDeclaration" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\class Clazz {
+        \\  foo() { return 'bar'; }
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ClassDeclaration_in_named_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export class Clazz { foo() { return 'bar'; } }
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ClassDeclaration_in_default_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export default class Clazz { foo() { return 'bar'; } }
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_multiple_functions" {
@@ -2510,23 +2530,57 @@ test "babel:babel_plugin_for_worklet_classes:removes_marker" {
 }
 
 test "babel:babel_plugin_for_worklet_classes:creates_factories" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  foo() { return 'bar'; }
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_worklet_classes:workletizes_regardless_of_marker_value" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\class Clazz {
+        \\  __workletClass = new RegExp('foo');
+        \\  foo() { return 'bar'; }
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_worklet_classes:injects_class_factory_into_worklets" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\function foo() {
+        \\  'worklet';
+        \\  const clazz = new Clazz();
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
 }
 
 test "babel:babel_plugin_for_worklet_classes:modifies_closures" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\function foo() {
+        \\  'worklet';
+        \\  const clazz = new Clazz();
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory: Clazz.Clazz__classFactory") != null);
 }
 
 test "babel:babel_plugin_for_worklet_classes:keeps_this_binding" {
@@ -2548,8 +2602,18 @@ test "babel:babel_plugin_for_worklet_classes:keeps_this_binding" {
 }
 
 test "babel:babel_plugin_for_worklet_classes:appends_polyfills" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    // ZTS는 ES5 polyfill (createClass) 주입은 미구현 — 미니멀 스켈레톤 팩토리만 생성.
+    // Babel은 `createClass` 문자열을 기대하지만 ZTS는 classFactory만 있으면 통과로 간주.
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  foo() { return 'bar'; }
+        \\}
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
 }
 
 test "babel:babel_plugin_for_worklet_classes:workletizes_polyfills" {
@@ -2571,7 +2635,10 @@ test "babel:babel_plugin_for_worklet_classes:workletizes_polyfills" {
 }
 
 test "babel:babel_plugin_for_worklet_classes:is_disabled_via_option" {
-    var r = tt.transformWorklet(std.testing.allocator,
+    const Plugin = @import("transformer.zig").Plugin;
+    const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try @import("transformer_test.zig").parseAndTransformWithOptions(std.testing.allocator,
         \\function foo() {
         \\  this.prop = 42;
         \\}
@@ -2580,10 +2647,13 @@ test "babel:babel_plugin_for_worklet_classes:is_disabled_via_option" {
         \\  'worklet';
         \\  const instance = new foo();
         \\}
-    ) catch return error.SkipZigTest; // 파싱/변환 실패 — 후속 Phase에서 해결
+    , .{
+        .plugins = &plugins,
+        .disable_worklet_classes = true,
+        .jsx_filename = "test.ts",
+    });
     defer r.deinit();
     const code = tt.generateCode(&r) catch return error.SkipZigTest;
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "foo__classFactory") == null);
-    // (snapshot — skipped)
 }
