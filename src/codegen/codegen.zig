@@ -421,9 +421,7 @@ pub const Codegen = struct {
     fn isFunctionLike(self: *const Codegen, idx: NodeIndex) bool {
         if (idx.isNone()) return false;
         return switch (self.ast.getNode(idx).tag) {
-            .function_declaration, .function_expression, .function,
-            .arrow_function_expression,
-            .class_declaration, .class_expression => true,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .class_declaration, .class_expression => true,
             else => false,
         };
     }
@@ -444,9 +442,7 @@ pub const Codegen = struct {
         if (idx.isNone()) return null;
         const n = self.ast.getNode(idx);
         return switch (n.tag) {
-            .identifier_reference,
-            .assignment_target_identifier,
-            .binding_identifier => self.ast.getText(n.data.string_ref),
+            .identifier_reference, .assignment_target_identifier, .binding_identifier => self.ast.getText(n.data.string_ref),
             .static_member_expression => blk: {
                 const e = n.data.extra;
                 if (!self.ast.hasExtra(e, 2)) break :blk null;
@@ -470,9 +466,7 @@ pub const Codegen = struct {
         if (idx.isNone()) return null;
         const n = self.ast.getNode(idx);
         return switch (n.tag) {
-            .identifier_reference,
-            .binding_identifier,
-            .private_identifier => self.ast.getText(n.data.string_ref),
+            .identifier_reference, .binding_identifier, .private_identifier => self.ast.getText(n.data.string_ref),
             .string_literal => self.resolveStringLiteralValue(n),
             .numeric_literal => self.ast.getText(n.span),
             .computed_property_key => blk: {
@@ -494,9 +488,7 @@ pub const Codegen = struct {
         if (idx.isNone()) return null;
         const n = self.ast.getNode(idx);
         return switch (n.tag) {
-            .identifier_reference,
-            .binding_identifier,
-            .private_identifier => self.ast.getText(n.data.string_ref),
+            .identifier_reference, .binding_identifier, .private_identifier => self.ast.getText(n.data.string_ref),
             else => null,
         };
     }
