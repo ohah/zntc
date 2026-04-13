@@ -976,9 +976,12 @@ test "Worklet: __initData.code shorthand for multiple closure vars" {
     try std.testing.expect(std.mem.indexOf(u8, code, "{a,b,c}=this.__closure") != null);
 }
 
-test "Worklet: __initData includes sourceMap field (Babel parity)" {
-    // Babel plugin은 dev 빌드에서 __initData.sourceMap을 항상 주입.
-    // ZTS는 worklet 수준 sourceMap 미생성이라 빈 문자열이라도 필드 존재 보장.
+test "Worklet: __initData does NOT emit sourceMap when none generated" {
+    // Babel plugin은 실제 source map 생성 성공 시에만 sourceMap 필드를 주입
+    // (workletFactory.ts:187). 빈 문자열을 넣으면 Reanimated 네이티브가
+    // JSON 파싱 실패 → UI Runtime 초기화 abort →
+    // `Expected microtaskQueueFinalizers to be defined` 에러로 이어짐.
+    // ZTS는 worklet 수준 source map 미지원 → 필드 생략이 정답.
     var r = try transformWorklet(std.testing.allocator,
         \\function w() {
         \\  "worklet";
@@ -988,6 +991,5 @@ test "Worklet: __initData includes sourceMap field (Babel parity)" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap: \"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap") == null);
 }

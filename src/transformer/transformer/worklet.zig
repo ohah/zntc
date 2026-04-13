@@ -983,29 +983,11 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
         try self.scratch.append(self.allocator, prop);
     }
 
-    // sourceMap property — Babel plugin이 dev 빌드에서 항상 주입하는 필드.
-    // ZTS는 현재 worklet body 수준의 source map을 생성하지 않으므로 빈 문자열.
-    // Reanimated runtime이 필드 존재 자체를 전제하는 경우를 대비해 빈 값이라도 설정.
-    {
-        const key_span = try self.ast.addString("sourceMap");
-        const key = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = key_span,
-            .data = .{ .string_ref = key_span },
-        });
-        const empty_str_span = try self.ast.addString("\"\"");
-        const value = try self.ast.addNode(.{
-            .tag = .string_literal,
-            .span = empty_str_span,
-            .data = .{ .string_ref = empty_str_span },
-        });
-        const prop = try self.ast.addNode(.{
-            .tag = .object_property,
-            .span = zero_span,
-            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
-        });
-        try self.scratch.append(self.allocator, prop);
-    }
+    // NOTE: sourceMap 필드는 실제 source map 데이터를 생성할 때만 추가해야 함.
+    // 빈 문자열을 주입하면 Reanimated 네이티브가 JSON 파싱 시도 → 파싱 실패로
+    // UI Runtime 초기화가 abort되어 _microtaskQueueFinalizers 등이 세팅 안 됨.
+    // Babel plugin도 sourceMap 생성 성공 시에만 주입 (workletFactory.ts:187-191).
+    // ZTS는 worklet 수준 source map 미지원 → 필드 생략.
 
     const obj_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{
