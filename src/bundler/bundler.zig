@@ -589,13 +589,12 @@ pub const Bundler = struct {
         graph.jsx_import_source = self.options.jsx_import_source;
         defer graph.deinit();
 
-        // graph.build() 또는 buildIncremental() 호출
-        var reparsed_count: usize = 0;
-        var incremental: bool = false;
+        // graph.build() 또는 buildIncremental() 호출.
+        // reparsed_count: 증분 경로(=store 전달)일 때만 set — null은 전체 파싱을 의미.
+        var reparsed_count: ?usize = null;
         if (self.options.module_store) |store| {
             const inc_result = try graph.buildIncremental(self.options.entry_points, store);
             reparsed_count = inc_result.reparsed_indices.len;
-            incremental = true;
             self.allocator.free(inc_result.reparsed_indices);
         } else {
             try graph.build(self.options.entry_points);
@@ -1008,7 +1007,7 @@ pub const Bundler = struct {
                 .shake_ns = t_shake,
                 .emit_ns = t_emit,
             },
-            .reparsed_modules = if (incremental) reparsed_count else null,
+            .reparsed_modules = reparsed_count,
         };
     }
 };
