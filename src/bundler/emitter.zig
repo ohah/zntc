@@ -62,6 +62,8 @@ pub const EmitOptions = struct {
     react_refresh: bool = false,
     /// Reanimated worklet 네이티브 변환.
     worklet_transform: bool = false,
+    /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수.
+    worklet_plugin_version: ?[]const u8 = null,
     /// dev mode에서 per-module codes 수집 여부.
     /// false면 output만 생성하고 module_dev_codes를 건너뛴다 (초기 빌드용, 메모리 절감).
     /// true면 HMR 업데이트용 module_dev_codes를 수집한다 (rebuild용).
@@ -722,6 +724,7 @@ pub fn emitModule(
         .jsx_fragment = options.jsx_fragment,
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = module.path,
+        .worklet_plugin_version = options.worklet_plugin_version,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 ast 기준으로 재매핑

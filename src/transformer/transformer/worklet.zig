@@ -665,9 +665,11 @@ pub fn buildWorkletPropertyAssignments(
     const stack_stmt = try buildPropAssignment(self, func_name_span, "__stackDetails", empty_array, func_node_idx);
 
     // 5. funcName.__pluginVersion = "<version>";
-    // Babel react-native-worklets/plugin이 packageVersion을 심볼로 주입하는 동작과 동일.
-    // (Reanimated devtools/tooling이 worklet plugin 버전을 식별하는 용도)
-    const version_span = try self.ast.addString("\"" ++ WORKLET_PLUGIN_VERSION ++ "\"");
+    // Reanimated dev mode가 jsVersion과 대조 (serializable.native.ts:464) —
+    // 불일치 시 WorkletsError throw. 번들러가 사용자 react-native-worklets 버전을
+    // 전달하지 않으면 WORKLET_PLUGIN_VERSION fallback.
+    // 매 worklet당 allocPrint 방지를 위해 Transformer.init에서 pre-computed span 사용.
+    const version_span = self.worklet_plugin_version_span orelse try self.ast.addString("\"" ++ WORKLET_PLUGIN_VERSION ++ "\"");
     const version_node = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = version_span,
