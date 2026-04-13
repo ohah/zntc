@@ -62,13 +62,37 @@ zts --flow app.js
 ```bash
 zts --format=esm app.ts   # ESM (default)
 zts --format=cjs app.ts   # CommonJS
+zts --format=iife app.ts  # Immediately Invoked Function Expression
+zts --format=umd app.ts   # UMD (browser + Node)
+zts --format=amd app.ts   # AMD (RequireJS)
 ```
+
+### ES Target / Engine Target
+
+```bash
+# ES version target — es2015 ~ esnext
+zts --target=es2020 app.ts
+
+# Engine version target — feature-level downleveling
+zts --target=chrome80,safari14 app.ts
+zts --target=node18 app.ts
+zts --target=hermes0.70 app.ts   # React Native (Hermes)
+```
+
+Engine targets only emit the transformations required by each engine's compatibility table.
 
 ### Minify
 
 ```bash
-zts --minify app.ts  # Whitespace + identifiers + syntax
+zts --minify app.ts  # All three
+
+# Granular (esbuild-compatible)
+zts --minify-whitespace app.ts    # Whitespace/semicolons/newlines (debuggable)
+zts --minify-syntax app.ts        # true→!0, paren removal, constant folding
+zts --minify-identifiers app.ts   # Shorten local identifiers
 ```
+
+Combine flags freely — e.g. enable only `--minify-whitespace` for dev builds to get a debuggable, smaller output.
 
 ### Source Maps
 

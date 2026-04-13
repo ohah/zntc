@@ -133,9 +133,11 @@ if (result.errors.length > 0) {
 | `outdir` | `string` | Output directory |
 | `outfile` | `string` | Output file (single) |
 | `bundle` | `boolean` | Bundle mode |
-| `format` | `"esm" \| "cjs" \| "iife"` | Module format |
-| `platform` | `"browser" \| "node" \| "react-native"` | Target platform |
-| `minify` | `boolean` | Minification |
+| `format` | `"esm" \| "cjs" \| "iife" \| "umd" \| "amd"` | Module format |
+| `platform` | `"browser" \| "node" \| "neutral" \| "react-native"` | Target platform |
+| `target` | `string \| string[]` | ES version (`"es2020"`) or engines (`["chrome80","safari14"]`) |
+| `minify` | `boolean` | Minification (all three) |
+| `minifyWhitespace` / `minifySyntax` / `minifyIdentifiers` | `boolean` | Granular toggles |
 | `sourcemap` | `boolean` | Source maps |
 | `splitting` | `boolean` | Code splitting |
 | `write` | `boolean` | `false` to return in-memory |

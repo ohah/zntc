@@ -100,6 +100,39 @@ zts --bundle entry.ts -o bundle.js --metafile=meta.json
 zts --bundle entry.ts -o bundle.js --analyze
 ```
 
+## Minify
+
+```bash
+zts --bundle entry.ts -o bundle.js --minify  # All three
+
+# Granular (esbuild-compatible) — toggle individually
+zts --bundle entry.ts -o bundle.js --minify-whitespace
+zts --bundle entry.ts -o bundle.js --minify-syntax
+zts --bundle entry.ts -o bundle.js --minify-identifiers
+```
+
+## ES Target
+
+```bash
+# ES version (es2015~esnext)
+zts --bundle entry.ts -o bundle.js --target=es2020
+
+# Engine target — feature-level downleveling
+zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
+zts --bundle entry.ts -o bundle.js --target=node18
+zts --bundle entry.ts -o bundle.js --target=hermes0.70
+```
+
+## Output Format
+
+```bash
+zts --bundle entry.ts --format=esm    # ESM (default)
+zts --bundle entry.ts --format=cjs    # CommonJS
+zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
+zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
+zts --bundle entry.ts --format=amd                       # AMD
+```
+
 ## Watch Mode
 
 ```bash

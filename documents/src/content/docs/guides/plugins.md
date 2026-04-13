@@ -175,9 +175,11 @@ if (result.errors.length > 0) {
 | `outdir` | `string` | 출력 디렉토리 |
 | `outfile` | `string` | 출력 파일 (단일) |
 | `bundle` | `boolean` | 번들 모드 |
-| `format` | `"esm" \| "cjs" \| "iife"` | 모듈 포맷 |
-| `platform` | `"browser" \| "node" \| "react-native"` | 타겟 플랫폼 |
-| `minify` | `boolean` | 압축 |
+| `format` | `"esm" \| "cjs" \| "iife" \| "umd" \| "amd"` | 모듈 포맷 |
+| `platform` | `"browser" \| "node" \| "neutral" \| "react-native"` | 타겟 플랫폼 |
+| `target` | `string \| string[]` | ES 버전(`"es2020"`) 또는 엔진(`["chrome80","safari14"]`) |
+| `minify` | `boolean` | 압축 (전체) |
+| `minifyWhitespace` / `minifySyntax` / `minifyIdentifiers` | `boolean` | 세분화 토글 |
 | `sourcemap` | `boolean` | 소스맵 |
 | `splitting` | `boolean` | 코드 스플리팅 |
 | `write` | `boolean` | `false`면 메모리 반환 |
