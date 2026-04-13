@@ -45,7 +45,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const flags = self.readU32(e, 4);
 
             const new_name = try self.visitNode(name_idx);
-            const new_body = try self.visitNode(body_idx);
+            const new_body = try self.visitBodyWorkletAware(body_idx);
 
             const new_params = try self.visitExtraList(params_start, params_len);
 
@@ -90,7 +90,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const flags = self.readU32(e, 2);
 
             const new_params = try self.visitNode(params_idx);
-            const new_body = try self.visitNode(body_idx);
+            const new_body = try self.visitBodyWorkletAware(body_idx);
 
             // expression body → { return expr; }
             const body_node = self.ast.getNode(new_body);
