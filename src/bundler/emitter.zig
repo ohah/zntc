@@ -1349,9 +1349,8 @@ fn emitBundleRuntimeHelpers(
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
-    if (options.unsupported.async_await) {
-        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
-    }
+    // __async는 이후 appendRuntimeHelpers(collected_helpers)에서 실제 사용 여부 기반으로
+    // 주입됨 — 여기서 target 기반으로 또 주입하면 중복 emit 된다.
     // dev mode: HMR 런타임 주입 (__zts_modules, __zts_require, __zts_apply_update 등).
     // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
     if (options.dev_mode) {
@@ -1397,6 +1396,9 @@ pub fn emitChunkRuntimeHelpers(
             try output.appendSlice(allocator, if (options.minify_whitespace) rt.ES_DECORATOR_RUNTIME_MIN else rt.ES_DECORATOR_RUNTIME);
         }
     }
+    // splitting 모드에서는 collected_helpers가 null로 전달되므로 per-chunk 사용 여부를
+    // 알 수 없다 → target 기반으로 주입 (단일-번들 모드와 달리 이 경로에선 appendRuntimeHelpers
+    // 가 다시 호출되지 않으므로 중복 아님).
     if (options.unsupported.async_await) {
         try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
     }

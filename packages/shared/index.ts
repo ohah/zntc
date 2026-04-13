@@ -72,6 +72,11 @@ export interface TranspileOptions {
   platform?: Platform;
   /** ES 다운레벨 타겟 */
   target?: Target;
+  /**
+   * browserslist 쿼리 (예: "last 2 versions", ">1%, not dead").
+   * 지정 시 target보다 우선. core 패키지에서만 해석됨 (browserslist 의존).
+   */
+  browserslist?: string | string[];
 }
 
 export interface TranspileResult {
@@ -138,4 +143,59 @@ export function encodeFlags(opts: TranspileOptions = {}): number {
 export function targetToUnsupported(target?: Target): number {
   if (!target) return 0;
   return ES_TARGET_BITS[target] ?? 0;
+}
+
+// ─── browserslist → UnsupportedFeatures ───
+
+export type { Engine, EngineVersion, Feature } from "./compat-engines";
+export { computeUnsupportedFromEngines, FEATURES } from "./compat-engines";
+
+import type { Engine, EngineVersion } from "./compat-engines";
+import { computeUnsupportedFromEngines } from "./compat-engines";
+
+/** browserslist 결과 문자열 ("chrome 100", "ios_saf 14.5") → EngineVersion. */
+export function parseBrowserslistEntry(entry: string): EngineVersion | null {
+  // 형식: "<name> <version>" — version은 "100", "14.1", "100-101" 등
+  const m = entry.trim().match(/^(\S+)\s+([\d.]+)(?:-[\d.]+)?$/);
+  if (!m) return null;
+  const name = m[1].toLowerCase();
+  const versionStr = m[2];
+  const [majStr, minStr = "0"] = versionStr.split(".");
+  const major = parseInt(majStr, 10);
+  const minor = parseInt(minStr, 10);
+  if (Number.isNaN(major)) return null;
+
+  // browserslist 이름 → ZTS Engine 매핑
+  // 미매핑 엔진(op_mini, samsung, and_chr 등)은 null 반환 → 호출자가 filter.
+  const map: Record<string, Engine> = {
+    chrome: "chrome",
+    and_chr: "chrome", // Android Chrome
+    firefox: "firefox",
+    and_ff: "firefox",
+    safari: "safari",
+    ios_saf: "ios",
+    edge: "edge",
+    node: "node",
+    deno: "deno",
+    opera: "opera",
+    op_mob: "opera",
+    hermes: "hermes",
+  };
+  const engine = map[name];
+  if (!engine) return null;
+  return { engine, major, minor };
+}
+
+/**
+ * browserslist가 반환한 문자열 배열 → unsupported bitmask.
+ * 매핑 불가능한 엔진(samsung, kaios 등)은 무시 (ZTS가 타겟팅하지 않는 엔진).
+ */
+export function browserslistToUnsupported(entries: string[]): number {
+  const engines: EngineVersion[] = [];
+  for (const e of entries) {
+    const parsed = parseBrowserslistEntry(e);
+    if (parsed) engines.push(parsed);
+  }
+  if (engines.length === 0) return 0; // 매핑된 엔진 없음 → 보수적으로 esnext
+  return computeUnsupportedFromEngines(engines);
 }
