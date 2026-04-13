@@ -13,6 +13,23 @@ const zts_lib = @import("zts_lib");
 const transpile_mod = zts_lib.transpile;
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
+const FileWatcher = zts_lib.server.FileWatcher;
+
+/// Issue #1223 Phase 1: 워처 튜닝 상수.
+/// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
+/// - watch_debounce_ms: 첫 이벤트 이후 정적(idle) 구간 — 연속 저장 병합 윈도우.
+const watch_poll_timeout_ms: u32 = 200;
+const watch_debounce_ms: u32 = 50;
+
+/// 파일 내용의 content hash (Wyhash 64-bit).
+/// mtime 변동만으로 리빌드하지 않고, 실제 내용 변화만 감지한다.
+fn hashFileContent(allocator: std.mem.Allocator, path: []const u8) ?u64 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const content = file.readToEndAlloc(allocator, 128 * 1024 * 1024) catch return null;
+    defer allocator.free(content);
+    return std.hash.Wyhash.hash(0, content);
+}
 const BundleOptions = bundler_mod.BundleOptions;
 const Platform = zts_lib.codegen.codegen.Platform;
 const JsxRuntime = zts_lib.codegen.codegen.JsxRuntime;
@@ -1342,35 +1359,56 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     });
     defer persistent_resolve_cache.deinit();
 
-    // mtime 맵 초기화
-    var mtime_map = std.StringHashMap(i128).init(allocator);
+    // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
+    // 실패 시 워치 스레드 진입 직전에 종료한다.
+    var watcher = FileWatcher.init(allocator) catch {
+        const event = allocator.create(WatchRebuildEvent) catch {
+            _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+            _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+            async_data.deinit();
+            return;
+        };
+        event.* = .{ .success = false, .error_msg = allocator.dupe(u8, "FileWatcherInitFailed") catch null };
+        if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
+            event.deinit();
+        }
+        _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
+        _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
+        async_data.deinit();
+        return;
+    };
+    defer watcher.deinit();
+
+    // content hash 캐시: mtime 변동으로 깨우되 실제 내용 변화만 리빌드 트리거.
+    var content_hash_map = std.StringHashMap(u64).init(allocator);
     defer {
-        var it = mtime_map.keyIterator();
+        var it = content_hash_map.keyIterator();
         while (it.next()) |k| allocator.free(k.*);
-        mtime_map.deinit();
+        content_hash_map.deinit();
     }
 
-    // 엔트리 파일을 감시 대상에 추가
+    // 감시 대상 등록: 엔트리 + 초기 빌드의 module_paths
+    var initial_watch_count: usize = 0;
+    const registerWatchPath = struct {
+        fn run(w: *FileWatcher, hmap: *std.StringHashMap(u64), alloc: std.mem.Allocator, path: []const u8) bool {
+            w.addPath(path) catch return false;
+            const key = alloc.dupe(u8, path) catch return true;
+            const h = hashFileContent(alloc, path) orelse 0;
+            hmap.put(key, h) catch alloc.free(key);
+            return true;
+        }
+    }.run;
+
     if (bundle_opts.entry_points.len > 0) {
-        const entry_path = bundle_opts.entry_points[0];
-        const entry_dupe = allocator.dupe(u8, entry_path) catch @as([]u8, "");
-        if (entry_dupe.len > 0) {
-            const entry_mtime = getFileMtime(entry_path) catch 0;
-            mtime_map.put(entry_dupe, entry_mtime) catch {
-                allocator.free(entry_dupe);
-            };
+        if (registerWatchPath(&watcher, &content_hash_map, allocator, bundle_opts.entry_points[0])) {
+            initial_watch_count += 1;
         }
     }
-
-    // 초기 빌드의 module_paths에서 mtime 수집
     if (result.module_paths) |paths| {
         for (paths) |p| {
-            const duped = allocator.dupe(u8, p) catch continue;
-            const mt = getFileMtime(p) catch continue;
-            mtime_map.put(duped, mt) catch {
-                allocator.free(duped);
-                continue;
-            };
+            if (registerWatchPath(&watcher, &content_hash_map, allocator, p)) {
+                initial_watch_count += 1;
+            }
         }
     }
 
@@ -1411,7 +1449,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     {
         const ready_event = allocator.create(WatchReadyEvent) catch return;
         ready_event.* = .{
-            .files = mtime_map.count(),
+            .files = initial_watch_count,
             .bytes = initial_bytes,
         };
         if (c.napi_call_threadsafe_function(async_data.ready_tsfn, @ptrCast(ready_event), c.napi_tsfn_blocking) != c.napi_ok) {
@@ -1419,31 +1457,66 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         }
     }
 
-    // 폴링 루프 — 500ms 간격으로 파일 변경 감지
+    // Issue #1223 Phase 1: 이벤트 기반 워처 + 디바운스 + content hash 필터링.
     while (!async_data.stop_flag.load(.acquire)) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-
-        // stop_flag 재확인 (sleep 후)
+        // 첫 이벤트 대기 (stop_flag 체크를 위해 poll timeout 사용).
+        const first_events = watcher.waitForChanges(watch_poll_timeout_ms) catch &[_]zts_lib.server.ChangeEvent{};
         if (async_data.stop_flag.load(.acquire)) break;
 
         var total_timer = std.time.Timer.start() catch null;
         var detect_timer = std.time.Timer.start() catch null;
-        var changed = false;
+
+        // 이벤트 수집 — path 중복 제거용 set.
+        var touched: std.StringHashMap(void) = .init(allocator);
+        defer {
+            var kit = touched.keyIterator();
+            while (kit.next()) |k| allocator.free(k.*);
+            touched.deinit();
+        }
+        const collectTouched = struct {
+            fn run(set: *std.StringHashMap(void), alloc: std.mem.Allocator, evts: []const zts_lib.server.ChangeEvent) void {
+                for (evts) |e| {
+                    if (set.contains(e.path)) continue;
+                    const dup = alloc.dupe(u8, e.path) catch continue;
+                    set.put(dup, {}) catch alloc.free(dup);
+                }
+            }
+        }.run;
+        collectTouched(&touched, allocator, first_events);
+
+        if (touched.count() == 0) continue;
+
+        // 디바운스: 정적 구간(50ms)이 확보될 때까지 추가 이벤트를 병합.
+        while (!async_data.stop_flag.load(.acquire)) {
+            const more = watcher.waitForChanges(watch_debounce_ms) catch break;
+            if (more.len == 0) break;
+            collectTouched(&touched, allocator, more);
+        }
+        if (async_data.stop_flag.load(.acquire)) break;
+
+        // content hash 필터링: 내용이 실제로 변한 파일만 changed_files에 포함.
         var changed_files: std.ArrayList([]const u8) = .empty;
         defer changed_files.deinit(allocator);
-
-        var mit = mtime_map.iterator();
-        while (mit.next()) |entry| {
-            const current_mtime = getFileMtime(entry.key_ptr.*) catch continue;
-            if (current_mtime != entry.value_ptr.*) {
-                entry.value_ptr.* = current_mtime;
-                changed = true;
-                changed_files.append(allocator, entry.key_ptr.*) catch {};
+        var tkit = touched.keyIterator();
+        while (tkit.next()) |pkey| {
+            const path = pkey.*;
+            const new_hash = hashFileContent(allocator, path) orelse continue;
+            const old_hash = content_hash_map.get(path);
+            if (old_hash != null and old_hash.? == new_hash) continue; // 내용 동일 — 스킵
+            // 해시 업데이트 (기존 키 재사용).
+            if (content_hash_map.getEntry(path)) |entry| {
+                entry.value_ptr.* = new_hash;
+            } else {
+                const key_copy = allocator.dupe(u8, path) catch continue;
+                content_hash_map.put(key_copy, new_hash) catch {
+                    allocator.free(key_copy);
+                };
             }
+            changed_files.append(allocator, path) catch {};
         }
         const detect_ns: u64 = if (detect_timer) |*t| t.read() else 0;
 
-        if (!changed) continue;
+        if (changed_files.items.len == 0) continue;
 
         // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
         var incremental_opts = bundle_opts;
@@ -1602,31 +1675,24 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             event.deinit();
         }
 
-        // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가
-        {
-            var kit = mtime_map.keyIterator();
-            while (kit.next()) |k| allocator.free(k.*);
-            mtime_map.clearRetainingCapacity();
-
-            // 엔트리 재추가
-            if (bundle_opts.entry_points.len > 0) {
-                const entry_path = bundle_opts.entry_points[0];
-                const re_entry = allocator.dupe(u8, entry_path) catch continue;
-                const re_mtime = getFileMtime(entry_path) catch 0;
-                mtime_map.put(re_entry, re_mtime) catch {
-                    allocator.free(re_entry);
-                    continue;
-                };
+        // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가.
+        // content_hash_map은 리빌드 시점에 새 파일의 해시만 보강(기존 엔트리는 유지).
+        watcher.clearPaths();
+        if (bundle_opts.entry_points.len > 0) {
+            watcher.addPath(bundle_opts.entry_points[0]) catch {};
+            if (!content_hash_map.contains(bundle_opts.entry_points[0])) {
+                const key = allocator.dupe(u8, bundle_opts.entry_points[0]) catch continue;
+                const h = hashFileContent(allocator, bundle_opts.entry_points[0]) orelse 0;
+                content_hash_map.put(key, h) catch allocator.free(key);
             }
-
-            if (rebuild_result.module_paths) |paths| {
-                for (paths) |p| {
-                    const duped = allocator.dupe(u8, p) catch continue;
-                    const mt = getFileMtime(p) catch continue;
-                    mtime_map.put(duped, mt) catch {
-                        allocator.free(duped);
-                        continue;
-                    };
+        }
+        if (rebuild_result.module_paths) |paths| {
+            for (paths) |p| {
+                watcher.addPath(p) catch continue;
+                if (!content_hash_map.contains(p)) {
+                    const key = allocator.dupe(u8, p) catch continue;
+                    const h = hashFileContent(allocator, p) orelse 0;
+                    content_hash_map.put(key, h) catch allocator.free(key);
                 }
             }
         }
