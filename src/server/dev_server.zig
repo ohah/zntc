@@ -59,29 +59,51 @@ const WsClients = struct {
     }
 };
 
-/// SSE 클라이언트 목록 — `/sse/events`로 연결된 long-lived HTTP 응답 writer들.
+/// 한 SSE 구독자 — `*std.Io.Writer`만 갖고는 chunked transfer-encoding의 chunk 종결을
+/// underlying TCP까지 push할 수 없다. `body_writer`가 있으면 `BodyWriter.flush()`로
+/// `http_protocol_output.flush()`까지 호출해 frame이 즉시 클라이언트에 도달.
+/// 단위 테스트에서는 `body_writer = null`로 fixed buffer만 검증.
+pub const SseSink = struct {
+    writer: *std.Io.Writer,
+    body_writer: ?*http.BodyWriter = null,
+
+    fn writeFrame(self: *SseSink, event_type: []const u8, data_json: []const u8) !void {
+        try self.writer.writeAll("event: ");
+        try self.writer.writeAll(event_type);
+        try self.writer.writeAll("\ndata: ");
+        try self.writer.writeAll(data_json);
+        try self.writer.writeAll("\n\n");
+        // chunked encoding은 두 단계 flush 필요:
+        // 1) writer.flush() — 버퍼를 chunk frame으로 인코딩하여 http_protocol_output에 push
+        // 2) BodyWriter.flush() — http_protocol_output을 TCP로 push
+        try self.writer.flush();
+        if (self.body_writer) |bw| try bw.flush();
+    }
+};
+
+/// SSE 클라이언트 목록 — `/sse/events`로 연결된 long-lived HTTP 응답 sink들.
 /// WS와 병렬 운영; 빌드 이벤트는 SSE로 전송 (HMR은 WS 유지).
 const SseClients = struct {
     mutex: std.Thread.Mutex = .{},
-    items: [max_clients]*std.Io.Writer = undefined,
+    items: [max_clients]*SseSink = undefined,
     len: usize = 0,
 
     const max_clients = 64;
 
-    fn add(self: *SseClients, writer: *std.Io.Writer) void {
+    fn add(self: *SseClients, sink: *SseSink) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.len < max_clients) {
-            self.items[self.len] = writer;
+            self.items[self.len] = sink;
             self.len += 1;
         }
     }
 
-    fn remove(self: *SseClients, writer: *std.Io.Writer) void {
+    fn remove(self: *SseClients, sink: *SseSink) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         for (self.items[0..self.len], 0..) |item, i| {
-            if (item == writer) {
+            if (item == sink) {
                 self.len -= 1;
                 self.items[i] = self.items[self.len];
                 return;
@@ -90,12 +112,13 @@ const SseClients = struct {
     }
 
     /// `event: <type>\ndata: <json>\n\n` 형식으로 모든 구독자에 브로드캐스트.
+    /// keep-alive 핸들러와 broadcast가 같은 sink를 동시 write하지 않도록 mutex로 직렬화.
     fn broadcast(self: *SseClients, event_type: []const u8, data_json: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         var i: usize = 0;
         while (i < self.len) {
-            writeSseFrame(self.items[i], event_type, data_json) catch {
+            self.items[i].writeFrame(event_type, data_json) catch {
                 self.len -= 1;
                 self.items[i] = self.items[self.len];
                 continue;
@@ -104,15 +127,6 @@ const SseClients = struct {
         }
     }
 };
-
-fn writeSseFrame(writer: *std.Io.Writer, event_type: []const u8, data_json: []const u8) !void {
-    try writer.writeAll("event: ");
-    try writer.writeAll(event_type);
-    try writer.writeAll("\ndata: ");
-    try writer.writeAll(data_json);
-    try writer.writeAll("\n\n");
-    try writer.flush();
-}
 
 /// SSE 이벤트 타입 이름. publishEvent 호출부와 외부 소비자가 공유하는 단일 출처.
 pub const EventType = struct {
@@ -875,20 +889,27 @@ pub const DevServer = struct {
             },
         }) catch return;
 
-        // 초기 ping — std.http BodyWriter는 buffer가 차야 send 트리거.
-        // 명시적으로 flush() 후 underlying response stream도 flush.
+        // 초기 ping
         response.writer.writeAll(": connected\n\n") catch return;
         response.writer.flush() catch return;
         response.flush() catch return;
 
-        self.sse_clients.add(&response.writer);
-        defer self.sse_clients.remove(&response.writer);
+        var sink: SseSink = .{ .writer = &response.writer, .body_writer = &response };
+        self.sse_clients.add(&sink);
+        defer self.sse_clients.remove(&sink);
 
-        // 연결 유지 루프: 30초마다 keep-alive 주석 전송, 쓰기 실패 시 종료
+        // keep-alive: 30초마다 주석 전송. broadcast와 race 방지를 위해 sink mutex 사용.
         while (true) {
             std.Thread.sleep(30 * std.time.ns_per_s);
-            response.writer.writeAll(": keep-alive\n\n") catch break;
-            response.writer.flush() catch break;
+            self.sse_clients.mutex.lock();
+            const ok = blk: {
+                response.writer.writeAll(": keep-alive\n\n") catch break :blk false;
+                response.writer.flush() catch break :blk false;
+                response.flush() catch break :blk false;
+                break :blk true;
+            };
+            self.sse_clients.mutex.unlock();
+            if (!ok) break;
         }
     }
 
@@ -1640,10 +1661,11 @@ test "buildHmrUpdateFromModules: 모듈 2개 → 콤마로 구분된 배열" {
 // SSE / EventRing / MCP 헬퍼 테스트
 // ============================================================
 
-test "writeSseFrame: 표준 SSE 형식 (event: + data: + 빈 줄)" {
+test "SseSink.writeFrame: 표준 SSE 형식 (event: + data: + 빈 줄)" {
     var buf: [256]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    try writeSseFrame(&w, "build_done", "{\"id\":42}");
+    var sink: SseSink = .{ .writer = &w };
+    try sink.writeFrame("build_done", "{\"id\":42}");
     const out = buf[0..w.end];
     try std.testing.expectEqualStrings("event: build_done\ndata: {\"id\":42}\n\n", out);
 }
@@ -1736,11 +1758,13 @@ test "SseClients: broadcast — 다수 클라이언트에 SSE 형식으로 전�
 
     var buf1: [256]u8 = undefined;
     var w1 = std.Io.Writer.fixed(&buf1);
+    var sink1: SseSink = .{ .writer = &w1 };
     var buf2: [256]u8 = undefined;
     var w2 = std.Io.Writer.fixed(&buf2);
+    var sink2: SseSink = .{ .writer = &w2 };
 
-    sse.add(&w1);
-    sse.add(&w2);
+    sse.add(&sink1);
+    sse.add(&sink2);
     try std.testing.expectEqual(@as(usize, 2), sse.len);
 
     sse.broadcast("ping", "{}");
@@ -1753,20 +1777,22 @@ test "SseClients: remove — swap-remove로 제거" {
 
     var buf1: [16]u8 = undefined;
     var w1 = std.Io.Writer.fixed(&buf1);
+    var sink1: SseSink = .{ .writer = &w1 };
     var buf2: [16]u8 = undefined;
     var w2 = std.Io.Writer.fixed(&buf2);
+    var sink2: SseSink = .{ .writer = &w2 };
     var buf3: [16]u8 = undefined;
     var w3 = std.Io.Writer.fixed(&buf3);
+    var sink3: SseSink = .{ .writer = &w3 };
 
-    sse.add(&w1);
-    sse.add(&w2);
-    sse.add(&w3);
-    sse.remove(&w2);
+    sse.add(&sink1);
+    sse.add(&sink2);
+    sse.add(&sink3);
+    sse.remove(&sink2);
 
     try std.testing.expectEqual(@as(usize, 2), sse.len);
-    // swap-remove → w3가 빈 자리 차지
-    try std.testing.expect(sse.items[0] == &w1);
-    try std.testing.expect(sse.items[1] == &w3);
+    try std.testing.expect(sse.items[0] == &sink1);
+    try std.testing.expect(sse.items[1] == &sink3);
 }
 
 test "SseClients: broadcast 시 dead client 자동 제거" {
@@ -1774,16 +1800,17 @@ test "SseClients: broadcast 시 dead client 자동 제거" {
 
     var buf_ok: [256]u8 = undefined;
     var w_ok = std.Io.Writer.fixed(&buf_ok);
+    var sink_ok: SseSink = .{ .writer = &w_ok };
     var buf_full: [4]u8 = undefined; // 너무 작아 SSE 프레임 못 씀 → 쓰기 실패
     var w_full = std.Io.Writer.fixed(&buf_full);
+    var sink_full: SseSink = .{ .writer = &w_full };
 
-    sse.add(&w_full);
-    sse.add(&w_ok);
+    sse.add(&sink_full);
+    sse.add(&sink_ok);
     sse.broadcast("evt", "{}");
 
-    // 실패한 클라이언트가 제거되어야 함
     try std.testing.expectEqual(@as(usize, 1), sse.len);
-    try std.testing.expect(sse.items[0] == &w_ok);
+    try std.testing.expect(sse.items[0] == &sink_ok);
 }
 
 test "EventType: 상수가 정확한 이벤트 이름 매핑" {

@@ -121,11 +121,7 @@ describe("Dev Server: SSE / Control API / MCP", () => {
     await reader.cancel().catch(() => {});
   });
 
-  // TODO: SSE broadcast 후 클라이언트 read hang — std.http BodyWriter는 핸들러 스레드 외부에서
-  // response.flush() 호출 불가. SseClients.broadcast가 writer.flush()만 호출하면 underlying TCP
-  // stream까지 flush되지 않아 chunked frame이 클라이언트에 도달 안 함. 추후 raw stream 직접 사용
-  // 또는 std.http API 변경 시 재활성화.
-  test.skip("/sse/events: cache_reset 이벤트 broadcast", async () => {
+  test("/sse/events: cache_reset 이벤트 broadcast", async () => {
     const server = await setupServer();
     const controller = new AbortController();
     const res = await fetch(`http://127.0.0.1:${server.port}/sse/events`, {
@@ -266,8 +262,7 @@ describe("Dev Server: SSE / Control API / MCP", () => {
     expect(res.status).toBe(413);
   });
 
-  // TODO: 위 SSE broadcast 한계와 동일 — 추후 재활성화.
-  test.skip("MCP tools/call reset_cache → SSE cache_reset 이벤트 발생", async () => {
+  test("MCP tools/call reset_cache → SSE cache_reset 이벤트 발생", async () => {
     const server = await setupServer();
     const controller = new AbortController();
     const sseRes = await fetch(`http://127.0.0.1:${server.port}/sse/events`, {
