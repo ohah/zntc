@@ -49,7 +49,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
             // visitNode에서 this → _this, arguments → _arguments로 치환된다.
             self.arrow_this_depth += 1;
-            var new_body = try self.visitNode(body_idx);
+            var new_body = try self.visitBodyWorkletAware(body_idx);
             self.arrow_this_depth -= 1;
 
             // expression body → { return expr; }

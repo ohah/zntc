@@ -283,6 +283,10 @@ pub const Transformer = struct {
     /// 같은 파일 내에서 0부터 증가, worklet plugin이 fallback name 만들 때 사용.
     worklet_anonymous_counter: u32 = 0,
 
+    /// worklet 함수 body 방문 중 깊이. > 0 이면 define 치환(`--define:global=...`) 억제.
+    /// worklet body는 UI 런타임에서 실행되므로 JS 전용 global polyfill 심볼로 치환하면 안 된다.
+    worklet_body_depth: u32 = 0,
+
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
@@ -579,7 +583,8 @@ pub const Transformer = struct {
         // --------------------------------------------------------
         // 3단계: define 글로벌 치환
         // --------------------------------------------------------
-        if (self.options.define.len > 0) {
+        // worklet body 내부에서는 억제: UI 런타임은 bundler prelude의 polyfill 심볼을 모름.
+        if (self.options.define.len > 0 and self.worklet_body_depth == 0) {
             if (self.tryDefineReplace(node)) |new_node| {
                 return try new_node;
             }
@@ -1734,6 +1739,18 @@ pub const Transformer = struct {
     // define 글로벌 치환
     // ================================================================
 
+    /// 함수 body가 worklet이 될 예정이면 `worklet_body_depth`를 올린 상태로 body를 방문한다.
+    /// 반환된 body 내부에서는 `--define` 치환이 억제되어 UI 런타임에서도 심볼이 안전하게 유지된다.
+    pub fn visitBodyWorkletAware(self: *Transformer, body_idx: NodeIndex) Error!NodeIndex {
+        const is_worklet = self.auto_worklet_next or
+            worklet_mod.isWorkletDirectiveGeneric(self, body_idx, "worklet");
+        if (is_worklet) self.worklet_body_depth += 1;
+        defer if (is_worklet) {
+            self.worklet_body_depth -= 1;
+        };
+        return self.visitNode(body_idx);
+    }
+
     /// 노드가 define 치환 대상이면 새 string_literal 노드를 반환.
     /// 대상: identifier_reference 또는 static_member_expression 체인.
     fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
@@ -2060,7 +2077,7 @@ pub const Transformer = struct {
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 3);
-        var new_body = try self.visitNode(old_body_idx);
+        var new_body = try self.visitBodyWorkletAware(old_body_idx);
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
@@ -2738,7 +2755,7 @@ pub const Transformer = struct {
         const body_idx = self.readNodeIdx(e, 1);
         const flags = self.readU32(e, 2);
         const new_params = try self.visitNode(params_idx);
-        const new_body = try self.visitNode(body_idx);
+        const new_body = try self.visitBodyWorkletAware(body_idx);
         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
         const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
 
@@ -3020,7 +3037,7 @@ pub const Transformer = struct {
         }
         defer self.new_target_ctx = saved_new_target_ctx;
 
-        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
+        var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 3));
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
