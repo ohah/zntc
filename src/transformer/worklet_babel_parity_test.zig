@@ -387,8 +387,24 @@ test "babel:babel_plugin_for_closure_capturing:captures_locally_bound_variables_
 }
 
 test "babel:babel_plugin_for_closure_capturing:doesn_3" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    const Plugin = @import("transformer.zig").Plugin;
+    const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    const globals = [_][]const u8{"foo"};
+    var r = try @import("transformer_test.zig").parseAndTransformWithOptions(std.testing.allocator,
+        \\function f() {
+        \\  'worklet';
+        \\  console.log(foo);
+        \\}
+    , .{
+        .plugins = &plugins,
+        .worklet_globals = &globals,
+        .jsx_filename = "test.ts",
+    });
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "f.__closure = {}") != null);
 }
 
 test "babel:babel_plugin_for_closure_capturing:doesn_4" {
@@ -2272,18 +2288,47 @@ test "babel:babel_plugin_for_file_workletization:workletizes_ObjectMethod_in_def
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_implicit_WorkletContextObject" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\const foo = {
+        \\  bar() {
+        \\    return 'bar';
+        \\  },
+        \\  foobar() {
+        \\    return this.bar();
+        \\  },
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_implicit_WorkletContextObject_in_named_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export const foo = {
+        \\  bar() { return 'bar'; },
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_implicit_WorkletContextObject_in_default_export" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\export default {
+        \\  bar() { return 'bar'; },
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_file_workletization:workletizes_ClassDeclaration" {
@@ -2337,8 +2382,25 @@ test "babel:babel_plugin_for_file_workletization:doesn" {
 }
 
 test "babel:babel_plugin_for_file_workletization:moves_CommonJS_export_to_the_bottom_of_the_file" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\'worklet';
+        \\exports.foo = foo;
+        \\function foo() {}
+        \\const bar = 1;
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    // exports.foo 할당이 const bar = 1 뒤에 위치해야 함.
+    const bar_idx = std.mem.indexOf(u8, code, "const bar = 1") orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    const exp_idx = std.mem.indexOf(u8, code, "exports.foo = foo") orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(exp_idx > bar_idx);
 }
 
 test "babel:babel_plugin_for_file_workletization:moves_multiple_CommonJS_exports_to_the_bottom_of_the_file" {

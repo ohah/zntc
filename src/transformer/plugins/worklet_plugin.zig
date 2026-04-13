@@ -456,12 +456,21 @@ fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
     const trailing_top = t.trailing_nodes.items.len;
     defer t.trailing_nodes.shrinkRetainingCapacity(trailing_top);
 
+    // CommonJS `exports.X = Y` 는 Babel 호환을 위해 파일 하단으로 이동.
+    var deferred_exports: std.ArrayList(NodeIndex) = .empty;
+    defer deferred_exports.deinit(t.allocator);
+
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const raw = t.ast.extra_data.items[list_start + i];
         const child_idx: NodeIndex = @enumFromInt(raw);
         if (!child_idx.isNone()) {
             const child = t.ast.getNode(child_idx);
+            if (isCommonJSExport(t, child)) {
+                const visited = try t.visitNode(child_idx);
+                if (!visited.isNone()) try deferred_exports.append(t.allocator, visited);
+                continue;
+            }
             switch (child.tag) {
                 .function_declaration, .class_declaration, .variable_declaration, .export_named_declaration, .export_default_declaration => t.auto_worklet_next = true,
                 else => {},
@@ -480,12 +489,36 @@ fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
         }
     }
 
+    for (deferred_exports.items) |e| try t.scratch.append(t.allocator, e);
+
     const new_list = try t.ast.addNodeList(t.scratch.items[scratch_top..]);
     return t.ast.addNode(.{
         .tag = node.tag,
         .span = node.span,
         .data = .{ .list = new_list },
     });
+}
+
+/// `exports.X = Y` 형태의 statement인지 판정. Babel 동일 (module.X는 처리 안 함).
+/// 원본: react-native-worklets/plugin/src/file.ts::isCommonJSExport
+fn isCommonJSExport(t: *Transformer, node: Node) bool {
+    if (node.tag != .expression_statement) return false;
+    const inner_idx = node.data.unary.operand;
+    if (inner_idx.isNone()) return false;
+    const expr = t.ast.getNode(inner_idx);
+    if (expr.tag != .assignment_expression) return false;
+    const lhs_idx = expr.data.binary.left;
+    if (lhs_idx.isNone()) return false;
+    const lhs = t.ast.getNode(lhs_idx);
+    if (lhs.tag != .static_member_expression) return false;
+    const me = lhs.data.extra;
+    if (me >= t.ast.extra_data.items.len) return false;
+    const obj_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+    if (obj_idx.isNone()) return false;
+    const obj = t.ast.getNode(obj_idx);
+    if (obj.tag != .identifier_reference) return false;
+    const obj_name = t.ast.source[obj.span.start..obj.span.end];
+    return std.mem.eql(u8, obj_name, "exports");
 }
 
 fn hasWorkletContextObjectMarker(t: *Transformer, node: Node) bool {
