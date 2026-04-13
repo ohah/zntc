@@ -1244,6 +1244,73 @@ test "Bundler: dev mode module_dev_codes" {
     }
 }
 
+test "Bundler: dev mode per-module sourcemap (Issue #1248)" {
+    // sourcemap 활성화 시 ModuleDevCode.map 에 모듈별 V3 소스맵 JSON이 채워진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
+    try writeFile(tmp.dir, "index.ts", "import { add } from './utils';\nconsole.log(add(1, 2));");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len >= 1);
+
+    // 모든 모듈에 standalone sourcemap이 채워짐 + V3 형식 검증
+    var maps_found: usize = 0;
+    for (codes) |c| {
+        const m = c.map orelse continue;
+        maps_found += 1;
+        try std.testing.expect(std.mem.indexOf(u8, m, "\"version\":3") != null);
+        try std.testing.expect(std.mem.indexOf(u8, m, "\"sources\":[") != null);
+        try std.testing.expect(std.mem.indexOf(u8, m, "\"mappings\":\"") != null);
+        // 모듈 ID가 파일명을 포함해야 함 (sourceMappingURL/디버거 표시용)
+        try std.testing.expect(std.mem.indexOf(u8, m, ".ts") != null);
+    }
+    try std.testing.expect(maps_found == codes.len);
+}
+
+test "Bundler: dev mode per-module sourcemap — sources_content=false (Issue #1248)" {
+    // sources_content=false 면 모듈 소스맵에도 sourcesContent 미포함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "main.ts", "console.log('hi');");
+
+    const entry = try absPath(&tmp, "main.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .sources_content = false,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len >= 1);
+    for (codes) |c| {
+        const m = c.map orelse continue;
+        try std.testing.expect(std.mem.indexOf(u8, m, "sourcesContent") == null);
+    }
+}
+
 test "Bundler: dev mode sourcemap" {
     // dev mode에서 소스맵이 생성되는지 확인
     var tmp = std.testing.tmpDir(.{});

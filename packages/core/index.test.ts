@@ -3481,6 +3481,12 @@ describe("watch()", () => {
     if (event.updates && event.updates.length > 0) {
       expect(event.updates[0].id).toBeDefined();
       expect(event.updates[0].code).toContain("999");
+      // Issue #1248: 모듈별 standalone sourcemap이 함께 노출되어야 함
+      expect(event.updates[0].map).toBeDefined();
+      const map = event.updates[0].map!;
+      expect(map).toContain('"version":3');
+      expect(map).toContain('"mappings":"');
+      expect(map).toContain('"sources":[');
     }
     handle.stop();
     rmSync(dir, { recursive: true });

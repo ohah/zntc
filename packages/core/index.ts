@@ -252,7 +252,16 @@ export interface WatchRebuildEvent {
   error?: string;
   changed?: string[];
   graphChanged?: boolean;
-  updates?: Array<{ id: string; code: string }>;
+  updates?: Array<{
+    id: string;
+    code: string;
+    /**
+     * 모듈별 standalone source map (V3 JSON). sourcemap 옵션 활성화 시 채워진다.
+     * HMR 클라이언트가 eval된 코드에 sourceMappingURL data URL로 부착하면
+     * 전체 번들 sourcemap을 재생성하지 않고도 디버거 매핑이 유지된다 (Issue #1248).
+     */
+    map?: string;
+  }>;
   bytes?: number;
   /** 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출. */
   phaseDurations?: {

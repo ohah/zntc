@@ -491,9 +491,37 @@ pub fn emitWithTreeShaking(
                 code,
                 "\n})();\n",
             });
+
+            // 모듈별 standalone sourcemap (Issue #1248): HMR 클라이언트가 전체 번들
+            // sourcemap을 재처리하지 않고 변경 모듈만 매핑할 수 있게 한다.
+            // 위 hmr_code preamble은 항상 정확히 2줄 — IIFE 시작 + var alias 줄.
+            const HMR_PREAMBLE_LINES: u32 = 2;
+            var module_map: ?[]const u8 = null;
+            if (options.sourcemap) {
+                if (results[i].mappings) |maps| {
+                    var mod_sm = SourceMap.SourceMapBuilder.init(allocator);
+                    defer mod_sm.deinit();
+                    mod_sm.sources_content = options.sources_content;
+                    try addModuleMappings(
+                        &mod_sm,
+                        sourcemapSourcePath(m.path, options),
+                        m.source,
+                        maps,
+                        HMR_PREAMBLE_LINES,
+                        results[i].preamble_lines,
+                        options.sources_content,
+                        false,
+                    );
+                    _ = try mod_sm.generateJSON(mod_id);
+                    // buf 소유권 이전 — dupe + deinit-free 라운드트립 회피
+                    module_map = try mod_sm.buf.toOwnedSlice(allocator);
+                }
+            }
+
             try dev_module_codes.append(allocator, .{
                 .id = try allocator.dupe(u8, mod_id),
                 .code = hmr_code,
+                .map = module_map,
             });
         }
     }

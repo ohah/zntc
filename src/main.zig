@@ -1884,6 +1884,10 @@ pub fn main() !void {
                                         try writeJsonString(stdout, dc.id);
                                         try stdout.print(",\"code\":", .{});
                                         try writeJsonString(stdout, dc.code);
+                                        if (dc.map) |m| {
+                                            try stdout.print(",\"map\":", .{});
+                                            try writeJsonString(stdout, m);
+                                        }
                                         try stdout.print("}}", .{});
                                     }
                                 }

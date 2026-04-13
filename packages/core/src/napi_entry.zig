@@ -807,12 +807,10 @@ fn serializeFunctionInfo(
             if (!first_idx.isNone()) {
                 const first = api.transformer.ast.getNode(first_idx);
                 // directive 태그 또는 expression_statement > string_literal
-                const directive_text: ?[]const u8 = if (first.tag == .directive)
-                    blk: {
-                        const t = api.transformer.ast.getText(first.span);
-                        break :blk if (t.len >= 2) t[1 .. t.len - 1] else null;
-                    }
-                else if (first.tag == .expression_statement) blk: {
+                const directive_text: ?[]const u8 = if (first.tag == .directive) blk: {
+                    const t = api.transformer.ast.getText(first.span);
+                    break :blk if (t.len >= 2) t[1 .. t.len - 1] else null;
+                } else if (first.tag == .expression_statement) blk: {
                     const op = api.transformer.ast.getNode(first.data.unary.operand);
                     if (op.tag == .string_literal) {
                         const t = api.transformer.ast.getText(op.data.string_ref);
@@ -1149,6 +1147,8 @@ const WatchRebuildEvent = struct {
     const ModuleUpdate = struct {
         id: []const u8,
         code: []const u8,
+        /// 모듈별 standalone source map (V3 JSON). null이면 미수집 (Issue #1248).
+        map: ?[]const u8 = null,
     };
 
     fn deinit(self: *WatchRebuildEvent) void {
@@ -1160,6 +1160,7 @@ const WatchRebuildEvent = struct {
             for (upd) |u| {
                 native_alloc.free(u.id);
                 native_alloc.free(u.code);
+                if (u.map) |m| native_alloc.free(m);
             }
             native_alloc.free(upd);
         }
@@ -1251,6 +1252,11 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 var js_code: c.napi_value = undefined;
                 _ = c.napi_create_string_utf8(env, u.code.ptr, u.code.len, &js_code);
                 _ = c.napi_set_named_property(env, js_u, "code", js_code);
+                if (u.map) |m| {
+                    var js_map: c.napi_value = undefined;
+                    _ = c.napi_create_string_utf8(env, m.ptr, m.len, &js_map);
+                    _ = c.napi_set_named_property(env, js_u, "map", js_map);
+                }
                 _ = c.napi_set_element(env, js_updates, @intCast(i), js_u);
             }
             _ = c.napi_set_named_property(env, js_event, "updates", js_updates);
@@ -1606,9 +1612,14 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                             allocator.free(id_copy);
                             continue;
                         };
-                        update_list.append(allocator, .{ .id = id_copy, .code = code_copy }) catch {
+                        const map_copy: ?[]const u8 = if (dc.map) |m|
+                            (allocator.dupe(u8, m) catch null)
+                        else
+                            null;
+                        update_list.append(allocator, .{ .id = id_copy, .code = code_copy, .map = map_copy }) catch {
                             allocator.free(id_copy);
                             allocator.free(code_copy);
+                            if (map_copy) |m| allocator.free(m);
                             continue;
                         };
                     }
@@ -2070,12 +2081,9 @@ fn parseBuildOptions(
     const legal_str = getObjectString(env, opts_obj, "legalComments", native_alloc);
     if (legal_str) |s| if (!trackStr(owned_strings, s)) return null;
     const legal_comments: bundler_mod.types.LegalComments = if (legal_str) |s|
-        if (std.mem.eql(u8, s, "none")) .none
-        else if (std.mem.eql(u8, s, "inline")) .@"inline"
-        else if (std.mem.eql(u8, s, "eof")) .eof
-        else if (std.mem.eql(u8, s, "linked")) .linked
-        else .default
-    else .default;
+        if (std.mem.eql(u8, s, "none")) .none else if (std.mem.eql(u8, s, "inline")) .@"inline" else if (std.mem.eql(u8, s, "eof")) .eof else if (std.mem.eql(u8, s, "linked")) .linked else .default
+    else
+        .default;
 
     // globalIdentifiers: string[]
     const global_identifiers = getObjectStringArray(env, opts_obj, "globalIdentifiers", native_alloc);
