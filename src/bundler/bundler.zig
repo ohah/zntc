@@ -221,6 +221,20 @@ pub const BundleResult = struct {
     asset_outputs: ?[]OutputFile = null,
     /// metafile JSON (--metafile). allocator 소유.
     metafile_json: ?[]const u8 = null,
+    /// 파이프라인 단계별 타이밍 (ns). 항상 측정 — 워치 모드 관측성용.
+    timings: BundleTimings = .{},
+
+    /// 단계별 빌드 시간 (나노초).
+    pub const BundleTimings = struct {
+        /// resolve + parse + finalize (graph build)
+        graph_ns: u64 = 0,
+        /// scope hoisting + linking
+        link_ns: u64 = 0,
+        /// tree-shaking
+        shake_ns: u64 = 0,
+        /// transform + codegen
+        emit_ns: u64 = 0,
+    };
 
     /// dev mode에서 모듈별 HMR 업데이트 코드. types.ModuleDevCode의 별칭.
     pub const ModuleDevCode = types.ModuleDevCode;
@@ -492,7 +506,8 @@ pub const Bundler = struct {
         var t_shake: u64 = 0;
         var t_emit: u64 = 0;
 
-        var timer: ?std.time.Timer = if (timing) std.time.Timer.start() catch null else null;
+        // 타이머는 항상 동작 (watch 관측성용). Timer.read()는 ns 단위 syscall 한 번으로 저렴.
+        var timer: ?std.time.Timer = std.time.Timer.start() catch null;
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입.
         // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
@@ -975,6 +990,12 @@ pub const Bundler = struct {
             .module_dev_codes = module_dev_codes,
             .asset_outputs = final_asset_outputs,
             .metafile_json = metafile_json,
+            .timings = .{
+                .graph_ns = t_graph,
+                .link_ns = t_link,
+                .shake_ns = t_shake,
+                .emit_ns = t_emit,
+            },
         };
     }
 };
