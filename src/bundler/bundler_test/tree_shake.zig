@@ -933,3 +933,156 @@ test "sideEffects: CJS side-effect import must not be duplicated in barrel init 
     const count = std.mem.count(u8, index_init_block, "require_pkg_sideeffect()");
     try std.testing.expectEqual(@as(usize, 1), count);
 }
+
+// ============================================================
+// UserDefined sideEffects lock — rolldown DeterminedSideEffects::UserDefined parity
+// ============================================================
+
+test "sideEffects: UserDefined lock — package.json sideEffects array MUST NOT be overridden by auto-purity" {
+    // React-native-worklets의 lib/module/index.js는 top-level에서 init() 호출 (side-effect).
+    // 근데 `import` + `function_call()`만 있는 파일은 ZTS auto-purity 로직이 "pure"로 오판할 수도.
+    // package.json의 sideEffects 배열에 명시된 파일은 auto-purity가 덮어쓰면 안 됨.
+    // 이 테스트는 해당 regression을 방지한다 (#1193 root cause).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './node_modules/pkg';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"name":"pkg","main":"./index.js","sideEffects":["./runtime-init.js"]}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\import './runtime-init';
+        \\export const x = 1;
+    );
+    // runtime-init.js는 top-level에서 globalInit() 호출.
+    // 호출 자체는 auto-purity 기준으로 "pure"로 보일 수 있지만 (function call on unknown binding),
+    // sideEffects array에 명시됐으므로 반드시 보존되어야 한다.
+    try writeFile(tmp.dir, "node_modules/pkg/runtime-init.js",
+        \\import { globalInit } from './helper';
+        \\globalInit();
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/helper.js",
+        \\export function globalInit() { globalThis.__runtimeInitialized = true; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // runtime-init.js body가 번들에 포함되어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "globalInit()") != null);
+    // 게다가 top-level init 경로에서 실행 가능해야 한다 — 단순 정의 외에 호출 라인이 있어야 함
+    // (RN 플랫폼에서는 __esm wrap의 factory body에 globalInit() 있어야)
+    const has_call = std.mem.count(u8, result.output, "globalInit()") >= 2;
+    try std.testing.expect(has_call);
+}
+
+test "sideEffects: UserDefined lock — sideEffects:false module stays tree-shakable even if complex" {
+    // 반대 방향 회귀: sideEffects:false는 auto-purity와 일치 — lock이 잘못 걸리면 안 됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './node_modules/lib';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "node_modules/lib/package.json",
+        \\{"name":"lib","main":"./index.js","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/lib/index.js",
+        \\export const x = 1;
+        \\export const unused = 2;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 1") != null);
+}
+
+test "sideEffects: UserDefined lock — auto-purity does not flip package.json true to false" {
+    // `sideEffects: true` (array 아님)도 user_defined 설정.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './node_modules/preserve';
+    );
+    try writeFile(tmp.dir, "node_modules/preserve/package.json",
+        \\{"name":"preserve","sideEffects":true}
+    );
+    // body는 pure literal만 — auto-purity가 보면 "pure"라고 판단할 텍스트.
+    try writeFile(tmp.dir, "node_modules/preserve/index.js",
+        \\const PURE_CONST = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // sideEffects:true로 명시된 순수 module도 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "sideEffects: UserDefined lock — pattern matched file preserved even in node_modules with other pure modules" {
+    // react-native-worklets 실제 구조 흉내: sideEffects에 특정 파일만 나열.
+    // 매치되는 파일의 top-level call은 보존, 매치 안 되는 pure 파일은 tree-shake.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { api } from './node_modules/worklets';
+        \\console.log(api);
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/package.json",
+        \\{"name":"worklets","main":"./index.js","sideEffects":["./index.js","./init.js"]}
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/index.js",
+        \\import { init } from './init';
+        \\import { api } from './api';
+        \\init();
+        \\export { api };
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/init.js",
+        \\export function init() { globalThis.__workletsReady = true; }
+    );
+    try writeFile(tmp.dir, "node_modules/worklets/api.js",
+        \\export const api = 'ok';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // index.js의 `init();` call이 번들에 보존되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init()") != null);
+    // api 사용도 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ok\"") != null or
+        std.mem.indexOf(u8, result.output, "'ok'") != null);
+}

@@ -90,6 +90,10 @@ pub const Module = struct {
     /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
     uses_top_level_await: bool = false,
     side_effects: bool,
+    /// side_effects가 package.json `sideEffects` 필드에 의해 결정됐음을 표시.
+    /// true면 tree-shaker의 auto-purity 분석이 이 값을 덮어쓸 수 없다.
+    /// Rolldown `DeterminedSideEffects::UserDefined` 포팅.
+    side_effects_user_defined: bool = false,
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,

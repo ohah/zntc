@@ -124,8 +124,11 @@ pub const TreeShaker = struct {
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
+        // 단, package.json sideEffects에 의해 결정된 값(user_defined)은 덮어쓰지 않는다
+        // (rolldown DeterminedSideEffects::UserDefined 포팅).
         for (self.modules, 0..) |m, i| {
             if (!m.side_effects) continue;
+            if (m.side_effects_user_defined) continue;
             if (self.entry_set.isSet(i)) continue;
             if (m.ast) |ast| {
                 if (isModulePure(&ast)) {

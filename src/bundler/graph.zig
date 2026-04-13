@@ -1094,13 +1094,7 @@ pub const ModuleGraph = struct {
 
         // 캐시 확인 — 같은 패키지의 package.json을 반복 읽지 않음
         if (self.side_effects_cache.get(pkg_dir_path)) |cached| {
-            switch (cached) {
-                .all => |val| module.side_effects = val,
-                .patterns => |patterns| {
-                    module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);
-                },
-                .unknown => {},
-            }
+            applyCachedSideEffects(module, pkg_dir_path, cached);
             return;
         }
 
@@ -1116,10 +1110,21 @@ pub const ModuleGraph = struct {
         // 소유권을 캐시로 이전했으므로 parsed.deinit()에서 이중 해제 방지
         parsed.pkg.side_effects = .unknown;
 
+        applyCachedSideEffects(module, pkg_dir_path, se);
+    }
+
+    /// package.json sideEffects 값을 모듈에 적용.
+    /// `.all`/`.patterns` 케이스는 tree-shaker가 auto-purity로 덮어쓰지 못하도록 user_defined lock 설정.
+    /// `.unknown` (필드 없음)은 기본 동작(conservative: side_effects=true 유지) 그대로.
+    fn applyCachedSideEffects(module: *Module, pkg_dir_path: []const u8, se: pkg_json.PackageJson.SideEffects) void {
         switch (se) {
-            .all => |val| module.side_effects = val,
+            .all => |val| {
+                module.side_effects = val;
+                module.side_effects_user_defined = true;
+            },
             .patterns => |patterns| {
                 module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);
+                module.side_effects_user_defined = true;
             },
             .unknown => {},
         }
