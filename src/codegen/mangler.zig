@@ -172,10 +172,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258)
                 if (!sym.scope_id.isNone()) {
                     const s_idx = sym.scope_id.toIndex();
-                    if (s_idx < scopes.len) {
-                        const s = scopes[s_idx];
-                        if (s.subtree_has_direct_eval or s.subtree_has_with) continue;
-                    }
+                    if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) continue;
                 }
                 if (skip_symbols) |ss| {
                     if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) continue;

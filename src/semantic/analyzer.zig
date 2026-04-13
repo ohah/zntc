@@ -255,33 +255,22 @@ pub const SemanticAnalyzer = struct {
     // 스코프 관리
     // ================================================================
 
+    /// 현재 스코프부터 root까지 각 Scope의 bool 필드(`field_offset`에 해당)를 true로 set.
+    /// rolldown/oxc 방식: direct eval / with은 포함 스코프와 모든 상위 스코프의
+    /// 바인딩을 동적으로 참조할 수 있으므로 mangling 대상에서 제외되어야 한다.
+    fn markScopeFieldToRoot(self: *SemanticAnalyzer, comptime field: []const u8) void {
+        var cur = self.current_scope;
+        while (!cur.isNone()) {
+            const idx = cur.toIndex();
+            if (idx >= self.scopes.items.len) break;
+            const ptr = &@field(self.scopes.items[idx], field);
+            if (ptr.*) break; // 이미 전파됨
+            ptr.* = true;
+            cur = self.scopes.items[idx].parent;
+        }
+    }
+
     /// 새 스코프를 생성하고 진입한다. 반환값: 이전 스코프 ID (나갈 때 복원용).
-    /// 현재 스코프 및 모든 조상 스코프에 direct eval 플래그를 전파한다.
-    /// rolldown/oxc 방식: direct eval은 포함 스코프와 모든 상위 스코프의 바인딩을
-    /// 동적으로 참조할 수 있으므로, 해당 스코프들의 변수 mangling을 비활성화한다.
-    fn markDirectEvalToRoot(self: *SemanticAnalyzer) void {
-        var cur = self.current_scope;
-        while (!cur.isNone()) {
-            const idx = cur.toIndex();
-            if (idx >= self.scopes.items.len) break;
-            if (self.scopes.items[idx].subtree_has_direct_eval) break; // 이미 전파됨
-            self.scopes.items[idx].subtree_has_direct_eval = true;
-            cur = self.scopes.items[idx].parent;
-        }
-    }
-
-    /// `with` 문도 동일하게 상위로 전파.
-    fn markWithToRoot(self: *SemanticAnalyzer) void {
-        var cur = self.current_scope;
-        while (!cur.isNone()) {
-            const idx = cur.toIndex();
-            if (idx >= self.scopes.items.len) break;
-            if (self.scopes.items[idx].subtree_has_with) break;
-            self.scopes.items[idx].subtree_has_with = true;
-            cur = self.scopes.items[idx].parent;
-        }
-    }
-
     fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) AllocError!ScopeId {
         const parent = self.current_scope;
         const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
@@ -1078,7 +1067,7 @@ pub const SemanticAnalyzer = struct {
             .with_statement => {
                 // with 블록은 동적 이름 lookup을 유발하므로 현재 스코프와
                 // 모든 상위 스코프의 바인딩 mangling을 차단.
-                self.markWithToRoot();
+                self.markScopeFieldToRoot("subtree_has_with");
                 try self.visitNode(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
             },
@@ -1265,7 +1254,7 @@ pub const SemanticAnalyzer = struct {
                             if (callee_node.tag == .identifier_reference) {
                                 const callee_name = self.ast.getSourceText(callee_node.span);
                                 if (std.mem.eql(u8, callee_name, "eval")) {
-                                    self.markDirectEvalToRoot();
+                                    self.markScopeFieldToRoot("subtree_has_direct_eval");
                                 }
                             }
                         }

@@ -76,4 +76,10 @@ pub const Scope = struct {
 
     /// 이 스코프에서 선언된 심볼 수 (디버깅/통계용)
     symbol_count: u16 = 0,
+
+    /// 이 스코프에 선언된 바인딩이 direct eval/with으로 인해
+    /// 동적 lookup 대상이 될 수 있는지. mangler가 이름 변경을 건너뛰는 기준.
+    pub fn blocksMangling(self: Scope) bool {
+        return self.subtree_has_direct_eval or self.subtree_has_with;
+    }
 };
