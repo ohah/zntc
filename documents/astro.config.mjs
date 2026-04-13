@@ -79,6 +79,7 @@ export default defineConfig({
             { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },
             { label: "마이그레이션", slug: "guides/migration", translations: { en: "Migration" } },
             { label: "React Native", slug: "guides/react-native" },
+            { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
           ],
         },
         {

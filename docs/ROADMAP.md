@@ -102,6 +102,12 @@
 - **SIMD 확장** — 렉서에 `@Vector(16, u8)` 부분 적용 완료 (공백/식별자 스캔). 추가 확장 여지 있음
 - **WASM 공개 AST API** — AST 안정화 후
 
+## ✅ 최근 추가 (Dev Server 확장)
+
+- **SSE 이벤트 스트림** (`/sse/events`) — `server_ready`, `watch_change`, `bundle_build_*`, `cache_reset` 실시간 브로드캐스트 (rollipop 호환)
+- **Control API** (`/reset-cache`) — 외부에서 캐시 무효화 트리거
+- **MCP 서버** (`/mcp`) — JSON-RPC 2.0, `initialize`/`tools/list`/`tools/call`. 도구: `reset_cache`, `get_build_events`. Claude Code 등 LLM 에이전트가 `.mcp.json`으로 직접 연결 가능
+
 ## 의존성 관계
 ```
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
