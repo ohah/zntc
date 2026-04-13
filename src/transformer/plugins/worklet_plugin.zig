@@ -50,25 +50,38 @@ pub fn plugin() Plugin {
 /// Reanimated/Worklets auto-workletization 대상 함수 목록.
 /// Babel react-native-worklets/plugin과 동일.
 const auto_worklet_callees = [_]AutoWorkletCallee{
-    // Scheduling functions (arg 0)
+    // Scheduling functions (arg 0) — Babel plugin reanimatedFunctionHooks
     .{ .name = "runOnUI" },
     .{ .name = "runOnUISync" },
     .{ .name = "runOnUIAsync" },
     .{ .name = "scheduleOnUI" },
     .{ .name = "executeOnUIRuntimeSync" },
-    .{ .name = "runOnJS" },
+    // NOTE: runOnJS(fn)은 JS thread에서 실행할 함수를 받는 것이라 worklet이 아님 — 제외.
     // Scheduling functions (arg 1)
     .{ .name = "runOnRuntime", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
     .{ .name = "runOnRuntimeSync", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
     .{ .name = "runOnRuntimeAsync", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
     .{ .name = "scheduleOnRuntime", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "runOnRuntimeSyncWithId", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
+    .{ .name = "scheduleOnRuntimeWithId", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
     // Hooks (arg 0)
     .{ .name = "useFrameCallback" },
     .{ .name = "useAnimatedStyle" },
     .{ .name = "useAnimatedProps" },
     .{ .name = "createAnimatedPropAdapter" },
     .{ .name = "useDerivedValue" },
-    .{ .name = "useAnimatedScrollHandler" },
+    // Object hooks — 객체 리터럴 인자의 property value도 worklet으로 변환
+    .{ .name = "useAnimatedScrollHandler", .accept_object = true },
+    // Gesture Handler object hooks (gestureHandlerAutoworkletization.ts:41-51)
+    .{ .name = "useTapGesture", .accept_object = true },
+    .{ .name = "usePanGesture", .accept_object = true },
+    .{ .name = "usePinchGesture", .accept_object = true },
+    .{ .name = "useRotationGesture", .accept_object = true },
+    .{ .name = "useFlingGesture", .accept_object = true },
+    .{ .name = "useLongPressGesture", .accept_object = true },
+    .{ .name = "useNativeGesture", .accept_object = true },
+    .{ .name = "useManualGesture", .accept_object = true },
+    .{ .name = "useHoverGesture", .accept_object = true },
     // useAnimatedReaction (args 0 and 1)
     .{ .name = "useAnimatedReaction", .arg_indices = .{ 0, 1, 0xFF, 0xFF } },
     // Animation callbacks
@@ -76,17 +89,18 @@ const auto_worklet_callees = [_]AutoWorkletCallee{
     .{ .name = "withSpring", .arg_indices = .{ 2, 0xFF, 0xFF, 0xFF } },
     .{ .name = "withDecay", .arg_indices = .{ 1, 0xFF, 0xFF, 0xFF } },
     .{ .name = "withRepeat", .arg_indices = .{ 3, 0xFF, 0xFF, 0xFF } },
-    // Gesture handler method callbacks (arg 0, method call)
-    .{ .name = "onBegin", .is_method = true },
-    .{ .name = "onStart", .is_method = true },
-    .{ .name = "onEnd", .is_method = true },
-    .{ .name = "onFinalize", .is_method = true },
-    .{ .name = "onUpdate", .is_method = true },
-    .{ .name = "onChange", .is_method = true },
-    .{ .name = "onTouchesDown", .is_method = true },
-    .{ .name = "onTouchesMove", .is_method = true },
-    .{ .name = "onTouchesUp", .is_method = true },
-    .{ .name = "onTouchesCancelled", .is_method = true },
+    // Gesture handler method callbacks — receiver 검증 필수 (임의 `.onStart()` 오인 방지).
+    // Babel plugin의 isGestureObjectEventCallbackMethod 참고: `Gesture.Foo()[.method()*].onX(cb)` 패턴만 매칭.
+    .{ .name = "onBegin", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onStart", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onEnd", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onFinalize", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onUpdate", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onChange", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onTouchesDown", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onTouchesMove", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onTouchesUp", .is_method = true, .receiver_kind = .gesture_object },
+    .{ .name = "onTouchesCancelled", .is_method = true, .receiver_kind = .gesture_object },
     // Layout Animation callback — receiver 검증 필수 (임의 .withCallback() 오인 방지).
     // `FadeIn.withCallback(cb)`, `new FadeIn().withCallback(cb)`, `FadeIn.build().withCallback(cb)` 등.
     .{ .name = "withCallback", .is_method = true, .receiver_kind = .layout_animation },
@@ -131,6 +145,14 @@ pub const LAYOUT_ANIMATION_CLASSES = [_][]const u8{
 
 /// Reanimated web 플랫폼 체크 함수 — `substituteWebPlatformChecks` 옵션에서 `true`로 치환 대상.
 pub const WEB_PLATFORM_CHECK_NAMES = [_][]const u8{ "isWeb", "shouldBeUseWeb" };
+
+/// `Gesture.Foo()`의 `Foo` 후보 이름 집합 — gesture handler builder method의 receiver 검증에 사용.
+/// Babel plugin의 `gestureHandlerGestureObjects` 그대로.
+pub const GESTURE_OBJECT_NAMES = [_][]const u8{
+    "Tap",        "Pan",    "Pinch",  "Rotation", "Fling",        "LongPress",
+    "ForceTouch", "Native", "Manual", "Race",     "Simultaneous", "Exclusive",
+    "Hover",
+};
 
 /// Layout Animation 클래스의 체이닝 메서드 집합.
 /// `FadeIn.duration(300).withCallback(cb)` 같은 체인 추적용.

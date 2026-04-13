@@ -1430,6 +1430,20 @@ test "Worklet: auto-workletization does not affect wrong arg index" {
 }
 
 test "Worklet: method auto-workletization for gesture handler onBegin" {
+    // Babel parity: `Gesture.Foo()` 체인의 onBegin만 workletize.
+    var r = try transformWorklet(std.testing.allocator,
+        \\Gesture.Pan().onBegin((e) => {
+        \\  console.log(e);
+        \\});
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "Worklet: method onBegin on non-gesture-object receiver is NOT workletized" {
+    // 임의 객체의 `.onBegin()`은 auto-worklet 대상 아님 (Babel parity).
     var r = try transformWorklet(std.testing.allocator,
         \\var gesture = {};
         \\gesture.onBegin((e) => {
@@ -1439,8 +1453,7 @@ test "Worklet: method auto-workletization for gesture handler onBegin" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    // obj.onBegin() 메서드 호출의 첫 번째 인자가 worklet화
-    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
 }
 
 test "Worklet: auto-workletization inside worklet function body" {
