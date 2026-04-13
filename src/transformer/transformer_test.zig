@@ -1159,6 +1159,7 @@ test "Worklet: default param with external ref" {
 }
 
 test "Worklet: __stackDetails property is emitted" {
+    // Babel workletFactory.ts:298-327 포맷: [new global.Error(), lineOffset, -27]
     var r = try transformWorklet(std.testing.allocator,
         \\function f() {
         \\  "worklet";
@@ -1168,7 +1169,7 @@ test "Worklet: __stackDetails property is emitted" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "__stackDetails = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__stackDetails = [new global.Error()") != null);
 }
 
 test "Worklet: initData code has no ES5 helpers (spread preserved)" {
