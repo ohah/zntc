@@ -515,28 +515,34 @@ pub const Codegen = struct {
         const is_getter = flags & 0x02 != 0;
         const is_setter = flags & 0x04 != 0;
         const is_static = flags & 0x01 != 0;
-
-        // constructor → 부모 class 이름
-        if (self.resolveKeyName(key)) |k| {
-            if (std.mem.eql(u8, k, "constructor")) {
-                return self.resolveParentClassName() orelse "constructor";
-            }
-        }
+        const sep: []const u8 = if (is_static) "." else "#";
 
         const raw = self.resolveKeyName(key) orelse "<anonymous>";
 
-        const method_name: []const u8 = if (is_getter)
-            try std.fmt.allocPrint(self.allocator, "get__{s}", .{raw})
-        else if (is_setter)
-            try std.fmt.allocPrint(self.allocator, "set__{s}", .{raw})
+        // constructor → 부모 class 이름
+        if (std.mem.eql(u8, raw, "constructor")) {
+            return self.resolveParentClassName() orelse "constructor";
+        }
+
+        const class_name = self.resolveParentClassName();
+
+        if (is_getter) {
+            return if (class_name) |cn|
+                std.fmt.allocPrint(self.allocator, "{s}{s}get__{s}", .{ cn, sep, raw })
+            else
+                std.fmt.allocPrint(self.allocator, "get__{s}", .{raw});
+        }
+        if (is_setter) {
+            return if (class_name) |cn|
+                std.fmt.allocPrint(self.allocator, "{s}{s}set__{s}", .{ cn, sep, raw })
+            else
+                std.fmt.allocPrint(self.allocator, "set__{s}", .{raw});
+        }
+        // 일반 메서드: class 컨텍스트 없으면 기존 슬라이스 그대로 반환 (할당 불필요)
+        return if (class_name) |cn|
+            std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ cn, sep, raw })
         else
             raw;
-
-        if (self.resolveParentClassName()) |class_name| {
-            const sep: []const u8 = if (is_static) "." else "#";
-            return std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ class_name, sep, method_name });
-        }
-        return method_name;
     }
 
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
@@ -2067,7 +2073,7 @@ pub const Codegen = struct {
             try self.fnMapEnter(fn_name);
         }
         defer if (self.fn_map_builder != null) {
-            self.fnMapExit() catch {};
+            self.fnMapExit() catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
         };
 
         // strict execution order: function declaration → 할당식으로 변환.
@@ -2117,7 +2123,7 @@ pub const Codegen = struct {
             try self.fnMapEnter(saved_pending orelse "<anonymous>");
         }
         defer if (self.fn_map_builder != null) {
-            self.fnMapExit() catch {};
+            self.fnMapExit() catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
         };
 
         if (flags & 0x01 != 0) try self.write("async ");
@@ -2165,7 +2171,7 @@ pub const Codegen = struct {
             try self.fnMapEnter(class_name);
         }
         defer if (self.fn_map_builder != null) {
-            self.fnMapExit() catch {};
+            self.fnMapExit() catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
         };
 
         // class는 block-scoped → __esm 콜백 밖 __export getter가 접근 불가.
@@ -2247,7 +2253,7 @@ pub const Codegen = struct {
             try self.fnMapEnter(method_name);
         }
         defer if (self.fn_map_builder != null) {
-            self.fnMapExit() catch {};
+            self.fnMapExit() catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
         };
 
         try self.emitMemberDecorators(deco_start, deco_len);
