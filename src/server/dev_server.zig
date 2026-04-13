@@ -866,15 +866,20 @@ pub const DevServer = struct {
             .{ .name = "X-Accel-Buffering", .value = "no" },
         };
 
-        // respondStreaming으로 body writer를 획득 (keep-alive, chunked 아님 — 서버가 연결 유지)
+        // respondStreaming + chunked transfer encoding 명시 (Bun fetch 등 클라이언트 호환).
         var body_buf: [1024]u8 = undefined;
         var response = request.respondStreaming(&body_buf, .{
-            .respond_options = .{ .extra_headers = &sse_headers },
+            .respond_options = .{
+                .extra_headers = &sse_headers,
+                .transfer_encoding = .chunked,
+            },
         }) catch return;
 
-        // 초기 ping (프록시 타임아웃 회피 + 클라이언트 연결 확인)
+        // 초기 ping — std.http BodyWriter는 buffer가 차야 send 트리거.
+        // 명시적으로 flush() 후 underlying response stream도 flush.
         response.writer.writeAll(": connected\n\n") catch return;
         response.writer.flush() catch return;
+        response.flush() catch return;
 
         self.sse_clients.add(&response.writer);
         defer self.sse_clients.remove(&response.writer);
@@ -898,8 +903,17 @@ pub const DevServer = struct {
             return;
         }
 
-        // 요청 body 읽기 — 1바이트 추가 버퍼로 초과 감지 후 413 반환.
+        // 요청 body 읽기 — Content-Length를 먼저 보고 64KB 초과 시 즉시 413.
         const max_body = 64 * 1024;
+        if (request.head.content_length) |cl| {
+            if (cl > max_body) {
+                request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
+                    .status = .payload_too_large,
+                    .extra_headers = &json_headers,
+                }) catch {};
+                return;
+            }
+        }
         const reader = request.readerExpectContinue(&.{}) catch |err| {
             getLog().print("  [mcp] body reader error: {}\n", .{err}) catch {};
             return;
@@ -907,6 +921,13 @@ pub const DevServer = struct {
         var body_buf: [max_body + 1]u8 = undefined;
         var body_writer = std.Io.Writer.fixed(&body_buf);
         _ = reader.streamRemaining(&body_writer) catch |err| {
+            if (body_writer.end > max_body) {
+                request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Request body too large (max 64KB)\"},\"id\":null}", .{
+                    .status = .payload_too_large,
+                    .extra_headers = &json_headers,
+                }) catch {};
+                return;
+            }
             getLog().print("  [mcp] body read error: {}\n", .{err}) catch {};
             return;
         };
