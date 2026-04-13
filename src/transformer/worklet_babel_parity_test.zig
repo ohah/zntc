@@ -2831,3 +2831,241 @@ test "ZTS: arrow ExpressionBody with closure preserves implicit return (issue #1
     try std.testing.expect(std.mem.indexOf(u8, code, "this.__closure") != null);
     try std.testing.expect(containsReturnExpr(code));
 }
+
+// ============================================================
+// Object hook auto-workletization (#1193 follow-up)
+// ============================================================
+
+test "ZTS: useAnimatedScrollHandler object arg — arrow value workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedScrollHandler({
+        \\  onScroll: (e) => { console.log(e); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__initData") != null);
+}
+
+test "ZTS: useAnimatedScrollHandler object arg — shorthand method workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedScrollHandler({
+        \\  onScroll(e) { console.log(e); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: useAnimatedScrollHandler object arg — multiple properties all workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedScrollHandler({
+        \\  onScroll: (e) => { console.log(1); },
+        \\  onBeginDrag: (e) => { console.log(2); },
+        \\  onEndDrag(e) { console.log(3); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    const count = std.mem.count(u8, code, "__workletHash");
+    try std.testing.expect(count >= 3);
+}
+
+test "ZTS: gesture handler object hook (usePanGesture) — property workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\usePanGesture({
+        \\  onUpdate: (e) => { translateX.value = e.translationX; },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: non-object-hook callee does NOT workletize object properties" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\randomFn({
+        \\  onScroll: (e) => { console.log(e); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "ZTS: all 9 gesture handler object hooks workletize property values" {
+    // gestureHandlerAutoworkletization.ts gestureHandlerObjectHooks 전수 검증.
+    const hooks = [_][]const u8{
+        "useTapGesture",      "usePanGesture",    "usePinchGesture",
+        "useRotationGesture", "useFlingGesture",  "useLongPressGesture",
+        "useNativeGesture",   "useManualGesture", "useHoverGesture",
+    };
+    for (hooks) |name| {
+        const src = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{s}({{ onUpdate: (e) => {{ console.log(e); }} }});",
+            .{name},
+        );
+        defer std.testing.allocator.free(src);
+
+        var r = try tt.transformWorklet(std.testing.allocator, src);
+        defer r.deinit();
+        const code = try tt.generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    }
+}
+
+test "ZTS: runOnRuntimeSyncWithId arg 1 workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\runOnRuntimeSyncWithId(id, () => { console.log('ui'); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: scheduleOnRuntimeWithId arg 1 workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\scheduleOnRuntimeWithId(id, () => { console.log('ui'); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: runOnJS arg is NOT workletized (runs on JS thread)" {
+    // runOnJS(fn)은 UI → JS 스케줄링용이므로 fn은 일반 JS 함수여야 함.
+    // Babel plugin도 reanimatedFunctionHooks에 runOnJS 없음.
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\runOnJS(() => { console.log('js'); })();
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "ZTS: object hook — nested function value is still workletized" {
+    // default value가 arrow인 경우 같은 엣지 케이스.
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedScrollHandler({
+        \\  onScroll: (e = {}) => { console.log(e); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: object hook — non-function property values are preserved unchanged" {
+    // 함수가 아닌 property는 worklet 대상 아님.
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedScrollHandler({
+        \\  throttle: 16,
+        \\  onScroll: (e) => { console.log(e); },
+        \\});
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "throttle:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "16") != null);
+    // __workletHash은 정확히 1번만 (onScroll만 worklet화).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, code, "__workletHash"));
+}
+
+// ============================================================
+// Gesture builder method receiver validation (Babel parity)
+// ============================================================
+
+test "ZTS: Gesture.Pan().onStart(fn) — workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\Gesture.Pan().onStart((e) => { console.log(e); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+}
+
+test "ZTS: Gesture.Tap().onStart().onEnd() chain — all workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\Gesture.Tap()
+        \\  .onStart((e) => { console.log('start'); })
+        \\  .onUpdate((e) => { console.log('update'); })
+        \\  .onEnd((e) => { console.log('end'); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    const count = std.mem.count(u8, code, "__workletHash");
+    try std.testing.expect(count >= 3);
+}
+
+test "ZTS: random.onStart(fn) — NOT workletized (no Gesture receiver)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\var random = {};
+        \\random.onStart((e) => { console.log(e); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "ZTS: Gesture.Unknown().onStart(fn) — NOT workletized (unknown gesture type)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\Gesture.Unknown().onStart((e) => { console.log(e); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "ZTS: NotGesture.Tap().onStart(fn) — NOT workletized (object must be `Gesture`)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\NotGesture.Tap().onStart((e) => { console.log(e); });
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") == null);
+}
+
+test "ZTS: Gesture composite types (Race/Simultaneous/Exclusive) workletize onStart" {
+    const composites = [_][]const u8{ "Race", "Simultaneous", "Exclusive" };
+    for (composites) |name| {
+        const src = try std.fmt.allocPrint(std.testing.allocator, "Gesture.{s}().onStart((e) => {{ console.log(e); }});", .{name});
+        defer std.testing.allocator.free(src);
+        var r = try tt.transformWorklet(std.testing.allocator, src);
+        defer r.deinit();
+        const code = try tt.generateCode(&r);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
+    }
+}
+
+test "ZTS: useAnimatedReaction both args (0 and 1) workletized" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\useAnimatedReaction(
+        \\  () => sv.value,
+        \\  (current, prev) => { console.log(current, prev); }
+        \\);
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, code, "__workletHash"));
+}

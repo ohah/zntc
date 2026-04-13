@@ -101,13 +101,19 @@ pub const AutoWorkletCallee = struct {
     arg_indices: [4]u8 = .{ 0, 0xFF, 0xFF, 0xFF },
     /// true이면 obj.method() 형태의 method call도 매칭 (callee가 static_member_expression)
     is_method: bool = false,
+    /// true이면 지정된 인자가 object literal일 때 프로퍼티 값(function/arrow/method)도
+    /// 재귀적으로 worklet으로 변환. `useAnimatedScrollHandler({ onScroll: fn })` 등
+    /// Reanimated "object hook" 패턴용.
+    accept_object: bool = false,
     /// 수신자(receiver) 검증 방식.
     /// - any: 이름만 매칭 (기본)
     /// - layout_animation: `X.withCallback(cb)` 형태에서 X가 Layout Animation 클래스인지 추가 검증.
     ///   FadeIn/SlideIn/Bounce* 등의 알려진 클래스 및 new/chain 형태 허용.
+    /// - gesture_object: `X.onStart(cb)` 형태에서 X가 `Gesture.Foo()` 또는 그 체인인지 추가 검증.
+    ///   Babel plugin의 containsGestureObject 포팅.
     receiver_kind: ReceiverKind = .any,
 
-    pub const ReceiverKind = enum { any, layout_animation };
+    pub const ReceiverKind = enum { any, layout_animation, gesture_object };
 };
 
 /// 플러그인 배열을 순회하며 훅을 실행하는 유틸리티.
