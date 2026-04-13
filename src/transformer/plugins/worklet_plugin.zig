@@ -900,13 +900,9 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     const call_extra = try t.ast.addExtras(&.{ @intFromEnum(wrapper_fn), call_args.start, call_args.len, 0 });
     const iife = try t.ast.addNode(.{ .tag = .call_expression, .span = zero_span, .data = .{ .extra = call_extra } });
 
-    // 중요: visit을 돌려 plugin의 onFunction이 IIFE 내부 function_declaration을 worklet화하도록.
-    // Fast Refresh 등록은 억제 — IIFE 내부 factory function은 최상위 바인딩이 아니므로
-    // `_cN = <name>` 참조 시 ReferenceError 발생.
-    const saved_suppress = t.plugins.refresh.suppress_registration;
-    t.plugins.refresh.suppress_registration = true;
-    const visited_iife = try t.visitNode(iife);
-    t.plugins.refresh.suppress_registration = saved_suppress;
+    // visit을 돌려 plugin의 onFunction이 IIFE 내부 function_declaration을 worklet화하도록.
+    // Fast Refresh 등록은 억제: IIFE 내부 factory는 최상위 바인딩이 아니라 `_cN = <name>`가 ReferenceError.
+    const visited_iife = try t.visitWithRefreshSuppressed(iife);
 
     // LHS: ClassName.ClassName__classFactory
     const obj_ref = try t.ast.addNode(.{

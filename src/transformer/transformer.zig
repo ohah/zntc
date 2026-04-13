@@ -1717,6 +1717,17 @@ pub const Transformer = struct {
         return self.visitNode(body_idx);
     }
 
+    /// Fast Refresh 등록이 억제된 scope 안에서 node를 visit한다.
+    /// IIFE 내부 factory처럼 최상위 바인딩이 아닌 함수 선언에 대해
+    /// `_cN = <name>` 참조 시 ReferenceError를 유발하지 않도록 refresh 등록을 건너뛴다.
+    /// 호출 scope 바깥의 suppress 상태는 save/restore된다.
+    pub fn visitWithRefreshSuppressed(self: *Transformer, node_idx: NodeIndex) Error!NodeIndex {
+        const saved = self.plugins.refresh.suppress_registration;
+        self.plugins.refresh.suppress_registration = true;
+        defer self.plugins.refresh.suppress_registration = saved;
+        return self.visitNode(node_idx);
+    }
+
     /// 노드가 define 치환 대상이면 새 string_literal 노드를 반환.
     /// 대상: identifier_reference 또는 static_member_expression 체인.
     fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {

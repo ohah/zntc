@@ -57,10 +57,10 @@ pub const RefreshState = struct {
     /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
     signatures: std.ArrayList(RefreshSignature) = .empty,
 
-    /// 등록 억제 플래그 (plugin이 IIFE 내부 함수를 visit할 때 설정).
-    /// 중첩 function_declaration이 컴포넌트로 오인되어 ReferenceError 유발하는 것을 방지.
+    /// 등록 억제 플래그. 중첩 function_declaration이 컴포넌트로 오인되어
+    /// `_cN = <name>` ReferenceError 유발하는 것을 방지.
     ///
-    /// NOTE: 현재 worklet_plugin이 직접 이 플래그를 세팅하는 cross-plugin 접근이 있다 (#1195 후속 과제).
+    /// 외부에서 직접 세팅하지 말고 core의 `visitWithRefreshSuppressed` scope API를 사용할 것.
     suppress_registration: bool = false,
 };
 
