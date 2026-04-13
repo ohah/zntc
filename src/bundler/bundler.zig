@@ -223,6 +223,9 @@ pub const BundleResult = struct {
     metafile_json: ?[]const u8 = null,
     /// 파이프라인 단계별 타이밍 (ns). 항상 측정 — 워치 모드 관측성용.
     timings: BundleTimings = .{},
+    /// 증분 빌드에서 실제로 재파싱된 모듈 수.
+    /// non-incremental 빌드에서는 `null` (전체 파싱). HMR 관측성용.
+    reparsed_modules: ?usize = null,
 
     /// 단계별 빌드 시간 (나노초).
     pub const BundleTimings = struct {
@@ -587,8 +590,12 @@ pub const Bundler = struct {
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출
+        var reparsed_count: usize = 0;
+        var incremental: bool = false;
         if (self.options.module_store) |store| {
             const inc_result = try graph.buildIncremental(self.options.entry_points, store);
+            reparsed_count = inc_result.reparsed_indices.len;
+            incremental = true;
             self.allocator.free(inc_result.reparsed_indices);
         } else {
             try graph.build(self.options.entry_points);
@@ -1001,6 +1008,7 @@ pub const Bundler = struct {
                 .shake_ns = t_shake,
                 .emit_ns = t_emit,
             },
+            .reparsed_modules = if (incremental) reparsed_count else null,
         };
     }
 };
