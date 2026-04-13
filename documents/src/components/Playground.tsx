@@ -89,16 +89,21 @@ type TranspileFn = (
 interface Options {
   filename: string;
   jsx: "classic" | "automatic" | "automatic-dev";
+  jsxInJs: boolean;
   format: "esm" | "cjs";
   minify: boolean;
   minifyWhitespace: boolean;
   minifyIdentifiers: boolean;
   minifySyntax: boolean;
   sourcemap: boolean;
+  sourcemapDebugIds: boolean;
+  sourcesContent: boolean;
   dropConsole: boolean;
   dropDebugger: boolean;
   asciiOnly: boolean;
+  charsetUtf8: boolean;
   experimentalDecorators: boolean;
+  emitDecoratorMetadata: boolean;
   flow: boolean;
   quotes: "double" | "single" | "preserve";
   target: string;
@@ -112,16 +117,21 @@ interface Options {
 const DEFAULT_OPTIONS: Options = {
   filename: "input.tsx",
   jsx: "classic",
+  jsxInJs: false,
   format: "esm",
   minify: false,
   minifyWhitespace: false,
   minifyIdentifiers: false,
   minifySyntax: false,
   sourcemap: false,
+  sourcemapDebugIds: false,
+  sourcesContent: true,
   dropConsole: false,
   dropDebugger: false,
   asciiOnly: false,
+  charsetUtf8: false,
   experimentalDecorators: false,
+  emitDecoratorMetadata: false,
   flow: false,
   quotes: "double",
   target: "esnext",
@@ -142,7 +152,10 @@ function doTranspile(
     const result = transpileFn(code, {
       filename: opts.filename,
       jsx: opts.jsx,
+      jsxInJs: opts.jsxInJs,
       sourcemap: opts.sourcemap,
+      sourcemapDebugIds: opts.sourcemapDebugIds,
+      sourcesContent: opts.sourcesContent,
       minify: opts.minify,
       minifyWhitespace: opts.minifyWhitespace,
       minifyIdentifiers: opts.minifyIdentifiers,
@@ -151,7 +164,9 @@ function doTranspile(
       dropConsole: opts.dropConsole,
       dropDebugger: opts.dropDebugger,
       asciiOnly: opts.asciiOnly,
+      charsetUtf8: opts.charsetUtf8,
       experimentalDecorators: opts.experimentalDecorators,
+      emitDecoratorMetadata: opts.emitDecoratorMetadata,
       flow: opts.flow,
       quotes: opts.quotes,
       target: opts.target === "esnext" ? undefined : opts.target,
@@ -407,7 +422,9 @@ export default function Playground() {
             <Section title="Parser">
               <Sel label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)} options={[["input.tsx","TypeScript+JSX"],["input.ts","TypeScript"],["input.jsx","JavaScript+JSX"],["input.js","JavaScript"]]} />
               <Chk label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
+              <Chk label="JSX in .js" checked={options.jsxInJs} onChange={(v) => updateOption("jsxInJs", v)} />
               <Chk label="Experimental Decorators" checked={options.experimentalDecorators} onChange={(v) => updateOption("experimentalDecorators", v)} />
+              <Chk label="Emit Decorator Metadata" checked={options.emitDecoratorMetadata} onChange={(v) => updateOption("emitDecoratorMetadata", v)} />
             </Section>
             <Section title="Target">
               <Sel label="Target" value={options.target} onChange={(v) => updateOption("target", v)} options={[["esnext","ESNext"],["es2025","ES2025"],["es2024","ES2024"],["es2022","ES2022"],["es2021","ES2021"],["es2020","ES2020"],["es2019","ES2019"],["es2018","ES2018"],["es2017","ES2017"],["es2016","ES2016"],["es2015","ES2015"],["es5","ES5"]]} />
@@ -415,6 +432,9 @@ export default function Playground() {
             </Section>
             <Section title="Transform">
               <Sel label="JSX" value={options.jsx} onChange={(v) => updateOption("jsx", v as Options["jsx"])} options={[["classic","Classic"],["automatic","Automatic"],["automatic-dev","Automatic (Dev)"]]} />
+              <Txt label="JSX Factory" value={options.jsxFactory} placeholder="React.createElement" onChange={(v) => updateOption("jsxFactory", v)} />
+              <Txt label="JSX Fragment" value={options.jsxFragment} placeholder="React.Fragment" onChange={(v) => updateOption("jsxFragment", v)} />
+              <Txt label="JSX Import Source" value={options.jsxImportSource} placeholder="react" onChange={(v) => updateOption("jsxImportSource", v)} />
               <Sel label="Module" value={options.format} onChange={(v) => updateOption("format", v as Options["format"])} options={[["esm","ESM"],["cjs","CJS"]]} />
               <Chk label="useDefineForClassFields" checked={options.useDefineForClassFields} onChange={(v) => updateOption("useDefineForClassFields", v)} />
             </Section>
@@ -423,9 +443,14 @@ export default function Playground() {
               <Chk label="Whitespace" checked={options.minifyWhitespace} onChange={(v) => updateOption("minifyWhitespace", v)} />
               <Chk label="Identifiers" checked={options.minifyIdentifiers} onChange={(v) => updateOption("minifyIdentifiers", v)} />
               <Chk label="Syntax" checked={options.minifySyntax} onChange={(v) => updateOption("minifySyntax", v)} />
-              <Chk label="Sourcemap" checked={options.sourcemap} onChange={(v) => updateOption("sourcemap", v)} />
               <Chk label="ASCII Only" checked={options.asciiOnly} onChange={(v) => updateOption("asciiOnly", v)} />
+              <Chk label="Charset UTF-8" checked={options.charsetUtf8} onChange={(v) => updateOption("charsetUtf8", v)} />
               <Sel label="Quotes" value={options.quotes} onChange={(v) => updateOption("quotes", v as Options["quotes"])} options={[["double","Double"],["single","Single"],["preserve","Preserve"]]} />
+            </Section>
+            <Section title="Sourcemap">
+              <Chk label="Generate" checked={options.sourcemap} onChange={(v) => updateOption("sourcemap", v)} />
+              <Chk label="Sources Content" checked={options.sourcesContent} onChange={(v) => updateOption("sourcesContent", v)} />
+              <Chk label="Debug IDs (Sentry)" checked={options.sourcemapDebugIds} onChange={(v) => updateOption("sourcemapDebugIds", v)} />
             </Section>
             <Section title="Drop">
               <Chk label="console.*" checked={options.dropConsole} onChange={(v) => updateOption("dropConsole", v)} />
@@ -493,6 +518,16 @@ function Sel({ label, value, onChange, options }: { label: string; value: string
         style={{ padding: "2px 4px", borderRadius: 4, border: "1px solid #2d2d4a", background: "#1a1a2e", color: "#e2e8f0", fontSize: 12, maxWidth: 130 }}>
         {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
       </select>
+    </div>
+  );
+}
+
+function Txt({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (v: string) => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "#cbd5e1", fontSize: 13 }}>
+      <span>{label}</span>
+      <input type="text" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
+        style={{ padding: "2px 4px", borderRadius: 4, border: "1px solid #2d2d4a", background: "#1a1a2e", color: "#e2e8f0", fontSize: 12, maxWidth: 130, width: 130 }} />
     </div>
   );
 }
