@@ -18,6 +18,10 @@ const plugin_mod = lib.bundler.plugin;
 /// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
 const CliOptions = struct {
     input_file: ?[]const u8 = null,
+    /// 추가 entry points (다중 entry CLI 지원). 첫 번째는 input_file로 들어가고
+    /// 두 번째 이후가 여기에 누적된다. --bundle + --splitting 또는 --preserve-modules
+    /// 에서 다중 entry 번들링에 사용.
+    extra_inputs: std.ArrayList([]const u8) = .empty,
     output_file: ?[]const u8 = null,
     output_dir: ?[]const u8 = null,
     minify_whitespace: bool = false,
@@ -169,6 +173,7 @@ const CliOptions = struct {
     };
 
     fn deinit(self: *CliOptions, alloc: std.mem.Allocator) void {
+        self.extra_inputs.deinit(alloc);
         self.external_list.deinit(alloc);
         self.define_list.deinit(alloc);
         self.conditions_list.deinit(alloc);
@@ -633,7 +638,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             try printUsage(stdout);
             return null;
         } else if (arg[0] != '-' or (arg.len == 1 and arg[0] == '-')) {
-            opts.input_file = arg;
+            if (opts.input_file == null) {
+                opts.input_file = arg;
+            } else {
+                try opts.extra_inputs.append(allocator, arg);
+            }
         } else {
             try stderr.print("zts: unknown option: {s}\n", .{arg});
             std.process.exit(1);
@@ -1288,9 +1297,27 @@ pub fn main() !void {
             }
         }
 
+        // abs_entry는 outer scope에서 free됨. extras는 entries_list에서 소유.
+        var entries_extras: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (entries_extras.items) |e| allocator.free(e);
+            entries_extras.deinit(allocator);
+        }
+        for (opts.extra_inputs.items) |extra| {
+            const abs = std.fs.cwd().realpathAlloc(allocator, extra) catch {
+                try stderr.print("zts: cannot resolve entry file '{s}'\n", .{extra});
+                std.process.exit(1);
+            };
+            try entries_extras.append(allocator, abs);
+        }
+        var entries_list: std.ArrayList([]const u8) = .empty;
+        defer entries_list.deinit(allocator);
+        try entries_list.append(allocator, abs_entry);
+        try entries_list.appendSlice(allocator, entries_extras.items);
+
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
         var bundle_opts: BundleOptions = .{
-            .entry_points = &.{abs_entry},
+            .entry_points = entries_list.items,
             .format = opts.bundle_format,
             .platform = opts.platform,
             .external = opts.external_list.items,

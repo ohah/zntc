@@ -124,4 +124,35 @@ describe.skipIf(!hasVite)("vite-plugin-zts", () => {
     expect(jsChunk.code).not.toContain("type ID");
     expect(jsChunk.code).toContain("greet");
   });
+
+  it("RSC: 'use client' 디렉티브 보존 (Vite + ZTS)", async () => {
+    const fixture = await createFixture({
+      "main.tsx": `"use client";\nexport const tag = "CLIENT";\nexport function f(x: number){return x + 1;}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await viteBuildLib(fixture.dir, join(fixture.dir, "main.tsx"));
+    const jsChunk = result.output.find((o: any) => o.type === "chunk");
+    expect(jsChunk).toBeDefined();
+    // Vite/Rollup이 디렉티브를 출력 청크 top에 보존 (ZTS transform이 디렉티브를 살린 상태로 넘김)
+    expect(
+      jsChunk.code.trimStart().startsWith('"use client"') ||
+        jsChunk.code.trimStart().startsWith("'use client'"),
+    ).toBe(true);
+  });
+
+  it("RSC: 'use server' 디렉티브 보존 (Vite + ZTS)", async () => {
+    const fixture = await createFixture({
+      "main.ts": `"use server";\nexport async function action(){return 1;}`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await viteBuildLib(fixture.dir, join(fixture.dir, "main.ts"));
+    const jsChunk = result.output.find((o: any) => o.type === "chunk");
+    expect(jsChunk).toBeDefined();
+    expect(
+      jsChunk.code.trimStart().startsWith('"use server"') ||
+        jsChunk.code.trimStart().startsWith("'use server'"),
+    ).toBe(true);
+  });
 });
