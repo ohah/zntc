@@ -459,6 +459,8 @@ pub const Transformer = struct {
         // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
         const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
         const saved_temp_counter = self.temp_var_counter;
+        // worklet anonymous naming counter — Transformer 인스턴스 재사용 시 매 transform당 0부터 시작.
+        self.worklet_anonymous_counter = 0;
         var root = try self.visitNode(root_idx);
 
         // Pass 2: ES2015 params lowering 일괄 적용
@@ -920,29 +922,22 @@ pub const Transformer = struct {
                 return self.visitArrowFunction(node);
             },
             .class_declaration => {
-                if (try self.dispatchVisitor(.on_class_declaration, idx)) |replacement| {
-                    // Plugin이 새 class node 반환 시 ES5 lowering 후처리 적용 (옵션 활성화된 경우).
-                    // Plugin은 worklet 변환만 책임지고, downlevel은 transformer가 일관 처리.
-                    if (self.options.unsupported.class) {
-                        return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, self.ast.getNode(replacement));
-                    }
-                    return replacement;
-                }
+                const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
+                const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
+                // 관심사 분리: plugin은 worklet 변환만, transformer는 ES downlevel 일관 처리.
                 if (self.options.unsupported.class) {
-                    return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, node);
+                    return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, target_node);
                 }
+                if (replacement_idx) |r| return r;
                 return self.visitClass(node);
             },
             .class_expression => {
-                if (try self.dispatchVisitor(.on_class_expression, idx)) |replacement| {
-                    if (self.options.unsupported.class) {
-                        return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, self.ast.getNode(replacement));
-                    }
-                    return replacement;
-                }
+                const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
+                const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
                 if (self.options.unsupported.class) {
-                    return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, node);
+                    return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, target_node);
                 }
+                if (replacement_idx) |r| return r;
                 return self.visitClass(node);
             },
             .for_statement => self.visitForStatement(node),

@@ -2733,3 +2733,63 @@ test "ZTS: class factory body returns reconstructed class (not stub)" {
     // method 이름이 __initData.code에 직렬화
     try std.testing.expect(std.mem.indexOf(u8, code, "foo") != null);
 }
+
+// ================================================================
+// Babel-style anonymous worklet naming (`<file>_null<N>`)
+// ================================================================
+
+test "ZTS: anonymous worklet uses `<sanitizedFile>_null<N>` naming" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\const a = (x) => { 'worklet'; return x; };
+        \\const b = (y) => { 'worklet'; return y; };
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // jsx_filename = "test.ts" → sanitized "testts" → testts_null0, testts_null1
+    try std.testing.expect(std.mem.indexOf(u8, code, "testts_null0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "testts_null1") != null);
+    // 이전 fallback "anonymous"는 더 이상 emit되지 않음
+    try std.testing.expect(std.mem.indexOf(u8, code, "var anonymous") == null);
+}
+
+test "ZTS: named worklet keeps original name (no `_null<N>` suffix)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\function foo(x) { 'worklet'; return x; }
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "foo.__workletHash") != null);
+    // anonymous fallback이 named function에 적용되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, code, "_null0") == null);
+}
+
+// ================================================================
+// __workletClass + ES5 lowering 후처리
+// ================================================================
+
+test "ZTS: __workletClass with es5 target produces lowered IIFE class" {
+    const Plugin = @import("transformer.zig").Plugin;
+    const compat = @import("compat.zig");
+    const worklet_plugin_mod = @import("plugins/worklet_plugin.zig");
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try @import("transformer_test.zig").parseAndTransformWithOptions(std.testing.allocator,
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  foo() { return 'bar'; }
+        \\}
+    , .{
+        .plugins = &plugins,
+        .unsupported = compat.fromESTarget(.es5),
+        .jsx_filename = "test.ts",
+    });
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    // ES5 target이면 class declaration이 IIFE 패턴으로 lowered되어야 함.
+    // 이전 버그: plugin이 새 class 반환 시 ES5 lowering 우회 → ES6 class 잔존
+    try std.testing.expect(std.mem.indexOf(u8, code, "var Clazz = (function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__classCallCheck") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
+}
