@@ -176,8 +176,8 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     var anon_name_buf: [256]u8 = undefined;
     var sanitize_buf: [128]u8 = undefined;
     const func_name = if (info.name) |n| n else blk: {
-        const idx = api.transformer.worklet_anonymous_counter;
-        api.transformer.worklet_anonymous_counter += 1;
+        const idx = api.transformer.plugins.worklet.anonymous_counter;
+        api.transformer.plugins.worklet.anonymous_counter += 1;
         const file_marker = sanitizeFilename(info.source_path, &sanitize_buf);
         const name = std.fmt.bufPrint(&anon_name_buf, "{s}_null{d}", .{ file_marker, idx }) catch return error.OutOfMemory;
         break :blk name;
@@ -487,7 +487,7 @@ fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
                 continue;
             }
             switch (child.tag) {
-                .function_declaration, .class_declaration, .variable_declaration, .export_named_declaration, .export_default_declaration => t.auto_worklet_next = true,
+                .function_declaration, .class_declaration, .variable_declaration, .export_named_declaration, .export_default_declaration => t.plugins.worklet.auto_next = true,
                 else => {},
             }
         }
@@ -496,7 +496,7 @@ fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
             t.pending_nodes.shrinkRetainingCapacity(pending_top);
         }
         const new_child = try t.visitNode(child_idx);
-        t.auto_worklet_next = false;
+        t.plugins.worklet.auto_next = false;
         if (!new_child.isNone()) try t.scratch.append(t.allocator, new_child);
         if (t.trailing_nodes.items.len > trailing_top) {
             try t.scratch.appendSlice(t.allocator, t.trailing_nodes.items[trailing_top..]);
