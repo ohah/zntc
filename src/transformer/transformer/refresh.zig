@@ -45,6 +45,7 @@ pub fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
 /// visitFunction에서 호출.
 pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex) Error!void {
     if (!self.options.react_refresh) return;
+    if (self.suppress_refresh_registration) return;
 
     const func_node = self.ast.getNode(new_func_idx);
     // function_expression의 이름은 함수 내부 스코프에서만 접근 가능하므로
