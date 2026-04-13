@@ -1728,7 +1728,7 @@ pub const Transformer = struct {
     // define 글로벌 치환
     // ================================================================
 
-    /// 함수 body가 worklet이 될 예정이면 `worklet_body_depth`를 올린 상태로 body를 방문한다.
+    /// 함수 body가 worklet이 될 예정이면 `plugins.worklet.body_depth`를 올린 상태로 body를 방문한다.
     /// 반환된 body 내부에서는 `--define` 치환이 억제되어 UI 런타임에서도 심볼이 안전하게 유지된다.
     pub fn visitBodyWorkletAware(self: *Transformer, body_idx: NodeIndex) Error!NodeIndex {
         const is_worklet = self.plugins.worklet.auto_next or
@@ -2945,7 +2945,7 @@ pub const Transformer = struct {
         const new_callee = try self.visitNode(callee_idx);
 
         // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면
-        // 해당 인자 위치의 function/arrow에 auto_worklet_next 플래그를 설정.
+        // 해당 인자 위치의 function/arrow에 plugins.worklet.auto_next 플래그를 설정.
         const auto_callee = self.matchAutoWorkletCallee(callee_idx);
         const new_args = if (auto_callee != null)
             try self.visitCallArgsWithAutoWorklet(args_start, args_len, auto_callee.?)
@@ -3516,7 +3516,7 @@ pub const Transformer = struct {
     }
 
     /// auto-workletization이 필요한 call expression의 인자를 개별 방문.
-    /// 대상 인자 위치의 function/arrow 방문 전에 auto_worklet_next 플래그를 설정.
+    /// 대상 인자 위치의 function/arrow 방문 전에 plugins.worklet.auto_next 플래그를 설정.
     fn visitCallArgsWithAutoWorklet(self: *Transformer, args_start: u32, args_len: u32, callee: AutoWorkletCallee) Error!NodeList {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3542,7 +3542,7 @@ pub const Transformer = struct {
             };
 
             // save/restore: 재귀적 visitNode 내부의 중첩 call_expression이
-            // auto_worklet_next를 오염시키지 않도록 보호.
+            // plugins.worklet.auto_next를 오염시키지 않도록 보호.
             const saved_auto = self.plugins.worklet.auto_next;
             if (should_auto and !arg_idx.isNone()) {
                 const arg_node = self.ast.getNode(arg_idx);
