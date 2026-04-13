@@ -617,33 +617,25 @@ pub fn emitEsmWrappedModule(
             if (source_mod_idx.isNone()) continue;
             const src_i = @intFromEnum(source_mod_idx);
             if (src_i >= l.modules.len) continue;
-            // 같은 소스 모듈에 대해 중복 init 방지
             if (re_export_inited.contains(src_i)) continue;
             re_export_inited.put(src_i, {}) catch {};
 
-            const src_mod = &l.modules[src_i];
-            switch (src_mod.wrap_kind) {
-                .esm => {
-                    if (src_mod.uses_top_level_await) try star_init_buf.appendSlice(allocator, "await ");
-                    if (options.dev_mode) {
-                        try star_init_buf.appendSlice(allocator, "__zts_modules[\"");
-                        try star_init_buf.appendSlice(allocator, src_mod.dev_id);
-                        try star_init_buf.appendSlice(allocator, "\"].fn();\n");
-                    } else {
-                        const iv = try types.makeInitVarName(allocator, src_mod.path);
-                        defer allocator.free(iv);
-                        try star_init_buf.appendSlice(allocator, iv);
-                        try star_init_buf.appendSlice(allocator, "();\n");
-                    }
-                },
-                .cjs => {
-                    const rv = try types.makeRequireVarName(allocator, src_mod.path);
-                    defer allocator.free(rv);
-                    try star_init_buf.appendSlice(allocator, rv);
-                    try star_init_buf.appendSlice(allocator, "();\n");
-                },
-                .none => {},
-            }
+            try appendWrappedInitCall(&star_init_buf, allocator, &l.modules[src_i], options);
+        }
+
+        // Side-effect-only import (`import './x';`)도 barrel의 init에서 호출되어야
+        // 한다. export_bindings에는 포함되지 않으므로 별도 루프로 처리.
+        // 누락 시 RN 런타임에서 target 모듈의 top-level이 실행되지 않아
+        // global setup(예: Reanimated LayoutAnimationsManager) 실패 (#1193).
+        for (module.import_records) |rec| {
+            if (rec.kind != .side_effect) continue;
+            if (rec.resolved.isNone()) continue;
+            const src_i = @intFromEnum(rec.resolved);
+            if (src_i >= l.modules.len) continue;
+            if (re_export_inited.contains(src_i)) continue;
+            re_export_inited.put(src_i, {}) catch {};
+
+            try appendWrappedInitCall(&star_init_buf, allocator, &l.modules[src_i], options);
         }
     }
 
@@ -819,6 +811,39 @@ pub fn emitEsmWrappedModule(
         .code = try allocator.dupe(u8, wrapped.items),
         .mappings = mappings,
     };
+}
+
+/// 래핑된 소스 모듈의 init/require 호출을 buffer에 추가한다.
+/// re-export (`export * from`, `export { x } from`) 및 side-effect-only import
+/// (`import './x';`)에서 소스 모듈 초기화 코드를 생성할 때 공용으로 쓴다.
+fn appendWrappedInitCall(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    src_mod: *const Module,
+    options: EmitOptions,
+) !void {
+    switch (src_mod.wrap_kind) {
+        .esm => {
+            if (src_mod.uses_top_level_await) try buf.appendSlice(allocator, "await ");
+            if (options.dev_mode) {
+                try buf.appendSlice(allocator, "__zts_modules[\"");
+                try buf.appendSlice(allocator, src_mod.dev_id);
+                try buf.appendSlice(allocator, "\"].fn();\n");
+            } else {
+                const iv = try types.makeInitVarName(allocator, src_mod.path);
+                defer allocator.free(iv);
+                try buf.appendSlice(allocator, iv);
+                try buf.appendSlice(allocator, "();\n");
+            }
+        },
+        .cjs => {
+            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+            defer allocator.free(rv);
+            try buf.appendSlice(allocator, rv);
+            try buf.appendSlice(allocator, "();\n");
+        },
+        .none => {},
+    }
 }
 
 /// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
