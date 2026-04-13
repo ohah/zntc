@@ -110,6 +110,11 @@ pub const TransformOptions = struct {
     /// web build에서 플랫폼 체크 코드가 항상 true로 평가되므로 dead code 제거 효과.
     substitute_web_platform_checks: bool = false,
 
+    /// Reanimated worklet plugin의 `globals` 옵션 포팅.
+    /// 사용자가 지정한 이름은 closure 분석에서 제외 (전역으로 간주).
+    /// 예: `globals: ['__DEV__']` → worklet 내 `__DEV__` 참조가 __closure에 포함 안 됨.
+    worklet_globals: []const []const u8 = &.{},
+
     pub const compat = @import("compat.zig");
 };
 

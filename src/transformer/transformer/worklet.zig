@@ -177,6 +177,15 @@ pub fn collectClosureVars(
         const name = entry.key_ptr.*;
         if (locals.contains(name)) continue;
         if (isGlobal(name)) continue;
+        // 사용자 설정 globals (옵션)도 closure에서 제외
+        var is_user_global = false;
+        for (self.options.worklet_globals) |g| {
+            if (std.mem.eql(u8, g, name)) {
+                is_user_global = true;
+                break;
+            }
+        }
+        if (is_user_global) continue;
         const duped = self.allocator.dupe(u8, name) catch return error.OutOfMemory;
         try result.append(self.allocator, .{ .name = duped, .ref_idx = entry.value_ptr.* });
     }
