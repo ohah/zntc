@@ -46,6 +46,8 @@ pub const FunctionMapBuilder = struct {
     last_line: i32 = 1, // Metro: new RelativeValue(1)
     last_column: i32 = 0,
     last_name_index: i32 = 0,
+    /// 마지막으로 emit된 이름. 연속으로 동일 이름 push 시 중복 제거 (Metro advanceToPos 패턴).
+    last_pushed_name: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) FunctionMapBuilder {
         return .{ .allocator = allocator };
@@ -63,6 +65,11 @@ pub const FunctionMapBuilder = struct {
     /// 같은 위치에 동일 이름을 연속으로 push 하는 호출은 호출자가 미리 필터링해야 한다
     /// (Metro 도 top-of-stack name 비교로 중복을 막는다).
     pub fn push(self: *FunctionMapBuilder, mapping: RangeMapping) !void {
+        // 연속으로 동일 이름이면 스킵 (Metro advanceToPos: name !== tailName 체크와 동일).
+        if (self.last_pushed_name) |last| {
+            if (std.mem.eql(u8, last, mapping.name)) return;
+        }
+        self.last_pushed_name = mapping.name;
         const name_index = try self.internName(mapping.name);
 
         const new_line: i32 = @intCast(mapping.line);
@@ -165,14 +172,26 @@ test "two segments same line — AAA,UC" {
     try std.testing.expectEqualStrings("foo", names[1]);
 }
 
-test "name dedup — second push of same name reuses index" {
+test "name dedup — consecutive same name push is skipped" {
+    // 연속 동일 이름은 중복 매핑을 방지한다 (Metro advanceToPos 패턴).
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "foo", .line = 1, .column = 0 });
-    try b.push(.{ .name = "foo", .line = 1, .column = 5 });
+    try b.push(.{ .name = "foo", .line = 1, .column = 5 }); // 동일 이름 → 스킵
     try std.testing.expectEqual(@as(usize, 1), b.namesSlice().len);
-    // name_delta=0 → "AAA" + "," + VLQ(5)="K" + VLQ(0)="A" = "AAA,KA"
-    try std.testing.expectEqualStrings("AAA,KA", b.mappingsSlice());
+    try std.testing.expectEqualStrings("AAA", b.mappingsSlice());
+}
+
+test "name dedup — non-consecutive same name reuses names index" {
+    // <global>@L1,0 → foo@L1,5 → <global>@L1,15: names에 중복 없음
+    // 세그먼트3: col_delta=10→"U", name_delta=-1→VLQ(-1)=(1<<1)|1=3→"D" → ",UD"
+    var b = FunctionMapBuilder.init(std.testing.allocator);
+    defer b.deinit();
+    try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
+    try b.push(.{ .name = "foo", .line = 1, .column = 5 });
+    try b.push(.{ .name = "<global>", .line = 1, .column = 15 });
+    try std.testing.expectEqual(@as(usize, 2), b.namesSlice().len);
+    try std.testing.expectEqualStrings("AAA,KC,UD", b.mappingsSlice());
 }
 
 test "new line — semicolon + 3-field with line_delta" {

@@ -116,6 +116,9 @@ pub const CodegenOptions = struct {
     dev_module_id: ?[]const u8 = null,
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
     import_records: []const @import("../bundler/types.zig").ImportRecord = &.{},
+    /// Metro x_facebook_sources function map emit 활성화.
+    /// --platform=react-native 시 자동 활성화 (PR#3).
+    sourcemap_function_map: bool = false,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -132,6 +135,8 @@ const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__d
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
 const Mapping = @import("sourcemap.zig").Mapping;
+const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
+const RangeMapping = @import("function_map.zig").RangeMapping;
 
 pub const Codegen = struct {
     ast: *const Ast,
@@ -167,6 +172,15 @@ pub const Codegen = struct {
     // JSX 필드 제거: Transformer의 jsx_lowering이 JSX → call_expression 변환을 담당.
     // codegen은 더 이상 JSX AST 노드를 처리하지 않음.
 
+    /// Metro function map 빌더 (sourcemap_function_map 활성화 시).
+    fn_map_builder: ?FunctionMapBuilder = null,
+    /// function map 이름 스택. enter 시 push, exit 시 pop. last()가 현재 scope 이름.
+    fn_name_stack: std.ArrayList([]const u8) = .empty,
+    /// 다음 function/arrow/class에 적용할 contextual name.
+    /// parent emit(VariableDeclarator, Assignment, ObjectProperty 등)에서 설정,
+    /// emitFunction/emitArrow/emitClass 진입 시 소비 후 null 로 초기화.
+    pending_fn_name: ?[]const u8 = null,
+
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }
@@ -177,6 +191,7 @@ pub const Codegen = struct {
             builder.source_root = options.source_root;
             builder.sources_content = options.sources_content;
         }
+        const fm = if (options.sourcemap_function_map) FunctionMapBuilder.init(allocator) else null;
         return .{
             .ast = ast,
             .allocator = allocator,
@@ -184,6 +199,7 @@ pub const Codegen = struct {
             .options = options,
             .indent_level = 0,
             .sm_builder = sm,
+            .fn_map_builder = fm,
             .gen_line = 0,
             .gen_col = 0,
             // JSX 필드 제거: Transformer가 JSX lowering 담당
@@ -195,6 +211,8 @@ pub const Codegen = struct {
         self.declared_names.deinit(self.allocator);
         self.keep_names_entries.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
+        if (self.fn_map_builder) |*fm| fm.deinit();
+        self.fn_name_stack.deinit(self.allocator);
     }
 
     /// 특정 statement 노드 목록만 코드로 생성한다 (__esm var 호이스팅용).
@@ -221,7 +239,11 @@ pub const Codegen = struct {
 
         // namespace var 중복 제거: top-level 선언 이름 사전 수집
         self.collectTopLevelDeclNames(root);
+
+        // function map: program 진입 시 <global> frame
+        if (self.fn_map_builder != null) try self.fnMapEnter("<global>");
         try self.emitNode(root);
+        if (self.fn_map_builder != null) try self.fnMapExit();
 
         // keepNames: 수집된 entries를 코드 끝에 __name() 호출로 append (복사 없음)
         for (self.keep_names_entries.items) |entry| {
@@ -328,6 +350,16 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// 소스맵 JSON + x_facebook_sources를 함께 생성한다. generate() 후에 호출.
+    /// fn_map_builder가 없으면 generateSourceMap과 동일.
+    pub fn generateSourceMapWithFunctionMap(self: *Codegen, output_file: []const u8) !?[]const u8 {
+        const sm = &(self.sm_builder orelse return null);
+        if (self.fn_map_builder) |*fm| {
+            return try sm.generateJSONWithFunctionMap(self.allocator, output_file, fm);
+        }
+        return try sm.generateJSON(output_file);
+    }
+
     // ================================================================
     // 출력 헬퍼
     // ================================================================
@@ -353,6 +385,166 @@ pub const Codegen = struct {
         } else {
             self.gen_col += 1;
         }
+    }
+
+    // ================================================================
+    // Function Map 도우미
+    // ================================================================
+
+    /// 현재 generated position으로 새 이름 frame에 진입. fn_name_stack push.
+    /// 이름이 바뀔 때만 FunctionMapBuilder.push 호출 (중복 제거는 FunctionMapBuilder가 담당).
+    fn fnMapEnter(self: *Codegen, name: []const u8) !void {
+        if (self.fn_map_builder == null) return;
+        try self.fn_map_builder.?.push(.{
+            .name = name,
+            .line = self.gen_line + 1, // FunctionMapBuilder는 1-based
+            .column = self.gen_col,
+        });
+        try self.fn_name_stack.append(self.allocator, name);
+    }
+
+    /// 현재 generated position으로 frame 종료. fn_name_stack pop 후 부모 이름으로 복귀.
+    fn fnMapExit(self: *Codegen) !void {
+        if (self.fn_map_builder == null) return;
+        if (self.fn_name_stack.items.len == 0) return;
+        _ = self.fn_name_stack.pop();
+        if (self.fn_name_stack.items.len == 0) return;
+        const parent = self.fn_name_stack.items[self.fn_name_stack.items.len - 1];
+        try self.fn_map_builder.?.push(.{
+            .name = parent,
+            .line = self.gen_line + 1,
+            .column = self.gen_col,
+        });
+    }
+
+    /// 노드가 function/arrow/class 인지 확인.
+    fn isFunctionLike(self: *const Codegen, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        return switch (self.ast.getNode(idx).tag) {
+            .function_declaration, .function_expression, .function,
+            .arrow_function_expression,
+            .class_declaration, .class_expression => true,
+            else => false,
+        };
+    }
+
+    /// binding_identifier 노드에서 이름 추출.
+    fn resolveBindingName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
+        if (idx.isNone()) return null;
+        const n = self.ast.getNode(idx);
+        return switch (n.tag) {
+            .binding_identifier => self.ast.getText(n.data.string_ref),
+            else => null,
+        };
+    }
+
+    /// MemberExpression/identifier의 leaf 이름 추출 (assignment left 용).
+    /// `a.b.c` → "c", `a["str"]` → "str", `a[expr]` → null
+    fn resolveMemberLeafName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
+        if (idx.isNone()) return null;
+        const n = self.ast.getNode(idx);
+        return switch (n.tag) {
+            .identifier_reference,
+            .assignment_target_identifier,
+            .binding_identifier => self.ast.getText(n.data.string_ref),
+            .static_member_expression => blk: {
+                const e = n.data.extra;
+                if (!self.ast.hasExtra(e, 2)) break :blk null;
+                const property = self.ast.readExtraNode(e, 1);
+                break :blk self.resolveIdentifierText(property);
+            },
+            .computed_member_expression => blk: {
+                const e = n.data.extra;
+                if (!self.ast.hasExtra(e, 2)) break :blk null;
+                const property = self.ast.readExtraNode(e, 1);
+                break :blk self.resolveKeyName(property);
+            },
+            else => null,
+        };
+    }
+
+    /// object/method key 노드에서 이름 추출.
+    /// identifier → 이름, string_literal → 값(따옴표 제거), numeric → 텍스트,
+    /// computed(literal) → 값, computed(expr) → null
+    fn resolveKeyName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
+        if (idx.isNone()) return null;
+        const n = self.ast.getNode(idx);
+        return switch (n.tag) {
+            .identifier_reference,
+            .binding_identifier,
+            .private_identifier => self.ast.getText(n.data.string_ref),
+            .string_literal => self.resolveStringLiteralValue(n),
+            .numeric_literal => self.ast.getText(n.span),
+            .computed_property_key => blk: {
+                const inner = n.data.unary.operand;
+                if (inner.isNone()) break :blk null;
+                const inner_n = self.ast.getNode(inner);
+                // 리터럴만 이름으로 사용 (변수 참조는 런타임 값 → anonymous)
+                break :blk switch (inner_n.tag) {
+                    .string_literal => self.resolveStringLiteralValue(inner_n),
+                    .numeric_literal => self.ast.getText(inner_n.span),
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
+
+    fn resolveIdentifierText(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
+        if (idx.isNone()) return null;
+        const n = self.ast.getNode(idx);
+        return switch (n.tag) {
+            .identifier_reference,
+            .binding_identifier,
+            .private_identifier => self.ast.getText(n.data.string_ref),
+            else => null,
+        };
+    }
+
+    /// string_literal 노드에서 따옴표를 제거한 값 반환.
+    fn resolveStringLiteralValue(self: *const Codegen, n: Node) ?[]const u8 {
+        const text = self.ast.getText(n.span);
+        return if (text.len >= 2) text[1 .. text.len - 1] else null;
+    }
+
+    /// fn_name_stack top (현재 class 이름). <global>/<anonymous> 이면 null.
+    fn resolveParentClassName(self: *const Codegen) ?[]const u8 {
+        const stack = self.fn_name_stack.items;
+        if (stack.len == 0) return null;
+        const top = stack[stack.len - 1];
+        if (std.mem.eql(u8, top, "<global>") or std.mem.eql(u8, top, "<anonymous>")) return null;
+        return top;
+    }
+
+    /// method_definition 키 + flags → Metro 스타일 이름 생성.
+    /// getter → "get__name", setter → "set__name", constructor → class 이름.
+    /// 부모 class 이름이 있으면 "ClassName#method" / "ClassName.method" 형태.
+    fn resolveMethodName(self: *Codegen, key: NodeIndex, flags: u32) ![]const u8 {
+        const is_getter = flags & 0x02 != 0;
+        const is_setter = flags & 0x04 != 0;
+        const is_static = flags & 0x01 != 0;
+
+        // constructor → 부모 class 이름
+        if (self.resolveKeyName(key)) |k| {
+            if (std.mem.eql(u8, k, "constructor")) {
+                return self.resolveParentClassName() orelse "constructor";
+            }
+        }
+
+        const raw = self.resolveKeyName(key) orelse "<anonymous>";
+
+        const method_name: []const u8 = if (is_getter)
+            try std.fmt.allocPrint(self.allocator, "get__{s}", .{raw})
+        else if (is_setter)
+            try std.fmt.allocPrint(self.allocator, "set__{s}", .{raw})
+        else
+            raw;
+
+        if (self.resolveParentClassName()) |class_name| {
+            const sep: []const u8 = if (is_static) "." else "#";
+            return std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ class_name, sep, method_name });
+        }
+        return method_name;
     }
 
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
@@ -1294,7 +1486,19 @@ pub const Codegen = struct {
             try self.writeByte('=');
         }
         try self.writeSpace();
-        try self.emitNode(node.data.binary.right);
+        const right = node.data.binary.right;
+        // contextual name: 단순 할당(=)이고 오른쪽이 function-like → left leaf 이름 사용.
+        // flags == 0: 트랜스포머 합성 = 노드, flags == Kind.eq: 파서 생성 = 노드.
+        const is_simple_assign = node.data.binary.flags == 0 or
+            @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
+        if (self.fn_map_builder != null and is_simple_assign and self.isFunctionLike(right)) {
+            const saved = self.pending_fn_name;
+            self.pending_fn_name = self.resolveMemberLeafName(node.data.binary.left);
+            try self.emitNode(right);
+            self.pending_fn_name = saved;
+        } else {
+            try self.emitNode(right);
+        }
     }
 
     fn emitConditional(self: *Codegen, node: Node) !void {
@@ -1404,7 +1608,15 @@ pub const Codegen = struct {
             } else {
                 try self.write(": ");
             }
-            try self.emitNode(value);
+            // contextual name: 값이 function-like → key 이름 사용
+            if (self.fn_map_builder != null and self.isFunctionLike(value)) {
+                const saved = self.pending_fn_name;
+                self.pending_fn_name = self.resolveKeyName(key);
+                try self.emitNode(value);
+                self.pending_fn_name = saved;
+            } else {
+                try self.emitNode(value);
+            }
         }
     }
 
@@ -1852,6 +2064,20 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[3]);
         const flags = extras[4];
 
+        // function map: contextual name 소비 후 진입
+        const saved_pending = self.pending_fn_name;
+        self.pending_fn_name = null;
+        if (self.fn_map_builder != null) {
+            const fn_name: []const u8 = if (!name.isNone())
+                self.ast.getText(self.ast.getNode(name).data.string_ref)
+            else
+                saved_pending orelse "<anonymous>";
+            try self.fnMapEnter(fn_name);
+        }
+        defer if (self.fn_map_builder != null) {
+            self.fnMapExit() catch {};
+        };
+
         // strict execution order: function declaration → 할당식으로 변환.
         // `function foo() {...}` → `foo = function() {...};`
         // var foo; 선언은 esm_wrap에서 hoisted_var_names로 이미 top-level에 배치됨.
@@ -1892,6 +2118,16 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[e + 1]);
         const flags = extras[e + 2];
 
+        // function map: 화살표 함수는 항상 익명 — contextual name 사용
+        const saved_pending = self.pending_fn_name;
+        self.pending_fn_name = null;
+        if (self.fn_map_builder != null) {
+            try self.fnMapEnter(saved_pending orelse "<anonymous>");
+        }
+        defer if (self.fn_map_builder != null) {
+            self.fnMapExit() catch {};
+        };
+
         if (flags & 0x01 != 0) try self.write("async ");
 
         // params 출력 — esbuild 호환: 항상 괄호로 감싸기 (단일 파라미터도 괄호 추가)
@@ -1925,6 +2161,20 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
         const deco_start = self.ast.extra_data.items[e + 6];
         const deco_len = self.ast.extra_data.items[e + 7];
+
+        // function map: class도 frame (Metro는 Class를 Function처럼 처리)
+        const saved_pending = self.pending_fn_name;
+        self.pending_fn_name = null;
+        if (self.fn_map_builder != null) {
+            const class_name: []const u8 = if (!name.isNone())
+                self.ast.getText(self.ast.getNode(name).data.string_ref)
+            else
+                saved_pending orelse "<anonymous>";
+            try self.fnMapEnter(class_name);
+        }
+        defer if (self.fn_map_builder != null) {
+            self.fnMapExit() catch {};
+        };
 
         // class는 block-scoped → __esm 콜백 밖 __export getter가 접근 불가.
         // variable_declaration과 동일하게 할당문으로 변환. (emitter가 var 선언을 밖에 배치)
@@ -1999,6 +2249,15 @@ pub const Codegen = struct {
         const deco_start = extras[5];
         const deco_len = extras[6];
 
+        // function map: ClassName#method / ClassName.method / get__name / set__name
+        if (self.fn_map_builder != null) {
+            const method_name = try self.resolveMethodName(key, flags);
+            try self.fnMapEnter(method_name);
+        }
+        defer if (self.fn_map_builder != null) {
+            self.fnMapExit() catch {};
+        };
+
         try self.emitMemberDecorators(deco_start, deco_len);
 
         // flags: bit0=static, bit1=getter, bit2=setter, bit3=async, bit4=generator(*)
@@ -2036,7 +2295,15 @@ pub const Codegen = struct {
             try self.writeSpace();
             try self.writeByte('=');
             try self.writeSpace();
-            try self.emitNode(value);
+            // contextual name: class property = function-like → key 이름 사용
+            if (self.fn_map_builder != null and self.isFunctionLike(value)) {
+                const saved = self.pending_fn_name;
+                self.pending_fn_name = self.resolveKeyName(key);
+                try self.emitNode(value);
+                self.pending_fn_name = saved;
+            } else {
+                try self.emitNode(value);
+            }
         }
         try self.writeByte(';');
     }
@@ -2207,7 +2474,15 @@ pub const Codegen = struct {
             try self.writeSpace();
             try self.writeByte('=');
             try self.writeSpace();
-            try self.emitNode(init_val);
+            // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
+            if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
+                const saved = self.pending_fn_name;
+                self.pending_fn_name = self.resolveBindingName(name);
+                try self.emitNode(init_val);
+                self.pending_fn_name = saved;
+            } else {
+                try self.emitNode(init_val);
+            }
         }
     }
 
@@ -2727,7 +3002,15 @@ pub const Codegen = struct {
         }
         try self.write("export default ");
         const inner_idx = node.data.unary.operand;
-        try self.emitNode(inner_idx);
+        // contextual name: 익명 function/arrow/class → "default"
+        if (self.fn_map_builder != null and self.isFunctionLike(inner_idx)) {
+            const saved = self.pending_fn_name;
+            self.pending_fn_name = "default";
+            try self.emitNode(inner_idx);
+            self.pending_fn_name = saved;
+        } else {
+            try self.emitNode(inner_idx);
+        }
         // class/function 선언 뒤에는 세미콜론 불필요
         if (!inner_idx.isNone()) {
             const inner_tag = self.ast.getNode(inner_idx).tag;
