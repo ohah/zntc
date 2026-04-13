@@ -10,6 +10,7 @@
 //!    를 통해서만 plugin 상태에 접근.
 //! 이 규칙을 지키면 추후 visitor-hook 아키텍처로 전환 시 비용이 저렴하다.
 
+const std = @import("std");
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
@@ -31,6 +32,39 @@ pub const WorkletState = struct {
     plugin_version_span: ?Span = null,
 };
 
+pub const RefreshRegistration = struct {
+    /// _c / _c2 핸들 변수의 string_table Span (재사용)
+    handle_span: Span,
+    /// 컴포넌트 이름 (문자열)
+    name: []const u8,
+};
+
+pub const RefreshSignature = struct {
+    /// _s / _s2 핸들 변수의 string_table Span
+    handle_span: Span,
+    /// 컴포넌트 이름 (문자열)
+    component_name: []const u8,
+    /// Hook 시그니처 문자열 ("useState{[foo, setFoo](0)}\nuseEffect{}")
+    signature: []const u8,
+};
+
+pub const RefreshState = struct {
+    /// 감지된 컴포넌트 등록 목록.
+    /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
+    registrations: std.ArrayList(RefreshRegistration) = .empty,
+
+    /// Hook 시그니처 등록 목록.
+    /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
+    signatures: std.ArrayList(RefreshSignature) = .empty,
+
+    /// 등록 억제 플래그 (plugin이 IIFE 내부 함수를 visit할 때 설정).
+    /// 중첩 function_declaration이 컴포넌트로 오인되어 ReferenceError 유발하는 것을 방지.
+    ///
+    /// NOTE: 현재 worklet_plugin이 직접 이 플래그를 세팅하는 cross-plugin 접근이 있다 (#1195 후속 과제).
+    suppress_registration: bool = false,
+};
+
 pub const PluginState = struct {
     worklet: WorkletState = .{},
+    refresh: RefreshState = .{},
 };
