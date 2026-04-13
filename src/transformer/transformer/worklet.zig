@@ -983,6 +983,30 @@ fn buildInitDataObject(self: *Transformer, init_code: []const u8, source_locatio
         try self.scratch.append(self.allocator, prop);
     }
 
+    // sourceMap property — Babel plugin이 dev 빌드에서 항상 주입하는 필드.
+    // ZTS는 현재 worklet body 수준의 source map을 생성하지 않으므로 빈 문자열.
+    // Reanimated runtime이 필드 존재 자체를 전제하는 경우를 대비해 빈 값이라도 설정.
+    {
+        const key_span = try self.ast.addString("sourceMap");
+        const key = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = key_span,
+            .data = .{ .string_ref = key_span },
+        });
+        const empty_str_span = try self.ast.addString("\"\"");
+        const value = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = empty_str_span,
+            .data = .{ .string_ref = empty_str_span },
+        });
+        const prop = try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = zero_span,
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+        });
+        try self.scratch.append(self.allocator, prop);
+    }
+
     const obj_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{
         .tag = .object_expression,
@@ -1087,6 +1111,8 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
     const none = @intFromEnum(NodeIndex.none);
 
     // object binding pattern: { var1, var2, ... }
+    // codegen에서 binding_property.right가 NodeIndex.none이면 `{key}` shorthand로 출력됨.
+    // Babel/Metro 출력 (`const {X,Y}`)과 형태 일치 — Reanimated가 worklet code string을 파싱할 때 동일 형태 기대.
     for (closure_vars) |cv| {
         const name_span = try self.ast.addString(cv.name);
         const key = try self.ast.addNode(.{
@@ -1094,16 +1120,10 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
             .span = name_span,
             .data = .{ .string_ref = name_span },
         });
-        const binding = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
-        // shorthand binding property: { varName } → key = varName, value = varName binding
         const prop = try self.ast.addNode(.{
             .tag = .binding_property,
             .span = zero_span,
-            .data = .{ .binary = .{ .left = key, .right = binding, .flags = 0 } },
+            .data = .{ .binary = .{ .left = key, .right = NodeIndex.none, .flags = 0 } },
         });
         try self.scratch.append(self.allocator, prop);
     }
