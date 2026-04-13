@@ -19,6 +19,14 @@ import { tmpdir } from "node:os";
 const ROOT = resolve(import.meta.dir, "../..");
 const WARMUP = 3;
 const ITERATIONS = 10;
+const IS_WINDOWS = process.platform === "win32";
+const ZTS_BIN_NAME = IS_WINDOWS ? "zts.exe" : "zts";
+
+// Windows 경로의 백슬래시는 템플릿 문자열에 그대로 삽입하면 이스케이프 시퀀스로
+// 해석돼 잘못된 경로가 됨. JSON.stringify로 감싸 literal string으로 안전하게 주입.
+function q(s: string): string {
+  return JSON.stringify(s);
+}
 
 // ─── Fixture 생성 ───
 
@@ -45,10 +53,10 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const NAPI_PATH = "${resolve(ROOT, "zig-out/lib/zts.node")}";
+const NAPI_PATH = ${q(resolve(ROOT, "zig-out/lib/zts.node"))};
 const native = require(NAPI_PATH);
 
-const source = readFileSync("${sourceFile}", "utf8");
+const source = readFileSync(${q(sourceFile)}, "utf8");
 const flags = (1 << 16) | (1 << 22);
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
@@ -80,7 +88,7 @@ console.log(JSON.stringify({
     const script = `
 import { readFileSync } from "node:fs";
 
-const WASM_PATH = "${resolve(ROOT, "zig-out/bin/zts.wasm")}";
+const WASM_PATH = ${q(resolve(ROOT, "zig-out/bin/zts.wasm"))};
 const encoder = new TextEncoder();
 
 const wasmBytes = readFileSync(WASM_PATH);
@@ -103,7 +111,7 @@ const instance = new WebAssembly.Instance(mod, imports);
 memory = instance.exports.memory;
 const w = instance.exports;
 
-const source = readFileSync("${sourceFile}", "utf8");
+const source = readFileSync(${q(sourceFile)}, "utf8");
 const flags = (1 << 16) | (1 << 22);
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
@@ -148,8 +156,8 @@ console.log(JSON.stringify({
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const ZTS_BIN = "${resolve(ROOT, "zig-out/bin/zts")}";
-const source = readFileSync("${sourceFile}", "utf8");
+const ZTS_BIN = ${q(resolve(ROOT, "zig-out/bin", ZTS_BIN_NAME))};
+const source = readFileSync(${q(sourceFile)}, "utf8");
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
 
