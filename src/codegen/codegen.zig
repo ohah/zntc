@@ -1447,6 +1447,10 @@ pub const Codegen = struct {
         if (inner_node.tag != .identifier_reference) return false;
         if (self.options.linking_metadata) |md| {
             if (self.resolveSymbolId(inner, md)) |sid| {
+                // namespace import(`import * as X`)는 rename 이름(`X$N`)에 값이 할당되지 않고
+                // 별도 ns var(`X_ns`)에 object literal이 저장된다. 따라서 self-ref 아님 —
+                // `export default X`는 반드시 `X$N = X_ns` 할당이 필요.
+                if (md.ns_inline_objects.get(sid) != null) return false;
                 if (md.renames.get(sid)) |renamed| {
                     return std.mem.eql(u8, renamed, def_name);
                 }
@@ -2661,11 +2665,14 @@ pub const Codegen = struct {
                             try self.emitNode(inner);
                             try self.writeByte(';');
                         } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                            // mangling으로 이름이 바뀐 경우 (View → View$44) 할당 필요.
-                            try self.write(def_name);
-                            try self.writeByte('=');
-                            try self.emitNode(inner);
-                            try self.writeByte(';');
+                            // namespace import이면 ns var name을 직접 사용 (rename과 다름).
+                            if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
+                                // mangling으로 이름이 바뀐 경우 (View → View$44) 할당 필요.
+                                try self.write(def_name);
+                                try self.writeByte('=');
+                                try self.emitNode(inner);
+                                try self.writeByte(';');
+                            }
                         }
                     }
                 }
@@ -2689,7 +2696,14 @@ pub const Codegen = struct {
                 } else {
                     const def_name = self.options.linking_metadata.?.default_export_name;
                     if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                        try self.emitDefaultVarAssignment(def_name, inner);
+                        // namespace import(`export default X` where `X` is `import * as X`):
+                        // 실제 값은 `X_ns` (ns_inline_objects의 var_name)에 저장되므로
+                        // inner의 rename이 아닌 ns var에서 읽어야 한다.
+                        if (try self.tryEmitNsVarAssignment(def_name, inner)) {
+                            // 완료
+                        } else {
+                            try self.emitDefaultVarAssignment(def_name, inner);
+                        }
                     }
                 }
             }
@@ -2705,6 +2719,29 @@ pub const Codegen = struct {
                 try self.writeByte(';');
             }
         }
+    }
+
+    /// inner가 namespace import (`import * as X`) 를 참조하면 `<def_name> = <X_ns>;` 할당을 emit.
+    /// 성공 시 true, namespace import가 아니면 false (caller가 기본 emit 수행).
+    /// `var Animated$6;` 선언과 `Animated_ns = {...}` 객체 사이 연결을 복원해 default getter가
+    /// 올바른 namespace 객체를 반환하도록 한다 (#1208).
+    fn tryEmitNsVarAssignment(self: *Codegen, def_name: []const u8, inner: NodeIndex) !bool {
+        const md = self.options.linking_metadata orelse return false;
+        const inner_node = self.ast.getNode(inner);
+        if (inner_node.tag != .identifier_reference) return false;
+        const sid = self.resolveSymbolId(inner, md) orelse return false;
+        const entry = md.ns_inline_objects.get(sid) orelse return false;
+
+        if (!self.options.esm_var_assign_only) try self.write("var ");
+        try self.write(def_name);
+        if (self.options.minify_whitespace) {
+            try self.writeByte('=');
+        } else {
+            try self.write(" = ");
+        }
+        try self.write(entry.var_name);
+        try self.writeByte(';');
+        return true;
     }
 
     /// `var <name> = <inner>;` 출력 (export default 변환용).
