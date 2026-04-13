@@ -2793,3 +2793,44 @@ test "ZTS: __workletClass with es5 target produces lowered IIFE class" {
     try std.testing.expect(std.mem.indexOf(u8, code, "__classCallCheck") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "Clazz__classFactory") != null);
 }
+
+test "ZTS: arrow ExpressionBody preserves implicit return in __initData.code (issue #1191)" {
+    // useAnimatedStyle(() => ({ ... })) 같은 arrow + expression body 형태가
+    // __initData.code에 return 없이 직렬화되어 UI thread가 undefined를 반환하던 버그 회귀 방지.
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\const animatedStyle = useAnimatedStyle(() => ({
+        \\  transform: [{ scale: scale.value }],
+        \\}));
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // __initData.code 문자열 안의 function body에 `return{` 또는 `return (` 가 포함되어야 한다.
+    const has_return = std.mem.indexOf(u8, code, "return{") != null or
+        std.mem.indexOf(u8, code, "return {") != null or
+        std.mem.indexOf(u8, code, "return(") != null or
+        std.mem.indexOf(u8, code, "return (") != null;
+    try std.testing.expect(has_return);
+}
+
+test "ZTS: arrow ExpressionBody with closure preserves implicit return (issue #1191)" {
+    var r = try tt.transformWorklet(std.testing.allocator,
+        \\function Box(){
+        \\  const scale = useSharedValue(1);
+        \\  const animatedStyle = useAnimatedStyle(() => ({
+        \\    transform: [{ scale: scale.value }],
+        \\  }));
+        \\}
+    );
+    defer r.deinit();
+    const code = try tt.generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // closure destructuring이 삽입된 뒤에도 return이 살아있어야 함.
+    const has_closure = std.mem.indexOf(u8, code, "this.__closure") != null;
+    const has_return = std.mem.indexOf(u8, code, "return{") != null or
+        std.mem.indexOf(u8, code, "return {") != null or
+        std.mem.indexOf(u8, code, "return(") != null or
+        std.mem.indexOf(u8, code, "return (") != null;
+    try std.testing.expect(has_closure);
+    try std.testing.expect(has_return);
+}
