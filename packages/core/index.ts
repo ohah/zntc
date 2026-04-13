@@ -254,6 +254,21 @@ export interface WatchRebuildEvent {
   graphChanged?: boolean;
   updates?: Array<{ id: string; code: string }>;
   bytes?: number;
+  /** 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출. */
+  phaseDurations?: {
+    /** 변경 감지 (mtime 스캔) */
+    detect: number;
+    /** 파싱 (resolve + parse + finalize) */
+    parse: number;
+    /** 의미 분석 (scope hoisting + linking + tree-shaking) */
+    semantic: number;
+    /** 코드 생성 (transform + codegen) */
+    emit: number;
+    /** HMR delta 추출 */
+    delta: number;
+    /** 총 리빌드 시간 (detect → delta 합산) */
+    total: number;
+  };
 }
 
 export interface WatchHandle {

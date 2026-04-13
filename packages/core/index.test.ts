@@ -3685,6 +3685,193 @@ describe("watch()", () => {
 });
 
 // ================================================================
+// Issue #1223: HMR perf — 재현 테스트
+// 폴링 워처(500ms), mtime-only 캐시, 디바운스 부재, 증분 미흡, 관측성 부재
+// ================================================================
+
+describe("Issue #1223 HMR perf 재현", () => {
+  // ---- Phase 3: 관측성 (phaseDurations) ----
+  test("phase3: WatchRebuildEvent에 phaseDurations 필드가 노출되어야 함", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-1223-phase3-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<any>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+
+    const event = await rebuildP;
+    handle.stop();
+    rmSync(dir, { recursive: true });
+
+    expect(event.phaseDurations).toBeDefined();
+    expect(typeof event.phaseDurations.detect).toBe("number");
+    expect(typeof event.phaseDurations.parse).toBe("number");
+    expect(typeof event.phaseDurations.semantic).toBe("number");
+    expect(typeof event.phaseDurations.emit).toBe("number");
+    expect(typeof event.phaseDurations.delta).toBe("number");
+    expect(typeof event.phaseDurations.total).toBe("number");
+    expect(event.phaseDurations.total).toBeGreaterThan(0);
+  }, 10000);
+
+  // ---- Phase 1a: 워처 latency (목표 < 200ms, 현재 폴링 500ms) ----
+  test("phase1a: 변경 감지부터 onRebuild까지 200ms 이내여야 함 (현재 500ms 폴링)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-1223-phase1a-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<void>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuildDone();
+      },
+    });
+    await readyP;
+    await new Promise((r) => setTimeout(r, 50));
+
+    const t0 = performance.now();
+    writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+    await rebuildP;
+    const elapsed = performance.now() - t0;
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+
+    expect(elapsed).toBeLessThan(200);
+  }, 10000);
+
+  // ---- Phase 1b: content hash (mtime만 갱신, 내용 동일 → 알림 없음) ----
+  test("phase1b: 내용이 동일하면 onRebuild가 호출되지 않아야 함 (content hash)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-1223-phase1b-"));
+    const entry = join(dir, "entry.ts");
+    const src = "export const x = 1;";
+    writeFileSync(entry, src);
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let rebuildCount = 0;
+
+    const handle = watch({
+      entryPoints: [entry],
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuildCount++;
+      },
+    });
+    await readyP;
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 내용 동일, mtime만 갱신 (touch와 유사)
+    writeFileSync(entry, src);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+
+    // 현재: mtime만 봐서 무조건 리빌드 트리거 → rebuildCount=1
+    // 목표: content hash로 스킵 → rebuildCount=0
+    expect(rebuildCount).toBe(0);
+  }, 10000);
+
+  // ---- Phase 1c: 디바운스 (idle 상태에서 50ms 내 두 번 저장 → 1회 리빌드) ----
+  test("phase1c: 첫 리빌드 후 50ms 내 두 번 저장은 한 번으로 병합되어야 함", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-1223-phase1c-"));
+    const entry = join(dir, "entry.ts");
+    writeFileSync(entry, "export const x = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let rebuildCount = 0;
+    let firstRebuildResolve: (() => void) | null = null;
+    const firstRebuildP = new Promise<void>((r) => {
+      firstRebuildResolve = r;
+    });
+
+    const handle = watch({
+      entryPoints: [entry],
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuildCount++;
+        if (rebuildCount === 1) firstRebuildResolve!();
+      },
+    });
+    await readyP;
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 첫 저장 → 첫 리빌드 완료까지 대기
+    writeFileSync(entry, "export const x = 2;");
+    await firstRebuildP;
+    expect(rebuildCount).toBe(1);
+
+    // idle 상태에서 50ms 내에 두 번 빠르게 저장
+    writeFileSync(entry, "export const x = 3;");
+    await new Promise((r) => setTimeout(r, 10));
+    writeFileSync(entry, "export const x = 4;");
+
+    // 디바운스(50ms) + 빌드 시간 충분히 대기
+    await new Promise((r) => setTimeout(r, 2000));
+    handle.stop();
+    rmSync(dir, { recursive: true });
+
+    // 현재: 폴링으로 두 번 모두 감지 → rebuildCount=3
+    // 목표: 디바운스로 병합 → rebuildCount=2
+    expect(rebuildCount).toBe(2);
+  }, 15000);
+
+  // ---- Phase 2: 증분 그래프 (1개 변경 → 1개만 재파싱) ----
+  test("phase2: 의존 그래프에서 leaf 1개만 변경 시 reparsedModules=1 이어야 함", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-1223-phase2-"));
+    writeFileSync(join(dir, "a.ts"), 'import { b } from "./b"; export const a = b + 1;');
+    writeFileSync(join(dir, "b.ts"), 'import { c } from "./c"; export const b = c + 1;');
+    writeFileSync(join(dir, "c.ts"), "export const c = 1;");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<any>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "a.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+    await new Promise((r) => setTimeout(r, 100));
+
+    // leaf(c.ts)만 변경 → c만 재파싱되어야 함 (a, b는 캐시)
+    writeFileSync(join(dir, "c.ts"), "export const c = 999;");
+
+    const event = await rebuildP;
+    handle.stop();
+    rmSync(dir, { recursive: true });
+
+    expect(event.reparsedModules).toBe(1);
+  }, 10000);
+});
+
+// ================================================================
 // buildResult에 moduleCodes/modulePaths 노출 테스트
 // ================================================================
 
