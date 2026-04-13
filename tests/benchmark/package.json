@@ -97,7 +97,7 @@
     "rfdc": "^1.0.0",
     "rxjs": "^7.0.0",
     "safe-buffer": "^5.0.0",
-    "semver": "^7.0.0",
+    "semver": "^7.7.4",
     "signal-exit": "^4.0.0",
     "solid-js": "^1.0.0",
     "statuses": "^2.0.0",
