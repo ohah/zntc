@@ -1182,3 +1182,205 @@ test "TreeShaking: pure static field in unused class is removed (#1261 companion
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_FIELD_MARKER") == null);
 }
+
+test "TreeShaking: dynamic import transitive dependency preserved (#1260 edge)" {
+    // import("./lazy") → lazy.ts가 re-export from './deep'인 경우
+    // deep.ts의 export도 보존되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function load() {
+        \\  const m = await import('./lazy');
+        \\  return m.token();
+        \\}
+    );
+    try writeFile(tmp.dir, "lazy.ts", "export { token } from './deep';");
+    try writeFile(tmp.dir, "deep.ts",
+        \\export function token() { return "DEEP_TRANSITIVE_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEEP_TRANSITIVE_MARKER") != null);
+}
+
+test "TreeShaking: dynamic import deep chain (3 levels) preserved (#1260 edge)" {
+    // entry -> dyn import a -> static b -> static c — c의 export가 reached
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function load() {
+        \\  const a = await import('./a');
+        \\  return a.chain();
+        \\}
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\import { fromB } from './b';
+        \\export function chain() { return fromB(); }
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { fromC } from './c';
+        \\export function fromB() { return fromC(); }
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\export function fromC() { return "CHAIN_LEVEL3_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CHAIN_LEVEL3_MARKER") != null);
+}
+
+test "TreeShaking: dynamic + static import of same module coexist (#1260 edge)" {
+    // 동일 모듈이 static import와 dynamic import로 동시 참조될 때
+    // 둘 다 올바르게 동작하고 중복 번들되지 않아야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { eager } from './shared';
+        \\export async function mix() {
+        \\  const m = await import('./shared');
+        \\  return eager() + m.lazy();
+        \\}
+    );
+    try writeFile(tmp.dir, "shared.ts",
+        \\export function eager() { return "EAGER_MARKER"; }
+        \\export function lazy() { return "LAZY_MARKER"; }
+        \\export function unused() { return "UNUSED_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // dynamic import는 전체 export 보존이므로 unused도 남아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "EAGER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_MARKER") != null);
+}
+
+test "TreeShaking: dynamic import with non-static specifier does not protect (#1260 edge)" {
+    // import(variable) 처럼 정적 해석 불가한 경우 resolved가 none이므로
+    // 보호 대상 아님 — 미참조 모듈은 정상적으로 tree-shake되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './a';
+        \\declare const name: string;
+        \\export async function load() {
+        \\  const m = await import(/* non-static */ name as string);
+        \\  return (m as any).x;
+        \\}
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "a.ts", "export function used() { return 'A_USED'; }");
+    try writeFile(tmp.dir, "b.ts",
+        \\export function unused() { return "B_UNRELATED_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // b.ts는 참조 자체가 없으므로 원래부터 번들에 없음 — 정상 제거 확인
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "B_UNRELATED_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "A_USED") != null);
+}
+
+test "TreeShaking: class static block side-effect preserved (#1261 edge)" {
+    // static initialization block도 side-effect로 간주되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './side';
+        \\console.log('main');
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\function marker() { console.log("STATIC_BLOCK_MARKER"); return 1; }
+        \\export class Unused {
+        \\  static { marker(); }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "STATIC_BLOCK_MARKER") != null);
+}
+
+test "TreeShaking: class extends call expression preserved (#1261 edge)" {
+    // class Foo extends getBase() — extends call은 side-effect이므로 보존.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './side';
+        \\console.log('main');
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\function getBase() { console.log("EXTENDS_CALL_MARKER"); return class {}; }
+        \\export class Unused extends getBase() {}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "EXTENDS_CALL_MARKER") != null);
+}
