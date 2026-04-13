@@ -13,11 +13,14 @@ pub const Codegen = codegen.Codegen;
 pub const QuoteStyle = codegen.QuoteStyle;
 pub const sourcemap = @import("sourcemap.zig");
 pub const SourceMapBuilder = sourcemap.SourceMapBuilder;
+pub const function_map = @import("function_map.zig");
+pub const FunctionMapBuilder = function_map.FunctionMapBuilder;
 pub const mangler = @import("mangler.zig");
 
 test {
     _ = codegen;
     _ = sourcemap;
+    _ = function_map;
     _ = mangler;
 
     // test files
