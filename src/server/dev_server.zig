@@ -114,6 +114,81 @@ fn writeSseFrame(writer: *std.Io.Writer, event_type: []const u8, data_json: []co
     try writer.flush();
 }
 
+/// 최근 이벤트 순환 버퍼 — MCP `get_build_events`에서 특정 시점 이후 이벤트 조회에 사용.
+/// 고정 용량; 오래된 엔트리는 덮어쓰임. `seq`로 이벤트 순서 추적.
+const EventRing = struct {
+    mutex: std.Thread.Mutex = .{},
+    allocator: std.mem.Allocator,
+    items: [capacity]Record = undefined,
+    /// 다음 쓰기 위치 (`items[head % capacity]`).
+    head: u64 = 0,
+
+    const capacity: usize = 256;
+
+    const Record = struct {
+        seq: u64,
+        event_type: []const u8, // owned
+        data_json: []const u8, // owned
+    };
+
+    fn init(allocator: std.mem.Allocator) EventRing {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *EventRing) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const count = @min(self.head, capacity);
+        for (self.items[0..count]) |*r| {
+            self.allocator.free(r.event_type);
+            self.allocator.free(r.data_json);
+        }
+    }
+
+    fn push(self: *EventRing, seq: u64, event_type: []const u8, data_json: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const idx = self.head % capacity;
+        if (self.head >= capacity) {
+            self.allocator.free(self.items[idx].event_type);
+            self.allocator.free(self.items[idx].data_json);
+        }
+        const t_dup = self.allocator.dupe(u8, event_type) catch return;
+        const d_dup = self.allocator.dupe(u8, data_json) catch {
+            self.allocator.free(t_dup);
+            return;
+        };
+        self.items[idx] = .{ .seq = seq, .event_type = t_dup, .data_json = d_dup };
+        self.head += 1;
+    }
+
+    /// `since_seq` 이후 이벤트들을 복사해 반환. caller가 free.
+    fn snapshotSince(self: *EventRing, alloc: std.mem.Allocator, since_seq: u64) ![]Record {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const total = self.head;
+        const start = if (total > capacity) total - capacity else 0;
+        var out: std.ArrayList(Record) = .empty;
+        errdefer {
+            for (out.items) |r| {
+                alloc.free(r.event_type);
+                alloc.free(r.data_json);
+            }
+            out.deinit(alloc);
+        }
+        var i: u64 = @max(start, since_seq + 1);
+        while (i < total) : (i += 1) {
+            const src = self.items[i % capacity];
+            try out.append(alloc, .{
+                .seq = src.seq,
+                .event_type = try alloc.dupe(u8, src.event_type),
+                .data_json = try alloc.dupe(u8, src.data_json),
+            });
+        }
+        return try out.toOwnedSlice(alloc);
+    }
+};
+
 /// WebSocket text frame을 직접 인코딩하여 writer에 쓴다.
 /// std.http.Server.WebSocket.writeMessage와 동일한 형식이지만,
 /// WebSocket 구조체 없이 raw writer로 전송할 수 있다.
@@ -148,6 +223,22 @@ fn writeJsonEscaped(w: anytype, s: []const u8) !void {
     }
 }
 
+/// 임의의 std.json.Value를 JSON으로 직렬화 (MCP `id` 필드용 — string/integer/null만).
+fn writeJsonValue(w: anytype, v: std.json.Value) !void {
+    switch (v) {
+        .null => try w.writeAll("null"),
+        .bool => |b| try w.writeAll(if (b) "true" else "false"),
+        .integer => |n| try std.fmt.format(w, "{d}", .{n}),
+        .float => |f| try std.fmt.format(w, "{d}", .{f}),
+        .string => |s| {
+            try w.writeByte('"');
+            try writeJsonEscaped(w, s);
+            try w.writeByte('"');
+        },
+        else => try w.writeAll("null"),
+    }
+}
+
 pub const DevServer = struct {
     allocator: std.mem.Allocator,
     root_dir: std.fs.Dir,
@@ -164,6 +255,8 @@ pub const DevServer = struct {
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// MCP `get_build_events` 도구용 이벤트 히스토리 (최근 N개).
+    event_ring: EventRing,
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     sourcemap_cache: struct {
@@ -233,6 +326,7 @@ pub const DevServer = struct {
             .abs_entry = abs_entry,
             .plugins = options.plugins,
             .proxy = options.proxy,
+            .event_ring = EventRing.init(allocator),
         };
     }
 
@@ -240,6 +334,7 @@ pub const DevServer = struct {
         if (self.tcp_server) |*s| s.deinit();
         if (self.abs_entry) |ae| self.allocator.free(ae);
         self.root_dir.close();
+        self.event_ring.deinit();
     }
 
     pub fn start(self: *DevServer) !void {
@@ -764,10 +859,170 @@ pub const DevServer = struct {
         }
     }
 
+    /// MCP (Model Context Protocol) JSON-RPC 2.0 엔드포인트.
+    /// 지원 method: initialize, tools/list, tools/call (reset_cache, get_build_events).
+    fn handleMcp(self: *DevServer, request: *http.Server.Request) !void {
+        if (request.head.method != .POST) {
+            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Use POST\"},\"id\":null}", .{
+                .status = .method_not_allowed,
+                .extra_headers = &json_headers,
+            }) catch {};
+            return;
+        }
+
+        // 요청 body 읽기
+        var body_buf: [64 * 1024]u8 = undefined;
+        const reader = request.readerExpectContinue(&.{}) catch |err| {
+            getLog().print("  [mcp] body reader error: {}\n", .{err}) catch {};
+            return;
+        };
+        var body_writer_buf: [64 * 1024]u8 = undefined;
+        var body_writer = std.Io.Writer.fixed(&body_writer_buf);
+        _ = reader.streamRemaining(&body_writer) catch |err| {
+            getLog().print("  [mcp] body read error: {}\n", .{err}) catch {};
+            return;
+        };
+        const body_len = body_writer.end;
+        @memcpy(body_buf[0..body_len], body_writer_buf[0..body_len]);
+        const body = body_buf[0..body_len];
+
+        // JSON 파싱
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
+            request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}", .{
+                .status = .ok,
+                .extra_headers = &json_headers,
+            }) catch {};
+            return;
+        };
+        defer parsed.deinit();
+        const root = parsed.value;
+
+        const method = switch (root) {
+            .object => |o| switch (o.get("method") orelse .null) {
+                .string => |s| s,
+                else => "",
+            },
+            else => "",
+        };
+        const id_val: std.json.Value = switch (root) {
+            .object => |o| o.get("id") orelse .null,
+            else => .null,
+        };
+
+        var resp: std.ArrayList(u8) = .empty;
+        defer resp.deinit(self.allocator);
+        const w = resp.writer(self.allocator);
+
+        try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+        try writeJsonValue(w, id_val);
+        try w.writeAll(",");
+
+        if (std.mem.eql(u8, method, "initialize")) {
+            try w.writeAll(
+                \\"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"zts-dev-server","version":"0.1.0"}}
+            );
+        } else if (std.mem.eql(u8, method, "tools/list")) {
+            try w.writeAll(
+                \\"result":{"tools":[
+                \\{"name":"reset_cache","description":"Clear the build cache. Next build will be a full rebuild.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+                \\{"name":"get_build_events","description":"Subscribe to bundler events for a duration and return collected events.","inputSchema":{"type":"object","properties":{"duration":{"type":"number","minimum":1000,"maximum":60000,"default":10000,"description":"milliseconds to listen"}},"additionalProperties":false}}
+                \\]}
+            );
+        } else if (std.mem.eql(u8, method, "tools/call")) {
+            try self.handleToolsCall(w, root);
+        } else if (std.mem.eql(u8, method, "notifications/initialized")) {
+            // MCP 클라이언트 initialized 통지는 응답 없음 (notification)
+            try w.writeAll("\"result\":{}");
+        } else {
+            try w.writeAll("\"error\":{\"code\":-32601,\"message\":\"Method not found\"}");
+        }
+        try w.writeAll("}");
+
+        request.respond(resp.items, .{
+            .status = .ok,
+            .extra_headers = &json_headers,
+        }) catch {};
+    }
+
+    fn handleToolsCall(self: *DevServer, w: anytype, root: std.json.Value) !void {
+        const params: std.json.Value = switch (root) {
+            .object => |o| o.get("params") orelse .null,
+            else => .null,
+        };
+        const tool_name: []const u8 = switch (params) {
+            .object => |o| switch (o.get("name") orelse .null) {
+                .string => |s| s,
+                else => "",
+            },
+            else => "",
+        };
+        const args: std.json.Value = switch (params) {
+            .object => |o| o.get("arguments") orelse .null,
+            else => .null,
+        };
+
+        if (std.mem.eql(u8, tool_name, "reset_cache")) {
+            self.cache_reset_requested.store(true, .release);
+            try w.writeAll(
+                \\"result":{"content":[{"type":"text","text":"Cache reset requested; next build will be a full rebuild."}]}
+            );
+            return;
+        }
+
+        if (std.mem.eql(u8, tool_name, "get_build_events")) {
+            var duration_ms: u64 = 10_000;
+            switch (args) {
+                .object => |o| switch (o.get("duration") orelse .null) {
+                    .integer => |n| duration_ms = @intCast(@max(1000, @min(60000, n))),
+                    .float => |f| duration_ms = @intFromFloat(@max(1000.0, @min(60000.0, f))),
+                    else => {},
+                },
+                else => {},
+            }
+            const start_seq = self.event_seq.load(.monotonic);
+            std.Thread.sleep(duration_ms * std.time.ns_per_ms);
+            const records = self.event_ring.snapshotSince(self.allocator, start_seq) catch {
+                try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}]}");
+                return;
+            };
+            defer {
+                for (records) |r| {
+                    self.allocator.free(r.event_type);
+                    self.allocator.free(r.data_json);
+                }
+                self.allocator.free(records);
+            }
+
+            // 이벤트 JSON 배열을 별도 버퍼에 구축 (이중 이스케이프 회피)
+            var inner: std.ArrayList(u8) = .empty;
+            defer inner.deinit(self.allocator);
+            const iw = inner.writer(self.allocator);
+            try iw.writeAll("[");
+            for (records, 0..) |r, i| {
+                if (i > 0) try iw.writeAll(",");
+                try std.fmt.format(iw, "{{\"seq\":{d},\"type\":\"", .{r.seq});
+                try writeJsonEscaped(iw, r.event_type);
+                try iw.writeAll("\",\"data\":");
+                // data_json은 이미 JSON → 그대로 삽입
+                try iw.writeAll(r.data_json);
+                try iw.writeAll("}");
+            }
+            try iw.writeAll("]");
+
+            try w.writeAll("\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+            try writeJsonEscaped(w, inner.items);
+            try w.writeAll("\"}]}");
+            return;
+        }
+
+        try w.writeAll("\"error\":{\"code\":-32602,\"message\":\"Unknown tool\"}");
+    }
+
     /// 이벤트를 SSE 구독자 전원에 브로드캐스트.
     /// `data_json`은 유효한 JSON 오브젝트 문자열이어야 한다 (이스케이프 호출부 책임).
     pub fn publishEvent(self: *DevServer, event_type: []const u8, data_json: []const u8) void {
-        _ = self.event_seq.fetchAdd(1, .monotonic);
+        const seq = self.event_seq.fetchAdd(1, .monotonic) + 1;
+        self.event_ring.push(seq, event_type, data_json);
         self.sse_clients.broadcast(event_type, data_json);
     }
 
@@ -812,6 +1067,18 @@ pub const DevServer = struct {
                     .status = .ok,
                     .extra_headers = &json_headers,
                 }) catch {};
+                return;
+            }
+
+            // MCP JSON-RPC 서버 — POST /mcp
+            if (std.mem.eql(u8, raw_path_early, "/mcp")) {
+                self.handleMcp(request) catch |err| {
+                    getLog().print("zts: /mcp handler error: {}\n", .{err}) catch {};
+                    request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}", .{
+                        .status = .ok,
+                        .extra_headers = &json_headers,
+                    }) catch {};
+                };
                 return;
             }
         }
