@@ -959,11 +959,31 @@ pub fn generateInitCode(
 ) Error![]const u8 {
     const zero_span = Span{ .start = 0, .end = 0 };
 
-    // closure destructuring: const { v1, v2 } = this.__closure;
-    var new_body_idx = body_idx;
+    // arrow ExpressionBody 보정: body가 block/function_body가 아니면
+    // `{ return expr; }`로 감싸 implicit return 의미를 복원한다.
+    // (es2015_arrow는 visited body만 래핑하고 original_body_idx는 pre-visit expression을 그대로 넘기므로,
+    //  __initData.code 경로에서 return이 누락되어 UI thread가 undefined를 반환하는 문제를 수정.)
+    var new_body_idx = blk: {
+        if (body_idx.isNone()) break :blk body_idx;
+        const body_node = self.ast.getNode(body_idx);
+        if (body_node.tag == .block_statement or body_node.tag == .function_body or body_node.tag == .program) {
+            break :blk body_idx;
+        }
+        const ret_stmt = try self.ast.addNode(.{
+            .tag = .return_statement,
+            .span = body_node.span,
+            .data = .{ .unary = .{ .operand = body_idx, .flags = 0 } },
+        });
+        const list = try self.ast.addNodeList(&.{ret_stmt});
+        break :blk try self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = body_node.span,
+            .data = .{ .list = list },
+        });
+    };
     if (closure_vars.len > 0) {
         const destr_stmt = try buildClosureDestructuring(self, closure_vars, zero_span);
-        new_body_idx = try self.prependStatementsToBody(body_idx, &.{destr_stmt});
+        new_body_idx = try self.prependStatementsToBody(new_body_idx, &.{destr_stmt});
     }
 
     // synthetic function: function funcName(params) { ...body... }
