@@ -16,6 +16,7 @@
 //!   - references/rolldown/crates/rolldown/src/chunk_graph/
 
 const std = @import("std");
+const wyhash = @import("../util/wyhash.zig");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 pub const ChunkIndex = types.ChunkIndex;
@@ -105,7 +106,7 @@ pub const BitSet = struct {
 
     /// 해시값을 계산한다 (HashMap 키로 사용).
     pub fn hash(self: BitSet) u64 {
-        return @import("../util/wyhash.zig").hashU64(self.entries);
+        return wyhash.hashU64(self.entries);
     }
 };
 

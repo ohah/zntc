@@ -11,6 +11,7 @@
 //!   'worklet' 디렉티브 없이도 FunctionInfo.is_auto_worklet == true이면 변환.
 
 const std = @import("std");
+const wyhash = @import("../../util/wyhash.zig");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -218,7 +219,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     );
     defer api.getAllocator().free(init_code);
 
-    const hash = @as(u32, @truncate(@import("../../util/wyhash.zig").hashU64(init_code)));
+    const hash = @as(u32, @truncate(wyhash.hashU64(init_code)));
 
     const stmts = try worklet_mod.buildWorkletPropertyAssignments(
         api.transformer,

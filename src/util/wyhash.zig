@@ -51,7 +51,6 @@ test "hashHex8 format" {
     for (out) |c| {
         try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
     }
-    // low 32-bit와 일치하는지 확인
     const expect_u32 = @as(u32, @truncate(hashU64("abc")));
     var expect_buf: [8]u8 = undefined;
     _ = std.fmt.bufPrint(&expect_buf, "{x:0>8}", .{expect_u32}) catch unreachable;
