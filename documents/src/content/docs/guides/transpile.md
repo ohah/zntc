@@ -62,13 +62,37 @@ zts --flow app.js
 ```bash
 zts --format=esm app.ts   # ESM (기본)
 zts --format=cjs app.ts   # CommonJS
+zts --format=iife app.ts  # 즉시 실행 함수
+zts --format=umd app.ts   # UMD (브라우저/Node 양립)
+zts --format=amd app.ts   # AMD (RequireJS)
 ```
+
+### ES 타겟 / 엔진 타겟
+
+```bash
+# ES 버전 타겟 — es2015 ~ esnext
+zts --target=es2020 app.ts
+
+# 엔진 버전 타겟 — feature-level 다운레벨링
+zts --target=chrome80,safari14 app.ts
+zts --target=node18 app.ts
+zts --target=hermes0.70 app.ts   # React Native (Hermes)
+```
+
+엔진 버전 타겟은 각 엔진이 지원하는 기능 표(`compat-table`)에 맞춰 필요한 변환만 수행합니다.
 
 ### Minify
 
 ```bash
-zts --minify app.ts  # whitespace + identifiers + syntax 전부
+zts --minify app.ts  # 세 가지 모두
+
+# 세분화 (esbuild 호환)
+zts --minify-whitespace app.ts    # 공백·세미콜론·줄바꿈 (디버깅 가능)
+zts --minify-syntax app.ts        # true→!0, 괄호 제거, constant folding
+zts --minify-identifiers app.ts   # 지역 변수명 단축
 ```
+
+조합 가능 — 예: 개발용 빌드에 `--minify-whitespace`만 켜서 디버그 가능한 작은 출력을 얻을 수 있습니다.
 
 ### 소스맵
 

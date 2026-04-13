@@ -14,9 +14,9 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `esbuild src/index.ts --bundle` | `zts --bundle src/index.ts` | Same |
 | `--outfile=dist/out.js` | `-o dist/out.js` | Short form supported |
 | `--outdir=dist` | `--outdir dist` | Same |
-| `--format=esm` | `--format=esm` | Same (esm/cjs/iife) |
-| `--platform=node` | `--platform=node` | Same |
-| `--minify` | `--minify` | Same |
+| `--format=esm` | `--format=esm` | Same (esm/cjs/iife/umd/amd) |
+| `--platform=node` | `--platform=node` | Same (browser/node/neutral/react-native) |
+| `--minify` | `--minify` | Same (`--minify-{whitespace,syntax,identifiers}` granular toggles) |
 | `--sourcemap` | `--sourcemap` | Same |
 | `--splitting` | `--splitting` | Same |
 | `--target=es2020` | `--target=es2020` | Same |

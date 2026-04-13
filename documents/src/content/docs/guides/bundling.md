@@ -100,6 +100,39 @@ zts --bundle entry.ts -o bundle.js --metafile=meta.json
 zts --bundle entry.ts -o bundle.js --analyze
 ```
 
+## Minify
+
+```bash
+zts --bundle entry.ts -o bundle.js --minify  # 세 가지 모두
+
+# 세분화 (esbuild 호환) — 개별 토글
+zts --bundle entry.ts -o bundle.js --minify-whitespace
+zts --bundle entry.ts -o bundle.js --minify-syntax
+zts --bundle entry.ts -o bundle.js --minify-identifiers
+```
+
+## ES 타겟
+
+```bash
+# ES 버전 (es2015~esnext)
+zts --bundle entry.ts -o bundle.js --target=es2020
+
+# 엔진 타겟 — feature-level 다운레벨링
+zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
+zts --bundle entry.ts -o bundle.js --target=node18
+zts --bundle entry.ts -o bundle.js --target=hermes0.70
+```
+
+## 출력 포맷
+
+```bash
+zts --bundle entry.ts --format=esm    # ESM (기본)
+zts --bundle entry.ts --format=cjs    # CommonJS
+zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
+zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
+zts --bundle entry.ts --format=amd                       # AMD
+```
+
 ## Watch 모드
 
 ```bash
