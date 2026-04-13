@@ -105,7 +105,7 @@ pub const BitSet = struct {
 
     /// 해시값을 계산한다 (HashMap 키로 사용).
     pub fn hash(self: BitSet) u64 {
-        return std.hash.Wyhash.hash(0, self.entries);
+        return @import("../util/wyhash.zig").hashU64(self.entries);
     }
 };
 
