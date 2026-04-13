@@ -323,6 +323,10 @@ pub const Transformer = struct {
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
 
+    /// Fast Refresh 등록 억제 플래그 (plugin이 IIFE 내부 함수를 visit할 때 설정).
+    /// 중첩 function_declaration이 컴포넌트로 오인되어 ReferenceError 유발하는 것을 방지.
+    suppress_refresh_registration: bool = false,
+
     /// React Fast Refresh: Hook 시그니처 등록 목록.
     /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
     refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
