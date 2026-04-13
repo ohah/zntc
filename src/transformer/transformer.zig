@@ -312,18 +312,6 @@ pub const Transformer = struct {
     /// 소스의 줄 오프셋 테이블 (Scanner에서 전달). jsxDEV source info 계산용.
     line_offsets: []const u32 = &.{},
 
-    /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
-    /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
-    refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
-
-    /// Fast Refresh 등록 억제 플래그 (plugin이 IIFE 내부 함수를 visit할 때 설정).
-    /// 중첩 function_declaration이 컴포넌트로 오인되어 ReferenceError 유발하는 것을 방지.
-    suppress_refresh_registration: bool = false,
-
-    /// React Fast Refresh: Hook 시그니처 등록 목록.
-    /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
-    refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
-
     /// 후행 노드 버퍼 (함수 뒤에 프로퍼티 할당문 삽입용).
     /// pending_nodes가 자식 앞에 삽입되는 것과 대칭: trailing_nodes는 자식 뒤에 삽입.
     /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
@@ -361,21 +349,10 @@ pub const Transformer = struct {
         member_idx: NodeIndex = NodeIndex.none, // method_definition 노드 (ES2015 경로에서 사용)
     };
 
-    pub const RefreshRegistration = struct {
-        /// _c / _c2 핸들 변수의 string_table Span (재사용)
-        handle_span: Span,
-        /// 컴포넌트 이름 (문자열)
-        name: []const u8,
-    };
-
-    pub const RefreshSignature = struct {
-        /// _s / _s2 핸들 변수의 string_table Span
-        handle_span: Span,
-        /// 컴포넌트 이름 (문자열)
-        component_name: []const u8,
-        /// Hook 시그니처 문자열 ("useState{[foo, setFoo](0)}\nuseEffect{}")
-        signature: []const u8,
-    };
+    // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.
+    // 외부 모듈 (refresh.zig 등)에서 `Transformer.RefreshRegistration`로 접근 가능하도록 alias 제공.
+    pub const RefreshRegistration = plugin_state.RefreshRegistration;
+    pub const RefreshSignature = plugin_state.RefreshSignature;
 
     pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
         // experimentalDecorators → useDefineForClassFields=false 강제
@@ -411,9 +388,9 @@ pub const Transformer = struct {
         self.pending_nodes.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         if (self.define_spans.len > 0) self.allocator.free(self.define_spans);
-        self.refresh_registrations.deinit(self.allocator);
-        for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
-        self.refresh_signatures.deinit(self.allocator);
+        self.plugins.refresh.registrations.deinit(self.allocator);
+        for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
+        self.plugins.refresh.signatures.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
@@ -476,7 +453,7 @@ pub const Transformer = struct {
         }
 
         // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거)
-        if (self.options.react_refresh and self.refresh_registrations.items.len > 0) {
+        if (self.options.react_refresh and self.plugins.refresh.registrations.items.len > 0) {
             return try self.appendRefreshRegistrations(root);
         }
 

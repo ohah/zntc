@@ -45,7 +45,7 @@ pub fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
 /// visitFunction에서 호출.
 pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex) Error!void {
     if (!self.options.react_refresh) return;
-    if (self.suppress_refresh_registration) return;
+    if (self.plugins.refresh.suppress_registration) return;
 
     const func_node = self.ast.getNode(new_func_idx);
     // function_expression의 이름은 함수 내부 스코프에서만 접근 가능하므로
@@ -56,7 +56,7 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
 
     // 핸들 변수명 생성 + 등록 (프로그램 끝에서 일괄 주입)
     const handle_span = try self.makeRefreshHandle();
-    try self.refresh_registrations.append(self.allocator, .{
+    try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
         .name = name,
     });
@@ -64,7 +64,7 @@ pub fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex
 
 /// _c, _c2, _c3, ... 핸들 변수명 생성
 pub fn makeRefreshHandle(self: *Transformer) Error!Span {
-    const idx = self.refresh_registrations.items.len;
+    const idx = self.plugins.refresh.registrations.items.len;
     if (idx == 0) {
         return self.ast.addString("_c");
     }
@@ -90,7 +90,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
     }
 
     // _c = App; _c2 = Helper; 할당문 (함수 선언 뒤에 실행)
-    for (self.refresh_registrations.items) |reg| {
+    for (self.plugins.refresh.registrations.items) |reg| {
         const assign_stmt = try self.buildRefreshAssignment(reg);
         try self.scratch.append(self.allocator, assign_stmt);
     }
@@ -103,7 +103,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
 
     // $RefreshReg$(_c, "ComponentName"); 호출들
     const refresh_reg_span = try self.ast.addString("$RefreshReg$");
-    for (self.refresh_registrations.items) |reg| {
+    for (self.plugins.refresh.registrations.items) |reg| {
         const reg_stmt = try self.buildRefreshRegCall(reg, refresh_reg_span);
         try self.scratch.append(self.allocator, reg_stmt);
     }
@@ -148,7 +148,7 @@ pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     const none = @intFromEnum(NodeIndex.none);
 
-    for (self.refresh_registrations.items) |reg| {
+    for (self.plugins.refresh.registrations.items) |reg| {
         const binding = try self.ast.addNode(.{
             .tag = .binding_identifier,
             .span = reg.handle_span,
@@ -469,7 +469,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
 
 /// _s / _s2 핸들 변수명 생성
 pub fn makeSigHandle(self: *Transformer) Error!Span {
-    const idx = self.refresh_signatures.items.len;
+    const idx = self.plugins.refresh.signatures.items.len;
     if (idx == 0) {
         return self.ast.addString("_s");
     }
@@ -492,7 +492,7 @@ pub fn maybeRegisterRefreshSignature(
     const signature = try self.scanHookSignature(old_body_idx) orelse return;
 
     const handle_span = try self.makeSigHandle();
-    try self.refresh_signatures.append(self.allocator, .{
+    try self.plugins.refresh.signatures.append(self.allocator, .{
         .handle_span = handle_span,
         .component_name = name,
         .signature = signature,
