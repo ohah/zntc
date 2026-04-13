@@ -256,6 +256,32 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     /// 새 스코프를 생성하고 진입한다. 반환값: 이전 스코프 ID (나갈 때 복원용).
+    /// 현재 스코프 및 모든 조상 스코프에 direct eval 플래그를 전파한다.
+    /// rolldown/oxc 방식: direct eval은 포함 스코프와 모든 상위 스코프의 바인딩을
+    /// 동적으로 참조할 수 있으므로, 해당 스코프들의 변수 mangling을 비활성화한다.
+    fn markDirectEvalToRoot(self: *SemanticAnalyzer) void {
+        var cur = self.current_scope;
+        while (!cur.isNone()) {
+            const idx = cur.toIndex();
+            if (idx >= self.scopes.items.len) break;
+            if (self.scopes.items[idx].subtree_has_direct_eval) break; // 이미 전파됨
+            self.scopes.items[idx].subtree_has_direct_eval = true;
+            cur = self.scopes.items[idx].parent;
+        }
+    }
+
+    /// `with` 문도 동일하게 상위로 전파.
+    fn markWithToRoot(self: *SemanticAnalyzer) void {
+        var cur = self.current_scope;
+        while (!cur.isNone()) {
+            const idx = cur.toIndex();
+            if (idx >= self.scopes.items.len) break;
+            if (self.scopes.items[idx].subtree_has_with) break;
+            self.scopes.items[idx].subtree_has_with = true;
+            cur = self.scopes.items[idx].parent;
+        }
+    }
+
     fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) AllocError!ScopeId {
         const parent = self.current_scope;
         const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
@@ -1050,6 +1076,9 @@ pub const SemanticAnalyzer = struct {
             .labeled_statement => try self.visitLabeledStatement(node),
             .break_statement, .continue_statement => try self.visitBreakContinue(node),
             .with_statement => {
+                // with 블록은 동적 이름 lookup을 유발하므로 현재 스코프와
+                // 모든 상위 스코프의 바인딩 mangling을 차단.
+                self.markWithToRoot();
                 try self.visitNode(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
             },
@@ -1225,6 +1254,22 @@ pub const SemanticAnalyzer = struct {
                 const e = node.data.extra;
                 if (self.ast.hasExtra(e, 2)) {
                     const callee_idx = self.ast.readExtraNode(e, 0);
+                    // direct eval 감지: callee가 단순 identifier "eval"이면
+                    // 현재 스코프~루트의 변수 mangling을 차단.
+                    // indirect eval ((0,eval)(...), globalThis.eval 등)은 ECMA 사양상
+                    // 전역에서 평가되므로 로컬 변수에 영향 없음 → 감지 제외.
+                    if (node.tag == .call_expression and !callee_idx.isNone()) {
+                        const callee_ni = @intFromEnum(callee_idx);
+                        if (callee_ni < self.ast.nodes.items.len) {
+                            const callee_node = self.ast.nodes.items[callee_ni];
+                            if (callee_node.tag == .identifier_reference) {
+                                const callee_name = self.ast.getSourceText(callee_node.span);
+                                if (std.mem.eql(u8, callee_name, "eval")) {
+                                    self.markDirectEvalToRoot();
+                                }
+                            }
+                        }
+                    }
                     try self.visitNode(callee_idx);
                     try self.visitNodeList(.{
                         .start = self.ast.readExtra(e, 1),
