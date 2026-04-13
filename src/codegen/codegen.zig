@@ -2696,12 +2696,9 @@ pub const Codegen = struct {
                 } else {
                     const def_name = self.options.linking_metadata.?.default_export_name;
                     if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                        // namespace import(`export default X` where `X` is `import * as X`):
-                        // 실제 값은 `X_ns` (ns_inline_objects의 var_name)에 저장되므로
-                        // inner의 rename이 아닌 ns var에서 읽어야 한다.
-                        if (try self.tryEmitNsVarAssignment(def_name, inner)) {
-                            // 완료
-                        } else {
+                        // namespace import는 실제 값이 `X_ns` 변수에 저장되므로
+                        // `def_name = X_ns;` 로 할당. 일반 케이스는 inner 표현식 직접 대입.
+                        if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
                             try self.emitDefaultVarAssignment(def_name, inner);
                         }
                     }
