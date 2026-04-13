@@ -18,17 +18,65 @@ const FileWatcher = zts_lib.server.FileWatcher;
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
 /// - watch_debounce_ms: 첫 이벤트 이후 정적(idle) 구간 — 연속 저장 병합 윈도우.
+/// - watch_debounce_max_ms: 디바운스 최대 대기 시간 — 지속 변경되는 파일에 의한 기아 방지.
 const watch_poll_timeout_ms: u32 = 200;
 const watch_debounce_ms: u32 = 50;
+const watch_debounce_max_ms: u64 = 500;
 
-/// 파일 내용의 content hash (Wyhash 64-bit).
-/// mtime 변동만으로 리빌드하지 않고, 실제 내용 변화만 감지한다.
-fn hashFileContent(allocator: std.mem.Allocator, path: []const u8) ?u64 {
+/// 파일 내용 해시 최대 크기 (소스 파일 기준 충분).
+const watch_hash_max_bytes: usize = 10 * 1024 * 1024;
+
+/// 파일 내용의 content hash (Wyhash 64-bit, 스트리밍).
+/// 전체 내용을 힙에 올리지 않고 64KB 버퍼로 순회하여 대용량 파일에서도 메모리 부담 없음.
+fn hashFileContent(path: []const u8) ?u64 {
     const file = std.fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
-    const content = file.readToEndAlloc(allocator, 128 * 1024 * 1024) catch return null;
-    defer allocator.free(content);
-    return std.hash.Wyhash.hash(0, content);
+    var hasher = std.hash.Wyhash.init(0);
+    var buf: [64 * 1024]u8 = undefined;
+    var total: usize = 0;
+    while (true) {
+        const n = file.read(&buf) catch return null;
+        if (n == 0) break;
+        total += n;
+        if (total > watch_hash_max_bytes) return null;
+        hasher.update(buf[0..n]);
+    }
+    return hasher.final();
+}
+
+/// FileWatcher에 path를 등록하고 content_hash_map에 해시 엔트리 생성/갱신.
+/// overwrite=false면 기존 엔트리의 해시는 보존(리빌드 후 재-싱크 용도).
+fn addAndCacheHash(
+    w: *FileWatcher,
+    hmap: *std.StringHashMap(u64),
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    overwrite: bool,
+) bool {
+    w.addPath(path) catch return false;
+    if (!overwrite and hmap.contains(path)) return true;
+    const h = hashFileContent(path) orelse 0;
+    if (hmap.getEntry(path)) |e| {
+        e.value_ptr.* = h;
+    } else {
+        const key = alloc.dupe(u8, path) catch return true;
+        hmap.put(key, h) catch alloc.free(key);
+    }
+    return true;
+}
+
+/// 이벤트 배열의 path들을 중복 제거 set에 병합.
+/// FileWatcher.waitForChanges 결과는 다음 호출에서 무효화되므로 path를 dupe.
+fn collectTouched(
+    set: *std.StringHashMap(void),
+    alloc: std.mem.Allocator,
+    evts: []const zts_lib.server.ChangeEvent,
+) void {
+    for (evts) |e| {
+        if (set.contains(e.path)) continue;
+        const dup = alloc.dupe(u8, e.path) catch continue;
+        set.put(dup, {}) catch alloc.free(dup);
+    }
 }
 const BundleOptions = bundler_mod.BundleOptions;
 const Platform = zts_lib.codegen.codegen.Platform;
@@ -1361,14 +1409,15 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
     // 실패 시 워치 스레드 진입 직전에 종료한다.
-    var watcher = FileWatcher.init(allocator) catch {
+    var watcher = FileWatcher.init(allocator) catch |err| {
         const event = allocator.create(WatchRebuildEvent) catch {
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
             _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
             async_data.deinit();
             return;
         };
-        event.* = .{ .success = false, .error_msg = allocator.dupe(u8, "FileWatcherInitFailed") catch null };
+        const err_name: [:0]const u8 = @errorName(err);
+        event.* = .{ .success = false, .error_msg = allocator.dupe(u8, err_name) catch null };
         if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
             event.deinit();
         }
@@ -1387,26 +1436,15 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         content_hash_map.deinit();
     }
 
-    // 감시 대상 등록: 엔트리 + 초기 빌드의 module_paths
     var initial_watch_count: usize = 0;
-    const registerWatchPath = struct {
-        fn run(w: *FileWatcher, hmap: *std.StringHashMap(u64), alloc: std.mem.Allocator, path: []const u8) bool {
-            w.addPath(path) catch return false;
-            const key = alloc.dupe(u8, path) catch return true;
-            const h = hashFileContent(alloc, path) orelse 0;
-            hmap.put(key, h) catch alloc.free(key);
-            return true;
-        }
-    }.run;
-
-    if (bundle_opts.entry_points.len > 0) {
-        if (registerWatchPath(&watcher, &content_hash_map, allocator, bundle_opts.entry_points[0])) {
-            initial_watch_count += 1;
-        }
+    if (bundle_opts.entry_points.len > 0 and
+        addAndCacheHash(&watcher, &content_hash_map, allocator, bundle_opts.entry_points[0], true))
+    {
+        initial_watch_count += 1;
     }
     if (result.module_paths) |paths| {
         for (paths) |p| {
-            if (registerWatchPath(&watcher, &content_hash_map, allocator, p)) {
+            if (addAndCacheHash(&watcher, &content_hash_map, allocator, p, true)) {
                 initial_watch_count += 1;
             }
         }
@@ -1459,58 +1497,49 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     // Issue #1223 Phase 1: 이벤트 기반 워처 + 디바운스 + content hash 필터링.
     while (!async_data.stop_flag.load(.acquire)) {
-        // 첫 이벤트 대기 (stop_flag 체크를 위해 poll timeout 사용).
         const first_events = watcher.waitForChanges(watch_poll_timeout_ms) catch &[_]zts_lib.server.ChangeEvent{};
         if (async_data.stop_flag.load(.acquire)) break;
 
-        var total_timer = std.time.Timer.start() catch null;
-        var detect_timer = std.time.Timer.start() catch null;
+        var total_timer: ?std.time.Timer = std.time.Timer.start() catch null;
+        var detect_timer: ?std.time.Timer = std.time.Timer.start() catch null;
 
-        // 이벤트 수집 — path 중복 제거용 set.
         var touched: std.StringHashMap(void) = .init(allocator);
         defer {
             var kit = touched.keyIterator();
             while (kit.next()) |k| allocator.free(k.*);
             touched.deinit();
         }
-        const collectTouched = struct {
-            fn run(set: *std.StringHashMap(void), alloc: std.mem.Allocator, evts: []const zts_lib.server.ChangeEvent) void {
-                for (evts) |e| {
-                    if (set.contains(e.path)) continue;
-                    const dup = alloc.dupe(u8, e.path) catch continue;
-                    set.put(dup, {}) catch alloc.free(dup);
-                }
-            }
-        }.run;
         collectTouched(&touched, allocator, first_events);
 
         if (touched.count() == 0) continue;
 
-        // 디바운스: 정적 구간(50ms)이 확보될 때까지 추가 이벤트를 병합.
+        // 디바운스: idle 50ms 확보까지 드레인. 지속 변경되는 파일로 인한 기아를 막기 위해
+        // 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
+        var debounce_timer: ?std.time.Timer = std.time.Timer.start() catch null;
         while (!async_data.stop_flag.load(.acquire)) {
             const more = watcher.waitForChanges(watch_debounce_ms) catch break;
             if (more.len == 0) break;
             collectTouched(&touched, allocator, more);
+            if (debounce_timer) |*t| {
+                if (t.read() / std.time.ns_per_ms > watch_debounce_max_ms) break;
+            }
         }
         if (async_data.stop_flag.load(.acquire)) break;
 
-        // content hash 필터링: 내용이 실제로 변한 파일만 changed_files에 포함.
+        // content hash 필터링.
         var changed_files: std.ArrayList([]const u8) = .empty;
         defer changed_files.deinit(allocator);
         var tkit = touched.keyIterator();
         while (tkit.next()) |pkey| {
             const path = pkey.*;
-            const new_hash = hashFileContent(allocator, path) orelse continue;
+            const new_hash = hashFileContent(path) orelse continue;
             const old_hash = content_hash_map.get(path);
-            if (old_hash != null and old_hash.? == new_hash) continue; // 내용 동일 — 스킵
-            // 해시 업데이트 (기존 키 재사용).
+            if (old_hash != null and old_hash.? == new_hash) continue;
             if (content_hash_map.getEntry(path)) |entry| {
                 entry.value_ptr.* = new_hash;
             } else {
                 const key_copy = allocator.dupe(u8, path) catch continue;
-                content_hash_map.put(key_copy, new_hash) catch {
-                    allocator.free(key_copy);
-                };
+                content_hash_map.put(key_copy, new_hash) catch allocator.free(key_copy);
             }
             changed_files.append(allocator, path) catch {};
         }
@@ -1675,26 +1704,37 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             event.deinit();
         }
 
-        // watch 대상 재구축 — 삭제된 모듈 제거 + 새 모듈 추가.
-        // content_hash_map은 리빌드 시점에 새 파일의 해시만 보강(기존 엔트리는 유지).
-        watcher.clearPaths();
+        // Issue #1223 Phase 1: diff 기반 재-싱크.
+        // 모듈 경로가 변하지 않으면 kqueue/inotify 갱신 없이 기존 상태 재사용.
+        // 삭제된 모듈의 content_hash 엔트리도 함께 정리하여 무한 증가 방지.
+        var desired: std.StringHashMap(void) = .init(allocator);
+        defer desired.deinit();
         if (bundle_opts.entry_points.len > 0) {
-            watcher.addPath(bundle_opts.entry_points[0]) catch {};
-            if (!content_hash_map.contains(bundle_opts.entry_points[0])) {
-                const key = allocator.dupe(u8, bundle_opts.entry_points[0]) catch continue;
-                const h = hashFileContent(allocator, bundle_opts.entry_points[0]) orelse 0;
-                content_hash_map.put(key, h) catch allocator.free(key);
-            }
+            desired.put(bundle_opts.entry_points[0], {}) catch {};
         }
         if (rebuild_result.module_paths) |paths| {
-            for (paths) |p| {
-                watcher.addPath(p) catch continue;
-                if (!content_hash_map.contains(p)) {
-                    const key = allocator.dupe(u8, p) catch continue;
-                    const h = hashFileContent(allocator, p) orelse 0;
-                    content_hash_map.put(key, h) catch allocator.free(key);
-                }
+            for (paths) |p| desired.put(p, {}) catch {};
+        }
+
+        // stale 엔트리 제거 — 워처와 content_hash_map 모두에서.
+        {
+            var stale: std.ArrayList([]const u8) = .empty;
+            defer stale.deinit(allocator);
+            var hit = content_hash_map.keyIterator();
+            while (hit.next()) |k| {
+                if (!desired.contains(k.*)) stale.append(allocator, k.*) catch {};
             }
+            for (stale.items) |k| {
+                watcher.removePath(k);
+                if (content_hash_map.fetchRemove(k)) |kv| allocator.free(kv.key);
+            }
+        }
+
+        // 추가된 경로만 addPath + 해시. 기존 경로는 kqueue/inotify에 이미 등록됨.
+        var dit = desired.keyIterator();
+        while (dit.next()) |pkey| {
+            if (content_hash_map.contains(pkey.*)) continue;
+            _ = addAndCacheHash(&watcher, &content_hash_map, allocator, pkey.*, false);
         }
     }
 
