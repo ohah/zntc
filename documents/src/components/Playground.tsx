@@ -1,7 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 
-const DEFAULT_CODE = `interface User {
+const EXAMPLES: { label: string; code: string }[] = [
+  {
+    label: "TypeScript 기본",
+    code: `interface User {
   name: string;
   age: number;
 }
@@ -12,7 +15,71 @@ function greet(user: User): string {
 
 const user: User = { name: "World", age: 42 };
 console.log(greet(user));
-`;
+`,
+  },
+  {
+    label: "RSC: 'use client' 컴포넌트",
+    code: `"use client";
+
+import { useState } from "react";
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={() => setCount(count + 1)}>+</button>
+    </div>
+  );
+}
+`,
+  },
+  {
+    label: "RSC: 'use server' 액션",
+    code: `"use server";
+
+export async function createUser(data: { name: string; email: string }) {
+  // 서버에서만 실행되는 코드
+  const id = crypto.randomUUID();
+  return { id, ...data };
+}
+
+export async function deleteUser(id: string) {
+  return { ok: true, id };
+}
+`,
+  },
+  {
+    label: "RSC: 인라인 server function",
+    code: `export function Item({ id }: { id: number }) {
+  async function deleteItem() {
+    "use server";
+    await fetch(\`/api/items/\${id}\`, { method: "DELETE" });
+  }
+  return <button onClick={deleteItem}>Delete</button>;
+}
+`,
+  },
+  {
+    label: "Decorators (Stage 3)",
+    code: `function loggable<T, U>(value: (this: T, ...args: any[]) => U, ctx: ClassMethodDecoratorContext<T>) {
+  return function (this: T, ...args: any[]) {
+    console.log(\`call \${String(ctx.name)}\`);
+    return value.call(this, ...args);
+  };
+}
+
+class Service {
+  @loggable
+  greet(name: string) { return \`hi \${name}\`; }
+}
+
+new Service().greet("world");
+`,
+  },
+];
+
+const DEFAULT_CODE = EXAMPLES[0].code;
 
 type TranspileFn = (
   source: string,
@@ -312,7 +379,22 @@ export default function Playground() {
           {loading && <Badge color="#1e3a5f" text="Loading WASM..." />}
           {!loading && !error && <Badge color="#065f46" text="Ready" textColor="#6ee7b7" />}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select
+            aria-label="예제"
+            onChange={(e) => {
+              const ex = EXAMPLES.find((x) => x.label === e.target.value);
+              if (ex) setInput(ex.code);
+              e.target.value = "";
+            }}
+            defaultValue=""
+            style={{ ...btnStyle, padding: "4px 8px" }}
+          >
+            <option value="" disabled>예제 선택…</option>
+            {EXAMPLES.map((ex) => (
+              <option key={ex.label} value={ex.label}>{ex.label}</option>
+            ))}
+          </select>
           <button onClick={handleShare} style={btnStyle}>Share</button>
           <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={{ ...btnStyle, textDecoration: "none" }}>GitHub</a>
         </div>

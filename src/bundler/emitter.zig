@@ -379,6 +379,10 @@ pub fn emitWithTreeShaking(
     var module_output: std.ArrayList(u8) = .empty;
     defer module_output.deinit(allocator);
 
+    // RSC: 디렉티브가 첫 문장이어야 인식되므로 entry 모듈의 prologue를 호이스트.
+    var hoisted_directives: std.ArrayList(u8) = .empty;
+    defer hoisted_directives.deinit(allocator);
+
     // dev mode per-module code 수집 (HMR용)
     var dev_module_codes: std.ArrayList(types.ModuleDevCode) = .empty;
     if (options.dev_mode and options.collect_module_codes) {
@@ -445,8 +449,14 @@ pub fn emitWithTreeShaking(
             }
         }
 
-        try module_output.appendSlice(allocator, code);
-        module_line += @intCast(std.mem.count(u8, code, "\n"));
+        // RSC: ESM entry 모듈만 호이스트 대상. IIFE/CJS는 의미 없음.
+        const code_to_append = if (is_entry and options.format == .esm)
+            chunks.extractLeadingDirectives(code, &hoisted_directives, allocator) catch code
+        else
+            code;
+
+        try module_output.appendSlice(allocator, code_to_append);
+        module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
         if (!options.minify_whitespace) {
             try module_output.append(allocator, '\n');
             module_line += 1;
@@ -481,6 +491,10 @@ pub fn emitWithTreeShaking(
     // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
     // module_output 합류 전에 계산해야 함 — 합류 후에 세면 전체 줄 수가 됨
     const prologue_lines: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
+
+    if (hoisted_directives.items.len > 0) {
+        try output.insertSlice(allocator, 0, hoisted_directives.items);
+    }
 
     // 모듈 코드 합류
     try output.appendSlice(allocator, module_output.items);
@@ -1062,15 +1076,21 @@ pub fn emitModule(
     } else null;
 
     if (preamble != null or final_exports != null) {
-        // preamble_lines: preamble 내 줄바꿈 수 (코드 매핑 오프셋용)
+        // RSC: 디렉티브가 preamble보다 위에 와야 인식 (preserve-modules에서 자체 파일이 되는 경우).
+        var dir_buf: std.ArrayList(u8) = .empty;
+        defer dir_buf.deinit(allocator);
+        const code_no_dir = chunks.extractLeadingDirectives(code, &dir_buf, allocator) catch code;
+
+        // preamble_lines: 디렉티브 + preamble 내 줄바꿈 수 (코드 매핑 오프셋용)
         if (preamble_lines_out) |out| {
-            if (preamble) |p| {
-                out.* = @intCast(std.mem.count(u8, p, "\n"));
-            }
+            var pl: u32 = @intCast(std.mem.count(u8, dir_buf.items, "\n"));
+            if (preamble) |p| pl += @intCast(std.mem.count(u8, p, "\n"));
+            out.* = pl;
         }
         return try std.mem.concat(allocator, u8, &.{
+            dir_buf.items,
             preamble orelse "",
-            code,
+            code_no_dir,
             final_exports orelse "",
         });
     }

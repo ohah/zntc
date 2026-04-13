@@ -78,6 +78,10 @@ pub fn emitChunks(
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
 
+        // RSC: 디렉티브가 파일 첫 문장이어야 React/Next가 인식.
+        var hoisted_directives: std.ArrayList(u8) = .empty;
+        defer hoisted_directives.deinit(allocator);
+
         // 출력 확장자 (cross-chunk import 경로 + 파일명에 공용)
         const ext = options.out_extension_js orelse ".js";
 
@@ -250,16 +254,27 @@ pub fn emitChunks(
             const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph, options.public_path, ext, options);
             defer allocator.free(code);
 
+            // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
+            // "use client"/"use server"는 청크 최상단으로 호이스팅되어야 RSC가 인식.
+            const should_hoist = is_entry or options.preserve_modules;
+            const stripped = if (should_hoist)
+                extractLeadingDirectives(code, &hoisted_directives, allocator) catch code
+            else
+                code;
+
             if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "// --- ");
                 try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
                 try chunk_output.appendSlice(allocator, " ---\n");
             }
-            try chunk_output.appendSlice(allocator, code);
+            try chunk_output.appendSlice(allocator, stripped);
             if (!options.minify_whitespace) {
                 try chunk_output.append(allocator, '\n');
             }
         }
+
+        // RSC 디렉티브 충돌 검증 (Next.js 스펙).
+        warnRscDirectiveConflict(hoisted_directives.items, chunk.rel_dir orelse "<chunk>");
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
@@ -361,6 +376,10 @@ pub fn emitChunks(
         };
         errdefer allocator.free(filename);
 
+        if (hoisted_directives.items.len > 0) {
+            try chunk_output.insertSlice(allocator, 0, hoisted_directives.items);
+        }
+
         try outputs.append(allocator, .{
             .path = filename,
             .contents = try chunk_output.toOwnedSlice(allocator),
@@ -373,6 +392,149 @@ pub fn emitChunks(
     try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph);
 
     return outputs.toOwnedSlice(allocator);
+}
+
+/// 모듈 코드 선두에서 directive prologue (`"use strict"`, `"use client"`,
+/// `"use server"` 등 string literal expression statement)를 추출한다.
+///
+/// 추출된 디렉티브는 `out`에 누적 (각 디렉티브 + ";\n"). 반환값은 디렉티브를
+/// 제거한 나머지 코드 (input slice의 일부, 별도 할당 없음).
+///
+/// 규칙: 공백·줄바꿈·라인 주석(`//`)·블록 주석(`/* */`)을 건너뛰고, "..." 또는
+/// '...' 형태의 string literal이 expression statement로 등장하는 동안 반복.
+/// 첫 비-디렉티브 토큰을 만나면 중단.
+pub fn extractLeadingDirectives(
+    code: []const u8,
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) ![]const u8 {
+    var i: usize = 0;
+    var last_directive_end: usize = 0;
+
+    while (i < code.len) {
+        // 공백 및 주석 스킵
+        const ws_end = skipWhitespaceAndComments(code, i);
+        i = ws_end;
+        if (i >= code.len) break;
+
+        const c = code[i];
+        if (c != '"' and c != '\'') break;
+
+        // 문자열 리터럴 끝 찾기 (이스케이프 처리)
+        const quote = c;
+        var j = i + 1;
+        var terminated = false;
+        while (j < code.len) : (j += 1) {
+            const cj = code[j];
+            if (cj == '\\') {
+                j += 1;
+                continue;
+            }
+            if (cj == quote) {
+                terminated = true;
+                break;
+            }
+            if (cj == '\n') break; // 미종료 문자열 — 중단
+        }
+        if (!terminated) break;
+
+        const literal_start = i;
+        const literal_end = j + 1; // closing quote 포함
+
+        // 다음 토큰이 `;` 또는 줄바꿈이어야 expression statement
+        var k = literal_end;
+        while (k < code.len and (code[k] == ' ' or code[k] == '\t')) : (k += 1) {}
+        if (k >= code.len) {
+            // EOF — directive로 인정
+            try out.appendSlice(allocator, code[literal_start..literal_end]);
+            try out.appendSlice(allocator, ";\n");
+            last_directive_end = code.len;
+            i = code.len;
+            break;
+        }
+
+        const after = code[k];
+        if (after == ';') {
+            try out.appendSlice(allocator, code[literal_start..literal_end]);
+            try out.appendSlice(allocator, ";\n");
+            i = k + 1;
+            last_directive_end = i;
+        } else if (after == '\n' or after == '\r') {
+            try out.appendSlice(allocator, code[literal_start..literal_end]);
+            try out.appendSlice(allocator, ";\n");
+            i = k;
+            last_directive_end = i;
+        } else {
+            // 문자열 다음에 다른 토큰 — directive 아님
+            break;
+        }
+    }
+
+    return code[last_directive_end..];
+}
+
+/// RSC 디렉티브 리터럴 상수 (single/double quote 양쪽).
+const USE_CLIENT_DQ = "\"use client\"";
+const USE_CLIENT_SQ = "'use client'";
+const USE_SERVER_DQ = "\"use server\"";
+const USE_SERVER_SQ = "'use server'";
+const USE_CACHE_DQ = "\"use cache\"";
+const USE_CACHE_SQ = "'use cache'";
+
+fn containsDirective(hoisted: []const u8, dq: []const u8, sq: []const u8) bool {
+    return std.mem.indexOf(u8, hoisted, dq) != null or std.mem.indexOf(u8, hoisted, sq) != null;
+}
+
+/// `hoisted` 안에 RSC 디렉티브 충돌이 있으면 stderr에 경고를 출력.
+/// Next.js 스펙: `'use client'` + `'use server'`/`'use cache'` 같은 파일 공존 불가.
+pub fn warnRscDirectiveConflict(hoisted: []const u8, where: []const u8) void {
+    if (hoisted.len == 0) return;
+    const has_client = containsDirective(hoisted, USE_CLIENT_DQ, USE_CLIENT_SQ);
+    if (!has_client) return;
+    const has_server = containsDirective(hoisted, USE_SERVER_DQ, USE_SERVER_SQ);
+    const has_cache = containsDirective(hoisted, USE_CACHE_DQ, USE_CACHE_SQ);
+
+    if (has_server) {
+        std.debug.print(
+            "[zts] warning: RSC directive conflict — 'use client' and 'use server' coexist in the same file/chunk ({s}). React/Next.js runtime will reject this.\n",
+            .{where},
+        );
+    }
+    if (has_cache) {
+        std.debug.print(
+            "[zts] warning: RSC directive conflict — 'use client' and 'use cache' coexist in the same file/chunk ({s}). Next.js runtime will reject this.\n",
+            .{where},
+        );
+    }
+}
+
+fn skipWhitespaceAndComments(code: []const u8, start: usize) usize {
+    var i = start;
+    while (i < code.len) {
+        const c = code[i];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            i += 1;
+            continue;
+        }
+        if (i + 1 < code.len and c == '/') {
+            const c2 = code[i + 1];
+            if (c2 == '/') {
+                // line comment
+                i += 2;
+                while (i < code.len and code[i] != '\n') : (i += 1) {}
+                continue;
+            }
+            if (c2 == '*') {
+                // block comment
+                i += 2;
+                while (i + 1 < code.len and !(code[i] == '*' and code[i + 1] == '/')) : (i += 1) {}
+                if (i + 1 < code.len) i += 2;
+                continue;
+            }
+        }
+        break;
+    }
+    return i;
 }
 
 /// 동적 import 경로를 청크 파일명으로 리라이트한다.
@@ -1008,4 +1170,174 @@ fn computeRelativePath(
     try result.appendSlice(allocator, ext);
 
     return result.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+fn testExtract(input: []const u8, expected_directives: []const u8, expected_rest: []const u8) !void {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const rest = try extractLeadingDirectives(input, &out, testing.allocator);
+    try testing.expectEqualStrings(expected_directives, out.items);
+    try testing.expectEqualStrings(expected_rest, rest);
+}
+
+test "extractLeadingDirectives: 단일 use client" {
+    try testExtract(
+        "\"use client\";\nimport x from 'y';\n",
+        "\"use client\";\n",
+        "\nimport x from 'y';\n",
+    );
+}
+
+test "extractLeadingDirectives: use strict + use client" {
+    try testExtract(
+        "\"use strict\";\n\"use client\";\nfoo();\n",
+        "\"use strict\";\n\"use client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: single quote 'use server'" {
+    try testExtract(
+        "'use server'\nexport async function f(){}\n",
+        "'use server';\n",
+        "\nexport async function f(){}\n",
+    );
+}
+
+test "extractLeadingDirectives: 디렉티브 없음" {
+    try testExtract(
+        "import x from 'y';\n",
+        "",
+        "import x from 'y';\n",
+    );
+}
+
+test "extractLeadingDirectives: 라인 주석 후 디렉티브" {
+    try testExtract(
+        "// banner\n\"use client\";\nfoo();\n",
+        "\"use client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 블록 주석 후 디렉티브" {
+    try testExtract(
+        "/** copyright */\n\"use client\";\nfoo();\n",
+        "\"use client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 첫 비-string 만나면 중단" {
+    try testExtract(
+        "\"use client\";\n\"random\";\nimport x;\n",
+        "\"use client\";\n\"random\";\n",
+        "\nimport x;\n",
+    );
+}
+
+test "extractLeadingDirectives: 문자열 다음에 + 연산자면 디렉티브 아님" {
+    try testExtract(
+        "\"foo\" + \"bar\";\n",
+        "",
+        "\"foo\" + \"bar\";\n",
+    );
+}
+
+test "extractLeadingDirectives: 이스케이프된 quote 처리" {
+    try testExtract(
+        "\"use \\\"x\\\" client\";\nfoo();\n",
+        "\"use \\\"x\\\" client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 빈 입력" {
+    try testExtract("", "", "");
+}
+
+test "extractLeadingDirectives: 공백만" {
+    try testExtract("   \n\t\n", "", "   \n\t\n");
+}
+
+test "extractLeadingDirectives: 주석만 (디렉티브 없음)" {
+    try testExtract("// just a comment\n/* block */\n", "", "// just a comment\n/* block */\n");
+}
+
+test "extractLeadingDirectives: CRLF 줄바꿈" {
+    try testExtract(
+        "\"use client\";\r\nfoo();\r\n",
+        "\"use client\";\n",
+        "\r\nfoo();\r\n",
+    );
+}
+
+test "extractLeadingDirectives: 디렉티브 + 같은 줄에 코드 (semicolon으로 분리)" {
+    try testExtract(
+        "\"use client\"; foo();\n",
+        "\"use client\";\n",
+        " foo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 라인 주석 + 블록 주석 + 디렉티브" {
+    try testExtract(
+        "// line\n/* block */\n\"use server\";\n",
+        "\"use server\";\n",
+        "\n",
+    );
+}
+
+test "extractLeadingDirectives: 두 디렉티브 사이 주석" {
+    try testExtract(
+        "\"use strict\";\n// between\n\"use client\";\nfoo();\n",
+        "\"use strict\";\n\"use client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 중첩 블록 주석은 미지원이어도 단순 블록은 OK" {
+    try testExtract(
+        "/* a */\n/* b */ \"use client\";\nfoo();\n",
+        "\"use client\";\n",
+        "\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: 미종료 문자열 — 중단" {
+    try testExtract(
+        "\"unterminated\nfoo();\n",
+        "",
+        "\"unterminated\nfoo();\n",
+    );
+}
+
+test "extractLeadingDirectives: var 선언 → 즉시 중단" {
+    try testExtract(
+        "var x = 1;\n\"use client\";\n",
+        "",
+        "var x = 1;\n\"use client\";\n",
+    );
+}
+
+test "extractLeadingDirectives: 디렉티브 후 EOF" {
+    try testExtract(
+        "\"use client\"",
+        "\"use client\";\n",
+        "",
+    );
+}
+
+test "extractLeadingDirectives: tab/space 들여쓰기된 디렉티브 (스펙상 prologue)" {
+    try testExtract(
+        "  \"use client\";\nfoo();\n",
+        "\"use client\";\n",
+        "\nfoo();\n",
+    );
 }
