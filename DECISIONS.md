@@ -778,5 +778,16 @@
 - **보류**: resolve 병렬화 (95ms, 모듈당 0.15ms) — Zig 0.16 async/await 지원 후 rolldown 방식(join_all) 또는 esbuild 방식(파일 단위 파이프라인) 비교하여 결정. 현재는 절대값이 작아 투자 대비 효과 낮음.
 - **참고**: esbuild — goroutine+channel 파일 단위 파이프라인, rolldown — tokio::spawn+join_all import 단위 병렬
 
+### D097: 플러그인 state를 PluginState 구조체로 분리 (2026-04-13)
+- **결정**: Transformer core에 산재하던 plugin-specific runtime state를 `plugin_state.zig`의 `PluginState` 구조체로 이사. 각 플러그인은 sub-struct(`plugins.worklet`, `plugins.refresh`) 소유.
+- **이유**: 기존 Transformer에 `auto_worklet_next`, `worklet_body_depth`, `refresh_registrations` 등 7개+ 플러그인 필드 혼재 → core가 "generic JS transformer"가 아닌 "React+Reanimated 특화"로 변질. 유지보수 시 관심사 혼동.
+- **설계 원칙 (유지보수 안전장치)**:
+  1. **Plugin state 접근은 자기 plugin만**. Cross-plugin 직접 접근 금지 (예: `refresh.zig`가 `plugins.worklet.*`를 읽으면 안 됨).
+  2. **Core는 명명된 hook point 함수로만 plugin 상태 접근** (예: `visitBodyWorkletAware`, `dispatchFunctionPlugins`).
+- **왜 Visitor-Hook 아키텍처(Option B)로 가지 않았나**: Zig는 trait/interface가 없어 hook dispatch가 타입 안전성을 약화시킴. ZTS는 내부 플러그인만 상정(써드파티 AST 플러그인 비목표)이라 hook 인프라는 과설계. 위 규칙을 지키면 추후 B로 전환 비용이 저렴 (state는 이미 plugin별로 뭉쳐있음 → dispatch만 간접화).
+- **참고**: oxc의 `TransformCtx`도 동일 패턴 (내부 플러그인 state를 단일 ctx struct). oxlint만 외부 JS 플러그인을 별도 프로세스 경계로 분리.
+- **관련**: #1195, PR #1196 (Phase 1a — worklet 이사), PR #1197 (Phase 1b — refresh 이사)
+- **알려진 cross-plugin 위반**: `worklet_plugin.zig`가 `plugins.refresh.suppress_registration`을 직접 세팅. 후속 과제로 core에 중립 API(`t.suppressRefreshInScope(...)` 등) 도입하여 해소 예정.
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
