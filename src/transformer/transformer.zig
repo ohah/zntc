@@ -571,7 +571,11 @@ pub const Transformer = struct {
             .flow_component_wrapper => self.visitFlowComponentWrapper(node),
 
             // === 리스트 노드: 자식을 하나씩 방문하며 복사 ===
-            .program,
+            .program => {
+                // Plugin visitor 훅 선취권 (file-level worklet directive 등)
+                if (try self.dispatchVisitor(.on_program, idx)) |replacement| return replacement;
+                return self.visitListNode(node);
+            },
             .block_statement,
             .sequence_expression,
             .class_body,
@@ -609,6 +613,8 @@ pub const Transformer = struct {
 
             // object_expression: spread(ES2018) 또는 computed property(ES2015) 다운레벨링
             .object_expression => {
+                // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
+                if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;
                 if (self.options.unsupported.object_spread) {
                     if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
                         return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
@@ -926,6 +932,8 @@ pub const Transformer = struct {
                         return es2015_class.ES2015Class(Transformer).lowerSuperComputedMethodCall(self, node);
                     }
                 }
+                // Plugin visitor 훅 — web-check 치환 등
+                if (try self.dispatchVisitor(.on_call_expression, idx)) |replacement| return replacement;
                 // ES2015: spread in call → .apply()
                 if (self.options.unsupported.spread) {
                     if (es2015_spread.ES2015Spread(Transformer).hasSpreadArg(self, node)) {
@@ -1331,13 +1339,9 @@ pub const Transformer = struct {
         if (self.options.unsupported.block_scoping and (node.tag == .program or node.tag == .function_body)) {
             self.collectTopLevelVarNames(node.data.list.start, node.data.list.len);
         }
-        // File-level worklet directive: program 최상단에 `'worklet';` 있으면
-        // top-level 함수/클래스를 auto-worklet 대상으로 표시 (Babel 호환).
-        if (self.options.plugins.len > 0 and node.tag == .program and
-            hasWorkletDirective(self, node.data.list.start, node.data.list.len))
-        {
-            return try self.visitFileWorkletProgram(node);
-        }
+        // Plugin visitor 훅 — program 노드 선취권 (file-level worklet directive 등)
+        // visitListNode는 idx를 직접 받지 않으므로 caller(visitNodeInner)에서 이미 dispatch 완료 상태.
+        // 여기서는 추가 작업 없음.
         // ES2025: using/await using → try-finally 래핑
         if (self.options.unsupported.using) {
             const Using = es2025_using.ES2025Using(Transformer);
@@ -2891,26 +2895,6 @@ pub const Transformer = struct {
         const args_start = self.readU32(e, 1);
         const args_len = self.readU32(e, 2);
         const flags = self.readU32(e, 3);
-
-        // Reanimated web: `isWeb()` / `shouldBeUseWeb()` → `true` (dead code 제거 목적).
-        if (self.options.substitute_web_platform_checks and args_len == 0 and !callee_idx.isNone()) {
-            const callee_node = self.ast.getNode(callee_idx);
-            if (callee_node.tag == .identifier_reference) {
-                const name = self.ast.source[callee_node.span.start..callee_node.span.end];
-                const wp = @import("plugins/worklet_plugin.zig");
-                for (wp.WEB_PLATFORM_CHECK_NAMES) |n| {
-                    if (std.mem.eql(u8, n, name)) {
-                        const true_span = try self.ast.addString("true");
-                        return try self.ast.addNode(.{
-                            .tag = .boolean_literal,
-                            .span = true_span,
-                            .data = .{ .string_ref = true_span },
-                        });
-                    }
-                }
-            }
-        }
-
         const new_callee = try self.visitNode(callee_idx);
 
         // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면
@@ -3560,79 +3544,24 @@ pub const Transformer = struct {
         };
     }
 
-    /// file-level `'worklet'` directive가 있는 program: 각 top-level 함수/클래스 방문 전에
-    /// auto_worklet_next=true로 설정. 중첩 함수/클래스는 영향 없음 (auto_worklet_next는
-    /// 한 번 소비되면 리셋).
-    fn visitFileWorkletProgram(self: *Transformer, node: Node) Error!NodeIndex {
-        const list_start = node.data.list.start;
-        const list_len = node.data.list.len;
-
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        const pending_top = self.pending_nodes.items.len;
-        defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
-        const trailing_top = self.trailing_nodes.items.len;
-        defer self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
-
-        var i: u32 = 0;
-        while (i < list_len) : (i += 1) {
-            const raw = self.ast.extra_data.items[list_start + i];
-            const child_idx: NodeIndex = @enumFromInt(raw);
-            if (!child_idx.isNone()) {
-                const child = self.ast.getNode(child_idx);
-                switch (child.tag) {
-                    .function_declaration, .class_declaration, .variable_declaration, .export_named_declaration, .export_default_declaration => {
-                        self.auto_worklet_next = true;
-                    },
-                    else => {},
-                }
-            }
-
-            // pending_nodes를 child 앞에 삽입 (visitExtraList와 동일 패턴)
-            if (self.pending_nodes.items.len > pending_top) {
-                try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
-                self.pending_nodes.shrinkRetainingCapacity(pending_top);
-            }
-
-            const new_child = try self.visitNode(child_idx);
-            self.auto_worklet_next = false;
-            if (!new_child.isNone()) try self.scratch.append(self.allocator, new_child);
-
-            // trailing_nodes를 child 뒤에 삽입 (__workletHash 할당문 등)
-            if (self.trailing_nodes.items.len > trailing_top) {
-                try self.scratch.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
-                self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
-            }
+    /// Plugin visitor 훅 dispatch — 지정된 tag에 등록된 훅을 순회하며 first-wins로 호출.
+    /// 모든 훅이 null 반환이면 null → caller가 default 방문 진행.
+    pub const VisitorHookKind = enum { on_program, on_object_expression, on_call_expression };
+    pub fn dispatchVisitor(self: *Transformer, comptime kind: VisitorHookKind, node_idx: NodeIndex) Error!?NodeIndex {
+        if (self.options.plugins.len == 0) return null;
+        var api = AstTransformCtx{ .transformer = self };
+        for (self.options.plugins) |p| {
+            const v = p.visitor orelse continue;
+            // enum → struct field: @tagName이 런타임 오버헤드 없이 comptime 매핑.
+            // 새 훅 추가 시 enum + Visitor struct만 수정하면 됨 (switch 분기 불필요).
+            const hook = @field(v, @tagName(kind)) orelse continue;
+            const result = hook(p.context, &api, node_idx) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.PluginFailed => continue,
+            };
+            if (result) |r| return r;
         }
-
-        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.ast.addNode(.{
-            .tag = node.tag,
-            .span = node.span,
-            .data = .{ .list = new_list },
-        });
-    }
-
-    /// 리스트에서 첫 번째 directive로 `'worklet'` 또는 `"worklet"`가 있는지 확인.
-    /// directive는 expression_statement + string_literal (첫 non-comment 문장).
-    fn hasWorkletDirective(self: *Transformer, list_start: u32, list_len: u32) bool {
-        var i: u32 = 0;
-        while (i < list_len) : (i += 1) {
-            const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
-            if (idx.isNone()) continue;
-            const stmt = self.ast.getNode(idx);
-            if (stmt.tag != .expression_statement) return false; // directive는 리스트 맨 앞
-            const inner_idx = stmt.data.unary.operand;
-            if (inner_idx.isNone()) return false;
-            const inner = self.ast.getNode(inner_idx);
-            if (inner.tag != .string_literal) return false;
-            const text = self.ast.source[inner.span.start..inner.span.end];
-            // text는 quote 포함 (`"worklet"` 또는 `'worklet'`)
-            if (std.mem.eql(u8, text, "\"worklet\"") or std.mem.eql(u8, text, "'worklet'")) return true;
-            // 다른 directive (예: "use strict")면 다음으로 진행
-        }
-        return false;
+        return null;
     }
 
     /// onFunction 플러그인 훅을 실행한다.
