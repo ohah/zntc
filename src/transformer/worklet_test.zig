@@ -401,9 +401,9 @@ test "Worklet: nested function captures outer refs but params stay local" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     // ext는 inner body에서 참조하는 외부 변수 → worklet closure에 포함
-    try std.testing.expect(std.mem.indexOf(u8, code, "ext:ext}=this.__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "ext}=this.__closure") != null);
     // inner의 param x는 closure에 포함되면 안 됨
-    try std.testing.expect(std.mem.indexOf(u8, code, "x:x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "x: x") == null);
 }
 
 test "Worklet: default param (c = 0) not in closure" {
@@ -601,7 +601,7 @@ test "Worklet: object method with outer closure vars captured" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "config:config}=this.__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "config}=this.__closure") != null);
 }
 
 test "Worklet: getter with worklet directive becomes factory body (Babel 호환)" {
@@ -769,7 +769,7 @@ test "Worklet: closure analysis includes refs inside object getters/setters/meth
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "outerFn") != null);
     // __initData.code에서 this.__closure로 destructure
-    try std.testing.expect(std.mem.indexOf(u8, code, "outerFn:outerFn}=this.__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "outerFn}=this.__closure") != null);
 }
 
 test "Worklet: object method worklet strips directive from IIFE body" {
@@ -814,7 +814,7 @@ test "Worklet: TS type assertion (as) does not break closure analysis" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "outer:outer}=this.__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "outer}=this.__closure") != null);
 }
 
 test "Worklet: closure captures through ternary, template literal, array, spread" {
@@ -831,10 +831,10 @@ test "Worklet: closure captures through ternary, template literal, array, spread
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "a:a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "b:b") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "c:c") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "d:d") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "a: a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "b: b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "c: c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "d: d") != null);
 }
 
 test "Worklet: closure captures through switch, for-in, try-catch" {
@@ -850,11 +850,11 @@ test "Worklet: closure captures through switch, for-in, try-catch" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "val:val") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "obj:obj") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "fn2:fn2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "val: val") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "obj: obj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "fn2: fn2") != null);
     // catch param 'e'는 closure가 아닌 로컬
-    try std.testing.expect(std.mem.indexOf(u8, code, "e:e") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "e: e") == null);
 }
 
 test "Worklet: method param shadowing does not leak to outer closure" {
@@ -885,8 +885,8 @@ test "Worklet: nested object with computed property and new expression" {
     defer r.deinit();
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, "key:key") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "Cls:Cls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "key: key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "Cls: Cls") != null);
 }
 
 test "Worklet: nested function and arrow capture outer imports" {
@@ -906,8 +906,8 @@ test "Worklet: nested function and arrow capture outer imports" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     // 중첩 function 안의 isShared와 arrow 안의 helper 모두 worklet closure에 포함
-    try std.testing.expect(std.mem.indexOf(u8, code, "isShared:isShared") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "helper:helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "isShared: isShared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "helper: helper") != null);
     // extract의 param x는 closure에 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, code, " x:x") == null);
 }
@@ -939,4 +939,55 @@ test "Worklet: arrow with destructured param does not leak" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+// ============================================================
+// Babel parity: __initData.code destructuring shorthand + sourceMap field (#1193 follow-up)
+// ============================================================
+
+test "Worklet: __initData.code uses shorthand destructuring (const {X} = this.__closure)" {
+    // Babel react-native-worklets는 worklet code string에서 shorthand 형태로 emit.
+    // Reanimated runtime이 해당 형태를 기대하는 경우를 대비 parity 유지.
+    var r = try transformWorklet(std.testing.allocator,
+        \\var foo = 1;
+        \\function w() {
+        \\  "worklet";
+        \\  return foo + 1;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "{foo}=this.__closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "{foo:foo}=this.__closure") == null);
+}
+
+test "Worklet: __initData.code shorthand for multiple closure vars" {
+    var r = try transformWorklet(std.testing.allocator,
+        \\var a = 1, b = 2, c = 3;
+        \\function w() {
+        \\  "worklet";
+        \\  return a + b + c;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "{a,b,c}=this.__closure") != null);
+}
+
+test "Worklet: __initData includes sourceMap field (Babel parity)" {
+    // Babel plugin은 dev 빌드에서 __initData.sourceMap을 항상 주입.
+    // ZTS는 worklet 수준 sourceMap 미생성이라 빈 문자열이라도 필드 존재 보장.
+    var r = try transformWorklet(std.testing.allocator,
+        \\function w() {
+        \\  "worklet";
+        \\  return 1;
+        \\}
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap: \"\"") != null);
 }
