@@ -449,6 +449,185 @@ pub fn ES2022(comptime Transformer: type) type {
             return null;
         }
 
+        // ================================================================
+        // Private Fields (#field) → WeakMap + constructor init (Babel 방식)
+        // ================================================================
+
+        /// 클래스 바디에서 private instance field를 추출하여 WeakMap + ctor init으로 변환.
+        ///
+        /// class X { #f = 1; get(){ return this.#f; } }
+        /// → var _f = new WeakMap();
+        ///   class X {
+        ///     constructor() { _f.set(this, 1); }
+        ///     get() { return _f.get(this); }
+        ///   }
+        ///
+        /// 2-pass (lowerPrivateMethods와 동일 구조):
+        ///   Pass 1: body를 스캔하여 private field 매핑 수집 + body에서 property_definition 제거
+        ///   Pass 2: current_private_fields를 설정한 후 body 멤버를 visit
+        ///           → this.#f 참조는 transformer dispatch에서 기존 lowerPrivateFieldGet/Set 경유
+        ///
+        /// 반환: true이면 private field가 있어 변환 수행됨.
+        ///
+        /// TODO: static private field, this.#f++ update expression은 기존
+        ///       lowerPrivateFieldUpdate 경로가 unsupported.class 게이트에 묶여 있어
+        ///       별도 작업 필요.
+        pub fn lowerPrivateFields(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            new_body_out: *NodeIndex,
+            pre_stmts: *std.ArrayList(NodeIndex),
+            ctor_init_stmts: *std.ArrayList(NodeIndex),
+            mappings: *std.ArrayList(Transformer.PrivateFieldMapping),
+            has_super: bool,
+        ) Transformer.Error!bool {
+            const body_node = self.ast.getNode(body_idx);
+            const body_start = body_node.data.list.start;
+            const body_len = body_node.data.list.len;
+            const span = body_node.span;
+
+            // ── Pass 1: private instance field 수집 (read-only 스캔) ──
+            // 각 mapping의 member_raw_idx + init_idx 쌍을 병렬 배열로 임시 저장
+            var field_member_raw: std.ArrayList(u32) = .empty;
+            defer field_member_raw.deinit(self.allocator);
+            var field_init_idx: std.ArrayList(NodeIndex) = .empty;
+            defer field_init_idx.deinit(self.allocator);
+
+            {
+                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
+                for (body_members) |raw_idx| {
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (member.tag != .property_definition) continue;
+
+                    const pe = member.data.extra;
+                    const key: NodeIndex = self.readNodeIdx(pe, 0);
+                    if (key.isNone()) continue;
+                    const key_node = self.ast.getNode(key);
+                    if (key_node.tag != .private_identifier) continue;
+
+                    const flags = self.readU32(pe, 2);
+                    const is_static = (flags & 0x01) != 0;
+                    if (is_static) continue; // TODO: static private field
+
+                    const init_val: NodeIndex = self.readNodeIdx(pe, 1);
+                    const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#f"
+
+                    // "#f" → "_f"
+                    const bare = orig_name[1..];
+                    const var_name = try self.allocator.alloc(u8, 1 + bare.len);
+                    var_name[0] = '_';
+                    @memcpy(var_name[1..], bare);
+
+                    try mappings.append(self.allocator, .{
+                        .original_name = orig_name,
+                        .var_name = var_name,
+                    });
+                    try field_member_raw.append(self.allocator, raw_idx);
+                    try field_init_idx.append(self.allocator, init_val);
+                }
+            }
+
+            if (mappings.items.len == 0) return false;
+
+            // ── current_private_fields 설정 (Pass 2에서 this.#f 변환에 필요) ──
+            const saved_private_fields = self.current_private_fields;
+            self.current_private_fields = mappings.items;
+            defer self.current_private_fields = saved_private_fields;
+
+            // pre_stmts: var _f = new WeakMap();
+            for (mappings.items) |m| {
+                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
+                try pre_stmts.append(self.allocator, ws_decl);
+            }
+
+            // ── Pass 2: body 멤버 visit — private property_definition은 제거,
+            //           constructor에는 _f.set(this, init) 주입 ──
+            var body_nodes: std.ArrayList(NodeIndex) = .empty;
+            defer body_nodes.deinit(self.allocator);
+
+            var found_constructor = false;
+
+            var j: u32 = 0;
+            while (j < body_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[body_start + j];
+
+                // private field property_definition은 body에서 제거 (대신 ctor init 생성)
+                var is_private_field_def = false;
+                var init_for_this: NodeIndex = .none;
+                var var_name_for_this: []const u8 = "";
+                for (field_member_raw.items, field_init_idx.items, mappings.items) |fr, fi, m| {
+                    if (fr == raw_idx) {
+                        is_private_field_def = true;
+                        init_for_this = fi;
+                        var_name_for_this = m.var_name;
+                        break;
+                    }
+                }
+                if (is_private_field_def) {
+                    const init_stmt = try buildPrivateFieldSetInit(self, var_name_for_this, init_for_this, span);
+                    try ctor_init_stmts.append(self.allocator, init_stmt);
+                    continue;
+                }
+
+                // 일반 멤버 visit (this.#f 참조는 dispatch에서 lowerPrivateFieldGet/Set 경유)
+                var new_member = try self.visitNode(@enumFromInt(raw_idx));
+                if (new_member.isNone()) continue;
+
+                // constructor에 _f.set(this, init) 주입
+                if (ctor_init_stmts.items.len > 0) {
+                    const new_node = self.ast.getNode(new_member);
+                    if (new_node.tag == .method_definition) {
+                        const ne = new_node.data.extra;
+                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
+                        if (!nkey.isNone()) {
+                            const nk = self.ast.getNode(nkey);
+                            const kt = self.ast.source[nk.span.start..nk.span.end];
+                            if (std.mem.eql(u8, kt, "constructor")) {
+                                new_member = try injectIntoMethod(self, new_member, ctor_init_stmts.items);
+                                found_constructor = true;
+                            }
+                        }
+                    }
+                }
+
+                try body_nodes.append(self.allocator, new_member);
+            }
+
+            // constructor가 없으면 새로 생성하여 맨 앞에 삽입
+            if (!found_constructor and ctor_init_stmts.items.len > 0) {
+                const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
+                try body_nodes.insert(self.allocator, 0, ctor);
+            }
+
+            const new_list = try self.ast.addNodeList(body_nodes.items);
+            new_body_out.* = try self.ast.addNode(.{
+                .tag = .class_body,
+                .span = span,
+                .data = .{ .list = new_list },
+            });
+
+            return true;
+        }
+
+        /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
+        fn buildPrivateFieldSetInit(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
+            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
+            const this_node = try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+            const new_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
+            const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, new_init }, span);
+            return self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+            });
+        }
+
         /// static block의 body를 IIFE `(() => { ...body... })()`로 변환.
         /// static block: unary node, operand = block_statement (function_body)
         ///

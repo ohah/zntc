@@ -2399,6 +2399,84 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("Rex says woof");
     });
+
+    test("private instance field (#f = init → WeakMap)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X { #f = 1; get(){ return this.#f; } }
+            console.log(new X().get());
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("private field read/write/increment", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class A {
+              #x = 10;
+              #y: number | undefined;
+              inc() { this.#x++; return this.#x; }
+              sety(v: number) { this.#y = v; return this.#y; }
+            }
+            const a = new A();
+            console.log(a.inc(), a.inc(), a.sety(42));
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("11 12 42");
+    });
+
+    test("private field uninitialized (#f;)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X { #f; get(){ return this.#f; } set(v: number){ this.#f = v; } }
+            const x = new X();
+            console.log(x.get());
+            x.set(7);
+            console.log(x.get());
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined\n7");
+    });
+
+    test("private field with existing constructor (no super)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Greeter {
+              name: string;
+              #suffix = "!";
+              constructor(name: string) { this.name = name; }
+              greet() { return "Hello " + this.name + this.#suffix; }
+            }
+            console.log(new Greeter("world").greet());
+          `,
+        },
+        "index.ts",
+        ["--target=es2021"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Hello world!");
+    });
   });
 
   // ===== useDefineForClassFields=false =====
