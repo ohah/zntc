@@ -14,6 +14,7 @@ const transpile_mod = zts_lib.transpile;
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const FileWatcher = zts_lib.server.FileWatcher;
+const TrackedFileSet = zts_lib.server.TrackedFileSet;
 
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
@@ -25,32 +26,6 @@ const watch_debounce_max_ms: u64 = 500;
 
 /// 파일 내용 해시 최대 크기 (소스 파일 기준 충분).
 const watch_hash_max_bytes: usize = 10 * 1024 * 1024;
-
-/// 파일 내용의 content hash (Wyhash 64-bit, 스트리밍). `util.wyhash` 위임.
-fn hashFileContent(path: []const u8) ?u64 {
-    return zts_lib.util.wyhash.hashFileStreaming(path, watch_hash_max_bytes);
-}
-
-/// FileWatcher에 path를 등록하고 content_hash_map에 해시 엔트리 생성/갱신.
-/// overwrite=false면 기존 엔트리의 해시는 보존(리빌드 후 재-싱크 용도).
-fn addAndCacheHash(
-    w: *FileWatcher,
-    hmap: *std.StringHashMap(u64),
-    alloc: std.mem.Allocator,
-    path: []const u8,
-    overwrite: bool,
-) bool {
-    w.addPath(path) catch return false;
-    if (!overwrite and hmap.contains(path)) return true;
-    const h = hashFileContent(path) orelse 0;
-    if (hmap.getEntry(path)) |e| {
-        e.value_ptr.* = h;
-    } else {
-        const key = alloc.dupe(u8, path) catch return true;
-        hmap.put(key, h) catch alloc.free(key);
-    }
-    return true;
-}
 
 /// 이벤트 배열의 path들을 중복 제거 set에 병합.
 /// FileWatcher.waitForChanges 결과는 다음 호출에서 무효화되므로 path를 dupe.
@@ -1406,8 +1381,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     defer persistent_resolve_cache.deinit();
 
     // Issue #1223 Phase 1: 이벤트 기반 파일 워처 (kqueue/inotify, mtime 폴백).
+    // TrackedFileSet이 FileWatcher와 내용 해시 캐시를 함께 소유 (#1229 Part 2).
     // 실패 시 워치 스레드 진입 직전에 종료한다.
-    var watcher = FileWatcher.init(allocator) catch |err| {
+    var tracked = TrackedFileSet.init(allocator, watch_hash_max_bytes) catch |err| {
         const event = allocator.create(WatchRebuildEvent) catch {
             _ = c.napi_release_threadsafe_function(async_data.ready_tsfn, c.napi_tsfn_release);
             _ = c.napi_release_threadsafe_function(async_data.rebuild_tsfn, c.napi_tsfn_release);
@@ -1424,27 +1400,17 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         async_data.deinit();
         return;
     };
-    defer watcher.deinit();
-
-    // content hash 캐시: mtime 변동으로 깨우되 실제 내용 변화만 리빌드 트리거.
-    var content_hash_map = std.StringHashMap(u64).init(allocator);
-    defer {
-        var it = content_hash_map.keyIterator();
-        while (it.next()) |k| allocator.free(k.*);
-        content_hash_map.deinit();
-    }
+    defer tracked.deinit();
 
     var initial_watch_count: usize = 0;
     if (bundle_opts.entry_points.len > 0 and
-        addAndCacheHash(&watcher, &content_hash_map, allocator, bundle_opts.entry_points[0], true))
+        tracked.addPath(bundle_opts.entry_points[0], true))
     {
         initial_watch_count += 1;
     }
     if (result.module_paths) |paths| {
         for (paths) |p| {
-            if (addAndCacheHash(&watcher, &content_hash_map, allocator, p, true)) {
-                initial_watch_count += 1;
-            }
+            if (tracked.addPath(p, true)) initial_watch_count += 1;
         }
     }
 
@@ -1495,7 +1461,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     // Issue #1223 Phase 1: 이벤트 기반 워처 + 디바운스 + content hash 필터링.
     while (!async_data.stop_flag.load(.acquire)) {
-        const first_events = watcher.waitForChanges(watch_poll_timeout_ms) catch &[_]zts_lib.server.ChangeEvent{};
+        const first_events = tracked.waitForChanges(watch_poll_timeout_ms) catch &[_]zts_lib.server.ChangeEvent{};
         if (async_data.stop_flag.load(.acquire)) break;
 
         var total_timer: ?std.time.Timer = std.time.Timer.start() catch null;
@@ -1515,7 +1481,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // 첫 이벤트로부터 watch_debounce_max_ms 초과 시 강제 종료.
         var debounce_timer: ?std.time.Timer = std.time.Timer.start() catch null;
         while (!async_data.stop_flag.load(.acquire)) {
-            const more = watcher.waitForChanges(watch_debounce_ms) catch break;
+            const more = tracked.waitForChanges(watch_debounce_ms) catch break;
             if (more.len == 0) break;
             collectTouched(&touched, allocator, more);
             if (debounce_timer) |*t| {
@@ -1529,17 +1495,9 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         defer changed_files.deinit(allocator);
         var tkit = touched.keyIterator();
         while (tkit.next()) |pkey| {
-            const path = pkey.*;
-            const new_hash = hashFileContent(path) orelse continue;
-            const old_hash = content_hash_map.get(path);
-            if (old_hash != null and old_hash.? == new_hash) continue;
-            if (content_hash_map.getEntry(path)) |entry| {
-                entry.value_ptr.* = new_hash;
-            } else {
-                const key_copy = allocator.dupe(u8, path) catch continue;
-                content_hash_map.put(key_copy, new_hash) catch allocator.free(key_copy);
+            if (tracked.markIfChanged(pkey.*)) {
+                changed_files.append(allocator, pkey.*) catch {};
             }
-            changed_files.append(allocator, path) catch {};
         }
         const detect_ns: u64 = if (detect_timer) |*t| t.read() else 0;
 
@@ -1715,25 +1673,22 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             for (paths) |p| desired.put(p, {}) catch {};
         }
 
-        // stale 엔트리 제거 — 워처와 content_hash_map 모두에서.
+        // stale 엔트리 제거 — 워처와 해시 캐시 양쪽에서.
         {
             var stale: std.ArrayList([]const u8) = .empty;
             defer stale.deinit(allocator);
-            var hit = content_hash_map.keyIterator();
+            var hit = tracked.keyIterator();
             while (hit.next()) |k| {
                 if (!desired.contains(k.*)) stale.append(allocator, k.*) catch {};
             }
-            for (stale.items) |k| {
-                watcher.removePath(k);
-                if (content_hash_map.fetchRemove(k)) |kv| allocator.free(kv.key);
-            }
+            for (stale.items) |k| tracked.removePath(k);
         }
 
         // 추가된 경로만 addPath + 해시. 기존 경로는 kqueue/inotify에 이미 등록됨.
         var dit = desired.keyIterator();
         while (dit.next()) |pkey| {
-            if (content_hash_map.contains(pkey.*)) continue;
-            _ = addAndCacheHash(&watcher, &content_hash_map, allocator, pkey.*, false);
+            if (tracked.contains(pkey.*)) continue;
+            _ = tracked.addPath(pkey.*, false);
         }
     }
 
