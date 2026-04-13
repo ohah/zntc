@@ -803,14 +803,11 @@ fn serializeFunctionInfo(
     }
     try buf.append(alloc, ']');
 
-    // closureVars: 디렉티브가 있을 때만 계산 (스코프 분석은 비용이 크므로)
+    // closureVars: 디렉티브가 있을 때만 계산 (스코프 분석은 비용이 크므로).
+    // ctx 캐시 덕분에 worklet_plugin이 먼저 계산했다면 재사용 (#1114).
     try buf.appendSlice(alloc, ",\"closureVars\":[");
     if (has_directives) {
-        const closure_vars = api.getClosureVars(func.original_body_idx, func.original_params_start, func.original_params_len, func.name) catch &.{};
-        defer if (closure_vars.len > 0) {
-            for (closure_vars) |cv| api.getAllocator().free(cv.name);
-            api.getAllocator().free(closure_vars);
-        };
+        const closure_vars = api.getClosureVars(&func) catch &.{};
         for (closure_vars, 0..) |cv, i| {
             if (i > 0) try buf.append(alloc, ',');
             try buf.append(alloc, '"');

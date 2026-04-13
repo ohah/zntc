@@ -205,14 +205,8 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         break :blk name;
     };
 
-    const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len, info.name);
-    defer {
-        for (closure_vars) |cv| {
-            api.getAllocator().free(cv.name);
-            if (cv.class_factory_base) |b| api.getAllocator().free(b);
-        }
-        api.getAllocator().free(closure_vars);
-    }
+    // ctx가 캐시 소유 — 해제는 dispatcher의 deinitClosureCache()가 담당 (#1114).
+    const closure_vars = try api.getClosureVars(&info);
 
     const init_code = try api.generateCode(
         func_name,

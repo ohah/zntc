@@ -3729,6 +3729,7 @@ pub const Transformer = struct {
     pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo) Error!?NodeIndex {
         if (self.options.plugins.len == 0) return null;
         var api = AstTransformCtx{ .transformer = self, .modified_body = null };
+        defer api.deinitClosureCache();
         for (self.options.plugins) |p| {
             if (p.onFunction) |hook| {
                 hook(p.context, &api, func_info) catch |err| switch (err) {

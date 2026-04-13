@@ -75,6 +75,12 @@ pub const AstTransformCtx = struct {
     /// function_expression worklet → IIFE factory 변환 등에 사용.
     replaced_node: ?NodeIndex = null,
 
+    /// 현재 함수 방문의 closure 분석 캐시.
+    /// dispatchFunctionPlugins마다 ctx가 새로 만들어지므로 최대 1개 함수에 대한 결과.
+    /// 여러 플러그인(worklet_plugin, napi_entry 등)이 같은 closure 결과를 공유한다.
+    /// ctx 소유권 — dispatcher가 종료 시 deinitClosureCache() 호출로 해제.
+    closure_cache: ?[]const worklet_mod.ClosureVar = null,
+
     // --- 디렉티브 ---
 
     /// 함수 body의 첫 문장이 지정된 디렉티브인지 확인.
@@ -93,17 +99,37 @@ pub const AstTransformCtx = struct {
 
     // --- 스코프 분석 ---
 
-    /// 함수 body에서 closure 변수(외부 참조)를 추출.
-    /// func_name: 함수 이름 (자기 참조 제외용). null이면 무시.
-    /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
+    /// 함수의 closure 변수(외부 참조)를 추출.
+    /// 항상 **변환 전 원본** body/params로 분석 (Babel 호환) — 호출부 실수 방지.
+    /// 같은 ctx에서 반복 호출 시 캐시 반환 (issue #1114).
+    /// 반환된 슬라이스는 ctx가 소유 — 호출부가 free하지 말 것.
     pub fn getClosureVars(
         self: *AstTransformCtx,
-        body_idx: NodeIndex,
-        params_start: u32,
-        params_len: u32,
-        func_name: ?[]const u8,
+        info: *const FunctionInfo,
     ) Error![]const worklet_mod.ClosureVar {
-        return worklet_mod.collectClosureVars(self.transformer, body_idx, params_start, params_len, func_name);
+        if (self.closure_cache) |cached| return cached;
+        const vars = try worklet_mod.collectClosureVars(
+            self.transformer,
+            info.original_body_idx,
+            info.original_params_start,
+            info.original_params_len,
+            info.name,
+        );
+        self.closure_cache = vars;
+        return vars;
+    }
+
+    /// 캐시된 closure 결과 해제. dispatcher가 dispatchFunctionPlugins 종료 시 호출.
+    pub fn deinitClosureCache(self: *AstTransformCtx) void {
+        if (self.closure_cache) |vars| {
+            const alloc = self.getAllocator();
+            for (vars) |cv| {
+                alloc.free(cv.name);
+                if (cv.class_factory_base) |b| alloc.free(b);
+            }
+            alloc.free(vars);
+            self.closure_cache = null;
+        }
     }
 
     // --- AST 노드 생성 (Transformer/Ast 위임) ---
