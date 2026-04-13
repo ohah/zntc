@@ -733,8 +733,8 @@ pub const Transformer = struct {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
                     }
                 }
-                // ES2015: this.#x = v → _x.set(this, v)
-                if (self.options.unsupported.class and self.current_private_fields.len > 0) {
+                // ES2015/ES2022: this.#x = v → _x.set(this, v)
+                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
                         const left_node = self.ast.getNode(left_idx);
@@ -789,8 +789,8 @@ pub const Transformer = struct {
                         return result;
                     }
                 }
-                // ES2015: this.#x → _x.get(this)
-                if (self.options.unsupported.class and self.current_private_fields.len > 0) {
+                // ES2015/ES2022: this.#x → _x.get(this)
+                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
                         return result;
                     }
@@ -1297,7 +1297,7 @@ pub const Transformer = struct {
         const op_flags = self.readU32(e, 1);
 
         // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
-        if (node.tag == .update_expression and self.options.unsupported.class) {
+        if (node.tag == .update_expression and (self.options.unsupported.class or self.options.unsupported.class_private_field)) {
             const operand = self.ast.getNode(operand_idx);
             if (operand.tag == .private_field_expression) {
                 if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {

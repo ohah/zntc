@@ -41,6 +41,21 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         var current_body_idx = self.readNodeIdx(e, 2);
 
+        // ES2022 다운레벨링: private field → WeakMap + ctor init (instance only).
+        // private method 변환보다 먼저 선언 (pass 2에서 body visit하므로 method와 독립 구간 사용).
+        var pf_pre_stmts: std.ArrayList(NodeIndex) = .empty;
+        defer pf_pre_stmts.deinit(self.allocator);
+        var pf_ctor_stmts: std.ArrayList(NodeIndex) = .empty;
+        defer pf_ctor_stmts.deinit(self.allocator);
+        var pf_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
+        defer {
+            for (pf_mappings.items) |pf| {
+                self.allocator.free(pf.var_name);
+            }
+            pf_mappings.deinit(self.allocator);
+        }
+        var had_private_fields = false;
+
         // ES2022 다운레벨링: private method → WeakSet + standalone function
         var pm_pre_stmts: std.ArrayList(NodeIndex) = .empty;
         defer pm_pre_stmts.deinit(self.allocator);
@@ -79,11 +94,29 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             }
         }
 
+        // private field 변환: method 변환 후 실행하여 이중 visit 회피.
+        // 주의: had_private_methods이면 Pass 2에서 이미 body를 visit했으므로
+        //       lowerPrivateFields의 Pass 2 visit은 생략이 안전하지만,
+        //       간결성을 위해 private methods가 있을 때는 생략.
+        if (self.options.unsupported.class_private_field and !had_private_methods) {
+            const has_super_pf = !self.readNodeIdx(e, 1).isNone();
+            var pf_body: NodeIndex = .none;
+            had_private_fields = try es2022.ES2022(Transformer).lowerPrivateFields(
+                self,
+                current_body_idx,
+                &pf_body,
+                &pf_pre_stmts,
+                &pf_ctor_stmts,
+                &pf_mappings,
+                has_super_pf,
+            );
+            if (had_private_fields) current_body_idx = pf_body;
+        }
+
         // ES2022 다운레벨링: static block → IIFE (target < es2022)
-        // had_private_methods가 true이면 lowerPrivateMethods가 이미 body를
-        // 이미 변환했으므로, lowerStaticBlocks(파서 노드 기반)를 건너뛴다.
-        // lowerPrivateMethods 내의 visitNode가 static block도 이미 처리.
-        if (self.options.unsupported.class_static_block and !had_private_methods) {
+        // had_private_methods/had_private_fields가 true이면 이미 body를
+        // visit 했으므로, lowerStaticBlocks(파서 노드 기반)를 건너뛴다.
+        if (self.options.unsupported.class_static_block and !had_private_methods and !had_private_fields) {
             var new_body: NodeIndex = .none;
             var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
             defer static_block_iifes.deinit(self.allocator);
@@ -112,9 +145,13 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
                 // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
                 if (node.tag == .class_expression) {
+                    var combined_pre: std.ArrayList(NodeIndex) = .empty;
+                    defer combined_pre.deinit(self.allocator);
+                    try combined_pre.appendSlice(self.allocator, pf_pre_stmts.items);
+                    try combined_pre.appendSlice(self.allocator, pm_pre_stmts.items);
                     return wrapClassExprInIIFE(
                         self,
-                        pm_pre_stmts.items,
+                        combined_pre.items,
                         class_result,
                         static_block_iifes.items,
                         new_name,
@@ -122,7 +159,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     );
                 }
 
-                // pre_stmts (WeakSet + function) → class → static block IIFE
+                // pre_stmts (WeakMap + WeakSet + function) → class → static block IIFE
+                for (pf_pre_stmts.items) |stmt| {
+                    try self.pending_nodes.append(self.allocator, stmt);
+                }
                 for (pm_pre_stmts.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
@@ -134,8 +174,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             }
         }
 
-        // private method만 있고 static block은 없는 경우
-        if (had_private_methods) {
+        // private method/field 가 있고 static block은 없는 경우
+        if (had_private_methods or had_private_fields) {
             const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
             const none = @intFromEnum(NodeIndex.none);
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
@@ -146,9 +186,13 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
             // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
             if (node.tag == .class_expression) {
+                var combined_pre: std.ArrayList(NodeIndex) = .empty;
+                defer combined_pre.deinit(self.allocator);
+                try combined_pre.appendSlice(self.allocator, pf_pre_stmts.items);
+                try combined_pre.appendSlice(self.allocator, pm_pre_stmts.items);
                 return wrapClassExprInIIFE(
                     self,
-                    pm_pre_stmts.items,
+                    combined_pre.items,
                     class_result,
                     &.{},
                     new_name,
@@ -156,6 +200,9 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 );
             }
 
+            for (pf_pre_stmts.items) |stmt| {
+                try self.pending_nodes.append(self.allocator, stmt);
+            }
             for (pm_pre_stmts.items) |stmt| {
                 try self.pending_nodes.append(self.allocator, stmt);
             }
