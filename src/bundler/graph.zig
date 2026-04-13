@@ -17,6 +17,7 @@
 //!   - references/bun/src/bundler/LinkerContext.zig
 
 const std = @import("std");
+const wyhash = @import("../util/wyhash.zig");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
@@ -1710,7 +1711,7 @@ fn base64Encode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
     return buf;
 }
 
-const contentHash = @import("../util/wyhash.zig").hashHex8;
+const contentHash = wyhash.hashHex8;
 
 /// asset naming 패턴 적용: [name] [hash] 치환 + 확장자 추가.
 fn applyAssetNamingPattern(
