@@ -835,3 +835,55 @@ test "Integration: mixed default/named import from same module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"1.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "debug") != null);
 }
+
+test "sideEffects: side-effect-only import to ESM module under __esm wrap invokes init (#1193)" {
+    // Reanimated `layoutReanimation/index.ts`: `import './animationsManager'` +
+    // `export * from './animationBuilder'`. animationsManager.ts는 ESM 모듈이며
+    // RN 플랫폼에서 __esm 래핑된다. barrel(index.ts) factory body가 side-effect
+    // import 대상의 init 함수를 호출하지 않으면 top-level side-effect가 실행되지
+    // 않아 `global.LayoutAnimationsManager` 할당 누락 → UI Hermes SIGABRT.
+    //
+    // 주의: sideeffect 모듈이 CJS로 감지되면 기존 body rewrite가 require를 호출
+    // 하므로 버그가 드러나지 않는다. .ts + export를 포함해 ESM으로 만들어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './pkg';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "pkg/index.ts",
+        \\import './sideeffect';
+        \\export * from './values';
+    );
+    try writeFile(tmp.dir, "pkg/values.ts",
+        \\export const x = 1;
+    );
+    try writeFile(tmp.dir, "pkg/sideeffect.ts",
+        \\export {};
+        \\globalThis.sideEffectRan = true;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // side-effect 본문이 번들에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "sideEffectRan") != null);
+
+    // barrel(index.ts) init 함수 안에서 sideeffect ESM init이 호출되어야 한다.
+    const index_init_start = std.mem.indexOf(u8, result.output, "var init_index = __esm") orelse
+        return error.IndexInitMissing;
+    const index_init_end_off = std.mem.indexOfPos(u8, result.output, index_init_start, "})") orelse
+        return error.IndexInitMalformed;
+    const index_init_block = result.output[index_init_start .. index_init_end_off + 2];
+    try std.testing.expect(std.mem.indexOf(u8, index_init_block, "init_sideeffect()") != null);
+}
