@@ -179,7 +179,7 @@ function benchTranspile(): BenchResult[] {
         execBin("node", [
           "-e",
           `const {transformSync}=require('oxc-transform');const fs=require('fs');` +
-            `const code=fs.readFileSync('${inputFile}','utf8');` +
+            `const code=fs.readFileSync(${JSON.stringify(inputFile)},'utf8');` +
             `transformSync('input.ts',code,{sourceType:'module'})`,
         ]);
       }),
