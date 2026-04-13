@@ -76,10 +76,13 @@ pub const AstTransformCtx = struct {
     replaced_node: ?NodeIndex = null,
 
     /// 현재 함수 방문의 closure 분석 캐시.
-    /// dispatchFunctionPlugins마다 ctx가 새로 만들어지므로 최대 1개 함수에 대한 결과.
     /// 여러 플러그인(worklet_plugin, napi_entry 등)이 같은 closure 결과를 공유한다.
     /// ctx 소유권 — dispatcher가 종료 시 deinitClosureCache() 호출로 해제.
-    closure_cache: ?[]const worklet_mod.ClosureVar = null,
+    closure_cache: ?struct {
+        /// 캐시 대상 함수 식별자 — 향후 ctx 재사용 시 다른 함수 요청을 자동 재계산하도록.
+        node_idx: NodeIndex,
+        vars: []const worklet_mod.ClosureVar,
+    } = null,
 
     // --- 디렉티브 ---
 
@@ -107,7 +110,11 @@ pub const AstTransformCtx = struct {
         self: *AstTransformCtx,
         info: *const FunctionInfo,
     ) Error![]const worklet_mod.ClosureVar {
-        if (self.closure_cache) |cached| return cached;
+        if (self.closure_cache) |cached| {
+            if (cached.node_idx == info.node_idx) return cached.vars;
+            // 다른 함수 요청 — 기존 캐시 해제 후 재계산
+            self.deinitClosureCache();
+        }
         const vars = try worklet_mod.collectClosureVars(
             self.transformer,
             info.original_body_idx,
@@ -115,19 +122,19 @@ pub const AstTransformCtx = struct {
             info.original_params_len,
             info.name,
         );
-        self.closure_cache = vars;
+        self.closure_cache = .{ .node_idx = info.node_idx, .vars = vars };
         return vars;
     }
 
     /// 캐시된 closure 결과 해제. dispatcher가 dispatchFunctionPlugins 종료 시 호출.
     pub fn deinitClosureCache(self: *AstTransformCtx) void {
-        if (self.closure_cache) |vars| {
+        if (self.closure_cache) |cached| {
             const alloc = self.getAllocator();
-            for (vars) |cv| {
+            for (cached.vars) |cv| {
                 alloc.free(cv.name);
                 if (cv.class_factory_base) |b| alloc.free(b);
             }
-            alloc.free(vars);
+            alloc.free(cached.vars);
             self.closure_cache = null;
         }
     }
