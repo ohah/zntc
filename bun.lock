@@ -51,6 +51,9 @@
       "bin": {
         "zts": "./bin/zts.mjs",
       },
+      "dependencies": {
+        "browserslist": "^4.24.0",
+      },
       "optionalDependencies": {
         "lightningcss": "^1.28.0",
       },

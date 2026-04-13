@@ -20,7 +20,7 @@ import { fileURLToPath } from "url";
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
 import type { TranspileOptions, TranspileResult } from "../shared/index";
-import { encodeFlags, ES_TARGET_BITS } from "../shared/index";
+import { encodeFlags, ES_TARGET_BITS, browserslistToUnsupported } from "../shared/index";
 
 // ─── NAPI Module ───
 
@@ -104,12 +104,34 @@ export function init(addonPath?: string): void {
 /**
  * TypeScript/JSX 소스 코드를 트랜스파일한다.
  */
+/**
+ * browserslist 모듈 lazy-load 캐시. CJS require 캐시도 동작하지만
+ * 매 transpile마다 require() 호출 자체를 피해 오버헤드 제거.
+ */
+let _browserslist: ((q: string | string[]) => string[]) | null = null;
+
+/**
+ * target | browserslist → UnsupportedFeatures bitmask.
+ * browserslist가 지정되면 우선. 둘 다 없으면 0 (esnext).
+ */
+function resolveUnsupported(options: TranspileOptions): number {
+  if (options.browserslist) {
+    if (!_browserslist) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      _browserslist = require("browserslist") as (q: string | string[]) => string[];
+    }
+    const entries = _browserslist(options.browserslist);
+    return browserslistToUnsupported(entries);
+  }
+  return options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
+}
+
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!source) throw new Error("@zts/core: empty source");
 
   const flags = encodeFlags(options);
-  const unsupported = options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
+  const unsupported = resolveUnsupported(options);
 
   return native.transpile(
     source,
@@ -175,6 +197,11 @@ export interface BuildOptions {
   mainFields?: string[];
   /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
   target?: import("../shared/index").Target;
+  /**
+   * browserslist 쿼리 (transpile과 동일, target보다 우선).
+   * bundler에선 현재 미전달 — 후속 작업. 타입만 노출해 API 일관성 유지.
+   */
+  browserslist?: string | string[];
   /** 출력 디렉토리 (write: true 시 사용) */
   outdir?: string;
   /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */

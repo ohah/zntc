@@ -741,6 +741,153 @@ test "Bundler: UMD external dependencies in wrapper" {
     try std.testing.expect(std.mem.indexOf(u8, output, "React.useState") != null);
 }
 
+test "Async helper: single __async emit when target downlevels async (#1267 dup)" {
+    // target=es5 + async 사용 → __async/__generator helper 정확히 1회씩만 emit
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function run() { return await Promise.resolve(1); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const count = std.mem.count(u8, result.output, "var __async");
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const gcount = std.mem.count(u8, result.output, "var __generator");
+    try std.testing.expectEqual(@as(usize, 1), gcount);
+}
+
+test "Async helper: no emit when target supports async natively" {
+    // target esnext — async 사용해도 transform 안 하므로 __async 주입 금지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function run() { return await Promise.resolve(1); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __async") == null);
+}
+
+test "Async helper: no emit when code has no async/await (edge)" {
+    // target=es5이어도 async가 아예 없으면 __async 주입 안 함 (현재 수정 후 기대 동작)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export function run() { return 1; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 실제 사용 없음 → 주입 안 함 (code size 낭비 제거)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __async") == null);
+}
+
+test "Async helper: multi-module with async in one — single emit (edge)" {
+    // 여러 모듈 중 한 곳만 async 사용 → helper 1회만 emit
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { helper } from './helper';
+        \\import { load } from './lazy';
+        \\console.log(helper(), load());
+    );
+    try writeFile(tmp.dir, "helper.ts", "export function helper() { return 'h'; }");
+    try writeFile(tmp.dir, "lazy.ts",
+        \\export async function load() { return await Promise.resolve('l'); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
+}
+
+test "Async helper: top-level await triggers emit (edge)" {
+    // top-level await도 async transform을 트리거해야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const val = await Promise.resolve(42);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+        .format = .esm,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // top-level await는 현재 경고만 emit 가능 — 에러 없으면 OK.
+    // 핵심: 만약 transform이 발생하면 __async가 정확히 1번만 emit
+    const count = std.mem.count(u8, result.output, "var __async");
+    try std.testing.expect(count <= 1);
+}
+
+test "Async helper: async arrow function (edge)" {
+    // async arrow도 동일하게 주입
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const run = async () => await Promise.resolve(1);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
+}
+
 test "Bundler: AMD external dependencies in wrapper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -26,6 +26,9 @@
     "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js",
     "test": "bun test"
   },
+  "dependencies": {
+    "browserslist": "^4.24.0"
+  },
   "optionalDependencies": {
     "lightningcss": "^1.28.0"
   }
