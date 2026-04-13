@@ -27,10 +27,10 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [x] BOM 스킵 — PR #3
 - [x] /simplify 리뷰 2회 (PR #1, #3 이후) + 전체 리뷰 1회 (PR #14)
 
-### 미구현 (Phase 2 이후 또는 최적화 PR)
-- [ ] SIMD 최적화 (공백 스킵, 식별자 스캔) — 프로파일링 후
-- [ ] import attributes 토큰 (`with`, `assert`) — Phase 2 파서에서 키워드로 처리
-- [ ] 자동 세미콜론 삽입 (ASI) — Phase 2 파서에서 구현 (렉서는 has_newline_before 플래그 제공)
+### 후속 작업
+- [x] SIMD 최적화 — `@Vector(16, u8)` 공백/식별자 스캔 적용 (추가 확장 여지)
+- [x] import attributes 토큰 (`with`, `assert`) — 파서에서 키워드로 처리
+- [x] 자동 세미콜론 삽입 (ASI) — 파서에서 구현 (렉서는 has_newline_before 제공)
 
 ### Test262 통과율 (렉서 단독, 2026-03-18 기준)
 | Category | Pass Rate | 남은 실패 원인 |
@@ -57,7 +57,7 @@ JS/TS 소스 코드를 토큰으로 분리.
 
 ---
 
-## Phase 2: Parser (파서) — 핵심 기능 완료, 후반 작업 남음
+## Phase 2: Parser (파서) ✅ 완료
 토큰 스트림을 AST로 변환. PR #16-#33.
 
 ### 구현 완료
@@ -102,69 +102,69 @@ JS/TS 소스 코드를 토큰으로 분리.
 
 > 3개 카테고리 100%, 5개 카테고리 80%+. keywords/identifiers 실패는 대부분 negative test (에러가 나야 통과) — semantic analysis 필요.
 
-### 미구현 (Phase 2 후반 또는 Phase 3)
-- [ ] 에러 복구 강화 (negative test 통과율 ↑)
-- [ ] semantic analysis (스코프/심볼, 별도 패스, D038)
-- [ ] BACKLOG #47-#58 (TS 타입 시스템 고급 기능)
+### 후속 작업
+- [x] semantic analysis (스코프/심볼, 별도 패스, D038)
+- [x] 에러 복구 강화 (negative test 통과율 개선 — Test262 100% 통과)
+- [x] TS 타입 시스템 고급 기능 (BACKLOG #47-#58)
 
 ### ECMAScript 구문 (ES2024)
-- [ ] 리터럴 (string, number, boolean, null, undefined, regex, template)
-- [ ] 표현식 (binary, unary, ternary, assignment, comma, spread)
-- [ ] 화살표 함수
-- [ ] 구조분해 할당 (array, object, nested)
-- [ ] 클래스 (필드, 메서드, static, private `#`, computed property)
-- [ ] for...of, for...in, for await...of
-- [ ] async/await
-- [ ] generator (function*, yield)
-- [ ] import/export (ESM)
-- [ ] dynamic import (`import()`)
-- [ ] optional chaining (`?.`)
-- [ ] nullish coalescing (`??`)
-- [ ] logical assignment (`&&=`, `||=`, `??=`)
-- [ ] top-level await
-- [ ] class static block (`static { }`)
-- [ ] import attributes (`with { type: "json" }`)
-- [ ] using / await using (Explicit Resource Management)
+- [x] 리터럴 (string, number, boolean, null, undefined, regex, template)
+- [x] 표현식 (binary, unary, ternary, assignment, comma, spread)
+- [x] 화살표 함수
+- [x] 구조분해 할당 (array, object, nested)
+- [x] 클래스 (필드, 메서드, static, private `#`, computed property)
+- [x] for...of, for...in, for await...of
+- [x] async/await
+- [x] generator (function*, yield)
+- [x] import/export (ESM)
+- [x] dynamic import (`import()`)
+- [x] optional chaining (`?.`)
+- [x] nullish coalescing (`??`)
+- [x] logical assignment (`&&=`, `||=`, `??=`)
+- [x] top-level await
+- [x] class static block (`static { }`)
+- [x] import attributes (`with { type: "json" }`)
+- [x] using / await using (Explicit Resource Management)
 
 ### TypeScript 구문 (삭제 대상)
-- [ ] 타입 어노테이션 (변수, 파라미터, 리턴, 클래스 필드)
-- [ ] 제네릭 (파라미터, 제약, 기본값, const, in/out variance)
-- [ ] 타입 인자 (호출, new, tagged template, JSX)
-- [ ] type alias
-- [ ] interface (+ extends, call/construct/method/property/index signature)
-- [ ] as / as const / satisfies
-- [ ] non-null assertion (`!`)
-- [ ] angle bracket assertion (`<Type>expr`)
-- [ ] 인스턴스화 표현식 (`fn<string>` 호출 없이, TS 4.7)
-- [ ] import type / export type
-- [ ] inline type specifier (`import { type Foo }`, TS 4.5)
-- [ ] export type * / export type * as ns (TS 5.0)
-- [ ] declare (변수, 함수, 클래스, enum, module, global, 클래스 필드)
-- [ ] abstract (클래스, 메서드, 프로퍼티, accessor)
-- [ ] 접근 제어자 (public, private, protected)
-- [ ] readonly
-- [ ] override
-- [ ] implements
-- [ ] 함수 오버로드 시그니처
-- [ ] this 파라미터
-- [ ] definite assignment assertion (변수 `let x!`, 클래스 필드 `x!:`)
-- [ ] 옵셔널 클래스 프로퍼티 (`x?: number`)
-- [ ] 타입 가드 (x is string, asserts x is string)
-- [ ] .d.ts 파일 전체 무시
-- [ ] 트리플 슬래시 디렉티브
-- [ ] TSX 제네릭 화살표 함수 모호성 (`<T,>() => {}`)
+- [x] 타입 어노테이션 (변수, 파라미터, 리턴, 클래스 필드)
+- [x] 제네릭 (파라미터, 제약, 기본값, const, in/out variance)
+- [x] 타입 인자 (호출, new, tagged template, JSX)
+- [x] type alias
+- [x] interface (+ extends, call/construct/method/property/index signature)
+- [x] as / as const / satisfies
+- [x] non-null assertion (`!`)
+- [x] angle bracket assertion (`<Type>expr`)
+- [x] 인스턴스화 표현식 (`fn<string>` 호출 없이, TS 4.7)
+- [x] import type / export type
+- [x] inline type specifier (`import { type Foo }`, TS 4.5)
+- [x] export type * / export type * as ns (TS 5.0)
+- [x] declare (변수, 함수, 클래스, enum, module, global, 클래스 필드)
+- [x] abstract (클래스, 메서드, 프로퍼티, accessor)
+- [x] 접근 제어자 (public, private, protected)
+- [x] readonly
+- [x] override
+- [x] implements
+- [x] 함수 오버로드 시그니처
+- [x] this 파라미터
+- [x] definite assignment assertion (변수 `let x!`, 클래스 필드 `x!:`)
+- [x] 옵셔널 클래스 프로퍼티 (`x?: number`)
+- [x] 타입 가드 (x is string, asserts x is string)
+- [x] .d.ts 파일 전체 무시
+- [x] 트리플 슬래시 디렉티브
+- [x] TSX 제네릭 화살표 함수 모호성 (`<T,>() => {}`)
 
 ### TypeScript 구문 (변환 대상)
-- [ ] enum → IIFE
-- [ ] const enum → 인라이닝 또는 IIFE (isolatedModules 시 IIFE 폴백)
-- [ ] namespace (단일) → IIFE
-- [ ] namespace (병합) → 다중 IIFE
-- [ ] namespace (중첩) → 중첩 IIFE
-- [ ] namespace + class/function/enum 선언 병합
-- [ ] 파라미터 프로퍼티 → this.x = x 생성
-- [ ] export = → module.exports =
-- [ ] import x = require("...") → const x = require("...")
-- [ ] import x = Namespace.Value → const x = Namespace.Value
+- [x] enum → IIFE
+- [x] const enum → 인라이닝 또는 IIFE (isolatedModules 시 IIFE 폴백)
+- [x] namespace (단일) → IIFE
+- [x] namespace (병합) → 다중 IIFE
+- [x] namespace (중첩) → 중첩 IIFE
+- [x] namespace + class/function/enum 선언 병합
+- [x] 파라미터 프로퍼티 → this.x = x 생성
+- [x] export = → module.exports =
+- [x] import x = require("...") → const x = require("...")
+- [x] import x = Namespace.Value → const x = Namespace.Value
 - [x] legacy decorator (클래스, 메서드, 프로퍼티, 파라미터)
 - [x] emitDecoratorMetadata → Reflect.metadata 호출 생성
 - [x] accessor 키워드 (Stage 3 decorator용 backing field + getter/setter 자동 생성)
@@ -172,95 +172,98 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [x] static block (ES2022, 클래스 정의 시점 1회 실행)
 
 ### JSX
-- [ ] JSX element → React.createElement / jsxs 호출
-- [ ] JSX fragment
-- [ ] JSX spread attributes
-- [ ] JSX namespace (`<xml:svg>`)
-- [ ] 자동 import (React 17+ jsx transform)
+- [x] JSX element → React.createElement / jsxs 호출
+- [x] JSX fragment
+- [x] JSX spread attributes
+- [x] JSX namespace (`<xml:svg>`)
+- [x] 자동 import (React 17+ jsx transform, `jsxDEV` 포함)
 
 ### 에러 처리
-- [ ] 에러 복구 (sync token까지 스킵 후 계속 파싱)
-- [ ] 에러 메시지 품질 (위치, 기대값, 실제값)
-- [ ] 다중 에러 수집
+- [x] 에러 복구 (sync token까지 스킵 후 계속 파싱)
+- [x] 에러 메시지 품질 (위치, 기대값, 실제값, `rich_diagnostic` 렌더링)
+- [x] 다중 에러 수집
 
 ### 검증
-- [ ] Test262 language/ 테스트 통과율 추적
+- [x] Test262 language/ 테스트 통과율 추적 (50,504건 100% 통과)
 
 ---
 
-## Phase 3: Transformer (트랜스포머)
+## Phase 3: Transformer (트랜스포머) ✅ 완료
 AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 
 ### 목표
-- [ ] 타입 스트리핑 (삭제 대상 노드 제거)
-- [ ] enum 변환
-- [ ] const enum 인라이닝
-- [ ] namespace 변환 (단일, 병합, 중첩, 선언 병합)
-- [ ] 파라미터 프로퍼티 변환
-- [ ] export = / import = 변환
+- [x] 타입 스트리핑 (삭제 대상 노드 제거)
+- [x] enum 변환
+- [x] const enum 인라이닝 (isolatedModules 폴백 포함)
+- [x] namespace 변환 (단일, 병합, 중첩, 선언 병합)
+- [x] 파라미터 프로퍼티 변환
+- [x] export = / import = 변환
 - [x] legacy decorator 변환
 - [x] emitDecoratorMetadata (Reflect.metadata)
 - [x] accessor 변환 (Stage 3 decorator backing)
 - [x] Stage 3 decorator (method/getter/setter/field/accessor/class)
 - [x] static block
-- [ ] JSX 변환 (Classic + Automatic)
-- [ ] define (전역 치환: `process.env.NODE_ENV` → `"production"` 등)
-- [ ] import.meta CJS 변환 (`import.meta.url` → `pathToFileURL(__filename).href`)
-- [ ] ESM → CJS 모듈 변환 (import→require, export→module.exports)
-- [ ] direct eval 감지 → 해당 스코프 최적화 비활성화
-- [ ] 헬퍼 함수 전략 (인라인 기본, 외부 tslib 옵션)
-- [ ] `--drop` console/debugger/labels 제거 (D032)
-- [ ] Flow 타입 스트리핑 (Hermes C++ 파서 C ABI 링크) (D024)
+- [x] JSX 변환 (Classic + Automatic + jsxDEV)
+- [x] define (전역 치환: `process.env.NODE_ENV` → `"production"` 등)
+- [x] import.meta CJS 변환
+- [x] ESM → CJS 모듈 변환 (import→require, export→module.exports)
+- [x] direct eval 감지 → 해당 스코프 최적화 비활성화
+- [x] 헬퍼 함수 전략 (인라인 기본, 외부 tslib 옵션)
+- [x] `--drop` console/debugger/labels 제거 (D032)
+- [x] Flow 타입 스트리핑 (flow.zig 독립 파싱, Metro 410/410 통과) (D024)
 
 ---
 
-## Phase 4: Code Generator (코드젠)
+## Phase 4: Code Generator (코드젠) ✅ 완료
 변환된 AST를 JavaScript 문자열로 출력.
 
 ### 목표
-- [ ] AST → JS 문자열 출력
-- [ ] 소스맵 생성 (v3, inline + external + hidden)
-- [ ] 출력 포맷 옵션 (minify 기초)
-- [ ] 줄바꿈, 들여쓰기 보존
-- [ ] Legal 코멘트 처리 (`@license`, `@preserve` — none/inline/eof/external)
-- [ ] `"use strict"` 삽입 (CJS + alwaysStrict)
-- [ ] `--ascii-only` 출력 (non-ASCII → `\uXXXX` 이스케이프) (D031)
+- [x] AST → JS 문자열 출력
+- [x] 소스맵 생성 (v3, inline + external + hidden)
+- [x] 출력 포맷 옵션 (minify — AST 미니파이어)
+- [x] 줄바꿈, 들여쓰기 보존
+- [x] Legal 코멘트 처리 (`@license`, `@preserve` — none/inline/eof/external)
+- [x] `"use strict"` 삽입 (CJS + alwaysStrict)
+- [x] `--ascii-only` 출력 (non-ASCII → `\uXXXX` 이스케이프) (D031)
 
 ---
 
-## Phase 5: CLI & Integration
+## Phase 5: CLI & Integration ✅ 완료
 사용자가 실제로 쓸 수 있는 도구로 만듦.
 
 ### 목표
-- [ ] CLI 인터페이스 (`zts src/index.ts`)
-- [ ] 설정 파일 지원 (tsconfig.json 전체 파싱, extends 상속)
-- [ ] 파일 단위 병렬 파싱 (ThreadPool)
-- [ ] 디렉토리 재귀 처리 (rootDir → outDir 미러링)
-- [ ] watch 모드 (fsevents/inotify)
-- [ ] stdin/stdout 모드 (에디터 연동)
-- [ ] `--platform` 옵션 (browser/node/neutral)
-- [ ] `--format` 옵션 (esm/cjs)
-- [ ] .d.ts 생성 (isolatedDeclarations, TS 5.5+)
-- [ ] React Fast Refresh ($RefreshReg$, $RefreshSig$) (D029)
-- [ ] WASM 빌드 타겟
+- [x] CLI 인터페이스 (`zts src/index.ts`) — Node.js/Bun CLI로 전환 (Rolldown 방식)
+- [x] 설정 파일 지원 (tsconfig.json 전체 파싱, extends 상속)
+- [x] 파일 단위 병렬 파싱 (scan 파이프라인 + Producer-Consumer)
+- [x] 디렉토리 재귀 처리 (`--outdir` 미러링)
+- [x] watch 모드 (kqueue/inotify 이벤트 기반 + content hash + 증분 빌드)
+- [x] stdin/stdout 모드 (에디터 연동)
+- [x] `--platform` 옵션 (browser/node/neutral/react-native)
+- [x] `--format` 옵션 (esm/cjs/iife)
+- [ ] .d.ts 생성 (isolatedDeclarations, TS 5.5+) — 후순위, tsc에 위임
+- [x] React Fast Refresh ($RefreshReg$, $RefreshSig$) (D029)
+- [x] WASM 빌드 타겟 (`zig build wasm`)
 
 ---
 
-## Phase 6: Advanced (추후)
+## Phase 6: Advanced
 스펙 안정화 및 리소스 확보 후 진행.
 
-- [ ] Stage 3 (TC39) decorator — 스펙이 Stage 4 도달 또는 안정화 후 구현
-- [ ] ES 다운레벨링 (ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정)
+### 완료
+- [x] Stage 3 (TC39) decorator (method/getter/setter/field/accessor/class, MobX 6 호환)
+- [x] ES 다운레벨링 (es2015~es2024 + esnext, 엔진 타겟 feature-level 다운레벨링)
+- [x] 미니파이어 (constant folding, DCE, boolean simplification, comma operator)
+- [x] 번들러 (resolver, 모듈 그래프, linker, tree-shaking, code splitting, CSS)
+- [x] `--keep-names` (함수/클래스 이름 보존) (D033)
+
+### 미완료
 - [ ] loose 모드 (비표준이지만 빠른 다운레벨링)
-- [ ] 미니파이어
-- [ ] 번들러 (paths/baseUrl/moduleResolution 활성화, UMD 출력)
 - [ ] WASM 플러그인 시스템
-- [ ] WASM 공개 AST API
+- [ ] WASM 공개 AST API — AST 안정화 후
 - [ ] Compiler Assumptions (pure_getters, set_public_class_fields 등) (D028)
 - [ ] 미니파이 세분화 (whitespace / syntax / identifiers) (D030)
-- [ ] `--keep-names` (함수/클래스 이름 보존) (D033)
 - [ ] import defer (TS 5.9)
-- [ ] 증분 파싱 (에디터 LSP 연동)
+- [ ] 증분 파싱 (에디터 LSP 연동) — 번들러 수준 증분 빌드만 존재
 
 ---
 
