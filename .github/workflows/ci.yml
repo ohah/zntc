@@ -92,7 +92,12 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build NAPI module (Windows, MinGW ABI)
+        if: runner.os == 'Windows'
+        run: zig build napi -Dtarget=x86_64-windows-gnu
+
       - name: Build NAPI module
+        if: runner.os != 'Windows'
         run: zig build napi
 
       - name: Build JS wrapper

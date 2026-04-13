@@ -192,7 +192,33 @@ pub fn build(b: *std.Build) void {
         });
         napi_lib.linkLibC();
         // Node.js NAPI 심볼은 런타임에 제공되므로 undefined 허용
+        // (ELF/Mach-O는 이것만으로 충분하지만, Windows PE/COFF는 빌드 타임에
+        //  import library가 필요해서 아래에서 별도 처리한다.)
         napi_lib.linker_allow_shlib_undefined = true;
+
+        // ─── Windows: NAPI import library 생성 ───
+        // Windows 링커(lld-link)는 undefined 심볼을 허용하지 않으므로,
+        // node-api-headers가 제공하는 .def 파일로부터 `zig dlltool`을 이용해
+        // import library를 만든 뒤 napi_lib에 링크한다.
+        // (.def 파일이 `NAME NODE.EXE`를 포함하므로 실제 심볼은 런타임에 Node/Bun이 제공.)
+        if (target.result.os.tag == .windows) {
+            const machine = switch (target.result.cpu.arch) {
+                .x86_64 => "i386:x86-64",
+                .x86 => "i386",
+                .aarch64 => "arm64",
+                .arm => "arm",
+                else => @panic("unsupported Windows arch for NAPI import lib"),
+            };
+
+            for ([_][]const u8{ "js_native_api", "node_api" }) |stem| {
+                const def_path = b.fmt("vendor/node-api-headers/def/{s}.def", .{stem});
+                const lib_name = b.fmt("{s}.lib", .{stem});
+                const dlltool = b.addSystemCommand(&.{ "zig", "dlltool", "-m", machine, "-d" });
+                dlltool.addFileArg(b.path(def_path));
+                dlltool.addArg("-l");
+                napi_lib.addObjectFile(dlltool.addOutputFileArg(lib_name));
+            }
+        }
 
         const napi_install = b.addInstallArtifact(napi_lib, .{
             .dest_sub_path = "zts.node",

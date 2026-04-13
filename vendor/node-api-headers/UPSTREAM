@@ -1,0 +1,13 @@
+Upstream: https://github.com/nodejs/node-api-headers
+Commit:   663251b48d151a00c2ecaa079b3ca664558e953d
+Branch:   main
+Imported: 2026-04-14
+License:  MIT (see LICENSE)
+
+Vendored files (layout flattened from upstream include/):
+  js_native_api.h
+  js_native_api_types.h
+  node_api.h
+  node_api_types.h
+  def/js_native_api.def
+  def/node_api.def
