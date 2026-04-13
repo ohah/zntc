@@ -63,7 +63,33 @@ pub const Plugin = struct {
     /// transformer가 call_expression을 방문할 때 callee 이름을 매칭하여
     /// 해당 인자 위치의 function을 worklet으로 처리한다.
     autoWorkletCallees: []const AutoWorkletCallee = &.{},
+
+    /// AST 노드 방문 시 호출되는 훅. transformer의 visitNode가 특정 tag에 도달하면
+    /// 해당 훅을 호출. 훅이 non-null을 반환하면 default 방문을 건너뛰고 그 결과 사용.
+    ///
+    /// Babel plugin의 visitor 객체와 동일한 모델 — plugin이 자기 관심 태그만 선언하면
+    /// transformer는 해당 tag 방문 시 자동 dispatch. worklet 같은 AST-level 플러그인 로직을
+    /// core transformer 밖에 응집시키기 위함.
+    visitor: ?Visitor = null,
 };
+
+/// AST 노드 방문 훅 묶음.
+/// 각 필드는 특정 태그의 enter 훅 — null이면 해당 태그에 개입 없음.
+pub const Visitor = struct {
+    on_program: ?VisitHook = null,
+    on_object_expression: ?VisitHook = null,
+    on_call_expression: ?VisitHook = null,
+};
+
+/// 노드 방문 훅 시그니처.
+/// 반환값:
+///   - null: default 방문 진행
+///   - NodeIndex: default 방문 건너뛰고 반환값을 결과로 사용
+pub const VisitHook = *const fn (
+    ctx: ?*anyopaque,
+    api: *AstTransformCtx,
+    node_idx: ast_plugin_mod.NodeIndex,
+) PluginError!?ast_plugin_mod.NodeIndex;
 
 /// Auto-workletization 대상 함수 정의.
 /// call_expression의 callee 이름이 매칭되면 지정된 인자 위치의 함수를 worklet으로 변환.

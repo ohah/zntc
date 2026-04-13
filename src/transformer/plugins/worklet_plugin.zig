@@ -23,6 +23,7 @@ const plugin_mod = @import("../../bundler/plugin.zig");
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
 const AutoWorkletCallee = plugin_mod.AutoWorkletCallee;
+const Transformer = @import("../transformer.zig").Transformer;
 
 // method_definition flags (parser/object.zig와 동일 인코딩).
 const METHOD_FLAG_STATIC = 0x01;
@@ -36,6 +37,11 @@ pub fn plugin() Plugin {
         .name = "reanimated-worklet",
         .onFunction = onFunction,
         .autoWorkletCallees = &auto_worklet_callees,
+        .visitor = .{
+            .on_program = onProgram,
+            .on_object_expression = onObjectExpression,
+            .on_call_expression = onCallExpression,
+        },
     };
 }
 
@@ -361,5 +367,232 @@ fn buildWorkletIIFE(
         .tag = .call_expression,
         .span = zero_span,
         .data = .{ .extra = call_extra },
+    });
+}
+
+// ================================================================
+// Visitor hooks — Babel plugin visitor 포팅
+// core transformer에 worklet-specific 로직이 leak되지 않도록 plugin에 응집.
+// ================================================================
+
+/// Program 노드: 파일 최상단 `'worklet';` directive 감지 시 top-level 함수/클래스를
+/// auto-worklet으로 표시하고 전체 program을 재구성.
+fn onProgram(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    const t = api.transformer;
+    const node = t.ast.getNode(node_idx);
+    if (node.tag != .program) return null;
+    if (!hasFileWorkletDirective(t, node.data.list.start, node.data.list.len)) return null;
+    return try visitFileWorkletProgram(t, node);
+}
+
+/// Object expression: `{ ..., __workletContextObject: X }` 마커 감지 시 factory로 교체.
+fn onObjectExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    const t = api.transformer;
+    const node = t.ast.getNode(node_idx);
+    if (node.tag != .object_expression) return null;
+    if (!hasWorkletContextObjectMarker(t, node)) return null;
+    return try lowerWorkletContextObject(t, node);
+}
+
+/// Call expression: `isWeb()` / `shouldBeUseWeb()` → `true` 리터럴 (옵션 플래그 기반).
+fn onCallExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    const t = api.transformer;
+    if (!t.options.substitute_web_platform_checks) return null;
+    const node = t.ast.getNode(node_idx);
+    if (node.tag != .call_expression) return null;
+    const e = node.data.extra;
+    if (e + 3 >= t.ast.extra_data.items.len) return null;
+    const callee_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[e]);
+    const args_len = t.ast.extra_data.items[e + 2];
+    if (args_len != 0 or callee_idx.isNone()) return null;
+    const callee = t.ast.getNode(callee_idx);
+    if (callee.tag != .identifier_reference) return null;
+    const name = t.ast.source[callee.span.start..callee.span.end];
+    for (WEB_PLATFORM_CHECK_NAMES) |n| {
+        if (std.mem.eql(u8, n, name)) {
+            const true_span = try t.ast.addString("true");
+            return try t.ast.addNode(.{
+                .tag = .boolean_literal,
+                .span = true_span,
+                .data = .{ .string_ref = true_span },
+            });
+        }
+    }
+    return null;
+}
+
+// ================================================================
+// Helpers — visitor 훅에서 호출 (transformer.zig에서 이관)
+// ================================================================
+
+fn hasFileWorkletDirective(t: *Transformer, list_start: u32, list_len: u32) bool {
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
+        if (idx.isNone()) continue;
+        const stmt = t.ast.getNode(idx);
+        if (stmt.tag != .expression_statement) return false;
+        const inner_idx = stmt.data.unary.operand;
+        if (inner_idx.isNone()) return false;
+        const inner = t.ast.getNode(inner_idx);
+        if (inner.tag != .string_literal) return false;
+        const text = t.ast.source[inner.span.start..inner.span.end];
+        if (std.mem.eql(u8, text, "\"worklet\"") or std.mem.eql(u8, text, "'worklet'")) return true;
+    }
+    return false;
+}
+
+fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
+    const list_start = node.data.list.start;
+    const list_len = node.data.list.len;
+
+    const scratch_top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(scratch_top);
+    const pending_top = t.pending_nodes.items.len;
+    defer t.pending_nodes.shrinkRetainingCapacity(pending_top);
+    const trailing_top = t.trailing_nodes.items.len;
+    defer t.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const raw = t.ast.extra_data.items[list_start + i];
+        const child_idx: NodeIndex = @enumFromInt(raw);
+        if (!child_idx.isNone()) {
+            const child = t.ast.getNode(child_idx);
+            switch (child.tag) {
+                .function_declaration, .class_declaration, .variable_declaration, .export_named_declaration, .export_default_declaration => t.auto_worklet_next = true,
+                else => {},
+            }
+        }
+        if (t.pending_nodes.items.len > pending_top) {
+            try t.scratch.appendSlice(t.allocator, t.pending_nodes.items[pending_top..]);
+            t.pending_nodes.shrinkRetainingCapacity(pending_top);
+        }
+        const new_child = try t.visitNode(child_idx);
+        t.auto_worklet_next = false;
+        if (!new_child.isNone()) try t.scratch.append(t.allocator, new_child);
+        if (t.trailing_nodes.items.len > trailing_top) {
+            try t.scratch.appendSlice(t.allocator, t.trailing_nodes.items[trailing_top..]);
+            t.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+        }
+    }
+
+    const new_list = try t.ast.addNodeList(t.scratch.items[scratch_top..]);
+    return t.ast.addNode(.{
+        .tag = node.tag,
+        .span = node.span,
+        .data = .{ .list = new_list },
+    });
+}
+
+fn hasWorkletContextObjectMarker(t: *Transformer, node: Node) bool {
+    const list_start = node.data.list.start;
+    const list_len = node.data.list.len;
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
+        if (idx.isNone()) continue;
+        const prop = t.ast.getNode(idx);
+        if (prop.tag != .object_property) continue;
+        const key_idx = prop.data.binary.left;
+        if (key_idx.isNone()) continue;
+        const key = t.ast.getNode(key_idx);
+        if (key.tag != .identifier_reference) continue;
+        const name = t.ast.source[key.span.start..key.span.end];
+        if (std.mem.eql(u8, name, "__workletContextObject")) return true;
+    }
+    return false;
+}
+
+fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
+    const list_start = node.data.list.start;
+    const list_len = node.data.list.len;
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    const scratch_top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const child_raw = t.ast.extra_data.items[list_start + i];
+        const child_idx: NodeIndex = @enumFromInt(child_raw);
+        const prop = t.ast.getNode(child_idx);
+        var is_marker = false;
+        if (prop.tag == .object_property) {
+            const key = t.ast.getNode(prop.data.binary.left);
+            if (key.tag == .identifier_reference) {
+                const name = t.ast.source[key.span.start..key.span.end];
+                is_marker = std.mem.eql(u8, name, "__workletContextObject");
+            }
+        }
+        if (!is_marker) {
+            const visited = try t.visitNode(child_idx);
+            if (!visited.isNone()) try t.scratch.append(t.allocator, visited);
+            continue;
+        }
+
+        // `__workletContextObjectFactory: function() { 'worklet'; return null; }` 로 교체.
+        // plugin의 onFunction이 worklet factory IIFE로 감싸줌.
+        const factory_name_span = try t.ast.addString("__workletContextObjectFactory");
+        const new_key = try t.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = factory_name_span,
+            .data = .{ .string_ref = factory_name_span },
+        });
+        const body = try buildWorkletContextStubBody(t);
+        const empty_params = try t.ast.addNodeList(&.{});
+        const none = @intFromEnum(NodeIndex.none);
+        const fn_node = try t.addExtraNode(.function_expression, zero_span, &.{
+            none, empty_params.start, empty_params.len, @intFromEnum(body), 0, none,
+        });
+        const visited_fn = try t.visitNode(fn_node);
+        const new_prop = try t.ast.addNode(.{
+            .tag = .object_property,
+            .span = prop.span,
+            .data = .{ .binary = .{ .left = new_key, .right = visited_fn, .flags = 0 } },
+        });
+        try t.scratch.append(t.allocator, new_prop);
+    }
+
+    const new_list = try t.ast.addNodeList(t.scratch.items[scratch_top..]);
+    return t.ast.addNode(.{
+        .tag = .object_expression,
+        .span = node.span,
+        .data = .{ .list = new_list },
+    });
+}
+
+fn buildWorkletContextStubBody(t: *Transformer) !NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const dir_span = try t.ast.addString("\"worklet\"");
+    const dir_str = try t.ast.addNode(.{
+        .tag = .string_literal,
+        .span = dir_span,
+        .data = .{ .string_ref = dir_span },
+    });
+    const dir_stmt = try t.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = dir_str, .flags = 0 } },
+    });
+    const null_span = try t.ast.addString("null");
+    const null_node = try t.ast.addNode(.{
+        .tag = .null_literal,
+        .span = null_span,
+        .data = .{ .none = 0 },
+    });
+    const ret_stmt = try t.ast.addNode(.{
+        .tag = .return_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = null_node, .flags = 0 } },
+    });
+    const body_list = try t.ast.addNodeList(&.{ dir_stmt, ret_stmt });
+    return t.ast.addNode(.{
+        .tag = .block_statement,
+        .span = zero_span,
+        .data = .{ .list = body_list },
     });
 }

@@ -2320,8 +2320,19 @@ test "babel:babel_plugin_for_context_objects:removes_marker" {
 }
 
 test "babel:babel_plugin_for_context_objects:creates_factories" {
-    // PHASE 2+ 에서 구현 예정 (미구현 기능 테스트)
-    return error.SkipZigTest;
+    var r = tt.transformWorklet(std.testing.allocator,
+        \\const foo = {
+        \\  bar() {
+        \\    return 'bar';
+        \\  },
+        \\  __workletContextObject: true,
+        \\};
+    ) catch return error.SkipZigTest;
+    defer r.deinit();
+    const code = tt.generateCode(&r) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletContextObjectFactory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__workletHash") != null);
 }
 
 test "babel:babel_plugin_for_context_objects:workletizes_regardless_of_marker_value" {

@@ -1650,3 +1650,111 @@ test "Worklet: arrow with destructured param does not leak" {
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
 }
+
+// ================================================================
+// Visitor hooks infrastructure tests (Plugin.visitor)
+// ================================================================
+
+const plugin_mod = @import("../bundler/plugin.zig");
+const VisitorPlugin = plugin_mod.Plugin;
+const AstTransformCtx = plugin_mod.AstTransformCtx;
+const PluginError = plugin_mod.PluginError;
+
+/// 테스트용 플러그인: object_expression을 string_literal로 교체.
+fn testOnObjectExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    _ = node_idx;
+    const span = try api.addString("\"replaced\"");
+    return try api.addNode(.{
+        .tag = .string_literal,
+        .span = span,
+        .data = .{ .string_ref = span },
+    });
+}
+
+test "Visitor: on_object_expression hook replaces node" {
+    // plugin의 on_object_expression 훅이 non-null 반환 시 default 방문 skip + 반환값 사용.
+    const test_plugin = VisitorPlugin{
+        .name = "test-visitor",
+        .visitor = .{ .on_object_expression = testOnObjectExpression },
+    };
+    const plugins = [_]VisitorPlugin{test_plugin};
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "const x = { a: 1 };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // object literal이 "replaced" 문자열로 교체되었는지 확인.
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"replaced\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "a:") == null);
+}
+
+/// null 반환 훅 — default 방문이 그대로 진행되어야 함.
+fn testOnObjectNoOp(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    _ = api;
+    _ = node_idx;
+    return null;
+}
+
+test "Visitor: on_object_expression returning null falls through to default" {
+    const test_plugin = VisitorPlugin{
+        .name = "test-noop",
+        .visitor = .{ .on_object_expression = testOnObjectNoOp },
+    };
+    const plugins = [_]VisitorPlugin{test_plugin};
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "const x = { a: 1, b: 2 };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "a: 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "b: 2") != null);
+}
+
+test "Visitor: no plugins registered — dispatchVisitor short-circuits" {
+    // 빈 plugins slice일 때 visitor dispatch가 noop이어야 함.
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "const x = { a: 1 };",
+        .{ .plugins = &.{}, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "a: 1") != null);
+}
+
+/// 첫 훅은 null, 두 번째 훅이 교체 — first-wins 검증 (둘 다 반환하면 첫 번째가 우승이지만,
+/// 첫 번째가 null이면 두 번째 기회).
+fn testOnCallReturnTrue(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    _ = node_idx;
+    const span = try api.addString("true");
+    return try api.addNode(.{
+        .tag = .boolean_literal,
+        .span = span,
+        .data = .{ .string_ref = span },
+    });
+}
+
+test "Visitor: multiple plugins — null-returning plugin lets next plugin handle" {
+    const p1 = VisitorPlugin{ .name = "skip", .visitor = .{} }; // no hooks
+    const p2 = VisitorPlugin{ .name = "replace", .visitor = .{ .on_call_expression = testOnCallReturnTrue } };
+    const plugins = [_]VisitorPlugin{ p1, p2 };
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "const y = foo();",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "const y = true") != null);
+}
