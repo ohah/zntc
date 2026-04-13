@@ -171,7 +171,17 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     else
         info.original_body_idx;
 
-    const func_name = info.name orelse "anonymous";
+    // Babel 호환: 익명 worklet에 `<sanitizedFile>_null<N>` 이름 부여.
+    // 같은 이름의 worklet이 동일 파일에서 충돌해도 sequence index로 구분 가능.
+    var anon_name_buf: [256]u8 = undefined;
+    var sanitize_buf: [128]u8 = undefined;
+    const func_name = if (info.name) |n| n else blk: {
+        const idx = api.transformer.worklet_anonymous_counter;
+        api.transformer.worklet_anonymous_counter += 1;
+        const file_marker = sanitizeFilename(info.source_path, &sanitize_buf);
+        const name = std.fmt.bufPrint(&anon_name_buf, "{s}_null{d}", .{ file_marker, idx }) catch return error.OutOfMemory;
+        break :blk name;
+    };
 
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len, info.name);
     defer {
@@ -921,3 +931,29 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
 }
 
 // `buildWorkletContextStubBody` 재사용 (동일한 `'worklet'; return null;` body).
+
+/// 파일 경로에서 마지막 segment를 추출 후 alphanumeric만 남겨 worklet 이름에 사용.
+/// `/foo/App.tsx` → `AppTsx`, `/dev/null` → `null`. Babel의 makeWorkletName과 유사.
+/// caller가 buffer 제공 — race-free, 호출간 결과 보존.
+fn sanitizeFilename(path: []const u8, buf: []u8) []const u8 {
+    if (path.len == 0) return "anon";
+    var start: usize = 0;
+    var i: usize = path.len;
+    while (i > 0) : (i -= 1) {
+        if (path[i - 1] == '/' or path[i - 1] == '\\') {
+            start = i;
+            break;
+        }
+    }
+    const basename = path[start..];
+    var len: usize = 0;
+    for (basename) |ch| {
+        if (len >= buf.len) break;
+        if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')) {
+            buf[len] = ch;
+            len += 1;
+        }
+    }
+    if (len == 0) return "anon";
+    return buf[0..len];
+}
