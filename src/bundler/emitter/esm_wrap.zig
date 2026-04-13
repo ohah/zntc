@@ -623,8 +623,10 @@ pub fn emitEsmWrappedModule(
             try appendWrappedInitCall(&star_init_buf, allocator, &l.modules[src_i], options);
         }
 
-        // Side-effect-only import (`import './x';`)도 barrel의 init에서 호출되어야
-        // 한다. export_bindings에는 포함되지 않으므로 별도 루프로 처리.
+        // Side-effect-only import (`import './x';`) → target이 ESM 래핑일 때만
+        // barrel의 preamble에 init 호출을 추가한다. export_bindings에는 포함되지
+        // 않아 기존 re-export loop가 건너뛰기 때문.
+        // CJS 타겟은 body rewrite가 이미 `require_xxx()`를 주입하므로 제외 (중복 방지).
         // 누락 시 RN 런타임에서 target 모듈의 top-level이 실행되지 않아
         // global setup(예: Reanimated LayoutAnimationsManager) 실패 (#1193).
         for (module.import_records) |rec| {
@@ -633,9 +635,11 @@ pub fn emitEsmWrappedModule(
             const src_i = @intFromEnum(rec.resolved);
             if (src_i >= l.modules.len) continue;
             if (re_export_inited.contains(src_i)) continue;
+            const src_mod = &l.modules[src_i];
+            if (src_mod.wrap_kind != .esm) continue;
             re_export_inited.put(src_i, {}) catch {};
 
-            try appendWrappedInitCall(&star_init_buf, allocator, &l.modules[src_i], options);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, options);
         }
     }
 

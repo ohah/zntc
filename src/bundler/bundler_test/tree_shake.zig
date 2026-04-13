@@ -887,3 +887,49 @@ test "sideEffects: side-effect-only import to ESM module under __esm wrap invoke
     const index_init_block = result.output[index_init_start .. index_init_end_off + 2];
     try std.testing.expect(std.mem.indexOf(u8, index_init_block, "init_sideeffect()") != null);
 }
+
+test "sideEffects: CJS side-effect import must not be duplicated in barrel init (#1193)" {
+    // #1193 fix 후속: CJS 타겟은 body rewrite가 이미 require_xxx()를 주입하므로
+    // side-effect import 전용 preamble 루프는 ESM 타겟만 처리해야 한다.
+    // 중복 호출은 side-effect가 두 번 실행되는 동작 회귀를 일으킬 수 있음.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './node_modules/pkg';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"name":"pkg","main":"./index.js","sideEffects":["./sideeffect.js"]}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\import './sideeffect';
+        \\export * from './values';
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/values.js",
+        \\export const x = 1;
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/sideeffect.js",
+        \\globalThis.sideEffectRan = true;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const index_init_start = std.mem.indexOf(u8, result.output, "var init_pkg_index = __esm") orelse
+        return error.IndexInitMissing;
+    const index_init_end_off = std.mem.indexOfPos(u8, result.output, index_init_start, "})") orelse
+        return error.IndexInitMalformed;
+    const index_init_block = result.output[index_init_start .. index_init_end_off + 2];
+    const count = std.mem.count(u8, index_init_block, "require_pkg_sideeffect()");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
