@@ -1086,3 +1086,99 @@ test "sideEffects: UserDefined lock — pattern matched file preserved even in n
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ok\"") != null or
         std.mem.indexOf(u8, result.output, "'ok'") != null);
 }
+
+test "TreeShaking: dynamic import target module is preserved (#1260)" {
+    // import("./foo") 로만 참조되는 모듈은 정적 import_binding이 없어도
+    // 반드시 번들/출력에 포함되어야 한다. 정적 분석에서 제거되면 런타임에 모듈을
+    // 찾을 수 없어 깨진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function load() {
+        \\  const m = await import('./lazy');
+        \\  return m.unique_lazy_export_token();
+        \\}
+    );
+    try writeFile(tmp.dir, "lazy.ts",
+        \\export function unique_lazy_export_token() { return "LAZY_OK_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // lazy.ts의 export가 tree-shake로 제거되면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_OK_MARKER") != null);
+}
+
+test "TreeShaking: class with impure static field via getter access preserved (#1261)" {
+    // esbuild 방식: 클래스가 미참조로 보여도 static field initializer가 impure면 보존.
+    // 현재 purity.zig는 static field impurity를 이미 판정하나, 회귀 방지용 테스트.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './side';
+        \\console.log('main');
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\function sideMarker() { console.log("SIDE_FIELD_INIT"); return 1; }
+        \\export class Unused {
+        \\  static x = sideMarker();
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // sideMarker() 호출이 static field로 래핑되어 있어도 side-effect이므로 보존되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SIDE_FIELD_INIT") != null);
+}
+
+test "TreeShaking: pure static field in unused class is removed (#1261 companion)" {
+    // 반대로 pure한 static field만 있는 미사용 class는 제거되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './side';
+        \\console.log('main');
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\export class Unused {
+        \\  static x = 42;
+        \\  static y = "PURE_FIELD_MARKER";
+        \\}
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_FIELD_MARKER") == null);
+}
