@@ -14,6 +14,7 @@
 //   splitting_dev.zig      — code splitting, dev mode, profiling
 //   minify_loader.zig      — minify, asset loader, scope hoist regression
 //   plugin_misc.zig        — plugin, worker, Flow, ESM live binding, JSX auto, RN, misc
+//   function_map.zig       — Metro x_facebook_sources function map 번들러 통합 테스트
 
 comptime {
     _ = @import("bundler_test/basic.zig");
@@ -29,4 +30,5 @@ comptime {
     _ = @import("bundler_test/splitting_dev.zig");
     _ = @import("bundler_test/minify_loader.zig");
     _ = @import("bundler_test/plugin_misc.zig");
+    _ = @import("bundler_test/function_map.zig");
 }

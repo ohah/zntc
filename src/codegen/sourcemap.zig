@@ -218,24 +218,47 @@ pub const SourceMapBuilder = struct {
         return self.buf.items;
     }
 
-    /// 소스맵 JSON + x_facebook_sources를 함께 생성한다.
-    /// `fn_map`이 있으면 `"x_facebook_sources":[[{names,mappings}]]` 추가.
-    /// 단일 source 가정 — 복수 source는 PR#3(bundler integration)에서 처리.
+    /// 소스맵 JSON + x_facebook_sources를 함께 생성한다. 단일 source 전용.
+    /// `fn_map`의 내용을 `"x_facebook_sources":[[{names,mappings}]]`로 직렬화.
     pub fn generateJSONWithFunctionMap(
         self: *SourceMapBuilder,
         allocator: std.mem.Allocator,
         output_file: []const u8,
         fn_map: *const @import("function_map.zig").FunctionMapBuilder,
     ) ![]const u8 {
-        // 기존 JSON 생성 후 닫힘 `}` 직전에 x_facebook_sources 삽입.
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(allocator);
+        try fn_map.appendJson(&json_buf);
+        return self.generateJSONWithPerSourceFunctionMaps(allocator, output_file, &.{json_buf.items});
+    }
+
+    /// 소스맵 JSON + x_facebook_sources 배열을 함께 생성한다. 복수 source 지원.
+    /// source_fn_maps[i]는 sources[i]에 해당하는 function map JSON
+    /// (`{"names":[...],"mappings":"..."}`) 또는 null (function map 없음).
+    /// x_facebook_sources 포맷: sources 순서와 1:1 대응하는 배열.
+    /// 각 요소는 null 또는 [{names,mappings}] (Metro 스펙: 배열로 감싼 단일 객체).
+    pub fn generateJSONWithPerSourceFunctionMaps(
+        self: *SourceMapBuilder,
+        allocator: std.mem.Allocator,
+        output_file: []const u8,
+        source_fn_maps: []const ?[]const u8,
+    ) ![]const u8 {
         const base = try self.generateJSON(output_file);
-        // base 마지막 `}` 제거 후 x_facebook_sources 추가.
         std.debug.assert(base.len > 0 and base[base.len - 1] == '}');
         self.buf.shrinkRetainingCapacity(base.len - 1);
 
-        try self.buf.appendSlice(allocator, ",\"x_facebook_sources\":[[");
-        try fn_map.appendJson(&self.buf);
-        try self.buf.appendSlice(allocator, "]]");
+        try self.buf.appendSlice(allocator, ",\"x_facebook_sources\":[");
+        for (source_fn_maps, 0..) |fm_json, i| {
+            if (i > 0) try self.buf.append(allocator, ',');
+            if (fm_json) |json| {
+                try self.buf.append(allocator, '[');
+                try self.buf.appendSlice(allocator, json);
+                try self.buf.append(allocator, ']');
+            } else {
+                try self.buf.appendSlice(allocator, "null");
+            }
+        }
+        try self.buf.append(allocator, ']');
         try self.buf.append(allocator, '}');
         return self.buf.items;
     }

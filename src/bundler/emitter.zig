@@ -52,6 +52,9 @@ pub const EmitOptions = struct {
     /// Sentry Debug ID. --sourcemap-debug-ids 활성화 시 true.
     /// 번들 끝에 `//# debugId=<UUID>` 주석을 추가하고, 소스맵 JSON에 `"debugId"` 필드를 삽입.
     sourcemap_debug_ids: bool = false,
+    /// Metro x_facebook_sources function map 생성.
+    /// Hermes 스택트레이스 심볼리케이션용. RN 플랫폼에서 자동 활성화.
+    sourcemap_function_map: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -347,6 +350,7 @@ pub fn emitWithTreeShaking(
         for (results) |r| {
             if (r.code) |c| allocator.free(c);
             if (r.mappings) |m| allocator.free(m);
+            if (r.fn_map_json) |j| allocator.free(j);
         }
         allocator.free(results);
     }
@@ -371,7 +375,7 @@ pub fn emitWithTreeShaking(
         for (sorted.items, 0..) |m, i| {
             const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json) catch null;
         }
     }
 
@@ -404,6 +408,11 @@ pub fn emitWithTreeShaking(
         break :blk sm;
     } else null;
     defer if (bundle_sm) |*sm| sm.deinit();
+
+    // per-source function map JSON 목록 (sources 추가 순서와 1:1 대응).
+    // sourcemap + sourcemap_function_map 활성화 시에만 사용.
+    var per_source_fn_maps: std.ArrayList(?[]const u8) = .empty;
+    defer per_source_fn_maps.deinit(allocator);
 
     // output에 이미 추가된 prologue/banner/polyfill/runtime helper 줄 수 추적
     // (module_output과 별도로 output에 먼저 들어감 — 아래에서 합류 시 사용)
@@ -446,6 +455,10 @@ pub fn emitWithTreeShaking(
                     options.sources_content,
                     false,
                 );
+                // function map: source 추가 순서와 동기화
+                if (options.sourcemap_function_map) {
+                    try per_source_fn_maps.append(allocator, results[i].fn_map_json);
+                }
             }
         }
 
@@ -582,8 +595,22 @@ pub fn emitWithTreeShaking(
 
         // debugId 설정
         sm.debug_id = debug_id;
-        const json = try sm.generateJSON(options.output_filename);
-        sourcemap_json = try allocator.dupe(u8, json);
+
+        // function map: identity source(polyfill/runtime)는 null 패딩
+        if (options.sourcemap_function_map and per_source_fn_maps.items.len > 0) {
+            while (per_source_fn_maps.items.len < sm.sources.items.len) {
+                try per_source_fn_maps.append(allocator, null);
+            }
+            const json = try sm.generateJSONWithPerSourceFunctionMaps(
+                allocator,
+                options.output_filename,
+                per_source_fn_maps.items,
+            );
+            sourcemap_json = try allocator.dupe(u8, json);
+        } else {
+            const json = try sm.generateJSON(options.output_filename);
+            sourcemap_json = try allocator.dupe(u8, json);
+        }
     }
 
     // 소스맵 참조 추가
@@ -634,6 +661,8 @@ const ModuleEmitResult = struct {
     mappings: ?[]const SourceMap.Mapping = null,
     /// preamble(cjs_import_preamble 등)과 래핑 헤더로 인해 codegen 매핑과 어긋나는 줄 수.
     preamble_lines: u32 = 0,
+    /// function map JSON (`{"names":[...],"mappings":"..."}`). null이면 비활성 또는 함수 없음.
+    fn_map_json: ?[]const u8 = null,
 };
 
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
@@ -702,7 +731,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *ModuleEmitResult,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -719,6 +748,7 @@ pub fn emitModule(
     helpers_out: ?*RuntimeHelpers,
     mappings_out: ?*?[]const SourceMap.Mapping,
     preamble_lines_out: ?*u32,
+    fn_map_json_out: ?*?[]const u8,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -960,6 +990,8 @@ pub fn emitModule(
         .sources_content = options.sources_content,
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
+        // Metro function map: sourcemap 활성화 시에만 수집
+        .sourcemap_function_map = options.sourcemap and options.sourcemap_function_map,
         // JSX: Transformer가 이미 call_expression으로 lowering 완료.
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
         // dev mode: import.meta.hot → __zts_make_hot("dev_id")
@@ -991,6 +1023,18 @@ pub fn emitModule(
         if (cg.sm_builder) |*sm| {
             if (sm.mappings.items.len > 0) {
                 mout.* = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+            }
+        }
+    }
+
+    // function map JSON 직렬화 (활성화 시, arena 해제 전에)
+    if (fn_map_json_out) |fmout| {
+        if (cg.fn_map_builder) |*fm| {
+            if (fm.namesSlice().len > 0) {
+                var json_buf: std.ArrayList(u8) = .empty;
+                try fm.appendJson(&json_buf);
+                fmout.* = try allocator.dupe(u8, json_buf.items);
+                json_buf.deinit(arena_alloc);
             }
         }
     }
