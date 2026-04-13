@@ -48,14 +48,17 @@ pub const TrackedFileSet = struct {
     /// 반환값: watcher 등록 성공 여부.
     pub fn addPath(self: *Self, path: []const u8, overwrite: bool) bool {
         self.watcher.addPath(path) catch return false;
-        if (!overwrite and self.hashes.contains(path)) return true;
-        const h = wyhash.hashFileStreaming(path, self.max_bytes) orelse 0;
-        if (self.hashes.getEntry(path)) |e| {
-            e.value_ptr.* = h;
+        const gop = self.hashes.getOrPut(path) catch return true;
+        if (gop.found_existing) {
+            if (!overwrite) return true;
         } else {
-            const key = self.allocator.dupe(u8, path) catch return true;
-            self.hashes.put(key, h) catch self.allocator.free(key);
+            const key = self.allocator.dupe(u8, path) catch {
+                _ = self.hashes.remove(path);
+                return true;
+            };
+            gop.key_ptr.* = key;
         }
+        gop.value_ptr.* = wyhash.hashFileStreaming(path, self.max_bytes) orelse 0;
         return true;
     }
 
@@ -77,17 +80,17 @@ pub const TrackedFileSet = struct {
     /// 읽기 실패/크기 초과 시 false.
     pub fn markIfChanged(self: *Self, path: []const u8) bool {
         const new_hash = wyhash.hashFileStreaming(path, self.max_bytes) orelse return false;
-        const old_hash = self.hashes.get(path);
-        if (old_hash != null and old_hash.? == new_hash) return false;
-        if (self.hashes.getEntry(path)) |entry| {
-            entry.value_ptr.* = new_hash;
+        const gop = self.hashes.getOrPut(path) catch return false;
+        if (gop.found_existing) {
+            if (gop.value_ptr.* == new_hash) return false;
         } else {
-            const key_copy = self.allocator.dupe(u8, path) catch return false;
-            self.hashes.put(key_copy, new_hash) catch {
-                self.allocator.free(key_copy);
+            const key = self.allocator.dupe(u8, path) catch {
+                _ = self.hashes.remove(path);
                 return false;
             };
+            gop.key_ptr.* = key;
         }
+        gop.value_ptr.* = new_hash;
         return true;
     }
 
