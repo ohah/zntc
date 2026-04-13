@@ -30,21 +30,22 @@ pub const RangeMapping = struct {
 ///
 /// Metro `MappingEncoder` 의 Zig 포팅. 이름을 중복 제거하며 `push()` 호출이
 /// 증가 순서 (line asc, then column asc) 임을 가정한다 — Metro도 동일.
+///
+/// 소유권: `push()`에 전달하는 `name` 슬라이스는 빌더 생존 기간 동안
+/// 호출자가 소유해야 한다. 빌더는 이름을 복사하지 않고 참조만 저장한다.
 pub const FunctionMapBuilder = struct {
     allocator: std.mem.Allocator,
     /// 등장 순 이름 목록.
     names: std.ArrayList([]const u8) = .empty,
-    /// 이름 → names 인덱스 (중복 제거).
+    /// 이름 → names 인덱스 (중복 제거). 키는 외부 소유 슬라이스 참조.
     names_map: std.StringHashMapUnmanaged(u32) = .empty,
     /// VLQ mappings 버퍼.
     mappings: std.ArrayList(u8) = .empty,
 
     // RelativeValue 들 — 상대값 인코딩용.
-    last_line: i32 = 1, // 초기값 1 (Metro: new RelativeValue(1))
+    last_line: i32 = 1, // Metro: new RelativeValue(1)
     last_column: i32 = 0,
     last_name_index: i32 = 0,
-    /// 현재 라인에 이미 세그먼트를 쓴 적이 있는지. false면 다음 push 는 first-of-line.
-    has_segment_on_line: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) FunctionMapBuilder {
         return .{ .allocator = allocator };
@@ -68,18 +69,17 @@ pub const FunctionMapBuilder = struct {
         const line_delta: i32 = new_line - self.last_line;
         self.last_line = new_line;
 
+        // 첫 세그먼트이거나 라인이 바뀐 경우 — first-of-line (3필드 인코딩).
         const first_of_line = self.mappings.items.len == 0 or line_delta > 0;
 
         if (line_delta > 0) {
-            // 라인 구분자 1개만 출력, 실제 라인 차이는 line_delta 필드로 전달됨.
+            // 세미콜론 1개 — 실제 라인 차이는 line_delta 필드로 전달.
             try self.mappings.append(self.allocator, ';');
             self.last_column = 0;
-        } else if (self.has_segment_on_line) {
-            // 같은 라인의 뒤 세그먼트 — 콤마 구분.
+        } else if (!first_of_line) {
             try self.mappings.append(self.allocator, ',');
         }
 
-        // [col_delta, name_delta] 공통.
         const new_column: i32 = @intCast(mapping.column);
         const col_delta = new_column - self.last_column;
         self.last_column = new_column;
@@ -92,11 +92,8 @@ pub const FunctionMapBuilder = struct {
         try sourcemap.encodeVLQ(self.allocator, &self.mappings, name_delta);
 
         if (first_of_line) {
-            // 세 번째 필드: 실제 라인 델타.
             try sourcemap.encodeVLQ(self.allocator, &self.mappings, line_delta);
         }
-
-        self.has_segment_on_line = true;
     }
 
     /// 현재까지의 mappings 를 반환. 소유권은 빌더에 남는다.
@@ -111,15 +108,15 @@ pub const FunctionMapBuilder = struct {
 
     /// JSON 직렬화: `{"names":[...],"mappings":"..."}` 를 `buf` 에 추가한다.
     /// sources 배열 외부 구조 (x_facebook_sources 전체 배열) 는 호출자가 감싼다.
-    pub fn appendJson(self: *const FunctionMapBuilder, allocator: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
-        try buf.appendSlice(allocator, "{\"names\":[");
+    pub fn appendJson(self: *const FunctionMapBuilder, buf: *std.ArrayList(u8)) !void {
+        try buf.appendSlice(self.allocator, "{\"names\":[");
         for (self.names.items, 0..) |n, i| {
-            if (i > 0) try buf.append(allocator, ',');
-            try appendJsonString(allocator, buf, n);
+            if (i > 0) try buf.append(self.allocator, ',');
+            try sourcemap.appendJsonStringTo(self.allocator, buf, n);
         }
-        try buf.appendSlice(allocator, "],\"mappings\":\"");
-        try buf.appendSlice(allocator, self.mappings.items);
-        try buf.appendSlice(allocator, "\"}");
+        try buf.appendSlice(self.allocator, "],\"mappings\":\"");
+        try buf.appendSlice(self.allocator, self.mappings.items);
+        try buf.appendSlice(self.allocator, "\"}");
     }
 
     fn internName(self: *FunctionMapBuilder, name: []const u8) !u32 {
@@ -133,30 +130,6 @@ pub const FunctionMapBuilder = struct {
     }
 };
 
-fn appendJsonString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
-    try buf.append(allocator, '"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(allocator, "\\\""),
-            '\\' => try buf.appendSlice(allocator, "\\\\"),
-            '\n' => try buf.appendSlice(allocator, "\\n"),
-            '\r' => try buf.appendSlice(allocator, "\\r"),
-            '\t' => try buf.appendSlice(allocator, "\\t"),
-            else => {
-                if (c < 0x20) {
-                    try buf.appendSlice(allocator, "\\u00");
-                    const hex = "0123456789abcdef";
-                    try buf.append(allocator, hex[c >> 4]);
-                    try buf.append(allocator, hex[c & 0x0f]);
-                } else {
-                    try buf.append(allocator, c);
-                }
-            },
-        }
-    }
-    try buf.append(allocator, '"');
-}
-
 // ============================================================
 // Tests — Metro MappingEncoder 의 동작을 trace 하여 기대값 고정.
 // ============================================================
@@ -169,8 +142,9 @@ test "empty builder produces empty mappings and names" {
 }
 
 test "first push on line 1 col 0 — AAA (col=0, name=0, line_delta=0)" {
-    // Metro: new RelativeValue(1) 초기. push line=1 → lineDelta=0 → firstOfLine(pos==0)
-    // startSegment(0) → append VLQ(0)="A", append name(0)="A", append lineDelta(0)="A"
+    // Metro RelativeValue 초기: line=1, col=0, name=0.
+    // push(line=1) → line_delta=0, first_of_line(len==0) → 3필드
+    // VLQ(0)+VLQ(0)+VLQ(0) = "AAA"
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
@@ -178,10 +152,9 @@ test "first push on line 1 col 0 — AAA (col=0, name=0, line_delta=0)" {
     try std.testing.expectEqualStrings("<global>", b.namesSlice()[0]);
 }
 
-test "two segments same line different name — AAA,UC" {
-    // push(<global>, 1, 0) → "AAA"
-    // push(foo, 1, 10): line_delta=0, firstOfLine=false (has segment)
-    //   → "," + VLQ(10)="U" + VLQ(1)="C" → ",UC"
+test "two segments same line — AAA,UC" {
+    // push(<global>,1,0) → "AAA"
+    // push(foo,1,10): line_delta=0, not first → "," + VLQ(10)="U" + VLQ(1)="C"
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
@@ -197,18 +170,14 @@ test "name dedup — second push of same name reuses index" {
     defer b.deinit();
     try b.push(.{ .name = "foo", .line = 1, .column = 0 });
     try b.push(.{ .name = "foo", .line = 1, .column = 5 });
-    // names 에 "foo" 하나뿐.
     try std.testing.expectEqual(@as(usize, 1), b.namesSlice().len);
-    // 두 번째 세그먼트의 name_delta = 0.
-    // "AAA" + "," + VLQ(5)="K" + VLQ(0)="A" → "AAA,KA"
+    // name_delta=0 → "AAA" + "," + VLQ(5)="K" + VLQ(0)="A" = "AAA,KA"
     try std.testing.expectEqualStrings("AAA,KA", b.mappingsSlice());
 }
 
-test "new line — semicolon + first-of-line 3-field segment with line_delta" {
-    // push(<global>, 1, 0) → "AAA"
-    // push(foo, 3, 2): line_delta=2, firstOfLine=true
-    //   → ";" (single, regardless of line diff) + VLQ(2)="E" + VLQ(1)="C" + VLQ(2)="E"
-    //   → ";ECE"
+test "new line — semicolon + 3-field with line_delta" {
+    // push(<global>,1,0) → "AAA"
+    // push(foo,3,2): line_delta=2 → ";" + VLQ(2)="E" + VLQ(1)="C" + VLQ(2)="E"
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
@@ -217,9 +186,9 @@ test "new line — semicolon + first-of-line 3-field segment with line_delta" {
 }
 
 test "new line resets column delta base to 0" {
-    // push(<global>, 1, 0) → "AAA"
-    // push(foo, 2, 5): line_delta=1, col resets to 0 → col_delta=5
-    //   → ";" + VLQ(5)="K" + VLQ(1)="C" + VLQ(1)="C" → ";KCC"
+    // push(<global>,1,0) → "AAA"
+    // push(foo,2,5): line_delta=1, col resets → col_delta=5
+    //   → ";" + VLQ(5)="K" + VLQ(1)="C" + VLQ(1)="C" = ";KCC"
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
@@ -235,7 +204,7 @@ test "appendJson serializes names and mappings" {
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try b.appendJson(std.testing.allocator, &buf);
+    try b.appendJson(&buf);
     try std.testing.expectEqualStrings(
         "{\"names\":[\"<global>\",\"foo\"],\"mappings\":\"AAA,UC\"}",
         buf.items,
@@ -243,24 +212,21 @@ test "appendJson serializes names and mappings" {
 }
 
 test "appendJson escapes special characters in names" {
-    // 이름에 따옴표/백슬래시가 섞인 경우 (eval 함수 이름 등 이론적 케이스).
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "a\"b", .line = 1, .column = 0 });
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
-    try b.appendJson(std.testing.allocator, &buf);
+    try b.appendJson(&buf);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"a\\\"b\"") != null);
 }
 
 test "multiple lines with multiple segments" {
-    // L1: <global>@0   → "AAA"
-    // L1: foo@5        → ",KC"  (col_delta=5, name_delta=+1, 2필드)
-    // L2: bar@0        → new line → last_column 리셋 0, col_delta=0-0=0
-    //   → ";" + VLQ(0)="A" + VLQ(+1)="C" + VLQ(line_delta=1)="C"
-    //   → ";ACC"
-    // 기대: "AAA,KC;ACC"
+    // push(<global>,1,0) → "AAA"
+    // push(foo,1,5): same line → ",KC"  (col=5→VLQ"K", name+1→VLQ"C")
+    // push(bar,2,0): new line → last_column 리셋 0, col_delta=0
+    //   → ";" + VLQ(0)="A" + VLQ(1)="C" + VLQ(1)="C" = ";ACC"
     var b = FunctionMapBuilder.init(std.testing.allocator);
     defer b.deinit();
     try b.push(.{ .name = "<global>", .line = 1, .column = 0 });
