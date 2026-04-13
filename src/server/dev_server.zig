@@ -162,6 +162,8 @@ pub const DevServer = struct {
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
+    cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     sourcemap_cache: struct {
@@ -553,6 +555,14 @@ pub const DevServer = struct {
 
         while (true) {
             const events = watcher.waitForChanges(watch_interval_ms) catch continue;
+
+            // Control API 경유 캐시 리셋 요청 처리 — 파일 변경 없어도 다음 rebuild를 전체 빌드로.
+            if (self.cache_reset_requested.swap(false, .acquire)) {
+                inc_bundler.reset();
+                self.publishEvent("cache_reset", "{\"type\":\"cache_reset\"}");
+                getLog().print("  [ctrl] cache reset via /reset-cache\n", .{}) catch {};
+            }
+
             if (events.len == 0) continue;
 
             var changed_paths: std.ArrayList([]const u8) = .empty;
@@ -783,6 +793,29 @@ pub const DevServer = struct {
             }
         }
 
+        // 방법 제한 전에 검사하는 라우트 (POST 허용 Control API)
+        {
+            const target_early = request.head.target;
+            const path_end_early = std.mem.indexOfScalar(u8, target_early, '?') orelse target_early.len;
+            const raw_path_early = target_early[0..path_end_early];
+
+            // /sse/events — GET (event-stream)
+            if (std.mem.eql(u8, raw_path_early, "/sse/events")) {
+                self.handleSse(request) catch {};
+                return;
+            }
+
+            // Control API: /reset-cache — 모든 HTTP method 허용
+            if (std.mem.eql(u8, raw_path_early, "/reset-cache")) {
+                self.cache_reset_requested.store(true, .release);
+                request.respond("{\"ok\":true,\"action\":\"reset_cache\"}", .{
+                    .status = .ok,
+                    .extra_headers = &json_headers,
+                }) catch {};
+                return;
+            }
+        }
+
         if (request.head.method != .GET and request.head.method != .HEAD) {
             try request.respond("405 Method Not Allowed", .{
                 .status = .method_not_allowed,
@@ -802,12 +835,6 @@ pub const DevServer = struct {
             });
             return;
         };
-
-        // /sse/events — Server-Sent Events 구독 (모든 platform, entry 유무 무관)
-        if (std.mem.eql(u8, raw_path, "/sse/events")) {
-            self.handleSse(request) catch {};
-            return;
-        }
 
         if (self.entry_point != null) {
             // /@react-refresh — react-refresh/runtime 가상 모듈 (Vite 방식)
@@ -1111,6 +1138,10 @@ pub const DevServer = struct {
         .{ .name = "Access-Control-Allow-Methods", .value = "GET, HEAD, OPTIONS" },
         .{ .name = "Access-Control-Allow-Headers", .value = "*" },
         .{ .name = "Cache-Control", .value = "no-cache, no-store, must-revalidate" },
+    };
+
+    const json_headers = cors_headers ++ [_]http.Header{
+        .{ .name = "Content-Type", .value = "application/json; charset=utf-8" },
     };
 };
 
