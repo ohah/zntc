@@ -218,6 +218,28 @@ pub const SourceMapBuilder = struct {
         return self.buf.items;
     }
 
+    /// 소스맵 JSON + x_facebook_sources를 함께 생성한다.
+    /// `fn_map`이 있으면 `"x_facebook_sources":[[{names,mappings}]]` 추가.
+    /// 단일 source 가정 — 복수 source는 PR#3(bundler integration)에서 처리.
+    pub fn generateJSONWithFunctionMap(
+        self: *SourceMapBuilder,
+        allocator: std.mem.Allocator,
+        output_file: []const u8,
+        fn_map: *const @import("function_map.zig").FunctionMapBuilder,
+    ) ![]const u8 {
+        // 기존 JSON 생성 후 닫힘 `}` 직전에 x_facebook_sources 삽입.
+        const base = try self.generateJSON(output_file);
+        // base 마지막 `}` 제거 후 x_facebook_sources 추가.
+        std.debug.assert(base.len > 0 and base[base.len - 1] == '}');
+        self.buf.shrinkRetainingCapacity(base.len - 1);
+
+        try self.buf.appendSlice(allocator, ",\"x_facebook_sources\":[[");
+        try fn_map.appendJson(&self.buf);
+        try self.buf.appendSlice(allocator, "]]");
+        try self.buf.append(allocator, '}');
+        return self.buf.items;
+    }
+
     /// 문자열을 JSON 이스케이프하여 buf에 추가한다.
     fn appendJsonString(self: *SourceMapBuilder, s: []const u8) !void {
         return appendJsonStringTo(self.allocator, &self.buf, s);

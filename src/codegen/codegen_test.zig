@@ -10,6 +10,7 @@
 //   flow.zig               — Flow 타입 스트리핑
 //   engine_jsx.zig         — 엔진 타겟 + JSX 런타임 모드
 //   private_jsx_advanced.zig — private method, JSX text/dev/auto, ES2025
+//   function_map.zig       — Metro x_facebook_sources function map E2E 테스트
 
 comptime {
     _ = @import("codegen_test/helpers.zig");
@@ -22,4 +23,5 @@ comptime {
     _ = @import("codegen_test/engine_jsx.zig");
     _ = @import("codegen_test/private_jsx_advanced.zig");
     _ = @import("codegen_test/decorator.zig");
+    _ = @import("codegen_test/function_map.zig");
 }
