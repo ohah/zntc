@@ -28,6 +28,10 @@ pub const ClosureVar = struct {
     /// 원본 identifier_reference 노드 인덱스.
     /// buildClosureObject에서 symbol_id를 복사하여 scope hoisting rename을 지원.
     ref_idx: NodeIndex,
+    /// `new X()` 형태에서 수집된 worklet class의 factory 참조.
+    /// true면 `<name>` 대신 `<base_class>.<name>` 형태로 closure 값 생성.
+    /// name은 이미 `<BaseClass>__classFactory`로 설정되어 있어야 함.
+    class_factory_base: ?[]const u8 = null,
 };
 
 // ================================================================
@@ -150,6 +154,8 @@ pub fn collectClosureVars(
     defer locals.deinit();
     var refs = std.StringHashMap(NodeIndex).init(self.allocator);
     defer refs.deinit();
+    var new_classes = std.StringHashMap(NodeIndex).init(self.allocator);
+    defer new_classes.deinit();
 
     // 0. 함수 이름 → locals (자기 참조 제외: JS 스펙상 함수 이름은 body 내에서 접근 가능)
     if (func_name) |name| {
@@ -167,7 +173,13 @@ pub fn collectClosureVars(
     }
 
     // 2-3. body 순회: 지역 선언 → locals, 식별자 참조 → refs (NodeIndex 포함)
-    try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
+    //      동시에 `new X()` 형태의 callee identifier를 new_classes에 수집
+    //      (disable_worklet_classes 옵션이면 수집 안 함).
+    if (self.options.disable_worklet_classes) {
+        try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
+    } else {
+        try walkBodyForClosureAnalysisWithNew(self, body_idx, &locals, &refs, &new_classes, 0);
+    }
 
     // 4. refs - locals - globals = closure vars
     // name을 복제: string_table 슬라이스는 이후 addString 호출로 무효화될 수 있음
@@ -188,6 +200,30 @@ pub fn collectClosureVars(
         if (is_user_global) continue;
         const duped = self.allocator.dupe(u8, name) catch return error.OutOfMemory;
         try result.append(self.allocator, .{ .name = duped, .ref_idx = entry.value_ptr.* });
+    }
+
+    // 4b. `new X()` — 로컬/전역/사용자 globals 제외, 각 class의 factory entry 추가.
+    var nc_iter = new_classes.iterator();
+    while (nc_iter.next()) |entry| {
+        const base_name = entry.key_ptr.*;
+        if (locals.contains(base_name)) continue;
+        if (isGlobal(base_name)) continue;
+        var is_user_global = false;
+        for (self.options.worklet_globals) |g| {
+            if (std.mem.eql(u8, g, base_name)) {
+                is_user_global = true;
+                break;
+            }
+        }
+        if (is_user_global) continue;
+        const base_duped = self.allocator.dupe(u8, base_name) catch return error.OutOfMemory;
+        // factory key: "<BaseClass>__classFactory"
+        const factory_name = std.fmt.allocPrint(self.allocator, "{s}__classFactory", .{base_name}) catch return error.OutOfMemory;
+        try result.append(self.allocator, .{
+            .name = factory_name,
+            .ref_idx = entry.value_ptr.*,
+            .class_factory_base = base_duped,
+        });
     }
 
     // 정렬 (결정론적 출력)
@@ -352,6 +388,90 @@ fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.String
 /// Generic AST walker: nodeLayout() 메타데이터를 사용하여 모든 노드 타입을 자동 순회.
 /// 특수 처리가 필요한 노드(함수, 변수, catch, method, object_property)만 명시적으로 처리하고,
 /// 나머지는 layout 기반으로 자식 노드를 재귀 순회한다.
+/// walkBodyForClosureAnalysis + `new X()` callee identifier 수집 (Phase 5 worklet class factory용).
+/// 내부적으로 pre-pass로 new_expression을 찾고 전체 walk는 기존 함수에 위임.
+fn walkBodyForClosureAnalysisWithNew(
+    self: *Transformer,
+    idx: NodeIndex,
+    locals: *std.StringHashMap(void),
+    refs: *std.StringHashMap(NodeIndex),
+    new_classes: *std.StringHashMap(NodeIndex),
+    depth: u32,
+) Error!void {
+    try collectNewExpressionCallees(self, idx, new_classes, 0);
+    try walkBodyForClosureAnalysis(self, idx, locals, refs, depth);
+}
+
+/// AST를 순회하며 `new <Identifier>(...)` 형태의 callee identifier를 수집.
+fn collectNewExpressionCallees(
+    self: *Transformer,
+    idx: NodeIndex,
+    new_classes: *std.StringHashMap(NodeIndex),
+    depth: u32,
+) Error!void {
+    if (idx.isNone()) return;
+    if (depth > 128) return;
+    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    const node = self.ast.getNode(idx);
+    if (node.tag == .new_expression) {
+        const e = node.data.extra;
+        if (e < self.ast.extra_data.items.len) {
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            if (!callee_idx.isNone()) {
+                const callee = self.ast.getNode(callee_idx);
+                if (callee.tag == .identifier_reference) {
+                    const name = self.ast.getText(callee.data.string_ref);
+                    if (name.len > 0) {
+                        new_classes.put(name, callee_idx) catch return error.OutOfMemory;
+                    }
+                }
+            }
+        }
+    }
+    // 자식 재귀 (generic layout 기반)
+    const tag = node.tag;
+    const kind = tag.dataKind();
+    switch (kind) {
+        .leaf => {},
+        .unary => if (!node.data.unary.operand.isNone()) try collectNewExpressionCallees(self, node.data.unary.operand, new_classes, depth + 1),
+        .binary => {
+            try collectNewExpressionCallees(self, node.data.binary.left, new_classes, depth + 1);
+            try collectNewExpressionCallees(self, node.data.binary.right, new_classes, depth + 1);
+        },
+        .ternary => {
+            try collectNewExpressionCallees(self, node.data.ternary.a, new_classes, depth + 1);
+            try collectNewExpressionCallees(self, node.data.ternary.b, new_classes, depth + 1);
+            try collectNewExpressionCallees(self, node.data.ternary.c, new_classes, depth + 1);
+        },
+        .list => {
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                if (list.start + i >= self.ast.extra_data.items.len) break;
+                try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), new_classes, depth + 1);
+            }
+        },
+        .extra => {
+            const e = node.data.extra;
+            for (tag.extraChildOffsets()) |offset| {
+                if (self.ast.hasExtra(e, @as(u32, offset) + 1)) {
+                    try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[e + offset]), new_classes, depth + 1);
+                }
+            }
+            for (tag.extraListOffsets()) |lo| {
+                if (!self.ast.hasExtra(e, @as(u32, lo[1]) + 1)) continue;
+                const ls = self.ast.extra_data.items[e + lo[0]];
+                const ll = self.ast.extra_data.items[e + lo[1]];
+                var li: u32 = 0;
+                while (li < ll) : (li += 1) {
+                    if (ls + li >= self.ast.extra_data.items.len) break;
+                    try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[ls + li]), new_classes, depth + 1);
+                }
+            }
+        },
+    }
+}
+
 fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
@@ -694,22 +814,37 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
 
     for (closure_vars) |cv| {
         const name_span = try self.ast.addString(cv.name);
-        // key: identifier (property name — rename 대상 아님)
         const key = try self.ast.addNode(.{
             .tag = .identifier_reference,
             .span = name_span,
             .data = .{ .string_ref = name_span },
         });
-        // value: identifier_reference (scope hoisting rename 대상)
-        const value = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = name_span,
-            .data = .{ .string_ref = name_span },
-        });
-        // 원본 참조의 symbol_id 복사 → scope hoisting rename 시 자동 갱신
-        // (ref_idx는 walkBodyForClosureAnalysis에서 항상 유효한 identifier_reference 노드)
-        self.copySymbolId(cv.ref_idx, value);
-        // explicit key-value: { hue2rgb: hue2rgb } → rename 시 { hue2rgb: hue2rgb$1 }
+        // 값 생성: 일반 closure는 identifier_reference, worklet class factory는
+        // `<BaseClass>.<name>` 형태의 static_member_expression.
+        const value = if (cv.class_factory_base) |base| blk: {
+            const base_span = try self.ast.addString(base);
+            const base_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = base_span,
+                .data = .{ .string_ref = base_span },
+            });
+            const factory_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = name_span,
+                .data = .{ .string_ref = name_span },
+            });
+            break :blk try self.addExtraNode(.static_member_expression, zero_span, &.{
+                @intFromEnum(base_ref), @intFromEnum(factory_ref), 0,
+            });
+        } else blk: {
+            const v = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = name_span,
+                .data = .{ .string_ref = name_span },
+            });
+            self.copySymbolId(cv.ref_idx, v);
+            break :blk v;
+        };
         const prop = try self.ast.addNode(.{
             .tag = .object_property,
             .span = zero_span,

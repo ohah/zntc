@@ -41,6 +41,8 @@ pub fn plugin() Plugin {
             .on_program = onProgram,
             .on_object_expression = onObjectExpression,
             .on_call_expression = onCallExpression,
+            .on_class_declaration = onClassDeclaration,
+            .on_class_expression = onClassDeclaration,
         },
     };
 }
@@ -173,7 +175,10 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
     const closure_vars = try api.getClosureVars(info.original_body_idx, info.original_params_start, info.original_params_len, info.name);
     defer {
-        for (closure_vars) |cv| api.getAllocator().free(cv.name);
+        for (closure_vars) |cv| {
+            api.getAllocator().free(cv.name);
+            if (cv.class_factory_base) |b| api.getAllocator().free(b);
+        }
         api.getAllocator().free(closure_vars);
     }
 
@@ -629,3 +634,188 @@ fn buildWorkletContextStubBody(t: *Transformer) !NodeIndex {
         .data = .{ .list = body_list },
     });
 }
+
+// ================================================================
+// Worklet class (__workletClass marker) — Phase 5
+// ================================================================
+
+/// `class Foo { __workletClass = X; ... }` 감지 시 factory 생성.
+/// 반환값 non-null 시 default 방문 건너뛰고 visited class + trailing factory 할당.
+fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex) PluginError!?NodeIndex {
+    _ = ctx;
+    const t = api.transformer;
+    const node = t.ast.getNode(node_idx);
+    if (node.tag != .class_declaration and node.tag != .class_expression) return null;
+
+    // class body = extra[2] (.list)
+    const class_extra = node.data.extra;
+    if (class_extra + 2 >= t.ast.extra_data.items.len) return null;
+    const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[class_extra + 2]);
+    if (body_idx.isNone()) return null;
+    const class_name = getClassName(t, node) orelse return null;
+
+    if (!hasWorkletClassMarker(t, body_idx)) return null;
+
+    // __workletClass property를 strip한 새 body 생성 + default 방문 수행.
+    const stripped_body = try stripWorkletClassMarker(t, body_idx);
+    // 원본 class extra를 복사하여 body만 교체한 새 class 노드.
+    const none = @intFromEnum(NodeIndex.none);
+    const new_name_idx = t.ast.extra_data.items[class_extra];
+    const new_super_idx = t.ast.extra_data.items[class_extra + 1];
+    const deco_start = t.ast.extra_data.items[class_extra + 6];
+    const deco_len = t.ast.extra_data.items[class_extra + 7];
+    const new_class = try t.addExtraNode(node.tag, node.span, &.{
+        new_name_idx, new_super_idx, @intFromEnum(stripped_body),
+        none,         0,             0,
+        deco_start,   deco_len,
+    });
+    // visit은 skip (default 경로가 __workletClass 필드 없는 상태로 이미 완료).
+    // Trailing: `Foo.Foo__classFactory = <worklet IIFE>`
+    const factory_stmt = try buildClassFactoryAssignment(t, class_name);
+    // pending_nodes 또는 trailing_nodes에 추가해야 program/block이 반영.
+    try t.trailing_nodes.append(t.allocator, factory_stmt);
+    return new_class;
+}
+
+fn getClassName(t: *Transformer, node: Node) ?[]const u8 {
+    const e = node.data.extra;
+    const name_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[e]);
+    if (name_idx.isNone()) return null;
+    const name_node = t.ast.getNode(name_idx);
+    if (name_node.tag != .binding_identifier) return null;
+    return t.ast.source[name_node.span.start..name_node.span.end];
+}
+
+fn hasWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) bool {
+    const body = t.ast.getNode(body_idx);
+    if (body.tag != .class_body) return false;
+    const ls = body.data.list.start;
+    const ll = body.data.list.len;
+    var i: u32 = 0;
+    while (i < ll) : (i += 1) {
+        const m: NodeIndex = @enumFromInt(t.ast.extra_data.items[ls + i]);
+        if (m.isNone()) continue;
+        const mn = t.ast.getNode(m);
+        if (mn.tag != .property_definition) continue;
+        const me = mn.data.extra;
+        if (me >= t.ast.extra_data.items.len) continue;
+        const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+        if (key_idx.isNone()) continue;
+        const key = t.ast.getNode(key_idx);
+        if (key.tag != .identifier_reference) continue;
+        const name = t.ast.source[key.span.start..key.span.end];
+        if (std.mem.eql(u8, name, "__workletClass")) return true;
+    }
+    return false;
+}
+
+fn stripWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) !NodeIndex {
+    const body = t.ast.getNode(body_idx);
+    const ls = body.data.list.start;
+    const ll = body.data.list.len;
+
+    const top = t.scratch.items.len;
+    defer t.scratch.shrinkRetainingCapacity(top);
+
+    var i: u32 = 0;
+    while (i < ll) : (i += 1) {
+        const m: NodeIndex = @enumFromInt(t.ast.extra_data.items[ls + i]);
+        if (m.isNone()) continue;
+        const mn = t.ast.getNode(m);
+        var is_marker = false;
+        if (mn.tag == .property_definition) {
+            const me = mn.data.extra;
+            if (me < t.ast.extra_data.items.len) {
+                const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+                if (!key_idx.isNone()) {
+                    const key = t.ast.getNode(key_idx);
+                    if (key.tag == .identifier_reference) {
+                        const name = t.ast.source[key.span.start..key.span.end];
+                        is_marker = std.mem.eql(u8, name, "__workletClass");
+                    }
+                }
+            }
+        }
+        if (!is_marker) try t.scratch.append(t.allocator, m);
+    }
+
+    const new_list = try t.ast.addNodeList(t.scratch.items[top..]);
+    return t.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = new_list } });
+}
+
+/// `ClassName.ClassName__classFactory = (function() { function ClassName__classFactory() { 'worklet'; return null; } return ClassName__classFactory; })();`
+/// 생성. plugin의 onFunction이 자동으로 함수를 worklet으로 변환.
+fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8) !NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+
+    // factory 이름: `<ClassName>__classFactory`
+    var factory_name_buf: [128]u8 = undefined;
+    const factory_name = std.fmt.bufPrint(&factory_name_buf, "{s}__classFactory", .{class_name}) catch return error.OutOfMemory;
+    const factory_name_span = try t.ast.addString(factory_name);
+    const class_name_span = try t.ast.addString(class_name);
+
+    // function <factory_name>() { 'worklet'; return null; }
+    const binding_node = try t.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = factory_name_span,
+        .data = .{ .string_ref = factory_name_span },
+    });
+    const body = try buildWorkletContextStubBody(t);
+    const empty_params = try t.ast.addNodeList(&.{});
+    const none = @intFromEnum(NodeIndex.none);
+    const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
+        @intFromEnum(binding_node), empty_params.start, empty_params.len,
+        @intFromEnum(body),         0,                  none,
+    });
+
+    // IIFE: (function() { function <fn>(){...} return <fn>; })()
+    const fn_ref = try t.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = factory_name_span,
+        .data = .{ .string_ref = factory_name_span },
+    });
+    const ret_stmt = try t.ast.addNode(.{
+        .tag = .return_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = fn_ref, .flags = 0 } },
+    });
+    const iife_body_list = try t.ast.addNodeList(&.{ inner_fn, ret_stmt });
+    const iife_body = try t.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = iife_body_list } });
+    const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
+        none, empty_params.start, empty_params.len, @intFromEnum(iife_body), 0, none,
+    });
+    const call_args = try t.ast.addNodeList(&.{});
+    const call_extra = try t.ast.addExtras(&.{ @intFromEnum(wrapper_fn), call_args.start, call_args.len, 0 });
+    const iife = try t.ast.addNode(.{ .tag = .call_expression, .span = zero_span, .data = .{ .extra = call_extra } });
+
+    // 중요: visit을 돌려 plugin의 onFunction이 IIFE 내부 function_declaration을 worklet화하도록.
+    const visited_iife = try t.visitNode(iife);
+
+    // LHS: ClassName.ClassName__classFactory
+    const obj_ref = try t.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = class_name_span,
+        .data = .{ .string_ref = class_name_span },
+    });
+    const prop_ref = try t.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = factory_name_span,
+        .data = .{ .string_ref = factory_name_span },
+    });
+    const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
+        @intFromEnum(obj_ref), @intFromEnum(prop_ref), 0,
+    });
+    // assignment_expression: binary = { left, right, flags }
+    const assign = try t.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = zero_span,
+        .data = .{ .binary = .{ .left = member, .right = visited_iife, .flags = 0 } },
+    });
+    return t.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+    });
+}
+
+// `buildWorkletContextStubBody` 재사용 (동일한 `'worklet'; return null;` body).
