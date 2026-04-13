@@ -11,11 +11,16 @@ const Span = @import("../lexer/token.zig").Span;
 pub const ModuleDevCode = struct {
     id: []const u8,
     code: []const u8,
+    /// 모듈별 standalone source map (V3 JSON). null이면 sourcemap 미수집.
+    /// HMR 클라이언트가 eval한 코드에 sourceMappingURL data URL로 부착하여
+    /// 전체 번들 sourcemap을 재생성하지 않고도 디버거 매핑을 유지한다 (Issue #1248).
+    map: ?[]const u8 = null,
 
     pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
         for (codes) |c| {
             allocator.free(c.id);
             allocator.free(c.code);
+            if (c.map) |m| allocator.free(m);
         }
         allocator.free(codes);
     }
