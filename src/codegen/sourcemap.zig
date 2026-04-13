@@ -220,28 +220,7 @@ pub const SourceMapBuilder = struct {
 
     /// 문자열을 JSON 이스케이프하여 buf에 추가한다.
     fn appendJsonString(self: *SourceMapBuilder, s: []const u8) !void {
-        try self.buf.append(self.allocator, '"');
-        for (s) |c| {
-            switch (c) {
-                '"' => try self.buf.appendSlice(self.allocator, "\\\""),
-                '\\' => try self.buf.appendSlice(self.allocator, "\\\\"),
-                '\n' => try self.buf.appendSlice(self.allocator, "\\n"),
-                '\r' => try self.buf.appendSlice(self.allocator, "\\r"),
-                '\t' => try self.buf.appendSlice(self.allocator, "\\t"),
-                else => {
-                    if (c < 0x20) {
-                        // 제어 문자 → \u00XX
-                        try self.buf.appendSlice(self.allocator, "\\u00");
-                        const hex = "0123456789abcdef";
-                        try self.buf.append(self.allocator, hex[c >> 4]);
-                        try self.buf.append(self.allocator, hex[c & 0x0f]);
-                    } else {
-                        try self.buf.append(self.allocator, c);
-                    }
-                },
-            }
-        }
-        try self.buf.append(self.allocator, '"');
+        return appendJsonStringTo(self.allocator, &self.buf, s);
     }
 
     /// mappings 필드를 VLQ 인코딩.
@@ -289,6 +268,32 @@ pub const SourceMapBuilder = struct {
         }
     }
 };
+
+/// 문자열을 JSON 이스케이프하여 `buf`에 추가한다.
+/// `SourceMapBuilder.appendJsonString` 및 `FunctionMapBuilder.appendJson`에서 공유.
+pub fn appendJsonStringTo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    try buf.append(allocator, '"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    try buf.appendSlice(allocator, "\\u00");
+                    const hex = "0123456789abcdef";
+                    try buf.append(allocator, hex[c >> 4]);
+                    try buf.append(allocator, hex[c & 0x0f]);
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+    try buf.append(allocator, '"');
+}
 
 // ============================================================
 // 테스트
