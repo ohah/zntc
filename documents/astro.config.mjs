@@ -78,6 +78,7 @@ export default defineConfig({
             { label: "플러그인", slug: "guides/plugins", translations: { en: "Plugins" } },
             { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },
             { label: "마이그레이션", slug: "guides/migration", translations: { en: "Migration" } },
+            { label: "Babel 이관 (RN)", slug: "guides/babel-migration", translations: { en: "Babel Migration (RN)" } },
             { label: "React Native", slug: "guides/react-native" },
             { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
           ],
