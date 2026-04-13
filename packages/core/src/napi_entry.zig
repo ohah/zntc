@@ -1177,6 +1177,8 @@ const WatchRebuildEvent = struct {
     updates: ?[]const ModuleUpdate = null,
     bytes: usize = 0,
     phase_durations: ?PhaseDurations = null,
+    /// 증분 그래프에서 재파싱된 모듈 수 (Issue #1223 Phase 2).
+    reparsed_modules: ?usize = null,
     // 실패 시
     error_msg: ?[]const u8 = null,
 
@@ -1313,6 +1315,12 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             }
             _ = c.napi_set_named_property(env, js_event, "phaseDurations", js_pd);
         }
+
+        if (event.reparsed_modules) |n| {
+            var js_n: c.napi_value = undefined;
+            _ = c.napi_create_int64(env, @intCast(n), &js_n);
+            _ = c.napi_set_named_property(env, js_event, "reparsedModules", js_n);
+        }
     } else {
         // error: string
         if (event.error_msg) |msg| {
@@ -1335,8 +1343,17 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     const allocator = native_alloc;
     const bundle_opts = async_data.options;
 
-    // 초기 빌드
-    var bundler = Bundler.init(allocator, bundle_opts);
+    // Issue #1223 Phase 2: 초기 빌드에도 PersistentModuleStore 전달.
+    // 초기 빌드에서 store가 채워져야 첫 리빌드가 캐시 히트 경로로 진입한다.
+    const module_store_mod = bundler_mod.module_store;
+    const ResolveCache = bundler_mod.ResolveCache;
+    var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
+    defer persistent_store.deinit();
+
+    var initial_opts = bundle_opts;
+    initial_opts.module_store = &persistent_store;
+
+    var bundler = Bundler.init(allocator, initial_opts);
     var result = bundler.bundle() catch |err| {
         // 초기 빌드 실패 — rebuild 이벤트로 에러 전달
         const event = allocator.create(WatchRebuildEvent) catch {
@@ -1361,12 +1378,6 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         return;
     };
     defer result.deinit(allocator);
-
-    // 증분 빌드용 PersistentModuleStore + ResolveCache
-    const module_store_mod = bundler_mod.module_store;
-    const ResolveCache = bundler_mod.ResolveCache;
-    var persistent_store = module_store_mod.PersistentModuleStore.init(allocator);
-    defer persistent_store.deinit();
 
     // dev mode: per-module code 캐시 (HMR diff용)
     var module_code_cache = std.StringHashMap([]const u8).init(allocator);
@@ -1698,6 +1709,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .delta_ms = nsToMs(delta_ns),
             .total_ms = nsToMs(total_ns),
         };
+        event.reparsed_modules = rebuild_result.reparsed_modules;
 
         // rebuild 이벤트 전송
         if (c.napi_call_threadsafe_function(async_data.rebuild_tsfn, @ptrCast(event), c.napi_tsfn_blocking) != c.napi_ok) {
