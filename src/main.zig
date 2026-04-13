@@ -33,6 +33,9 @@ const CliOptions = struct {
     sourcemap: bool = false,
     /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
     sourcemap_debug_ids: bool = false,
+    /// Metro x_facebook_sources function map (--sourcemap-function-map).
+    /// --platform=react-native 시 자동 활성화.
+    sourcemap_function_map: bool = false,
     ascii_only: bool = false,
     quote_style: lib.codegen.QuoteStyle = .double,
     watch: bool = false,
@@ -299,6 +302,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.sourcemap = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap-debug-ids")) {
             opts.sourcemap_debug_ids = true;
+        } else if (std.mem.eql(u8, arg, "--sourcemap-function-map")) {
+            opts.sourcemap_function_map = true;
         } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1266,6 +1271,8 @@ pub fn main() !void {
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
             }
+            // Metro function map: Hermes 스택트레이스 심볼리케이션 — RN에서 기본 활성화
+            opts.sourcemap_function_map = true;
 
             // RN 에셋 기본 로더: Metro assetExts 호환.
             // 사용자 --loader 오버라이드가 loader_list 앞에 이미 있으므로
@@ -1370,6 +1377,7 @@ pub fn main() !void {
             .main_fields = opts.main_fields_list.items,
             .sourcemap = opts.sourcemap,
             .sourcemap_debug_ids = opts.sourcemap_debug_ids,
+            .sourcemap_function_map = opts.sourcemap_function_map,
             .output_filename = if (opts.output_file) |of| std.fs.path.basename(of) else "bundle.js",
             .outbase = opts.outbase,
             .packages_external = opts.packages_external,

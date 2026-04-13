@@ -247,7 +247,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')

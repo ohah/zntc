@@ -99,6 +99,9 @@ pub const BundleOptions = struct {
     sourcemap: bool = false,
     /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
     sourcemap_debug_ids: bool = false,
+    /// Metro x_facebook_sources function map (--sourcemap-function-map).
+    /// --platform=react-native 시 자동 활성화. Hermes 스택트레이스 심볼리케이션용.
+    sourcemap_function_map: bool = false,
     /// 출력 파일명 (소스맵 참조용)
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
@@ -384,6 +387,7 @@ pub const Bundler = struct {
             .jsx_fragment = self.options.jsx_fragment,
             .jsx_import_source = self.options.jsx_import_source,
             .sourcemap_debug_ids = self.options.sourcemap_debug_ids,
+            .sourcemap_function_map = self.options.sourcemap_function_map,
             .root_dir = self.options.root_dir,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
