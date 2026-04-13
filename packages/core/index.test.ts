@@ -3492,6 +3492,55 @@ describe("watch()", () => {
     rmSync(dir, { recursive: true });
   }, 10000);
 
+  test("Issue #1248: 다중 모듈에서 변경 모듈만 updates에 + map은 자기 모듈만", async () => {
+    // entry → a, b 그래프에서 a.ts만 수정 → updates=[a]만, map.sources=[a]만 검증.
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-partial-"));
+    writeFileSync(join(dir, "a.ts"), "export const A = 'A-original';\n");
+    writeFileSync(join(dir, "b.ts"), "export const B = 'B-original';\n");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "import { A } from './a';\nimport { B } from './b';\nconsole.log(A, B);\n",
+    );
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: Array<{ id: string; code: string; map?: string }>;
+      graphChanged?: boolean;
+    }>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+      collectModuleCodes: true,
+      sourcemap: true,
+      onReady: () => readyDone(),
+      onRebuild: (e) => rebuildDone(e),
+    });
+
+    await readyP;
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "a.ts"), "export const A = 'A-changed';\n");
+
+    const event = await rebuildP;
+    handle.stop();
+
+    expect(event.graphChanged).toBeFalsy();
+    expect(event.updates).toBeDefined();
+    expect(event.updates!.length).toBe(1);
+
+    const u = event.updates![0];
+    expect(u.id.endsWith("a.ts")).toBe(true);
+    expect(u.code).toContain("A-changed");
+    expect(u.code).not.toContain("B-original");
+
+    expect(u.map).toBeDefined();
+    const m = JSON.parse(u.map!);
+    expect(m.sources).toHaveLength(1);
+    expect(m.sources[0].endsWith("a.ts")).toBe(true);
+
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
   test("새 import 추가 시 graphChanged 감지", async () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
     writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
