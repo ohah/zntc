@@ -535,3 +535,109 @@ test "Circular: entry depends on circular pair" {
     const a_pos = std.mem.indexOf(u8, result.output, "\"a\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_pos < entry_pos);
 }
+
+// ============================================================
+// #1208: export default X where X is namespace import
+// ============================================================
+
+test "Default: export default from namespace import assigns ns var" {
+    // `import * as X from './lib'; export default X;` 패턴.
+    // ZTS가 var X$N을 호이스팅하지만 값 할당이 누락되던 버그 회귀 방지.
+    // Reanimated/GestureDetector가 `Reanimated.default.createAnimatedComponent`로
+    // 접근할 때 default getter가 undefined 반환 → 드래그 동작 실패 (#1208).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import Animated from './mod';
+        \\console.log(Animated.foo);
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\import * as X from './lib';
+        \\export default X;
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const foo = 'barvalue';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ns var 할당이 반드시 존재해야 한다 (X = X_ns; 형태).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "X_ns") != null);
+    // default getter가 X를 반환 (minified 또는 non-minified 둘 다 허용)
+    // default getter는 arrow 또는 function expression (platform/minify에 따라 다름)
+    const has_default_getter = std.mem.indexOf(u8, result.output, "\"default\": () => X") != null or
+        std.mem.indexOf(u8, result.output, "\"default\":()=>X") != null or
+        std.mem.indexOf(u8, result.output, "\"default\": function() { return X; }") != null;
+    try std.testing.expect(has_default_getter);
+    // 할당 라인 확인: `X = X_ns;`
+    const has_assign = std.mem.indexOf(u8, result.output, "X = X_ns;") != null or
+        std.mem.indexOf(u8, result.output, "X=X_ns;") != null;
+    try std.testing.expect(has_assign);
+}
+
+test "Default: export default namespace — IIFE bundle resolves member access" {
+    // default getter에서 반환된 namespace object의 member access가 올바르게 값을 반환해야.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import Pkg from './mod';
+        \\console.log(Pkg.answer);
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\import * as Stuff from './lib';
+        \\export default Stuff;
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const answer = 42;
+        \\export const other = 'skip';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // answer가 번들에 포함되어야 (trees-haker가 default 경유 namespace 접근도 보존)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "answer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Default: regular export default identifier still self-ref (no regression)" {
+    // namespace가 아닌 일반 identifier는 self-ref 최적화가 그대로 유지되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import x from './mod';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\const value = 'hello';
+        \\export default value;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // regular default는 _ns suffix 없어야 — self-ref 최적화 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value_ns") == null);
+}
