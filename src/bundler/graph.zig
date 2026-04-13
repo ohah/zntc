@@ -1823,7 +1823,7 @@ fn createJsxImportBindings(
     for (jsx_bindings, 0..) |jb, i| {
         // 각 synthetic binding에 고유 sentinel span 부여.
         // Span.EMPTY(0,0)를 공유하면 linker의 spanKey 기반 HashMap에서 덮어쓰기 발생.
-        const sentinel_start: u32 = 0xFFFF_0000 + @as(u32, @intCast(i));
+        const sentinel_start: u32 = ImportBinding.SYNTHETIC_SPAN_BASE + @as(u32, @intCast(i));
         new_bindings[existing_bindings.len + i] = .{
             .kind = .named,
             .local_name = jb.local,

@@ -1583,7 +1583,31 @@ pub const PreambleWriter = struct {
         imported_name: []const u8,
         is_namespace: bool,
     ) !void {
-        try self.write("var ");
+        return self.writeUnresolvedRequireInner(local_name, specifier, imported_name, is_namespace, false);
+    }
+
+    /// ESM-wrapped 모듈의 synthetic JSX binding 등에서 사용.
+    /// top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 있으므로 init 함수 본문에서는
+    /// `var` 없이 할당만 해야 함 (var 재선언 시 outer scope shadowing → #1209).
+    pub fn writeUnresolvedRequireAssignOnly(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        specifier: []const u8,
+        imported_name: []const u8,
+        is_namespace: bool,
+    ) !void {
+        return self.writeUnresolvedRequireInner(local_name, specifier, imported_name, is_namespace, true);
+    }
+
+    fn writeUnresolvedRequireInner(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        specifier: []const u8,
+        imported_name: []const u8,
+        is_namespace: bool,
+        assign_only: bool,
+    ) !void {
+        if (!assign_only) try self.write("var ");
         try self.write(local_name);
         try self.write(" = require(\"");
         try self.write(specifier);
