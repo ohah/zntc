@@ -23,8 +23,11 @@ const watch_poll_timeout_ms: u32 = 200;
 const watch_debounce_ms: u32 = 50;
 const watch_debounce_max_ms: u64 = 500;
 
-/// 파일 내용 해시 최대 크기 (소스 파일 기준 충분).
-const watch_hash_max_bytes: usize = 10 * 1024 * 1024;
+/// 파일 내용 해시 상한 (#1233). RN 등 대형 프로젝트의 vendor 번들/asset catalog/locale
+/// JSON이 수십 MB에 이를 수 있어 넉넉히 잡음. 초과 시 `util.wyhash.hashFileStreaming`이
+/// size+mtime 기반 pseudo-hash로 폴백한다 — 해당 파일이 영영 리빌드 트리거되지 않는 stale
+/// output 방지.
+const watch_hash_max_bytes: usize = 256 * 1024 * 1024;
 
 /// 이벤트 배열의 path들을 중복 제거 set에 병합.
 /// FileWatcher.waitForChanges 결과는 다음 호출에서 무효화되므로 path를 dupe.

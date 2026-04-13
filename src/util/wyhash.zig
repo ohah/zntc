@@ -21,18 +21,25 @@ pub fn hashHex8(data: []const u8) [8]u8 {
 }
 
 /// 파일 내용의 Wyhash-64. 파일을 64KB 버퍼로 순회하여 대용량에서도 메모리 부담 없음.
-/// `max_bytes` 초과 시 null. 열기/읽기 실패 시 null.
+/// `max_bytes` 초과 시 size+mtime 기반 pseudo-hash로 폴백 (RN 등 vendor 번들/locale JSON 대응 — #1233).
+/// 열기/stat/읽기 실패 시 null.
 pub fn hashFileStreaming(path: []const u8, max_bytes: usize) ?u64 {
     const file = std.fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
+    const stat = file.stat() catch return null;
+    if (stat.size > max_bytes) {
+        // 거대 파일: 내용 스트리밍 비용을 피하고 size+mtime으로 pseudo-hash.
+        // mtime만 갱신될 때 false-positive가 생길 수 있지만 stale output보다 안전.
+        var h = std.hash.Wyhash.init(0);
+        h.update(std.mem.asBytes(&stat.size));
+        h.update(std.mem.asBytes(&stat.mtime));
+        return h.final();
+    }
     var hasher = std.hash.Wyhash.init(0);
     var buf: [64 * 1024]u8 = undefined;
-    var total: usize = 0;
     while (true) {
         const n = file.read(&buf) catch return null;
         if (n == 0) break;
-        total += n;
-        if (total > max_bytes) return null;
         hasher.update(buf[0..n]);
     }
     return hasher.final();
@@ -68,14 +75,17 @@ test "hashFileStreaming matches hashU64" {
     try std.testing.expectEqual(hashU64(contents), got);
 }
 
-test "hashFileStreaming respects max_bytes" {
+test "hashFileStreaming over-limit falls back to size+mtime pseudo-hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(.{ .sub_path = "big.txt", .data = "0123456789" });
     const real = try tmp.dir.realpathAlloc(std.testing.allocator, "big.txt");
     defer std.testing.allocator.free(real);
-    try std.testing.expect(hashFileStreaming(real, 5) == null);
-    try std.testing.expect(hashFileStreaming(real, 100) != null);
+    // 한도 초과 — null 대신 pseudo-hash 반환 (size+mtime).
+    const fallback = hashFileStreaming(real, 5) orelse return error.HashFailed;
+    const full = hashFileStreaming(real, 100) orelse return error.HashFailed;
+    // 둘은 다른 알고리즘이므로 서로 달라야 함 (확률적 — 충돌 매우 희박).
+    try std.testing.expect(fallback != full);
 }
 
 test "hashFileStreaming missing file returns null" {
