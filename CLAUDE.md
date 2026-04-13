@@ -32,6 +32,7 @@ Rollup/Vite 어댑터: `vitePlugin({...})` (모든 훅 async 지원).
 - `--platform=node` → Node 빌트인 자동 external
 - `--platform=react-native` → RN 프리셋: `.ios.*`/`.android.*`/`.native.*` 확장자, `react-native` main-field/exports 조건, `--flow` 자동
 - `--watch`/`--serve` → 증분 빌드, `--watch-json`은 NDJSON 이벤트 stdout 출력 (외부 HMR 연동)
+- Dev server 외부 인터페이스: `/sse/events` (SSE 빌드 이벤트), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — Claude Code 등 LLM 에이전트 연동)
 - ES 다운레벨: `es5`~`es2025`/`esnext` (ES2023 hashbang strip, ES2025 `using` 다운레벨)
 - `import './x.css'` → 별도 CSS 파일 자동 생성 (Lightning CSS minify)
 
