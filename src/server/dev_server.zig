@@ -268,6 +268,8 @@ pub const DevServer = struct {
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// MCP `get_build_events` 도구용 이벤트 히스토리 (최근 N개).
     event_ring: EventRing,
+    /// shutdown() 호출 시 set; acceptLoop가 다음 iteration에서 종료.
+    shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
     sourcemap_cache: struct {
@@ -502,7 +504,9 @@ pub const DevServer = struct {
 
     fn acceptLoop(self: *DevServer) void {
         while (true) {
+            if (self.shutdown_requested.load(.acquire)) return;
             const connection = self.tcp_server.?.accept() catch |err| {
+                if (self.shutdown_requested.load(.acquire)) return;
                 getLog().print("zts: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
@@ -511,6 +515,19 @@ pub const DevServer = struct {
                 continue;
             };
             thread.detach();
+        }
+    }
+
+    /// 외부 (테스트 등)에서 acceptLoop을 종료시킨다.
+    /// macOS/Linux에서 close()는 블로킹 중인 accept()를 깨우지 않으므로
+    /// self-connect로 accept를 한 번 트리거 → acceptLoop가 다음 iteration에서
+    /// shutdown_requested 플래그를 보고 종료. 실제 socket close는 deinit에서.
+    pub fn shutdown(self: *DevServer) void {
+        self.shutdown_requested.store(true, .release);
+        if (self.tcp_server) |*s| {
+            const addr = s.listen_address;
+            const stream = std.net.tcpConnectToAddress(addr) catch return;
+            stream.close();
         }
     }
 
