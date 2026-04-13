@@ -847,3 +847,138 @@ test "Visitor: multiple plugins — null-returning plugin lets next plugin handl
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "const y = true") != null);
 }
+
+// ============================================================
+// ES5 다운레벨: labeled for-of의 `continue LABEL`/`break LABEL` 보존
+// ============================================================
+//
+// for-of를 iterator protocol(try-catch-finally)로 내리면 원본 for-of 는
+// block_statement 로 치환된다. 상위의 `LABEL: for (x of it) {...}` 를 그대로 두면
+// label이 iteration statement가 아닌 block을 가리켜
+// "SyntaxError: Illegal continue statement" 를 유발한다.
+// 수정: labeled_statement가 lowered for-of를 감쌀 때 label을 inner for_statement 에 부여.
+
+fn assertLabelPrecedesFor(code: []const u8, label: []const u8) !void {
+    // `LABEL:` 은 반드시 for_statement를 직접 수식해야 한다 (block `{` 앞이면 안 됨).
+    // 즉 code 내에서 label 등장 위치가 다음 `try {` 보다 먼저 `for` 가 나와야 한다.
+    const label_pos = std.mem.indexOf(u8, code, label) orelse return error.LabelNotFound;
+    const for_pos = std.mem.indexOfPos(u8, code, label_pos, "for") orelse return error.ForNotFound;
+    if (std.mem.indexOfPos(u8, code, label_pos, "try {")) |try_pos| {
+        try std.testing.expect(for_pos < try_pos);
+    }
+    // label 직후(공백 skip) 다음 토큰이 `for` 여야 한다 — 즉 `LABEL:<ws>for`.
+    var i: usize = label_pos + label.len;
+    while (i < code.len and (code[i] == ' ' or code[i] == '\n' or code[i] == '\t' or code[i] == '\r')) : (i += 1) {}
+    try std.testing.expect(i + 3 <= code.len);
+    try std.testing.expectEqualStrings("for", code[i .. i + 3]);
+}
+
+test "ES5 downlevel: labeled for-of retains label on inner for_statement" {
+    const source =
+        \\OUTER: for (const row of data) {
+        \\  for (const x of row) {
+        \\    if (x === 3) continue OUTER;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try assertLabelPrecedesFor(code, "OUTER:");
+    try std.testing.expect(std.mem.indexOf(u8, code, "continue OUTER") != null);
+}
+
+test "ES5 downlevel: nested labeled for-of preserves `break OUTER`" {
+    const source =
+        \\OUTER: for (const row of data) {
+        \\  INNER: for (const x of row) {
+        \\    if (x === 0) break OUTER;
+        \\    if (x < 0) continue INNER;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try assertLabelPrecedesFor(code, "OUTER:");
+    try assertLabelPrecedesFor(code, "INNER:");
+    try std.testing.expect(std.mem.indexOf(u8, code, "break OUTER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "continue INNER") != null);
+}
+
+test "ES5 downlevel: labeled for-of with assignment-form lvalue" {
+    const source =
+        \\let x;
+        \\LBL: for (x of it) { if (x) break LBL; }
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try assertLabelPrecedesFor(code, "LBL:");
+    try std.testing.expect(std.mem.indexOf(u8, code, "break LBL") != null);
+}
+
+test "ES5 downlevel: labeled for-of with destructuring binding" {
+    const source =
+        \\LBL: for (const {a, b} of arr) { if (a) continue LBL; }
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try assertLabelPrecedesFor(code, "LBL:");
+    try std.testing.expect(std.mem.indexOf(u8, code, "continue LBL") != null);
+}
+
+test "ES5 downlevel: regular labeled `for (;;)` loop unaffected by for-of lowering" {
+    const source =
+        \\LBL: for (let i = 0; i < n; i++) { if (i === 3) break LBL; }
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try assertLabelPrecedesFor(code, "LBL:");
+    try std.testing.expect(std.mem.indexOf(u8, code, "break LBL") != null);
+    // for-of lowering의 흔적(Symbol.iterator) 이 나오면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "Symbol.iterator") == null);
+}
+
+test "ES5 downlevel: labeled non-for-of statement unchanged" {
+    const source =
+        \\LOOP: while (cond) { if (x) break LOOP; }
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "LOOP:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "break LOOP") != null);
+}

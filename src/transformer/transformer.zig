@@ -759,7 +759,6 @@ pub const Transformer = struct {
             },
             .while_statement,
             .do_while_statement,
-            .labeled_statement,
             .with_statement,
             // JSX
             .jsx_attribute,
@@ -849,6 +848,22 @@ pub const Transformer = struct {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
                 }
                 return self.visitTernaryNode(node);
+            },
+            .labeled_statement => {
+                // for-of를 ES5 block으로 lowering할 때, label이 block에 남으면
+                // 바디의 `continue LABEL` 이 iteration statement를 못 찾는다.
+                // label을 lowered inner for_statement에 직접 부여해 이를 회피.
+                if (self.options.unsupported.for_of) {
+                    const child_idx = node.data.binary.right;
+                    if (!child_idx.isNone()) {
+                        const child = self.ast.getNode(child_idx);
+                        if (child.tag == .for_of_statement) {
+                            const new_label = try self.visitNode(node.data.binary.left);
+                            return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
+                        }
+                    }
+                }
+                return self.visitBinaryNode(node);
             },
 
             // === extra 기반 노드: 별도 처리 ===

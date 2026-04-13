@@ -47,9 +47,19 @@ const es_helpers = @import("es_helpers.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
     return struct {
+        // for_await_of_statement (ES2018) is not downleveled at any target —
+        // matches SWC/esbuild behavior. Full downlevel requires an async
+        // iterator protocol helper (cf. Babel's plugin-proposal-async-generator-functions).
         /// for (const x of iterable) { body }
         /// → iterator protocol (try-catch-finally 포함)
         pub fn lowerForOfStatement(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerForOfStatementLabeled(self, node, .none);
+        }
+
+        /// `label_name_idx`가 주어지면 lowered inner `for_statement`에 label을 부여해
+        /// `continue <label>` / `break <label>` 가 iteration statement를 타겟으로 하게 한다.
+        /// 미지정(.none)이면 일반 for-of 경로.
+        pub fn lowerForOfStatementLabeled(self: *Transformer, node: Node, label_name_idx: NodeIndex) Transformer.Error!NodeIndex {
             const span = node.span;
             const left = node.data.ternary.a; // loop variable (variable_declaration or expression)
             const right = node.data.ternary.b; // iterable
@@ -181,7 +191,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // =====================================================
             // 3. try 블록
             // =====================================================
-            const try_body_list = try self.ast.addNodeList(&.{for_stmt});
+            // labeled for-of: label을 block 대신 inner for_statement에 붙여야
+            // `continue LABEL` 이 합법적인 iteration statement를 가리킨다.
+            const labeled_for_stmt = if (label_name_idx.isNone())
+                for_stmt
+            else
+                try self.ast.addNode(.{
+                    .tag = .labeled_statement,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = label_name_idx, .right = for_stmt, .flags = 0 } },
+                });
+            const try_body_list = try self.ast.addNodeList(&.{labeled_for_stmt});
             const try_block = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,

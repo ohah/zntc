@@ -728,4 +728,6 @@ for (v of "hello") { }`,
       [],
     );
   });
+  // for-await-of (ES2018) is not downleveled — matches SWC/esbuild behavior.
+  test.skip("for-await-of downlevel (not implemented; parity with SWC/esbuild)", async () => {});
 });
