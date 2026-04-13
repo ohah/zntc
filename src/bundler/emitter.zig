@@ -142,6 +142,8 @@ pub const EmitOptions = struct {
     pub const PolyfillEntry = struct {
         name: []const u8,
         content: []const u8,
+        /// 원본 폴리필 파일 경로. 소스맵 sources 등록용. null이면 sources에 등록하지 않는다.
+        path: ?[]const u8 = null,
     };
 
     pub const Format = types.Format;
@@ -254,17 +256,48 @@ pub fn emitWithTreeShaking(
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
-    for (options.polyfills) |poly| {
+    const PolyfillRange = struct {
+        content_start_line: u32,
+        content_line_count: u32,
+        entry: *const EmitOptions.PolyfillEntry,
+    };
+    var polyfill_ranges: std.ArrayList(PolyfillRange) = .empty;
+    defer polyfill_ranges.deinit(allocator);
+
+    // output에 누적 추가된 줄 수를 인라인 추적 (전체 버퍼 재스캔 방지).
+    var output_line: u32 = @intCast(std.mem.count(u8, output.items, "\n"));
+
+    for (options.polyfills) |*poly| {
         if (!options.minify_whitespace) {
             try output.appendSlice(allocator, "// --- polyfill: ");
             try output.appendSlice(allocator, poly.name);
             try output.appendSlice(allocator, " ---\n");
+            output_line += 1;
         }
         try output.appendSlice(allocator, "(function(){");
-        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        if (!options.minify_whitespace) {
+            try output.append(allocator, '\n');
+            output_line += 1;
+        }
+
+        const content_start = output_line;
         try output.appendSlice(allocator, poly.content);
-        if (!options.minify_whitespace) try output.append(allocator, '\n');
+        output_line += @intCast(std.mem.count(u8, poly.content, "\n"));
+        if (!options.minify_whitespace) {
+            try output.append(allocator, '\n');
+            output_line += 1;
+        }
+
+        if (options.sourcemap and poly.path != null) {
+            try polyfill_ranges.append(allocator, .{
+                .content_start_line = content_start,
+                .content_line_count = output_line - content_start,
+                .entry = poly,
+            });
+        }
+
         try output.appendSlice(allocator, "})();\n");
+        output_line += 1;
     }
 
     // 런타임 헬퍼 주입
@@ -509,24 +542,27 @@ pub fn emitWithTreeShaking(
             }
         }
 
-        // prologue 전체(banner/polyfill/runtime helper/HMR runtime)를 가상 소스 "<runtime>"으로 매핑.
-        // DevTools가 prologue 프레임을 자동으로 무시하고 유저 코드 프레임을 표시.
-        // prologue_lines가 0이면 prologue가 없으므로 스킵.
+        // prologue를 가상 소스 "<runtime>"으로 매핑하고 polyfill은 별도 source로 매핑.
+        // DevTools가 vendored 프레임을 ignoreList로 스킵 → 유저 코드 프레임을 노출.
         if (prologue_lines > 0) {
-            const runtime_src_idx = try sm.addSource("node_modules/.zts/runtime.js");
-            if (options.sources_content) {
-                try sm.addSourceContent("// zts bundle runtime (polyfills, helpers)\n");
-            }
+            const runtime_src_idx = try addIdentitySource(sm, "node_modules/.zts/runtime.js", "// zts bundle runtime (polyfills, helpers)\n", options.sources_content);
             try sm.addIgnoredSource(runtime_src_idx);
-            // identity mapping: prologue의 모든 줄을 <runtime>에 매핑
-            for (0..prologue_lines) |line| {
-                try sm.addMapping(.{
-                    .generated_line = @intCast(line),
-                    .generated_column = 0,
-                    .source_index = runtime_src_idx,
-                    .original_line = @intCast(line),
-                    .original_column = 0,
-                });
+
+            // polyfill content 라인을 건너뛰며 runtime identity 매핑 추가.
+            // polyfill_ranges는 삽입 순서가 곧 시작 라인 오름차순.
+            var cursor: u32 = 0;
+            for (polyfill_ranges.items) |r| {
+                try addIdentityMappings(sm, runtime_src_idx, cursor, r.content_start_line - cursor, cursor);
+                cursor = r.content_start_line + r.content_line_count;
+            }
+            if (cursor < prologue_lines) {
+                try addIdentityMappings(sm, runtime_src_idx, cursor, prologue_lines - cursor, cursor);
+            }
+
+            for (polyfill_ranges.items) |r| {
+                const src_idx = try addIdentitySource(sm, r.entry.path.?, r.entry.content, options.sources_content);
+                try sm.addIgnoredSource(src_idx);
+                try addIdentityMappings(sm, src_idx, r.content_start_line, r.content_line_count, 0);
             }
         }
 
@@ -1375,6 +1411,27 @@ pub fn collectImportBindingNames(
 // --- ESM wrap functions (emitter/esm_wrap.zig) ---
 const esm_wrap = @import("emitter/esm_wrap.zig");
 const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
+
+/// source 등록 + (선택) sourcesContent 등록을 한 번에. source_index 반환.
+fn addIdentitySource(sm: *SourceMap.SourceMapBuilder, path: []const u8, content: []const u8, include_content: bool) !u32 {
+    const idx = try sm.addSource(path);
+    if (include_content) try sm.addSourceContent(content);
+    return idx;
+}
+
+/// generated_line[gen_start..gen_start+count)를 (col=0, source_idx, original_line=orig_start+i, col=0)로 매핑.
+fn addIdentityMappings(sm: *SourceMap.SourceMapBuilder, source_idx: u32, gen_start: u32, count: u32, orig_start: u32) !void {
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        try sm.addMapping(.{
+            .generated_line = gen_start + i,
+            .generated_column = 0,
+            .source_index = source_idx,
+            .original_line = orig_start + i,
+            .original_column = 0,
+        });
+    }
+}
 
 // --- 포맷별 래핑 (prologue/epilogue) ---
 
