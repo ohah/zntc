@@ -303,8 +303,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     defer ctor_param_decos.deinit(self.allocator);
 
     // emitDecoratorMetadata: constructor 파라미터 위치 (원본 AST에서 수집)
-    var ctor_params_start: u32 = 0;
-    var ctor_params_len: u32 = 0;
+    var ctor_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
 
     var ctx = ClassMemberContext{
         .class_members = &class_members,
@@ -316,8 +315,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
         .ctor_param_decos = &ctor_param_decos,
         .has_super = has_super,
-        .ctor_params_start = &ctor_params_start,
-        .ctor_params_len = &ctor_params_len,
+        .ctor_params = &ctor_params,
     };
 
     // ES2022 static block this 치환을 위한 클래스 이름 추출
@@ -442,8 +440,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
                 static_block_iifes.items,
                 static_field_assignments.items,
                 ctor_param_decos.items,
-                ctor_params_start,
-                ctor_params_len,
+                ctor_params,
             );
         }
     }
@@ -545,8 +542,7 @@ pub const ClassMemberContext = struct {
     /// super class가 있으면 field initializer visit 시 this → _this 치환
     has_super: bool = false,
     /// emitDecoratorMetadata: constructor 파라미터 위치 (원본 AST에서 수집)
-    ctor_params_start: *u32 = undefined,
-    ctor_params_len: *u32 = undefined,
+    ctor_params: *ast_mod.NodeList = undefined,
 };
 
 pub fn classifyClassMember(
@@ -615,7 +611,8 @@ pub fn classifyPropertyDefinition(
         const deco_len = self.readU32(me, 4);
         if (deco_len > 0) {
             const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, 0, 0, new_key, is_static, 2, 0, 0);
+            const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
+            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty);
         }
     }
 
@@ -700,10 +697,9 @@ pub fn classifyMethodDefinition(
     if (is_ctor) {
         // constructor parameter decorator → class-level __decorateClass에 포함
         if (self.options.experimental_decorators) {
-            try self.collectParamDecorators(ctx.ctor_param_decos, params_list_m.start, params_list_m.len);
+            try self.collectParamDecorators(ctx.ctor_param_decos, params_list_m);
             // emitDecoratorMetadata: 원본 AST에서 constructor 파라미터 위치 저장
-            ctx.ctor_params_start.* = params_list_m.start;
-            ctx.ctor_params_len.* = params_list_m.len;
+            ctx.ctor_params.* = params_list_m;
         }
 
         const new_member = try self.visitMethodDefinition(member);
@@ -719,21 +715,17 @@ pub fn classifyMethodDefinition(
     if (self.options.experimental_decorators) {
         const deco_start = self.readU32(me, 4);
         const deco_len = self.readU32(me, 5);
-        const params_start = params_list_m.start;
-        const params_len = params_list_m.len;
-        if (deco_len > 0 or params_len > 0) {
+        if (deco_len > 0 or params_list_m.len > 0) {
             const new_key = try self.visitNode(self.readNodeIdx(me, 0));
             try self.collectMemberDecorators(
                 member_decorators,
                 deco_start,
                 deco_len,
-                params_start,
-                params_len,
+                params_list_m,
                 new_key,
                 is_static,
                 1,
-                params_start,
-                params_len,
+                params_list_m,
             );
         }
     }
@@ -787,9 +779,8 @@ pub const MemberDecoratorInfo = struct {
     is_static: bool,
     /// descriptor 종류: 1=method, 2=property
     kind: u32,
-    /// emitDecoratorMetadata: 원본 AST 파라미터 위치
-    params_start: u32 = 0,
-    params_len: u32 = 0,
+    /// emitDecoratorMetadata: 원본 AST 파라미터 리스트
+    params: ast_mod.NodeList = .{ .start = 0, .len = 0 },
 };
 
 /// decorator 노드에서 expression 부분을 visit하여 반환.
@@ -812,20 +803,18 @@ pub fn collectMemberDecorators(
     list: *std.ArrayList(MemberDecoratorInfo),
     deco_start: u32,
     deco_len: u32,
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
     key: NodeIndex,
     is_static: bool,
     kind: u32,
-    orig_params_start: u32,
-    orig_params_len: u32,
+    orig_params: ast_mod.NodeList,
 ) Error!void {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
     // 1) parameter decorator → __decorateParam(index, dec)
-    if (params_len > 0) {
-        try self.appendParamDecorators(&self.scratch, params_start, params_len);
+    if (params.len > 0) {
+        try self.appendParamDecorators(&self.scratch, params);
     }
 
     // 2) member decorator (method/property 자체에 붙은 decorator)
@@ -848,8 +837,7 @@ pub fn collectMemberDecorators(
         .key = key,
         .is_static = is_static,
         .kind = kind,
-        .params_start = orig_params_start,
-        .params_len = orig_params_len,
+        .params = orig_params,
     });
 }
 
@@ -859,10 +847,9 @@ pub fn collectMemberDecorators(
 pub fn collectParamDecorators(
     self: *Transformer,
     list: *std.ArrayList(NodeIndex),
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
 ) Error!void {
-    try self.appendParamDecorators(list, params_start, params_len);
+    try self.appendParamDecorators(list, params);
 }
 
 /// parameter decorator를 __decorateParam(index, dec) 형태로 변환하여 list에 추가.
@@ -870,13 +857,12 @@ pub fn collectParamDecorators(
 pub fn appendParamDecorators(
     self: *Transformer,
     list: anytype,
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
 ) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
     var param_i: u32 = 0;
-    while (param_i < params_len) : (param_i += 1) {
-        const raw_idx = self.ast.extra_data.items[params_start + param_i];
+    while (param_i < params.len) : (param_i += 1) {
+        const raw_idx = self.ast.extra_data.items[params.start + param_i];
         const p_idx: NodeIndex = @enumFromInt(raw_idx);
         if (p_idx.isNone()) continue;
         const param = self.ast.getNode(p_idx);
@@ -1181,8 +1167,7 @@ pub fn transformExperimentalDecorators(
     static_block_iifes: []const NodeIndex,
     static_field_assigns: []const FieldAssignment,
     ctor_param_decos: []const NodeIndex,
-    ctor_params_start: u32,
-    ctor_params_len: u32,
+    ctor_params: ast_mod.NodeList,
 ) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
     const decorate_span = try self.ast.addString("__decorateClass");
@@ -1238,8 +1223,7 @@ pub fn transformExperimentalDecorators(
             old_deco_start,
             old_deco_len,
             ctor_param_decos,
-            ctor_params_start,
-            ctor_params_len,
+            ctor_params,
         );
         try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
@@ -1331,7 +1315,7 @@ pub fn buildDecorateClassMemberCall(
     defer deco_items.deinit(self.allocator);
     try deco_items.appendSlice(self.allocator, md.decorators);
     // emitDecoratorMetadata: __metadata 호출 추가
-    try self.appendMemberMetadata(&deco_items, md.params_start, md.params_len);
+    try self.appendMemberMetadata(&deco_items, md.params);
     const deco_array_list = try self.ast.addNodeList(deco_items.items);
     const deco_array = try self.ast.addNode(.{
         .tag = .array_expression,
@@ -1406,8 +1390,7 @@ pub fn buildDecorateClassCall(
     old_deco_start: u32,
     old_deco_len: u32,
     ctor_param_decos: []const NodeIndex,
-    ctor_params_start: u32,
-    ctor_params_len: u32,
+    ctor_params: ast_mod.NodeList,
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -1437,10 +1420,10 @@ pub fn buildDecorateClassCall(
     }
 
     // emitDecoratorMetadata: constructor paramtypes 추가
-    if (self.options.emit_decorator_metadata and ctor_params_len > 0) {
+    if (self.options.emit_decorator_metadata and ctor_params.len > 0) {
         var meta_list: std.ArrayList(NodeIndex) = .empty;
         defer meta_list.deinit(self.allocator);
-        try self.appendClassMetadata(&meta_list, ctor_params_start, ctor_params_len);
+        try self.appendClassMetadata(&meta_list, ctor_params);
         for (meta_list.items) |meta| {
             try self.scratch.append(self.allocator, meta);
         }
@@ -1627,15 +1610,15 @@ pub fn buildMetadataCall(self: *Transformer, key: []const u8, value_idx: NodeInd
 }
 
 /// 함수의 파라미터 타입 배열을 생성한다: [Number, String, MyClass]
-pub fn buildParamTypesArray(self: *Transformer, params_start: u32, params_len: u32) Error!NodeIndex {
+pub fn buildParamTypesArray(self: *Transformer, params: ast_mod.NodeList) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     var type_nodes: std.ArrayList(NodeIndex) = .empty;
     defer type_nodes.deinit(self.allocator);
 
     var j: u32 = 0;
-    while (j < params_len) : (j += 1) {
-        if (params_start + j >= self.ast.extra_data.items.len) break;
-        const raw = self.ast.extra_data.items[params_start + j];
+    while (j < params.len) : (j += 1) {
+        if (params.start + j >= self.ast.extra_data.items.len) break;
+        const raw = self.ast.extra_data.items[params.start + j];
         const p_idx: NodeIndex = @enumFromInt(raw);
         if (p_idx.isNone() or @intFromEnum(p_idx) >= self.ast.nodes.items.len) {
             try type_nodes.append(self.allocator, try makeIdentifier(self, "Object"));
@@ -1670,8 +1653,7 @@ pub fn buildParamTypesArray(self: *Transformer, params_start: u32, params_len: u
 pub fn appendMemberMetadata(
     self: *Transformer,
     deco_list: *std.ArrayList(NodeIndex),
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
 ) Error!void {
     if (!self.options.emit_decorator_metadata) return;
 
@@ -1681,7 +1663,7 @@ pub fn appendMemberMetadata(
     try deco_list.append(self.allocator, type_meta);
 
     // design:paramtypes → 파라미터 타입 배열
-    const param_types = try self.buildParamTypesArray(params_start, params_len);
+    const param_types = try self.buildParamTypesArray(params);
     const paramtypes_meta = try self.buildMetadataCall("design:paramtypes", param_types);
     try deco_list.append(self.allocator, paramtypes_meta);
 
@@ -1696,13 +1678,12 @@ pub fn appendMemberMetadata(
 pub fn appendClassMetadata(
     self: *Transformer,
     deco_list: *std.ArrayList(NodeIndex),
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
 ) Error!void {
     if (!self.options.emit_decorator_metadata) return;
-    if (params_len == 0) return;
+    if (params.len == 0) return;
 
-    const param_types = try self.buildParamTypesArray(params_start, params_len);
+    const param_types = try self.buildParamTypesArray(params);
     const meta = try self.buildMetadataCall("design:paramtypes", param_types);
     try deco_list.append(self.allocator, meta);
 }
@@ -1768,9 +1749,8 @@ const Stage3MemberInfo = struct {
     descriptor_name: ?[]const u8 = null,
     /// private method용: 원본 method body (function expression으로 변환에 사용)
     method_body: NodeIndex = .none,
-    /// private method용: 원본 params_start/params_len
-    method_params_start: u32 = 0,
-    method_params_len: u32 = 0,
+    /// private method용: 원본 params NodeList
+    method_params: ast_mod.NodeList = .{ .start = 0, .len = 0 },
     /// decorator 변수명 (예: "_greet_decorators") — 식 평가/적용 분리용
     deco_var_name: ?[]const u8 = null,
     /// 원본 AST 멤버 인덱스 (class body 내 위치)
@@ -1930,14 +1910,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     // private method: descriptor 변수명 + body 저장
                     var desc_name: ?[]const u8 = null;
                     var m_body: NodeIndex = .none;
-                    var m_params_start: u32 = 0;
-                    var m_params_len: u32 = 0;
+                    var m_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
                     if (is_private_method) {
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
                         m_body = try self.visitNode(self.readNodeIdx(me, 2));
-                        const pl = self.ast.functionParamsList(member);
-                        m_params_start = pl.start;
-                        m_params_len = pl.len;
+                        m_params = self.ast.functionParamsList(member);
                     }
 
                     try member_infos.append(self.allocator, .{
@@ -1948,8 +1925,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .decorators = decos,
                         .descriptor_name = desc_name,
                         .method_body = m_body,
-                        .method_params_start = m_params_start,
-                        .method_params_len = m_params_len,
+                        .method_params = m_params,
                         .deco_var_name = deco_vname,
                     });
                 }
@@ -2703,10 +2679,7 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
         // __setFunctionName(function() { ... }, "#name")
         const setfn_callee = try makeIdentifier(self, "__setFunctionName");
         // function expression with original body
-        const fn_params_node = try self.ast.addFormalParameters(
-            .{ .start = info.method_params_start, .len = info.method_params_len },
-            zero_span,
-        );
+        const fn_params_node = try self.ast.addFormalParameters(info.method_params, zero_span);
         const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
             @intFromEnum(fn_params_node),
