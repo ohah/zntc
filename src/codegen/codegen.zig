@@ -947,7 +947,7 @@ pub const Codegen = struct {
             .export_specifier => try self.emitExportSpecifier(node),
 
             // Formal parameters
-            .formal_parameters, .function_body => try self.emitList(node, ", "),
+            .formal_parameters, .function_body => try self.emitList(node, if (self.options.minify_whitespace) "," else ", "),
 
             .formal_parameter => try self.emitFormalParam(node),
 
