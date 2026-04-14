@@ -275,8 +275,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // --- function expression ---
             const none = @intFromEnum(NodeIndex.none);
+            const params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = params },
+            });
             const func_extra = try self.ast.addExtras(&.{
-                none,                           params.start, params.len,
+                none,                           @intFromEnum(params_node),
                 @intFromEnum(transformed_body), 0,            none,
             });
             const func_expr = try self.ast.addNode(.{
