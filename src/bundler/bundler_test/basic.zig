@@ -924,6 +924,43 @@ test "Arrow param shadows hoisted top-level rename (effect TDZ repro)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(size) => size") != null);
 }
 
+test "Re-export resolves to canonical local (not global-identifier reserved, #1312)" {
+    // `export { X } from './mod'` 직접 re-export가 `--global-identifier=X` 예약 때문에
+    // 원본 이름 X로 emit되어 글로벌 참조로 오염되는 버그.
+    // fix 후: re-export chain을 따라 source 모듈의 canonical 이름 (X$1)으로 resolve.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "URLSearchParams.ts",
+        \\export class URLSearchParams { constructor() { this.tag = "local"; } }
+    );
+    try writeFile(tmp.dir, "URL.ts",
+        \\export { URLSearchParams } from './URLSearchParams';
+        \\export class URL { constructor() { this.tag = "url"; } }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as M from './URL';
+        \\console.log(new M.URLSearchParams().tag);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const globals = [_][]const u8{"URLSearchParams"};
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .global_identifiers = &globals,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // URL.ts의 re-export getter가 canonical local name `URLSearchParams$1`을 반환해야 함.
+    // (bare `URLSearchParams` 참조는 `--global-identifier` 글로벌과 충돌)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams,") == null);
+}
+
 test "Bundler: AMD external dependencies in wrapper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
