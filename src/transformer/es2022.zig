@@ -123,139 +123,9 @@ pub fn ES2022(comptime Transformer: type) type {
 
         // ================================================================
         // Private Methods (#method) → WeakSet + standalone function (SWC 방식)
+        // Private Fields (#field) → WeakMap + ctor init
+        // lowerPrivateMembers (아래) 참조.
         // ================================================================
-
-        /// 클래스 바디에서 private method를 추출하여 WeakSet + standalone function으로 변환한다.
-        ///
-        /// 2-pass 방식:
-        ///   Pass 1: body를 스캔하여 private method 매핑 수집
-        ///   Pass 2: current_private_methods를 설정한 후 body 멤버를 visit (this.#method() 호출 변환)
-        ///
-        /// 반환: true이면 private method가 있어 변환 수행됨.
-        pub fn lowerPrivateMethods(
-            self: *Transformer,
-            body_idx: NodeIndex,
-            new_body_out: *NodeIndex,
-            pre_stmts: *std.ArrayList(NodeIndex),
-            ctor_init_stmts: *std.ArrayList(NodeIndex),
-            mappings: *std.ArrayList(Transformer.PrivateMethodMapping),
-            has_super: bool,
-        ) Transformer.Error!bool {
-            const body_node = self.ast.getNode(body_idx);
-            const body_start = body_node.data.list.start;
-            const body_len = body_node.data.list.len;
-            const span = body_node.span;
-
-            // ── Pass 1: private method 수집 + pre_stmts 생성 (read-only 스캔이므로 슬라이스 안전) ──
-            {
-                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
-                for (body_members) |raw_idx| {
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (member.tag != .method_definition) continue;
-
-                    const extras = self.ast.extra_data.items;
-                    const me = member.data.extra;
-                    const key: NodeIndex = @enumFromInt(extras[me]);
-                    const flags = extras[me + 4];
-                    const is_static = (flags & 0x01) != 0;
-
-                    if (key.isNone() or is_static) continue;
-                    const key_node = self.ast.getNode(key);
-                    if (key_node.tag != .private_identifier) continue;
-
-                    const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#bar"
-
-                    const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
-
-                    try mappings.append(self.allocator, .{
-                        .original_name = orig_name,
-                        .weakset_name = names.ws_name,
-                        .func_name = names.fn_name,
-                        .member_idx = @enumFromInt(raw_idx),
-                    });
-                }
-            }
-
-            if (mappings.items.len == 0) return false;
-
-            // ── current_private_methods 설정 (Pass 2에서 this.#method() 변환에 필요) ──
-            const saved_private_methods = self.current_private_methods;
-            self.current_private_methods = mappings.items;
-            defer self.current_private_methods = saved_private_methods;
-
-            // ── Pass 2: pre_stmts 생성 + non-private 멤버 visit (단일 루프) ──
-            // while 인덱스 루프: visitNode/buildStandaloneFunc가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
-            var body_nodes: std.ArrayList(NodeIndex) = .empty;
-            defer body_nodes.deinit(self.allocator);
-
-            var found_constructor = false;
-            var mapping_idx: usize = 0;
-
-            var j: u32 = 0;
-            while (j < body_len) : (j += 1) {
-                const raw_idx = self.ast.extra_data.items[body_start + j];
-                const member_idx: NodeIndex = @enumFromInt(raw_idx);
-
-                // private method → WeakSet 선언 + standalone function + ctor init
-                // Pass 1에서 저장한 member_idx로 판별 (재감지 불필요)
-                if (mapping_idx < mappings.items.len and
-                    @intFromEnum(mappings.items[mapping_idx].member_idx) == raw_idx)
-                {
-                    const mapping = mappings.items[mapping_idx];
-                    mapping_idx += 1;
-
-                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", mapping.weakset_name, span);
-                    try pre_stmts.append(self.allocator, ws_decl);
-
-                    const func_decl = try es_helpers.buildStandaloneFunc(self, mapping.func_name, member_idx, span);
-                    try pre_stmts.append(self.allocator, func_decl);
-
-                    const init_stmt = try es_helpers.buildPrivateMethodInit(self, mapping.weakset_name, span);
-                    try ctor_init_stmts.append(self.allocator, init_stmt);
-                    continue;
-                }
-
-                // 일반 멤버 visit
-                var new_member = try self.visitNode(@enumFromInt(raw_idx));
-
-                if (new_member.isNone()) continue;
-
-                // constructor에 WeakSet.add(this) 주입
-                if (ctor_init_stmts.items.len > 0) {
-                    const new_node = self.ast.getNode(new_member);
-                    if (new_node.tag == .method_definition) {
-                        const ne = new_node.data.extra;
-                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
-                        if (!nkey.isNone()) {
-                            const nk = self.ast.getNode(nkey);
-                            const kt = self.ast.source[nk.span.start..nk.span.end];
-                            if (std.mem.eql(u8, kt, "constructor")) {
-                                new_member = try injectIntoMethod(self, new_member, ctor_init_stmts.items);
-                                found_constructor = true;
-                            }
-                        }
-                    }
-                }
-
-                try body_nodes.append(self.allocator, new_member);
-            }
-
-            // constructor가 없으면 새로 생성하여 맨 앞에 삽입
-            if (!found_constructor and ctor_init_stmts.items.len > 0) {
-                const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
-                try body_nodes.insert(self.allocator, 0, ctor);
-            }
-
-            // 새 class_body 생성
-            const new_list = try self.ast.addNodeList(body_nodes.items);
-            new_body_out.* = try self.ast.addNode(.{
-                .tag = .class_body,
-                .span = span,
-                .data = .{ .list = new_list },
-            });
-
-            return true;
-        }
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
         fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
@@ -283,6 +153,178 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .extra = new_me },
             });
+        }
+
+        /// Private method + private field를 단일 Pass로 함께 다운레벨링한다.
+        ///
+        /// 두 변환을 분리해서 순차 호출하면 두 번째가 첫 번째의 방문 결과를 다시 visit하여
+        /// 이중 변환이 발생하므로, body 한 번 스캔으로 통합 처리한다. (issue #1275)
+        ///
+        /// lower_methods / lower_fields: false면 해당 종류는 수집하지 않는다
+        /// (예: ES2022 타겟에서 method만 다운레벨, field는 런타임 네이티브 유지).
+        pub fn lowerPrivateMembers(
+            self: *Transformer,
+            body_idx: NodeIndex,
+            new_body_out: *NodeIndex,
+            pre_stmts: *std.ArrayList(NodeIndex),
+            ctor_init_stmts: *std.ArrayList(NodeIndex),
+            method_mappings: *std.ArrayList(Transformer.PrivateMethodMapping),
+            field_mappings: *std.ArrayList(Transformer.PrivateFieldMapping),
+            lower_methods: bool,
+            lower_fields: bool,
+            has_super: bool,
+        ) Transformer.Error!bool {
+            const body_node = self.ast.getNode(body_idx);
+            const body_start = body_node.data.list.start;
+            const body_len = body_node.data.list.len;
+            const span = body_node.span;
+
+            // field raw_idx + init_idx를 병렬 배열로 임시 보관: property_definition 제거 판별 + 순차 매칭용.
+            var field_member_raw: std.ArrayList(u32) = .empty;
+            defer field_member_raw.deinit(self.allocator);
+            var field_init_idx: std.ArrayList(NodeIndex) = .empty;
+            defer field_init_idx.deinit(self.allocator);
+
+            {
+                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
+                for (body_members) |raw_idx| {
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+
+                    if (lower_methods and member.tag == .method_definition) {
+                        const me = member.data.extra;
+                        const extras = self.ast.extra_data.items;
+                        const key: NodeIndex = @enumFromInt(extras[me]);
+                        const flags = extras[me + 4];
+                        const is_static = (flags & 0x01) != 0;
+                        if (key.isNone() or is_static) continue;
+                        const key_node = self.ast.getNode(key);
+                        if (key_node.tag != .private_identifier) continue;
+
+                        const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
+                        const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
+                        try method_mappings.append(self.allocator, .{
+                            .original_name = orig_name,
+                            .weakset_name = names.ws_name,
+                            .func_name = names.fn_name,
+                            .member_idx = @enumFromInt(raw_idx),
+                        });
+                    } else if (lower_fields and member.tag == .property_definition) {
+                        const pe = member.data.extra;
+                        const key: NodeIndex = self.readNodeIdx(pe, 0);
+                        if (key.isNone()) continue;
+                        const key_node = self.ast.getNode(key);
+                        if (key_node.tag != .private_identifier) continue;
+
+                        const flags = self.readU32(pe, 2);
+                        if ((flags & 0x01) != 0) continue; // TODO: static private field
+
+                        const init_val: NodeIndex = self.readNodeIdx(pe, 1);
+                        const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
+                        const bare = orig_name[1..];
+                        const var_name = try self.allocator.alloc(u8, 1 + bare.len);
+                        var_name[0] = '_';
+                        @memcpy(var_name[1..], bare);
+
+                        try field_mappings.append(self.allocator, .{
+                            .original_name = orig_name,
+                            .var_name = var_name,
+                        });
+                        try field_member_raw.append(self.allocator, raw_idx);
+                        try field_init_idx.append(self.allocator, init_val);
+                    }
+                }
+            }
+
+            if (method_mappings.items.len == 0 and field_mappings.items.len == 0) return false;
+
+            for (field_mappings.items) |m| {
+                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
+                try pre_stmts.append(self.allocator, wm_decl);
+            }
+            for (method_mappings.items) |m| {
+                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
+                try pre_stmts.append(self.allocator, ws_decl);
+                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, span);
+                try pre_stmts.append(self.allocator, fn_decl);
+            }
+
+            // Pass 2 body visit 중 this.#method()/this.#f 참조 변환에 필요한 컨텍스트.
+            const saved_private_methods = self.current_private_methods;
+            const saved_private_fields = self.current_private_fields;
+            self.current_private_methods = method_mappings.items;
+            self.current_private_fields = field_mappings.items;
+            defer self.current_private_methods = saved_private_methods;
+            defer self.current_private_fields = saved_private_fields;
+
+            var body_nodes: std.ArrayList(NodeIndex) = .empty;
+            defer body_nodes.deinit(self.allocator);
+
+            // ctor 주입은 Pass 2 종료 후 수행: constructor가 method/field 선언보다 앞에 있으면
+            // constructor 방문 시점엔 ctor_init_stmts가 아직 비어 있기 때문.
+            var ctor_pos: ?usize = null;
+            // 매핑 배열은 body 순서대로 수집됐으므로 단조 증가 인덱스로 O(N) 매칭.
+            var method_mapping_idx: usize = 0;
+            var field_mapping_idx: usize = 0;
+
+            var j: u32 = 0;
+            while (j < body_len) : (j += 1) {
+                const raw_idx = self.ast.extra_data.items[body_start + j];
+                const member_idx: NodeIndex = @enumFromInt(raw_idx);
+
+                if (method_mapping_idx < method_mappings.items.len and
+                    @intFromEnum(method_mappings.items[method_mapping_idx].member_idx) == raw_idx)
+                {
+                    const m = method_mappings.items[method_mapping_idx];
+                    method_mapping_idx += 1;
+                    const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, span);
+                    try ctor_init_stmts.append(self.allocator, init_stmt);
+                    continue;
+                }
+
+                if (field_mapping_idx < field_member_raw.items.len and
+                    field_member_raw.items[field_mapping_idx] == raw_idx)
+                {
+                    const fm = field_mappings.items[field_mapping_idx];
+                    const fi = field_init_idx.items[field_mapping_idx];
+                    field_mapping_idx += 1;
+                    const init_stmt = try buildPrivateFieldSetInit(self, fm.var_name, fi, span);
+                    try ctor_init_stmts.append(self.allocator, init_stmt);
+                    continue;
+                }
+
+                const new_member = try self.visitNode(member_idx);
+                if (new_member.isNone()) continue;
+
+                if (ctor_pos == null) {
+                    const new_node = self.ast.getNode(new_member);
+                    if (new_node.tag == .method_definition) {
+                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_node.data.extra]);
+                        if (es_helpers.isConstructorKey(self, nkey)) {
+                            ctor_pos = body_nodes.items.len;
+                        }
+                    }
+                }
+
+                try body_nodes.append(self.allocator, new_member);
+            }
+
+            // ctor 주입: 기존 constructor에 prepend, 없으면 새로 생성.
+            if (ctor_init_stmts.items.len > 0) {
+                if (ctor_pos) |pos| {
+                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items);
+                } else {
+                    const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
+                    try body_nodes.insert(self.allocator, 0, ctor);
+                }
+            }
+
+            const new_list = try self.ast.addNodeList(body_nodes.items);
+            new_body_out.* = try self.ast.addNode(.{
+                .tag = .class_body,
+                .span = span,
+                .data = .{ .list = new_list },
+            });
+            return true;
         }
 
         /// 빈 constructor method_definition에 init_stmts를 넣어 생성.
@@ -449,165 +491,9 @@ pub fn ES2022(comptime Transformer: type) type {
             return null;
         }
 
-        // ================================================================
-        // Private Fields (#field) → WeakMap + constructor init (Babel 방식)
-        // ================================================================
-
-        /// 클래스 바디에서 private instance field를 추출하여 WeakMap + ctor init으로 변환.
-        ///
-        /// class X { #f = 1; get(){ return this.#f; } }
-        /// → var _f = new WeakMap();
-        ///   class X {
-        ///     constructor() { _f.set(this, 1); }
-        ///     get() { return _f.get(this); }
-        ///   }
-        ///
-        /// 2-pass (lowerPrivateMethods와 동일 구조):
-        ///   Pass 1: body를 스캔하여 private field 매핑 수집 + body에서 property_definition 제거
-        ///   Pass 2: current_private_fields를 설정한 후 body 멤버를 visit
-        ///           → this.#f 참조는 transformer dispatch에서 기존 lowerPrivateFieldGet/Set 경유
-        ///
-        /// 반환: true이면 private field가 있어 변환 수행됨.
-        ///
-        /// TODO: static private field, this.#f++ update expression은 기존
-        ///       lowerPrivateFieldUpdate 경로가 unsupported.class 게이트에 묶여 있어
-        ///       별도 작업 필요.
-        pub fn lowerPrivateFields(
-            self: *Transformer,
-            body_idx: NodeIndex,
-            new_body_out: *NodeIndex,
-            pre_stmts: *std.ArrayList(NodeIndex),
-            ctor_init_stmts: *std.ArrayList(NodeIndex),
-            mappings: *std.ArrayList(Transformer.PrivateFieldMapping),
-            has_super: bool,
-        ) Transformer.Error!bool {
-            const body_node = self.ast.getNode(body_idx);
-            const body_start = body_node.data.list.start;
-            const body_len = body_node.data.list.len;
-            const span = body_node.span;
-
-            // ── Pass 1: private instance field 수집 (read-only 스캔) ──
-            // 각 mapping의 member_raw_idx + init_idx 쌍을 병렬 배열로 임시 저장
-            var field_member_raw: std.ArrayList(u32) = .empty;
-            defer field_member_raw.deinit(self.allocator);
-            var field_init_idx: std.ArrayList(NodeIndex) = .empty;
-            defer field_init_idx.deinit(self.allocator);
-
-            {
-                const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
-                for (body_members) |raw_idx| {
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (member.tag != .property_definition) continue;
-
-                    const pe = member.data.extra;
-                    const key: NodeIndex = self.readNodeIdx(pe, 0);
-                    if (key.isNone()) continue;
-                    const key_node = self.ast.getNode(key);
-                    if (key_node.tag != .private_identifier) continue;
-
-                    const flags = self.readU32(pe, 2);
-                    const is_static = (flags & 0x01) != 0;
-                    if (is_static) continue; // TODO: static private field
-
-                    const init_val: NodeIndex = self.readNodeIdx(pe, 1);
-                    const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#f"
-
-                    // "#f" → "_f"
-                    const bare = orig_name[1..];
-                    const var_name = try self.allocator.alloc(u8, 1 + bare.len);
-                    var_name[0] = '_';
-                    @memcpy(var_name[1..], bare);
-
-                    try mappings.append(self.allocator, .{
-                        .original_name = orig_name,
-                        .var_name = var_name,
-                    });
-                    try field_member_raw.append(self.allocator, raw_idx);
-                    try field_init_idx.append(self.allocator, init_val);
-                }
-            }
-
-            if (mappings.items.len == 0) return false;
-
-            // ── current_private_fields 설정 (Pass 2에서 this.#f 변환에 필요) ──
-            const saved_private_fields = self.current_private_fields;
-            self.current_private_fields = mappings.items;
-            defer self.current_private_fields = saved_private_fields;
-
-            // pre_stmts: var _f = new WeakMap();
-            for (mappings.items) |m| {
-                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
-                try pre_stmts.append(self.allocator, ws_decl);
-            }
-
-            // ── Pass 2: body 멤버 visit — private property_definition은 제거,
-            //           constructor에는 _f.set(this, init) 주입 ──
-            var body_nodes: std.ArrayList(NodeIndex) = .empty;
-            defer body_nodes.deinit(self.allocator);
-
-            var found_constructor = false;
-
-            var j: u32 = 0;
-            while (j < body_len) : (j += 1) {
-                const raw_idx = self.ast.extra_data.items[body_start + j];
-
-                // private field property_definition은 body에서 제거 (대신 ctor init 생성)
-                var is_private_field_def = false;
-                var init_for_this: NodeIndex = .none;
-                var var_name_for_this: []const u8 = "";
-                for (field_member_raw.items, field_init_idx.items, mappings.items) |fr, fi, m| {
-                    if (fr == raw_idx) {
-                        is_private_field_def = true;
-                        init_for_this = fi;
-                        var_name_for_this = m.var_name;
-                        break;
-                    }
-                }
-                if (is_private_field_def) {
-                    const init_stmt = try buildPrivateFieldSetInit(self, var_name_for_this, init_for_this, span);
-                    try ctor_init_stmts.append(self.allocator, init_stmt);
-                    continue;
-                }
-
-                // 일반 멤버 visit (this.#f 참조는 dispatch에서 lowerPrivateFieldGet/Set 경유)
-                var new_member = try self.visitNode(@enumFromInt(raw_idx));
-                if (new_member.isNone()) continue;
-
-                // constructor에 _f.set(this, init) 주입
-                if (ctor_init_stmts.items.len > 0) {
-                    const new_node = self.ast.getNode(new_member);
-                    if (new_node.tag == .method_definition) {
-                        const ne = new_node.data.extra;
-                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
-                        if (!nkey.isNone()) {
-                            const nk = self.ast.getNode(nkey);
-                            const kt = self.ast.source[nk.span.start..nk.span.end];
-                            if (std.mem.eql(u8, kt, "constructor")) {
-                                new_member = try injectIntoMethod(self, new_member, ctor_init_stmts.items);
-                                found_constructor = true;
-                            }
-                        }
-                    }
-                }
-
-                try body_nodes.append(self.allocator, new_member);
-            }
-
-            // constructor가 없으면 새로 생성하여 맨 앞에 삽입
-            if (!found_constructor and ctor_init_stmts.items.len > 0) {
-                const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
-                try body_nodes.insert(self.allocator, 0, ctor);
-            }
-
-            const new_list = try self.ast.addNodeList(body_nodes.items);
-            new_body_out.* = try self.ast.addNode(.{
-                .tag = .class_body,
-                .span = span,
-                .data = .{ .list = new_list },
-            });
-
-            return true;
-        }
+        // TODO: static private field, this.#f++ update expression은 기존
+        //       lowerPrivateFieldUpdate 경로가 unsupported.class 게이트에 묶여 있어
+        //       별도 작업 필요.
 
         /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
         fn buildPrivateFieldSetInit(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {

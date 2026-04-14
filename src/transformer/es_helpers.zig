@@ -14,6 +14,16 @@ const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
+/// class member의 key가 `constructor` 이름인지 판별.
+/// identifier_reference/binding_identifier만 허용 (string literal key 등은 constructor로 취급 안 함).
+pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
+    if (key_idx.isNone()) return false;
+    const key = self.ast.getNode(key_idx);
+    if (key.tag != .identifier_reference and key.tag != .binding_identifier) return false;
+    const text = self.ast.source[key.data.string_ref.start..key.data.string_ref.end];
+    return std.mem.eql(u8, text, "constructor");
+}
+
 /// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
 /// makeTempVarSpan과 hoistTempVars에서 공용.
 pub fn tempVarName(idx: u32, buf: *[16]u8) []const u8 {

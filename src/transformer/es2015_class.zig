@@ -1094,7 +1094,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const method_body: NodeIndex = @enumFromInt(self.readU32(me, 3));
                     if (is_abstract or is_declare or method_body.isNone()) continue;
 
-                    if (!is_static and isConstructorKey(self, key)) {
+                    if (!is_static and es_helpers.isConstructorKey(self, key)) {
                         cm.constructor_idx = @enumFromInt(raw_idx);
                         continue;
                     }
@@ -1279,14 +1279,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// constructor인지 확인 (key가 "constructor" identifier)
-        fn isConstructorKey(self: *const Transformer, key_idx: NodeIndex) bool {
-            if (key_idx.isNone()) return false;
-            const key = self.ast.getNode(key_idx);
-            if (key.tag != .identifier_reference and key.tag != .binding_identifier) return false;
-            const text = self.ast.source[key.data.string_ref.start..key.data.string_ref.end];
-            return std.mem.eql(u8, text, "constructor");
-        }
-
         /// constructor method_definition에서 function_declaration 생성.
         /// method_definition: extra = [key, params_start, params_len, body, flags, ...]
         fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
@@ -2001,7 +1993,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const is_static = (flags & 0x01) != 0;
                     const key: NodeIndex = self.readNodeIdx(me, 0);
 
-                    if (!is_static and isConstructorKey(self, key)) {
+                    if (!is_static and es_helpers.isConstructorKey(self, key)) {
                         // constructor param decorator
                         const params_start = self.readU32(me, 1);
                         const params_len = self.readU32(me, 2);

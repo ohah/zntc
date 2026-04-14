@@ -41,26 +41,12 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         var current_body_idx = self.readNodeIdx(e, 2);
 
-        // ES2022 다운레벨링: private field → WeakMap + ctor init (instance only).
-        // private method 변환보다 먼저 선언 (pass 2에서 body visit하므로 method와 독립 구간 사용).
-        var pf_pre_stmts: std.ArrayList(NodeIndex) = .empty;
-        defer pf_pre_stmts.deinit(self.allocator);
-        var pf_ctor_stmts: std.ArrayList(NodeIndex) = .empty;
-        defer pf_ctor_stmts.deinit(self.allocator);
-        var pf_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
-        defer {
-            for (pf_mappings.items) |pf| {
-                self.allocator.free(pf.var_name);
-            }
-            pf_mappings.deinit(self.allocator);
-        }
-        var had_private_fields = false;
-
-        // ES2022 다운레벨링: private method → WeakSet + standalone function
-        var pm_pre_stmts: std.ArrayList(NodeIndex) = .empty;
-        defer pm_pre_stmts.deinit(self.allocator);
-        var pm_ctor_stmts: std.ArrayList(NodeIndex) = .empty;
-        defer pm_ctor_stmts.deinit(self.allocator);
+        // ES2022 다운레벨링: private method (WeakSet + standalone fn) + private field (WeakMap + ctor init).
+        // 두 변환은 단일 Pass로 통합 — body 순회 1회 + ctor_init 주입 1회.
+        var pre_stmts: std.ArrayList(NodeIndex) = .empty;
+        defer pre_stmts.deinit(self.allocator);
+        var ctor_stmts: std.ArrayList(NodeIndex) = .empty;
+        defer ctor_stmts.deinit(self.allocator);
         var pm_mappings: std.ArrayList(PrivateMethodMapping) = .empty;
         defer {
             for (pm_mappings.items) |pm| {
@@ -69,48 +55,39 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             }
             pm_mappings.deinit(self.allocator);
         }
-
-        var had_private_methods = false;
-        if (self.options.unsupported.class_private_method) {
-            var pm_body: NodeIndex = .none;
-
-            // private method 변환 중 current_private_methods 설정
-            // (body 내부의 this.#method() 호출이 변환되도록)
-            const has_super = !self.readNodeIdx(e, 1).isNone();
-            had_private_methods = try es2022.ES2022(Transformer).lowerPrivateMethods(
-                self,
-                current_body_idx,
-                &pm_body,
-                &pm_pre_stmts,
-                &pm_ctor_stmts,
-                &pm_mappings,
-                has_super,
-            );
-
-            if (had_private_methods) {
-                current_body_idx = pm_body;
-                // lowerPrivateMethods가 내부적으로 current_private_methods를 설정/해제하므로
-                // 여기서는 body가 이미 변환된 상태. 추가 설정 불필요.
+        var pf_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
+        defer {
+            for (pf_mappings.items) |pf| {
+                self.allocator.free(pf.var_name);
             }
+            pf_mappings.deinit(self.allocator);
         }
 
-        // private field 변환: method 변환 후 실행하여 이중 visit 회피.
-        // 주의: had_private_methods이면 Pass 2에서 이미 body를 visit했으므로
-        //       lowerPrivateFields의 Pass 2 visit은 생략이 안전하지만,
-        //       간결성을 위해 private methods가 있을 때는 생략.
-        if (self.options.unsupported.class_private_field and !had_private_methods) {
-            const has_super_pf = !self.readNodeIdx(e, 1).isNone();
-            var pf_body: NodeIndex = .none;
-            had_private_fields = try es2022.ES2022(Transformer).lowerPrivateFields(
+        const lower_pm = self.options.unsupported.class_private_method;
+        const lower_pf = self.options.unsupported.class_private_field;
+        var had_private_methods = false;
+        var had_private_fields = false;
+
+        if (lower_pm or lower_pf) {
+            const has_super = !self.readNodeIdx(e, 1).isNone();
+            var new_body: NodeIndex = .none;
+            const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
                 self,
                 current_body_idx,
-                &pf_body,
-                &pf_pre_stmts,
-                &pf_ctor_stmts,
+                &new_body,
+                &pre_stmts,
+                &ctor_stmts,
+                &pm_mappings,
                 &pf_mappings,
-                has_super_pf,
+                lower_pm,
+                lower_pf,
+                has_super,
             );
-            if (had_private_fields) current_body_idx = pf_body;
+            if (had_any) {
+                current_body_idx = new_body;
+                had_private_methods = pm_mappings.items.len > 0;
+                had_private_fields = pf_mappings.items.len > 0;
+            }
         }
 
         // ES2022 다운레벨링: static block → IIFE (target < es2022)
@@ -143,15 +120,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     new_decos.start,        new_decos.len,
                 });
 
-                // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
                 if (node.tag == .class_expression) {
-                    var combined_pre: std.ArrayList(NodeIndex) = .empty;
-                    defer combined_pre.deinit(self.allocator);
-                    try combined_pre.appendSlice(self.allocator, pf_pre_stmts.items);
-                    try combined_pre.appendSlice(self.allocator, pm_pre_stmts.items);
                     return wrapClassExprInIIFE(
                         self,
-                        combined_pre.items,
+                        pre_stmts.items,
                         class_result,
                         static_block_iifes.items,
                         new_name,
@@ -160,10 +132,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 }
 
                 // pre_stmts (WeakMap + WeakSet + function) → class → static block IIFE
-                for (pf_pre_stmts.items) |stmt| {
-                    try self.pending_nodes.append(self.allocator, stmt);
-                }
-                for (pm_pre_stmts.items) |stmt| {
+                for (pre_stmts.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
                 try self.pending_nodes.append(self.allocator, class_result);
@@ -184,15 +153,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 new_decos.start,        new_decos.len,
             });
 
-            // class_expression 이면 IIFE로 래핑 (pending_nodes 드레인 컨텍스트가 없음)
             if (node.tag == .class_expression) {
-                var combined_pre: std.ArrayList(NodeIndex) = .empty;
-                defer combined_pre.deinit(self.allocator);
-                try combined_pre.appendSlice(self.allocator, pf_pre_stmts.items);
-                try combined_pre.appendSlice(self.allocator, pm_pre_stmts.items);
                 return wrapClassExprInIIFE(
                     self,
-                    combined_pre.items,
+                    pre_stmts.items,
                     class_result,
                     &.{},
                     new_name,
@@ -200,10 +164,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 );
             }
 
-            for (pf_pre_stmts.items) |stmt| {
-                try self.pending_nodes.append(self.allocator, stmt);
-            }
-            for (pm_pre_stmts.items) |stmt| {
+            for (pre_stmts.items) |stmt| {
                 try self.pending_nodes.append(self.allocator, stmt);
             }
             try self.pending_nodes.append(self.allocator, class_result);
