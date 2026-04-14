@@ -232,10 +232,11 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
                 if (ast.extra_data.items[me + 4] > 0) return true; // decorator
             },
             .method_definition => {
+                // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
                 const me = member.data.extra;
-                if (me + 6 >= ast.extra_data.items.len) return true;
+                if (me + 5 >= ast.extra_data.items.len) return true;
                 if (computedKeyHasSideEffects(ast, me)) return true;
-                if (ast.extra_data.items[me + 6] > 0) return true; // decorator
+                if (ast.extra_data.items[me + 5] > 0) return true; // decorator
             },
             else => {},
         }
