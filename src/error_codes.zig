@@ -210,6 +210,19 @@ pub const Code = enum(u16) {
         };
     }
 
+    /// Recoverable validation 에러인지 판정.
+    /// true면 AST 구조는 정상이고 런타임(V8/Hermes 등)도 실행하므로, 번들러는
+    /// 모듈을 스킵하지 말고 계속 진행해야 한다 (esbuild/rollup 동일 정책).
+    ///
+    /// 예: `"use strict"` + non-simple params는 ECMAScript 14.1.2상 SyntaxError
+    /// 이지만 모든 실제 엔진에서 실행됨 — webpack UMD 번들에 흔히 존재 (#1291).
+    pub fn isRecoverable(self: Code) bool {
+        return switch (self) {
+            .use_strict_non_simple => true,
+            else => false,
+        };
+    }
+
     /// 이 에러 코드의 기본 메시지를 반환한다.
     pub fn message(self: Code) []const u8 {
         return switch (self) {

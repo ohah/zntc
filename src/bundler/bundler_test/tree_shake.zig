@@ -1472,6 +1472,41 @@ test "TreeShaking: class extends call expression preserved (#1261 edge)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "EXTENDS_CALL_MARKER") != null);
 }
 
+test "#1291 실제 증상: \"use strict\" + non-simple params 있는 모듈이 graph에서 스킵됨" {
+    // 실제 이슈 재현: backend.js 같은 webpack UMD 번들이 내부 함수에
+    // `"use strict"` + destructuring params 조합을 가질 때 parser가 validation 에러를
+    // 내고 graph.zig가 모듈 전체를 스킵 → require 참조가 생기지만 정의는 없음.
+    //
+    // SyntaxError지만 V8/Hermes 런타임은 실행하므로 번들러는 경고로 처리해야 함
+    // (esbuild/rollup 동일 정책).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js",
+        \\function foo({ a, b }) {
+        \\    "use strict";
+        \\    return a + b;
+        \\}
+        \\module.exports = foo;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const foo = require('./lib.js');
+        \\console.log(foo({ a: 1, b: 2 }));
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib = __commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = foo") != null);
+}
+
 test "TreeShaking: #1291 require()로 참조되는 UMD 모듈은 tree-shake하지 않음" {
     // UMD 패턴의 `module.exports = factory()`가 IIFE 내부에 있어 import_scanner가
     // CJS 신호를 놓쳐 exports_kind=.none이 되면, hasAnyUsedExport=false로 판정된다.
