@@ -459,26 +459,53 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 
 /// Hermes (React Native) 전용 Unsupported matrix.
 ///
-/// Hermes 0.12+ 기준:
-/// - class expression 거부 → class 전체를 function IIFE로 다운레벨
-/// - **arrow function**: 큰 arrow function ternary가 object literal property value 위치에
-///   있을 때 Hermes가 후속 prop을 누락하는 런타임 버그 (#1299). 정확한 트리거 추출이
-///   어렵고 Rolldown + `@react-native/babel-preset`도 사용자 코드 arrow를 사실상 모두
-///   function으로 변환하므로(검증 결과) 동일하게 전체 다운레벨.
-/// - **block scoping (let/const)**: arrow → function 변환만으로 #1299 회피되지 않음.
-///   `for (let q = 0, ...)` 같은 패턴이 Hermes object literal 평가를 깨뜨려 후속 prop
-///   누락. Rolldown + `@babel/plugin-transform-block-scoping`도 var로 변환 (검증 결과).
-///   동일 정책으로 전체 다운레벨.
-/// - using 선언 미지원
-/// - async/await, ?., ??, destructuring, generator 등은 native 지원 → 보존
-/// - 특히 async는 #1267 state machine 버그 때문에 **반드시 보존해야 함**
+/// 정책: **사실상 ES5 다운레벨**이지만 `fromESTarget(.es5)`를 직접 쓰지 않고 필드를
+/// 명시적으로 나열한다. Hermes는 일부 ES2015+ feature를 native 지원하지만 edge case가
+/// 누적되어 (#1267 #1283 #1299 #1302 등) 보수적으로 전체 다운레벨이 안전. 동시에
+/// 미래에 특정 feature를 보존하고 싶을 때(예: #1267 회귀 감수해서 async 다시 보존)
+/// 개별 필드만 false로 토글할 수 있어야 한다.
 ///
-/// 관련 이슈: #1267, #1275, #1277, #1278, #1283, #1299
+/// 비고:
+/// - async_await=true: ES5와 동일하게 state machine으로 변환. 단 #1267에서 보고된
+///   `_state.sent()` 버그가 도질 수 있음 — 발생 시 false로 토글 검토.
+/// - 모든 ES2015+ feature 다운레벨이 Rolldown + `@react-native/babel-preset` 출력과
+///   가장 가까움 (검증 결과).
+///
+/// 관련 이슈: #1267 #1275 #1277 #1278 #1283 #1299 #1302
 pub fn fromHermesPreset() UnsupportedFeatures {
     return .{
-        .class = true,
+        // ES2015
         .arrow = true,
+        .class = true,
+        .template_literal = true,
+        .destructuring = true,
+        .for_of = true,
+        .spread = true,
+        .object_extensions = true,
+        .default_params = true,
         .block_scoping = true,
+        .generator = true,
+        .new_target = true,
+        // ES2016
+        .exponentiation = true,
+        // ES2017
+        .async_await = true,
+        // ES2018
+        .object_spread = true,
+        // ES2019
+        .optional_catch_binding = true,
+        // ES2020
+        .nullish_coalescing = true,
+        .optional_chaining = true,
+        // ES2021
+        .logical_assignment = true,
+        // ES2022
+        .class_static_block = true,
+        .class_private_method = true,
+        .class_private_field = true,
+        // ES2023
+        .hashbang = true,
+        // ES2025
         .using = true,
     };
 }
