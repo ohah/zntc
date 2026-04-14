@@ -2064,7 +2064,12 @@ fn parseBuildOptions(
     const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
     const target_str = getObjectString(env, opts_obj, "target", native_alloc);
     if (target_str) |s| if (!trackStr(owned_strings, s)) return null;
-    const unsupported: compat.UnsupportedFeatures = if (target_str) |s|
+    // JS side (browserslist 해석 등)에서 미리 계산한 unsupported bitmask가 있으면 우선.
+    // 0이면 미설정으로 간주 — 어차피 unsupported=0은 esnext와 동일해서 target 기반 경로로 fallback해도 결과 동일.
+    const unsupported_override = getObjectUint32(env, opts_obj, "unsupported", 0);
+    const unsupported: compat.UnsupportedFeatures = if (unsupported_override != 0)
+        @bitCast(unsupported_override)
+    else if (target_str) |s|
         if (std.meta.stringToEnum(compat.ESTarget, s)) |t| compat.fromESTarget(t) else .{}
     else
         .{};

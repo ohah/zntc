@@ -4376,6 +4376,38 @@ describe("@zts/core browserslist", () => {
     void src;
   });
 
+  test("browserslist: build API도 해석 (BuildOptions.browserslist)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-bs-build-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "export async function run() { return await Promise.resolve(1); }",
+    );
+    // 오래된 쿼리 → async 다운레벨
+    const r = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      browserslist: "chrome 50",
+    });
+    const code = r.outputFiles[0].text;
+    expect(code).toContain("__async");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("browserslist: build API — 모던 타겟은 async 유지", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-bs-build2-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "export async function run() { return await Promise.resolve(1); }",
+    );
+    const r = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      browserslist: "last 2 chrome versions",
+    });
+    const code = r.outputFiles[0].text;
+    expect(code).toContain("async function");
+    expect(code).not.toContain("__async");
+    rmSync(dir, { recursive: true });
+  });
+
   test("browserslist: 같은 엔진의 여러 버전 — 가장 낮은 버전 기준", () => {
     const { browserslistToUnsupported } = require("../shared/index");
     // chrome 40(미지원) + chrome 100(지원) 동시 전달 — 40 때문에 async_await unsupported

@@ -197,8 +197,8 @@ export interface BuildOptions {
   mainFields?: string[];
   /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
   target?: import("../shared/index").Target;
-  // browserslist는 build API에서 아직 구현되지 않았다. transpile API에서만 사용 가능.
-  // 구현 완료 후 이 위치에 필드를 추가한다.
+  /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
+  browserslist?: string | string[];
   /** 출력 디렉토리 (write: true 시 사용) */
   outdir?: string;
   /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */
@@ -510,6 +510,11 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   delete napiOptions.outdir;
   delete napiOptions.plugins;
   delete napiOptions.allowOverwrite;
+  // browserslist → unsupported bitmask. transpile과 동일한 resolveUnsupported 재사용.
+  if (options.browserslist) {
+    napiOptions.unsupported = resolveUnsupported({ browserslist: options.browserslist });
+    delete napiOptions.browserslist;
+  }
   return napiOptions;
 }
 
