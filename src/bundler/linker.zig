@@ -1151,6 +1151,42 @@ pub const Linker = struct {
         }
     }
 
+    /// #1328 Phase 4d: 모든 모듈의 import_bindings를 훑어 source 모듈 export 심볼의
+    /// `ref_count`를 증가시킨다. Tree-shaking의 companion metric — "몇 개 모듈이 이
+    /// export를 참조하나"를 symbol level에서 집계.
+    ///
+    /// 현재 tree_shaker가 statement-level reachability로 수행하는 분석과 별개로,
+    /// symbol 기반 usage 데이터를 축적한다. Phase 4e 이후 tree-shaker가 이 값을
+    /// 활용하도록 통합할 예정.
+    ///
+    /// link() + populateReExportAliases() 이후에 호출되어야 한다.
+    pub fn populateSymbolRefCounts(self: *const Linker, modules: []Module) void {
+        _ = self;
+        for (modules) |*importer| {
+            for (importer.import_bindings) |ib| {
+                if (ib.import_record_index >= importer.import_records.len) continue;
+                const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
+                if (source_mod_idx.isNone()) continue;
+                const source_i = @intFromEnum(source_mod_idx);
+                if (source_i >= modules.len) continue;
+
+                const source_mod = &modules[source_i];
+                const table_ptr = if (source_mod.symbol_table) |*t| t else continue;
+
+                for (source_mod.export_bindings) |eb| {
+                    if (!std.mem.eql(u8, eb.exported_name, ib.imported_name)) continue;
+                    switch (eb.symbol) {
+                        .bundler => |b| {
+                            if (!b.symbol.isNone()) table_ptr.incRefCount(b.symbol);
+                        },
+                        .semantic => {},
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     /// "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
     /// codegen 합성 변수명(_default)의 canonical name으로 대체.
     fn safeIdentifierName(self: *const Linker, name: []const u8, module_index: u32) []const u8 {
