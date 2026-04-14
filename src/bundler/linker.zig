@@ -1161,7 +1161,7 @@ pub const Linker = struct {
     ///
     /// link() + populateReExportAliases() 이후에 호출되어야 한다.
     pub fn populateSymbolRefCounts(self: *const Linker, modules: []Module) void {
-        _ = self;
+        var key_buf: [4096]u8 = undefined;
         for (modules) |*importer| {
             for (importer.import_bindings) |ib| {
                 if (ib.import_record_index >= importer.import_records.len) continue;
@@ -1170,19 +1170,15 @@ pub const Linker = struct {
                 const source_i = @intFromEnum(source_mod_idx);
                 if (source_i >= modules.len) continue;
 
-                const source_mod = &modules[source_i];
-                const table_ptr = if (source_mod.symbol_table) |*t| t else continue;
-
-                for (source_mod.export_bindings) |eb| {
-                    if (!std.mem.eql(u8, eb.exported_name, ib.imported_name)) continue;
-                    switch (eb.symbol) {
-                        .bundler => |b| {
-                            if (!b.symbol.isNone()) table_ptr.incRefCount(b.symbol);
-                        },
-                        .semantic => {},
-                    }
-                    break;
-                }
+                const key = makeExportKeyBuf(&key_buf, source_i, ib.imported_name);
+                const entry = self.export_map.get(key) orelse continue;
+                const sym = switch (entry.binding.symbol) {
+                    .bundler => |b| b,
+                    .semantic => continue,
+                };
+                if (sym.symbol.isNone()) continue;
+                const table_ptr = if (modules[source_i].symbol_table) |*t| t else continue;
+                table_ptr.incRefCount(sym.symbol);
             }
         }
     }
