@@ -315,48 +315,33 @@ export interface ZtsPlugin {
   setup(build: PluginBuild): void;
 }
 
+/** 플러그인 훅 반환값: 동기/비동기 모두 허용. null/undefined로 패스스루. */
+type HookResult<T> = T | null | undefined | Promise<T | null | undefined>;
+
 export interface PluginBuild {
   onResolve(
     options: { filter: RegExp },
     callback: (args: {
       path: string;
       importer: string | null;
-    }) =>
-      | { path: string; external?: boolean }
-      | null
-      | undefined
-      | Promise<{ path: string; external?: boolean } | null | undefined>,
+    }) => HookResult<{ path: string; external?: boolean }>,
   ): void;
   onLoad(
     options: { filter: RegExp },
-    callback: (args: {
-      path: string;
-    }) =>
-      | { contents: string; loader?: string }
-      | null
-      | undefined
-      | Promise<{ contents: string; loader?: string } | null | undefined>,
+    callback: (args: { path: string }) => HookResult<{ contents: string; loader?: string }>,
   ): void;
   onTransform(
     options: { filter: RegExp },
-    callback: (args: {
-      code: string;
-      path: string;
-    }) => { code: string } | null | undefined | Promise<{ code: string } | null | undefined>,
+    callback: (args: { code: string; path: string }) => HookResult<{ code: string }>,
   ): void;
   onRenderChunk(
     options: { filter: RegExp },
-    callback: (args: {
-      code: string;
-      chunk: string;
-    }) => { code: string } | null | undefined | Promise<{ code: string } | null | undefined>,
+    callback: (args: { code: string; chunk: string }) => HookResult<{ code: string }>,
   ): void;
   onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
   onAstFunction(
     options: { filter: RegExp },
-    callback: (
-      info: AstFunctionInfo,
-    ) => AstFunctionResult | null | undefined | Promise<AstFunctionResult | null | undefined>,
+    callback: (info: AstFunctionInfo) => HookResult<AstFunctionResult>,
   ): void;
 }
 
@@ -541,7 +526,7 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
 function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void {
   if (!options.minify) return;
 
-  let lcss: typeof import("lightningcss") | null = null;
+  let lcss: typeof import("lightningcss");
   try {
     lcss = require("lightningcss");
   } catch {
@@ -551,7 +536,7 @@ function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void
   for (const file of result.outputFiles) {
     if (!file.path.endsWith(".css")) continue;
     try {
-      const transformed = lcss!.transform({
+      const transformed = lcss.transform({
         code: Buffer.from(file.text),
         minify: true,
         filename: file.path,
