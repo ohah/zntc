@@ -421,7 +421,15 @@ pub fn emitEsmWrappedModule(
                             if (md.export_getter_overrides.get(eb.local_name)) |override|
                                 break :blk override;
                         }
+                        // `export { X } from './mod'` 직접 re-export는 현재 모듈에 로컬 바인딩이 없어
+                        // getCanonicalName(this_mod, local_name)이 miss → 원본 이름 fallback 시
+                        // `--global-identifier`로 예약된 글로벌과 충돌 가능 (#1312).
                         if (linker) |l| {
+                            if (eb.kind == .re_export) {
+                                if (l.resolveExportChain(module.index, eb.exported_name, 0)) |canonical| {
+                                    break :blk l.resolveToLocalName(canonical);
+                                }
+                            }
                             const mi: u32 = @intFromEnum(module.index);
                             if (l.getCanonicalName(mi, eb.local_name)) |renamed|
                                 break :blk renamed;
