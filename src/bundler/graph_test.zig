@@ -353,7 +353,7 @@ test "graph: semantic data preserved after build" {
     try std.testing.expect(sem.exported_names.get("x") != null);
     try std.testing.expect(sem.exported_names.get("greet") != null);
     // symbols 배열이 비어있지 않아야 함
-    try std.testing.expect(sem.symbols.len > 0);
+    try std.testing.expect(sem.symbols.items.len > 0);
     // scopes 배열이 비어있지 않아야 함
     try std.testing.expect(sem.scopes.len > 0);
 }

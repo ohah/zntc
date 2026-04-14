@@ -354,7 +354,7 @@ pub const Linker = struct {
             // 단, CJS 모듈을 import하면 preamble에서 `var X = require_xxx().X`로 변수가 생성되므로
             // 충돌 대상에 포함해야 한다.
             const sym_idx = scope_entry.value_ptr.*;
-            if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
+            if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].decl_flags.is_import) {
                 // import binding이 top-level 변수를 생성하는 경우에만 충돌 대상에 포함:
                 // - CJS preamble: var X = require_xxx().X
                 // - __esm 호이스팅: var X; (래퍼 밖으로 호이스팅)
@@ -628,7 +628,7 @@ pub const Linker = struct {
                 if (std.mem.eql(u8, sym_name, "default")) continue;
                 if (std.mem.eql(u8, sym_name, "arguments")) continue;
 
-                const ref_count: u32 = if (sym_idx < sem.symbols.len) sem.symbols[sym_idx].reference_count else 0;
+                const ref_count: u32 = if (sym_idx < sem.symbols.items.len) sem.symbols.items[sym_idx].reference_count else 0;
                 const prev = name_refs.get(sym_name) orelse 0;
                 try name_refs.put(sym_name, prev + ref_count);
             }

@@ -926,7 +926,7 @@ pub fn emitModule(
                         }
                     } else {
                         // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols, sym_ids)) |maybe_infos| {
+                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols.items, sym_ids)) |maybe_infos| {
                             if (maybe_infos) |infos| {
                                 var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                 defer used_sym_buf.deinit(arena_alloc);
@@ -1203,7 +1203,7 @@ fn propagateCrossModulePurity(
     // 1단계: no_side_effects인 import binding의 local symbol_id를 수집한다.
     // 비트셋 대신 bool 배열 사용 — 스택 256개, 초과 시 arena fallback.
     var has_any_pure = false;
-    const sym_count = sem.symbols.len;
+    const sym_count = sem.symbols.items.len;
     if (sym_count == 0) return;
 
     var pure_flags_buf: [256]bool = .{false} ** 256;
@@ -1234,8 +1234,8 @@ fn propagateCrossModulePurity(
             resolved.canonical.export_name;
 
         const target_sym_idx = target_scope.get(target_sym_name) orelse continue;
-        if (target_sym_idx >= target_sem.symbols.len) continue;
-        if (!target_sem.symbols[target_sym_idx].decl_flags.no_side_effects) continue;
+        if (target_sym_idx >= target_sem.symbols.items.len) continue;
+        if (!target_sem.symbols.items[target_sym_idx].decl_flags.no_side_effects) continue;
 
         const local_sym_idx = module_scope.get(ib.local_name) orelse continue;
         if (local_sym_idx >= sym_count) continue;

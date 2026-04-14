@@ -510,23 +510,23 @@ pub fn buildMetadataForAst(
 
         // nested scope mangling (liveness 기반)
         // top-level은 computeMangling에서 처리됨 → nested만 수행
-        if (self.nested_mangling_enabled and sem.symbols.len > 0) {
+        if (self.nested_mangling_enabled and sem.symbols.items.len > 0) {
             const Mangler = @import("../../codegen/mangler.zig");
 
             // top-level scope + export/import 심볼은 skip
-            var skip_syms = try std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.len);
+            var skip_syms = try std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.items.len);
             defer skip_syms.deinit();
 
             // scope_maps[0] (module scope)의 모든 심볼을 skip
             var skip_it = module_scope.iterator();
             while (skip_it.next()) |skip_entry| {
                 const sym_i = skip_entry.value_ptr.*;
-                if (sym_i < sem.symbols.len) skip_syms.set(sym_i);
+                if (sym_i < sem.symbols.items.len) skip_syms.set(sym_i);
             }
 
             var nested_result = try Mangler.mangle(self.allocator, .{
                 .scopes = sem.scopes,
-                .symbols = sem.symbols,
+                .symbols = sem.symbols.items,
                 .scope_maps = sem.scope_maps,
                 .ref_scope_pairs = sem.ref_scope_pairs,
                 .source = m.source,
@@ -744,8 +744,8 @@ pub fn buildCrossModuleConstValues(
             }
         }
         const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
-        if (target_sym_idx >= target_sem.symbols.len) continue;
-        const cv = target_sem.symbols[target_sym_idx].const_value;
+        if (target_sym_idx >= target_sem.symbols.items.len) continue;
+        const cv = target_sem.symbols.items[target_sym_idx].const_value;
         if (cv.kind == .none or !cv.isSafeToInline()) continue;
         // import binding의 local symbol에 매핑
         if (sem.scope_maps.len > 0) {
