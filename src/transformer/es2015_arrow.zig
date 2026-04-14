@@ -79,11 +79,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 0;
 
             const none = @intFromEnum(NodeIndex.none);
-            const params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = node.span,
-                .data = .{ .list = param_list },
-            });
+            const params_node = try self.ast.addFormalParameters(param_list, node.span);
             const new_extra = try self.ast.addExtras(&.{
                 none, // name (anonymous)
                 @intFromEnum(params_node),

@@ -407,11 +407,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 .data = .{ .string_ref = ctor_name_span },
             });
             // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
-            const ctor_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = params_list },
-            });
+            const ctor_params_node = try self.ast.addFormalParameters(params_list, span);
             const ctor_extra = try self.ast.addExtras(&.{
                 @intFromEnum(ctor_key),
                 @intFromEnum(ctor_params_node),
@@ -565,11 +561,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // 빈 formal_parameters 노드 생성
             const empty_params_list = try self.ast.addNodeList(&.{});
-            const params = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = empty_params_list },
-            });
+            const params = try self.ast.addFormalParameters(empty_params_list, span);
 
             // arrow_function_expression: extra = [params, body, flags]
             // flags = 0 (non-async)

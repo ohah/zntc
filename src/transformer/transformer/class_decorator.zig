@@ -2209,11 +2209,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             .data = .{ .list = body_list },
                         });
                         const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0); // setter + static
-                        const setter_params_node = try self.ast.addNode(.{
-                            .tag = .formal_parameters,
-                            .span = zero_span,
-                            .data = .{ .list = setter_params },
-                        });
+                        const setter_params_node = try self.ast.addFormalParameters(setter_params, zero_span);
                         const setter = try self.addExtraNode(.method_definition, zero_span, &.{
                             @intFromEnum(setter_key),
                             @intFromEnum(setter_params_node),
@@ -2464,11 +2460,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 .data = .{ .string_ref = ctor_key_span },
             });
             const empty_params = try self.ast.addNodeList(&.{});
-            const empty_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = zero_span,
-                .data = .{ .list = empty_params },
-            });
+            const empty_params_node = try self.ast.addFormalParameters(empty_params, zero_span);
             const empty_decos = try self.ast.addNodeList(&.{});
             const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
                 @intFromEnum(ctor_key),
@@ -2710,11 +2702,10 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
         // __setFunctionName(function() { ... }, "#name")
         const setfn_callee = try makeIdentifier(self, "__setFunctionName");
         // function expression with original body
-        const fn_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = zero_span,
-            .data = .{ .list = .{ .start = info.method_params_start, .len = info.method_params_len } },
-        });
+        const fn_params_node = try self.ast.addFormalParameters(
+            .{ .start = info.method_params_start, .len = info.method_params_len },
+            zero_span,
+        );
         const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
             @intFromEnum(fn_params_node),
@@ -3077,11 +3068,7 @@ pub fn buildAccessObject(self: *Transformer, info: Stage3MemberInfo) Error!NodeI
             .data = .{ .list = body_list },
         });
 
-        const set_fn_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = zero_span,
-            .data = .{ .list = fn_params },
-        });
+        const set_fn_params_node = try self.ast.addFormalParameters(fn_params, zero_span);
         const set_fn = try self.addExtraNode(.function_expression, zero_span, &.{
             none, // name (anonymous)
             @intFromEnum(set_fn_params_node),
@@ -3440,11 +3427,7 @@ pub fn buildGetterMethod(self: *Transformer, key: NodeIndex, return_expr: NodeIn
         .data = .{ .list = body_list },
     });
     const empty_params = try self.ast.addNodeList(&.{});
-    const empty_params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = span,
-        .data = .{ .list = empty_params },
-    });
+    const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
     const empty_decos = try self.ast.addNodeList(&.{});
     const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
     return self.addExtraNode(.method_definition, span, &.{
