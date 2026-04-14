@@ -297,12 +297,12 @@ interface BuildOptionsCommon {
 export type BuildOptions =
   | (BuildOptionsCommon & {
       /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
-      platform: "react-native";
+      platform: Extract<import("../shared/index").Platform, "react-native">;
       target?: never;
       browserslist?: never;
     })
   | (BuildOptionsCommon & {
-      platform?: "browser" | "node" | "neutral";
+      platform?: Exclude<import("../shared/index").Platform, "react-native">;
       /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
       target?: import("../shared/index").Target;
       /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */

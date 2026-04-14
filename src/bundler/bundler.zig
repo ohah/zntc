@@ -26,6 +26,7 @@ const Linker = @import("linker.zig").Linker;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const module_store = @import("module_store.zig");
 const transpile_mod = @import("../transpile.zig");
+const compat = @import("../transformer/transformer.zig").TransformOptions.compat;
 
 /// `--platform=react-native` 프리셋 부울 플래그.
 /// CLI(main.zig)와 NAPI(napi_entry.zig) 양쪽에서 단일 소스로 참조되어
@@ -72,7 +73,7 @@ pub const BundleOptions = struct {
     /// useDefineForClassFields=false (tsconfig)
     use_define_for_class_fields: bool = true,
     /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
-    unsupported: @import("../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures = .{},
+    unsupported: compat.UnsupportedFeatures = .{},
     /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
     conditions: []const []const u8 = &.{},
     /// 파이프라인 단계별 타이밍 출력 (--timing)
@@ -315,14 +316,18 @@ pub const Bundler = struct {
     /// 외부 소유 ResolveCache 포인터. non-null이면 이것을 사용하고 resolve_cache 필드는 무시.
     resolve_cache_ref: ?*ResolveCache = null,
 
+    /// platform=react-native → Hermes unsupported matrix로 덮어쓰기.
+    /// 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
+    /// 부분 지원 조합이라 target 직교성이 깨짐). 관련 이슈: #1283.
+    fn applyPlatformPreset(opts: *BundleOptions) void {
+        if (opts.platform == .react_native) {
+            opts.unsupported = compat.fromHermesPreset();
+        }
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) Bundler {
         var opts = options;
-        // platform=react-native → Hermes unsupported matrix로 덮어쓰기.
-        // 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
-        // 부분 지원 조합이라 target 직교성이 깨짐). 관련 이슈: #1283.
-        if (opts.platform == .react_native) {
-            opts.unsupported = @import("../transformer/transformer.zig").TransformOptions.compat.fromHermesPreset();
-        }
+        applyPlatformPreset(&opts);
         return .{
             .allocator = allocator,
             .options = opts,
@@ -344,9 +349,7 @@ pub const Bundler = struct {
     /// resolve_cache_ref 포인터를 저장하므로 얕은 복사 없이 원본을 직접 참조한다.
     pub fn initWithResolveCache(allocator: std.mem.Allocator, options: BundleOptions, rc: *ResolveCache) Bundler {
         var opts = options;
-        if (opts.platform == .react_native) {
-            opts.unsupported = @import("../transformer/transformer.zig").TransformOptions.compat.fromHermesPreset();
-        }
+        applyPlatformPreset(&opts);
         return .{
             .allocator = allocator,
             .options = opts,

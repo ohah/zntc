@@ -890,25 +890,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     });
                 }
                 // instance: _x.has(obj)
-                return buildWeakCollectionHas(self, pf.var_name, right_idx, node.span);
+                return buildWeakMapCall(self, pf.var_name, "has", right_idx, &.{}, node.span);
             }
 
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
                 if (!std.mem.eql(u8, pm.original_name, orig)) continue;
-                return buildWeakCollectionHas(self, pm.weakset_name, right_idx, node.span);
+                return buildWeakMapCall(self, pm.weakset_name, "has", right_idx, &.{}, node.span);
             }
 
             return null;
-        }
-
-        /// `_x.has(obj)` 표현식 생성 (WeakMap/WeakSet 공용).
-        fn buildWeakCollectionHas(self: *Transformer, var_name: []const u8, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
-            const has_prop = try es_helpers.makeIdentifierRef(self, "has");
-            const callee = try es_helpers.makeStaticMember(self, wm_ref, has_prop, span);
-            const new_obj = try self.visitNode(obj_idx);
-            return es_helpers.makeCallExpr(self, callee, &.{new_obj}, span);
         }
 
         /// static private field set: __classStaticPrivateFieldSpecSet(receiver, ClassName, _descriptor, value)
