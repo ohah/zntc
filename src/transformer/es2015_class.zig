@@ -1999,28 +1999,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
                         // constructor param decorator
-                        try self.collectParamDecorators(&ctor_param_decos, params_list_m.start, params_list_m.len);
+                        try self.collectParamDecorators(&ctor_param_decos, params_list_m);
                         continue;
                     }
 
                     // method decorator + param decorator
                     const deco_start = self.readU32(me, 4);
                     const deco_len = self.readU32(me, 5);
-                    const params_start = params_list_m.start;
-                    const params_len = params_list_m.len;
-                    if (deco_len > 0 or params_len > 0) {
+                    if (deco_len > 0 or params_list_m.len > 0) {
                         const new_key = try self.visitNode(key);
+                        const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(
                             &member_decos,
                             deco_start,
                             deco_len,
-                            params_start,
-                            params_len,
+                            params_list_m,
                             new_key,
                             is_static,
                             1,
-                            0,
-                            0,
+                            empty,
                         );
                     }
                 } else if (member.tag == .property_definition) {
@@ -2033,17 +2030,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (deco_len > 0) {
                         const key_idx: NodeIndex = self.readNodeIdx(me, 0);
                         const new_key = try self.visitNode(key_idx);
+                        const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(
                             &member_decos,
                             deco_start,
                             deco_len,
-                            0,
-                            0,
+                            empty,
                             new_key,
                             is_static,
                             2,
-                            0,
-                            0,
+                            empty,
                         );
                     }
                 }
@@ -2069,8 +2065,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     old_deco_start,
                     old_deco_len,
                     ctor_param_decos.items,
-                    0,
-                    0,
+                    .{ .start = 0, .len = 0 },
                 );
                 try self.pending_nodes.append(self.allocator, class_deco_stmt);
             }
