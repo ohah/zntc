@@ -487,8 +487,15 @@ pub const Transformer = struct {
                     var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_list.start, params_list.len, node.span);
                     defer lr.body_stmts.deinit(self.allocator);
 
-                    // formal_parameters 노드의 NodeList in-place 업데이트
-                    self.ast.nodes.items[@intFromEnum(params_idx)].data.list = lr.new_params;
+                    // formal_parameters 노드를 새로 만들어 extras[e+1]에 연결.
+                    // (여러 function 노드가 동일 params_idx를 공유할 수 있으므로 in-place mutation 금지:
+                    //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
+                    const new_params_node = try self.ast.addNode(.{
+                        .tag = .formal_parameters,
+                        .span = params_node.span,
+                        .data = .{ .list = lr.new_params },
+                    });
+                    self.ast.extra_data.items[e + 1] = @intFromEnum(new_params_node);
 
                     if (lr.body_stmts.items.len > 0) {
                         const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
