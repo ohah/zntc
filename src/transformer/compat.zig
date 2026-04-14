@@ -465,8 +465,12 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 ///   있을 때 Hermes가 후속 prop을 누락하는 런타임 버그 (#1299). 정확한 트리거 추출이
 ///   어렵고 Rolldown + `@react-native/babel-preset`도 사용자 코드 arrow를 사실상 모두
 ///   function으로 변환하므로(검증 결과) 동일하게 전체 다운레벨.
+/// - **block scoping (let/const)**: arrow → function 변환만으로 #1299 회피되지 않음.
+///   `for (let q = 0, ...)` 같은 패턴이 Hermes object literal 평가를 깨뜨려 후속 prop
+///   누락. Rolldown + `@babel/plugin-transform-block-scoping`도 var로 변환 (검증 결과).
+///   동일 정책으로 전체 다운레벨.
 /// - using 선언 미지원
-/// - async/await, let/const, ?., ??, destructuring, generator 등은 native 지원 → 보존
+/// - async/await, ?., ??, destructuring, generator 등은 native 지원 → 보존
 /// - 특히 async는 #1267 state machine 버그 때문에 **반드시 보존해야 함**
 ///
 /// 관련 이슈: #1267, #1275, #1277, #1278, #1283, #1299
@@ -474,6 +478,7 @@ pub fn fromHermesPreset() UnsupportedFeatures {
     return .{
         .class = true,
         .arrow = true,
+        .block_scoping = true,
         .using = true,
     };
 }
