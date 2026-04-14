@@ -113,3 +113,47 @@ test "bundler function_map: class methods — ClassName#method format" {
     try std.testing.expect(std.mem.indexOf(u8, sm, "\"Widget#render\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, sm, "\"Widget.create\"") != null);
 }
+
+test "bundler sourcemap: hoisted function bodies in __esm factory have mappings (#1315)" {
+    // RN preset에서 함수 선언이 __esm factory의 hoisted assignment(`X = function(...)`)로
+    // 변환될 때, func_cg의 sm_builder mappings이 머지되지 않아 함수 본문 전체가 [NO MAP]
+    // 처리되던 버그.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "App.tsx",
+        \\function runWithTiming(fn) {
+        \\  var result = fn();
+        \\  return result;
+        \\}
+        \\export { runWithTiming };
+    );
+    try writeFile(tmp.dir, "entry.ts", "export * from './App';");
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .sourcemap = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const sm = result.sourcemap orelse return error.TestUnexpectedResult;
+    // mappings 필드의 비어있지 않은 그룹(line) 수 — 버그 시 모듈 본문 line이 모두 빈 그룹.
+    // semicolon은 line 구분자, 빈 그룹("")은 mapping 없음.
+    const mappings_marker = "\"mappings\":\"";
+    const start = (std.mem.indexOf(u8, sm, mappings_marker) orelse return error.TestUnexpectedResult) + mappings_marker.len;
+    const end = std.mem.indexOfScalarPos(u8, sm, start, '"') orelse return error.TestUnexpectedResult;
+    const mappings_str = sm[start..end];
+
+    var non_empty: usize = 0;
+    var it = std.mem.splitScalar(u8, mappings_str, ';');
+    while (it.next()) |group| {
+        if (group.len > 0) non_empty += 1;
+    }
+    // 호이스팅된 함수 본문 3줄 + 모듈 외 줄들. 버그 시 함수 본문 mapping 누락으로 1~2개에 그침.
+    try std.testing.expect(non_empty >= 4);
+}

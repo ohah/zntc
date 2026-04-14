@@ -447,6 +447,9 @@ pub fn emitEsmWrappedModule(
     }
 
     // 5. body codegen (variable_declaration/class → 할당문만)
+    // func_code의 sourcemap 매핑을 병합 단계까지 보존 (호이스팅된 함수 정의 매핑, #1315)
+    var func_mappings: ?[]const SourceMap.Mapping = null;
+    var func_preamble_lines: u32 = 0;
     var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
         .minify_whitespace = options.minify_whitespace,
         .module_format = .cjs,
@@ -488,6 +491,9 @@ pub fn emitEsmWrappedModule(
             try func_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
         }
         func_code = try func_cg.generateStatements(root, body_func_stmts.items);
+        if (func_cg.sm_builder) |*sm| {
+            if (sm.mappings.items.len > 0) func_mappings = sm.mappings.items;
+        }
     }
     var body_code = try body_cg.generateStatements(root, body_stmts.items);
 
@@ -691,7 +697,10 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
         if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
-        if (func_code.len > 0) try wrapped.appendSlice(allocator, func_code);
+        if (func_code.len > 0) {
+            func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
+            try wrapped.appendSlice(allocator, func_code);
+        }
         if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
         if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
         try wrapped.appendSlice(allocator, body_code);
@@ -738,6 +747,7 @@ pub fn emitEsmWrappedModule(
         // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
         // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
         if (func_code.len > 0) {
+            func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
             try wrapped.append(allocator, '\t');
             try appendIndented(&wrapped, allocator, func_code);
         }
@@ -781,10 +791,11 @@ pub fn emitEsmWrappedModule(
     var mappings: ?[]const SourceMap.Mapping = null;
     {
         const hm = hoist_mappings orelse &[_]SourceMap.Mapping{};
+        const fm = func_mappings orelse &[_]SourceMap.Mapping{};
         const bm = if (body_cg.sm_builder) |*sm| sm.mappings.items else &[_]SourceMap.Mapping{};
-        const all_maps = [_][]const SourceMap.Mapping{ hm, bm };
-        const line_offsets = [_]u32{ hoist_preamble_lines, body_preamble_lines };
-        const total = hm.len + bm.len;
+        const all_maps = [_][]const SourceMap.Mapping{ hm, fm, bm };
+        const line_offsets = [_]u32{ hoist_preamble_lines, func_preamble_lines, body_preamble_lines };
+        const total = hm.len + fm.len + bm.len;
         if (total > 0) {
             // 각 줄의 첫 매핑이 column 0이 아니면, column 0 매핑을 추가.
             // DevTools가 col 0으로 소스맵을 역참조할 때 올바른 줄을 반환하도록.
