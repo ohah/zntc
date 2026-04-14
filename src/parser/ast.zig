@@ -871,7 +871,7 @@ pub const Ast = struct {
 
     /// variable_declaration 노드의 kind를 typed enum으로 반환.
     /// node.tag == .variable_declaration 가정. extra[0]에 저장된 u32를 디코드.
-    pub fn variableDeclarationKind(self: *const Ast, node: Node) VariableDeclarationKind {
+    pub inline fn variableDeclarationKind(self: *const Ast, node: Node) VariableDeclarationKind {
         return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
     }
 
