@@ -1318,3 +1318,48 @@ test "semantic: non-shorthand {x: y} does not reference x" {
         }
     }
 }
+
+// #1328 Phase 4d: populateSymbolRefCounts
+
+test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증가" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import x from './b'; console.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export default 42;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    r.linker.populateReExportAliases(r.graph.modules.items);
+    r.linker.populateSymbolRefCounts(r.graph.modules.items);
+
+    // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
+    const b = &r.graph.modules.items[1];
+    const b_table = b.symbol_table orelse return error.NoSymbolTable;
+    const def_id = b_table.find("_default") orelse return error.DefaultNotRegistered;
+    try std.testing.expectEqual(@as(u32, 1), b_table.getRefCount(def_id));
+}
+
+test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // entry는 named만 씀, default는 import 안 함
+    try writeFile(tmp.dir, "a.ts", "import { y } from './b'; console.log(y);");
+    try writeFile(tmp.dir, "b.ts", "export default 42; export const y = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    r.linker.populateReExportAliases(r.graph.modules.items);
+    r.linker.populateSymbolRefCounts(r.graph.modules.items);
+
+    const b = &r.graph.modules.items[1];
+    const b_table = b.symbol_table orelse return error.NoSymbolTable;
+    const def_id = b_table.find("_default") orelse return error.DefaultNotRegistered;
+    // default는 미참조
+    try std.testing.expectEqual(@as(u32, 0), b_table.getRefCount(def_id));
+}
