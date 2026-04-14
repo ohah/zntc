@@ -414,7 +414,12 @@ pub fn emitEsmWrappedModule(
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
-                        if (std.mem.eql(u8, eb.local_name, "default"))
+                        // 현재 모듈의 own `export default ...` 만 _default 합성 변수를 참조한다.
+                        // `.re_export`로 분류된 경우(예: `import X from './a'; export { X }` 또는
+                        // `export default X` where X는 default-import)는 local_name이 타깃 모듈의
+                        // imported_name("default")이므로, 이 분기로 들어가면 현재 모듈의 _default에
+                        // 잘못 연결된다 (#1321). 해당 경우는 아래 재-export 체인 해결로 내려보낸다.
+                        if (eb.kind == .local and std.mem.eql(u8, eb.local_name, "default"))
                             break :blk if (metadata) |md| md.default_export_name else "_default";
                         // live binding override: import binding이 canonical name으로 변경된 경우
                         if (metadata) |md| {
