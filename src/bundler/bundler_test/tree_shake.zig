@@ -1471,3 +1471,44 @@ test "TreeShaking: class extends call expression preserved (#1261 edge)" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "EXTENDS_CALL_MARKER") != null);
 }
+
+test "TreeShaking: #1291 require()로 참조되는 UMD 모듈은 tree-shake하지 않음" {
+    // UMD 패턴의 `module.exports = factory()`가 IIFE 내부에 있어 import_scanner가
+    // CJS 신호를 놓쳐 exports_kind=.none이 되면, hasAnyUsedExport=false로 판정된다.
+    // 하지만 require() 참조가 있으면 모듈 전체 반환이 필요하므로 제거 금지 — 이 불변식을 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "umd.js",
+        \\(function(root, factory) {
+        \\    if (typeof exports === 'object' && typeof module === 'object') {
+        \\        module.exports = factory();
+        \\    } else if (typeof define === 'function' && define.amd) {
+        \\        define([], factory);
+        \\    } else {
+        \\        root["Lib"] = factory();
+        \\    }
+        \\})(self, function() {
+        \\    return { MARKER_UMD_PAYLOAD: 42 };
+        \\});
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\const lib = require('./umd.js');
+        \\console.log(lib);
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // UMD 모듈이 번들에 포함돼야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MARKER_UMD_PAYLOAD") != null);
+    // require_umd 정의도 있어야 함 (참조가 있는데 정의 없으면 런타임 ReferenceError)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_umd") != null);
+}
