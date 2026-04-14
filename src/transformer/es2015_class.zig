@@ -218,9 +218,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const param_binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(super_param_text));
                 break :blk try self.ast.addNodeList(&.{param_binding});
             } else try self.ast.addNodeList(&.{});
+            const wrapper_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = wrapper_params },
+            });
+            // function_expression: [name(0), params(1), body(2), flags(3), ret_type(4)]
             const wrapper_extra = try self.ast.addExtras(&.{
-                none,                    wrapper_params.start, wrapper_params.len,
-                @intFromEnum(iife_body), 0,                    none,
+                none, @intFromEnum(wrapper_params_node),
+                @intFromEnum(iife_body), 0, none,
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
@@ -467,7 +473,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params = if (has_super and super_span != null) blk: {
                 break :blk try self.ast.addNodeList(&.{try es_helpers.makeBindingIdentifier(self, try self.ast.addString(expr_super_param))});
             } else try self.ast.addNodeList(&.{});
-            const wrapper_extra = try self.ast.addExtras(&.{ none, wrapper_params.start, wrapper_params.len, @intFromEnum(iife_body), 0, none });
+            const wrapper_params_node2 = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = wrapper_params },
+            });
+            const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
 
@@ -1456,11 +1467,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             const empty_params = try self.ast.addNodeList(&.{});
+            const empty_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = empty_params },
+            });
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
-                empty_params.start,
-                empty_params.len,
+                @intFromEnum(empty_params_node),
                 @intFromEnum(empty_body),
                 0,
                 none,
