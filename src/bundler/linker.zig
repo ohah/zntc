@@ -387,16 +387,18 @@ pub const Linker = struct {
             });
         }
 
-        // codegen이 "_default" 합성 변수를 생성하는 모든 경우를 수집하여
+        // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
         // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
-        // local_name == "default"이면 codegen이 합성 _default 변수를 만든다.
         const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index };
+        const sym_table_opt = if (m.symbol_table) |*t| t else null;
         for (m.export_bindings) |eb| {
-            if (std.mem.eql(u8, eb.local_name, "default")) {
-                if (eb.kind == .local or eb.kind == .re_export) {
+            if (sym_table_opt) |t| {
+                if (eb.hasSyntheticDefault(t)) {
                     try self.addNameOwner(name_to_owners, "_default", owner);
+                    continue;
                 }
-            } else if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+            }
+            if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
                 if (module_scope.get(eb.local_name) == null) {
                     try self.addNameOwner(name_to_owners, eb.local_name, owner);

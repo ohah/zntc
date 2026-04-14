@@ -313,9 +313,10 @@ test "barrel re-export: mixed local and re-export" {
 
 // #1328 Phase 1: synthetic symbol population
 
-test "populateSyntheticSymbols: export default 는 _default 등록" {
+test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var 재사용은 제외)" {
     const alloc = std.testing.allocator;
-    var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
+    // 리터럴 `export default 42` — codegen이 실제로 `_default = 42` emit.
+    var r = try parseAndExtractBindings(alloc, "export default 42;");
     defer r.arena.deinit();
     defer alloc.free(r.import_bindings);
     defer alloc.free(r.export_bindings);
@@ -327,7 +328,22 @@ test "populateSyntheticSymbols: export default 는 _default 등록" {
     try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings);
     const id = table.find("_default") orelse return error.NotFound;
     try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(id));
-    try std.testing.expectEqual(@as(u32, 1), table.count());
+}
+
+test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미등록" {
+    const alloc = std.testing.allocator;
+    // codegen이 x를 재사용하고 `_default` 변수를 만들지 않으므로 등록하지 않는다.
+    var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    var table = symbol.SymbolTable.init(alloc);
+    defer table.deinit();
+
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings);
+    try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
 }
 
 test "populateSyntheticSymbols: default 없으면 빈 테이블" {
@@ -348,7 +364,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
 
 test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     const alloc = std.testing.allocator;
-    var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
+    var r = try parseAndExtractBindings(alloc, "export default 42;");
     defer r.arena.deinit();
     defer alloc.free(r.import_bindings);
     defer alloc.free(r.export_bindings);
