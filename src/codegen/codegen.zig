@@ -364,6 +364,12 @@ pub const Codegen = struct {
     // 출력 헬퍼
     // ================================================================
 
+    /// 리스트 구분자: minify_whitespace=true면 "," 아니면 ", ".
+    /// formal_parameters, arguments, array literal 등에서 공용.
+    inline fn listSep(self: *const Codegen) []const u8 {
+        return if (self.options.minify_whitespace) "," else ", ";
+    }
+
     fn write(self: *Codegen, s: []const u8) !void {
         try self.buf.appendSlice(self.allocator, s);
         // 줄/열 추적
@@ -947,7 +953,7 @@ pub const Codegen = struct {
             .export_specifier => try self.emitExportSpecifier(node),
 
             // Formal parameters
-            .formal_parameters, .function_body => try self.emitList(node, if (self.options.minify_whitespace) "," else ", "),
+            .formal_parameters, .function_body => try self.emitList(node, self.listSep()),
 
             .formal_parameter => try self.emitFormalParam(node),
 
@@ -1550,7 +1556,7 @@ pub const Codegen = struct {
 
     fn emitArray(self: *Codegen, node: Node) !void {
         try self.writeByte('[');
-        try self.emitList(node, if (self.options.minify_whitespace) "," else ", ");
+        try self.emitList(node, self.listSep());
         try self.writeByte(']');
     }
 
@@ -1815,7 +1821,7 @@ pub const Codegen = struct {
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, if (self.options.minify_whitespace) "," else ", ");
+        try self.emitNodeList(args_start, args_len, self.listSep());
         try self.writeByte(')');
     }
 
@@ -1980,7 +1986,7 @@ pub const Codegen = struct {
         try self.write("new ");
         try self.emitNode(callee);
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, if (self.options.minify_whitespace) "," else ", ");
+        try self.emitNodeList(args_start, args_len, self.listSep());
         try self.writeByte(')');
     }
 
@@ -2580,7 +2586,7 @@ pub const Codegen = struct {
             if (!first) try self.write(", ");
             try self.writeByte('{');
             if (!self.options.minify_whitespace) try self.writeByte(' ');
-            const sep: []const u8 = if (self.options.minify_whitespace) "," else ", ";
+            const sep: []const u8 = self.listSep();
             var named_first = true;
             for (spec_indices) |raw_idx| {
                 const spec: NodeIndex = @enumFromInt(raw_idx);
