@@ -125,8 +125,6 @@ test "Default: barrel re-export default chain preserves bindings (#1321)" {
 
     try std.testing.expect(!result.hasErrors());
     // barrel의 Shape/Path getter가 _default$N으로 collapse되면 안 된다.
-    // 올바른 출력: `Shape: function() { return Shape; }` / `Path: function() { return Path; }`
-    // barrel의 Shape/Path getter가 _default$N으로 collapse되지 않아야 한다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Shape: () => Shape") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Path: () => Path") != null);
     // default getter는 Svg를 가리켜야 한다 (Shape/Path로 collapse 금지).
