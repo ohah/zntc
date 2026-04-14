@@ -203,7 +203,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         const me = member.data.extra;
                         const extras = self.ast.extra_data.items;
                         const key: NodeIndex = @enumFromInt(extras[me]);
-                        const flags = extras[me + 4];
+                        const flags = extras[me + 3];
                         const is_static = (flags & 0x01) != 0;
                         if (key.isNone() or is_static) continue;
                         const key_node = self.ast.getNode(key);

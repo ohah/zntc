@@ -499,10 +499,14 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
         .data = .{ .list = body_list },
     });
     const empty_params = try self.ast.addNodeList(&.{});
+    const empty_params_node = try self.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = span,
+        .data = .{ .list = empty_params },
+    });
     const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
-        empty_params.start,
-        empty_params.len,
+        @intFromEnum(empty_params_node),
         @intFromEnum(body_block),
         0,
         @intFromEnum(NodeIndex.none),
@@ -517,10 +521,14 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
 /// body를 감싸는 generator function expression 생성: function*() { ...body... }
 pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIndex {
     const empty_params = try self.ast.addNodeList(&.{});
+    const empty_params_node = try self.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = span,
+        .data = .{ .list = empty_params },
+    });
     const gen_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
-        empty_params.start,
-        empty_params.len,
+        @intFromEnum(empty_params_node),
         @intFromEnum(body),
         ast_mod.FunctionFlags.is_generator,
         @intFromEnum(NodeIndex.none),
