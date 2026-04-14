@@ -173,6 +173,7 @@ pub fn ES2022(comptime Transformer: type) type {
             lower_methods: bool,
             lower_fields: bool,
             has_super: bool,
+            class_name_text: ?[]const u8,
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -216,7 +217,10 @@ pub fn ES2022(comptime Transformer: type) type {
                         if (key_node.tag != .private_identifier) continue;
 
                         const flags = self.readU32(pe, 2);
-                        if ((flags & 0x01) != 0) continue; // TODO: static private field
+                        const is_static = (flags & 0x01) != 0;
+                        // static private field는 class 이름 기반 brand check 헬퍼를 사용하므로
+                        // 익명 class에서는 다운레벨할 수 없다 (클래스 자체 참조가 없음).
+                        if (is_static and class_name_text == null) continue;
 
                         const init_val: NodeIndex = self.readNodeIdx(pe, 1);
                         const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
@@ -228,6 +232,8 @@ pub fn ES2022(comptime Transformer: type) type {
                         try field_mappings.append(self.allocator, .{
                             .original_name = orig_name,
                             .var_name = var_name,
+                            .is_static = is_static,
+                            .class_name = if (is_static) class_name_text else null,
                         });
                         try field_member_raw.append(self.allocator, raw_idx);
                         try field_init_idx.append(self.allocator, init_val);
@@ -246,9 +252,16 @@ pub fn ES2022(comptime Transformer: type) type {
             defer self.current_private_methods = saved_private_methods;
             defer self.current_private_fields = saved_private_fields;
 
-            for (field_mappings.items) |m| {
-                const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
-                try pre_stmts.append(self.allocator, wm_decl);
+            for (field_mappings.items, field_init_idx.items) |m, init_val| {
+                if (m.is_static) {
+                    // static: `var _x = { writable: true, value: init };` — init이 descriptor 내부.
+                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span);
+                    try pre_stmts.append(self.allocator, desc);
+                    self.runtime_helpers.class_static_private_field = true;
+                } else {
+                    const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
+                    try pre_stmts.append(self.allocator, wm_decl);
+                }
             }
             for (method_mappings.items) |m| {
                 const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
@@ -288,8 +301,11 @@ pub fn ES2022(comptime Transformer: type) type {
                     const fm = field_mappings.items[field_mapping_idx];
                     const fi = field_init_idx.items[field_mapping_idx];
                     field_mapping_idx += 1;
-                    const init_stmt = try buildPrivateFieldSetInit(self, fm.var_name, fi, span);
-                    try ctor_init_stmts.append(self.allocator, init_stmt);
+                    // static은 descriptor가 init 값을 이미 담고 있으므로 ctor 주입 없음, body에서 제거만.
+                    if (!fm.is_static) {
+                        const init_stmt = try buildPrivateFieldSetInit(self, fm.var_name, fi, span);
+                        try ctor_init_stmts.append(self.allocator, init_stmt);
+                    }
                     continue;
                 }
 

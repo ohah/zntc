@@ -127,7 +127,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // static private field → descriptor 객체 선언: var _x = { writable: true, value: initValue }
             for (cm.static_private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try buildStaticPrivateFieldDescriptorDecl(self, pf.name, pf.init, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
                 self.runtime_helpers.class_static_private_field = true;
             }
             for (cm.private_methods.items) |pm| {
@@ -414,7 +414,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // static private field → descriptor 객체 선언
             for (cm.static_private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try buildStaticPrivateFieldDescriptorDecl(self, pf.name, pf.init, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
                 self.runtime_helpers.class_static_private_field = true;
             }
             for (cm.private_methods.items) |pm| {
@@ -861,51 +861,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_value = try self.visitNode(value_idx);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
-        }
-
-        /// static private field descriptor 선언: var _x = { writable: true, value: initValue }
-        fn buildStaticPrivateFieldDescriptorDecl(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            // { writable: true, value: initValue }
-            const scratch_top = self.scratch.items.len;
-            defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-            // writable: true
-            const writable_key = try es_helpers.makeIdentifierRef(self, "writable");
-            const true_span = try self.ast.addString("true");
-            const true_val = try self.ast.addNode(.{
-                .tag = .boolean_literal,
-                .span = true_span,
-                .data = .{ .none = 1 },
-            });
-            const writable_node = try self.ast.addNode(.{
-                .tag = .object_property,
-                .span = span,
-                .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, writable_node);
-
-            // value: initValue (or void 0)
-            const value_key = try es_helpers.makeIdentifierRef(self, "value");
-            const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
-            const value_node = try self.ast.addNode(.{
-                .tag = .object_property,
-                .span = span,
-                .data = .{ .binary = .{ .left = value_key, .right = value_init, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, value_node);
-
-            // object_expression
-            const props_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const obj = try self.ast.addNode(.{
-                .tag = .object_expression,
-                .span = span,
-                .data = .{ .list = props_list },
-            });
-
-            // var _x = { writable: true, value: ... }
-            const binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(var_name));
-            const declarator = try es_helpers.makeDeclarator(self, binding, obj, span);
-            return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
         }
 
         /// accessor method_definition에서 function expression 생성.
