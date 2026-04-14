@@ -62,6 +62,7 @@ pub const SourceMapTestResult = struct {
 };
 
 /// 소스맵 활성화 e2e. 매핑 결과에 접근 가능.
+/// 소유권: 반환된 arena는 caller 소유 (`defer r.arena.deinit()` 필수).
 pub fn e2eSourceMap(backing_allocator: std.mem.Allocator, source: []const u8) !SourceMapTestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
@@ -115,6 +116,11 @@ pub fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 /// 풀 옵션 e2e. ext로 확장자 지정 (".ts" 기본, ".tsx"면 JSX 모드).
 /// Arena로 전체 파이프라인을 실행. output은 arena 메모리를 가리키므로
 /// TestResult.deinit() 전에 사용해야 한다.
+///
+/// 소유권: 반환된 TestResult.arena는 **caller 소유**. caller가 반드시
+/// `defer r.arena.deinit();` 호출 필요. 성공 경로에선 errdefer가 실행되지
+/// 않으므로 caller defer가 유일한 해제 경로. 누락 시 arena 누수 (테스트 전용
+/// 이라 프로덕션 영향은 없음).
 pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions, ext: []const u8) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();

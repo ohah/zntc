@@ -164,7 +164,7 @@ pub fn transpileWithCallback(
     on_error: ?ErrorCallback,
 ) TranspileError!TranspileResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
+    defer arena.deinit();
     const arena_alloc = arena.allocator();
 
     // 1. 파싱
@@ -251,9 +251,9 @@ pub fn transpileWithCallback(
         @import("transformer/minify.zig").minify(&transformer.ast);
     }
 
-    // 5. Mangling 메타데이터 구성
+    // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
+    // (함수 종료 시 arena.deinit으로 일괄 해제).
     var mangle_metadata: ?LinkingMetadata = null;
-    defer if (mangle_metadata) |*mm| mm.skip_nodes.deinit();
 
     if (mangle_result) |*mr| {
         const node_count = transformer.ast.nodes.items.len;
@@ -343,9 +343,9 @@ pub fn transpileWithCallback(
         break :blk buf.items;
     } else output;
 
-    // Arena 밖으로 복제
+    // Arena 밖으로 복제 (arena는 함수 종료 시 defer로 해제 — line 167).
+    // mangle_metadata.skip_nodes는 arena-owned이므로 별도 deinit 불필요.
     const result_code = allocator.dupe(u8, final_output) catch return error.OutOfMemory;
-    arena.deinit();
     return .{
         .code = result_code,
         .sourcemap = sourcemap_json,
