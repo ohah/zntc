@@ -38,6 +38,7 @@ pub const subprocess_plugin = @import("subprocess_plugin.zig");
 pub const module_store = @import("module_store.zig");
 pub const css_scanner = @import("css_scanner.zig");
 pub const css_emitter = @import("css_emitter.zig");
+pub const symbol = @import("symbol.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -68,6 +69,10 @@ pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
 pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
 pub const PersistentModuleStore = module_store.PersistentModuleStore;
+pub const SymbolId = symbol.SymbolId;
+pub const SymbolRef = symbol.SymbolRef;
+pub const SymbolKind = symbol.SymbolKind;
+pub const SymbolTable = symbol.SymbolTable;
 pub const incremental = @import("incremental.zig");
 pub const IncrementalBundler = incremental.IncrementalBundler;
 
@@ -91,6 +96,7 @@ test {
     _ = plugin;
     _ = subprocess_plugin;
     _ = module_store;
+    _ = symbol;
 
     // test files
     _ = @import("bundler_test.zig");
