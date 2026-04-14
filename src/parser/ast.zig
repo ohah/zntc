@@ -875,6 +875,33 @@ pub const Ast = struct {
         return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
     }
 
+    /// 함수형 노드의 파라미터 슬라이스를 반환한다 (각 element는 NodeIndex의 raw u32).
+    /// 지원 태그: function_declaration / function_expression / function /
+    /// arrow_function_expression / method_definition.
+    /// arrow는 `formal_parameters` 노드를 unwrap, 나머지는 extra에 저장된 bare NodeList를 슬라이스.
+    /// formal_parameters 노드가 비어 있거나 params가 없으면 빈 슬라이스 반환.
+    pub fn functionParams(self: *const Ast, node: Node) []const u32 {
+        return switch (node.tag) {
+            .arrow_function_expression => blk: {
+                const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra]);
+                if (params_idx.isNone()) break :blk &[_]u32{};
+                const params_node = self.getNode(params_idx);
+                if (params_node.tag != .formal_parameters) break :blk &[_]u32{};
+                const list = params_node.data.list;
+                if (list.len == 0) break :blk &[_]u32{};
+                break :blk self.extra_data.items[list.start .. list.start + list.len];
+            },
+            .function_declaration, .function_expression, .function, .method_definition => blk: {
+                const e = node.data.extra;
+                const start = self.extra_data.items[e + 1];
+                const len = self.extra_data.items[e + 2];
+                if (len == 0) break :blk &[_]u32{};
+                break :blk self.extra_data.items[start .. start + len];
+            },
+            else => &[_]u32{},
+        };
+    }
+
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
     pub fn addExtra(self: *Ast, value: u32) !u32 {
         const index: u32 = @intCast(self.extra_data.items.len);
