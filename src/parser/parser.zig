@@ -1136,28 +1136,46 @@ pub const Parser = struct {
         }
     }
 
-    /// arrow function 파라미터를 cover grammar으로 검증.
-    /// parenthesized/sequence expression을 풀어서 각 요소에
-    /// coverExpressionToAssignmentTarget을 위임한다.
+    /// arrow function 파라미터를 cover grammar으로 검증 + **formal_parameters 노드로 정규화**.
     ///
-    /// 기존 checkRestInitInArrowParams를 대체한다.
-    pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) ParseError2!void {
-        if (idx.isNone()) return;
+    /// 입력: parseAssignmentExpression으로 파싱된 원형 (identifier / parenthesized / sequence / spread / formal_parameters).
+    /// 출력: `formal_parameters` list 노드 (모든 arrow 공통 계약). ESTree/Babel/esbuild/SWC 동일.
+    ///
+    /// 정규화 없이 원형을 유지하면 downstream consumer마다 cover grammar 해석 로직이 필요해지고
+    /// (params_start/len 계약 위반), worklet plugin 등에서 파라미터를 closure로 오인하는 버그가 발생.
+    /// 관련: #1283 (worklet arrow param ReferenceError).
+    pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) ParseError2!NodeIndex {
+        if (idx.isNone()) {
+            // `() => ...` 같은 빈 arrow
+            const empty_list = try self.ast.addNodeList(&.{});
+            return try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = .{ .start = 0, .end = 0 },
+                .data = .{ .list = empty_list },
+            });
+        }
         const node = self.ast.getNode(idx);
+
+        // 이미 formal_parameters면 그대로 (TS 타입 어노테이션 있는 경우 parser가 먼저 생성)
+        if (node.tag == .formal_parameters) return idx;
+
+        // 중복 파라미터 이름 검사는 원형 idx 기준으로 수행 (정규화 전)
+        self.param_name_spans.clearRetainingCapacity();
+        try self.collectCoverParamNames(idx);
+
+        const scratch_top = self.scratch.items.len;
+        defer self.restoreScratch(scratch_top);
+
         if (node.tag == .parenthesized_expression) {
-            // (expr) → 내부를 다시 풀기
-            // return으로 종료: 재귀 호출 내부에서 collectCoverParamNames가 실행되므로
-            // 여기서 다시 실행하면 중복 에러가 발생한다.
+            // (expr) → 내부를 풀어서 재귀 처리
             return self.coverExpressionToArrowParams(node.data.unary.operand);
         } else if (node.tag == .sequence_expression) {
-            // (a, b, c) → 각 요소를 개별 검증
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
                 const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
                 const elem = self.ast.getNode(elem_idx);
                 if (elem.tag == .spread_element) {
-                    // rest 파라미터: 마지막 요소여야 하고 initializer 금지, trailing comma 금지
                     if (i + 1 < list.len) {
                         try self.addErrorCode(elem.span, "Rest element must be last element", .rest_must_be_last);
                     }
@@ -1165,27 +1183,30 @@ pub const Parser = struct {
                         try self.addErrorCode(elem.span, "Rest element may not have a trailing comma", .rest_trailing_comma);
                     }
                     try self.checkBindingRestInit(elem.data.unary.operand);
-                    // rest의 operand도 valid assignment target이어야 함
                     _ = try self.coverExpressionToAssignmentTarget(elem.data.unary.operand, false);
                 } else {
                     _ = try self.coverExpressionToAssignmentTarget(elem_idx, false);
                 }
+                try self.scratch.append(self.allocator, elem_idx);
             }
         } else if (node.tag == .spread_element) {
-            // 단일 rest 파라미터: (...x) → initializer 금지 + trailing comma 금지
             if ((node.data.unary.flags & spread_trailing_comma) != 0) {
                 try self.addErrorCode(node.span, "Rest element may not have a trailing comma", .rest_trailing_comma);
             }
             try self.checkBindingRestInit(node.data.unary.operand);
             _ = try self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
+            try self.scratch.append(self.allocator, idx);
         } else {
-            // 단일 expression → 직접 검증
             _ = try self.coverExpressionToAssignmentTarget(idx, false);
+            try self.scratch.append(self.allocator, idx);
         }
-        // arrow 파라미터 중복 검사: (x, {x}) => 1 등
-        // cover grammar 변환 후에 수행 (변환된 태그도 처리하므로)
-        self.param_name_spans.clearRetainingCapacity();
-        try self.collectCoverParamNames(idx);
+
+        const params_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = node.span,
+            .data = .{ .list = params_list },
+        });
     }
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.

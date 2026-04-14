@@ -253,9 +253,15 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         .span = id_span,
                         .data = .{ .string_ref = id_span },
                     });
-                    const body = try parseArrowBody(self, true, param);
+                    const params_list = try self.ast.addNodeList(&.{param});
+                    const params_node = try self.ast.addNode(.{
+                        .tag = .formal_parameters,
+                        .span = id_span,
+                        .data = .{ .list = params_list },
+                    });
+                    const body = try parseArrowBody(self, true, params_node);
                     {
-                        const ae = try self.ast.addExtras(&.{ @intFromEnum(param), @intFromEnum(body), 0x01 });
+                        const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
                         return try self.ast.addNode(.{
                             .tag = .arrow_function_expression,
                             .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -279,13 +285,20 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     self.restoreState(saved);
                 } else if (self.current() == .l_paren and try self.peekNextKind() == .r_paren) {
                     // () 빈 파라미터 체크 (타입 없는 경우)
+                    const empty_paren_start = self.currentSpan().start;
                     try self.advance(); // skip (
                     try self.advance(); // skip )
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                         try self.advance(); // skip =>
-                        const body = try parseArrowBody(self, true, .none);
+                        const empty_list = try self.ast.addNodeList(&.{});
+                        const params_node = try self.ast.addNode(.{
+                            .tag = .formal_parameters,
+                            .span = .{ .start = empty_paren_start, .end = empty_paren_start },
+                            .data = .{ .list = empty_list },
+                        });
+                        const body = try parseArrowBody(self, true, params_node);
                         {
-                            const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0x01 });
+                            const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -298,13 +311,13 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     // 괄호를 expression으로 파싱 (parenthesized_expression)
                     const params_expr = try parseConditionalExpression(self);
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
-                        try self.coverExpressionToArrowParams(params_expr);
+                        const normalized_params = try self.coverExpressionToArrowParams(params_expr);
                         // async arrow: 파라미터에 'await' 식별자 사용 금지
                         try self.checkAsyncArrowParamsForAwait(params_expr);
                         try self.advance(); // skip =>
-                        const body = try parseArrowBody(self, true, params_expr);
+                        const body = try parseArrowBody(self, true, normalized_params);
                         {
-                            const ae = try self.ast.addExtras(&.{ @intFromEnum(params_expr), @intFromEnum(body), 0x01 });
+                            const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0x01 });
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -334,10 +347,17 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                 .span = id_span,
                 .data = .{ .string_ref = id_span },
             });
-            const body = try parseArrowBody(self, false, param);
+            // 모든 arrow는 formal_parameters list로 정규화 (ESTree 계약)
+            const params_list = try self.ast.addNodeList(&.{param});
+            const params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = id_span,
+                .data = .{ .list = params_list },
+            });
+            const body = try parseArrowBody(self, false, params_node);
 
             {
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(param), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = id_span.start, .end = self.currentSpan().start },
@@ -358,9 +378,15 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // skip )
         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
             try self.advance(); // skip =>
-            const body = try parseArrowBody(self, false, .none);
+            const empty_list = try self.ast.addNodeList(&.{});
+            const params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = .{ .start = arrow_start, .end = arrow_start },
+                .data = .{ .list = empty_list },
+            });
+            const body = try parseArrowBody(self, false, params_node);
             {
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = arrow_start, .end = self.currentSpan().start },
@@ -432,14 +458,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .arrow and !self.scanner.token.has_newline_before and
         self.isValidArrowParamForm(left))
     {
-        // arrow 파라미터 cover grammar 검증 (ECMAScript: ArrowFormalParameters)
-        try self.coverExpressionToArrowParams(left);
+        // arrow 파라미터 cover grammar 검증 + formal_parameters 노드로 정규화
         const left_start = self.ast.getNode(left).span.start;
+        const normalized_params = try self.coverExpressionToArrowParams(left);
         try self.advance(); // skip =>
-        const body = try parseArrowBody(self, false, left);
+        const body = try parseArrowBody(self, false, normalized_params);
 
         {
-            const ae = try self.ast.addExtras(&.{ @intFromEnum(left), @intFromEnum(body), 0 });
+            const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
             return try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = .{ .start = left_start, .end = self.currentSpan().start },
@@ -553,16 +579,15 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
     // data.none reads the same bytes as unary.operand via extern union — 0 means empty
     // because node index 0 is always the program root, never a valid sub-expression.
     const is_empty_paren = (paren_node.data.none == 0);
-    const params: NodeIndex = if (is_empty_paren) .none else paren_expr;
-
-    if (!is_empty_paren) {
+    const normalized_params: NodeIndex = if (is_empty_paren)
+        try self.coverExpressionToArrowParams(.none)
+    else
         try self.coverExpressionToArrowParams(paren_expr);
-    }
 
     try self.advance(); // skip =>
-    const body = try parseArrowBody(self, false, params);
+    const body = try parseArrowBody(self, false, normalized_params);
 
-    const ae = try self.ast.addExtras(&.{ @intFromEnum(params), @intFromEnum(body), 0 });
+    const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
     return try self.ast.addNode(.{
         .tag = .arrow_function_expression,
         .span = .{ .start = arrow_start, .end = self.currentSpan().start },
@@ -1989,10 +2014,10 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .arrow and !self.scanner.token.has_newline_before and
                 self.isValidArrowParamForm(paren_expr))
             {
-                try self.coverExpressionToArrowParams(paren_expr);
+                const normalized_params = try self.coverExpressionToArrowParams(paren_expr);
                 try self.advance(); // skip =>
-                const body = try parseArrowBody(self, false, paren_expr);
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(paren_expr), @intFromEnum(body), 0 });
+                const body = try parseArrowBody(self, false, normalized_params);
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },

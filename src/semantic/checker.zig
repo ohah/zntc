@@ -415,6 +415,7 @@ pub fn checkDuplicateArrowParams(
     // fast path: 단일 파라미터는 중복 불가능
     const node = ast.getNode(param_idx);
     if (node.tag == .binding_identifier or node.tag == .identifier_reference or node.tag == .assignment_target_identifier) return;
+    if (node.tag == .formal_parameters and node.data.list.len <= 1) return;
 
     var seen = std.StringHashMap(Span).init(allocator);
     defer seen.deinit();
@@ -438,7 +439,16 @@ fn collectArrowParamNames(
         .binding_identifier => {
             try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
-        // cover grammar에서 변환된 파라미터 리스트
+        // parser가 정규화한 formal_parameters list (#1283 이후 기본 형태)
+        .formal_parameters => {
+            if (node.data.list.len == 0) return;
+            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+            const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            for (indices) |raw_idx| {
+                try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+            }
+        },
+        // cover grammar에서 변환된 파라미터 리스트 (legacy — 정규화 전 호출 시)
         .parenthesized_expression, .sequence_expression => {
             if (node.tag == .parenthesized_expression) {
                 try collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);

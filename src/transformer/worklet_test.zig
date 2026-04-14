@@ -359,6 +359,40 @@ test "Worklet: arrow function params not in closure (ES5 lowering)" {
     try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
 }
 
+test "Worklet: arrow function params not in closure (arrow 보존, ES5 lowering 없음)" {
+    // #1283 후속: RN Hermes 프리셋은 arrow를 보존 — worklet 변환 시점에
+    // params wrapper가 formal_parameters가 아닌 parenthesized/sequence로 남는다.
+    // 그래도 value/context는 closure에 포함되지 않아야 한다.
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "var ext = 1; export const pf = (value, context) => { \"worklet\"; return ext + value + context; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // params(value, context)는 closure에서 제외, ext만 포함
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+    // value/context가 __closure에 들어가면 안 됨 (Hermes ReferenceError 방지)
+    try std.testing.expect(std.mem.indexOf(u8, code, "value: value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "context: context") == null);
+}
+
+test "Worklet: single-param arrow (x => ...) — x는 closure에서 제외 (arrow 보존)" {
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "var ext = 1; export const pf = x => { \"worklet\"; return ext + x; };",
+        .{ .plugins = &plugins, .jsx_filename = "test.ts" },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = { ext: ext }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "x: x") == null);
+}
+
 test "Worklet: arrow function with typed var params not in closure (ES5 lowering)" {
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
     var r = try parseAndTransformWithOptions(

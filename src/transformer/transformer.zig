@@ -2767,7 +2767,7 @@ pub const Transformer = struct {
         // Plugin dispatch: auto-workletization 등 AST 플러그인 적용
         const is_auto_worklet = self.plugins.worklet.auto_next;
         if (is_auto_worklet or self.options.plugins.len > 0) {
-            // arrow params는 formal_parameters (list) 또는 none일 수 있다.
+            // parser가 arrow params를 항상 formal_parameters list로 정규화하므로 tag 체크 불필요.
             var orig_p_start: u32 = 0;
             var orig_p_len: u32 = 0;
             var new_p_start: u32 = 0;

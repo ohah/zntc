@@ -162,7 +162,7 @@ pub fn collectClosureVars(
         if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
     }
 
-    // 1. 파라미터 이름 수집
+    // 1. 파라미터 이름 수집 (parser가 formal_parameters로 정규화 보장)
     var pi: u32 = 0;
     while (pi < params_len) : (pi += 1) {
         const param_raw = self.ast.extra_data.items[params_start + pi];

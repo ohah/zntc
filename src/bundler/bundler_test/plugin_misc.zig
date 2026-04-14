@@ -2000,6 +2000,42 @@ test "RN preset: browser 플랫폼에서는 class 그대로 보존" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
 }
 
+test "RN preset: arrow worklet params → __closure에서 제외 (#1283 Reanimated filter.ts 케이스)" {
+    // Reanimated worklet arrow `(value, context) => { 'worklet'; ... }`에서 value/context는
+    // 파라미터이므로 __closure에 포함되면 안 됨 (Hermes ReferenceError 유발).
+    // ES5 타겟은 arrow→function 선변환으로 우연히 통과했지만, RN preset은 arrow 보존이라
+    // parser 레벨에서 arrow params를 formal_parameters로 정규화해야 worklet plugin이 올바르게 인식.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\var ext = 1;
+        \\const pf = (value, context) => {
+        \\  'worklet';
+        \\  return ext + value + context;
+        \\};
+        \\console.log(pf);
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .worklet_transform = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ext: ext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value: value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "context: context") == null);
+    // generateCode의 __initData.code 문자열에 params가 유지돼야 한다 (Hermes runtime이 arg 전달용).
+    // 함수 이름은 파일 경로 기반이라 테스트 환경마다 다르므로 `(value,context)`만 확인.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(value,context){") != null);
+}
+
 test "RN preset: async/await은 보존 (Hermes native 지원)" {
     // #1267 회귀 방지: RN 프리셋이 async를 state machine으로 변환하지 않아야 함.
     var tmp = std.testing.tmpDir(.{});

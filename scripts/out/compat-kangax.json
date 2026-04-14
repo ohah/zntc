@@ -1,0 +1,444 @@
+[
+  {
+    "feature": "async_await",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          55
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          52
+        ]
+      },
+      {
+        "engine": "edge",
+        "version": [
+          15
+        ]
+      }
+    ],
+    "matchedTests": [
+      "async functions"
+    ]
+  },
+  {
+    "feature": "generator",
+    "supported": [
+      {
+        "engine": "safari",
+        "version": [
+          10
+        ]
+      },
+      {
+        "engine": "edge",
+        "version": [
+          13
+        ]
+      }
+    ],
+    "matchedTests": [
+      "generators"
+    ]
+  },
+  {
+    "feature": "arrow",
+    "supported": [
+      {
+        "engine": "safari",
+        "version": [
+          10
+        ]
+      }
+    ],
+    "matchedTests": [
+      "arrow functions"
+    ]
+  },
+  {
+    "feature": "class",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          49
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          45
+        ]
+      },
+      {
+        "engine": "edge",
+        "version": [
+          13
+        ]
+      }
+    ],
+    "matchedTests": [
+      "class"
+    ]
+  },
+  {
+    "feature": "destructuring",
+    "supported": [],
+    "matchedTests": [
+      "destructuring, declarations",
+      "destructuring, assignment"
+    ]
+  },
+  {
+    "feature": "default_params",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          49
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          10
+        ]
+      },
+      {
+        "engine": "edge",
+        "version": [
+          14
+        ]
+      },
+      {
+        "engine": "node",
+        "version": [
+          6
+        ]
+      }
+    ],
+    "matchedTests": [
+      "default function parameters"
+    ]
+  },
+  {
+    "feature": "spread",
+    "supported": [],
+    "matchedTests": []
+  },
+  {
+    "feature": "for_of",
+    "supported": [
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "for..of loops"
+    ]
+  },
+  {
+    "feature": "template_literal",
+    "supported": [],
+    "matchedTests": [
+      "template literals"
+    ]
+  },
+  {
+    "feature": "exponentiation",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          52
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          52
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          10,
+          1
+        ]
+      },
+      {
+        "engine": "edge",
+        "version": [
+          14
+        ]
+      },
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "exponentiation (**) operator"
+    ]
+  },
+  {
+    "feature": "object_spread",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          60
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          55
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          11,
+          1
+        ]
+      },
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "object rest/spread properties"
+    ]
+  },
+  {
+    "feature": "optional_catch_binding",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          66
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          58
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          11,
+          1
+        ]
+      }
+    ],
+    "matchedTests": [
+      "optional catch binding"
+    ]
+  },
+  {
+    "feature": "nullish_coalescing",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          80
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          72
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          13,
+          1
+        ]
+      },
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "nullish coalescing operator (??)"
+    ]
+  },
+  {
+    "feature": "optional_chaining",
+    "supported": [
+      {
+        "engine": "firefox",
+        "version": [
+          74
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          13,
+          1
+        ]
+      }
+    ],
+    "matchedTests": [
+      "optional chaining operator (?.)"
+    ]
+  },
+  {
+    "feature": "logical_assignment",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          85
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          79
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          14
+        ]
+      },
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "Logical Assignment"
+    ]
+  },
+  {
+    "feature": "class_static_block",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          94
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          93
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          16,
+          4
+        ]
+      }
+    ],
+    "matchedTests": [
+      "Class static initialization blocks"
+    ]
+  },
+  {
+    "feature": "class_private_method",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          84
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          90
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          15
+        ]
+      }
+    ],
+    "matchedTests": [
+      "private class methods"
+    ]
+  },
+  {
+    "feature": "class_private_field",
+    "supported": [],
+    "matchedTests": [
+      "instance class fields"
+    ]
+  },
+  {
+    "feature": "hashbang",
+    "supported": [
+      {
+        "engine": "chrome",
+        "version": [
+          74
+        ]
+      },
+      {
+        "engine": "firefox",
+        "version": [
+          67
+        ]
+      },
+      {
+        "engine": "safari",
+        "version": [
+          13,
+          1
+        ]
+      },
+      {
+        "engine": "hermes",
+        "version": [
+          0,
+          7,
+          0
+        ]
+      }
+    ],
+    "matchedTests": [
+      "Hashbang Grammar"
+    ]
+  }
+]
