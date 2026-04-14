@@ -584,7 +584,6 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 .local_span = .{ .start = start, .end = self.currentSpan().start },
                 .kind = re.kind,
                 .import_record_index = re.import_record_index,
-                .has_local_default_binding = true,
             }) catch {};
         }
 

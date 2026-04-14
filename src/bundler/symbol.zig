@@ -88,12 +88,15 @@ pub const Symbol = struct {
     name: []const u8,
     kind: SymbolKind,
     span: Span,
-    /// Re-export 체인에서 이 심볼이 가리키는 원본 (미해결/로컬은 invalid).
-    /// Phase 3에서 linker가 채움.
+    /// Re-export 체인의 다음 hop을 가리키는 SymbolRef. 현재 미사용 — Phase 3b는
+    /// canonical_name 문자열 캐시로 체인 resolve를 처리한다.
+    ///
+    /// Tree-shaking과 semantic symbol 통합 시 재활성화 예정(#1328 Phase 4d+):
+    /// 이름 기반 lookup 대신 points_to 체인을 walk해 ref_count 전파. 세부는 이슈 참조.
     points_to: SymbolRef = SymbolRef.invalid,
     /// Linker renaming 후 최종 emit 이름. 빈 문자열이면 `name` 사용.
     canonical_name: []const u8 = "",
-    /// Tree-shaking용 usage count. Phase 3에서 수집 시작.
+    /// Tree-shaking usage count. 현재 미사용 — Phase 4d에서 수집 시작 예정.
     ref_count: u32 = 0,
 };
 
