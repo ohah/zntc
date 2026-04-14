@@ -237,6 +237,15 @@ pub fn ES2022(comptime Transformer: type) type {
 
             if (method_mappings.items.len == 0 and field_mappings.items.len == 0) return false;
 
+            // standalone fn body visit과 Pass 2 body visit 모두 this.#field / this.#method() 참조를
+            // 변환해야 하므로 pre_stmts 생성 전에 컨텍스트를 설정한다.
+            const saved_private_methods = self.current_private_methods;
+            const saved_private_fields = self.current_private_fields;
+            self.current_private_methods = method_mappings.items;
+            self.current_private_fields = field_mappings.items;
+            defer self.current_private_methods = saved_private_methods;
+            defer self.current_private_fields = saved_private_fields;
+
             for (field_mappings.items) |m| {
                 const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
                 try pre_stmts.append(self.allocator, wm_decl);
@@ -247,14 +256,6 @@ pub fn ES2022(comptime Transformer: type) type {
                 const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, span);
                 try pre_stmts.append(self.allocator, fn_decl);
             }
-
-            // Pass 2 body visit 중 this.#method()/this.#f 참조 변환에 필요한 컨텍스트.
-            const saved_private_methods = self.current_private_methods;
-            const saved_private_fields = self.current_private_fields;
-            self.current_private_methods = method_mappings.items;
-            self.current_private_fields = field_mappings.items;
-            defer self.current_private_methods = saved_private_methods;
-            defer self.current_private_fields = saved_private_fields;
 
             var body_nodes: std.ArrayList(NodeIndex) = .empty;
             defer body_nodes.deinit(self.allocator);
