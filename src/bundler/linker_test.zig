@@ -1336,10 +1336,18 @@ test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증�
     r.linker.populateSymbolRefCounts(r.graph.modules.items);
 
     // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
+    // #1328 Phase 4e-2b: _default는 semantic 공간에 등록됨.
     const b = &r.graph.modules.items[1];
-    const b_table = b.symbol_table orelse return error.NoSymbolTable;
-    const def_id = b_table.find("_default") orelse return error.DefaultNotRegistered;
-    try std.testing.expectEqual(@as(u32, 1), b_table.getRefCount(def_id));
+    const b_sem = b.semantic orelse return error.NoSemantic;
+    var found_ref: u32 = 0;
+    for (b_sem.symbols.items) |sym| {
+        const sk = sym.synthetic_kind orelse continue;
+        if (sk == .default_export) {
+            found_ref = sym.reference_count;
+            break;
+        }
+    } else return error.DefaultNotRegistered;
+    try std.testing.expectEqual(@as(u32, 1), found_ref);
 }
 
 test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
@@ -1358,8 +1366,17 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
     r.linker.populateSymbolRefCounts(r.graph.modules.items);
 
     const b = &r.graph.modules.items[1];
-    const b_table = b.symbol_table orelse return error.NoSymbolTable;
-    const def_id = b_table.find("_default") orelse return error.DefaultNotRegistered;
-    // default는 미참조
-    try std.testing.expectEqual(@as(u32, 0), b_table.getRefCount(def_id));
+    const b_sem = b.semantic orelse return error.NoSemantic;
+    var found_ref: u32 = 0;
+    var found_default = false;
+    for (b_sem.symbols.items) |sym| {
+        const sk = sym.synthetic_kind orelse continue;
+        if (sk == .default_export) {
+            found_ref = sym.reference_count;
+            found_default = true;
+            break;
+        }
+    }
+    if (!found_default) return error.DefaultNotRegistered;
+    try std.testing.expectEqual(@as(u32, 0), found_ref);
 }

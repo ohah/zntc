@@ -20,6 +20,8 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
 const SymbolTable = symbol_mod.SymbolTable;
+const semantic_symbol = @import("../semantic/symbol.zig");
+const SemanticSymbol = semantic_symbol.Symbol;
 
 pub const ImportBinding = struct {
     kind: Kind,
@@ -75,14 +77,28 @@ pub const ExportBinding = struct {
         re_export_all,
     };
 
-    /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 symbol table로 확인.
-    /// linker.addNameOwner / metadata.default_export_name / esm_wrap 호이스팅·할당
-    /// 사이트의 단일 source of truth — scanner의 `populateSyntheticSymbols`가 이
-    /// predicate가 true가 될 조건에 대해 정확히 synthetic_default 심볼을 등록한다.
-    pub fn hasSyntheticDefault(self: ExportBinding, table: *const SymbolTable) bool {
+    /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
+    /// #1328 Phase 4e-2b: symbol이 semantic/bundler 두 공간 중 하나에 등록될 수
+    /// 있으므로 둘 다 지원한다. `table`은 bundler 합성, `symbols`는 semantic
+    /// 배열 (ModuleSemanticData.symbols.items). 둘 중 하나만 있어도 호출 가능.
+    pub fn hasSyntheticDefault(
+        self: ExportBinding,
+        table: ?*const SymbolTable,
+        symbols: ?[]const SemanticSymbol,
+    ) bool {
         return switch (self.symbol) {
-            .bundler => |b| !b.symbol.isNone() and table.getKind(b.symbol) == .synthetic_default,
-            .semantic => false,
+            .bundler => |b| blk: {
+                const t = table orelse break :blk false;
+                break :blk !b.symbol.isNone() and t.getKind(b.symbol) == .synthetic_default;
+            },
+            .semantic => |s| blk: {
+                if (s.symbol.isNone()) break :blk false;
+                const syms = symbols orelse break :blk false;
+                const idx: u32 = @intFromEnum(s.symbol);
+                if (idx >= syms.len) break :blk false;
+                const sk = syms[idx].synthetic_kind orelse break :blk false;
+                break :blk sk == .default_export;
+            },
         };
     }
 };
@@ -606,29 +622,45 @@ pub fn collectNamespaceAccesses(
     }
 }
 
-/// export bindings를 훑어 bundler-local 합성 심볼을 등록하고 `ExportBinding.symbol`을
-/// 채운다. Cross-module re-export 연결은 linker가 `populateReExportAliases`에서 수행.
+/// export bindings를 훑어 합성 심볼을 등록하고 `ExportBinding.symbol`을 채운다.
+/// Cross-module re-export 연결은 linker가 `populateReExportAliases`에서 수행.
+///
+/// #1328 Phase 4e-2b: `synthetic_default`는 semantic 공간으로 이전됨.
+/// `sem_symbols`/`sem_names`가 주어지면 semantic에 등록하고 ExportBinding.symbol은
+/// `.semantic` variant. null이면 기존 bundler 경로 (테스트/semantic 분석 실패 fallback).
+/// `re_export_alias`는 semantic 의미와 맞지 않아 항상 bundler 공간에 유지 (RFC #1338).
 pub fn populateSyntheticSymbols(
     table: *SymbolTable,
     module_index: ModuleIndex,
     export_bindings: []ExportBinding,
+    sem_symbols: ?*std.ArrayList(SemanticSymbol),
+    sem_names: ?*std.AutoHashMap(u32, []const u8),
+    arena: std.mem.Allocator,
 ) !void {
     for (export_bindings) |*eb| {
         // codegen이 `_default = <expr>` 할당을 emit하는 export만 synthetic_default 등록.
-        // 조건: local_name이 실제 바인딩 이름("Foo" 등)이 아닌 합성 이름일 때 — 즉
-        //   - "_default": 익명 default (`export default 42`) 또는 리터럴
-        //   - "default": `export { default } from './x'` / `export default X`(X는 default-import)
-        //     → esm_wrap body가 `_default = <chain>` 할당
-        // `export default class Foo` 등 **클래스명 재사용** 케이스(local_name="Foo")는 제외 —
-        // codegen이 Foo를 그대로 쓰므로 _default가 emit되지 않는다.
         if ((eb.kind == .local or eb.kind == .re_export) and
             std.mem.eql(u8, eb.exported_name, "default") and
             (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
         {
+            if (sem_symbols) |syms_ptr| if (sem_names) |names_ptr| {
+                const sem_id = try semantic_symbol.extendSymbol(
+                    arena,
+                    syms_ptr,
+                    names_ptr,
+                    .variable_var,
+                    .default_export,
+                    "_default",
+                    eb.local_span,
+                );
+                eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sem_id } };
+                continue;
+            };
+            // Fallback (semantic 없음): bundler 공간에 등록.
             const id = try table.declare("_default", .synthetic_default, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         } else if (eb.kind == .re_export) {
-            // Phase 3b: .re_export마다 alias 심볼 생성. linker가 post-link 단계에서
+            // re_export_alias는 bundler 전용 — linker가 post-link 단계에서
             // resolveExportChain 결과를 canonical_name으로 저장한다.
             const id = try table.declareAnonymous(eb.exported_name, .re_export_alias, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };

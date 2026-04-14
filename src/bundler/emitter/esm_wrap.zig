@@ -24,6 +24,7 @@ const stmt_info_mod = @import("../stmt_info.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const symbol_mod = @import("../symbol.zig");
 const SymbolRef = symbol_mod.SymbolRef;
+const semantic_symbol = @import("../../semantic/symbol.zig");
 const parent = @import("../emitter.zig");
 const EmitOptions = parent.EmitOptions;
 const resolveNodeName = parent.resolveNodeName;
@@ -44,10 +45,23 @@ fn localBundlerSymbol(ref: SymbolRef, mod: *const Module) ?symbol_mod.SymbolId {
 
 /// ExportBinding.symbol이 현재 모듈의 synthetic_default 심볼인지 확인.
 /// 현재 모듈의 `_default = <expr>` 할당을 참조할 수 있음을 의미.
+/// #1328 Phase 4e-2b: semantic 공간 등록도 지원.
 fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
-    const id = localBundlerSymbol(ref, mod) orelse return false;
-    const table = mod.symbol_table orelse return false;
-    return table.getKind(id) == .synthetic_default;
+    return switch (ref) {
+        .bundler => |b| blk: {
+            if (b.module != mod.index or b.symbol.isNone()) break :blk false;
+            const table = mod.symbol_table orelse break :blk false;
+            break :blk table.getKind(b.symbol) == .synthetic_default;
+        },
+        .semantic => |s| blk: {
+            if (s.module != mod.index or s.symbol.isNone()) break :blk false;
+            const sem = mod.semantic orelse break :blk false;
+            const idx: u32 = @intFromEnum(s.symbol);
+            if (idx >= sem.symbols.items.len) break :blk false;
+            const sk = sem.symbols.items[idx].synthetic_kind orelse break :blk false;
+            break :blk sk == .default_export;
+        },
+    };
 }
 
 /// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
@@ -254,9 +268,11 @@ pub fn emitEsmWrappedModule(
     // `export { default } from './x'` 같은 순수 re-export도 body에서 `_default = <chain>`
     // 할당을 만들어내므로 hoisted_var 선언 필요. symbol table에 synthetic_default가
     // 등록돼 있으면 _default 변수가 실제로 emit된다는 뜻.
-    if (module.symbol_table) |*t| {
+    {
+        const t_opt = if (module.symbol_table) |*t| t else null;
+        const syms_opt: ?[]const semantic_symbol.Symbol = if (module.semantic) |sem| sem.symbols.items else null;
         for (module.export_bindings) |eb| {
-            if (eb.kind == .re_export and eb.hasSyntheticDefault(t)) {
+            if (eb.kind == .re_export and eb.hasSyntheticDefault(t_opt, syms_opt)) {
                 const def_name = if (metadata) |md| md.default_export_name else "_default";
                 try hoisted_var_names.append(allocator, def_name);
                 break;
@@ -561,10 +577,10 @@ pub fn emitEsmWrappedModule(
     var reexport_buf: std.ArrayList(u8) = .empty;
     defer reexport_buf.deinit(allocator);
     const sym_table_opt = if (module.symbol_table) |*t| t else null;
+    const sem_syms_opt: ?[]const semantic_symbol.Symbol = if (module.semantic) |sem| sem.symbols.items else null;
     for (module.export_bindings) |eb| {
         if (eb.kind != .re_export) continue;
-        const t = sym_table_opt orelse continue;
-        if (!eb.hasSyntheticDefault(t)) continue;
+        if (!eb.hasSyntheticDefault(sym_table_opt, sem_syms_opt)) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;
