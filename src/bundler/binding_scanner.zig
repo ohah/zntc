@@ -35,6 +35,10 @@ pub const ImportBinding = struct {
     /// namespace import에서 실제 접근된 프로퍼티 목록 (v.object → "object")
     /// null = 전체 사용 (동적 접근, namespace 탈출 등 fallback)
     namespace_used_properties: ?[]const []const u8 = null,
+    /// #1328 Phase 2: source 모듈의 export 심볼 참조. invalid = 미해결.
+    /// Phase 3에서 linker가 cross-module resolve로 채움. 기존 문자열 로직은
+    /// 병존 (Phase 4에서 제거).
+    symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
     pub const Kind = enum {
         default,
@@ -60,6 +64,11 @@ pub const ExportBinding = struct {
     kind: Kind,
     /// re-export 시 소스 모듈의 ImportRecord 인덱스
     import_record_index: ?u32 = null,
+    /// #1328 Phase 2: 이 export가 가리키는 심볼.
+    ///   - .local: 현재 모듈의 심볼 (semantic 선언 또는 bundler 합성 `_default`)
+    ///   - .re_export: source 모듈의 export 심볼 (Phase 3에서 linker가 채움)
+    /// invalid = 미해결. 기존 문자열 로직은 병존 (Phase 4에서 제거).
+    symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
     pub const Kind = enum {
         local,
@@ -587,21 +596,25 @@ pub fn collectNamespaceAccesses(
     }
 }
 
-/// #1328 Phase 1: export bindings를 훑어 bundler-local 합성 심볼을 테이블에 등록.
-/// Consumer는 아직 없음 — 정합성 검증 + 다음 phase 준비용 shadow population.
+/// #1328 Phase 1-2: export bindings를 훑어 bundler-local 합성 심볼을 테이블에
+/// 등록하고, 대응하는 ExportBinding.symbol을 채운다.
 ///
 /// 현재 등록 대상:
 ///   - `export default` (kind=.local, exported_name="default") → synthetic_default ("_default")
+///     대응 ExportBinding.symbol은 .bundler SymbolRef로 연결.
 ///
+/// Cross-module re-export 연결은 Phase 3에서 linker가 담당.
 /// 향후 phase에서 `exports_<module>` / `init_<module>` / `__ns_*` 등을
 /// linker/emitter 진입 시점에 추가 등록한다.
 pub fn populateSyntheticSymbols(
     table: *SymbolTable,
-    export_bindings: []const ExportBinding,
+    module_index: ModuleIndex,
+    export_bindings: []ExportBinding,
 ) !void {
-    for (export_bindings) |eb| {
+    for (export_bindings) |*eb| {
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-            _ = try table.declare("_default", .synthetic_default, eb.local_span);
+            const id = try table.declare("_default", .synthetic_default, eb.local_span);
+            eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         }
     }
 }

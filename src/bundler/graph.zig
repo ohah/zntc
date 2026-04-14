@@ -767,7 +767,7 @@ pub const ModuleGraph = struct {
             // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
             // Consumer 연결은 Phase 2+. 지금은 shadow population만.
             module.ensureSymbolTable(self.allocator);
-            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.export_bindings) catch {};
+            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.index, module.export_bindings) catch {};
 
             module.state = .parsed;
             return;
