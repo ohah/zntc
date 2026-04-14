@@ -200,6 +200,13 @@ pub const SymbolTable = struct {
         return if (s.canonical_name.len > 0) s.canonical_name else s.name;
     }
 
+    /// `setCanonicalName`이 호출된 적 있는지 여부. re_export_alias의 체인 resolve
+    /// 완료를 판정할 때 fallback("" → name) 때문에 `getCanonicalName`만으로는 구분
+    /// 불가하므로 별도 API.
+    pub fn hasCanonicalName(self: *const SymbolTable, id: SymbolId) bool {
+        return self.symbols.items[@intFromEnum(id)].canonical_name.len > 0;
+    }
+
     pub fn getRefCount(self: *const SymbolTable, id: SymbolId) u32 {
         return self.symbols.items[@intFromEnum(id)].ref_count;
     }

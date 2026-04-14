@@ -1013,6 +1013,7 @@ pub const ModuleGraph = struct {
                         .local_span = sb.local_span,
                         .kind = eb_kind,
                         .import_record_index = sb.import_record_index,
+                        .has_local_default_binding = sb.has_local_default_binding,
                     };
                 }
                 module.export_bindings = ebindings;
@@ -1031,6 +1032,10 @@ pub const ModuleGraph = struct {
 
             // namespace access 수집은 별도 AST walk 필요
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+
+            // Phase 1-3b (#1328): 합성 심볼 테이블 초기화 + _default / re_export_alias 등록.
+            module.ensureSymbolTable(self.allocator);
+            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.index, module.export_bindings) catch {};
 
             // CJS/ESM 감지 — inline scan 결과로 ScanResult 생성
             const scan_result = import_scanner.ScanResult{
