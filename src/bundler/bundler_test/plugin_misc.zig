@@ -2101,7 +2101,7 @@ test "RN preset: #1299 let/const → var 다운레벨 (Hermes block scoping)" {
 
 test "RN preset: #1299 arrow → function 다운레벨 (Hermes object literal arrow ternary 버그 회피)" {
     // 이슈 #1299: 큰 arrow function ternary가 object property value 위치에 있을 때
-    // Hermes 런타임이 후속 prop을 누락. Rollipop도 사용자 arrow를 사실상 모두
+    // Hermes 런타임이 후속 prop을 누락. Rolldown + @react-native/babel-preset도 사용자 arrow를 사실상 모두
     // function으로 변환하므로 동일 정책.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

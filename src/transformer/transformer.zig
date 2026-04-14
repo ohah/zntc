@@ -1935,6 +1935,13 @@ pub const Transformer = struct {
     // ================================================================
 
     /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
+    /// binding이 destructuring pattern (object/array)인지 판별.
+    inline fn isBindingPattern(self: *const Transformer, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const tag = self.ast.getNode(idx).tag;
+        return tag == .object_pattern or tag == .array_pattern;
+    }
+
     fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         // ES2015: destructuring pattern → 개별 declarator로 분해
         // ES2018: object rest (...rest) → __rest 호출 (target < es2018)
@@ -1985,17 +1992,14 @@ pub const Transformer = struct {
                     // 단 destructuring pattern (`let {x}`, `let [x]`)은 init 추가 금지 —
                     // for-of/for-in의 left에서 매 반복 iter value를 받으며, `{x} = void 0` 같은
                     // statement는 block_statement로 잘못 파싱되어 syntax error (#1302).
-                    const binding = if (!new_name.isNone()) self.ast.getNode(new_name) else null;
-                    const is_destructuring = binding != null and (binding.?.tag == .object_pattern or binding.?.tag == .array_pattern);
+                    const is_destructuring = isBindingPattern(self, new_name);
                     const none = @intFromEnum(NodeIndex.none);
-                    if (is_destructuring) {
-                        const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, none });
-                        try self.scratch.append(self.allocator, new_decl);
-                    } else {
-                        const void_init = try es_helpers.makeVoidZero(self, node.span);
-                        const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(void_init) });
-                        try self.scratch.append(self.allocator, new_decl);
-                    }
+                    const init_node: u32 = if (is_destructuring)
+                        none
+                    else
+                        @intFromEnum(try es_helpers.makeVoidZero(self, node.span));
+                    const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, init_node });
+                    try self.scratch.append(self.allocator, new_decl);
                 } else {
                     const new_init = try self.visitNode(init_idx);
                     const none = @intFromEnum(NodeIndex.none);

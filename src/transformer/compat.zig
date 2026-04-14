@@ -459,7 +459,7 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 
 /// Hermes (React Native) 전용 Unsupported matrix.
 ///
-/// 정책: **사실상 ES5 다운레벨**이지만 `fromESTarget(.es5)`를 직접 쓰지 않고 필드를
+/// 정책: **ESNext → ES5 전체 다운레벨**. `fromESTarget(.es5)`를 직접 쓰지 않고 필드를
 /// 명시적으로 나열한다. Hermes는 일부 ES2015+ feature를 native 지원하지만 edge case가
 /// 누적되어 (#1267 #1283 #1299 #1302 등) 보수적으로 전체 다운레벨이 안전. 동시에
 /// 미래에 특정 feature를 보존하고 싶을 때(예: #1267 회귀 감수해서 async 다시 보존)
@@ -470,6 +470,7 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 ///   `_state.sent()` 버그가 도질 수 있음 — 발생 시 false로 토글 검토.
 /// - 모든 ES2015+ feature 다운레벨이 Rolldown + `@react-native/babel-preset` 출력과
 ///   가장 가까움 (검증 결과).
+/// - `UnsupportedFeatures`에 새 필드가 추가되면 여기도 검토 필요 (자동 반영 안 됨).
 ///
 /// 관련 이슈: #1267 #1275 #1277 #1278 #1283 #1299 #1302
 pub fn fromHermesPreset() UnsupportedFeatures {
