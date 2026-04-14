@@ -46,6 +46,22 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
     };
 }
 
+/// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
+/// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
+fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
+    return switch (ref) {
+        .bundler => |b| blk: {
+            if (b.module != mod.index) break :blk null;
+            if (b.symbol.isNone()) break :blk null;
+            const table = mod.symbol_table orelse break :blk null;
+            if (table.getKind(b.symbol) != .re_export_alias) break :blk null;
+            if (!table.hasCanonicalName(b.symbol)) break :blk null;
+            break :blk table.getCanonicalName(b.symbol);
+        },
+        .semantic => null,
+    };
+}
+
 pub const EsmEmitResult = struct {
     code: []const u8,
     mappings: ?[]const SourceMap.Mapping = null,
@@ -429,28 +445,23 @@ pub fn emitEsmWrappedModule(
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
-                        // #1328 Phase 3a: symbol table이 synthetic_default로 채운 경우에만
-                        // _default 단축 경로 사용. 현재 모듈에 `_default = <expr>` 할당이
-                        // 실제로 emit되는 케이스를 binding_scanner가 정확히 표시한다.
-                        // 분류 오탈자(.re_export로 잘못 분류된 barrel `export { X }`)에서도
-                        // 이 분기로 잘못 들어가지 않는다 (#1321 방어).
+                        // Symbol table이 단축 경로의 source of truth.
+                        // binding_scanner가 `_default = <expr>`가 실제로 emit되는 default만
+                        // synthetic_default로 표시하고, 나머지 re-export는 re_export_alias로
+                        // 표현 → linker가 canonical_name을 채운다. barrel `export { X }`같은
+                        // kind 오분류에도 영향받지 않음 (#1321 방어).
                         if (isSyntheticDefault(eb.symbol, module)) {
                             break :blk if (metadata) |md| md.default_export_name else "_default";
+                        }
+                        if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
+                            break :blk canon;
                         }
                         // live binding override: import binding이 canonical name으로 변경된 경우
                         if (metadata) |md| {
                             if (md.export_getter_overrides.get(eb.local_name)) |override|
                                 break :blk override;
                         }
-                        // `export { X } from './mod'` 직접 re-export는 현재 모듈에 로컬 바인딩이 없어
-                        // getCanonicalName(this_mod, local_name)이 miss → 원본 이름 fallback 시
-                        // `--global-identifier`로 예약된 글로벌과 충돌 가능 (#1312).
                         if (linker) |l| {
-                            if (eb.kind == .re_export) {
-                                if (l.resolveExportChain(module.index, eb.exported_name, 0)) |canonical| {
-                                    break :blk l.resolveToLocalName(canonical);
-                                }
-                            }
                             const mi: u32 = @intFromEnum(module.index);
                             if (l.getCanonicalName(mi, eb.local_name)) |renamed|
                                 break :blk renamed;
