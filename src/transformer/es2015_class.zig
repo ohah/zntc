@@ -1543,11 +1543,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             const empty_params = try self.ast.addNodeList(&.{});
+            const empty_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = empty_params },
+            });
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
-                empty_params.start,
-                empty_params.len,
+                @intFromEnum(empty_params_node),
                 @intFromEnum(body),
                 0,
                 none,
@@ -1750,13 +1754,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
 
             const key_idx: NodeIndex = @enumFromInt(extras[me]);
-            const params_start = extras[me + 1];
-            const params_len = extras[me + 2];
-            const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
-            const flags = extras[me + 4];
+            const params_idx: NodeIndex = @enumFromInt(extras[me + 1]);
+            const body_idx: NodeIndex = @enumFromInt(extras[me + 2]);
+            const flags = extras[me + 3];
 
             // function expression 생성 — ES2015 params lowering은 Pass 2에서 일괄 처리
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const params_list_unwrap: NodeList = if (!params_idx.isNone()) blk: {
+                const pn = self.ast.getNode(params_idx);
+                break :blk if (pn.tag == .formal_parameters) pn.data.list else .{ .start = 0, .len = 0 };
+            } else .{ .start = 0, .len = 0 };
+            const new_params = try self.visitExtraList(params_list_unwrap.start, params_list_unwrap.len);
 
             const is_async = flags & 0x08 != 0;
             const is_generator = flags & 0x10 != 0;
@@ -1796,10 +1803,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             };
 
             const none = @intFromEnum(NodeIndex.none);
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = new_params },
+            });
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                new_params.start,
-                new_params.len,
+                @intFromEnum(new_params_node),
                 @intFromEnum(new_body),
                 func_flags,
                 none,
@@ -1831,10 +1842,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .list = body_list },
             });
             const none = @intFromEnum(NodeIndex.none);
+            const params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = params },
+            });
             const func_extra = try self.ast.addExtras(&.{
                 none,
-                params.start,
-                params.len,
+                @intFromEnum(params_node),
                 @intFromEnum(wrapper_body),
                 0,
                 none,

@@ -1617,12 +1617,16 @@ pub const Transformer = struct {
             .span = span,
             .data = .{ .list = body_list },
         });
-        // function extra: [name, params_start, params_len, body, flags, return_type]
+        // function extra: [name, params, body, flags, return_type]
         const fn_params_list = try self.ast.addNodeList(&.{match_param});
+        const fn_params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = fn_params_list },
+        });
         const fn_extra = try self.ast.addExtras(&.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
-            fn_params_list.start,
-            fn_params_list.len,
+            @intFromEnum(fn_params_node),
             @intFromEnum(fn_body),
             0, // flags
             @intFromEnum(NodeIndex.none), // return type
@@ -2563,8 +2567,14 @@ pub const Transformer = struct {
             .data = .{ .list = inner_body_list },
         });
         const none = @intFromEnum(NodeIndex.none);
+        const inner_empty_params = try self.ast.addNodeList(&.{});
+        const inner_params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = inner_empty_params },
+        });
         const inner_func_extra = try self.ast.addExtras(&.{
-            none, 0, 0, @intFromEnum(inner_body), 0, none,
+            none, @intFromEnum(inner_params_node), @intFromEnum(inner_body), 0, none,
         });
         const inner_func = try self.ast.addNode(.{
             .tag = .function_expression,
@@ -2605,8 +2615,14 @@ pub const Transformer = struct {
             .span = fn_name_binding_span,
             .data = .{ .string_ref = fn_name_binding_span },
         });
+        const outer_empty_params = try self.ast.addNodeList(&.{});
+        const outer_params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = outer_empty_params },
+        });
         const outer_func_extra = try self.ast.addExtras(&.{
-            @intFromEnum(fn_name_binding), 0, 0, @intFromEnum(outer_body), 0, none,
+            @intFromEnum(fn_name_binding), @intFromEnum(outer_params_node), @intFromEnum(outer_body), 0, none,
         });
         const fn_decl = try self.ast.addNode(.{
             .tag = .function_declaration,
