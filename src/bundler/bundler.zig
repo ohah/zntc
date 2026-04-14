@@ -501,6 +501,7 @@ pub const Bundler = struct {
         if (self.options.minify_identifiers) {
             try worker_linker.computeMangling();
         }
+        worker_linker.populateReExportAliases(worker_graph.modules.items);
         defer worker_linker.deinit();
 
         // emit (IIFE 포맷)
@@ -661,6 +662,9 @@ pub const Bundler = struct {
                     try l.computeMangling();
                 }
             }
+            // Phase 3b (#1328): re_export_alias 심볼의 canonical_name 채우기.
+            // computeRenames 이후에 호출해야 getCanonicalName이 최종 리네임을 반영.
+            l.populateReExportAliases(graph.modules.items);
             break :blk l;
         } else null;
         defer if (linker) |*l| l.deinit();

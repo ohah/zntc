@@ -624,6 +624,11 @@ pub fn populateSyntheticSymbols(
         if (eb.has_local_default_binding and std.mem.eql(u8, eb.exported_name, "default")) {
             const id = try table.declare("_default", .synthetic_default, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
+        } else if (eb.kind == .re_export) {
+            // Phase 3b: .re_export마다 alias 심볼 생성. linker가 post-link 단계에서
+            // resolveExportChain 결과를 canonical_name으로 저장한다.
+            const id = try table.declareAnonymous(eb.exported_name, .re_export_alias, eb.local_span);
+            eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         }
     }
 }

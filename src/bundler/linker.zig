@@ -1121,6 +1121,34 @@ pub const Linker = struct {
         return self.safeIdentifierName(canonical, cmod);
     }
 
+    /// #1328 Phase 3b: 각 모듈의 `re_export_alias` 합성 심볼에 대해 체인 resolve를
+    /// 수행하고, 결과를 `canonical_name`에 저장한다. Phase 3c에서 emitter가 이 값을
+    /// 직접 읽어 문자열 기반 `resolveExportChain` 호출을 제거한다.
+    ///
+    /// link() 이후에 호출되어야 한다 — export_map과 canonical_names가 준비된 상태를 전제.
+    pub fn populateReExportAliases(self: *const Linker, modules: []Module) void {
+        for (modules, 0..) |*m, idx| {
+            const mod_idx: ModuleIndex = @enumFromInt(idx);
+            const table_ptr = if (m.symbol_table) |*t| t else continue;
+            for (m.export_bindings) |eb| {
+                if (eb.kind != .re_export) continue;
+                const sym_id = switch (eb.symbol) {
+                    .bundler => |b| blk: {
+                        if (b.module != mod_idx) break :blk null;
+                        if (b.symbol.isNone()) break :blk null;
+                        if (table_ptr.getKind(b.symbol) != .re_export_alias) break :blk null;
+                        break :blk b.symbol;
+                    },
+                    else => null,
+                } orelse continue;
+
+                const ref = self.resolveExportChain(mod_idx, eb.exported_name, 0) orelse continue;
+                const name = self.resolveToLocalName(ref);
+                table_ptr.setCanonicalName(sym_id, name);
+            }
+        }
+    }
+
     /// "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
     /// codegen 합성 변수명(_default)의 canonical name으로 대체.
     fn safeIdentifierName(self: *const Linker, name: []const u8, module_index: u32) []const u8 {
