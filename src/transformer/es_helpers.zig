@@ -14,6 +14,45 @@ const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
+/// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
+/// __classStaticPrivateFieldSpecGet/Set 헬퍼가 descriptor 객체의 value/get/set 슬롯을 읽는다.
+pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span) !NodeIndex {
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    const writable_key = try makeIdentifierRef(self, "writable");
+    const true_span = try self.ast.addString("true");
+    const true_val = try self.ast.addNode(.{
+        .tag = .boolean_literal,
+        .span = true_span,
+        .data = .{ .none = 1 },
+    });
+    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+        .tag = .object_property,
+        .span = span,
+        .data = .{ .binary = .{ .left = writable_key, .right = true_val, .flags = 0 } },
+    }));
+
+    const value_key = try makeIdentifierRef(self, "value");
+    const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
+    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+        .tag = .object_property,
+        .span = span,
+        .data = .{ .binary = .{ .left = value_key, .right = value_init, .flags = 0 } },
+    }));
+
+    const props_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    const obj = try self.ast.addNode(.{
+        .tag = .object_expression,
+        .span = span,
+        .data = .{ .list = props_list },
+    });
+
+    const binding = try makeBindingIdentifier(self, try self.ast.addString(var_name));
+    const declarator = try makeDeclarator(self, binding, obj, span);
+    return makeVarDeclaration(self, &.{declarator}, 0, span);
+}
+
 /// class member의 key가 `constructor` 이름인지 판별.
 /// identifier_reference/binding_identifier만 허용 (string literal key 등은 constructor로 취급 안 함).
 pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {

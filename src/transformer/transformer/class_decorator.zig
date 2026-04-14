@@ -70,6 +70,13 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         if (lower_pm or lower_pf) {
             const has_super = !self.readNodeIdx(e, 1).isNone();
+            // static private field helper는 class 이름으로 receiver brand check를 한다.
+            // 익명 class는 접근 helper가 `undefined`를 참조하게 되므로 static private field
+            // 자체가 emit되지 않는 한 문제 없음.
+            const class_name_text: ?[]const u8 = if (self.getClassNameSpan(new_name)) |s|
+                self.ast.getText(s)
+            else
+                null;
             var new_body: NodeIndex = .none;
             const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
                 self,
@@ -82,6 +89,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 lower_pm,
                 lower_pf,
                 has_super,
+                class_name_text,
             );
             if (had_any) {
                 current_body_idx = new_body;

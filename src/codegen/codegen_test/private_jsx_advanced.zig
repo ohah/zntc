@@ -843,6 +843,40 @@ test "#1275: private method만 있고 원본 constructor 없을 때 새 construc
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_priv)") != null);
 }
 
+test "#1278-2: static #field → descriptor + StaticPrivateFieldSpecGet/Set" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #map = new Map();
+        \\  static get(k) { return this.#map.get(k); }
+        \\  static set(k, v) { this.#map.set(k, v); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // descriptor 객체 선언 (class 밖)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _map={writable:true,value:new Map()}") != null);
+    // static private field property_definition은 body에서 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static #map") == null);
+    // helper 경유 접근 (class name은 'Foo')
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(this,Foo,_map)") != null);
+    // this.#map 구문은 class 본문 어디에도 남지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#map") == null);
+}
+
+test "#1278-2: instance #field + static #field 혼합" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Mixed {
+        \\  #inst = 1;
+        \\  static #stc = 2;
+        \\  use() { return this.#inst + Mixed.#stc; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _inst=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _stc={writable:true,value:2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_inst.get(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Mixed,Mixed,_stc)") != null);
+}
+
 test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 변환" {
     // private method 본문이 다른 private field를 참조할 때, standalone 함수로
     // 추출된 후에도 참조가 WeakMap 접근으로 변환돼야 한다. 버그 수정 전에는
