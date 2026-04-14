@@ -804,7 +804,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     // initializer가 있으면 에러 (예외: sloppy var + for-in + BindingIdentifier만)
     // Annex B.3.5: for (var BindingIdentifier Initializer in Expression) — 허용
     // BindingPattern (array/object destructuring)은 Annex B에서도 항상 금지
-    const is_var = kind == .@"var";
+    const is_var = !kind.isLexical();
     const is_for_in = self.current() == .kw_in;
     if (is_for_in and is_var) {
         // TS 모드에서는 for-in var initializer를 허용 (esbuild 호환).

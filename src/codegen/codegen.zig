@@ -16,7 +16,6 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
-const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const module_parser = @import("../parser/module.zig");
 const Kind = @import("../lexer/token.zig").Kind;
@@ -2399,7 +2398,7 @@ pub const Codegen = struct {
     fn emitVariableDeclaration(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 3];
-        const kind = VariableDeclarationKind.fromU32(extras[0]);
+        const kind = self.ast.variableDeclarationKind(node);
         const list_start = extras[1];
         const list_len = extras[2];
 

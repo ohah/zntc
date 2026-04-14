@@ -35,10 +35,9 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 
-/// let/const/using/await_using을 모두 var로 다운레벨링.
-/// (block scoping, using disposal 전부 var로 치환된 뒤 다른 패스에서 처리)
-pub fn lowerKind(kind: VariableDeclarationKind) VariableDeclarationKind {
-    _ = kind;
+/// block scoping 다운레벨 시 모든 lexical(let/const/using/await_using)을 var로 치환.
+/// (using disposal 등 의미 보존은 별도 패스가 처리)
+pub inline fn lowerKind(_: VariableDeclarationKind) VariableDeclarationKind {
     return .@"var";
 }
 
@@ -57,8 +56,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const init = self.ast.getNode(init_idx);
             if (init.tag != .variable_declaration) return names;
 
-            const kind = self.ast.variableDeclarationKind(init);
-            if (kind == .@"var") return names; // var는 무시, let/const/using/await_using만
+            if (!self.ast.variableDeclarationKind(init).isLexical()) return names;
 
             const e = init.data.extra;
 
