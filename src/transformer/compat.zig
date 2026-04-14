@@ -459,6 +459,22 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
 
 /// ESTarget → UnsupportedFeatures.
 /// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
+/// Hermes (React Native) 전용 Unsupported matrix.
+///
+/// Hermes 0.12+ 기준:
+/// - class expression 거부 → class 전체를 function IIFE로 다운레벨 (class=true 하나로 private/static 모두 함께 처리됨)
+/// - using 선언 미지원
+/// - async/await, let/const, ?., ??, arrow, destructuring, generator 등은 native 지원 → 보존
+/// - 특히 async는 #1267 state machine 버그 때문에 **반드시 보존해야 함**
+///
+/// 관련 이슈: #1267, #1275, #1277, #1278, #1283
+pub fn fromHermesPreset() UnsupportedFeatures {
+    return .{
+        .class = true,
+        .using = true,
+    };
+}
+
 pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
     const t = @intFromEnum(target);
     var bits: u32 = 0;

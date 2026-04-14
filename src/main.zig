@@ -62,6 +62,8 @@ const CliOptions = struct {
     unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
     /// --target에서 파싱한 ES 타겟. top-level await 등 타겟 제한 검증에 사용.
     es_target: ?lib.transformer.TransformOptions.compat.ESTarget = null,
+    /// 사용자가 --target을 명시적으로 전달했는지 (RN 프리셋 경고용).
+    target_explicit: bool = false,
     conditions_list: std.ArrayList([]const u8) = .empty,
     timing: bool = false,
     preserve_symlinks: bool = false,
@@ -459,6 +461,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--target=")) {
             const val = arg["--target=".len..];
             const compat = lib.transformer.TransformOptions.compat;
+            opts.target_explicit = true;
             // ES 타겟 먼저 시도 (es5, es2015, ..., esnext)
             if (std.meta.stringToEnum(compat.ESTarget, val)) |es| {
                 opts.unsupported = compat.fromESTarget(es);
@@ -1233,6 +1236,14 @@ pub fn main() !void {
             try stderr.print("zts: warning: --platform=react-native --dev without --rn-platform may cause unresolved platform-specific modules (e.g. DevTools). Use --rn-platform=ios or --rn-platform=android.\n", .{});
         }
         if (opts.platform == .react_native) {
+            // Hermes는 ES 버전으로 표현 불가능한 부분 지원 조합이라 target 직교성이 깨진다.
+            // platform=react-native면 Hermes 매트릭스가 unsupported를 강제한다.
+            if (opts.target_explicit) {
+                try stderr.print("zts: warning: --target ignored when --platform=react-native (Hermes matrix applied)\n", .{});
+            }
+            opts.unsupported = lib.transformer.TransformOptions.compat.fromHermesPreset();
+            opts.es_target = null;
+
             if (opts.resolve_extensions_list.items.len == 0) {
                 // Metro/롤다운 호환: ts → tsx 순서 (sourceExtensions 기본 순서)
                 const native_and_base = &[_][]const u8{

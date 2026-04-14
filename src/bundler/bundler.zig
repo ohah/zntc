@@ -316,11 +316,18 @@ pub const Bundler = struct {
     resolve_cache_ref: ?*ResolveCache = null,
 
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) Bundler {
+        var opts = options;
+        // platform=react-native → Hermes unsupported matrix로 덮어쓰기.
+        // 사용자가 --target으로 지정한 값은 무시된다 (Hermes는 ES 버전으로 표현 불가능한
+        // 부분 지원 조합이라 target 직교성이 깨짐). 관련 이슈: #1283.
+        if (opts.platform == .react_native) {
+            opts.unsupported = @import("../transformer/transformer.zig").TransformOptions.compat.fromHermesPreset();
+        }
         return .{
             .allocator = allocator,
-            .options = options,
+            .options = opts,
             .resolve_cache = ResolveCache.init(allocator, .{
-                .platform = options.platform,
+                .platform = opts.platform,
                 .external_patterns = options.external,
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
@@ -336,9 +343,13 @@ pub const Bundler = struct {
     /// 외부에서 소유하는 ResolveCache를 사용하는 생성자.
     /// resolve_cache_ref 포인터를 저장하므로 얕은 복사 없이 원본을 직접 참조한다.
     pub fn initWithResolveCache(allocator: std.mem.Allocator, options: BundleOptions, rc: *ResolveCache) Bundler {
+        var opts = options;
+        if (opts.platform == .react_native) {
+            opts.unsupported = @import("../transformer/transformer.zig").TransformOptions.compat.fromHermesPreset();
+        }
         return .{
             .allocator = allocator,
-            .options = options,
+            .options = opts,
             .resolve_cache = rc.*, // resolve_cache_ref가 우선이므로 이 값은 사용 안 됨
             .resolve_cache_ref = rc,
         };
