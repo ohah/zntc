@@ -24,19 +24,6 @@ const stmt_info_mod = @import("../stmt_info.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const symbol_mod = @import("../symbol.zig");
 const SymbolRef = symbol_mod.SymbolRef;
-
-/// #1328 Phase 3a: ExportBinding.symbol이 현재 모듈의 synthetic_default 심볼인지 확인.
-/// 현재 모듈의 `_default = <expr>` 할당을 참조할 수 있음을 의미.
-fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
-    return switch (ref) {
-        .bundler => |b| blk: {
-            if (b.module != mod.index) break :blk false;
-            const table = mod.symbol_table orelse break :blk false;
-            break :blk b.symbol.isNone() == false and table.getKind(b.symbol) == .synthetic_default;
-        },
-        .semantic => false,
-    };
-}
 const parent = @import("../emitter.zig");
 const EmitOptions = parent.EmitOptions;
 const resolveNodeName = parent.resolveNodeName;
@@ -45,6 +32,19 @@ const collectImportBindingNames = parent.collectImportBindingNames;
 const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
 const appendIndented = parent.appendIndented;
 const appendModuleCall = parent.appendModuleCall;
+
+/// ExportBinding.symbol이 현재 모듈의 synthetic_default 심볼인지 확인.
+/// 현재 모듈의 `_default = <expr>` 할당을 참조할 수 있음을 의미.
+fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
+    return switch (ref) {
+        .bundler => |b| blk: {
+            if (b.module != mod.index) break :blk false;
+            const table = mod.symbol_table orelse break :blk false;
+            break :blk !b.symbol.isNone() and table.getKind(b.symbol) == .synthetic_default;
+        },
+        .semantic => false,
+    };
+}
 
 pub const EsmEmitResult = struct {
     code: []const u8,
