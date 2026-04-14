@@ -741,7 +741,7 @@ test "Bundler: UMD external dependencies in wrapper" {
     try std.testing.expect(std.mem.indexOf(u8, output, "React.useState") != null);
 }
 
-test "Async helper: single __async emit when target downlevels async (#1267 dup)" {
+test "Async helper: single __async emit when target downlevels async" {
     // target=es5 + async 사용 → __async/__generator helper 정확히 1회씩만 emit
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
