@@ -21,6 +21,7 @@ const Data = Node.Data;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const module_parser = @import("../parser/module.zig");
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
@@ -1842,8 +1843,8 @@ pub const Transformer = struct {
         const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.scratch.shrinkRetainingCapacity(scratch_top);
         // variable_declaration: extra = [kind_flags, list.start, list.len]
-        // kind_flags=2: const
-        const var_extra = try self.ast.addExtras(&.{ 2, list.start, list.len });
+        // kind = .const
+        const var_extra = try self.ast.addExtras(&.{ @intFromEnum(VariableDeclarationKind.@"const"), list.start, list.len });
         return try self.ast.addNode(.{
             .tag = .variable_declaration,
             .span = node.span,
@@ -1955,16 +1956,16 @@ pub const Transformer = struct {
             }
         }
         const e = node.data.extra;
-        const orig_kind = self.readU32(e, 0);
-        const kind_flags = if (self.options.unsupported.block_scoping)
-            es2015_block_scoping.lowerKindFlags(orig_kind)
+        const orig_kind = VariableDeclarationKind.fromU32(self.readU32(e, 0));
+        const kind = if (self.options.unsupported.block_scoping)
+            es2015_block_scoping.lowerKind(orig_kind)
         else
             orig_kind;
 
         // let/const → var 변환 시: 초기화 없는 declarator에 = void 0 추가.
         // let은 블록 스코프로 매 반복 새 바인딩이지만, var는 hoisted되어 이전 값 유지.
         // Metro(Babel)와 동일하게 명시적 undefined 초기화로 의미론 보존.
-        const needs_void_init = self.options.unsupported.block_scoping and (orig_kind >= 1 and orig_kind <= 4);
+        const needs_void_init = self.options.unsupported.block_scoping and orig_kind.isLexical();
 
         const list_start = self.readU32(e, 1);
         const list_len = self.readU32(e, 2);
@@ -2009,11 +2010,11 @@ pub const Transformer = struct {
             }
 
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            return self.addExtraNode(.variable_declaration, node.span, &.{ kind_flags, new_list.start, new_list.len });
+            return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
         }
 
         const new_list = try self.visitExtraList(list_start, list_len);
-        return self.addExtraNode(.variable_declaration, node.span, &.{ kind_flags, new_list.start, new_list.len });
+        return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
     }
 
     /// variable_declarator: extra_data = [name, type_ann, init]
@@ -2662,8 +2663,8 @@ pub const Transformer = struct {
             if (stmt.tag != .variable_declaration) continue;
 
             const ve = stmt.data.extra;
-            const kind_flags = self.readU32(ve, 0);
-            if (kind_flags == 0) continue; // var(0)은 무시, let(1)/const(2)/using(3)/await_using(4)만
+            const kind = self.ast.variableDeclarationKind(stmt);
+            if (kind == .@"var") continue; // var는 무시, let/const/using/await_using만
 
             const decl_start = self.readU32(ve, 1);
             const decl_len = self.readU32(ve, 2);
@@ -2723,7 +2724,7 @@ pub const Transformer = struct {
 
         const decl_list = try self.ast.addNodeList(&.{declarator});
         return self.addExtraNode(.variable_declaration, span, &.{
-            0, // var
+            @intFromEnum(VariableDeclarationKind.@"var"),
             decl_list.start,
             decl_list.len,
         });
@@ -2757,7 +2758,7 @@ pub const Transformer = struct {
 
         const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-            0, // var
+            @intFromEnum(VariableDeclarationKind.@"var"),
             decl_list.start,
             decl_list.len,
         });

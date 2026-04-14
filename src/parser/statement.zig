@@ -12,6 +12,7 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Kind = token_mod.Kind;
 const Span = token_mod.Span;
@@ -496,18 +497,18 @@ fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    const kind_flags: u32 = switch (self.current()) {
-        .kw_var => 0,
-        .kw_let => 1,
-        .kw_const => 2,
-        .kw_using => if (self.is_await_using) @as(u32, 4) else @as(u32, 3), // 3=using, 4=await using
-        else => 0,
+    const kind: VariableDeclarationKind = switch (self.current()) {
+        .kw_var => .@"var",
+        .kw_let => .let,
+        .kw_const => .@"const",
+        .kw_using => if (self.is_await_using) .await_using else .using,
+        else => .@"var",
     };
     try self.advance(); // skip var/let/const/using
 
     // let/const 선언에서 바인딩 이름 'let'은 금지 (ECMAScript 14.3.1.1)
     // 'let let = 1' → SyntaxError (non-strict에서도)
-    if (kind_flags != 0 and self.current() == .kw_let) {
+    if (kind.isLexical() and self.current() == .kw_let) {
         try self.addErrorCode(self.currentSpan(), "'let' is not allowed as variable name in lexical declaration", .let_in_lexical);
     }
 
@@ -517,7 +518,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
         // const without initializer → SyntaxError (ECMAScript 14.3.1)
         // for-in/for-of에서는 const 이니셜라이저 불필요 (for (const x of ...))
         // TS declare에서도 불필요 (declare const x: number)
-        if (kind_flags == 2 and !decl.isNone() and !self.for_loop_init and !self.ctx.in_ambient) {
+        if (kind == .@"const" and !decl.isNone() and !self.for_loop_init and !self.ctx.in_ambient) {
             const decl_node = self.ast.getNode(decl);
             if (decl_node.tag == .variable_declarator) {
                 const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
@@ -542,7 +543,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     // extra_data: [kind_flags, list.start, list.len]
-    const extra_start = try self.ast.addExtra(kind_flags);
+    const extra_start = try self.ast.addExtra(@intFromEnum(kind));
     _ = try self.ast.addExtra(list.start);
     _ = try self.ast.addExtra(list.len);
 
@@ -782,7 +783,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     if (init_node.tag != .variable_declaration) return;
 
     const extras = self.ast.extra_data.items;
-    const kind_flags = extras[init_node.data.extra];
+    const kind = self.ast.variableDeclarationKind(init_node);
     const list_start = extras[init_node.data.extra + 1];
     const decl_len = extras[init_node.data.extra + 2];
 
@@ -803,7 +804,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     // initializer가 있으면 에러 (예외: sloppy var + for-in + BindingIdentifier만)
     // Annex B.3.5: for (var BindingIdentifier Initializer in Expression) — 허용
     // BindingPattern (array/object destructuring)은 Annex B에서도 항상 금지
-    const is_var = kind_flags == 0;
+    const is_var = kind == .@"var";
     const is_for_in = self.current() == .kw_in;
     if (is_for_in and is_var) {
         // TS 모드에서는 for-in var initializer를 허용 (esbuild 호환).

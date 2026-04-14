@@ -33,10 +33,13 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 
-/// let(1), const(2), using(3), await_using(4)이면 var(0)으로 변환.
-pub fn lowerKindFlags(kind_flags: u32) u32 {
-    return if (kind_flags >= 1 and kind_flags <= 4) 0 else kind_flags;
+/// let/const/using/await_using을 모두 var로 다운레벨링.
+/// (block scoping, using disposal 전부 var로 치환된 뒤 다른 패스에서 처리)
+pub fn lowerKind(kind: VariableDeclarationKind) VariableDeclarationKind {
+    _ = kind;
+    return .@"var";
 }
 
 pub fn ES2015BlockScoping(comptime Transformer: type) type {
@@ -54,9 +57,10 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const init = self.ast.getNode(init_idx);
             if (init.tag != .variable_declaration) return names;
 
+            const kind = self.ast.variableDeclarationKind(init);
+            if (kind == .@"var") return names; // var는 무시, let/const/using/await_using만
+
             const e = init.data.extra;
-            const kind_flags = self.readU32(e, 0);
-            if (kind_flags == 0) return names; // var(0)는 무시, let(1)/const(2)/using(3)/await_using(4)만
 
             const list_start = self.readU32(e, 1);
             const list_len = self.readU32(e, 2);
@@ -287,7 +291,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_name_span = try self.ast.addString(loop_name);
             const loop_binding = try es_helpers.makeBindingIdentifier(self, loop_name_span);
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
-            const loop_var = try es_helpers.makeVarDeclaration(self, &.{loop_decl}, 0, span);
+            const loop_var = try es_helpers.makeVarDeclaration(self, &.{loop_decl}, .@"var", span);
 
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
@@ -811,9 +815,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
 test "ES2015 block scoping module compiles" {
     const std_lib = @import("std");
-    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(0)); // var → var
-    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(1)); // let → var
-    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(2)); // const → var
-    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(3)); // using → var
-    try std_lib.testing.expectEqual(@as(u32, 0), lowerKindFlags(4)); // await_using → var
+    try std_lib.testing.expectEqual(VariableDeclarationKind.@"var", lowerKind(.@"var")); // var → var
+    try std_lib.testing.expectEqual(VariableDeclarationKind.@"var", lowerKind(.let)); // let → var
+    try std_lib.testing.expectEqual(VariableDeclarationKind.@"var", lowerKind(.@"const")); // const → var
+    try std_lib.testing.expectEqual(VariableDeclarationKind.@"var", lowerKind(.using)); // using → var
+    try std_lib.testing.expectEqual(VariableDeclarationKind.@"var", lowerKind(.await_using)); // await_using → var
 }

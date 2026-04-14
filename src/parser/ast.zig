@@ -869,6 +869,12 @@ pub const Ast = struct {
         self.nodes.items[@intFromEnum(index)].tag = new_tag;
     }
 
+    /// variable_declaration 노드의 kind를 typed enum으로 반환.
+    /// node.tag == .variable_declaration 가정. extra[0]에 저장된 u32를 디코드.
+    pub fn variableDeclarationKind(self: *const Ast, node: Node) VariableDeclarationKind {
+        return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
+    }
+
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
     pub fn addExtra(self: *Ast, value: u32) !u32 {
         const index: u32 = @intCast(self.extra_data.items.len);
@@ -1006,4 +1012,33 @@ pub const ArrowFlags = struct {
 /// extra: [tag, template, flags]
 pub const TaggedTemplateFlags = struct {
     pub const is_pure: u32 = 0x01; // @__PURE__
+};
+
+/// variable_declaration의 kind. extra[0]에 u32로 저장.
+/// 매직넘버(0~4) 대신 typed enum 사용. 값은 wire-compat 유지를 위해 고정.
+pub const VariableDeclarationKind = enum(u32) {
+    @"var" = 0,
+    let = 1,
+    @"const" = 2,
+    using = 3,
+    await_using = 4,
+
+    pub fn fromU32(v: u32) VariableDeclarationKind {
+        return switch (v) {
+            0 => .@"var",
+            1 => .let,
+            2 => .@"const",
+            3 => .using,
+            4 => .await_using,
+            else => .@"var", // 미지값은 var로 fallback (parser fallback과 일치)
+        };
+    }
+
+    pub fn isLexical(self: VariableDeclarationKind) bool {
+        return self != .@"var";
+    }
+
+    pub fn isUsing(self: VariableDeclarationKind) bool {
+        return self == .using or self == .await_using;
+    }
 };

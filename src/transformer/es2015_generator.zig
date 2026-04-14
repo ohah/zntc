@@ -203,7 +203,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, declarator);
                 }
                 self.generator_temp_var_spans.clearRetainingCapacity();
-                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top2..], 0, span);
+                var_decl_node = try es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top2..], .@"var", span);
             }
 
             return .{ .body = switch_node, .var_decl = var_decl_node };

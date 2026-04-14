@@ -1904,12 +1904,13 @@ test "let → var: 초기화 없는 let에 void 0 추가 확인" {
     // 트랜스포머가 void 0을 생성하는지 codegen_test에서 직접 검증 (4개 테스트 추가됨).
     // 여기서는 변환 로직의 핵심 경로만 확인.
     const block_scoping = @import("../../transformer/es2015_block_scoping.zig");
-    // let(1) → var(0)
-    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(1));
-    // const(2) → var(0)
-    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(2));
-    // var(0) → var(0) 그대로
-    try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(0));
+    const VDK = @import("../../parser/ast.zig").VariableDeclarationKind;
+    // let → var
+    try std.testing.expectEqual(VDK.@"var", block_scoping.lowerKind(.let));
+    // const → var
+    try std.testing.expectEqual(VDK.@"var", block_scoping.lowerKind(.@"const"));
+    // var → var 그대로
+    try std.testing.expectEqual(VDK.@"var", block_scoping.lowerKind(.@"var"));
 }
 
 // ============================================================

@@ -11,6 +11,7 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
@@ -45,7 +46,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
     const binding = try makeBindingIdentifier(self, try self.ast.addString(var_name));
     const declarator = try makeDeclarator(self, binding, obj, span);
-    return makeVarDeclaration(self, &.{declarator}, 0, span);
+    return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
 
 /// class member의 key가 `constructor` 이름인지 판별.
@@ -270,11 +271,10 @@ pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: 
     });
 }
 
-/// variable_declaration 노드 생성 (var 키워드, declarators 배열).
-/// kind_flags: 0 = var, 1 = let, 2 = const
-pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind_flags: u32, span: Span) !NodeIndex {
+/// variable_declaration 노드 생성 (var/let/const/using/await_using 키워드, declarators 배열).
+pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind: VariableDeclarationKind, span: Span) !NodeIndex {
     const decl_list = try self.ast.addNodeList(declarators);
-    const var_extra = try self.ast.addExtras(&.{ kind_flags, decl_list.start, decl_list.len });
+    const var_extra = try self.ast.addExtras(&.{ @intFromEnum(kind), decl_list.start, decl_list.len });
     return self.ast.addNode(.{
         .tag = .variable_declaration,
         .span = span,

@@ -31,6 +31,72 @@ test "Parser: variable declaration" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
+
+fn firstVariableDeclaration(parser: *Parser) ast_mod.Node {
+    // 첫 번째 variable_declaration 노드를 찾음 (program/block/function 위치 무관).
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .variable_declaration) return node;
+    }
+    unreachable;
+}
+
+fn parseAndGetKind(src: []const u8) !VariableDeclarationKind {
+    var scanner = try Scanner.init(std.testing.allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+    const decl = firstVariableDeclaration(&parser);
+    return parser.ast.variableDeclarationKind(decl);
+}
+
+test "Parser: variableDeclarationKind — var" {
+    try std.testing.expectEqual(VariableDeclarationKind.@"var", try parseAndGetKind("var x = 1;"));
+}
+
+test "Parser: variableDeclarationKind — let" {
+    try std.testing.expectEqual(VariableDeclarationKind.let, try parseAndGetKind("let x = 1;"));
+}
+
+test "Parser: variableDeclarationKind — const" {
+    try std.testing.expectEqual(VariableDeclarationKind.@"const", try parseAndGetKind("const x = 1;"));
+}
+
+test "Parser: variableDeclarationKind — using" {
+    try std.testing.expectEqual(VariableDeclarationKind.using, try parseAndGetKind("{ using x = null; }"));
+}
+
+test "Parser: variableDeclarationKind — await using" {
+    try std.testing.expectEqual(VariableDeclarationKind.await_using, try parseAndGetKind("async function f() { await using x = null; }"));
+}
+
+test "VariableDeclarationKind: isLexical / isUsing helpers" {
+    try std.testing.expect(!VariableDeclarationKind.@"var".isLexical());
+    try std.testing.expect(VariableDeclarationKind.let.isLexical());
+    try std.testing.expect(VariableDeclarationKind.@"const".isLexical());
+    try std.testing.expect(VariableDeclarationKind.using.isLexical());
+    try std.testing.expect(VariableDeclarationKind.await_using.isLexical());
+
+    try std.testing.expect(!VariableDeclarationKind.let.isUsing());
+    try std.testing.expect(VariableDeclarationKind.using.isUsing());
+    try std.testing.expect(VariableDeclarationKind.await_using.isUsing());
+}
+
+test "VariableDeclarationKind: wire-compat numeric values" {
+    // 모든 consumer가 의존하는 wire 값. 변경 금지.
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(VariableDeclarationKind.@"var"));
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(VariableDeclarationKind.let));
+    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(VariableDeclarationKind.@"const"));
+    try std.testing.expectEqual(@as(u32, 3), @intFromEnum(VariableDeclarationKind.using));
+    try std.testing.expectEqual(@as(u32, 4), @intFromEnum(VariableDeclarationKind.await_using));
+}
+
+test "VariableDeclarationKind: fromU32 unknown values fall back to var" {
+    try std.testing.expectEqual(VariableDeclarationKind.@"var", VariableDeclarationKind.fromU32(99));
+}
+
 test "Parser: binary expression" {
     var scanner = try Scanner.init(std.testing.allocator, "1 + 2 * 3;");
     defer scanner.deinit();

@@ -216,7 +216,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const destruct_decl = try es_helpers.makeVarDeclaration(
                 self,
                 &.{try es_helpers.makeDeclarator(self, visited_pattern, temp_ref2, span)},
-                0,
+                .@"var",
                 span,
             );
             try body_stmts.append(self.allocator, destruct_decl);
@@ -244,7 +244,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
-                const decl = try es_helpers.makeVarDeclaration(self, declarators, 0, span);
+                const decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
                 try body_stmts.append(self.allocator, decl);
             }
 
@@ -326,7 +326,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             // var rest = [].slice.call(arguments, N)
             const declarator = try es_helpers.makeDeclarator(self, binding, call_node, span);
-            return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
+            return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
         }
 
         /// identifier 노드를 복제한다 (같은 이름의 새 노드).

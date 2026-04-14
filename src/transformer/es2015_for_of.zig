@@ -114,7 +114,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const iter_declarator = try es_helpers.makeDeclarator(self, iter_binding, iter_call, span);
             const step_binding = try es_helpers.makeBindingIdentifier(self, step_span);
             const step_declarator = try es_helpers.makeDeclarator(self, step_binding, .none, span);
-            const for_init = try es_helpers.makeVarDeclaration(self, &.{ iter_declarator, step_declarator }, 0, span);
+            const for_init = try es_helpers.makeVarDeclaration(self, &.{ iter_declarator, step_declarator }, .@"var", span);
 
             // --- test: !(_a = (_e = _d.next()).done) ---
 
@@ -403,7 +403,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         fn makeVarDeclFromSpan(self: *Transformer, name_span: Span, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const binding = try es_helpers.makeBindingIdentifier(self, name_span);
             const declarator = try es_helpers.makeDeclarator(self, binding, init, span);
-            return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
+            return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
         }
 
         /// for-of의 left를 기반으로 var 선언 또는 대입문 생성.
@@ -425,7 +425,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 const binding_name = try self.visitNode(binding_idx);
 
                 const declarator = try es_helpers.makeDeclarator(self, binding_name, elem, span);
-                return es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
+                return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             } else {
                 const new_left = try self.visitNode(left);
                 const assign = try self.ast.addNode(.{
