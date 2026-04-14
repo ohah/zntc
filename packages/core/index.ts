@@ -321,21 +321,37 @@ export interface PluginBuild {
     callback: (args: {
       path: string;
       importer: string | null;
-    }) => { path: string; external?: boolean } | null | undefined,
+    }) =>
+      | { path: string; external?: boolean }
+      | null
+      | undefined
+      | Promise<{ path: string; external?: boolean } | null | undefined>,
   ): void;
   onLoad(
     options: { filter: RegExp },
-    callback: (args: { path: string }) => { contents: string; loader?: string } | null | undefined,
+    callback: (args: {
+      path: string;
+    }) =>
+      | { contents: string; loader?: string }
+      | null
+      | undefined
+      | Promise<{ contents: string; loader?: string } | null | undefined>,
   ): void;
   onTransform(
     options: { filter: RegExp },
-    callback: (args: { code: string; path: string }) => { code: string } | null | undefined,
+    callback: (args: {
+      code: string;
+      path: string;
+    }) => { code: string } | null | undefined | Promise<{ code: string } | null | undefined>,
   ): void;
   onRenderChunk(
     options: { filter: RegExp },
-    callback: (args: { code: string; chunk: string }) => { code: string } | null | undefined,
+    callback: (args: {
+      code: string;
+      chunk: string;
+    }) => { code: string } | null | undefined | Promise<{ code: string } | null | undefined>,
   ): void;
-  onGenerateBundle(callback: (outputs: OutputFile[]) => void): void;
+  onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
   onAstFunction(
     options: { filter: RegExp },
     callback: (
@@ -535,7 +551,7 @@ function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void
   for (const file of result.outputFiles) {
     if (!file.path.endsWith(".css")) continue;
     try {
-      const transformed = lcss.transform({
+      const transformed = lcss!.transform({
         code: Buffer.from(file.text),
         minify: true,
         filename: file.path,
