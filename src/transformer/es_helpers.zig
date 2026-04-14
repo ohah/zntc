@@ -41,12 +41,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
         .data = .{ .binary = .{ .left = value_key, .right = value_init, .flags = 0 } },
     }));
 
-    const props_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    const obj = try self.ast.addNode(.{
-        .tag = .object_expression,
-        .span = span,
-        .data = .{ .list = props_list },
-    });
+    const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
 
     const binding = try makeBindingIdentifier(self, try self.ast.addString(var_name));
     const declarator = try makeDeclarator(self, binding, obj, span);
@@ -400,17 +395,23 @@ pub const PrivateMethodNames = struct {
     fn_name: []const u8,
 };
 
+/// "#bar" → "_bar" (allocator 소유). private field WeakMap/descriptor 변수명으로 사용.
+pub fn makePrivateVarName(allocator: std.mem.Allocator, orig_name: []const u8) ![]u8 {
+    const bare = orig_name[1..]; // # 제거
+    const buf = try allocator.alloc(u8, 1 + bare.len);
+    buf[0] = '_';
+    @memcpy(buf[1..], bare);
+    return buf;
+}
+
 /// "#bar" → { ws_name="_bar", fn_name="_bar_fn" }
-/// allocator로 직접 할당하여 버퍼 크기 제한 없음.
 pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u8) !PrivateMethodNames {
-    const bare_name = orig_name[1..]; // # 제거
-    const ws_name = try allocator.alloc(u8, 1 + bare_name.len);
-    ws_name[0] = '_';
-    @memcpy(ws_name[1..], bare_name);
-    const fn_name = try allocator.alloc(u8, 1 + bare_name.len + 3);
+    const ws_name = try makePrivateVarName(allocator, orig_name);
+    const bare = orig_name[1..];
+    const fn_name = try allocator.alloc(u8, 1 + bare.len + 3);
     fn_name[0] = '_';
-    @memcpy(fn_name[1 .. 1 + bare_name.len], bare_name);
-    @memcpy(fn_name[1 + bare_name.len ..], "_fn");
+    @memcpy(fn_name[1 .. 1 + bare.len], bare);
+    @memcpy(fn_name[1 + bare.len ..], "_fn");
     return .{ .ws_name = ws_name, .fn_name = fn_name };
 }
 

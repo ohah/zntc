@@ -862,7 +862,7 @@ test "#1278-2: static #field → descriptor + StaticPrivateFieldSpecGet/Set" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#map") == null);
 }
 
-test "#1278-2: instance #field + static #field 혼합" {
+test "#1278-2: static #field + instance #field 혼합 (brand check + WeakMap 공존)" {
     var r = try e2eTarget(std.testing.allocator,
         \\class Mixed {
         \\  #inst = 1;

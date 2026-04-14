@@ -166,6 +166,10 @@ pub fn ES2022(comptime Transformer: type) type {
         ///
         /// lower_methods / lower_fields: false면 해당 종류는 수집하지 않는다
         /// (예: ES2022 타겟에서 method만 다운레벨, field는 런타임 네이티브 유지).
+        ///
+        /// class_name_text: static private field helper가 receiver brand check에 사용할
+        /// 클래스 이름(원본 소스 텍스트). 익명 class면 null — 이 경우 static private field는
+        /// 수집에서 제외된다 (클래스 자체 참조가 불가능).
         pub fn lowerPrivateMembers(
             self: *Transformer,
             body_idx: NodeIndex,
@@ -228,10 +232,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
                         const init_val: NodeIndex = self.readNodeIdx(pe, 1);
                         const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
-                        const bare = orig_name[1..];
-                        const var_name = try self.allocator.alloc(u8, 1 + bare.len);
-                        var_name[0] = '_';
-                        @memcpy(var_name[1..], bare);
+                        const var_name = try es_helpers.makePrivateVarName(self.allocator, orig_name);
 
                         try field_mappings.append(self.allocator, .{
                             .original_name = orig_name,
