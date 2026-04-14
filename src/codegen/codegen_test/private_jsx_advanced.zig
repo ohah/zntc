@@ -912,3 +912,112 @@ test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return _field.get(this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#field") == null);
 }
+
+// ES2022 Ergonomic Brand Checks: #x in obj
+// ================================================================
+// Spec: https://tc39.es/ecma262/#sec-relational-operators
+// Babel: @babel/plugin-transform-private-property-in-object
+// 동작: class가 다운레벨되어 private mapping이 있을 때만 변환.
+// - instance field  : #x in obj → _x.has(obj)    (WeakMap.has)
+// - private method  : #m in obj → _m.has(obj)    (WeakSet.has)
+// - static field    : #s in obj → obj === ClassName (brand check, class 이름 필요)
+
+test "#x in obj: instance private field → WeakMap.has" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x = 1;
+        \\  static test(o) { return #x in o; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    // private 구문이 class body 밖으로 새어 나가지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
+}
+
+test "#x in obj: private method → WeakSet.has" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #m() { return 1; }
+        \\  static test(o) { return #m in o; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_m.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#m in") == null);
+}
+
+test "#x in obj: static private field → class identity brand check" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #s = 1;
+        \\  static test(o) { return #s in o; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // static private field는 런타임에 별도 저장소가 없으므로 class 자체 비교로 brand check.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "o===Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#s in") == null);
+}
+
+test "#x in obj: 부정 !(#x in obj)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x;
+        \\  static test(o) { return !(#x in o); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // 원본의 괄호는 보존되어 `!(_x.has(o))`. 시맨틱 동일.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
+}
+
+test "#x in obj: 체이닝 (#x in o && #y in o)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x;
+        \\  #y;
+        \\  static test(o) { return (#x in o) && (#y in o); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_y.has(o)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#y in") == null);
+}
+
+test "#x in obj: if 문 안에서" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x;
+        \\  static test(o) { if (#x in o) return 1; return 0; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "if(_x.has(o))") != null);
+}
+
+test "#x in obj: instance method 내부 (this 컨텍스트 아닌 일반 인자)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x;
+        \\  test(o) { return #x in o; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.has(o)") != null);
+}
+
+test "#x in obj: es2022 타겟에서는 보존 (native 지원)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #x;
+        \\  static test(o) { return #x in o; }
+        \\}
+    , .es2022);
+    defer r.deinit();
+    // es2022에서는 private field가 native 지원이므로 #x in o 그대로 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#x in o") != null);
+}
