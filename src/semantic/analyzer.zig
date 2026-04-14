@@ -1120,11 +1120,9 @@ pub const SemanticAnalyzer = struct {
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = try self.enterScope(.function, self.is_strict_mode);
                     const params_list = self.ast.functionParamsList(node);
-                    const params_start = params_list.start;
-                    const params_len = params_list.len;
-                    try self.registerParams(params_start, params_len);
+                    try self.registerParams(params_list);
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
-                    try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+                    try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
                     try self.visitFunctionBodyInner(body_idx);
                     self.exitScope(scope_saved);
                 }
@@ -1743,15 +1741,13 @@ pub const SemanticAnalyzer = struct {
 
         // 파라미터를 function 스코프에 등록
         const params_list = self.ast.functionParamsList(node);
-        const params_start = params_list.start;
-        const params_len = params_list.len;
-        try self.registerParams(params_start, params_len);
+        try self.registerParams(params_list);
 
         // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
         // 일반 함수는 strict mode에서만 (non-strict sloppy mode는 중복 허용)
         const FnFlags = ast_mod.FunctionFlags;
         if ((flags & FnFlags.is_async) != 0 or (flags & FnFlags.is_generator) != 0 or self.isCurrentStrict()) {
-            try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+            try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
         }
 
         // 본문 순회
@@ -1777,7 +1773,7 @@ pub const SemanticAnalyzer = struct {
 
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const params_list = self.ast.functionParamsList(func_node);
-        try self.registerParams(params_list.start, params_list.len);
+        try self.registerParams(params_list);
         try self.visitFunctionBodyInner(body_idx);
         self.exitScope(saved);
     }
@@ -1799,9 +1795,7 @@ pub const SemanticAnalyzer = struct {
         _ = @as(NodeIndex, @enumFromInt(extras[extra_start])); // name_idx (사용하지 않음)
 
         const params_list = self.ast.functionParamsList(node);
-        const params_start = params_list.start;
-        const params_len = params_list.len;
-        try self.registerParams(params_start, params_len);
+        try self.registerParams(params_list);
 
         // 중복 파라미터 검증: flags에서 async/generator 판별
         const fn_flags = extras[extra_start + 3];
@@ -1809,7 +1803,7 @@ pub const SemanticAnalyzer = struct {
         const fn_is_async = (fn_flags & FnFlags.is_async) != 0;
         const fn_is_generator = (fn_flags & FnFlags.is_generator) != 0;
         if (fn_is_async or fn_is_generator or self.isCurrentStrict()) {
-            try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+            try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
         }
 
         try self.visitFunctionBodyInner(body_idx);
@@ -2736,10 +2730,10 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 함수 파라미터를 현재 스코프에 등록한다.
-    fn registerParams(self: *SemanticAnalyzer, params_start: u32, params_len: u32) AllocError!void {
-        if (params_len == 0) return;
-        if (params_start + params_len > self.ast.extra_data.items.len) return;
-        const param_indices = self.ast.extra_data.items[params_start .. params_start + params_len];
+    fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
+        if (params.len == 0) return;
+        if (params.start + params.len > self.ast.extra_data.items.len) return;
+        const param_indices = self.ast.extra_data.items[params.start .. params.start + params.len];
         for (param_indices) |raw_idx| {
             try self.registerBinding(@enumFromInt(raw_idx), .parameter);
         }

@@ -482,9 +482,9 @@ pub const Transformer = struct {
                     if (params_node.tag != .formal_parameters) continue;
                     const params_list = params_node.data.list;
                     if (params_list.len == 0) continue;
-                    if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_list.start, params_list.len)) continue;
+                    if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_list)) continue;
 
-                    var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_list.start, params_list.len, node.span);
+                    var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_list, node.span);
                     defer lr.body_stmts.deinit(self.allocator);
 
                     // formal_parameters 노드를 새로 만들어 extras[e+1]에 연결.
@@ -2096,12 +2096,10 @@ pub const Transformer = struct {
                 params_span = pnode.span;
             }
         }
-        const params_start = params_list_old.start;
-        const params_len = params_list_old.len;
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        const pp = try self.visitParamsCollectProperties(params_start, params_len);
+        const pp = try self.visitParamsCollectProperties(params_list_old);
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 2);
@@ -2172,10 +2170,8 @@ pub const Transformer = struct {
             .node_tag = node.tag,
             .name = self.getFunctionName(self.ast.getNode(result)),
             .body_idx = new_body,
-            .params_start = pp.new_params.start,
-            .params_len = pp.new_params.len,
-            .original_params_start = params_start,
-            .original_params_len = params_len,
+            .params = pp.new_params,
+            .original_params = params_list_old,
             .original_body_idx = old_body_idx,
             .flags = self.readU32(e, 3),
             .source_path = self.options.jsx_filename,
@@ -2198,7 +2194,7 @@ pub const Transformer = struct {
         prop_count: usize,
     };
 
-    fn visitParamsCollectProperties(self: *Transformer, vp_start: u32, vp_len: u32) Error!ParamPropertyResult {
+    fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!ParamPropertyResult {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -2210,8 +2206,8 @@ pub const Transformer = struct {
 
         // visitNode가 AST를 변형하므로 인덱스 루프 사용
         var i_loop: u32 = 0;
-        while (i_loop < vp_len) : (i_loop += 1) {
-            const raw_idx = self.ast.extra_data.items[vp_start + i_loop];
+        while (i_loop < vp.len) : (i_loop += 1) {
+            const raw_idx = self.ast.extra_data.items[vp.start + i_loop];
             const param_idx: NodeIndex = @enumFromInt(raw_idx);
             if (param_idx.isNone()) continue;
             const param_node = self.ast.getNode(param_idx);
@@ -2796,35 +2792,24 @@ pub const Transformer = struct {
         const is_auto_worklet = self.plugins.worklet.auto_next;
         if (is_auto_worklet or self.options.plugins.len > 0) {
             // parser가 arrow params를 항상 formal_parameters list로 정규화하므로 tag 체크 불필요.
-            var orig_p_start: u32 = 0;
-            var orig_p_len: u32 = 0;
-            var new_p_start: u32 = 0;
-            var new_p_len: u32 = 0;
-
-            if (!params_idx.isNone()) {
-                const orig_params_node = self.ast.getNode(params_idx);
-                if (orig_params_node.tag == .formal_parameters) {
-                    orig_p_start = orig_params_node.data.list.start;
-                    orig_p_len = orig_params_node.data.list.len;
-                }
-            }
-            if (!new_params.isNone()) {
-                const new_params_node = self.ast.getNode(new_params);
-                if (new_params_node.tag == .formal_parameters) {
-                    new_p_start = new_params_node.data.list.start;
-                    new_p_len = new_params_node.data.list.len;
-                }
-            }
+            const orig_params_list: NodeList = blk: {
+                if (params_idx.isNone()) break :blk .{ .start = 0, .len = 0 };
+                const n = self.ast.getNode(params_idx);
+                break :blk if (n.tag == .formal_parameters) n.data.list else .{ .start = 0, .len = 0 };
+            };
+            const new_params_list: NodeList = blk: {
+                if (new_params.isNone()) break :blk .{ .start = 0, .len = 0 };
+                const n = self.ast.getNode(new_params);
+                break :blk if (n.tag == .formal_parameters) n.data.list else .{ .start = 0, .len = 0 };
+            };
 
             if (try self.dispatchFunctionPlugins(result, .{
                 .node_idx = result,
                 .node_tag = .arrow_function_expression,
                 .name = null,
                 .body_idx = new_body,
-                .params_start = new_p_start,
-                .params_len = new_p_len,
-                .original_params_start = orig_p_start,
-                .original_params_len = orig_p_len,
+                .params = new_params_list,
+                .original_params = orig_params_list,
                 .original_body_idx = body_idx,
                 .flags = flags,
                 .source_path = self.options.jsx_filename,
@@ -3049,9 +3034,7 @@ pub const Transformer = struct {
                 params_span = pnode.span;
             }
         }
-        const params_start = params_list_old.start;
-        const params_len = params_list_old.len;
-        const pp = try self.visitParamsCollectProperties(params_start, params_len);
+        const pp = try self.visitParamsCollectProperties(params_list_old);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
         const saved_arrow_depth = self.arrow_this_depth;
@@ -3155,10 +3138,8 @@ pub const Transformer = struct {
             .node_tag = .method_definition,
             .name = method_name,
             .body_idx = new_body,
-            .params_start = pp.new_params.start,
-            .params_len = pp.new_params.len,
-            .original_params_start = params_start,
-            .original_params_len = params_len,
+            .params = pp.new_params,
+            .original_params = params_list_old,
             .original_body_idx = old_body_idx,
             .flags = flags,
             .source_path = self.options.jsx_filename,

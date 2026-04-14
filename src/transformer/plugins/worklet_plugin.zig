@@ -213,8 +213,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         func_name,
         code_body,
         closure_vars,
-        info.original_params_start,
-        info.original_params_len,
+        info.original_params,
         info.flags,
     );
     defer api.getAllocator().free(init_code);
@@ -293,10 +292,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 
     const none = @intFromEnum(NodeIndex.none);
     // function_expression: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
-    const params_list_node = t.ast.addFormalParameters(
-        .{ .start = info.params_start, .len = info.params_len },
-        method_node.span,
-    ) catch return error.OutOfMemory;
+    const params_list_node = t.ast.addFormalParameters(info.params, method_node.span) catch return error.OutOfMemory;
     const func_extra = t.ast.addExtras(&.{
         @intFromEnum(name_node),
         @intFromEnum(params_list_node),

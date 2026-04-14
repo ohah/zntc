@@ -146,8 +146,7 @@ const JS_GLOBALS = std.StaticStringMap(void).initComptime(.{
 pub fn collectClosureVars(
     self: *Transformer,
     body_idx: NodeIndex,
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
     func_name: ?[]const u8,
 ) Error![]const ClosureVar {
     var locals = std.StringHashMap(void).init(self.allocator);
@@ -164,8 +163,8 @@ pub fn collectClosureVars(
 
     // 1. 파라미터 이름 수집 (parser가 formal_parameters로 정규화 보장)
     var pi: u32 = 0;
-    while (pi < params_len) : (pi += 1) {
-        const param_raw = self.ast.extra_data.items[params_start + pi];
+    while (pi < params.len) : (pi += 1) {
+        const param_raw = self.ast.extra_data.items[params.start + pi];
         const param_idx: NodeIndex = @enumFromInt(param_raw);
         if (!param_idx.isNone()) {
             try collectBindingNames(self, param_idx, &locals);
@@ -1021,8 +1020,7 @@ pub fn generateInitCode(
     func_name: []const u8,
     body_idx: NodeIndex,
     closure_vars: []const ClosureVar,
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
     flags: u32,
 ) Error![]const u8 {
     const zero_span = Span{ .start = 0, .end = 0 };
@@ -1063,10 +1061,7 @@ pub fn generateInitCode(
     });
     const none = @intFromEnum(NodeIndex.none);
 
-    const params_node = try self.ast.addFormalParameters(
-        .{ .start = params_start, .len = params_len },
-        zero_span,
-    );
+    const params_node = try self.ast.addFormalParameters(params, zero_span);
     const synthetic_func = try self.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(name_node),    @intFromEnum(params_node),
         @intFromEnum(new_body_idx), flags,
