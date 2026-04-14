@@ -253,12 +253,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         .span = id_span,
                         .data = .{ .string_ref = id_span },
                     });
-                    const params_list = try self.ast.addNodeList(&.{param});
-                    const params_node = try self.ast.addNode(.{
-                        .tag = .formal_parameters,
-                        .span = id_span,
-                        .data = .{ .list = params_list },
-                    });
+                    const params_node = try self.wrapAsFormalParameters(&.{param}, id_span);
                     const body = try parseArrowBody(self, true, params_node);
                     {
                         const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
@@ -290,12 +285,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     try self.advance(); // skip )
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                         try self.advance(); // skip =>
-                        const empty_list = try self.ast.addNodeList(&.{});
-                        const params_node = try self.ast.addNode(.{
-                            .tag = .formal_parameters,
-                            .span = .{ .start = empty_paren_start, .end = empty_paren_start },
-                            .data = .{ .list = empty_list },
-                        });
+                        const params_node = try self.wrapAsFormalParameters(&.{}, .{ .start = empty_paren_start, .end = empty_paren_start });
                         const body = try parseArrowBody(self, true, params_node);
                         {
                             const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
@@ -348,12 +338,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .string_ref = id_span },
             });
             // 모든 arrow는 formal_parameters list로 정규화 (ESTree 계약)
-            const params_list = try self.ast.addNodeList(&.{param});
-            const params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = id_span,
-                .data = .{ .list = params_list },
-            });
+            const params_node = try self.wrapAsFormalParameters(&.{param}, id_span);
             const body = try parseArrowBody(self, false, params_node);
 
             {
@@ -378,12 +363,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // skip )
         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
             try self.advance(); // skip =>
-            const empty_list = try self.ast.addNodeList(&.{});
-            const params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = .{ .start = arrow_start, .end = arrow_start },
-                .data = .{ .list = empty_list },
-            });
+            const params_node = try self.wrapAsFormalParameters(&.{}, .{ .start = arrow_start, .end = arrow_start });
             const body = try parseArrowBody(self, false, params_node);
             {
                 const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0 });

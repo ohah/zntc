@@ -1136,6 +1136,17 @@ pub const Parser = struct {
         }
     }
 
+    /// 단일 파라미터 NodeIndex를 `formal_parameters` list 노드로 감싼다.
+    /// 빈 arrow(`() =>`)와 단일 식별자(`x =>`) 공용 헬퍼.
+    pub fn wrapAsFormalParameters(self: *Parser, params: []const NodeIndex, span: Span) !NodeIndex {
+        const list = try self.ast.addNodeList(params);
+        return try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = list },
+        });
+    }
+
     /// arrow function 파라미터를 cover grammar으로 검증 + **formal_parameters 노드로 정규화**.
     ///
     /// 입력: parseAssignmentExpression으로 파싱된 원형 (identifier / parenthesized / sequence / spread / formal_parameters).
@@ -1147,12 +1158,7 @@ pub const Parser = struct {
     pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) ParseError2!NodeIndex {
         if (idx.isNone()) {
             // `() => ...` 같은 빈 arrow
-            const empty_list = try self.ast.addNodeList(&.{});
-            return try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = .{ .start = 0, .end = 0 },
-                .data = .{ .list = empty_list },
-            });
+            return self.wrapAsFormalParameters(&.{}, .{ .start = 0, .end = 0 });
         }
         const node = self.ast.getNode(idx);
 
@@ -1201,12 +1207,7 @@ pub const Parser = struct {
             try self.scratch.append(self.allocator, idx);
         }
 
-        const params_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-        return try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = node.span,
-            .data = .{ .list = params_list },
-        });
+        return self.wrapAsFormalParameters(self.scratch.items[scratch_top..], node.span);
     }
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.

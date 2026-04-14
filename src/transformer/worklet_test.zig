@@ -360,9 +360,9 @@ test "Worklet: arrow function params not in closure (ES5 lowering)" {
 }
 
 test "Worklet: arrow function params not in closure (arrow 보존, ES5 lowering 없음)" {
-    // #1283 후속: RN Hermes 프리셋은 arrow를 보존 — worklet 변환 시점에
-    // params wrapper가 formal_parameters가 아닌 parenthesized/sequence로 남는다.
-    // 그래도 value/context는 closure에 포함되지 않아야 한다.
+    // #1283 후속: RN Hermes 프리셋은 arrow를 보존 — parser가 모든 arrow의 params를
+    // formal_parameters list로 정규화하므로 worklet plugin이 파라미터를 올바르게
+    // 인식해야 한다. value/context는 closure에 포함되면 안 됨.
     const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
