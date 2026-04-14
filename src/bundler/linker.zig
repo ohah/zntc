@@ -21,6 +21,7 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
+const semantic_symbol = @import("../semantic/symbol.zig");
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -391,12 +392,11 @@ pub const Linker = struct {
         // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
         const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index };
         const sym_table_opt = if (m.symbol_table) |*t| t else null;
+        const sem_syms_opt: ?[]const semantic_symbol.Symbol = if (m.semantic) |s| s.symbols.items else null;
         for (m.export_bindings) |eb| {
-            if (sym_table_opt) |t| {
-                if (eb.hasSyntheticDefault(t)) {
-                    try self.addNameOwner(name_to_owners, "_default", owner);
-                    continue;
-                }
+            if (eb.hasSyntheticDefault(sym_table_opt, sem_syms_opt)) {
+                try self.addNameOwner(name_to_owners, "_default", owner);
+                continue;
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
@@ -1172,13 +1172,21 @@ pub const Linker = struct {
 
                 const key = makeExportKeyBuf(&key_buf, source_i, ib.imported_name);
                 const entry = self.export_map.get(key) orelse continue;
-                const sym = switch (entry.binding.symbol) {
-                    .bundler => |b| b,
-                    .semantic => continue,
-                };
-                if (sym.symbol.isNone()) continue;
-                const table_ptr = if (modules[source_i].symbol_table) |*t| t else continue;
-                table_ptr.incRefCount(sym.symbol);
+                switch (entry.binding.symbol) {
+                    .bundler => |b| {
+                        if (b.symbol.isNone()) continue;
+                        const table_ptr = if (modules[source_i].symbol_table) |*t| t else continue;
+                        table_ptr.incRefCount(b.symbol);
+                    },
+                    .semantic => |s| {
+                        // #1328 Phase 4e-2b: semantic 공간의 합성/정규 심볼 ref_count 증가.
+                        if (s.symbol.isNone()) continue;
+                        const sem_ptr = if (modules[source_i].semantic) |*sem| sem else continue;
+                        const idx: u32 = @intFromEnum(s.symbol);
+                        if (idx >= sem_ptr.symbols.items.len) continue;
+                        sem_ptr.symbols.items[idx].reference_count += 1;
+                    },
+                }
             }
         }
     }

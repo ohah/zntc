@@ -10,6 +10,7 @@ const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const Span = @import("../../lexer/token.zig").Span;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Ast = @import("../../parser/ast.zig").Ast;
+const semantic_symbol = @import("../../semantic/symbol.zig");
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
@@ -555,12 +556,11 @@ pub fn buildMetadataForAst(
     // collectModuleNames에서 등록한 _default 충돌의 canonical name을 조회.
     var default_export_name: []const u8 = "_default";
     const sym_table_opt = if (m.symbol_table) |*t| t else null;
+    const sem_syms_opt: ?[]const semantic_symbol.Symbol = if (m.semantic) |s| s.symbols.items else null;
     for (m.export_bindings) |eb| {
-        if (sym_table_opt) |t| {
-            if (eb.hasSyntheticDefault(t)) {
-                default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
-                break;
-            }
+        if (eb.hasSyntheticDefault(sym_table_opt, sem_syms_opt)) {
+            default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+            break;
         }
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
             default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;

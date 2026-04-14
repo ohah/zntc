@@ -766,9 +766,27 @@ pub const ModuleGraph = struct {
             module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
 
             // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
-            // Consumer 연결은 Phase 2+. 지금은 shadow population만.
+            // Phase 4e-2b: synthetic_default는 semantic 공간에 등록 (가능하면).
             module.ensureSymbolTable(self.allocator);
-            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.index, module.export_bindings) catch {};
+            if (module.semantic) |*sem| {
+                binding_scanner_mod.populateSyntheticSymbols(
+                    &module.symbol_table.?,
+                    module.index,
+                    module.export_bindings,
+                    &sem.symbols,
+                    &sem.synthetic_names,
+                    arena_alloc,
+                ) catch {};
+            } else {
+                binding_scanner_mod.populateSyntheticSymbols(
+                    &module.symbol_table.?,
+                    module.index,
+                    module.export_bindings,
+                    null,
+                    null,
+                    arena_alloc,
+                ) catch {};
+            }
 
             module.state = .parsed;
             return;
@@ -1035,8 +1053,27 @@ pub const ModuleGraph = struct {
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
 
             // Phase 1-3b (#1328): 합성 심볼 테이블 초기화 + _default / re_export_alias 등록.
+            // Phase 4e-2b: synthetic_default는 semantic 공간에 등록 (가능하면).
             module.ensureSymbolTable(self.allocator);
-            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.index, module.export_bindings) catch {};
+            if (module.semantic) |*sem| {
+                binding_scanner_mod.populateSyntheticSymbols(
+                    &module.symbol_table.?,
+                    module.index,
+                    module.export_bindings,
+                    &sem.symbols,
+                    &sem.synthetic_names,
+                    arena_alloc,
+                ) catch {};
+            } else {
+                binding_scanner_mod.populateSyntheticSymbols(
+                    &module.symbol_table.?,
+                    module.index,
+                    module.export_bindings,
+                    null,
+                    null,
+                    arena_alloc,
+                ) catch {};
+            }
 
             // CJS/ESM 감지 — inline scan 결과로 ScanResult 생성
             const scan_result = import_scanner.ScanResult{
