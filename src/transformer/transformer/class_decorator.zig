@@ -1108,13 +1108,8 @@ pub fn buildConstructorWithFieldAssignments(
         .data = .{ .string_ref = ctor_span },
     });
 
-    // method_definition: extra = [key, params, body, flags, deco_start, deco_len]
     const empty_decos = try self.ast.addNodeList(&.{});
-    const params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = zero_span,
-        .data = .{ .list = params_list },
-    });
+    const params_node = try self.ast.addFormalParameters(params_list, zero_span);
     return self.addExtraNode(.method_definition, zero_span, &.{
         @intFromEnum(ctor_key), @intFromEnum(params_node),
         @intFromEnum(body), 0, // flags=0 (non-static, normal method)

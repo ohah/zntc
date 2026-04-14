@@ -1063,11 +1063,10 @@ pub fn generateInitCode(
     });
     const none = @intFromEnum(NodeIndex.none);
 
-    const params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = zero_span,
-        .data = .{ .list = .{ .start = params_start, .len = params_len } },
-    });
+    const params_node = try self.ast.addFormalParameters(
+        .{ .start = params_start, .len = params_len },
+        zero_span,
+    );
     const synthetic_func = try self.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(name_node),    @intFromEnum(params_node),
         @intFromEnum(new_body_idx), flags,        none,

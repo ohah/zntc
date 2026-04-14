@@ -293,11 +293,10 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 
     const none = @intFromEnum(NodeIndex.none);
     // function_expression: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
-    const params_list_node = t.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = method_node.span,
-        .data = .{ .list = .{ .start = info.params_start, .len = info.params_len } },
-    }) catch return error.OutOfMemory;
+    const params_list_node = t.ast.addFormalParameters(
+        .{ .start = info.params_start, .len = info.params_len },
+        method_node.span,
+    ) catch return error.OutOfMemory;
     const func_extra = t.ast.addExtras(&.{
         @intFromEnum(name_node),
         @intFromEnum(params_list_node),
@@ -385,11 +384,7 @@ fn buildWorkletIIFE(
 
     // function() { ... } (wrapper — 파라미터 없는 익명 함수)
     const empty_params = try t.ast.addNodeList(&.{});
-    const empty_params_node = try t.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = zero_span,
-        .data = .{ .list = empty_params },
-    });
+    const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const wrapper_func = try t.addExtraNode(.function_expression, zero_span, &.{
         none, // name (anonymous)
         @intFromEnum(empty_params_node),
@@ -620,11 +615,7 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
         });
         const body = try buildContextObjectFactoryBody(t, list_start, list_len);
         const empty_params = try t.ast.addNodeList(&.{});
-        const empty_params_node = try t.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = zero_span,
-            .data = .{ .list = empty_params },
-        });
+        const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
         const none = @intFromEnum(NodeIndex.none);
         const fn_node = try t.addExtraNode(.function_expression, zero_span, &.{
             none, @intFromEnum(empty_params_node), @intFromEnum(body), 0, none,
@@ -906,11 +897,7 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     });
     const body = try buildClassFactoryBody(t, class_name_span, stripped_body);
     const empty_params = try t.ast.addNodeList(&.{});
-    const empty_params_node = try t.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = zero_span,
-        .data = .{ .list = empty_params },
-    });
+    const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const none = @intFromEnum(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(binding_node), @intFromEnum(empty_params_node),

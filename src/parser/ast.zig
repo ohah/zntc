@@ -875,6 +875,16 @@ pub const Ast = struct {
         return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
     }
 
+    /// `formal_parameters` 노드를 생성한다. transformer가 function/method를 새로 만들 때
+    /// slot 1(arrow는 slot 0)에 넣을 NodeIndex를 반환 — caller는 `@intFromEnum(...)` 으로 extras에 기록.
+    pub fn addFormalParameters(self: *Ast, list: NodeList, span: Span) !NodeIndex {
+        return self.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = list },
+        });
+    }
+
     /// 함수형 노드의 formal_parameters NodeList를 반환한다 (extra_data 인덱스 + len).
     /// 지원 태그: function_declaration / function_expression / function /
     /// arrow_function_expression / method_definition.

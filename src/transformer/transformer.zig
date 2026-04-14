@@ -490,11 +490,7 @@ pub const Transformer = struct {
                     // formal_parameters 노드를 새로 만들어 extras[e+1]에 연결.
                     // (여러 function 노드가 동일 params_idx를 공유할 수 있으므로 in-place mutation 금지:
                     //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
-                    const new_params_node = try self.ast.addNode(.{
-                        .tag = .formal_parameters,
-                        .span = params_node.span,
-                        .data = .{ .list = lr.new_params },
-                    });
+                    const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
                     self.ast.extra_data.items[e + 1] = @intFromEnum(new_params_node);
 
                     if (lr.body_stmts.items.len > 0) {
@@ -895,24 +891,17 @@ pub const Transformer = struct {
             .function_declaration,
             .function_expression,
             => {
-                if (self.options.unsupported.async_await) {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 3 < extras.len and (extras[e + 3] & ast_mod.FunctionFlags.is_async) != 0) {
-                        // async + generator 둘 다 unsupported → 직접 state machine 생성
-                        if (self.options.unsupported.generator) {
-                            return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
-                        }
-                        return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
+                const e = node.data.extra;
+                const flags = self.readU32(e, 3);
+                if (self.options.unsupported.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) {
+                    // async + generator 둘 다 unsupported → 직접 state machine 생성
+                    if (self.options.unsupported.generator) {
+                        return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
                     }
+                    return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
                 }
-                // ES2015: generator function → 상태 머신
-                if (self.options.unsupported.generator) {
-                    const extras = self.ast.extra_data.items;
-                    const e = node.data.extra;
-                    if (e + 3 < extras.len and (extras[e + 3] & ast_mod.FunctionFlags.is_generator) != 0) {
-                        return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
-                    }
+                if (self.options.unsupported.generator and (flags & ast_mod.FunctionFlags.is_generator) != 0) {
+                    return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
                 }
                 return self.visitFunction(node);
             },
@@ -1624,13 +1613,8 @@ pub const Transformer = struct {
             .span = span,
             .data = .{ .list = body_list },
         });
-        // function extra: [name, params, body, flags, return_type]
         const fn_params_list = try self.ast.addNodeList(&.{match_param});
-        const fn_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = span,
-            .data = .{ .list = fn_params_list },
-        });
+        const fn_params_node = try self.ast.addFormalParameters(fn_params_list, span);
         const fn_extra = try self.ast.addExtras(&.{
             @intFromEnum(NodeIndex.none), // name (anonymous)
             @intFromEnum(fn_params_node),
@@ -2575,11 +2559,7 @@ pub const Transformer = struct {
         });
         const none = @intFromEnum(NodeIndex.none);
         const inner_empty_params = try self.ast.addNodeList(&.{});
-        const inner_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = span,
-            .data = .{ .list = inner_empty_params },
-        });
+        const inner_params_node = try self.ast.addFormalParameters(inner_empty_params, span);
         const inner_func_extra = try self.ast.addExtras(&.{
             none, @intFromEnum(inner_params_node), @intFromEnum(inner_body), 0, none,
         });
@@ -2623,11 +2603,7 @@ pub const Transformer = struct {
             .data = .{ .string_ref = fn_name_binding_span },
         });
         const outer_empty_params = try self.ast.addNodeList(&.{});
-        const outer_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = span,
-            .data = .{ .list = outer_empty_params },
-        });
+        const outer_params_node = try self.ast.addFormalParameters(outer_empty_params, span);
         const outer_func_extra = try self.ast.addExtras(&.{
             @intFromEnum(fn_name_binding), @intFromEnum(outer_params_node), @intFromEnum(outer_body), 0, none,
         });
