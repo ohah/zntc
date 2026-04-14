@@ -276,28 +276,34 @@ pub const Symbol = struct {
 /// Bundler가 post-semantic 단계에서 합성 심볼을 semantic 공간에 추가한다.
 /// #1328 Phase 4e-2 / RFC #1338.
 ///
-/// `list`는 `ModuleSemanticData.symbols`의 ArrayList이어야 하고,
-/// `allocator`는 해당 모듈의 `parse_arena`여야 한다 (name/span 수명 일치).
+/// `list`는 `ModuleSemanticData.symbols`의 ArrayList, `names`는 같은 data의
+/// 합성 이름 사이드카 맵이어야 한다. `allocator`는 해당 모듈의 `parse_arena`.
+///
+/// 합성 심볼은 소스 범위의 name span을 갖지 않으므로 `Symbol.name`은
+/// 빈 Span으로 두고 실제 이름은 `synthetic_names` 맵에 저장한다.
+/// 조회는 `ModuleSemanticData.symbolName(id, source)` 경유 (옵션 B).
 ///
 /// 반환된 SymbolId로 `SymbolRef { .semantic = { module, id } }` 구성 가능.
 pub fn extendSymbol(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(Symbol),
+    names: *std.AutoHashMap(u32, []const u8),
     kind: SymbolKind,
     synthetic: SyntheticKind,
-    name: Span,
+    name_text: []const u8,
     declaration_span: Span,
 ) !SymbolId {
-    const id: SymbolId = @enumFromInt(@as(u32, @intCast(list.items.len)));
+    const id_u32: u32 = @intCast(list.items.len);
     try list.append(allocator, .{
-        .name = name,
+        .name = .{ .start = 0, .end = 0 },
         .scope_id = ScopeId.none,
         .kind = kind,
         .decl_flags = kind.declFlags(),
         .declaration_span = declaration_span,
         .synthetic_kind = synthetic,
     });
-    return id;
+    try names.put(id_u32, name_text);
+    return @enumFromInt(id_u32);
 }
 
 /// 참조 발생 시 (심볼 인덱스, 참조 스코프) 쌍.
