@@ -771,3 +771,74 @@ test "ES2025: using 앞 문장은 try 밖에 출력" {
     const stack_pos = std.mem.indexOf(u8, output, "var _stack=[]") orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_pos < stack_pos);
 }
+
+// Issue #1275: private method/field 변환 시 constructor 중복 emit 방지
+// ================================================================
+
+test "#1275: private method + 원본 constructor가 단일 constructor로 병합" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  constructor(cb) { this.cb = cb; }
+        \\  #priv() { return 1; }
+        \\  use() { return this.#priv(); }
+        \\}
+    , .es2020);
+    defer r.deinit();
+    // constructor는 정확히 1개여야 한다
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
+    // 원본 body와 init이 병합됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_priv)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.cb=cb") != null);
+}
+
+test "#1275: private field + 원본 constructor (field가 ctor 뒤) 병합" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class X {
+        \\  constructor() { this.x = 1; }
+        \\  #f = 2;
+        \\  get() { return this.#f; }
+        \\}
+    , .es2020);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_f.set(this,2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
+    // property_definition은 body에서 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#f=") == null);
+}
+
+test "#1275: private method + field 혼합 (RN PerformanceObserver 케이스)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class PerformanceObserver {
+        \\  #nativeHandle = null;
+        \\  #callback;
+        \\  constructor(callback) { this.#callback = callback; }
+        \\  #createObserver() { return 1; }
+        \\  observe() { return this.#createObserver(); }
+        \\}
+    , .es2020);
+    defer r.deinit();
+    // constructor는 정확히 1개
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
+    // private field가 WeakMap으로 다운레벨됨 (method와 공존해도 skip되지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _nativeHandle=new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _callback=new WeakMap") != null);
+    // private method도 변환됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _createObserver=new WeakSet") != null);
+    // ctor 안에 field init + method init + 원본 body가 모두 포함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_nativeHandle.set(this,null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_createObserver)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_callback.set(this,callback)") != null);
+}
+
+test "#1275: private method만 있고 원본 constructor 없을 때 새 constructor 1개 생성" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #priv() { return 1; }
+        \\  use() { return this.#priv(); }
+        \\}
+    , .es2020);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_priv)") != null);
+}
