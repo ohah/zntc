@@ -1005,13 +1005,13 @@ var x = [1, 2, \`abc\${ 123 }def\`];
 
 exports[`TSC: es6/templates templateStringInArrowFunction 1`] = `
 "// @target: es2015
-var x = (x) => \`abc\${ x }def\`;
+var x = (x) => \`abc\${x}def\`;
 "
 `;
 
 exports[`TSC: es6/templates templateStringInArrowFunctionES6 1`] = `
 "// @strict: false
-var x = (x) => \`abc\${ x }def\`;
+var x = (x) => \`abc\${x}def\`;
 "
 `;
 

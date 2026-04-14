@@ -6545,7 +6545,7 @@ exports[`TSC: expressions functionExpressionContextualTyping1 1`] = `
 var E = /* @__PURE__ */ ((E) => {E[E["red"]=0]="red";E[E["blue"]=1]="blue";return E;})(E || {});
 // A contextual signature S is extracted from a function type T as follows:
 //      If T is a function type with exactly one call signature, and if that call signature is non- generic, S is that signature.
-var a0 = (num,str) => {
+var a0 = (num, str) => {
 	num.toExponential();
 	return 0;
 };
@@ -6563,17 +6563,17 @@ var a1 = (a1) => {
 //        and if all of the signatures are identical ignoring return types,
 //        then S is a signature with the same parameters and a union of the return types.
 var b1;
-b1 = (k,h) => {
+b1 = (k, h) => {
 };
 var b2;
-b2 = (foo,bar) => {
+b2 = (foo, bar) => {
 	return foo + 1;
 };
-b2 = (foo,bar) => {
+b2 = (foo, bar) => {
 	return "hello";
 };
 var b3;
-b3 = (name,number) => {
+b3 = (name, number) => {
 };
 var b4 = (number = 1) => {
 	return "hello";
@@ -6593,12 +6593,12 @@ b6 = (i) => {
 	return i;
 };
 // Per spec, no contextual signature can be extracted in this case. (Otherwise clause)
-b7 = (j,m) => {
+b7 = (j, m) => {
 };
 // Per spec, no contextual signature can be extracted in this case. (Otherwise clause)
 class C {
 	constructor() {
-		var k = (j,k) => {
+		var k = (j, k) => {
 			return [j, k];
 		};
 	}
@@ -6618,7 +6618,7 @@ exports[`TSC: expressions functionExpressionContextualTyping2 1`] = `
 //      Otherwise, no contextual signature can be extracted from T and S is undefined.
 var a0;
 var a1;
-a1 = (foo,bar) => {
+a1 = (foo, bar) => {
 	return true;
 };
 // Error
@@ -7656,7 +7656,7 @@ function someGenerics2b(n) {
 }
 someGenerics2b((n, x) => n);
 someGenerics2b((n, t) => n);
-someGenerics2b((n,t) => n.substr(t * t));
+someGenerics2b((n, t) => n.substr(t * t));
 // Generic call with argument of function type whose parameter is not of type parameter type but body/return type uses type parameter
 function someGenerics3(producer) {
 }
@@ -7739,7 +7739,7 @@ new someGenerics2a((n) => n);
 new someGenerics2a((n) => n.substr(0));
 new someGenerics2b((n, x) => n);
 new someGenerics2b((n, t) => n);
-new someGenerics2b((n,t) => n.substr(t * t));
+new someGenerics2b((n, t) => n.substr(t * t));
 // Generic call with argument of function type whose parameter is not of type parameter type but body/return type uses type parameter
 new someGenerics3(() => "");
 new someGenerics3(() => undefined);
@@ -7853,7 +7853,7 @@ function someGenerics2b(n) {
 }
 someGenerics2b((n, x) => n);
 someGenerics2b((n, t) => n);
-someGenerics2b((n,t) => n.substr(t * t));
+someGenerics2b((n, t) => n.substr(t * t));
 // Generic call with argument of function type whose parameter is not of type parameter type but body/return type uses type parameter
 function someGenerics3(producer) {
 }
@@ -8473,7 +8473,7 @@ const a = () => undefined;
 	var a;
 })();
 const x = "";
-((b = a() ?? "d",d = x) => {
+((b = a() ?? "d", d = x) => {
 	var x;
 })();
 "
@@ -8896,7 +8896,7 @@ const a = () => undefined;
 	var a;
 })();
 const x = "";
-((b = a()?.d,d = x) => {
+((b = a()?.d, d = x) => {
 	var x;
 })();
 "
