@@ -1625,7 +1625,8 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// VariableDeclarationKind → SymbolKind 매핑.
-    /// using/await_using은 lexical이지만 현재 분석기 구조상 var 분류 유지 (별도 처리 패스 도입 시 변경).
+    /// TODO(using): using/await_using은 의미상 lexical이지만 현재 분석기 구조상 var 분류 유지.
+    /// 별도 처리 패스(disposal scope tracking) 도입 시 `variable_using` 등으로 분리.
     fn symbolKindFor(kind: VariableDeclarationKind) SymbolKind {
         return switch (kind) {
             .@"var", .using, .await_using => .variable_var,

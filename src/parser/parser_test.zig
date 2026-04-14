@@ -97,6 +97,57 @@ test "VariableDeclarationKind: fromU32 unknown values fall back to var" {
     try std.testing.expectEqual(VariableDeclarationKind.@"var", VariableDeclarationKind.fromU32(99));
 }
 
+fn findFirstNodeWithTag(parser: *Parser, tag: Tag) ast_mod.Node {
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == tag) return node;
+    }
+    unreachable;
+}
+
+fn parseAndGetParamCount(src: []const u8, tag: Tag) !usize {
+    var scanner = try Scanner.init(std.testing.allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+    const fn_node = findFirstNodeWithTag(&parser, tag);
+    return parser.ast.functionParams(fn_node).len;
+}
+
+test "Ast.functionParams: function declaration — 0/1/N params" {
+    try std.testing.expectEqual(@as(usize, 0), try parseAndGetParamCount("function f() {}", .function_declaration));
+    try std.testing.expectEqual(@as(usize, 1), try parseAndGetParamCount("function f(a) {}", .function_declaration));
+    try std.testing.expectEqual(@as(usize, 3), try parseAndGetParamCount("function f(a, b, c) {}", .function_declaration));
+}
+
+test "Ast.functionParams: function expression" {
+    try std.testing.expectEqual(@as(usize, 2), try parseAndGetParamCount("var f = function(a, b) {};", .function_expression));
+}
+
+test "Ast.functionParams: arrow function — 0/1/N + 정규화 검증" {
+    // arrow는 formal_parameters로 정규화됨 (#1283). 헬퍼가 unwrap 처리.
+    try std.testing.expectEqual(@as(usize, 0), try parseAndGetParamCount("var f = () => 1;", .arrow_function_expression));
+    try std.testing.expectEqual(@as(usize, 1), try parseAndGetParamCount("var f = x => x;", .arrow_function_expression));
+    try std.testing.expectEqual(@as(usize, 1), try parseAndGetParamCount("var f = (x) => x;", .arrow_function_expression));
+    try std.testing.expectEqual(@as(usize, 3), try parseAndGetParamCount("var f = (a, b, c) => a;", .arrow_function_expression));
+}
+
+test "Ast.functionParams: arrow with destructuring/rest/default" {
+    try std.testing.expectEqual(@as(usize, 2), try parseAndGetParamCount("var f = ({a}, [b]) => a;", .arrow_function_expression));
+    try std.testing.expectEqual(@as(usize, 2), try parseAndGetParamCount("var f = (a, ...rest) => a;", .arrow_function_expression));
+    try std.testing.expectEqual(@as(usize, 2), try parseAndGetParamCount("var f = (a = 1, b = 2) => a;", .arrow_function_expression));
+}
+
+test "Ast.functionParams: method definition" {
+    try std.testing.expectEqual(@as(usize, 2), try parseAndGetParamCount("class C { m(a, b) {} }", .method_definition));
+}
+
+test "Ast.functionParams: async/generator function" {
+    try std.testing.expectEqual(@as(usize, 1), try parseAndGetParamCount("async function f(x) {}", .function_declaration));
+    try std.testing.expectEqual(@as(usize, 1), try parseAndGetParamCount("function* g(x) {}", .function_declaration));
+}
+
 test "Parser: binary expression" {
     var scanner = try Scanner.init(std.testing.allocator, "1 + 2 * 3;");
     defer scanner.deinit();
