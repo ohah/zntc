@@ -2042,7 +2042,7 @@ pub const Transformer = struct {
         // function foo(): void;  ← overload signature (body 없음)
         // function foo(x: number): void;  ← overload signature
         // function foo(x?: number) {}  ← 구현체 (body 있음)
-        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
+        if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
 
         // 일반 함수는 자체 this 바인딩을 가지므로 depth 증가.
         // static block 안에서 function() { this.x } 의 this는 치환하면 안 됨.
@@ -2091,15 +2091,25 @@ pub const Transformer = struct {
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 + parameter property 수집
-        const params_start = self.readU32(e, 1);
-        const params_len = self.readU32(e, 2);
+        const params_idx_old = self.readNodeIdx(e, 1);
+        var params_span = node.span;
+        var params_list_old = NodeList{ .start = 0, .len = 0 };
+        if (!params_idx_old.isNone()) {
+            const pnode = self.ast.getNode(params_idx_old);
+            if (pnode.tag == .formal_parameters) {
+                params_list_old = pnode.data.list;
+                params_span = pnode.span;
+            }
+        }
+        const params_start = params_list_old.start;
+        const params_len = params_list_old.len;
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         const pp = try self.visitParamsCollectProperties(params_start, params_len);
 
         // 바디 방문
-        const old_body_idx = self.readNodeIdx(e, 3);
+        const old_body_idx = self.readNodeIdx(e, 2);
         var new_body = try self.visitBodyWorkletAware(old_body_idx);
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
@@ -2153,9 +2163,14 @@ pub const Transformer = struct {
         // Metro도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
 
         const none = @intFromEnum(NodeIndex.none);
+        const new_params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = params_span,
+            .data = .{ .list = pp.new_params },
+        });
         const result = try self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), pp.new_params.start, pp.new_params.len,
-            @intFromEnum(new_body), self.readU32(e, 4),  none,
+            @intFromEnum(new_name), @intFromEnum(new_params_node),
+            @intFromEnum(new_body), self.readU32(e, 3),  none,
         });
 
         // Plugin dispatch: onFunction (AST 훅)
@@ -2170,7 +2185,7 @@ pub const Transformer = struct {
             .original_params_start = params_start,
             .original_params_len = params_len,
             .original_body_idx = old_body_idx,
-            .flags = self.readU32(e, 4),
+            .flags = self.readU32(e, 3),
             .source_path = self.options.jsx_filename,
             .is_auto_worklet = is_auto_worklet,
         })) |replacement| {
@@ -3015,21 +3030,31 @@ pub const Transformer = struct {
         });
     }
 
-    // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+    // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     // constructor의 parameter property (public x: number) 변환도 처리.
     // abstract 메서드 (flags bit5=0x20)는 런타임에 존재하면 안 되므로 완전히 제거.
     pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const flags = self.readU32(e, 4);
+        const flags = self.readU32(e, 3);
         // abstract 메서드는 타입 전용이므로 완전히 스트리핑
         if (self.options.strip_types and (flags & 0x20) != 0) return NodeIndex.none;
         // TS method overload signature: body가 없으면 제거
-        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
+        if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 — parameter property 감지
-        const params_start = self.readU32(e, 1);
-        const params_len = self.readU32(e, 2);
+        const params_idx_old = self.readNodeIdx(e, 1);
+        var params_span = node.span;
+        var params_list_old = NodeList{ .start = 0, .len = 0 };
+        if (!params_idx_old.isNone()) {
+            const pnode = self.ast.getNode(params_idx_old);
+            if (pnode.tag == .formal_parameters) {
+                params_list_old = pnode.data.list;
+                params_span = pnode.span;
+            }
+        }
+        const params_start = params_list_old.start;
+        const params_len = params_list_old.len;
         const pp = try self.visitParamsCollectProperties(params_start, params_len);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
@@ -3059,7 +3084,7 @@ pub const Transformer = struct {
         }
         defer self.new_target_ctx = saved_new_target_ctx;
 
-        var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 3));
+        var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 2));
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
@@ -3106,11 +3131,16 @@ pub const Transformer = struct {
         const new_decos = if (self.options.experimental_decorators)
             NodeList{ .start = 0, .len = 0 }
         else
-            try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
-        const old_body_idx = self.readNodeIdx(e, 3);
+            try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
+        const old_body_idx = self.readNodeIdx(e, 2);
+        const new_params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = params_span,
+            .data = .{ .list = pp.new_params },
+        });
         const result = try self.addExtraNode(.method_definition, node.span, &.{
-            @intFromEnum(new_key), pp.new_params.start, pp.new_params.len, @intFromEnum(new_body),
-            self.readU32(e, 4),    new_decos.start,     new_decos.len,
+            @intFromEnum(new_key), @intFromEnum(new_params_node), @intFromEnum(new_body),
+            self.readU32(e, 3),    new_decos.start,               new_decos.len,
         });
 
         // Plugin dispatch: worklet 등 AST 플러그인 적용

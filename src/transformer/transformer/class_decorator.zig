@@ -682,8 +682,9 @@ pub fn classifyMethodDefinition(
     const class_members = ctx.class_members;
     const member_decorators = ctx.member_decorators;
     const me = member.data.extra;
-    const flags = self.readU32(me, 4);
+    const flags = self.readU32(me, 3);
     const is_static = (flags & 0x01) != 0;
+    const params_list_m = self.ast.functionParamsList(member);
 
     // constructor 감지
     const is_ctor = if (!is_static) blk: {
@@ -699,12 +700,10 @@ pub fn classifyMethodDefinition(
     if (is_ctor) {
         // constructor parameter decorator → class-level __decorateClass에 포함
         if (self.options.experimental_decorators) {
-            const params_start = self.readU32(me, 1);
-            const params_len = self.readU32(me, 2);
-            try self.collectParamDecorators(ctx.ctor_param_decos, params_start, params_len);
+            try self.collectParamDecorators(ctx.ctor_param_decos, params_list_m.start, params_list_m.len);
             // emitDecoratorMetadata: 원본 AST에서 constructor 파라미터 위치 저장
-            ctx.ctor_params_start.* = params_start;
-            ctx.ctor_params_len.* = params_len;
+            ctx.ctor_params_start.* = params_list_m.start;
+            ctx.ctor_params_len.* = params_list_m.len;
         }
 
         const new_member = try self.visitMethodDefinition(member);
@@ -718,10 +717,10 @@ pub fn classifyMethodDefinition(
 
     // 일반 메서드: member decorator + parameter decorator 수집 (single-pass)
     if (self.options.experimental_decorators) {
-        const deco_start = self.readU32(me, 5);
-        const deco_len = self.readU32(me, 6);
-        const params_start = self.readU32(me, 1);
-        const params_len = self.readU32(me, 2);
+        const deco_start = self.readU32(me, 4);
+        const deco_len = self.readU32(me, 5);
+        const params_start = params_list_m.start;
+        const params_len = params_list_m.len;
         if (deco_len > 0 or params_len > 0) {
             const new_key = try self.visitNode(self.readNodeIdx(me, 0));
             try self.collectMemberDecorators(
@@ -936,7 +935,7 @@ pub fn insertFieldAssignmentsIntoConstructor(
     fields: []const FieldAssignment,
     has_super: bool,
 ) Error!NodeIndex {
-    // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+    // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     const ctor_node = self.ast.getNode(ctor_idx);
     const ce = ctor_node.data.extra;
     // extra_data에서 값만 미리 복사 (이후 AST 변형으로 슬라이스가 무효화될 수 있음)
@@ -946,8 +945,7 @@ pub fn insertFieldAssignmentsIntoConstructor(
     const ctor_e3 = self.ast.extra_data.items[ce + 3];
     const ctor_e4 = self.ast.extra_data.items[ce + 4];
     const ctor_e5 = self.ast.extra_data.items[ce + 5];
-    const ctor_e6 = self.ast.extra_data.items[ce + 6];
-    const body_idx: NodeIndex = @enumFromInt(ctor_e3);
+    const body_idx: NodeIndex = @enumFromInt(ctor_e2);
 
     if (body_idx.isNone()) return ctor_idx;
 
@@ -1006,10 +1004,10 @@ pub fn insertFieldAssignmentsIntoConstructor(
     });
 
     // constructor method_definition을 새 body로 재생성
+    // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     return self.addExtraNode(.method_definition, ctor_node.span, &.{
-        ctor_e0,                ctor_e1, ctor_e2,
-        @intFromEnum(new_body), ctor_e4, ctor_e5,
-        ctor_e6,
+        ctor_e0, ctor_e1,
+        @intFromEnum(new_body), ctor_e3, ctor_e4, ctor_e5,
     });
 }
 
@@ -1739,8 +1737,8 @@ pub fn hasAnyMemberDecorators(self: *Transformer, class_extra: u32) bool {
             const deco_len = self.readU32(me, 4);
             if (deco_len > 0) return true;
         } else if (member.tag == .method_definition) {
-            // extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
-            const deco_len = self.readU32(me, 6);
+            // extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
+            const deco_len = self.readU32(me, 5);
             if (deco_len > 0) return true;
         }
     }
@@ -1884,10 +1882,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             const me = member.data.extra;
 
             if (member.tag == .method_definition) {
-                // extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
-                const flags = self.readU32(me, 4);
-                const deco_start = self.readU32(me, 5);
-                const deco_len = self.readU32(me, 6);
+                // extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
+                const flags = self.readU32(me, 3);
+                const deco_start = self.readU32(me, 4);
+                const deco_len = self.readU32(me, 5);
                 const is_static = (flags & 0x01) != 0;
                 const is_getter = (flags & 0x02) != 0;
                 const is_setter = (flags & 0x04) != 0;
@@ -1935,9 +1933,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     var m_params_len: u32 = 0;
                     if (is_private_method) {
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
-                        m_body = try self.visitNode(self.readNodeIdx(me, 3));
-                        m_params_start = self.readU32(me, 1);
-                        m_params_len = self.readU32(me, 2);
+                        m_body = try self.visitNode(self.readNodeIdx(me, 2));
+                        const pl = self.ast.functionParamsList(member);
+                        m_params_start = pl.start;
+                        m_params_len = pl.len;
                     }
 
                     try member_infos.append(self.allocator, .{
@@ -1964,12 +1963,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
-                    const new_body = try self.visitNode(self.readNodeIdx(me, 3));
+                    const new_body = try self.visitNode(self.readNodeIdx(me, 2));
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_method = try self.addExtraNode(.method_definition, member.span, &.{
                         @intFromEnum(new_key),
                         self.readU32(me, 1),
-                        self.readU32(me, 2),
                         @intFromEnum(new_body),
                         flags,
                         empty_list.start,

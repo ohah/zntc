@@ -39,10 +39,11 @@ pub fn ES2017(comptime Transformer: type) type {
         pub fn lowerAsyncFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const params_start = self.readU32(e, 1);
-            const params_len = self.readU32(e, 2);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
-            const flags = self.readU32(e, 4);
+            const params_list = self.ast.functionParamsList(node);
+            const params_start = params_list.start;
+            const params_len = params_list.len;
+            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const flags = self.readU32(e, 3);
 
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
@@ -67,10 +68,14 @@ pub fn ES2017(comptime Transformer: type) type {
             });
 
             const new_flags = flags & ~ast_mod.FunctionFlags.is_async;
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = node.span,
+                .data = .{ .list = new_params },
+            });
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
-                new_params.start,
-                new_params.len,
+                @intFromEnum(new_params_node),
                 @intFromEnum(wrapper_body),
                 new_flags,
                 @intFromEnum(NodeIndex.none),
@@ -134,10 +139,11 @@ pub fn ES2017(comptime Transformer: type) type {
             const span = node.span;
 
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const params_start = self.readU32(e, 1);
-            const params_len = self.readU32(e, 2);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
-            const flags = self.readU32(e, 4);
+            const params_list = self.ast.functionParamsList(node);
+            const params_start = params_list.start;
+            const params_len = params_list.len;
+            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const flags = self.readU32(e, 3);
 
             const new_name = try self.visitNode(name_idx);
 
@@ -174,10 +180,14 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = new_params },
+            });
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
-                new_params.start,
-                new_params.len,
+                @intFromEnum(new_params_node),
                 @intFromEnum(wrapper_body),
                 new_flags,
                 @intFromEnum(NodeIndex.none),

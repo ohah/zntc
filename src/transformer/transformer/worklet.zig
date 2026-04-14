@@ -505,12 +505,13 @@ fn walkBodyForClosureAnalysis(
             if (tag == .function_declaration) {
                 try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
             }
-            if (!self.ast.hasExtra(e, 4)) return;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
+            if (!self.ast.hasExtra(e, 3)) return;
+            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
             if (body_idx.isNone()) return;
             // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
-            const p_start = self.ast.extra_data.items[e + 1];
-            const p_len = self.ast.extra_data.items[e + 2];
+            const plist = self.ast.functionParamsList(node);
+            const p_start = plist.start;
+            const p_len = plist.len;
             // name(e[0])은 항상 포함, params는 extra_data 슬라이스
             // 두 소스를 합치기 위해 단일 배열 사용은 불가 → 두 번 호출 대신 inline 처리
             var fn_locals = std.StringHashMap(void).init(self.allocator);
@@ -543,11 +544,12 @@ fn walkBodyForClosureAnalysis(
         },
         .method_definition => {
             const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 4)) return;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
+            if (!self.ast.hasExtra(e, 3)) return;
+            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
             if (body_idx.isNone()) return;
-            const p_start = self.ast.extra_data.items[e + 1];
-            const p_len = self.ast.extra_data.items[e + 2];
+            const plist = self.ast.functionParamsList(node);
+            const p_start = plist.start;
+            const p_len = plist.len;
             if (p_start + p_len <= self.ast.extra_data.items.len) {
                 try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs, depth);
             }

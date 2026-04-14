@@ -918,9 +918,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
         fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            const params_start = self.readU32(me, 1);
-            const params_len = self.readU32(me, 2);
-            const body_idx: NodeIndex = self.readNodeIdx(me, 3);
+            const params_list_old = self.ast.functionParamsList(member);
+            const params_start = params_list_old.start;
+            const params_len = params_list_old.len;
+            const body_idx: NodeIndex = self.readNodeIdx(me, 2);
 
             const new_params = try self.visitExtraList(params_start, params_len);
 
@@ -928,9 +929,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_body = try visitMethodBodyWithCtx(self, body_idx, span, nt_ctx);
 
             const none = @intFromEnum(NodeIndex.none);
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = new_params },
+            });
             const func_extra = try self.ast.addExtras(&.{
-                none,                   new_params.start, new_params.len,
-                @intFromEnum(new_body), 0,                none,
+                none,                   @intFromEnum(new_params_node),
+                @intFromEnum(new_body), 0,                             none,
             });
             return self.ast.addNode(.{
                 .tag = .function_expression,
@@ -1089,14 +1095,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
                     const key: NodeIndex = self.readNodeIdx(me, 0);
-                    const flags = self.readU32(me, 4);
+                    const flags = self.readU32(me, 3);
                     const is_static = (flags & 0x01) != 0;
                     const is_abstract = (flags & 0x20) != 0;
                     const is_declare = (flags & 0x40) != 0;
                     const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
 
                     // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
-                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, 3));
+                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, 2));
                     if (is_abstract or is_declare or method_body.isNone()) continue;
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
@@ -1253,18 +1259,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // extra_data 슬라이스는 prependStatementsToBody 호출 시 재할당될 수 있으므로
             // 필요한 값을 미리 로컬에 복사
             const saved_name = self.ast.extra_data.items[fe];
-            const saved_params_start = self.ast.extra_data.items[fe + 1];
-            const saved_params_len = self.ast.extra_data.items[fe + 2];
-            const saved_flags = self.ast.extra_data.items[fe + 4];
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 3]);
+            const saved_params_idx = self.ast.extra_data.items[fe + 1];
+            const saved_flags = self.ast.extra_data.items[fe + 3];
+            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
 
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
             const none = @intFromEnum(NodeIndex.none);
             const new_extra = try self.ast.addExtras(&.{
                 saved_name,
-                saved_params_start,
-                saved_params_len,
+                saved_params_idx,
                 @intFromEnum(new_body),
                 saved_flags,
                 none,
@@ -1283,9 +1287,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const ctor = self.ast.getNode(ctor_idx);
             const me = ctor.data.extra;
 
-            const params_start = self.readU32(me, 1);
-            const params_len = self.readU32(me, 2);
-            const body_idx: NodeIndex = self.readNodeIdx(me, 3);
+            const params_list_old = self.ast.functionParamsList(ctor);
+            const params_start = params_list_old.start;
+            const params_len = params_list_old.len;
+            const body_idx: NodeIndex = self.readNodeIdx(me, 2);
 
             // super_call_this_alias save/restore (lowerSuperCall이 설정)
             const saved_super_alias = self.super_call_this_alias;
@@ -1312,10 +1317,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             const none = @intFromEnum(NodeIndex.none);
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = new_params },
+            });
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
-                new_params.start,
-                new_params.len,
+                @intFromEnum(new_params_node),
                 @intFromEnum(new_body),
                 0, // flags (no async/generator)
                 none, // return_type
@@ -1987,23 +1996,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
-                    const flags = self.readU32(me, 4);
+                    const flags = self.readU32(me, 3);
                     const is_static = (flags & 0x01) != 0;
                     const key: NodeIndex = self.readNodeIdx(me, 0);
+                    const params_list_m = self.ast.functionParamsList(member);
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
                         // constructor param decorator
-                        const params_start = self.readU32(me, 1);
-                        const params_len = self.readU32(me, 2);
-                        try self.collectParamDecorators(&ctor_param_decos, params_start, params_len);
+                        try self.collectParamDecorators(&ctor_param_decos, params_list_m.start, params_list_m.len);
                         continue;
                     }
 
                     // method decorator + param decorator
-                    const deco_start = self.readU32(me, 5);
-                    const deco_len = self.readU32(me, 6);
-                    const params_start = self.readU32(me, 1);
-                    const params_len = self.readU32(me, 2);
+                    const deco_start = self.readU32(me, 4);
+                    const deco_len = self.readU32(me, 5);
+                    const params_start = params_list_m.start;
+                    const params_len = params_list_m.len;
                     if (deco_len > 0 or params_len > 0) {
                         const new_key = try self.visitNode(key);
                         try self.collectMemberDecorators(

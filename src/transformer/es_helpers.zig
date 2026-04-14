@@ -431,13 +431,13 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 }
 
 /// method_definition → standalone function declaration으로 추출.
-/// method_definition: extra = [key, params_start, params_len, body, flags, ...]
+/// method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
-    const me = method_node.data.extra;
-    const params_start = self.ast.extra_data.items[me + 1];
-    const params_len = self.ast.extra_data.items[me + 2];
-    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 3]);
+    const params_list_old = self.ast.functionParamsList(method_node);
+    const params_start = params_list_old.start;
+    const params_len = params_list_old.len;
+    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[method_node.data.extra + 2]);
 
     const new_params = try self.visitExtraList(params_start, params_len);
 
@@ -447,10 +447,15 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const name_node = try makeBindingIdentifier(self, name_span);
 
     const none = @intFromEnum(NodeIndex.none);
+    // function_declaration: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
+    const new_params_node = try self.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = span,
+        .data = .{ .list = new_params },
+    });
     const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(name_node),
-        new_params.start,
-        new_params.len,
+        @intFromEnum(new_params_node),
         @intFromEnum(new_body),
         0,
         none,
