@@ -2036,6 +2036,35 @@ test "RN preset: arrow worklet params → __closure에서 제외 (#1283 Reanimat
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(value,context){") != null);
 }
 
+test "RN preset: #1299 arrow → function 다운레벨 (Hermes object literal arrow ternary 버그 회피)" {
+    // 이슈 #1299: 큰 arrow function ternary가 object property value 위치에 있을 때
+    // Hermes 런타임이 후속 prop을 누락. Rollipop도 사용자 arrow를 사실상 모두
+    // function으로 변환하므로 동일 정책.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const obj = {
+        \\  flushQueue: (true ? () => { return 1; } : () => { return 2; }),
+        \\  createNode(tag) { return tag; },
+        \\};
+        \\console.log(Object.keys(obj));
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // arrow 구문 (` => `)이 출력에 없어야 함 (모두 function으로 변환)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, " => ") == null);
+}
+
 test "RN preset: async/await은 보존 (Hermes native 지원)" {
     // #1267 회귀 방지: RN 프리셋이 async를 state machine으로 변환하지 않아야 함.
     var tmp = std.testing.tmpDir(.{});
