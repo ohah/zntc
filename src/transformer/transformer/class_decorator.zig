@@ -2421,7 +2421,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             for (new_members.items, 0..) |member_node_idx, mi| {
                 const m = self.ast.getNode(member_node_idx);
                 if (m.tag != .method_definition) continue;
-                const m_flags = self.readU32(m.data.extra, 4);
+                const m_flags = self.readU32(m.data.extra, 3);
                 if ((m_flags & 0x07) != 0) continue; // getter/setter/static이면 skip
                 const m_key_idx = self.readNodeIdx(m.data.extra, 0);
                 if (m_key_idx.isNone()) continue;
@@ -2430,15 +2430,15 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 if (!std.mem.eql(u8, self.ast.getText(m_key.data.string_ref), "constructor")) continue;
 
                 // prependStatementsToBody로 기존 body 앞에 삽입
-                const old_body_idx = self.readNodeIdx(m.data.extra, 3);
+                const old_body_idx = self.readNodeIdx(m.data.extra, 2);
                 const new_body_ctor = try self.prependStatementsToBody(old_body_idx, &.{run_init_stmt});
                 const empty_decos = try self.ast.addNodeList(&.{});
+                // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
                 const new_ctor_method = try self.addExtraNode(.method_definition, m.span, &.{
                     self.readU32(m.data.extra, 0), // key
-                    self.readU32(m.data.extra, 1), // params_start
-                    self.readU32(m.data.extra, 2), // params_len
+                    self.readU32(m.data.extra, 1), // params (formal_parameters idx)
                     @intFromEnum(new_body_ctor),
-                    self.readU32(m.data.extra, 4), // flags
+                    self.readU32(m.data.extra, 3), // flags
                     empty_decos.start,
                     empty_decos.len,
                 });
