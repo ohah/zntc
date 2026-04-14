@@ -197,11 +197,8 @@ export interface BuildOptions {
   mainFields?: string[];
   /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
   target?: import("../shared/index").Target;
-  /**
-   * browserslist 쿼리 (transpile과 동일, target보다 우선).
-   * bundler에선 현재 미전달 — 후속 작업. 타입만 노출해 API 일관성 유지.
-   */
-  browserslist?: string | string[];
+  // browserslist는 build API에서 아직 구현되지 않았다. transpile API에서만 사용 가능.
+  // 구현 완료 후 이 위치에 필드를 추가한다.
   /** 출력 디렉토리 (write: true 시 사용) */
   outdir?: string;
   /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */

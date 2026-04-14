@@ -76,6 +76,11 @@ const FEATURE_MAP: Record<string, string[]> = {
   class_private_method: ["private class methods"],
   class_private_field: ["instance class fields"],
   hashbang: ["Hashbang Grammar"],
+  // ZTS compat.zig에 있으나 이전 커밋에서 누락된 feature (FEATURE_MAP 커버리지 확장).
+  block_scoping: ["const", "let"],
+  new_target: ["new.target"],
+  object_extensions: ["object literal extensions"],
+  // using: ES2025, kangax 미등재 — SUPPORT 테이블 비어있음.
 };
 
 // 우리가 관심 있는 엔진만 추출 (kangax env 키 기준).
