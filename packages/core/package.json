@@ -13,17 +13,18 @@
   ],
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "dist/core/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/core/index.d.ts"
     }
   },
   "scripts": {
     "build:napi": "cd ../.. && zig build napi",
     "build:js": "bun build index.ts --outdir dist --format esm --target node",
-    "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js",
+    "build:dts": "bun x tsc --emitDeclarationOnly",
+    "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js && bun run build:dts",
     "test": "bun test"
   },
   "dependencies": {
