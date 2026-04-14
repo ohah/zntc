@@ -73,9 +73,9 @@ pub fn checkDuplicateConstructors(
         if (node.tag != .method_definition) continue;
 
         const extra_start = node.data.extra;
-        if (extra_start + 4 >= ast.extra_data.items.len) continue;
+        if (extra_start + 3 >= ast.extra_data.items.len) continue;
         const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
-        const flags = ast.extra_data.items[extra_start + 4];
+        const flags = ast.extra_data.items[extra_start + 3];
 
         // static 메서드는 constructor가 아님
         if ((flags & METHOD_FLAG_STATIC) != 0) continue;
@@ -86,8 +86,8 @@ pub fn checkDuplicateConstructors(
         if (!matchKeyName(ast, key_idx, "constructor")) continue;
 
         // TypeScript constructor overloads: body가 없는 시그니처는 허용.
-        // body(extra[3])가 .none이면 overload 시그니처이므로 스킵.
-        const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + 3]);
+        // body(extra[2])가 .none이면 overload 시그니처이므로 스킵.
+        const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + 2]);
         if (body_idx.isNone()) continue;
 
         if (first_constructor_span) |_| {
@@ -163,9 +163,9 @@ pub fn checkPrivateNameStaticConflict(
         switch (node.tag) {
             .method_definition => {
                 const extra_start = node.data.extra;
-                if (extra_start + 4 >= ast.extra_data.items.len) continue;
+                if (extra_start + 3 >= ast.extra_data.items.len) continue;
                 const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
-                const flags = ast.extra_data.items[extra_start + 4];
+                const flags = ast.extra_data.items[extra_start + 3];
                 const is_static = (flags & METHOD_FLAG_STATIC) != 0;
 
                 try checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
@@ -293,10 +293,10 @@ pub fn checkGetterSetterParams(
     if (node.tag != .method_definition) return;
 
     const extra_start = node.data.extra;
-    if (extra_start + 4 >= ast.extra_data.items.len) return;
+    if (extra_start + 3 >= ast.extra_data.items.len) return;
 
-    const flags = ast.extra_data.items[extra_start + 4];
-    const params_len = ast.extra_data.items[extra_start + 2];
+    const flags = ast.extra_data.items[extra_start + 3];
+    const params_len: u32 = @intCast(ast.functionParams(node).len);
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
         try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}), .getter_no_params);

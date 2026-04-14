@@ -875,6 +875,25 @@ pub const Ast = struct {
         return VariableDeclarationKind.fromU32(self.extra_data.items[node.data.extra]);
     }
 
+    /// 함수형 노드의 formal_parameters NodeList를 반환한다 (extra_data 인덱스 + len).
+    /// 지원 태그: function_declaration / function_expression / function /
+    /// arrow_function_expression / method_definition.
+    /// formal_parameters 노드가 없거나 잘못된 경우 빈 NodeList 반환.
+    /// consumer에서 registerParams/checkDuplicateParams 등 (start, len) 시그니처 호출에 사용.
+    pub fn functionParamsList(self: *const Ast, node: Node) NodeList {
+        const params_slot: u32 = switch (node.tag) {
+            .arrow_function_expression => 0,
+            .function_declaration, .function_expression, .function, .method_definition => 1,
+            else => return .{ .start = 0, .len = 0 },
+        };
+        if (node.data.extra + params_slot >= self.extra_data.items.len) return .{ .start = 0, .len = 0 };
+        const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra + params_slot]);
+        if (params_idx.isNone() or @intFromEnum(params_idx) >= self.nodes.items.len) return .{ .start = 0, .len = 0 };
+        const params_node = self.getNode(params_idx);
+        if (params_node.tag != .formal_parameters) return .{ .start = 0, .len = 0 };
+        return params_node.data.list;
+    }
+
     /// 함수형 노드의 파라미터 슬라이스를 반환한다 (각 element는 NodeIndex의 raw u32).
     /// 지원 태그: function_declaration / function_expression / function /
     /// arrow_function_expression / method_definition.

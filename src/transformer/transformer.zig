@@ -473,25 +473,28 @@ pub const Transformer = struct {
             const node = self.ast.nodes.items[i];
             switch (node.tag) {
                 .function_declaration, .function_expression, .function, .method_definition => {
-                    // extra layout: [name_or_key, params_start, params_len, body, ...]
+                    // extra layout: [name_or_key(0), params(1), body(2), ...]
                     const e = node.data.extra;
-                    if (e + 3 >= self.ast.extra_data.items.len) continue;
-                    const params_start = self.ast.extra_data.items[e + 1];
-                    const params_len = self.ast.extra_data.items[e + 2];
-                    if (params_len == 0) continue;
-                    if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len)) continue;
+                    if (e + 2 >= self.ast.extra_data.items.len) continue;
+                    const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                    if (params_idx.isNone() or @intFromEnum(params_idx) >= self.ast.nodes.items.len) continue;
+                    const params_node = self.ast.getNode(params_idx);
+                    if (params_node.tag != .formal_parameters) continue;
+                    const params_list = params_node.data.list;
+                    if (params_list.len == 0) continue;
+                    if (!es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_list.start, params_list.len)) continue;
 
-                    var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_start, params_len, node.span);
+                    var lr = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, params_list.start, params_list.len, node.span);
                     defer lr.body_stmts.deinit(self.allocator);
 
-                    self.ast.extra_data.items[e + 1] = lr.new_params.start;
-                    self.ast.extra_data.items[e + 2] = lr.new_params.len;
+                    // formal_parameters 노드의 NodeList in-place 업데이트
+                    self.ast.nodes.items[@intFromEnum(params_idx)].data.list = lr.new_params;
 
                     if (lr.body_stmts.items.len > 0) {
-                        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 3]);
+                        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                         if (!body_idx.isNone()) {
                             const new_body = try self.prependStatementsToBody(body_idx, lr.body_stmts.items);
-                            self.ast.extra_data.items[e + 3] = @intFromEnum(new_body);
+                            self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
                         }
                     }
                 },
