@@ -1013,7 +1013,6 @@ pub const ModuleGraph = struct {
                         .local_span = sb.local_span,
                         .kind = eb_kind,
                         .import_record_index = sb.import_record_index,
-                        .has_local_default_binding = sb.has_local_default_binding,
                     };
                 }
                 module.export_bindings = ebindings;

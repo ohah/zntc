@@ -75,9 +75,6 @@ pub const ScanExportBinding = struct {
     kind: ExportBindingKind,
     /// re-export 시 소스 모듈의 scan_import_records 인덱스
     import_record_index: ?u32 = null,
-    /// #1328 Phase 3a: `export default <expr>` 구문에서 나온 바인딩인지.
-    /// true = codegen이 로컬 `_default = <expr>` 할당을 emit한다.
-    has_local_default_binding: bool = false,
 };
 
 /// CJS/ESM 감지 결과.

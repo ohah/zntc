@@ -68,11 +68,6 @@ pub const ExportBinding = struct {
     ///   - .re_export: source 모듈의 export 심볼 (Phase 3에서 linker가 채움)
     /// invalid = 미해결. 기존 문자열 로직은 병존 (Phase 4에서 제거).
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
-    /// #1328 Phase 3a: `export default <expr>` 구문에서 나온 바인딩인지 여부.
-    /// true = codegen이 현재 모듈에 `_default = <expr>` 할당을 emit한다.
-    /// false (kind=.re_export) = `export { default } from './x'` 같은 순수 재-export로,
-    /// 현재 모듈에 로컬 default 바인딩이 없음 → esm_wrap은 체인 resolve로 내려보낸다.
-    has_local_default_binding: bool = false,
 
     pub const Kind = enum {
         local,
@@ -80,20 +75,10 @@ pub const ExportBinding = struct {
         re_export_all,
     };
 
-    /// Scanner 내부용 predicate: local_name=="default" 패턴으로 `_default = <chain>`
-    /// 할당을 esm_wrap body가 만드는 케이스. `populateSyntheticSymbols`가 이 조건에
-    /// 해당하는 export에 synthetic_default 합성 심볼을 등록한다.
-    fn emitsLocalDefault(self: ExportBinding) bool {
-        if (self.kind != .local and self.kind != .re_export) return false;
-        return std.mem.eql(u8, self.local_name, "default");
-    }
-
-    /// #1328 Phase 4a: 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지
-    /// symbol table로 확인. linker.addNameOwner / metadata.default_export_name /
-    /// esm_wrap 호이스팅·할당 사이트의 단일 source of truth.
-    ///
-    /// scanner의 `populateSyntheticSymbols`가 이 predicate가 true가 될 조건에 대해
-    /// 정확히 synthetic_default 심볼을 등록하므로, 판정은 symbol 조회 한 번으로 끝.
+    /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 symbol table로 확인.
+    /// linker.addNameOwner / metadata.default_export_name / esm_wrap 호이스팅·할당
+    /// 사이트의 단일 source of truth — scanner의 `populateSyntheticSymbols`가 이
+    /// predicate가 true가 될 조건에 대해 정확히 synthetic_default 심볼을 등록한다.
     pub fn hasSyntheticDefault(self: ExportBinding, table: *const SymbolTable) bool {
         return switch (self.symbol) {
             .bundler => |b| !b.symbol.isNone() and table.getKind(b.symbol) == .synthetic_default,
@@ -359,7 +344,6 @@ pub fn extractExportBindings(
                     .local_span = node.span,
                     .kind = kind,
                     .import_record_index = final_rec_idx,
-                    .has_local_default_binding = true,
                 });
             },
             .export_all_declaration => {
@@ -622,20 +606,8 @@ pub fn collectNamespaceAccesses(
     }
 }
 
-/// #1328 Phase 1-3a: export bindings를 훑어 bundler-local 합성 심볼을 테이블에
-/// 등록하고, 대응하는 ExportBinding.symbol을 채운다.
-///
-/// `_default` 합성 심볼은 `has_local_default_binding == true`인 모든 default
-/// export에 등록된다. 여기에는 다음이 포함된다:
-///   - `export default 42;` / `export default class Foo {}` (kind=.local)
-///   - `import X from './x'; export default X;` (kind=.re_export — #1321 커밋 분류)
-///     codegen이 `_default = X` 할당을 emit하므로 로컬 `_default` 참조 가능.
-///
-/// 제외: `export { default } from './x'` (has_local_default_binding=false).
-/// 이 경우엔 로컬 `_default` 바인딩이 없어 esm_wrap이 re-export 체인 resolve로
-/// 내려보내야 한다.
-///
-/// Cross-module re-export 연결은 Phase 3b에서 linker가 담당.
+/// export bindings를 훑어 bundler-local 합성 심볼을 등록하고 `ExportBinding.symbol`을
+/// 채운다. Cross-module re-export 연결은 linker가 `populateReExportAliases`에서 수행.
 pub fn populateSyntheticSymbols(
     table: *SymbolTable,
     module_index: ModuleIndex,
