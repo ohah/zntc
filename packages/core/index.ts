@@ -171,10 +171,13 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
 
 export type { OutputFile, Diagnostic };
 
-export interface BuildOptions {
+/**
+ * Common build options shared by all platforms.
+ * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
+ */
+interface BuildOptionsCommon {
   entryPoints: string[];
   format?: "esm" | "cjs" | "iife" | "umd" | "amd";
-  platform?: "browser" | "node" | "neutral" | "react-native";
   external?: string[];
   minify?: boolean;
   minifyWhitespace?: boolean;
@@ -218,10 +221,6 @@ export interface BuildOptions {
   resolveExtensions?: string[];
   /** package.json 필드 순서 (예: ["module", "main"]) */
   mainFields?: string[];
-  /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
-  target?: import("../shared/index").Target;
-  /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
-  browserslist?: string | string[];
   /** 출력 디렉토리 (write: true 시 사용) */
   outdir?: string;
   /** 출력 파일 경로 (단일 엔트리 시, write: true 시 사용) */
@@ -288,6 +287,27 @@ export interface BuildOptions {
   /** watch 모드 리빌드 콜백 */
   onRebuild?: (event: WatchRebuildEvent) => void;
 }
+
+/**
+ * BuildOptions: 사용자 공개 API.
+ *
+ * `platform === "react-native"` 일 때는 Hermes 호환 매트릭스가 강제되므로
+ * `target` / `browserslist`를 전달할 수 없다 (런타임에서도 무시됨).
+ */
+export type BuildOptions =
+  | (BuildOptionsCommon & {
+      /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
+      platform: "react-native";
+      target?: never;
+      browserslist?: never;
+    })
+  | (BuildOptionsCommon & {
+      platform?: "browser" | "node" | "neutral";
+      /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
+      target?: import("../shared/index").Target;
+      /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
+      browserslist?: string | string[];
+    });
 
 export interface WatchReadyEvent {
   files: number;

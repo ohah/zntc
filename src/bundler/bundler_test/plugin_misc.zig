@@ -1911,3 +1911,117 @@ test "let → var: 초기화 없는 let에 void 0 추가 확인" {
     // var(0) → var(0) 그대로
     try std.testing.expectEqual(@as(u32, 0), block_scoping.lowerKindFlags(0));
 }
+
+// ============================================================
+// RN preset: platform=react-native → Hermes unsupported matrix 강제 적용
+// ============================================================
+
+test "RN preset: class → function IIFE 강제 다운레벨 (Hermes class expression 호환)" {
+    // Hermes는 __esm wrap 내부의 `X = class X {}` 형태 class expression을 거부한다.
+    // platform=react-native 프리셋은 자동으로 `unsupported.class = true`를 설정해
+    // class를 function + prototype으로 다운레벨한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { AppError } from './err.js';
+        \\console.log(new AppError('x'));
+    );
+    try writeFile(tmp.dir, "err.js",
+        \\export class AppError extends Error {
+        \\  constructor(msg) { super(msg); }
+        \\}
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // class expression이 emit되지 않아야 함 (Hermes 호환의 핵심)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "= class AppError") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=class AppError") == null);
+    // class → function 변환 런타임 헬퍼가 주입돼야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") != null);
+}
+
+test "RN preset: 사용자 unsupported.class=false여도 RN에서 자동 true 오버라이드" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\class Foo { greet() { return 'hi'; } }
+        \\new Foo().greet();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    // 사용자가 의도적으로 class 보존을 요청해도 RN 프리셋이 오버라이드
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .unsupported = .{ .class = false },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // RN에서는 class가 남아 있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "= class Foo") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=class Foo") == null);
+}
+
+test "RN preset: browser 플랫폼에서는 class 그대로 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\class Foo { greet() { return 'hi'; } }
+        \\new Foo().greet();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // browser는 class 문법 지원 → 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
+}
+
+test "RN preset: async/await은 보존 (Hermes native 지원)" {
+    // #1267 회귀 방지: RN 프리셋이 async를 state machine으로 변환하지 않아야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\export async function f() { return await Promise.resolve(1); }
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // async/await 그대로 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "async function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await ") != null);
+    // state machine 헬퍼 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator") == null);
+}
