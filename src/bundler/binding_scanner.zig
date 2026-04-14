@@ -20,7 +20,6 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
 const SymbolTable = symbol_mod.SymbolTable;
-const SymbolKind = symbol_mod.SymbolKind;
 
 pub const ImportBinding = struct {
     kind: Kind,

@@ -8,6 +8,7 @@ const types = @import("types.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const import_scanner = @import("import_scanner.zig");
+const symbol = @import("symbol.zig");
 
 // ============================================================
 // Tests
@@ -320,7 +321,6 @@ test "populateSyntheticSymbols: export default 는 _default 등록" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    const symbol = @import("symbol.zig");
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
@@ -338,7 +338,6 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    const symbol = @import("symbol.zig");
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
@@ -355,7 +354,6 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    const symbol = @import("symbol.zig");
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
@@ -382,7 +380,6 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    const symbol = @import("symbol.zig");
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
