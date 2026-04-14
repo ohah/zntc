@@ -76,6 +76,9 @@ pub const SymbolKind = enum(u8) {
     synthetic_init,
     /// `import * as X` namespace 객체
     synthetic_namespace,
+    /// Re-export alias (`export { X } from './m'`, barrel 등).
+    /// 자기 자신은 값을 갖지 않고 `points_to`로 target export를 가리킴.
+    re_export_alias,
     /// Resolve 실패한 외부 import (node builtin 등)
     unresolved_external,
 };
@@ -133,6 +136,23 @@ pub const SymbolTable = struct {
             .span = span,
         });
         try self.by_name.put(name, id);
+        return id;
+    }
+
+    /// 이름 기반 조회 없이 익명 심볼 등록. re_export_alias처럼 같은 exported_name이
+    /// 여러 개 올 수 있거나, name으로 lookup이 필요 없는 경우에 사용.
+    pub fn declareAnonymous(
+        self: *SymbolTable,
+        name: []const u8,
+        kind: SymbolKind,
+        span: Span,
+    ) !SymbolId {
+        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        try self.symbols.append(self.allocator, .{
+            .name = name,
+            .kind = kind,
+            .span = span,
+        });
         return id;
     }
 
