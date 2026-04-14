@@ -2238,7 +2238,7 @@ pub const Codegen = struct {
         try self.emitNode(node.data.unary.operand);
     }
 
-    // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+    // method_definition: extra = [key, params, body, flags, deco_start, deco_len]
     fn emitMethodDef(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 6];
@@ -3502,8 +3502,7 @@ pub const Codegen = struct {
             .function_declaration, .class_declaration => {
                 // function foo() {} → Foo.foo = foo;
                 const e = decl.data.extra;
-                const extras = self.ast.extra_data.items[e .. e + 6];
-                const name_idx: NodeIndex = @enumFromInt(extras[0]);
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 if (!name_idx.isNone()) {
                     const fn_name_node = self.ast.getNode(name_idx);
                     const fn_name = self.ast.getText(fn_name_node.span);
