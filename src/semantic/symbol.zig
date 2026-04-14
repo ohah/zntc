@@ -193,6 +193,21 @@ pub const DeclFlags = packed struct(u16) {
     }
 };
 
+/// Bundler가 생성한 합성 심볼 종류. #1328 Phase 4e-2.
+/// 선언 소스가 AST에 없는 심볼 — linker가 cross-module 연결용으로 추가.
+/// `re_export_alias`/`unresolved_external`은 값 의미가 없어 semantic 공간에
+/// 얹지 않으며, bundler 전용 `AliasTable`에 남는다 (RFC #1338 결정).
+pub const SyntheticKind = enum(u8) {
+    /// `export default ...` 합성 변수 (`_default`, `_default$N`)
+    default_export,
+    /// CJS 래퍼의 `exports_<module>` 객체
+    cjs_exports,
+    /// ESM 래퍼의 `init_<module>` 함수
+    esm_init,
+    /// `import * as X` namespace 객체
+    namespace,
+};
+
 /// 컴파일 타임 상수 값. 번들러에서 크로스-모듈 인라인에 사용.
 /// `const x = false` → ConstValue{ .kind = .false_ }
 pub const ConstValue = struct {
@@ -242,9 +257,19 @@ pub const Symbol = struct {
     /// const/let 선언의 초기화 값이 리터럴이면 설정.
     const_value: ConstValue = .{},
 
+    /// Bundler가 추가한 합성 심볼 종류. null = AST 선언에서 온 정규 심볼.
+    /// #1328 Phase 4e-2: `extendSymbol`로 추가된 심볼만 non-null.
+    synthetic_kind: ?SyntheticKind = null,
+
     /// 이 심볼의 이름을 소스에서 읽는다.
+    /// 합성 심볼(`synthetic_kind != null`)은 `span`이 소스 범위 밖을 가리킬 수 있어
+    /// caller는 `isSynthetic()`을 먼저 확인해야 한다.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
         return source[self.name.start..self.name.end];
+    }
+
+    pub fn isSynthetic(self: *const Symbol) bool {
+        return self.synthetic_kind != null;
     }
 };
 
