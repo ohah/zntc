@@ -34,7 +34,7 @@ var lambda2 = (x, y="hello") => {
 };
 var lambda3 = (x, y="hello", ...rest) => {
 };
-var lambda4 = (y = "hello",...rest) => {
+var lambda4 = (y = "hello", ...rest) => {
 };
 var x = function(str="hello",...rest) {
 };
@@ -53,7 +53,7 @@ var lambda2 = (x, y="hello") => {
 };
 var lambda3 = (x, y="hello", ...rest) => {
 };
-var lambda4 = (y = "hello",...rest) => {
+var lambda4 = (y = "hello", ...rest) => {
 };
 var x = function(str="hello",...rest) {
 };

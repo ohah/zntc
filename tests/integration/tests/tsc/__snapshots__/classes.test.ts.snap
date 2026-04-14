@@ -1073,7 +1073,7 @@ class C {
 const x = "";
 ((b = class extends C {
 	static x = 1;
-},d = x) => {
+}, d = x) => {
 	var x;
 })();
 "
@@ -1091,7 +1091,7 @@ class C {
 const x = "";
 ((b = class extends C {
 	static x = 1;
-},d = x) => {
+}, d = x) => {
 	var x;
 })();
 "
@@ -10775,10 +10775,10 @@ let A = (() => {
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
 			_x_decorators = [// uses class reference
-((t,c) => {
+((t, c) => {
 			})];
 			_y_decorators = [// uses 'this'
-((t,c) => {
+((t, c) => {
 			})];
 			__esDecorate(this, null, _x_decorators, { kind: "accessor", name: "x", static: true, private: false, access: { has: (obj) => "x" in obj, get: (obj) => obj.x, set: function(obj,value) {
 				obj.x = value;
