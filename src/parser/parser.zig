@@ -1147,6 +1147,17 @@ pub const Parser = struct {
         });
     }
 
+    /// 이미 만든 NodeList(extra_data에 연속 저장된 NodeIndex 리스트)를 formal_parameters 노드로 감싼다.
+    /// function/method/arrow가 공유하는 정규화 계약. arrow는 coverExpressionToArrowParams에서,
+    /// function/method는 parse* 함수들의 마지막 단계에서 사용.
+    pub fn wrapAsFormalParametersFromList(self: *Parser, list: NodeList, span: Span) !NodeIndex {
+        return try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = span,
+            .data = .{ .list = list },
+        });
+    }
+
     /// arrow function 파라미터를 cover grammar으로 검증 + **formal_parameters 노드로 정규화**.
     ///
     /// 입력: parseAssignmentExpression으로 파싱된 원형 (identifier / parenthesized / sequence / spread / formal_parameters).

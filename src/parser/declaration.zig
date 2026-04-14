@@ -126,9 +126,9 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
+    const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(param_list.start);
-    _ = try self.ast.addExtra(param_list.len);
+    _ = try self.ast.addExtra(@intFromEnum(params_node));
     _ = try self.ast.addExtra(@intFromEnum(body));
     _ = try self.ast.addExtra(flags);
     _ = try self.ast.addExtra(@intFromEnum(return_type));
@@ -236,9 +236,9 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
+    const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(param_list.start);
-    _ = try self.ast.addExtra(param_list.len);
+    _ = try self.ast.addExtra(@intFromEnum(params_node));
     _ = try self.ast.addExtra(@intFromEnum(body));
     _ = try self.ast.addExtra(flags);
     _ = try self.ast.addExtra(@intFromEnum(return_type));
@@ -318,9 +318,9 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
 
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
+    const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(param_list.start);
-    _ = try self.ast.addExtra(param_list.len);
+    _ = try self.ast.addExtra(@intFromEnum(params_node));
     _ = try self.ast.addExtra(@intFromEnum(body));
     _ = try self.ast.addExtra(flags);
 
@@ -781,12 +781,12 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.allow_super_property = saved_super_prop_for_params;
         const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
         self.restoreScratch(param_top);
+        const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
 
-        // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+        // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
         const extra_start = try self.ast.addExtras(&.{
             @intFromEnum(key),
-            param_list.start,
-            param_list.len,
+            @intFromEnum(params_node),
             @intFromEnum(body),
             flags,
             decorators.start,
