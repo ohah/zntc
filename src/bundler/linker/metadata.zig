@@ -554,12 +554,13 @@ pub fn buildMetadataForAst(
 
     // collectModuleNames에서 등록한 _default 충돌의 canonical name을 조회.
     var default_export_name: []const u8 = "_default";
+    const sym_table_opt = if (m.symbol_table) |*t| t else null;
     for (m.export_bindings) |eb| {
-        if (std.mem.eql(u8, eb.local_name, "default") and
-            (eb.kind == .local or eb.kind == .re_export))
-        {
-            default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
-            break;
+        if (sym_table_opt) |t| {
+            if (eb.hasSyntheticDefault(t)) {
+                default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
+                break;
+            }
         }
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
             default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;

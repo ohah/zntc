@@ -251,13 +251,16 @@ pub fn emitEsmWrappedModule(
         }
     }
 
-    // re-export (export { default } from / export { default as X } from)는
-    // AST에 export_default_declaration 노드가 없으므로 export_bindings에서 확인.
-    for (module.export_bindings) |eb| {
-        if (eb.kind == .re_export and std.mem.eql(u8, eb.local_name, "default")) {
-            const def_name = if (metadata) |md| md.default_export_name else "_default";
-            try hoisted_var_names.append(allocator, def_name);
-            break;
+    // `export { default } from './x'` 같은 순수 re-export도 body에서 `_default = <chain>`
+    // 할당을 만들어내므로 hoisted_var 선언 필요. symbol table에 synthetic_default가
+    // 등록돼 있으면 _default 변수가 실제로 emit된다는 뜻.
+    if (module.symbol_table) |*t| {
+        for (module.export_bindings) |eb| {
+            if (eb.kind == .re_export and eb.hasSyntheticDefault(t)) {
+                const def_name = if (metadata) |md| md.default_export_name else "_default";
+                try hoisted_var_names.append(allocator, def_name);
+                break;
+            }
         }
     }
 
@@ -557,9 +560,11 @@ pub fn emitEsmWrappedModule(
     // 소스 모듈의 wrap_kind에 따라 적절한 할당문을 직접 생성.
     var reexport_buf: std.ArrayList(u8) = .empty;
     defer reexport_buf.deinit(allocator);
+    const sym_table_opt = if (module.symbol_table) |*t| t else null;
     for (module.export_bindings) |eb| {
         if (eb.kind != .re_export) continue;
-        if (!std.mem.eql(u8, eb.local_name, "default")) continue;
+        const t = sym_table_opt orelse continue;
+        if (!eb.hasSyntheticDefault(t)) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;

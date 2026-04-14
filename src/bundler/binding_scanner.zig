@@ -79,6 +79,27 @@ pub const ExportBinding = struct {
         re_export,
         re_export_all,
     };
+
+    /// Scanner 내부용 predicate: local_name=="default" 패턴으로 `_default = <chain>`
+    /// 할당을 esm_wrap body가 만드는 케이스. `populateSyntheticSymbols`가 이 조건에
+    /// 해당하는 export에 synthetic_default 합성 심볼을 등록한다.
+    fn emitsLocalDefault(self: ExportBinding) bool {
+        if (self.kind != .local and self.kind != .re_export) return false;
+        return std.mem.eql(u8, self.local_name, "default");
+    }
+
+    /// #1328 Phase 4a: 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지
+    /// symbol table로 확인. linker.addNameOwner / metadata.default_export_name /
+    /// esm_wrap 호이스팅·할당 사이트의 단일 source of truth.
+    ///
+    /// scanner의 `populateSyntheticSymbols`가 이 predicate가 true가 될 조건에 대해
+    /// 정확히 synthetic_default 심볼을 등록하므로, 판정은 symbol 조회 한 번으로 끝.
+    pub fn hasSyntheticDefault(self: ExportBinding, table: *const SymbolTable) bool {
+        return switch (self.symbol) {
+            .bundler => |b| !b.symbol.isNone() and table.getKind(b.symbol) == .synthetic_default,
+            .semantic => false,
+        };
+    }
 };
 
 /// AST에서 import 바인딩 상세를 추출한다.
@@ -621,7 +642,17 @@ pub fn populateSyntheticSymbols(
     export_bindings: []ExportBinding,
 ) !void {
     for (export_bindings) |*eb| {
-        if (eb.has_local_default_binding and std.mem.eql(u8, eb.exported_name, "default")) {
+        // codegen이 `_default = <expr>` 할당을 emit하는 export만 synthetic_default 등록.
+        // 조건: local_name이 실제 바인딩 이름("Foo" 등)이 아닌 합성 이름일 때 — 즉
+        //   - "_default": 익명 default (`export default 42`) 또는 리터럴
+        //   - "default": `export { default } from './x'` / `export default X`(X는 default-import)
+        //     → esm_wrap body가 `_default = <chain>` 할당
+        // `export default class Foo` 등 **클래스명 재사용** 케이스(local_name="Foo")는 제외 —
+        // codegen이 Foo를 그대로 쓰므로 _default가 emit되지 않는다.
+        if ((eb.kind == .local or eb.kind == .re_export) and
+            std.mem.eql(u8, eb.exported_name, "default") and
+            (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
+        {
             const id = try table.declare("_default", .synthetic_default, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         } else if (eb.kind == .re_export) {
