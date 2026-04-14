@@ -324,7 +324,7 @@ test "populateSyntheticSymbols: export default 는 _default 등록" {
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, r.export_bindings);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings);
     const id = table.find("_default") orelse return error.NotFound;
     try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(id));
     try std.testing.expectEqual(@as(u32, 1), table.count());
@@ -342,7 +342,52 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, r.export_bindings);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings);
     try std.testing.expectEqual(@as(u32, 0), table.count());
     try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
+}
+
+test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    const symbol = @import("symbol.zig");
+    var table = symbol.SymbolTable.init(alloc);
+    defer table.deinit();
+
+    const m: types.ModuleIndex = @enumFromInt(7);
+    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings);
+
+    // default export가 bundler ref로 채워졌는지
+    try std.testing.expect(r.export_bindings[0].symbol.isValid());
+    try std.testing.expectEqual(m, r.export_bindings[0].symbol.moduleIndex());
+    switch (r.export_bindings[0].symbol) {
+        .bundler => |b| {
+            try std.testing.expectEqualStrings("_default", table.getName(b.symbol));
+            try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(b.symbol));
+        },
+        .semantic => return error.UnexpectedSpace,
+    }
+}
+
+test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "export const x = 1;");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    const symbol = @import("symbol.zig");
+    var table = symbol.SymbolTable.init(alloc);
+    defer table.deinit();
+
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings);
+
+    // 일반 named export는 Phase 2에선 아직 미연결 (Phase 3에서 semantic 심볼과 연결)
+    try std.testing.expect(!r.export_bindings[0].symbol.isValid());
 }
