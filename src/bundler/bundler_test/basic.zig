@@ -888,6 +888,30 @@ test "Async helper: async arrow function (edge)" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
 }
 
+test "Async helper: __generator sent() re-throws on throw op (#1306)" {
+    // tslib 호환: `sent()`는 t[0]&1 (throw op) 시 t[1]을 re-throw 해야 함.
+    // 누락 시 rejected Promise가 값으로 resolve되어 try/catch 없는 await에서 에러가 소실.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function run() { return await Promise.resolve(1); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "if (t[0] & 1) throw t[1]") != null);
+}
+
 test "Bundler: AMD external dependencies in wrapper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
