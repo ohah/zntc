@@ -30,8 +30,8 @@ const es_helpers = @import("es_helpers.zig");
 pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
         /// 파라미터 목록에서 default/rest 파라미터가 있는지 검사한다.
-        pub fn hasDefaultOrRest(self: *const Transformer, params_start: u32, params_len: u32) bool {
-            const old_params = self.ast.extra_data.items[params_start .. params_start + params_len];
+        pub fn hasDefaultOrRest(self: *const Transformer, params: ast_mod.NodeList) bool {
+            const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];
             for (old_params) |raw_idx| {
                 const param = self.ast.getNode(@enumFromInt(raw_idx));
                 if (param.tag == .spread_element or param.tag == .rest_element) return true;
@@ -62,26 +62,23 @@ pub fn ES2015Params(comptime Transformer: type) type {
         /// 반환: { new_params, body_prepend_stmts }
         pub fn lowerParams(
             self: *Transformer,
-            params_start: u32,
-            params_len: u32,
+            params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params_start, params_len, span, false);
+            return lowerParamsImpl(self, params, span, false);
         }
 
         pub fn lowerParamsPass2(
             self: *Transformer,
-            params_start: u32,
-            params_len: u32,
+            params: ast_mod.NodeList,
             span: Span,
         ) Transformer.Error!LowerResult {
-            return lowerParamsImpl(self, params_start, params_len, span, true);
+            return lowerParamsImpl(self, params, span, true);
         }
 
         fn lowerParamsImpl(
             self: *Transformer,
-            params_start: u32,
-            params_len: u32,
+            params: ast_mod.NodeList,
             span: Span,
             comptime pass2: bool,
         ) Transformer.Error!LowerResult {
@@ -101,8 +98,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             }.call;
 
             var i_loop: u32 = 0;
-            while (i_loop < params_len) : (i_loop += 1) {
-                const raw_idx = self.ast.extra_data.items[params_start + i_loop];
+            while (i_loop < params.len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[params.start + i_loop];
                 const param = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (param.tag == .spread_element or param.tag == .rest_element) {

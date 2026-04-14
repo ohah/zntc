@@ -324,19 +324,18 @@ pub fn checkGetterSetterParams(
 ///   - generator/async function 파라미터
 pub fn checkDuplicateParams(
     ast: *const Ast,
-    params_start: u32,
-    params_len: u32,
+    params: ast_mod.NodeList,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (params_len == 0) return;
-    if (params_start + params_len > ast.extra_data.items.len) return;
+    if (params.len == 0) return;
+    if (params.start + params.len > ast.extra_data.items.len) return;
 
     // 파라미터 이름 → 첫 선언 위치 매핑
     var seen = std.StringHashMap(Span).init(allocator);
     defer seen.deinit();
 
-    const param_indices = ast.extra_data.items[params_start .. params_start + params_len];
+    const param_indices = ast.extra_data.items[params.start .. params.start + params.len];
     for (param_indices) |raw_idx| {
         try collectBindingNames(ast, @enumFromInt(raw_idx), &seen, errors, allocator);
     }

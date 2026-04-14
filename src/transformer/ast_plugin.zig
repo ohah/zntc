@@ -40,13 +40,10 @@ pub const FunctionInfo = struct {
     name: ?[]const u8,
     /// 함수 body 노드 인덱스 (변환 후)
     body_idx: NodeIndex,
-    /// 파라미터 extra_data 시작 위치 (변환 후)
-    params_start: u32,
-    /// 파라미터 수 (변환 후)
-    params_len: u32,
+    /// 파라미터 리스트 (변환 후) — formal_parameters 노드의 NodeList
+    params: ast_mod.NodeList,
     /// 원본 (변환 전) — Babel과 동일하게 변환 전 AST로 closure 분석
-    original_params_start: u32,
-    original_params_len: u32,
+    original_params: ast_mod.NodeList,
     original_body_idx: NodeIndex,
     /// 함수 플래그 (bit 0=async, bit 1=generator)
     flags: u32,
@@ -118,8 +115,7 @@ pub const AstTransformCtx = struct {
         const vars = try worklet_mod.collectClosureVars(
             self.transformer,
             info.original_body_idx,
-            info.original_params_start,
-            info.original_params_len,
+            info.original_params,
             info.name,
         );
         self.closure_cache = .{ .node_idx = info.node_idx, .vars = vars };
@@ -352,8 +348,7 @@ pub const AstTransformCtx = struct {
         func_name: []const u8,
         body_idx: NodeIndex,
         closure_vars: []const worklet_mod.ClosureVar,
-        params_start: u32,
-        params_len: u32,
+        params: ast_mod.NodeList,
         flags: u32,
     ) Error![]const u8 {
         return worklet_mod.generateInitCode(
@@ -361,8 +356,7 @@ pub const AstTransformCtx = struct {
             func_name,
             body_idx,
             closure_vars,
-            params_start,
-            params_len,
+            params,
             flags,
         );
     }
