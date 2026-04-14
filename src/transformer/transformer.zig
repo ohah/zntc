@@ -891,7 +891,7 @@ pub const Transformer = struct {
                 if (self.options.unsupported.async_await) {
                     const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
-                    if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
+                    if (e + 3 < extras.len and (extras[e + 3] & ast_mod.FunctionFlags.is_async) != 0) {
                         // async + generator 둘 다 unsupported → 직접 state machine 생성
                         if (self.options.unsupported.generator) {
                             return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);
@@ -903,7 +903,7 @@ pub const Transformer = struct {
                 if (self.options.unsupported.generator) {
                     const extras = self.ast.extra_data.items;
                     const e = node.data.extra;
-                    if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_generator) != 0) {
+                    if (e + 3 < extras.len and (extras[e + 3] & ast_mod.FunctionFlags.is_generator) != 0) {
                         return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
                     }
                 }
