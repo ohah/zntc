@@ -1854,6 +1854,17 @@ pub const SemanticAnalyzer = struct {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
                 try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
             },
+            // 파서가 정규화한 formal_parameters list (#1283 이후 기본 형태).
+            // 이 케이스가 누락되면 arrow function 파라미터가 스코프에 등록되지 않아
+            // body 내부 참조가 outer top-level 바인딩으로 resolve되는 섀도잉 버그가 발생.
+            .formal_parameters => {
+                if (node.data.list.len == 0) return;
+                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (indices) |raw_idx| {
+                    try self.declareArrowParams(@enumFromInt(raw_idx));
+                }
+            },
             .parenthesized_expression => {
                 try self.declareArrowParams(node.data.unary.operand);
             },

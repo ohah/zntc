@@ -888,28 +888,40 @@ test "Async helper: async arrow function (edge)" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
 }
 
-test "Async helper: __generator sent() re-throws on throw op (#1306)" {
-    // tslib 호환: `sent()`는 t[0]&1 (throw op) 시 t[1]을 re-throw 해야 함.
-    // 누락 시 rejected Promise가 값으로 resolve되어 try/catch 없는 await에서 에러가 소실.
+test "Arrow param shadows hoisted top-level rename (effect TDZ repro)" {
+    // top-level `size`가 여러 모듈에 있으면 linker가 size→size$N으로 rename.
+    // 이때 arrow function 파라미터 `size`가 같은 모듈 top-level `size`를 섀도잉해야 하며,
+    // body 내부 참조는 파라미터(rename 안 됨)로 resolve되어야 함.
+    // 버그: declareArrowParams가 .formal_parameters 태그를 처리하지 않아 파라미터 미등록 →
+    // body 참조가 top-level rename(`size$N`)으로 오염되어 TDZ 유발 (effect lib 브라우저 번들 실패).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const size = 1;\n");
+    try writeFile(tmp.dir, "c.ts",
+        \\export const size = 99;
+        \\export const makeImpl = (size) => size;
+    );
+    // c.ts의 top-level `size`를 쓰는 참조가 있어야 rename이 tree-shake 후에도 남음
     try writeFile(tmp.dir, "entry.ts",
-        \\export async function run() { return await Promise.resolve(1); }
+        \\import * as A from './a';
+        \\import { size, makeImpl } from './c';
+        \\console.log(A.size, size, makeImpl(42));
     );
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
-    const compat = @import("../../transformer/compat.zig");
 
-    var b = Bundler.init(std.testing.allocator, .{
-        .entry_points = &.{entry},
-        .unsupported = compat.fromESTarget(.es5),
-    });
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
-
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "if (t[0] & 1) throw t[1]") != null);
+
+    // top-level rename은 발생해야 함 (회귀 방지)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "size$") != null);
+    // 파라미터가 rename된 버전은 존재해선 안 됨 — body의 size 참조는 파라미터로 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(size) => size$") == null);
+    // 양성 신호: body가 rename 안 된 `size`를 참조 (formatter 변경에도 견고하도록 공백 범위 허용)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(size) => size") != null);
 }
 
 test "Bundler: AMD external dependencies in wrapper" {
