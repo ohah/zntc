@@ -148,9 +148,9 @@ pub fn ES2022(comptime Transformer: type) type {
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
             const new_me = try self.ast.addExtras(&.{
-                saved_key, saved_params,
-                @intFromEnum(new_body), saved_flags, saved_deco_start,
-                saved_deco_len,
+                saved_key,              saved_params,
+                @intFromEnum(new_body), saved_flags,
+                saved_deco_start,       saved_deco_len,
             });
             return self.ast.addNode(.{
                 .tag = .method_definition,

@@ -1006,8 +1006,9 @@ pub fn insertFieldAssignmentsIntoConstructor(
     // constructor method_definition을 새 body로 재생성
     // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     return self.addExtraNode(.method_definition, ctor_node.span, &.{
-        ctor_e0, ctor_e1,
-        @intFromEnum(new_body), ctor_e3, ctor_e4, ctor_e5,
+        ctor_e0,                ctor_e1,
+        @intFromEnum(new_body), ctor_e3,
+        ctor_e4,                ctor_e5,
     });
 }
 

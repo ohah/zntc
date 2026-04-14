@@ -2161,7 +2161,8 @@ pub const Transformer = struct {
         const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
         const result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_params_node),
-            @intFromEnum(new_body), self.readU32(e, 3),  none,
+            @intFromEnum(new_body), self.readU32(e, 3),
+            none,
         });
 
         // Plugin dispatch: onFunction (AST 훅)
