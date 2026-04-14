@@ -2059,10 +2059,10 @@ test "RN preset: #1302 for-of destructuring + const→var는 void 0 init 추가 
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // for-of left의 destructuring init은 추가하지 않음
+    // 잘못된 `{...} = void 0;` statement가 emit되지 않아야 함
+    // (RN preset에서 destructuring/for-of 자체도 다운레벨되므로 패턴이 더 변환되지만,
+    // 핵심 회귀 조건은 destructuring + no-init declarator에 void 0가 안 붙는 것)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "} = void 0;") == null);
-    // for-of 자체는 var로 정상 변환
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "for (var {") != null);
 }
 
 test "RN preset: #1299 let/const → var 다운레벨 (Hermes block scoping)" {
@@ -2128,8 +2128,10 @@ test "RN preset: #1299 arrow → function 다운레벨 (Hermes object literal ar
     try std.testing.expect(std.mem.indexOf(u8, result.output, " => ") == null);
 }
 
-test "RN preset: async/await은 보존 (Hermes native 지원)" {
-    // #1267 회귀 방지: RN 프리셋이 async를 state machine으로 변환하지 않아야 함.
+test "RN preset: async/await도 ES5 매트릭스로 다운레벨 (보수적 정책)" {
+    // #1267 회귀 가능성 감수. RN preset은 사실상 ES5 매트릭스 — async도 state
+    // machine으로 변환. 만약 #1267 도지면 fromHermesPreset()의 async_await만
+    // false로 토글 (필드별 명시적 작성으로 개별 조정 가능).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js",
@@ -2147,9 +2149,6 @@ test "RN preset: async/await은 보존 (Hermes native 지원)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // async/await 그대로 보존
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "async function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "await ") != null);
-    // state machine 헬퍼 없어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator") == null);
+    // async function이 더 이상 native 형태로 남지 않음 (state machine으로 변환)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "async function f") == null);
 }
