@@ -2129,9 +2129,9 @@ test "RN preset: #1299 arrow → function 다운레벨 (Hermes object literal ar
 }
 
 test "RN preset: async/await도 ES5 매트릭스로 다운레벨 (보수적 정책)" {
-    // #1267 회귀 가능성 감수. RN preset은 사실상 ES5 매트릭스 — async도 state
-    // machine으로 변환. 만약 #1267 도지면 fromHermesPreset()의 async_await만
-    // false로 토글 (필드별 명시적 작성으로 개별 조정 가능).
+    // RN preset은 사실상 ES5 매트릭스 — async도 state machine으로 변환.
+    // #1306에서 sent() throw-check 수정 후 rejected Promise 전파 정상 동작.
+    // 네이티브 async 보존이 필요하면 fromHermesPreset()의 async_await만 false로 토글.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.js",
