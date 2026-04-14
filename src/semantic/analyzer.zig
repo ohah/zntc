@@ -2773,10 +2773,8 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .variable_declaration => {
-                const extra_start = node.data.extra;
-                const extras = self.ast.extra_data.items;
-                if (extra_start + 2 >= extras.len) return;
-                if (self.ast.variableDeclarationKind(node).isLexical()) return; // let/const/using는 block scoped
+                // 바운드 체크는 predeclareVarDecl 내부에서 수행.
+                if (self.ast.variableDeclarationKind(node).isLexical()) return; // let/const/using/await_using는 block scoped
                 try self.predeclareVarDecl(node);
             },
             // 함수 선언도 hoisting 대상 (var scope에 등록)
