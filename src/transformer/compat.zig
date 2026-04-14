@@ -457,8 +457,6 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
     return null;
 }
 
-/// ESTarget → UnsupportedFeatures.
-/// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
 /// Hermes (React Native) 전용 Unsupported matrix.
 ///
 /// Hermes 0.12+ 기준:
@@ -475,6 +473,8 @@ pub fn fromHermesPreset() UnsupportedFeatures {
     };
 }
 
+/// ESTarget → UnsupportedFeatures.
+/// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
 pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
     const t = @intFromEnum(target);
     var bits: u32 = 0;
