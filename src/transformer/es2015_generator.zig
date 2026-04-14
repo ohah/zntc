@@ -70,16 +70,17 @@ const Operation = struct {
 pub fn ES2015Generator(comptime Transformer: type) type {
     return struct {
         /// generator function을 상태 머신으로 변환.
-        /// function*: extra = [name, params_start, params_len, body, flags, return_type]
+        /// function*: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
         pub fn lowerGeneratorFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const e = node.data.extra;
             const span = node.span;
 
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const params_start = self.readU32(e, 1);
-            const params_len = self.readU32(e, 2);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 3);
-            const flags = self.readU32(e, 4);
+            const params_list_old = self.ast.functionParamsList(node);
+            const params_start = params_list_old.start;
+            const params_len = params_list_old.len;
+            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const flags = self.readU32(e, 3);
 
             const new_name = try self.visitNode(name_idx);
 
@@ -121,10 +122,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
             const none = @intFromEnum(NodeIndex.none);
+            const new_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = new_params },
+            });
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
-                new_params.start,
-                new_params.len,
+                @intFromEnum(new_params_node),
                 @intFromEnum(new_body),
                 new_flags,
                 none,

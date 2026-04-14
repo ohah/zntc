@@ -240,7 +240,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         const t = api.transformer;
         const method_node = t.ast.getNode(info.node_idx);
         const me = method_node.data.extra;
-        const method_flags = t.ast.extra_data.items[me + 4];
+        const method_flags = t.ast.extra_data.items[me + 3];
         const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
 
         if ((method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0) {
@@ -275,7 +275,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     const method_node = t.ast.getNode(info.node_idx);
     const me = method_node.data.extra;
 
-    // method_definition extra = [key(0), params_start(1), params_len(2), body(3), flags(4), ...]
+    // method_definition extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     const name_span = if (info.name) |n| (t.ast.addString(n) catch return error.OutOfMemory) else Span{ .start = 0, .end = 0 };
     const name_node = if (info.name != null) (t.ast.addNode(.{
         .tag = .binding_identifier,
@@ -284,16 +284,21 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     }) catch return error.OutOfMemory) else NodeIndex.none;
 
     // method flags → function flags (async=bit0 of method flags bit3, generator=bit4)
-    const method_flags = t.ast.extra_data.items[me + 4];
+    const method_flags = t.ast.extra_data.items[me + 3];
     var func_flags: u32 = 0;
     if ((method_flags & METHOD_FLAG_ASYNC) != 0) func_flags |= 0x01; // function async
     if ((method_flags & METHOD_FLAG_GENERATOR) != 0) func_flags |= 0x02; // function generator
 
     const none = @intFromEnum(NodeIndex.none);
+    // function_expression: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
+    const params_list_node = t.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = method_node.span,
+        .data = .{ .list = .{ .start = info.params_start, .len = info.params_len } },
+    }) catch return error.OutOfMemory;
     const func_extra = t.ast.addExtras(&.{
         @intFromEnum(name_node),
-        info.params_start,
-        info.params_len,
+        @intFromEnum(params_list_node),
         @intFromEnum(body_idx),
         func_flags,
         none, // return type
@@ -655,17 +660,16 @@ fn buildContextObjectFactoryBody(t: *Transformer, list_start: u32, list_len: u32
             // method → object_property with function_expression value.
             const me = member.data.extra;
             const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
-            const params_start = t.ast.extra_data.items[me + 1];
-            const params_len = t.ast.extra_data.items[me + 2];
-            const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me + 3]);
-            const m_flags = t.ast.extra_data.items[me + 4];
+            const params_idx_raw = t.ast.extra_data.items[me + 1];
+            const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me + 2]);
+            const m_flags = t.ast.extra_data.items[me + 3];
             // method → function expression flags: async/generator만 전파
             var fn_flags: u32 = 0;
             if ((m_flags & METHOD_FLAG_ASYNC) != 0) fn_flags |= 0x01;
             if ((m_flags & METHOD_FLAG_GENERATOR) != 0) fn_flags |= 0x02;
             const none = @intFromEnum(NodeIndex.none);
             const fn_expr = try t.addExtraNode(.function_expression, member.span, &.{
-                none, params_start, params_len, @intFromEnum(body_idx), fn_flags, none,
+                none, params_idx_raw, @intFromEnum(body_idx), fn_flags, none,
             });
             const new_prop = try t.ast.addNode(.{
                 .tag = .object_property,

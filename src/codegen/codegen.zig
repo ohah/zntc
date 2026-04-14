@@ -2061,12 +2061,15 @@ pub const Codegen = struct {
 
     fn emitFunction(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 6];
+        // function_expression은 ret_type 없이 4 slots, function_declaration/function은 5 slots.
+        // 공통 [name(0), params(1), body(2), flags(3)]만 읽는다.
+        const extras = self.ast.extra_data.items[e .. e + 4];
         const name: NodeIndex = @enumFromInt(extras[0]);
-        const params_start = extras[1];
-        const params_len = extras[2];
-        const body: NodeIndex = @enumFromInt(extras[3]);
-        const flags = extras[4];
+        const params_list = self.ast.functionParamsList(node);
+        const params_start = params_list.start;
+        const params_len = params_list.len;
+        const body: NodeIndex = @enumFromInt(extras[2]);
+        const flags = extras[3];
 
         // function map: contextual name 소비 후 진입
         const saved_pending = self.pending_fn_name;
@@ -2238,14 +2241,15 @@ pub const Codegen = struct {
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
     fn emitMethodDef(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 7];
+        const extras = self.ast.extra_data.items[e .. e + 6];
         const key: NodeIndex = @enumFromInt(extras[0]);
-        const params_start = extras[1];
-        const params_len = extras[2];
-        const body: NodeIndex = @enumFromInt(extras[3]);
-        const flags = extras[4];
-        const deco_start = extras[5];
-        const deco_len = extras[6];
+        const params_list = self.ast.functionParamsList(node);
+        const params_start = params_list.start;
+        const params_len = params_list.len;
+        const body: NodeIndex = @enumFromInt(extras[2]);
+        const flags = extras[3];
+        const deco_start = extras[4];
+        const deco_len = extras[5];
 
         // function map: ClassName#method / ClassName.method / get__name / set__name
         if (self.fn_map_builder != null) {
