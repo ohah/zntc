@@ -105,10 +105,32 @@ export function init(addonPath?: string): void {
  * TypeScript/JSX 소스 코드를 트랜스파일한다.
  */
 /**
- * browserslist 모듈 lazy-load 캐시. CJS require 캐시도 동작하지만
- * 매 transpile마다 require() 호출 자체를 피해 오버헤드 제거.
+ * browserslist 모듈 lazy-load 캐시.
+ *
+ * Bun/esbuild 같은 번들러는 `require("browserslist")`를 **정적 분석**해서
+ * 의존성을 강제 해결하려 한다. browserslist는 optional이므로 (missing 시
+ * target으로 graceful fallback) Function 생성자로 require를 감싸 정적
+ * resolve를 회피한다. 사용자가 `browserslist` 옵션을 전달했지만 패키지가
+ * 설치되어 있지 않으면 친절한 에러 throw.
  */
 let _browserslist: ((q: string | string[]) => string[]) | null = null;
+let _browserslistResolved = false;
+
+function loadBrowserslist(): ((q: string | string[]) => string[]) | null {
+  if (_browserslistResolved) return _browserslist;
+  _browserslistResolved = true;
+  try {
+    // ESM 환경이라 Node/Bun의 createRequire로 런타임 require를 얻는다.
+    // 동적 문자열 key를 넘겨 Bun 번들러의 정적 분석을 회피 → browserslist
+    // 미설치여도 zts 자체는 로드 가능 (optional dep).
+    const req = createRequire(import.meta.url);
+    const name = "browserslist";
+    _browserslist = req(name) as (q: string | string[]) => string[];
+  } catch {
+    _browserslist = null;
+  }
+  return _browserslist;
+}
 
 /**
  * target | browserslist → UnsupportedFeatures bitmask.
@@ -116,12 +138,13 @@ let _browserslist: ((q: string | string[]) => string[]) | null = null;
  */
 function resolveUnsupported(options: TranspileOptions): number {
   if (options.browserslist) {
-    if (!_browserslist) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      _browserslist = require("browserslist") as (q: string | string[]) => string[];
+    const bl = loadBrowserslist();
+    if (!bl) {
+      throw new Error(
+        "@zts/core: 'browserslist' option requires the 'browserslist' package. Install it: bun add browserslist",
+      );
     }
-    const entries = _browserslist(options.browserslist);
-    return browserslistToUnsupported(entries);
+    return browserslistToUnsupported(bl(options.browserslist));
   }
   return options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
 }
