@@ -273,6 +273,33 @@ pub const Symbol = struct {
     }
 };
 
+/// Bundler가 post-semantic 단계에서 합성 심볼을 semantic 공간에 추가한다.
+/// #1328 Phase 4e-2 / RFC #1338.
+///
+/// `list`는 `ModuleSemanticData.symbols`의 ArrayList이어야 하고,
+/// `allocator`는 해당 모듈의 `parse_arena`여야 한다 (name/span 수명 일치).
+///
+/// 반환된 SymbolId로 `SymbolRef { .semantic = { module, id } }` 구성 가능.
+pub fn extendSymbol(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(Symbol),
+    kind: SymbolKind,
+    synthetic: SyntheticKind,
+    name: Span,
+    declaration_span: Span,
+) !SymbolId {
+    const id: SymbolId = @enumFromInt(@as(u32, @intCast(list.items.len)));
+    try list.append(allocator, .{
+        .name = name,
+        .scope_id = ScopeId.none,
+        .kind = kind,
+        .decl_flags = kind.declFlags(),
+        .declaration_span = declaration_span,
+        .synthetic_kind = synthetic,
+    });
+    return id;
+}
+
 /// 참조 발생 시 (심볼 인덱스, 참조 스코프) 쌍.
 /// mangler의 liveness BitSet 계산에 사용: 심볼이 어느 스코프에서 참조되는지 추적.
 /// analyzer.resolveIdentifier에서 수집, mangler.mangleLiveness에서 소비.

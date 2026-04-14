@@ -280,7 +280,7 @@ pub const TreeShaker = struct {
             module_stmt_infos[i] = stmt_info_mod.build(
                 self.allocator,
                 ast,
-                sem.symbols,
+                sem.symbols.items,
                 sem.symbol_ids,
             ) catch null;
         }
@@ -430,7 +430,7 @@ pub const TreeShaker = struct {
             if (!self.included.isSet(i)) continue;
             const sem = mod.semantic orelse continue;
             if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) continue;
-            var arr = try self.allocator.alloc(?u32, sem.symbols.len);
+            var arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
             for (arr) |*a| a.* = null;
             for (mod.import_bindings, 0..) |ib, ib_idx| {
                 if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
@@ -900,7 +900,7 @@ pub const TreeShaker = struct {
         if (m.semantic) |sem| {
             if (sem.scope_maps.len > 0) {
                 if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
-                    if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].reference_count > 0) return true;
+                    if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].reference_count > 0) return true;
                 }
             }
         } else return true;

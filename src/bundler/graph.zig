@@ -735,7 +735,7 @@ pub const ModuleGraph = struct {
             analyzer.enable_stmt_info = true;
             if (analyzer.analyze()) |_| {
                 module.semantic = .{
-                    .symbols = analyzer.symbols.items,
+                    .symbols = analyzer.symbols,
                     .scopes = analyzer.scopes.items,
                     .scope_maps = analyzer.scope_maps.items,
                     .exported_names = analyzer.exported_names,
@@ -938,7 +938,7 @@ pub const ModuleGraph = struct {
         // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
         if (analyze_ok) {
             module.semantic = .{
-                .symbols = analyzer.symbols.items,
+                .symbols = analyzer.symbols,
                 .scopes = analyzer.scopes.items,
                 .scope_maps = analyzer.scope_maps.items,
                 .exported_names = analyzer.exported_names,

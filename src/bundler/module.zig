@@ -28,7 +28,11 @@ pub const SymbolTable = symbol_mod.SymbolTable;
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
 pub const ModuleSemanticData = struct {
-    symbols: []const Symbol,
+    /// Semantic 심볼 배열. parse_arena가 backing 메모리를 소유.
+    /// #1328 Phase 4e-2 / RFC #1338: ArrayList로 보관하여 bundler가
+    /// `extendSymbol`로 합성 심볼을 post-semantic 단계에 추가할 수 있게 한다.
+    /// 읽기는 `.items` 사용.
+    symbols: std.ArrayList(Symbol),
     scopes: []const Scope,
     /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
     scope_maps: []const std.StringHashMap(usize),
