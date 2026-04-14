@@ -2036,6 +2036,35 @@ test "RN preset: arrow worklet params → __closure에서 제외 (#1283 Reanimat
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(value,context){") != null);
 }
 
+test "RN preset: #1302 for-of destructuring + const→var는 void 0 init 추가 안 함" {
+    // for-of/for-in의 left는 매 반복 iter value를 binding하므로 init 불필요.
+    // block_scoping이 무조건 `void 0` init 추가하면 `{x} = void 0` invalid statement 생성.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const updates = [{id:1, instance:2, color:3}];
+        \\for (const { id, instance, color } of updates) {
+        \\  console.log(id);
+        \\}
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // for-of left의 destructuring init은 추가하지 않음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "} = void 0;") == null);
+    // for-of 자체는 var로 정상 변환
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "for (var {") != null);
+}
+
 test "RN preset: #1299 let/const → var 다운레벨 (Hermes block scoping)" {
     // `for (let q = 0, ...)` 같은 패턴이 object literal 평가를 깨뜨려 후속 prop 누락.
     // arrow → function 변환만으로 회피되지 않음. Rolldown도 block-scoping 변환.
