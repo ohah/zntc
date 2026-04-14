@@ -1023,7 +1023,7 @@ pub const VariableDeclarationKind = enum(u32) {
     using = 3,
     await_using = 4,
 
-    pub fn fromU32(v: u32) VariableDeclarationKind {
+    pub inline fn fromU32(v: u32) VariableDeclarationKind {
         return switch (v) {
             0 => .@"var",
             1 => .let,
@@ -1034,11 +1034,11 @@ pub const VariableDeclarationKind = enum(u32) {
         };
     }
 
-    pub fn isLexical(self: VariableDeclarationKind) bool {
+    pub inline fn isLexical(self: VariableDeclarationKind) bool {
         return self != .@"var";
     }
 
-    pub fn isUsing(self: VariableDeclarationKind) bool {
+    pub inline fn isUsing(self: VariableDeclarationKind) bool {
         return self == .using or self == .await_using;
     }
 };

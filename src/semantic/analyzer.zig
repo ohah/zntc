@@ -1536,17 +1536,11 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
+        const kind = self.ast.variableDeclarationKind(node);
         const decl_start = extras[extra_start + 1];
         const decl_len = extras[extra_start + 2];
 
-        const sym_kind: SymbolKind = switch (kind) {
-            .@"var" => .variable_var,
-            .let => .variable_let,
-            .@"const" => .variable_const,
-            // using/await_using은 기존 동작을 유지하여 variable_var로 분류.
-            .using, .await_using => .variable_var,
-        };
+        const sym_kind = symbolKindFor(kind);
 
         if (decl_start + decl_len > extras.len) return;
         const decl_indices = extras[decl_start .. decl_start + decl_len];
@@ -1628,6 +1622,16 @@ pub const SemanticAnalyzer = struct {
             },
             else => {},
         }
+    }
+
+    /// VariableDeclarationKind → SymbolKind 매핑.
+    /// using/await_using은 lexical이지만 현재 분석기 구조상 var 분류 유지 (별도 처리 패스 도입 시 변경).
+    fn symbolKindFor(kind: VariableDeclarationKind) SymbolKind {
+        return switch (kind) {
+            .@"var", .using, .await_using => .variable_var,
+            .let => .variable_let,
+            .@"const" => .variable_const,
+        };
     }
 
     /// function flags → SymbolKind 변환.
@@ -2310,21 +2314,15 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn visitVariableDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // extra: [kind_flags, declarators.start, declarators.len]
+        // extra: [kind, declarators.start, declarators.len]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return; // 바운드 방어
-        const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
+        const kind = self.ast.variableDeclarationKind(node);
         const decl_start = extras[extra_start + 1];
         const decl_len = extras[extra_start + 2];
 
-        const sym_kind: SymbolKind = switch (kind) {
-            .@"var" => .variable_var,
-            .let => .variable_let,
-            .@"const" => .variable_const,
-            // using/await_using도 기존 else 분기와 동일하게 variable_var.
-            .using, .await_using => .variable_var,
-        };
+        const sym_kind = symbolKindFor(kind);
 
         // 각 declarator에서 바인딩 이름 추출
         // variable_declarator의 data는 extra: [name, type_ann, init_expr]
@@ -2778,8 +2776,7 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 2 >= extras.len) return;
-                const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
-                if (kind != .@"var") return; // let/const는 block scoped
+                if (self.ast.variableDeclarationKind(node).isLexical()) return; // let/const/using는 block scoped
                 try self.predeclareVarDecl(node);
             },
             // 함수 선언도 hoisting 대상 (var scope에 등록)

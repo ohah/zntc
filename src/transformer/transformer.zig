@@ -1956,7 +1956,7 @@ pub const Transformer = struct {
             }
         }
         const e = node.data.extra;
-        const orig_kind = VariableDeclarationKind.fromU32(self.readU32(e, 0));
+        const orig_kind = self.ast.variableDeclarationKind(node);
         const kind = if (self.options.unsupported.block_scoping)
             es2015_block_scoping.lowerKind(orig_kind)
         else
@@ -2663,8 +2663,7 @@ pub const Transformer = struct {
             if (stmt.tag != .variable_declaration) continue;
 
             const ve = stmt.data.extra;
-            const kind = self.ast.variableDeclarationKind(stmt);
-            if (kind == .@"var") continue; // var는 무시, let/const/using/await_using만
+            if (!self.ast.variableDeclarationKind(stmt).isLexical()) continue;
 
             const decl_start = self.readU32(ve, 1);
             const decl_len = self.readU32(ve, 2);
