@@ -435,11 +435,10 @@ fn collectArrowParamNames(
     const node = ast.getNode(idx);
 
     switch (node.tag) {
-        // 단일 파라미터 (post-cover-grammar)
         .binding_identifier => {
             try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
-        // parser가 정규화한 formal_parameters list (#1283 이후 기본 형태)
+        // parser가 정규화한 formal_parameters list (#1283 이후 항상 이 형태)
         .formal_parameters => {
             if (node.data.list.len == 0) return;
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
@@ -448,20 +447,6 @@ fn collectArrowParamNames(
                 try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
             }
         },
-        // cover grammar에서 변환된 파라미터 리스트 (legacy — 정규화 전 호출 시)
-        .parenthesized_expression, .sequence_expression => {
-            if (node.tag == .parenthesized_expression) {
-                try collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
-            } else {
-                if (node.data.list.len == 0) return;
-                if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
-                const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (indices) |raw_idx| {
-                    try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
-                }
-            }
-        },
-        // identifier를 파라미터로 사용 (cover grammar 변환 전후 모두 처리)
         .identifier_reference, .assignment_target_identifier => {
             try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },

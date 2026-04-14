@@ -2134,17 +2134,11 @@ pub const Codegen = struct {
 
         if (flags & 0x01 != 0) try self.write("async ");
 
-        // params 출력 — esbuild 호환: 항상 괄호로 감싸기 (단일 파라미터도 괄호 추가)
+        // params 출력 — #1283 이후 항상 formal_parameters 노드. 괄호는 codegen이 부착.
         if (!params.isNone()) {
-            const param_node = self.ast.getNode(params);
-            if (param_node.tag == .parenthesized_expression) {
-                // 괄호 형태: (a, b) => a + b — parenthesized_expression이 이미 괄호를 포함
-                try self.emitNode(params);
-            } else {
-                try self.writeByte('(');
-                try self.emitNode(params);
-                try self.writeByte(')');
-            }
+            try self.writeByte('(');
+            try self.emitNode(params);
+            try self.writeByte(')');
         } else {
             try self.write("()");
         }
