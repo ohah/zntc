@@ -2226,7 +2226,7 @@ pub const SemanticAnalyzer = struct {
                     count.* += 1;
                 }
             },
-            .array_pattern, .array_expression => {
+            .array_pattern => {
                 // list: binding elements
                 if (node.data.list.len == 0) return;
                 if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
@@ -2235,7 +2235,7 @@ pub const SemanticAnalyzer = struct {
                     try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
                 }
             },
-            .object_pattern, .object_expression => {
+            .object_pattern => {
                 if (node.data.list.len == 0) return;
                 if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
