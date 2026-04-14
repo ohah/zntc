@@ -236,6 +236,8 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         for (stmts) |stmt| {
             try api.addTrailingStatement(stmt);
         }
+        // 함수 body에서 "worklet" directive 제거 (dispatcher가 result 노드 body slot 패치)
+        if (has_directive) api.modified_body = stripped_body;
     } else if (info.node_tag == .method_definition) {
         const t = api.transformer;
         const method_node = t.ast.getNode(info.node_idx);

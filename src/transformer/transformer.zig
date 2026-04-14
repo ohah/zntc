@@ -3792,8 +3792,8 @@ pub const Transformer = struct {
         return switch (tag) {
             // arrow: [params(0), body(1), flags]
             .arrow_function_expression => 1,
-            // function_declaration/expression/method_definition: [name, params_start, params_len, body(3), ...]
-            else => 3,
+            // function_declaration/expression/method_definition: [name/key(0), params(1), body(2), flags(3), ...]
+            else => 2,
         };
     }
 
