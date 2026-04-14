@@ -1095,15 +1095,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
                         const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#x"
-                        // "#x" → "_x"
-                        var name_buf: [128]u8 = undefined;
-                        name_buf[0] = '_';
-                        const name_rest = orig_name[1..]; // "x" (# 제거)
-                        @memcpy(name_buf[1 .. 1 + name_rest.len], name_rest);
-                        const var_name = name_buf[0 .. 1 + name_rest.len];
-
                         const field_info = PrivateFieldInfo{
-                            .name = try self.allocator.dupe(u8, var_name),
+                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name),
                             .original_name = orig_name,
                             .init = init_val,
                         };
