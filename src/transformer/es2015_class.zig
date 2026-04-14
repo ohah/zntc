@@ -218,11 +218,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const param_binding = try es_helpers.makeBindingIdentifier(self, try self.ast.addString(super_param_text));
                 break :blk try self.ast.addNodeList(&.{param_binding});
             } else try self.ast.addNodeList(&.{});
-            const wrapper_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = wrapper_params },
-            });
+            const wrapper_params_node = try self.ast.addFormalParameters(wrapper_params, span);
             // function_expression: [name(0), params(1), body(2), flags(3), ret_type(4)]
             const wrapper_extra = try self.ast.addExtras(&.{
                 none, @intFromEnum(wrapper_params_node),
@@ -473,11 +469,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params = if (has_super and super_span != null) blk: {
                 break :blk try self.ast.addNodeList(&.{try es_helpers.makeBindingIdentifier(self, try self.ast.addString(expr_super_param))});
             } else try self.ast.addNodeList(&.{});
-            const wrapper_params_node2 = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = wrapper_params },
-            });
+            const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
             const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
@@ -940,11 +932,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_body = try visitMethodBodyWithCtx(self, body_idx, span, nt_ctx);
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none,                   @intFromEnum(new_params_node),
                 @intFromEnum(new_body), 0,                             none,
@@ -1328,11 +1316,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
                 @intFromEnum(new_params_node),
@@ -1467,11 +1451,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             const empty_params = try self.ast.addNodeList(&.{});
-            const empty_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = empty_params },
-            });
+            const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
@@ -1543,11 +1523,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             const empty_params = try self.ast.addNodeList(&.{});
-            const empty_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = empty_params },
-            });
+            const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
@@ -1799,11 +1775,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             };
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @intFromEnum(new_params_node),
@@ -1838,11 +1810,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .list = body_list },
             });
             const none = @intFromEnum(NodeIndex.none);
-            const params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = params },
-            });
+            const params_node = try self.ast.addFormalParameters(params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none,
                 @intFromEnum(params_node),

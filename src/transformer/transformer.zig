@@ -2158,11 +2158,7 @@ pub const Transformer = struct {
         // Metro도 직접 스캔하지 않고 Babel/SWC에 위임. $RefreshReg$만 유지.
 
         const none = @intFromEnum(NodeIndex.none);
-        const new_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = params_span,
-            .data = .{ .list = pp.new_params },
-        });
+        const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
         const result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_params_node),
             @intFromEnum(new_body), self.readU32(e, 3),  none,
@@ -3132,11 +3128,7 @@ pub const Transformer = struct {
         else
             try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
         const old_body_idx = self.readNodeIdx(e, 2);
-        const new_params_node = try self.ast.addNode(.{
-            .tag = .formal_parameters,
-            .span = params_span,
-            .data = .{ .list = pp.new_params },
-        });
+        const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
         const result = try self.addExtraNode(.method_definition, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_params_node), @intFromEnum(new_body),
             self.readU32(e, 3),    new_decos.start,               new_decos.len,

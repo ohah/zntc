@@ -122,11 +122,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 @intFromEnum(new_params_node),
@@ -1959,11 +1955,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // function(_state) { ... }
             const params = try self.ast.addNodeList(&.{state_param});
             const none = @intFromEnum(NodeIndex.none);
-            const params_node_g = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = .{ .start = 0, .end = 0 },
-                .data = .{ .list = params },
-            });
+            const params_node_g = try self.ast.addFormalParameters(params, .{ .start = 0, .end = 0 });
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @intFromEnum(params_node_g),

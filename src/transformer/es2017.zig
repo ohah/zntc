@@ -68,11 +68,7 @@ pub fn ES2017(comptime Transformer: type) type {
             });
 
             const new_flags = flags & ~ast_mod.FunctionFlags.is_async;
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = node.span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, node.span);
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 @intFromEnum(new_params_node),
@@ -180,11 +176,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             // 일반 function으로 변환 (async + generator 플래그 모두 제거)
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
-            const new_params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = new_params },
-            });
+            const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 @intFromEnum(new_params_node),
