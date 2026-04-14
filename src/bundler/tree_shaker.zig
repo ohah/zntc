@@ -238,28 +238,11 @@ pub const TreeShaker = struct {
             if (!changed) break;
         }
 
-        // #1291: require()로 참조되는 모듈 인덱스 집합 사전 계산.
-        // require()는 모듈 전체를 반환하므로 개별 export 추적이 불가능 — 제거하면
-        // 참조 지점에서 ReferenceError 발생 (예: UMD 모듈이 exports_kind=.none으로
-        // 판정돼 hasAnyUsedExport=false여도 require 참조가 있으면 보존해야 함).
-        var require_targets = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
-        defer require_targets.deinit();
-        for (self.modules, 0..) |m, i| {
-            if (!self.included.isSet(i)) continue;
-            for (m.import_records) |rec| {
-                if (rec.kind != .require) continue;
-                if (rec.resolved.isNone()) continue;
-                const t = @intFromEnum(rec.resolved);
-                if (t < self.modules.len) require_targets.set(t);
-            }
-        }
-
         // fixpoint 후 미사용 sideEffects=false 모듈 제거 (1회만 수행, oscillation 방지)
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
-            if (require_targets.isSet(i)) continue; // #1291: require 참조 모듈 보호
             if (!self.hasAnyUsedExport(@intCast(i))) {
                 self.included.unset(i);
             }
@@ -306,25 +289,11 @@ pub const TreeShaker = struct {
         try self.buildSymToIbMaps();
         try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
 
-        // 미사용 sideEffects=false 모듈 제거.
-        // require_targets 사전 계산: require()로 참조되는 모듈은 export 단위 추적 불가 → 보호.
-        var require_targets2 = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
-        defer require_targets2.deinit();
-        for (self.modules, 0..) |m, i| {
-            if (!self.included.isSet(i)) continue;
-            for (m.import_records) |rec| {
-                if (rec.kind != .require) continue;
-                if (rec.resolved.isNone()) continue;
-                const t = @intFromEnum(rec.resolved);
-                if (t < self.modules.len) require_targets2.set(t);
-            }
-        }
-
+        // 미사용 sideEffects=false 모듈 제거
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
-            if (require_targets2.isSet(i)) continue; // #1291: require 참조 모듈 보호
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
                 self.included.unset(i);
             }
