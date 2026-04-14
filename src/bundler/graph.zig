@@ -764,6 +764,11 @@ pub const ModuleGraph = struct {
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &(module.ast.?), module.import_bindings) catch {};
             module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
 
+            // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
+            // Consumer 연결은 Phase 2+. 지금은 shadow population만.
+            module.ensureSymbolTable(self.allocator);
+            binding_scanner_mod.populateSyntheticSymbols(&module.symbol_table.?, module.export_bindings) catch {};
+
             module.state = .parsed;
             return;
         }

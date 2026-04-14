@@ -22,6 +22,8 @@ const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
 pub const ExportBinding = binding_scanner.ExportBinding;
 const stmt_info_mod = @import("stmt_info.zig");
+const symbol_mod = @import("symbol.zig");
+pub const SymbolTable = symbol_mod.SymbolTable;
 
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
@@ -69,6 +71,9 @@ pub const Module = struct {
     import_bindings: []ImportBinding = &.{},
     /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     export_bindings: []ExportBinding = &.{},
+    /// Bundler-local 합성 심볼 테이블 (cross-module linking용). #1328 Phase 1.
+    /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
+    symbol_table: ?SymbolTable = null,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -220,8 +225,17 @@ pub const Module = struct {
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
+        if (self.symbol_table) |*t| t.deinit();
         // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.
         // ast.deinit()는 불필요 — arena.deinit()이 일괄 해제.
         if (self.parse_arena) |*arena| arena.deinit();
+    }
+
+    /// Lazy 초기화. graph allocator로 합성 심볼 테이블을 만든다.
+    /// 이미 있으면 no-op.
+    pub fn ensureSymbolTable(self: *Module, allocator: std.mem.Allocator) void {
+        if (self.symbol_table == null) {
+            self.symbol_table = SymbolTable.init(allocator);
+        }
     }
 };
