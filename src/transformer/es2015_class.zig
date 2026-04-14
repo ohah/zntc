@@ -852,6 +852,65 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
         }
 
+        /// ES2022 Ergonomic Brand Checks: `#x in obj` → 내부 표현으로 다운레벨.
+        ///
+        /// node는 binary_expression(op=in, left=private_identifier "#x", right=obj).
+        /// private mapping이 없으면 null 반환 (보존).
+        ///
+        /// - instance field  : `_x.has(obj)`   (WeakMap.has)
+        /// - private method  : `_m.has(obj)`   (WeakSet.has)
+        /// - static field    : `obj === ClassName` (class identity brand check)
+        ///
+        /// Spec: https://tc39.es/proposal-private-fields-in-in/
+        /// Babel: @babel/plugin-transform-private-property-in-object
+        pub fn lowerPrivateIn(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
+            const left_idx = node.data.binary.left;
+            const right_idx = node.data.binary.right;
+            if (left_idx.isNone() or right_idx.isNone()) return null;
+            const left_node = self.ast.getNode(left_idx);
+            if (left_node.tag != .private_identifier) return null;
+
+            const orig = self.ast.source[left_node.span.start..left_node.span.end];
+
+            // instance field / static field 매핑 우선 조회
+            for (self.current_private_fields) |pf| {
+                if (!std.mem.eql(u8, pf.original_name, orig)) continue;
+                if (pf.is_static) {
+                    // static: obj === ClassName (class identity 비교)
+                    const new_obj = try self.visitNode(right_idx);
+                    const class_ref = try es_helpers.makeIdentifierRef(self, pf.class_name orelse "undefined");
+                    return self.ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = node.span,
+                        .data = .{ .binary = .{
+                            .left = new_obj,
+                            .right = class_ref,
+                            .flags = @intFromEnum(token_mod.Kind.eq3),
+                        } },
+                    });
+                }
+                // instance: _x.has(obj)
+                return buildWeakCollectionHas(self, pf.var_name, right_idx, node.span);
+            }
+
+            // private method 매핑 조회
+            for (self.current_private_methods) |pm| {
+                if (!std.mem.eql(u8, pm.original_name, orig)) continue;
+                return buildWeakCollectionHas(self, pm.weakset_name, right_idx, node.span);
+            }
+
+            return null;
+        }
+
+        /// `_x.has(obj)` 표현식 생성 (WeakMap/WeakSet 공용).
+        fn buildWeakCollectionHas(self: *Transformer, var_name: []const u8, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
+            const has_prop = try es_helpers.makeIdentifierRef(self, "has");
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, has_prop, span);
+            const new_obj = try self.visitNode(obj_idx);
+            return es_helpers.makeCallExpr(self, callee, &.{new_obj}, span);
+        }
+
         /// static private field set: __classStaticPrivateFieldSpecSet(receiver, ClassName, _descriptor, value)
         fn buildStaticPrivateFieldSet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, value_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");

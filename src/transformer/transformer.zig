@@ -712,6 +712,18 @@ pub const Transformer = struct {
                         return es2020.ES2020(Transformer).lowerNullishCoalescing(self, node);
                     }
                 }
+                // ES2022 Ergonomic Brand Checks: #x in obj → _x.has(obj) 등
+                // private mapping이 설정돼 있을 때만 변환 (class 다운레벨 경로가 활성화된 경우).
+                if (node.tag == .binary_expression and
+                    (self.current_private_fields.len > 0 or self.current_private_methods.len > 0))
+                {
+                    const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                    if (op == .kw_in) {
+                        if (es2015_class.ES2015Class(Transformer).lowerPrivateIn(self, node)) |result| {
+                            return result;
+                        }
+                    }
+                }
                 return self.visitBinaryNode(node);
             },
             .assignment_expression => {
