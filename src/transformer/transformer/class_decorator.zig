@@ -99,9 +99,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         }
 
         // ES2022 다운레벨링: static block → IIFE (target < es2022)
-        // had_private_methods/had_private_fields가 true이면 이미 body를
-        // visit 했으므로, lowerStaticBlocks(파서 노드 기반)를 건너뛴다.
-        if (self.options.unsupported.class_static_block and !had_private_methods and !had_private_fields) {
+        // private member가 이미 body를 visit한 경우 `already_visited=true`로 재방문을 막는다.
+        if (self.options.unsupported.class_static_block) {
             var new_body: NodeIndex = .none;
             var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
             defer static_block_iifes.deinit(self.allocator);
@@ -109,12 +108,14 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             // 클래스 이름 추출 → static block 안의 this 치환에 사용.
             const class_name_span = self.getClassNameSpan(new_name);
 
+            const already_visited = had_private_methods or had_private_fields;
             const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
                 self,
                 current_body_idx,
                 &new_body,
                 &static_block_iifes,
                 class_name_span,
+                already_visited,
             );
 
             if (had_static_blocks) {

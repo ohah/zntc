@@ -877,6 +877,24 @@ test "#1278-2: instance #field + static #field 혼합" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Mixed,Mixed,_stc)") != null);
 }
 
+test "#1278-3: private member + static block 공존 시 static block 다운레벨" {
+    // private member가 있으면 body가 이미 visit된 상태가 되므로,
+    // lowerStaticBlocks를 이중 visit 없이 실행해야 한다.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class A {
+        \\  #x = 1;
+        \\  static { console.log('sb'); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // static block은 IIFE로 클래스 밖에
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(\"sb\")") != null);
+    // class body에는 static {} 구문 남아있지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static {") == null);
+    // private field는 여전히 WeakMap으로 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _x=new WeakMap") != null);
+}
+
 test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 변환" {
     // private method 본문이 다른 private field를 참조할 때, standalone 함수로
     // 추출된 후에도 참조가 WeakMap 접근으로 변환돼야 한다. 버그 수정 전에는
