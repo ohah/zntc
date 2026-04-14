@@ -51,12 +51,15 @@ pub fn ES2022(comptime Transformer: type) type {
         ///   2. static_block이 아닌 멤버 → 그대로 방문하여 새 body에 추가
         ///   3. static_block → body에서 제거하고 IIFE로 변환, static_blocks에 수집
         ///   4. 호출자가 class 노드를 pending_nodes에 넣고, static_blocks의 IIFE를 그 뒤에 추가
+        /// already_visited=true: body가 이미 다른 변환 Pass에서 visit된 상태 — 멤버를 재방문하지
+        /// 않고 그대로 유지한다 (`lowerPrivateMembers` 뒤에 호출될 때 이중 변환 회피).
         pub fn lowerStaticBlocks(
             self: *Transformer,
             body_idx: NodeIndex,
             new_body_out: *NodeIndex,
             static_block_iifes: *std.ArrayList(NodeIndex),
             class_name_span: ?Span,
+            already_visited: bool,
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -94,8 +97,9 @@ pub fn ES2022(comptime Transformer: type) type {
                     // static block → IIFE로 변환
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
+                } else if (already_visited) {
+                    try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                 } else {
-                    // 일반 멤버 → 그대로 방문
                     const new_member = try self.visitNode(@enumFromInt(raw_idx));
 
                     // pending_nodes 드레인
