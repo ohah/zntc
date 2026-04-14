@@ -1140,9 +1140,9 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         // 1) function Name_withRef({...props}, ref) { body }
         const none = @intFromEnum(NodeIndex.none);
+        const params_node = try self.wrapAsFormalParametersFromList(params, .{ .start = 0, .end = 0 });
         const func_extra = try self.ast.addExtra(@intFromEnum(with_ref_name));
-        _ = try self.ast.addExtra(params.start);
-        _ = try self.ast.addExtra(params.len);
+        _ = try self.ast.addExtra(@intFromEnum(params_node));
         _ = try self.ast.addExtra(@intFromEnum(body));
         _ = try self.ast.addExtra(0); // flags
         _ = try self.ast.addExtra(none); // return_type
@@ -1226,9 +1226,9 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // ref가 없으면 일반 함수 선언
     const none = @intFromEnum(NodeIndex.none);
+    const params_node = try self.wrapAsFormalParametersFromList(params, .{ .start = 0, .end = 0 });
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(params.start);
-    _ = try self.ast.addExtra(params.len);
+    _ = try self.ast.addExtra(@intFromEnum(params_node));
     _ = try self.ast.addExtra(@intFromEnum(body));
     _ = try self.ast.addExtra(0);
     _ = try self.ast.addExtra(none);

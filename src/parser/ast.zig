@@ -595,14 +595,14 @@ pub const Node = struct {
                 .private_field_expression,
                 .computed_member_expression,
                 => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
-                // function: extra = [name(0), params_start(1), params_len(2), body(3), flags, ret_type(5)]
-                .function_expression, .function_declaration, .function => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
+                // function: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
+                .function_expression, .function_declaration, .function => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
                 // arrow: extra = [params(0), body(1), flags]
                 .arrow_function_expression => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
                 // class: extra = [name(0), super(1), body(2), type_params(3), impl_start, impl_len, deco_start, deco_len]
                 .class_expression, .class_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
-                // method: extra = [key(0), params_start(1), params_len(2), body(3), flags, deco_start, deco_len]
-                .method_definition => .{ .kind = .extra, .child_offsets = &.{ 0, 3 }, .list_offsets = &.{.{ 1, 2 }} },
+                // method: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
+                .method_definition => .{ .kind = .extra, .child_offsets = &.{ 0, 1, 2 } },
                 // property_definition: extra = [key(0), init(1), flags, deco_start, deco_len]
                 .property_definition, .accessor_property => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
                 // for_statement: extra = [init(0), test(1), update(2), body(3)]
@@ -878,28 +878,21 @@ pub const Ast = struct {
     /// 함수형 노드의 파라미터 슬라이스를 반환한다 (각 element는 NodeIndex의 raw u32).
     /// 지원 태그: function_declaration / function_expression / function /
     /// arrow_function_expression / method_definition.
-    /// arrow는 `formal_parameters` 노드를 unwrap, 나머지는 extra에 저장된 bare NodeList를 슬라이스.
+    /// 모두 `formal_parameters` 노드를 unwrap (arrow는 extra[0], 나머지는 extra[1]).
     /// formal_parameters 노드가 비어 있거나 params가 없으면 빈 슬라이스 반환.
     pub fn functionParams(self: *const Ast, node: Node) []const u32 {
-        return switch (node.tag) {
-            .arrow_function_expression => blk: {
-                const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra]);
-                if (params_idx.isNone()) break :blk &[_]u32{};
-                const params_node = self.getNode(params_idx);
-                if (params_node.tag != .formal_parameters) break :blk &[_]u32{};
-                const list = params_node.data.list;
-                if (list.len == 0) break :blk &[_]u32{};
-                break :blk self.extra_data.items[list.start .. list.start + list.len];
-            },
-            .function_declaration, .function_expression, .function, .method_definition => blk: {
-                const e = node.data.extra;
-                const start = self.extra_data.items[e + 1];
-                const len = self.extra_data.items[e + 2];
-                if (len == 0) break :blk &[_]u32{};
-                break :blk self.extra_data.items[start .. start + len];
-            },
-            else => &[_]u32{},
+        const params_slot: u32 = switch (node.tag) {
+            .arrow_function_expression => 0,
+            .function_declaration, .function_expression, .function, .method_definition => 1,
+            else => return &[_]u32{},
         };
+        const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra + params_slot]);
+        if (params_idx.isNone()) return &[_]u32{};
+        const params_node = self.getNode(params_idx);
+        if (params_node.tag != .formal_parameters) return &[_]u32{};
+        const list = params_node.data.list;
+        if (list.len == 0) return &[_]u32{};
+        return self.extra_data.items[list.start .. list.start + list.len];
     }
 
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
