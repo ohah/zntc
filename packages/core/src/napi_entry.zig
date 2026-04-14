@@ -848,9 +848,9 @@ fn serializeFunctionInfo(
     try buf.appendSlice(alloc, ",\"params\":[");
     {
         var pi: u32 = 0;
-        while (pi < func.params_len) : (pi += 1) {
+        while (pi < func.params.len) : (pi += 1) {
             if (pi > 0) try buf.append(alloc, ',');
-            const param_raw = api.transformer.ast.extra_data.items[func.params_start + pi];
+            const param_raw = api.transformer.ast.extra_data.items[func.params.start + pi];
             const param_idx: zts_lib.parser.ast.NodeIndex = @enumFromInt(param_raw);
             if (!param_idx.isNone()) {
                 const param_node = api.transformer.ast.getNode(param_idx);
