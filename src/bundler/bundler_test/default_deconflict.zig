@@ -86,6 +86,151 @@ test "Default: re-export default from another module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"real-value\"") != null);
 }
 
+test "Default: barrel re-export default chain preserves bindings (#1321)" {
+    // #1321: `import X from './x'; export default X; export { Y };` 패턴에서
+    // binding_scanner가 X, Y 모두 local_name="default"로 .re_export 분류 →
+    // esm_wrap이 local_name=="default"만 보고 현재 모듈의 _default$N에 잘못 연결.
+    // react-native-svg에서 `default`와 `Shape`가 같은 _default$N을 참조하는 회귀.
+    // Phase 3a(#1328): has_local_default_binding 플래그가 barrel `export { X }` 케이스에
+    // false를 유지하므로 _default 단축 경로에 들어가지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import Svg, { Shape, Path } from './index';
+        \\console.log(new Svg().kind, new Shape().kind, new Path().kind);
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\export * from './barrel';
+        \\export { default } from './barrel';
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import Svg from './Svg';
+        \\import Shape from './Shape';
+        \\import Path from './Path';
+        \\export default Svg;
+        \\export { Shape, Path };
+    );
+    try writeFile(tmp.dir, "Svg.ts", "export default class Svg { kind = 'Svg'; }");
+    try writeFile(tmp.dir, "Shape.ts", "export default class Shape { kind = 'Shape'; }");
+    try writeFile(tmp.dir, "Path.ts", "export default class Path { kind = 'Path'; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Shape: () => Shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Path: () => Path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default\": () => Svg") != null);
+}
+
+test "Default: export { X as default } where X is default-import (#1321 edge)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import V from './barrel';
+        \\console.log(V.tag);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import Real from './real';
+        \\export { Real as default };
+    );
+    try writeFile(tmp.dir, "real.ts", "export default { tag: 'REAL' };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"REAL\"") != null);
+}
+
+test "Default: mixed default + named imports re-exported from single source (#1321 edge)" {
+    // `import X, { Y } from './a'; export default X; export { Y };`
+    // X는 .re_export + has_local_default_binding=true → _default 단축 경로 OK.
+    // Y는 .re_export + has_local_default_binding=false → 체인 resolve.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import D, { named } from './barrel';
+        \\console.log(D, named);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import Def, { named } from './src';
+        \\export default Def;
+        \\export { named };
+    );
+    try writeFile(tmp.dir, "src.ts",
+        \\export default 'DEFVAL';
+        \\export const named = 'NAMEDVAL';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"DEFVAL\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"NAMEDVAL\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "named: () => named") != null);
+}
+
+test "Default: Platform.js 패턴 — export default X where X is default-import (#1328)" {
+    // RN Platform.js 회귀: `import Platform from './Platform.ios'; export default Platform;`
+    // binding_scanner가 .re_export로 분류하지만 codegen은 `_default = Platform` emit함.
+    // Phase 3a의 has_local_default_binding=true가 symbol table에 _default 등록 →
+    // esm_wrap이 `return _default$N;` 올바른 코드 생성. 기존 버그에선 `return default;`
+    // (reserved keyword) SyntaxError 발생.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import P from './Platform';
+        \\console.log(P.os);
+    );
+    try writeFile(tmp.dir, "Platform.ts",
+        \\import Impl from './Platform.ios';
+        \\export default Impl;
+    );
+    try writeFile(tmp.dir, "Platform.ios.ts", "export default { os: 'ios' };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ios\"") != null);
+    // getter가 예약어 `default`를 identifier로 참조하면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return default;") == null);
+}
+
 test "Default: default export with same-name local variable" {
     // Rollup default-identifier-deshadowing
     var tmp = std.testing.tmpDir(.{});

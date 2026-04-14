@@ -22,6 +22,21 @@ const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("../statement_shaker.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
+const symbol_mod = @import("../symbol.zig");
+const SymbolRef = symbol_mod.SymbolRef;
+
+/// #1328 Phase 3a: ExportBinding.symbol이 현재 모듈의 synthetic_default 심볼인지 확인.
+/// 현재 모듈의 `_default = <expr>` 할당을 참조할 수 있음을 의미.
+fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
+    return switch (ref) {
+        .bundler => |b| blk: {
+            if (b.module != mod.index) break :blk false;
+            const table = mod.symbol_table orelse break :blk false;
+            break :blk b.symbol.isNone() == false and table.getKind(b.symbol) == .synthetic_default;
+        },
+        .semantic => false,
+    };
+}
 const parent = @import("../emitter.zig");
 const EmitOptions = parent.EmitOptions;
 const resolveNodeName = parent.resolveNodeName;
@@ -414,8 +429,14 @@ pub fn emitEsmWrappedModule(
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
-                        if (std.mem.eql(u8, eb.local_name, "default"))
+                        // #1328 Phase 3a: symbol table이 synthetic_default로 채운 경우에만
+                        // _default 단축 경로 사용. 현재 모듈에 `_default = <expr>` 할당이
+                        // 실제로 emit되는 케이스를 binding_scanner가 정확히 표시한다.
+                        // 분류 오탈자(.re_export로 잘못 분류된 barrel `export { X }`)에서도
+                        // 이 분기로 잘못 들어가지 않는다 (#1321 방어).
+                        if (isSyntheticDefault(eb.symbol, module)) {
                             break :blk if (metadata) |md| md.default_export_name else "_default";
+                        }
                         // live binding override: import binding이 canonical name으로 변경된 경우
                         if (metadata) |md| {
                             if (md.export_getter_overrides.get(eb.local_name)) |override|

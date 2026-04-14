@@ -68,6 +68,11 @@ pub const ExportBinding = struct {
     ///   - .re_export: source 모듈의 export 심볼 (Phase 3에서 linker가 채움)
     /// invalid = 미해결. 기존 문자열 로직은 병존 (Phase 4에서 제거).
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
+    /// #1328 Phase 3a: `export default <expr>` 구문에서 나온 바인딩인지 여부.
+    /// true = codegen이 현재 모듈에 `_default = <expr>` 할당을 emit한다.
+    /// false (kind=.re_export) = `export { default } from './x'` 같은 순수 재-export로,
+    /// 현재 모듈에 로컬 default 바인딩이 없음 → esm_wrap은 체인 resolve로 내려보낸다.
+    has_local_default_binding: bool = false,
 
     pub const Kind = enum {
         local,
@@ -333,6 +338,7 @@ pub fn extractExportBindings(
                     .local_span = node.span,
                     .kind = kind,
                     .import_record_index = final_rec_idx,
+                    .has_local_default_binding = true,
                 });
             },
             .export_all_declaration => {
@@ -595,23 +601,27 @@ pub fn collectNamespaceAccesses(
     }
 }
 
-/// #1328 Phase 1-2: export bindings를 훑어 bundler-local 합성 심볼을 테이블에
+/// #1328 Phase 1-3a: export bindings를 훑어 bundler-local 합성 심볼을 테이블에
 /// 등록하고, 대응하는 ExportBinding.symbol을 채운다.
 ///
-/// 현재 등록 대상:
-///   - `export default` (kind=.local, exported_name="default") → synthetic_default ("_default")
-///     대응 ExportBinding.symbol은 .bundler SymbolRef로 연결.
+/// `_default` 합성 심볼은 `has_local_default_binding == true`인 모든 default
+/// export에 등록된다. 여기에는 다음이 포함된다:
+///   - `export default 42;` / `export default class Foo {}` (kind=.local)
+///   - `import X from './x'; export default X;` (kind=.re_export — #1321 커밋 분류)
+///     codegen이 `_default = X` 할당을 emit하므로 로컬 `_default` 참조 가능.
 ///
-/// Cross-module re-export 연결은 Phase 3에서 linker가 담당.
-/// 향후 phase에서 `exports_<module>` / `init_<module>` / `__ns_*` 등을
-/// linker/emitter 진입 시점에 추가 등록한다.
+/// 제외: `export { default } from './x'` (has_local_default_binding=false).
+/// 이 경우엔 로컬 `_default` 바인딩이 없어 esm_wrap이 re-export 체인 resolve로
+/// 내려보내야 한다.
+///
+/// Cross-module re-export 연결은 Phase 3b에서 linker가 담당.
 pub fn populateSyntheticSymbols(
     table: *SymbolTable,
     module_index: ModuleIndex,
     export_bindings: []ExportBinding,
 ) !void {
     for (export_bindings) |*eb| {
-        if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+        if (eb.has_local_default_binding and std.mem.eql(u8, eb.exported_name, "default")) {
             const id = try table.declare("_default", .synthetic_default, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         }
