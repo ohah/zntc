@@ -16,6 +16,7 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const scope_mod = @import("scope.zig");
 const ScopeId = scope_mod.ScopeId;
@@ -1535,15 +1536,16 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        const kind_flags = extras[extra_start];
+        const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
         const decl_start = extras[extra_start + 1];
         const decl_len = extras[extra_start + 2];
 
-        const sym_kind: SymbolKind = switch (kind_flags) {
-            0 => .variable_var,
-            1 => .variable_let,
-            2 => .variable_const,
-            else => .variable_var,
+        const sym_kind: SymbolKind = switch (kind) {
+            .@"var" => .variable_var,
+            .let => .variable_let,
+            .@"const" => .variable_const,
+            // using/await_using은 기존 동작을 유지하여 variable_var로 분류.
+            .using, .await_using => .variable_var,
         };
 
         if (decl_start + decl_len > extras.len) return;
@@ -2312,15 +2314,16 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return; // 바운드 방어
-        const kind_flags = extras[extra_start];
+        const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
         const decl_start = extras[extra_start + 1];
         const decl_len = extras[extra_start + 2];
 
-        const sym_kind: SymbolKind = switch (kind_flags) {
-            0 => .variable_var,
-            1 => .variable_let,
-            2 => .variable_const,
-            else => .variable_var,
+        const sym_kind: SymbolKind = switch (kind) {
+            .@"var" => .variable_var,
+            .let => .variable_let,
+            .@"const" => .variable_const,
+            // using/await_using도 기존 else 분기와 동일하게 variable_var.
+            .using, .await_using => .variable_var,
         };
 
         // 각 declarator에서 바인딩 이름 추출
@@ -2775,8 +2778,8 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 2 >= extras.len) return;
-                const kind_flags = extras[extra_start];
-                if (kind_flags != 0) return; // let/const는 block scoped
+                const kind = VariableDeclarationKind.fromU32(extras[extra_start]);
+                if (kind != .@"var") return; // let/const는 block scoped
                 try self.predeclareVarDecl(node);
             },
             // 함수 선언도 hoisting 대상 (var scope에 등록)

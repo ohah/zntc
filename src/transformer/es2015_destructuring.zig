@@ -633,7 +633,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // 2) for-in의 left를 var _ref 로 교체
             const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
             const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, NodeIndex.none, span);
-            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, 0, span);
+            const new_left = try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", span);
 
             // 3) right를 visit
             const new_right = try self.visitNode(right);

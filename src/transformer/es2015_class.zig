@@ -236,7 +236,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // var ClassName = IIFE;
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
-            const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, 0, span);
+            const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             try self.pending_nodes.append(self.allocator, var_decl);
 
             // static fields → IIFE 밖 (init에서 ClassName 자기참조 시 이미 할당된 상태)

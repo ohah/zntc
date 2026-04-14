@@ -53,6 +53,7 @@ const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 
 pub fn ES2025Using(comptime Transformer: type) type {
     return struct {
@@ -68,8 +69,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 if (node.tag == .variable_declaration) {
                     const e = node.data.extra;
                     if (self.ast.hasExtra(e, 3)) {
-                        const kind_flags = self.ast.extra_data.items[e];
-                        if (kind_flags == 3 or kind_flags == 4) return true;
+                        if (self.ast.variableDeclarationKind(node).isUsing()) return true;
                     }
                 }
             }
@@ -104,10 +104,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     if (node.tag == .variable_declaration) {
                         const e = node.data.extra;
                         if (self.ast.hasExtra(e, 3)) {
-                            const kind_flags = self.ast.extra_data.items[e];
-                            if (kind_flags == 3 or kind_flags == 4) {
+                            const kind = self.ast.variableDeclarationKind(node);
+                            if (kind.isUsing()) {
                                 if (first_using_idx == len) first_using_idx = i;
-                                if (kind_flags == 4) has_await_using = true;
+                                if (kind == .await_using) has_await_using = true;
                             }
                         }
                     }
@@ -155,7 +155,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             });
             const stack_decl_list = try self.ast.addNodeList(&.{stack_declarator});
             const stack_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
-                0, // var
+                @intFromEnum(VariableDeclarationKind.@"var"),
                 stack_decl_list.start,
                 stack_decl_list.len,
             });
@@ -173,15 +173,15 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     if (node.tag == .variable_declaration) {
                         const e = node.data.extra;
                         if (self.ast.hasExtra(e, 3)) {
-                            const kind_flags = self.ast.extra_data.items[e];
-                            if (kind_flags == 3 or kind_flags == 4) {
+                            const kind = self.ast.variableDeclarationKind(node);
+                            if (kind.isUsing()) {
                                 const decl_list_start = self.readU32(e, 1);
                                 const decl_list_len = self.readU32(e, 2);
                                 try transformUsingDeclarators(
                                     self,
                                     decl_list_start,
                                     decl_list_len,
-                                    kind_flags == 4,
+                                    kind == .await_using,
                                     stack_span,
                                     node.span,
                                 );
@@ -278,7 +278,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 });
                 const new_decl_list = try self.ast.addNodeList(&.{new_decl});
                 const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-                    0, // var
+                    @intFromEnum(VariableDeclarationKind.@"var"),
                     new_decl_list.start,
                     new_decl_list.len,
                 });
@@ -316,7 +316,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
             const var_list = try self.ast.addNodeList(&.{ error_declarator, has_error_declarator });
             const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-                0, // var
+                @intFromEnum(VariableDeclarationKind.@"var"),
                 var_list.start,
                 var_list.len,
             });

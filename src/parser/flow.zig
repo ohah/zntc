@@ -14,6 +14,7 @@ const std = @import("std");
 const ast_mod = @import("ast.zig");
 const Tag = ast_mod.Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
@@ -1205,7 +1206,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
         // variable_declaration: extra = [kind_flags, list_start, list_len]
         const decl_list = try self.ast.addNodeList(&.{declarator});
-        const var_extra = try self.ast.addExtras(&.{ 2, decl_list.start, decl_list.len }); // 2 = const
+        const var_extra = try self.ast.addExtras(&.{ @intFromEnum(VariableDeclarationKind.@"const"), decl_list.start, decl_list.len });
         const const_decl = try self.ast.addNode(.{
             .tag = .variable_declaration,
             .span = span,

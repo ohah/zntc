@@ -16,6 +16,7 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const module_parser = @import("../parser/module.zig");
 const Kind = @import("../lexer/token.zig").Kind;
@@ -2398,7 +2399,7 @@ pub const Codegen = struct {
     fn emitVariableDeclaration(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 3];
-        const kind_flags = extras[0];
+        const kind = VariableDeclarationKind.fromU32(extras[0]);
         const list_start = extras[1];
         const list_len = extras[2];
 
@@ -2443,13 +2444,12 @@ pub const Codegen = struct {
             // destructuring → fall through to normal path (var 키워드 유지)
         }
 
-        const keyword = switch (kind_flags) {
-            0 => "var ",
-            1 => "let ",
-            2 => "const ",
-            3 => "using ",
-            4 => "await using ",
-            else => "var ",
+        const keyword = switch (kind) {
+            .@"var" => "var ",
+            .let => "let ",
+            .@"const" => "const ",
+            .using => "using ",
+            .await_using => "await using ",
         };
         try self.write(keyword);
         try self.emitNodeList(list_start, list_len, ",");
