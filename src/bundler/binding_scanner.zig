@@ -18,6 +18,9 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
+const symbol_mod = @import("symbol.zig");
+const SymbolTable = symbol_mod.SymbolTable;
+const SymbolKind = symbol_mod.SymbolKind;
 
 pub const ImportBinding = struct {
     kind: Kind,
@@ -580,6 +583,25 @@ pub fn collectNamespaceAccesses(
             ib.namespace_used_properties = props;
         } else {
             ib.namespace_used_properties = &.{};
+        }
+    }
+}
+
+/// #1328 Phase 1: export bindings를 훑어 bundler-local 합성 심볼을 테이블에 등록.
+/// Consumer는 아직 없음 — 정합성 검증 + 다음 phase 준비용 shadow population.
+///
+/// 현재 등록 대상:
+///   - `export default` (kind=.local, exported_name="default") → synthetic_default ("_default")
+///
+/// 향후 phase에서 `exports_<module>` / `init_<module>` / `__ns_*` 등을
+/// linker/emitter 진입 시점에 추가 등록한다.
+pub fn populateSyntheticSymbols(
+    table: *SymbolTable,
+    export_bindings: []const ExportBinding,
+) !void {
+    for (export_bindings) |eb| {
+        if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+            _ = try table.declare("_default", .synthetic_default, eb.local_span);
         }
     }
 }
