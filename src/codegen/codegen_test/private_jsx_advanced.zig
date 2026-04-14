@@ -842,3 +842,21 @@ test "#1275: private method만 있고 원본 constructor 없을 때 새 construc
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "constructor("));
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_priv)") != null);
 }
+
+test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 변환" {
+    // private method 본문이 다른 private field를 참조할 때, standalone 함수로
+    // 추출된 후에도 참조가 WeakMap 접근으로 변환돼야 한다. 버그 수정 전에는
+    // `function _getField_fn() { return this.#field; }` 처럼 class body 밖에서
+    // private 구문이 남아 파싱 에러가 발생했다.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #field = 42;
+        \\  #getField() { return this.#field; }
+        \\  use() { return this.#getField(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _getField_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _field.get(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#field") == null);
+}
