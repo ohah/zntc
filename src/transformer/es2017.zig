@@ -239,13 +239,8 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .list = body_list },
             });
 
-            // function_expression: extra = [name, params, body, flags, return_type]
             const none = @intFromEnum(NodeIndex.none);
-            const params_node = try self.ast.addNode(.{
-                .tag = .formal_parameters,
-                .span = span,
-                .data = .{ .list = params_list },
-            });
+            const params_node = try self.ast.addFormalParameters(params_list, span);
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
                 @intFromEnum(params_node),

@@ -447,12 +447,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const name_node = try makeBindingIdentifier(self, name_span);
 
     const none = @intFromEnum(NodeIndex.none);
-    // function_declaration: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
-    const new_params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = span,
-        .data = .{ .list = new_params },
-    });
+    const new_params_node = try self.ast.addFormalParameters(new_params, span);
     const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(name_node),
         @intFromEnum(new_params_node),
@@ -499,11 +494,7 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
         .data = .{ .list = body_list },
     });
     const empty_params = try self.ast.addNodeList(&.{});
-    const empty_params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = span,
-        .data = .{ .list = empty_params },
-    });
+    const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
     const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
         @intFromEnum(empty_params_node),
@@ -521,11 +512,7 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
 /// body를 감싸는 generator function expression 생성: function*() { ...body... }
 pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIndex {
     const empty_params = try self.ast.addNodeList(&.{});
-    const empty_params_node = try self.ast.addNode(.{
-        .tag = .formal_parameters,
-        .span = span,
-        .data = .{ .list = empty_params },
-    });
+    const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
     const gen_extra = try self.ast.addExtras(&.{
         @intFromEnum(NodeIndex.none),
         @intFromEnum(empty_params_node),
