@@ -1982,10 +1982,20 @@ pub const Transformer = struct {
 
                 if (init_idx.isNone()) {
                     // let x; → var x = void 0;
-                    const void_init = try es_helpers.makeVoidZero(self, node.span);
+                    // 단 destructuring pattern (`let {x}`, `let [x]`)은 init 추가 금지 —
+                    // for-of/for-in의 left에서 매 반복 iter value를 받으며, `{x} = void 0` 같은
+                    // statement는 block_statement로 잘못 파싱되어 syntax error (#1302).
+                    const binding = if (!new_name.isNone()) self.ast.getNode(new_name) else null;
+                    const is_destructuring = binding != null and (binding.?.tag == .object_pattern or binding.?.tag == .array_pattern);
                     const none = @intFromEnum(NodeIndex.none);
-                    const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(void_init) });
-                    try self.scratch.append(self.allocator, new_decl);
+                    if (is_destructuring) {
+                        const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, none });
+                        try self.scratch.append(self.allocator, new_decl);
+                    } else {
+                        const void_init = try es_helpers.makeVoidZero(self, node.span);
+                        const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(void_init) });
+                        try self.scratch.append(self.allocator, new_decl);
+                    }
                 } else {
                     const new_init = try self.visitNode(init_idx);
                     const none = @intFromEnum(NodeIndex.none);
