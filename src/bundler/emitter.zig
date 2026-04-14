@@ -1171,60 +1171,11 @@ pub fn emitModule(
     return try allocator.dupe(u8, code);
 }
 
-/// JSON 모듈을 CJS 형태로 출력: __commonJS 래핑 + module.exports = <JSON content>
-/// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
-/// esbuild 호환 형식: var require_util = __commonJS({ "(disabled)"(exports, module) {} });
-fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool) !?[]const u8 {
-    const var_name = try types.makeRequireVarName(allocator, module.path);
-    defer allocator.free(var_name);
-
-    var buf: std.ArrayList(u8) = .empty;
-    if (minify) {
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, "=__commonJS({\"(disabled)\"(exports,module){}});");
-    } else {
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, " = __commonJS({\n\t\"(disabled)\"(exports, module) {\n\t}\n});\n");
-    }
-    return try buf.toOwnedSlice(allocator);
-}
-
-/// Asset 모듈을 출력한다 (CJS wrap 패턴).
-/// source에 값 표현식이 저장되어 있고, __commonJS wrapper로 래핑.
-/// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
-fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
-    if (module.source.len == 0) return null;
-    return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
-}
-
-/// __commonJS wrapper 출력 (Asset 모듈용).
-/// var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });
-fn emitCjsWrapper(allocator: std.mem.Allocator, path: []const u8, source: []const u8, minify: bool) !?[]const u8 {
-    const var_name = try types.makeRequireVarName(allocator, path);
-    defer allocator.free(var_name);
-
-    var buf: std.ArrayList(u8) = .empty;
-    if (minify) {
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, "=__commonJS({\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(path));
-        try buf.appendSlice(allocator, "\"(exports,module){module.exports=");
-        try buf.appendSlice(allocator, source);
-        try buf.appendSlice(allocator, "}});");
-    } else {
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
-        try buf.appendSlice(allocator, std.fs.path.basename(path));
-        try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
-        try buf.appendSlice(allocator, source);
-        try buf.appendSlice(allocator, ";\n\t}\n});\n");
-    }
-    return try buf.toOwnedSlice(allocator);
-}
+// --- CJS wrap functions (emitter/cjs_wrap.zig) ---
+const cjs_wrap = @import("emitter/cjs_wrap.zig");
+const emitDisabledModule = cjs_wrap.emitDisabledModule;
+const emitAssetModule = cjs_wrap.emitAssetModule;
+pub const emitCjsWrapper = cjs_wrap.emitCjsWrapper;
 
 /// Cross-module @__NO_SIDE_EFFECTS__ 전파.
 ///
