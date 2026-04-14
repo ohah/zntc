@@ -970,7 +970,7 @@ pub const SemanticAnalyzer = struct {
     fn isFunctionWithNoSideEffects(self: *const SemanticAnalyzer, node: Node) bool {
         const e = node.data.extra;
         return switch (node.tag) {
-            .function_expression, .function_declaration => self.ast.hasExtra(e, 4) and (self.ast.readExtra(e, 4) & ast_mod.FunctionFlags.no_side_effects) != 0,
+            .function_expression, .function_declaration => self.ast.hasExtra(e, 3) and (self.ast.readExtra(e, 3) & ast_mod.FunctionFlags.no_side_effects) != 0,
             .arrow_function_expression => self.ast.hasExtra(e, 2) and (self.ast.readExtra(e, 2) & ast_mod.ArrowFlags.no_side_effects) != 0,
             else => false,
         };
@@ -1096,10 +1096,10 @@ pub const SemanticAnalyzer = struct {
 
             // ---- method_definition/property_definition 내부 순회 ----
             .method_definition => {
-                // extra: [key, params.start, params.len, body, flags]
+                // extra: [key, params, body, flags]
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
-                if (extra_start + 3 < extras.len) {
+                if (extra_start + 2 < extras.len) {
                     // key 순회 — computed property ([expr])만 순회한다.
                     // non-computed key는 단순한 이름이므로 순회하지 않는다.
                     // 순회하면 identifier_reference로 방문되어 namespace import 이름이
@@ -1116,11 +1116,12 @@ pub const SemanticAnalyzer = struct {
                     // getter/setter 파라미터 개수 검증
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
-                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = try self.enterScope(.function, self.is_strict_mode);
-                    const params_start = extras[extra_start + 1];
-                    const params_len = extras[extra_start + 2];
+                    const params_list = self.ast.functionParamsList(node);
+                    const params_start = params_list.start;
+                    const params_len = params_list.len;
                     try self.registerParams(params_start, params_len);
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
                     try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
@@ -1654,12 +1655,12 @@ pub const SemanticAnalyzer = struct {
     fn predeclareFuncDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
-        if (extra_start + 5 >= extras.len) return;
+        if (extra_start + 4 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
 
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + 4]), node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + 3]), node.span, @intFromEnum(name_idx));
         }
     }
 
@@ -1697,13 +1698,13 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitFunctionDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // extra: [name, params.start, params.len, body, flags, return_type]
+        // extra: [name, params, body, flags, return_type]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
-        if (extra_start + 5 >= extras.len) return;
+        if (extra_start + 4 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
-        const flags = extras[extra_start + 4];
+        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        const flags = extras[extra_start + 3];
 
         const symbol_kind = functionSymbolKind(flags);
         const has_no_side_effects = (flags & ast_mod.FunctionFlags.no_side_effects) != 0;
@@ -1741,8 +1742,9 @@ pub const SemanticAnalyzer = struct {
         const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
 
         // 파라미터를 function 스코프에 등록
-        const params_start = extras[extra_start + 1];
-        const params_len = extras[extra_start + 2];
+        const params_list = self.ast.functionParamsList(node);
+        const params_start = params_list.start;
+        const params_len = params_list.len;
         try self.registerParams(params_start, params_len);
 
         // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
@@ -1769,22 +1771,23 @@ pub const SemanticAnalyzer = struct {
         const func_node = self.ast.getNode(func_idx);
         if (func_node.tag != .function_declaration) return;
         const fe = func_node.data.extra;
-        if (!self.ast.hasExtra(fe, 3)) return;
-        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 3]);
+        if (!self.ast.hasExtra(fe, 2)) return;
+        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
         if (body_idx.isNone()) return;
 
         const saved = try self.enterScope(.function, self.is_strict_mode);
-        try self.registerParams(self.ast.extra_data.items[fe + 1], self.ast.extra_data.items[fe + 2]);
+        const params_list = self.ast.functionParamsList(func_node);
+        try self.registerParams(params_list.start, params_list.len);
         try self.visitFunctionBodyInner(body_idx);
         self.exitScope(saved);
     }
 
     fn visitFunctionExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // extra: [name, params.start, params.len, body, flags]
+        // extra: [name, params, body, flags]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
-        if (extra_start + 4 >= extras.len) return;
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+        if (extra_start + 3 >= extras.len) return;
+        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
 
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
@@ -1795,12 +1798,13 @@ pub const SemanticAnalyzer = struct {
         // (이름의 read-only 접근은 런타임에서 처리)
         _ = @as(NodeIndex, @enumFromInt(extras[extra_start])); // name_idx (사용하지 않음)
 
-        const params_start = extras[extra_start + 1];
-        const params_len = extras[extra_start + 2];
+        const params_list = self.ast.functionParamsList(node);
+        const params_start = params_list.start;
+        const params_len = params_list.len;
         try self.registerParams(params_start, params_len);
 
         // 중복 파라미터 검증: flags에서 async/generator 판별
-        const fn_flags = extras[extra_start + 4];
+        const fn_flags = extras[extra_start + 3];
         const FnFlags = ast_mod.FunctionFlags;
         const fn_is_async = (fn_flags & FnFlags.is_async) != 0;
         const fn_is_generator = (fn_flags & FnFlags.is_generator) != 0;
@@ -2041,14 +2045,14 @@ pub const SemanticAnalyzer = struct {
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .method_definition => {
-                    // extra: [key, params.start, params.len, body, flags]
+                    // extra: [key, params, body, flags]
                     const extra_start = node.data.extra;
                     if (extra_start >= self.ast.extra_data.items.len) continue;
                     const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start]);
-                    // flags는 extra_start + 4: 0x02=getter, 0x04=setter
+                    // flags는 extra_start + 3: 0x02=getter, 0x04=setter
                     const kind: PrivateNameKind = blk: {
-                        if (extra_start + 4 < self.ast.extra_data.items.len) {
-                            const flags = self.ast.extra_data.items[extra_start + 4];
+                        if (extra_start + 3 < self.ast.extra_data.items.len) {
+                            const flags = self.ast.extra_data.items[extra_start + 3];
                             if (flags & 0x02 != 0) break :blk .getter;
                             if (flags & 0x04 != 0) break :blk .setter;
                         }
