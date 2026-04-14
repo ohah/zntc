@@ -72,17 +72,21 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 break :blk new_body;
             };
 
-            // function_expression: extra = [name, params_start, params_len, body, flags, return_type]
+            // function_expression: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
             const func_flags: u32 = if (flags & ast_mod.ArrowFlags.is_async != 0)
                 ast_mod.FunctionFlags.is_async
             else
                 0;
 
             const none = @intFromEnum(NodeIndex.none);
+            const params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = node.span,
+                .data = .{ .list = param_list },
+            });
             const new_extra = try self.ast.addExtras(&.{
                 none, // name (anonymous)
-                param_list.start,
-                param_list.len,
+                @intFromEnum(params_node),
                 @intFromEnum(func_body),
                 func_flags,
                 none, // return_type

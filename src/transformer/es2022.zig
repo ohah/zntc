@@ -137,18 +137,18 @@ pub fn ES2022(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const me = node.data.extra;
 
+            // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
             const saved_key = extras[me];
-            const saved_ps = extras[me + 1];
-            const saved_pl = extras[me + 2];
-            const saved_flags = extras[me + 4];
-            const saved_deco_start = extras[me + 5];
-            const saved_deco_len = extras[me + 6];
-            const body_idx: NodeIndex = @enumFromInt(extras[me + 3]);
+            const saved_params = extras[me + 1];
+            const saved_flags = extras[me + 3];
+            const saved_deco_start = extras[me + 4];
+            const saved_deco_len = extras[me + 5];
+            const body_idx: NodeIndex = @enumFromInt(extras[me + 2]);
 
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
             const new_me = try self.ast.addExtras(&.{
-                saved_key,              saved_ps,    saved_pl,
+                saved_key, saved_params,
                 @intFromEnum(new_body), saved_flags, saved_deco_start,
                 saved_deco_len,
             });
@@ -406,10 +406,15 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = ctor_name_span,
                 .data = .{ .string_ref = ctor_name_span },
             });
+            // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
+            const ctor_params_node = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = span,
+                .data = .{ .list = params_list },
+            });
             const ctor_extra = try self.ast.addExtras(&.{
                 @intFromEnum(ctor_key),
-                params_list.start,
-                params_list.len,
+                @intFromEnum(ctor_params_node),
                 @intFromEnum(ctor_body),
                 0, 0, 0, // flags, deco_start, deco_len
             });

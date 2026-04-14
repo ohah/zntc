@@ -1959,10 +1959,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // function(_state) { ... }
             const params = try self.ast.addNodeList(&.{state_param});
             const none = @intFromEnum(NodeIndex.none);
+            const params_node_g = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = .{ .start = 0, .end = 0 },
+                .data = .{ .list = params },
+            });
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                params.start,
-                params.len,
+                @intFromEnum(params_node_g),
                 @intFromEnum(body),
                 0, // flags
                 none,
