@@ -77,7 +77,7 @@ pub const SymbolKind = enum(u8) {
     /// `import * as X` namespace 객체
     synthetic_namespace,
     /// Re-export alias (`export { X } from './m'`, barrel 등).
-    /// 자기 자신은 값을 갖지 않고 `points_to`로 target export를 가리킴.
+    /// 자기 자신은 값을 갖지 않고 linker가 `canonical_name`에 체인 resolve 결과를 주입한다.
     re_export_alias,
     /// Resolve 실패한 외부 import (node builtin 등)
     unresolved_external,

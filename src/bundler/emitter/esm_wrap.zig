@@ -33,33 +33,31 @@ const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
 const appendIndented = parent.appendIndented;
 const appendModuleCall = parent.appendModuleCall;
 
+/// SymbolRef가 `mod` 소유의 bundler 심볼일 때 SymbolId를 반환. 다른 모듈/공간이거나
+/// invalid면 null. 아래 두 helper의 공통 unpack 단계.
+fn localBundlerSymbol(ref: SymbolRef, mod: *const Module) ?symbol_mod.SymbolId {
+    return switch (ref) {
+        .bundler => |b| if (b.module == mod.index and !b.symbol.isNone()) b.symbol else null,
+        .semantic => null,
+    };
+}
+
 /// ExportBinding.symbol이 현재 모듈의 synthetic_default 심볼인지 확인.
 /// 현재 모듈의 `_default = <expr>` 할당을 참조할 수 있음을 의미.
 fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
-    return switch (ref) {
-        .bundler => |b| blk: {
-            if (b.module != mod.index) break :blk false;
-            const table = mod.symbol_table orelse break :blk false;
-            break :blk !b.symbol.isNone() and table.getKind(b.symbol) == .synthetic_default;
-        },
-        .semantic => false,
-    };
+    const id = localBundlerSymbol(ref, mod) orelse return false;
+    const table = mod.symbol_table orelse return false;
+    return table.getKind(id) == .synthetic_default;
 }
 
 /// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
 /// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
-    return switch (ref) {
-        .bundler => |b| blk: {
-            if (b.module != mod.index) break :blk null;
-            if (b.symbol.isNone()) break :blk null;
-            const table = mod.symbol_table orelse break :blk null;
-            if (table.getKind(b.symbol) != .re_export_alias) break :blk null;
-            if (!table.hasCanonicalName(b.symbol)) break :blk null;
-            break :blk table.getCanonicalName(b.symbol);
-        },
-        .semantic => null,
-    };
+    const id = localBundlerSymbol(ref, mod) orelse return null;
+    const table = mod.symbol_table orelse return null;
+    if (table.getKind(id) != .re_export_alias) return null;
+    if (!table.hasCanonicalName(id)) return null;
+    return table.getCanonicalName(id);
 }
 
 pub const EsmEmitResult = struct {
