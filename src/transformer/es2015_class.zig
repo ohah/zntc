@@ -221,8 +221,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params_node = try self.ast.addFormalParameters(wrapper_params, span);
             // function_expression: [name(0), params(1), body(2), flags(3), ret_type(4)]
             const wrapper_extra = try self.ast.addExtras(&.{
-                none, @intFromEnum(wrapper_params_node),
-                @intFromEnum(iife_body), 0, none,
+                none,                    @intFromEnum(wrapper_params_node),
+                @intFromEnum(iife_body), 0,
+                none,
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             const paren = try es_helpers.makeParenExpr(self, wrapper_fn, span);
@@ -935,7 +936,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none,                   @intFromEnum(new_params_node),
-                @intFromEnum(new_body), 0,                             none,
+                @intFromEnum(new_body), 0,
+                none,
             });
             return self.ast.addNode(.{
                 .tag = .function_expression,

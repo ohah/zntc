@@ -1069,7 +1069,8 @@ pub fn generateInitCode(
     );
     const synthetic_func = try self.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(name_node),    @intFromEnum(params_node),
-        @intFromEnum(new_body_idx), flags,        none,
+        @intFromEnum(new_body_idx), flags,
+        none,
     });
 
     // 단일 문장 프로그램 생성

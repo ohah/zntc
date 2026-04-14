@@ -901,7 +901,8 @@ fn buildClassFactoryAssignment(t: *Transformer, class_name: []const u8, stripped
     const none = @intFromEnum(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
         @intFromEnum(binding_node), @intFromEnum(empty_params_node),
-        @intFromEnum(body),         0,                  none,
+        @intFromEnum(body),         0,
+        none,
     });
 
     // IIFE: (function() { function <fn>(){...} return <fn>; })()
