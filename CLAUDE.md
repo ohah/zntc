@@ -44,6 +44,11 @@ Rollup/Vite 어댑터: `vitePlugin({...})` (모든 훅 async 지원).
 5. 구현 전 Test262/유닛 테스트 먼저
 6. Zig 초보자에게 설명 포함
 
+## Memory ownership
+- **Arena 안 리소스는 개별 deinit 금지**. `arena_alloc`으로 만든 `DynamicBitSet`/`ArrayList` 등은 `arena.deinit()`이 일괄 해제. 개별 `defer X.deinit()`을 함께 걸면 `arena.deinit()` 이후에 실행되어 해제된 메모리 접근 → segfault (#1287).
+- 성공 경로에서 `arena.deinit()`을 명시 호출하지 말 것. `defer arena.deinit()` 하나로 충분.
+- `errdefer arena.deinit()`만 쓰고 성공 경로는 따로 관리하는 패턴은 위험 — defer 순서 실수 유발.
+
 PR 제목: `feat(lexer): add numeric literal tokenization` 형식.
 
 ## References
