@@ -84,7 +84,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
 
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             const sm_result = try buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;

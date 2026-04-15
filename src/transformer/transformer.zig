@@ -1394,7 +1394,7 @@ pub const Transformer = struct {
                 });
             }
         }
-        const new_list = try self.visitExtraList(node.data.list.start, node.data.list.len);
+        const new_list = try self.visitExtraList(node.data.list);
         return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
@@ -1409,7 +1409,7 @@ pub const Transformer = struct {
 
         const saved_scope_len = self.scope_var_names.items.len;
         const renames_added = try self.pushBlockRenames(list_start, list_len);
-        const new_list = try self.visitExtraList(list_start, list_len);
+        const new_list = try self.visitExtraList(.{ .start = list_start, .len = list_len });
 
         // 블록 퇴장: rename 맵 + scope_var_names 모두 복원
         if (renames_added > 0) {
@@ -1467,7 +1467,7 @@ pub const Transformer = struct {
     /// 해당 자식 앞에 삽입한다. 이를 통해 1→N 노드 확장이 가능하다.
     /// 예: enum 변환 시 visitNode가 IIFE를 반환하면서 `var Color;`을
     ///     pending_nodes에 push → 리스트에 `var Color;` + IIFE 순서로 삽입.
-    pub fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
+    pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
         // 주의: extra_data.items 슬라이스를 캐시하면 안 됨.
         // visitNode 내부에서 ast.extra_data에 append하면 배열이 재할당되어
         // 캐시된 슬라이스가 dangling pointer가 될 수 있다.
@@ -1486,9 +1486,9 @@ pub const Transformer = struct {
         defer self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
 
         var i: u32 = 0;
-        while (i < len) : (i += 1) {
+        while (i < list.len) : (i += 1) {
             // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
-            const raw_idx = self.ast.extra_data.items[start + i];
+            const raw_idx = self.ast.extra_data.items[list.start + i];
             const new_child = try self.visitNode(@enumFromInt(raw_idx));
 
             // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
@@ -1805,7 +1805,7 @@ pub const Transformer = struct {
         }
 
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_members = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         return self.addExtraNode(.ts_enum_declaration, node.span, &.{
             @intFromEnum(new_name), new_members.start, new_members.len, flags,
         });
@@ -1897,10 +1897,10 @@ pub const Transformer = struct {
     fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         const children_len = self.readU32(e, 4);
         const new_children = if (children_len > 0)
-            try self.visitExtraList(self.readU32(e, 3), children_len)
+            try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = children_len })
         else
             NodeList{ .start = 0, .len = 0 };
         return self.addExtraNode(.jsx_element, node.span, &.{
@@ -1921,7 +1921,7 @@ pub const Transformer = struct {
     fn visitJSXExtraNode(self: *Transformer, tag: Tag, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         return self.addExtraNode(tag, node.span, &.{
             @intFromEnum(new_tag),
             new_attrs.start,
@@ -2011,7 +2011,7 @@ pub const Transformer = struct {
             return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
         }
 
-        const new_list = try self.visitExtraList(list_start, list_len);
+        const new_list = try self.visitExtraList(.{ .start = list_start, .len = list_len });
         return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
     }
 
@@ -2949,7 +2949,7 @@ pub const Transformer = struct {
     fn visitSwitchStatement(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_disc = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_cases = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_cases = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         return self.addExtraNode(.switch_statement, node.span, &.{
             @intFromEnum(new_disc), new_cases.start, new_cases.len,
         });
@@ -2959,7 +2959,7 @@ pub const Transformer = struct {
     fn visitSwitchCase(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_test = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_stmts = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_stmts = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         return self.addExtraNode(.switch_case, node.span, &.{ @intFromEnum(new_test), new_stmts.start, new_stmts.len });
     }
 
@@ -2979,7 +2979,7 @@ pub const Transformer = struct {
         const new_args = if (auto_callee != null)
             try self.visitCallArgsWithAutoWorklet(args_start, args_len, auto_callee.?)
         else
-            try self.visitExtraList(args_start, args_len);
+            try self.visitExtraList(.{ .start = args_start, .len = args_len });
 
         const new_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_callee), new_args.start, new_args.len, flags,
@@ -3000,7 +3000,7 @@ pub const Transformer = struct {
         const args_len = self.readU32(e, 2);
         const flags = self.readU32(e, 3);
         const new_callee = try self.visitNode(callee_idx);
-        const new_args = try self.visitExtraList(args_start, args_len);
+        const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
         const new_extra = try self.ast.addExtras(&.{
             @intFromEnum(new_callee), new_args.start, new_args.len, flags,
         });
@@ -3110,7 +3110,7 @@ pub const Transformer = struct {
         const new_decos = if (self.options.experimental_decorators)
             NodeList{ .start = 0, .len = 0 }
         else
-            try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
+            try self.visitExtraList(.{ .start = self.readU32(e, 4), .len = self.readU32(e, 5) });
         const old_body_idx = self.readNodeIdx(e, 2);
         const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
         const result = try self.addExtraNode(.method_definition, node.span, &.{
@@ -3167,7 +3167,7 @@ pub const Transformer = struct {
         const new_decos = if (self.options.experimental_decorators)
             NodeList{ .start = 0, .len = 0 }
         else
-            try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+            try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
         return self.addExtraNode(.property_definition, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
             new_decos.start,       new_decos.len,
@@ -3182,7 +3182,7 @@ pub const Transformer = struct {
         if (self.options.strip_types and (flags & 0x40) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
-        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
         return self.addExtraNode(.accessor_property, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
             new_decos.start,       new_decos.len,
@@ -3232,7 +3232,7 @@ pub const Transformer = struct {
         }
         const new_pattern = try self.visitNode(self.readNodeIdx(e, 0));
         const new_default = try self.visitNode(self.readNodeIdx(e, 2));
-        const new_decos = try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
+        const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 4), .len = self.readU32(e, 5) });
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.formal_parameter, node.span, &.{
             @intFromEnum(new_pattern), none,            @intFromEnum(new_default), // type_ann 제거
@@ -3249,7 +3249,7 @@ pub const Transformer = struct {
             if (self.areAllSpecifiersUnused(x.specs_start, x.specs_len)) return .none;
         }
 
-        const new_specs = try self.visitExtraList(x.specs_start, x.specs_len);
+        const new_specs = try self.visitExtraList(.{ .start = x.specs_start, .len = x.specs_len });
         const new_source = try self.visitNode(x.source);
         // phase / attributes는 metadata — transform 대상 아님, 그대로 통과.
         return self.addExtraNode(.import_declaration, node.span, &.{
@@ -3302,7 +3302,7 @@ pub const Transformer = struct {
     fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_decl = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_specs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_specs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         const new_source = try self.visitNode(self.readNodeIdx(e, 3));
         // export interface/type alias 등 타입 선언만 있으면 빈 export {} 제거
         // export { type Foo } from './a' 같은 re-export는 source가 있으므로 유지

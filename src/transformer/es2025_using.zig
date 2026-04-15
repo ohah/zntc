@@ -116,7 +116,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
             // 방어: using이 없으면 일반 방문
             if (first_using_idx == len) {
-                return self.visitExtraList(start, len);
+                return self.visitExtraList(.{ .start = start, .len = len });
             }
 
             const zero_span = Span{ .start = 0, .end = 0 };

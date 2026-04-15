@@ -121,7 +121,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             if (had_static_blocks) {
                 current_body_idx = new_body;
 
-                const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+                const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
                 const none = @intFromEnum(NodeIndex.none);
                 const class_result = try self.addExtraNode(node.tag, node.span, &.{
                     @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
@@ -154,7 +154,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         // private method/field 가 있고 static block은 없는 경우
         if (had_private_methods or had_private_fields) {
-            const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+            const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
             const none = @intFromEnum(NodeIndex.none);
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
                 @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
@@ -181,7 +181,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         }
 
         const new_body = try self.visitNode(current_body_idx);
-        const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+        const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
@@ -447,7 +447,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
 
     // decorator 리스트 복사 (experimental이 아닌 경우)
     const new_decos = if (!self.options.experimental_decorators)
-        try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7))
+        try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) })
     else
         NodeList{ .start = 0, .len = 0 };
 

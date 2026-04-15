@@ -927,7 +927,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(me, 2);
 
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             const nt_ctx: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
             const new_body = try visitMethodBodyWithCtx(self, body_idx, span, nt_ctx);
@@ -1299,7 +1299,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.super_call_this_alias = saved_super_alias;
 
             // ES2015 params lowering은 Pass 2에서 일괄 처리
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
             const saved_new_target_ctx = self.new_target_ctx;
@@ -1737,7 +1737,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function expression 생성 — ES2015 params lowering은 Pass 2에서 일괄 처리
             const params_list_unwrap = self.ast.functionParamsList(member);
-            const new_params = try self.visitExtraList(params_list_unwrap.start, params_list_unwrap.len);
+            const new_params = try self.visitExtraList(params_list_unwrap);
 
             const is_async = flags & 0x08 != 0;
             const is_generator = flags & 0x10 != 0;

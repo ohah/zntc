@@ -194,7 +194,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     const flags = self.readU32(e, 3);
                     const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
                     const new_callee = if (is_optional) chain_base else try rebuildChainNode(self, self.ast.getNode(old_callee), chain_base);
-                    const new_args = try self.visitExtraList(args_start, args_len);
+                    const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
                     const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
                     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), new_args.start, new_args.len, new_flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = old_node.span, .data = .{ .extra = new_extra } });
