@@ -982,3 +982,135 @@ test "ES5 downlevel: labeled non-for-of statement unchanged" {
     try std.testing.expect(std.mem.indexOf(u8, code, "LOOP:") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "break LOOP") != null);
 }
+
+// ================================================================
+// ES2022 top-level await (#1384)
+// ================================================================
+
+/// 모듈 모드로 파싱 (top-level await 허용).
+fn parseAsModuleAndTransform(allocator: std.mem.Allocator, source: []const u8, options: TransformOptions) !TestResult {
+    const scanner_ptr = try allocator.create(Scanner);
+    scanner_ptr.* = try Scanner.init(allocator, source);
+    scanner_ptr.is_module = true;
+
+    const parser_ptr = try allocator.create(Parser);
+    parser_ptr.* = Parser.init(allocator, scanner_ptr);
+    parser_ptr.is_module = true;
+
+    _ = try parser_ptr.parse();
+
+    var t = try Transformer.init(allocator, &parser_ptr.ast, options);
+    const root = try t.transform();
+    const moved_ast = t.ast;
+    t.deinitExceptAst();
+    return .{ .ast = moved_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+}
+
+test "TLA: es2022+ no-op (top_level_await supported)" {
+    // TLA 가 지원되는 타겟에서는 await 가 그대로 유지된다.
+    const source = "await foo();";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{} },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "async (") == null);
+}
+
+test "TLA: wraps top-level await in async IIFE when unsupported" {
+    // top_level_await 만 unsupported: `await` → `(async () => { await ... })()`
+    const source = "await foo(); console.log(x);";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // 본문 문 두 개가 async arrow IIFE 안으로 이동한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "async") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "console.log(x)") != null);
+    // bare yield 가 leak 되지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "yield") == null);
+}
+
+test "TLA: no top-level await → no wrapping" {
+    // TLA 가 없으면 wrap 을 적용하지 않는다 (불필요한 IIFE 생성 방지).
+    const source = "console.log(1);";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "async") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "console.log(1)") != null);
+}
+
+test "TLA: await inside async function is not wrapped" {
+    // 함수 안쪽의 await 는 TLA 가 아니므로 wrap 하지 않는다.
+    const source = "async function f() { await g(); }";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // top-level IIFE wrapper 를 추가하지 않았어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "(async () =>") == null);
+    // async function 자체는 유지.
+    try std.testing.expect(std.mem.indexOf(u8, code, "async function") != null);
+}
+
+test "TLA: import declarations are kept outside of wrapper" {
+    // ESM 규칙상 import 는 module top-level 에만 올 수 있으므로 IIFE 바깥으로 보존.
+    const source =
+        \\import { x } from "./x.js";
+        \\await x();
+    ;
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .top_level_await = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    const import_pos = std.mem.indexOf(u8, code, "import") orelse return error.ImportMissing;
+    const async_pos = std.mem.indexOf(u8, code, "async") orelse return error.AsyncMissing;
+    try std.testing.expect(import_pos < async_pos);
+}
+
+test "TLA: ES5 downlevel produces __async + __generator wrap, no bare yield" {
+    // target=es5 (async_await + top_level_await + generator 전부 unsupported) 에서
+    // bare yield leak 이 없어야 한다 (#1384 재현 케이스).
+    const source = "await Promise.resolve(1);";
+    var r = try parseAsModuleAndTransform(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{
+            .top_level_await = true,
+            .async_await = true,
+            .generator = true,
+            .arrow = true,
+        } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // __async 경로를 탔으므로 `yield` 자체는 남지 않고 state machine 으로 변환된다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__async") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "__generator") != null);
+    // bare yield 는 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, code, "yield ") == null);
+}

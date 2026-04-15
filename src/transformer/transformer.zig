@@ -48,6 +48,7 @@ const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_generator = @import("es2015_generator.zig");
 const es2025_using = @import("es2025_using.zig");
+const es2022_tla = @import("es2022_tla.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
@@ -598,6 +599,12 @@ pub const Transformer = struct {
             .program => {
                 // Plugin visitor 훅 선취권 (file-level worklet directive 등)
                 if (try self.dispatchVisitor(.on_program, idx)) |replacement| return replacement;
+                // ES2022 top-level await 다운레벨링: 미지원 타겟에서 async IIFE 로 wrap. (#1384)
+                if (self.options.unsupported.top_level_await) {
+                    if (try es2022_tla.lowerProgram(Transformer, self, node)) |wrapped| {
+                        return wrapped;
+                    }
+                }
                 return self.visitListNode(node);
             },
             .block_statement,
