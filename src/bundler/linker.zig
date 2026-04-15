@@ -1525,7 +1525,8 @@ pub const Linker = struct {
                         }
                     }
                 }
-                break :blk self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
+                // .local else-blk: eb.symbol은 semantic → ref 기반 조회와 등가.
+                break :blk self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
             };
 
             const safe_local = self.safeIdentifierName(actual_local, @intCast(mod_i));

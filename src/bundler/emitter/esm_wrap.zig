@@ -987,7 +987,10 @@ fn makeStarGetterValue(
             // scope-hoisted: export의 local_name을 찾아 canonical name으로 변환
             for (src_mod.export_bindings) |src_eb| {
                 if (std.mem.eql(u8, src_eb.exported_name, name)) {
-                    const local = l.getCanonicalName(src_i, src_eb.local_name) orelse src_eb.local_name;
+                    const local = if (src_eb.kind == .local)
+                        l.getCanonicalByRef(src_eb.symbol) orelse src_eb.local_name
+                    else
+                        l.getCanonicalName(src_i, src_eb.local_name) orelse src_eb.local_name;
                     return try allocator.dupe(u8, local);
                 }
             }
@@ -1010,7 +1013,10 @@ fn makeStarGetterValue(
                 // .none: canonical 로컬 변수
                 for (canonical_mod.export_bindings) |ceb| {
                     if (std.mem.eql(u8, ceb.exported_name, resolved.export_name)) {
-                        const local = l.getCanonicalName(canonical_mod_i, ceb.local_name) orelse ceb.local_name;
+                        const local = if (ceb.kind == .local)
+                            l.getCanonicalByRef(ceb.symbol) orelse ceb.local_name
+                        else
+                            l.getCanonicalName(canonical_mod_i, ceb.local_name) orelse ceb.local_name;
                         return try allocator.dupe(u8, local);
                     }
                 }
