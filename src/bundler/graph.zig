@@ -1697,11 +1697,20 @@ pub const ModuleGraph = struct {
                     return;
                 };
 
+                // RN scale variants (@2x, @3x): asset_registry 활성화 시에만 스캔.
+                // 기본 URL 출력 모드에서는 variant가 의미 없음 (런타임이 해석 안 함).
+                const scales_result = if (self.asset_registry != null)
+                    collectScaleVariants(arena_alloc, module.path, name_without_ext, ext, self.asset_names, dir) catch ScaleCollection{ .scales = &.{1}, .variants = &.{} }
+                else
+                    ScaleCollection{ .scales = &.{1}, .variants = &.{} };
+
                 module.asset_data = .{
                     .raw_content = raw,
                     .content_hash = hash,
                     .output_name = output_name,
                     .ext = ext,
+                    .scales = scales_result.scales,
+                    .scale_variants = scales_result.variants,
                 };
 
                 const url = if (self.public_path.len > 0)
@@ -1716,7 +1725,7 @@ pub const ModuleGraph = struct {
                     };
 
                 module.source = if (self.asset_registry) |registry_path|
-                    emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url) catch {
+                    emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales) catch {
                         module.state = .ready;
                         return;
                     }
@@ -1875,7 +1884,6 @@ fn applyAssetNamingPattern(
 
 /// Metro AssetRegistry.registerAsset() 호출식을 생성.
 /// RN 런타임은 이 객체의 키를 정확히 요구하므로 shape를 Metro 1:1로 맞춘다.
-/// 스코프 주의: scales는 MVP에서 [1]로 고정. @2x/@3x 자동 그룹화는 후속 작업.
 fn emitAssetRegistryCall(
     alloc: std.mem.Allocator,
     registry_path: []const u8,
@@ -1885,6 +1893,7 @@ fn emitAssetRegistryCall(
     ext: []const u8,
     name_without_ext: []const u8,
     url: []const u8,
+    scales: []const u32,
 ) ![]const u8 {
     const asset_meta = @import("asset_meta.zig");
     const dims = asset_meta.extractDimensions(bytes);
@@ -1893,13 +1902,21 @@ fn emitAssetRegistryCall(
     const asset_type = asset_meta.AssetType.fromExtension(ext);
     const type_name = asset_type.typeName(ext);
 
-    // httpServerLocation: url의 앞부분(파일명 제외). dev server가 제공하는 path.
     const http_loc = std.fs.path.dirname(url) orelse ".";
     const fs_dir = std.fs.path.dirname(abs_path) orelse ".";
 
-    // hash는 8바이트 이진 → 16자리 hex 문자열
     var hash_hex: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&hash_hex, "{x:0>16}", .{std.mem.readInt(u64, hash, .big)}) catch unreachable;
+
+    // scales 배열 직렬화
+    var scales_buf: std.ArrayList(u8) = .empty;
+    defer scales_buf.deinit(alloc);
+    try scales_buf.append(alloc, '[');
+    for (scales, 0..) |s, i| {
+        if (i > 0) try scales_buf.appendSlice(alloc, ", ");
+        try std.fmt.format(scales_buf.writer(alloc), "{d}", .{s});
+    }
+    try scales_buf.append(alloc, ']');
 
     return try std.fmt.allocPrint(alloc,
         \\module.exports = require("{s}").registerAsset({{
@@ -1907,13 +1924,65 @@ fn emitAssetRegistryCall(
         \\  "httpServerLocation": "{s}",
         \\  "width": {d},
         \\  "height": {d},
-        \\  "scales": [1],
+        \\  "scales": {s},
         \\  "hash": "{s}",
         \\  "name": "{s}",
         \\  "type": "{s}",
         \\  "fileSystemLocation": "{s}"
         \\}})
-    , .{ registry_path, http_loc, width, height, &hash_hex, name_without_ext, type_name, fs_dir });
+    , .{ registry_path, http_loc, width, height, scales_buf.items, &hash_hex, name_without_ext, type_name, fs_dir });
+}
+
+const ScaleCollection = struct {
+    scales: []const u32,
+    variants: []const Module.ScaleVariant,
+};
+
+/// `name.ext`의 sibling을 스캔해 `name@2x.ext`, `name@3x.ext` 등을 수집.
+/// Metro는 base(1x)가 반드시 존재해야 하며 variant만 있으면 매칭 안 함 — 같은 규칙.
+fn collectScaleVariants(
+    alloc: std.mem.Allocator,
+    abs_path: []const u8,
+    name_without_ext: []const u8,
+    ext: []const u8,
+    asset_names: []const u8,
+    dir_pattern: []const u8,
+) !ScaleCollection {
+    const fs_dir = std.fs.path.dirname(abs_path) orelse return ScaleCollection{ .scales = &.{1}, .variants = &.{} };
+
+    var scale_list: std.ArrayList(u32) = .empty;
+    defer scale_list.deinit(alloc);
+    try scale_list.append(alloc, 1); // base
+
+    var variants: std.ArrayList(Module.ScaleVariant) = .empty;
+    defer variants.deinit(alloc);
+
+    // @2x부터 @4x까지 검사 (RN 실전 최대치). @1x 명시는 base와 중복이므로 무시.
+    var scale: u32 = 2;
+    while (scale <= 4) : (scale += 1) {
+        const variant_name = try std.fmt.allocPrint(alloc, "{s}@{d}x{s}", .{ name_without_ext, scale, ext });
+        defer alloc.free(variant_name);
+        const variant_path = try std.fs.path.join(alloc, &.{ fs_dir, variant_name });
+        defer alloc.free(variant_path);
+
+        const raw = std.fs.cwd().readFileAlloc(alloc, variant_path, 100 * 1024 * 1024) catch continue;
+        const hash = contentHash(raw);
+        const variant_basename = try std.fmt.allocPrint(alloc, "{s}@{d}x", .{ name_without_ext, scale });
+        defer alloc.free(variant_basename);
+        const output_name = try applyAssetNamingPattern(alloc, asset_names, variant_basename, &hash, ext, dir_pattern);
+
+        try scale_list.append(alloc, scale);
+        try variants.append(alloc, .{
+            .scale = scale,
+            .output_name = output_name,
+            .raw_content = raw,
+        });
+    }
+
+    return ScaleCollection{
+        .scales = try scale_list.toOwnedSlice(alloc),
+        .variants = try variants.toOwnedSlice(alloc),
+    };
 }
 
 /// asset 파일의 entry_dir 기준 상대 디렉토리 경로를 계산한다.

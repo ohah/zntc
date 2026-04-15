@@ -946,11 +946,13 @@ pub const Bundler = struct {
             break :blk paths;
         } else null;
 
-        // 5.5. Asset 파일 수집 (file/copy 로더 — 출력 디렉토리에 복사할 파일들)
+        // 5.5. Asset 파일 수집 (file/copy 로더 — 출력 디렉토리에 복사할 파일들).
+        // scale_variants가 있으면 base + @2x/@3x 각각 별개 OutputFile로 emit해서
+        // RN 런타임이 해상도별 파일을 로드할 수 있게 한다.
         const asset_outputs: ?[]OutputFile = blk: {
             var asset_count: usize = 0;
             for (graph.modules.items) |m| {
-                if (m.asset_data != null) asset_count += 1;
+                if (m.asset_data) |ad| asset_count += 1 + ad.scale_variants.len;
             }
             if (asset_count == 0) break :blk null;
 
@@ -964,6 +966,13 @@ pub const Bundler = struct {
                         .contents = try self.allocator.dupe(u8, ad.raw_content),
                     };
                     idx += 1;
+                    for (ad.scale_variants) |v| {
+                        outs[idx] = .{
+                            .path = try self.allocator.dupe(u8, v.output_name),
+                            .contents = try self.allocator.dupe(u8, v.raw_content),
+                        };
+                        idx += 1;
+                    }
                 }
             }
             break :blk outs;

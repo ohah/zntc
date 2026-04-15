@@ -106,6 +106,65 @@ describe("--asset-registry", () => {
     }
   });
 
+  test("@2x/@3x sibling 자동 감지 → scales 배열 + variant 파일 emit", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import logo from "./assets/logo.png"; console.log(logo);`,
+      "assets/.gitkeep": "",
+    });
+    writeFileSync(join(dir, "assets/logo.png"), PNG_1x1);
+    writeFileSync(join(dir, "assets/logo@2x.png"), PNG_1x1);
+    writeFileSync(join(dir, "assets/logo@3x.png"), PNG_1x1);
+
+    const outDir = join(dir, "dist");
+    const outFile = join(outDir, "bundle.js");
+    try {
+      const { exitCode } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--platform=react-native",
+        "--loader:.png=file",
+      ]);
+      expect(exitCode).toBe(0);
+      const bundle = readFileSync(outFile, "utf8");
+      // scales 배열에 1, 2, 3 모두 포함
+      expect(bundle).toContain('"scales": [1, 2, 3]');
+
+      // variant 파일들이 출력 디렉토리에 각각 생성됨
+      const { readdirSync } = await import("node:fs");
+      const files = readdirSync(outDir);
+      const variantFiles = files.filter((f) => f.includes("@2x") || f.includes("@3x"));
+      expect(variantFiles.length).toBe(2);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("variant 없이 base만 있으면 scales=[1]", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
+    });
+    writeFileSync(join(dir, "logo.png"), PNG_1x1);
+
+    const outFile = join(dir, "out.js");
+    try {
+      const { exitCode } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--platform=react-native",
+        "--loader:.png=file",
+      ]);
+      expect(exitCode).toBe(0);
+      const bundle = readFileSync(outFile, "utf8");
+      expect(bundle).toContain('"scales": [1]');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test("비-RN 플랫폼 + registry 미지정 → 일반 URL 문자열 (기존 동작 유지)", async () => {
     const { dir, cleanup } = await createFixture({
       "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
