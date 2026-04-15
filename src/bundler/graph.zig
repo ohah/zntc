@@ -769,12 +769,15 @@ pub const ModuleGraph = struct {
             // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
             module.ensureAliasTable(self.allocator);
             if (module.semantic) |*sem| {
+                const scope0: ?std.StringHashMap(usize) =
+                    if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
                 binding_scanner_mod.populateSyntheticSymbols(
                     &module.alias_table.?,
                     module.index,
                     module.export_bindings,
                     &sem.symbols,
                     arena_alloc,
+                    scope0,
                 ) catch {};
             }
 
@@ -1045,12 +1048,15 @@ pub const ModuleGraph = struct {
             // + semantic 공간에 synthetic_default 등록.
             module.ensureAliasTable(self.allocator);
             if (module.semantic) |*sem| {
+                const scope0: ?std.StringHashMap(usize) =
+                    if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
                 binding_scanner_mod.populateSyntheticSymbols(
                     &module.alias_table.?,
                     module.index,
                     module.export_bindings,
                     &sem.symbols,
                     arena_alloc,
+                    scope0,
                 ) catch {};
             }
 

@@ -335,7 +335,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
     const idx = findDefaultSymbol(sem_syms.items) orelse return error.NotFound;
     try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
 }
@@ -353,7 +353,7 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
     try std.testing.expectEqual(@as(?usize, null), findDefaultSymbol(sem_syms.items));
 }
 
@@ -370,7 +370,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
     try std.testing.expectEqual(@as(u32, 0), table.count());
     try std.testing.expectEqual(@as(usize, 0), sem_syms.items.len);
 }
@@ -389,7 +389,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     defer sem_syms.deinit(alloc);
 
     const m: types.ModuleIndex = @enumFromInt(7);
-    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc, null);
 
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
     try std.testing.expectEqual(m, r.export_bindings[0].symbol.moduleIndex());
@@ -417,7 +417,7 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null);
 
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());
 }
