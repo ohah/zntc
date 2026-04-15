@@ -903,10 +903,11 @@ pub fn computeAllUsedNames(
             const target_i: u32 = @intFromEnum(target);
             const gop = try reverse_map.getOrPut(allocator, target_i);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
+            const ieb_local = importer.exportBindingLocalName(ieb);
             try gop.value_ptr.append(allocator, .{
                 .importer_module_index = imp_i,
-                .imported_name = ieb.local_name,
-                .local_name = ieb.local_name,
+                .imported_name = ieb_local,
+                .local_name = ieb_local,
                 .exported_name = ieb.exported_name,
                 .kind = switch (ieb.kind) {
                     .re_export_star => .re_export_star,
@@ -993,11 +994,12 @@ pub fn computeAllUsedNames(
                 if (is_dead) continue;
             }
 
-            names_buf.append(allocator, eb.local_name) catch {
+            const eb_local = m.exportBindingLocalName(eb);
+            names_buf.append(allocator, eb_local) catch {
                 all_used = true;
                 break;
             };
-            if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
+            if (!std.mem.eql(u8, eb.exported_name, eb_local)) {
                 names_buf.append(allocator, eb.exported_name) catch {
                     all_used = true;
                     break;
