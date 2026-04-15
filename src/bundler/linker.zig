@@ -299,7 +299,7 @@ pub const Linker = struct {
         // 단순 그래프(re-export 없음)에서는 캐시 오버헤드가 이득보다 크므로 비활성.
         for (self.modules) |m| {
             for (m.export_bindings) |eb| {
-                if (eb.kind == .re_export or eb.kind == .re_export_all) {
+                if (eb.kind == .re_export or eb.kind.isReExportAll()) {
                     self.chain_cache_enabled = true;
                     break;
                 }
@@ -1112,7 +1112,7 @@ pub const Linker = struct {
         // 2. export * 확인 (re_export_all)
         const m = self.modules[mod_i];
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export_all) continue;
+            if (!eb.kind.isReExportAll()) continue;
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
@@ -1420,7 +1420,7 @@ pub const Linker = struct {
         var ns_re_exports = std.StringHashMap(u32).init(self.allocator); // exported_name → source_mod
         defer ns_re_exports.deinit();
         for (target.export_bindings) |eb| {
-            if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+            if (eb.kind == .re_export_namespace) {
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < target.import_records.len) {
                         const src = target.import_records[rec_idx].resolved;
@@ -1512,11 +1512,11 @@ pub const Linker = struct {
         for (m.export_bindings) |eb| {
             // 일반 export * from (exported_name == "*") → 재귀로 처리 (skip)
             // export * as ns (exported_name != "*") → named export로 포함
-            if (eb.kind == .re_export_all and std.mem.eql(u8, eb.exported_name, "*")) continue;
+            if (eb.kind == .re_export_star) continue;
             if (seen.contains(eb.exported_name)) continue;
             try seen.put(eb.exported_name, {});
 
-            const actual_local = if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) blk: {
+            const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 // export * as ns — 소스 모듈의 인라인 객체를 생성 (재귀)
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
@@ -1533,7 +1533,7 @@ pub const Linker = struct {
                     const cmod_i = @intFromEnum(canonical.module_index);
                     if (cmod_i < self.modules.len) {
                         for (self.modules[cmod_i].export_bindings) |ceb| {
-                            if (ceb.kind == .re_export_all and
+                            if (ceb.kind.isReExportAll() and
                                 std.mem.eql(u8, ceb.exported_name, canonical.export_name) and
                                 !std.mem.eql(u8, ceb.exported_name, "*"))
                             {
@@ -1582,7 +1582,7 @@ pub const Linker = struct {
         // 직접 선언된 export { default }는 위 첫 루프에서 이미 수집됨.
         try seen.put("default", {});
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export_all) continue;
+            if (!eb.kind.isReExportAll()) continue;
             if (!std.mem.eql(u8, eb.exported_name, "*")) continue; // export * as ns는 skip
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {

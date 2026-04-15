@@ -56,11 +56,12 @@ pub const ScanImportBinding = struct {
     import_record_index: u32,
 };
 
-/// export 바인딩 종류.
+/// export 바인딩 종류. bundler ExportBinding.Kind와 1:1 (intCast 대응 유지).
 pub const ExportBindingKind = enum {
     local,
     re_export,
-    re_export_all,
+    re_export_star,
+    re_export_namespace,
 };
 
 /// 파서가 수집하는 export 바인딩. bundler ExportBinding의 경량 버전.

@@ -638,7 +638,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     .exported_name = name_text,
                     .local_name = name_text,
                     .local_span = .{ .start = start, .end = self.currentSpan().start },
-                    .kind = .re_export_all,
+                    .kind = .re_export_namespace,
                     .import_record_index = rec_idx,
                 }) catch {};
             } else {
@@ -647,7 +647,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     .exported_name = "*",
                     .local_name = "*",
                     .local_span = .{ .start = start, .end = self.currentSpan().start },
-                    .kind = .re_export_all,
+                    .kind = .re_export_star,
                     .import_record_index = rec_idx,
                 }) catch {};
             }

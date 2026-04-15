@@ -378,7 +378,7 @@ pub fn buildMetadataForAst(
                     const cmod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     if (cmod < self.modules.len) {
                         for (self.modules[cmod].export_bindings) |eb| {
-                            if (eb.kind == .re_export_all and
+                            if (eb.kind.isReExportAll() and
                                 std.mem.eql(u8, eb.exported_name, rb.canonical.export_name) and
                                 !std.mem.eql(u8, eb.exported_name, "*"))
                             {
@@ -696,7 +696,7 @@ pub fn buildFinalExports(
     try buf.appendSlice(self.allocator, "export {");
     var first = true;
     for (export_bindings) |eb| {
-        if (eb.kind == .re_export_all) continue;
+        if (eb.kind.isReExportAll()) continue;
         if (std.mem.eql(u8, eb.exported_name, "*")) continue;
         if (!first) try buf.appendSlice(self.allocator, ",");
         first = false;
@@ -998,7 +998,7 @@ pub fn buildDevMetadataForAst(
         defer buf.deinit(self.allocator);
 
         for (m.export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
+            if (eb.kind.isReExportAll()) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
             // exports.name = local_name;
@@ -1186,7 +1186,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         try buf.appendSlice(self.allocator, "export {");
         var first = true;
         for (m.export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
+            if (eb.kind.isReExportAll()) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
             if (!first) try buf.appendSlice(self.allocator, ",");
