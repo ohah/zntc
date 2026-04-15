@@ -9,6 +9,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const import_scanner = @import("import_scanner.zig");
 const symbol = @import("symbol.zig");
+const semantic_symbol = @import("../semantic/symbol.zig");
 
 // ============================================================
 // Tests
@@ -313,9 +314,16 @@ test "barrel re-export: mixed local and re-export" {
 
 // #1328 Phase 1: synthetic symbol population
 
+fn findDefaultSymbol(syms: []const semantic_symbol.Symbol) ?usize {
+    for (syms, 0..) |s, i| {
+        const sk = s.synthetic_kind orelse continue;
+        if (sk == .default_export) return i;
+    }
+    return null;
+}
+
 test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var 재사용은 제외)" {
     const alloc = std.testing.allocator;
-    // 리터럴 `export default 42` — codegen이 실제로 `_default = 42` emit.
     var r = try parseAndExtractBindings(alloc, "export default 42;");
     defer r.arena.deinit();
     defer alloc.free(r.import_bindings);
@@ -324,15 +332,16 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
 
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
-    const id = table.find("_default") orelse return error.NotFound;
-    try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(id));
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    const idx = findDefaultSymbol(sem_syms.items) orelse return error.NotFound;
+    try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
 }
 
 test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미등록" {
     const alloc = std.testing.allocator;
-    // codegen이 x를 재사용하고 `_default` 변수를 만들지 않으므로 등록하지 않는다.
     var r = try parseAndExtractBindings(alloc, "const x = 1; export default x;");
     defer r.arena.deinit();
     defer alloc.free(r.import_bindings);
@@ -341,9 +350,11 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
 
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
-    try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
+    try std.testing.expectEqual(@as(?usize, null), findDefaultSymbol(sem_syms.items));
 }
 
 test "populateSyntheticSymbols: default 없으면 빈 테이블" {
@@ -356,10 +367,12 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
 
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
     try std.testing.expectEqual(@as(u32, 0), table.count());
-    try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
+    try std.testing.expectEqual(@as(usize, 0), sem_syms.items.len);
 }
 
 test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
@@ -372,19 +385,22 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
 
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(alloc);
 
     const m: types.ModuleIndex = @enumFromInt(7);
-    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc);
 
-    // default export가 bundler ref로 채워졌는지
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
     try std.testing.expectEqual(m, r.export_bindings[0].symbol.moduleIndex());
     switch (r.export_bindings[0].symbol) {
-        .bundler => |b| {
-            try std.testing.expectEqualStrings("_default", table.getName(b.symbol));
-            try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(b.symbol));
+        .bundler => return error.UnexpectedSpace,
+        .semantic => |s| {
+            const idx: u32 = @intFromEnum(s.symbol);
+            try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
+            const sk = sem_syms.items[idx].synthetic_kind orelse return error.NoSyntheticKind;
+            try std.testing.expectEqual(semantic_symbol.SyntheticKind.default_export, sk);
         },
-        .semantic => return error.UnexpectedSpace,
     }
 }
 
@@ -398,9 +414,10 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
 
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
+    var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc);
 
-    // 일반 named export는 Phase 2에선 아직 미연결 (Phase 3에서 semantic 심볼과 연결)
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());
 }
