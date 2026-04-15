@@ -561,7 +561,7 @@ pub fn buildMetadataForAst(
             break;
         }
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-            default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+            default_export_name = self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
             break;
         }
     }
@@ -700,7 +700,12 @@ pub fn buildFinalExports(
         if (std.mem.eql(u8, eb.exported_name, "*")) continue;
         if (!first) try buf.appendSlice(self.allocator, ",");
         first = false;
-        const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+        // .local: eb.symbol(semantic)로 ref 기반 조회, 외: 기존 문자열 경로 유지
+        // (re_export alias는 chain-resolve된 canonical을 쓰므로 final exports 의미가 달라짐).
+        const actual_name = if (eb.kind == .local)
+            self.getCanonicalByRef(eb.symbol) orelse eb.local_name
+        else
+            self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
         try buf.append(self.allocator, ' ');
         try buf.appendSlice(self.allocator, actual_name);
         if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
@@ -1193,7 +1198,11 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             first = false;
 
             // canonical 이름 (리네임됐으면 변경된 이름)
-            const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+            // .local은 semantic ref, 그 외는 기존 문자열 경로 유지.
+            const actual_name = if (eb.kind == .local)
+                self.getCanonicalByRef(eb.symbol) orelse eb.local_name
+            else
+                self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
 
             try buf.append(self.allocator, ' ');
             try buf.appendSlice(self.allocator, actual_name);
