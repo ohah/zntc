@@ -28,27 +28,26 @@ pub const AliasId = enum(u32) {
     }
 };
 
-/// Cross-module 심볼 참조. semantic 선언/합성 vs bundler alias 공간을 구분.
-/// 4e-2d-c에서 union 평탄화 예정.
+/// Cross-module 심볼 참조. semantic 선언/합성 vs re-export alias 공간을 구분.
 pub const SymbolRef = union(enum) {
     /// semantic이 소유한 선언/합성 심볼
     semantic: struct { module: ModuleIndex, symbol: SemanticSymbolId },
-    /// bundler alias (re-export chain)
-    bundler: struct { module: ModuleIndex, symbol: AliasId },
+    /// Cross-module re-export alias (값 없는 redirect)
+    alias: struct { module: ModuleIndex, symbol: AliasId },
 
-    pub const invalid: SymbolRef = .{ .bundler = .{ .module = .none, .symbol = .none } };
+    pub const invalid: SymbolRef = .{ .alias = .{ .module = .none, .symbol = .none } };
 
     pub fn isValid(self: SymbolRef) bool {
         return switch (self) {
             .semantic => |s| !s.module.isNone() and !s.symbol.isNone(),
-            .bundler => |b| !b.module.isNone() and !b.symbol.isNone(),
+            .alias => |b| !b.module.isNone() and !b.symbol.isNone(),
         };
     }
 
     pub fn moduleIndex(self: SymbolRef) ModuleIndex {
         return switch (self) {
             .semantic => |s| s.module,
-            .bundler => |b| b.module,
+            .alias => |b| b.module,
         };
     }
 
@@ -56,10 +55,10 @@ pub const SymbolRef = union(enum) {
         return switch (a) {
             .semantic => |sa| switch (b) {
                 .semantic => |sb| sa.module == sb.module and sa.symbol == sb.symbol,
-                .bundler => false,
+                .alias => false,
             },
-            .bundler => |ba| switch (b) {
-                .bundler => |bb| ba.module == bb.module and ba.symbol == bb.symbol,
+            .alias => |ba| switch (b) {
+                .alias => |bb| ba.module == bb.module and ba.symbol == bb.symbol,
                 .semantic => false,
             },
         };
@@ -161,12 +160,12 @@ test "AliasTable: ref_count" {
     try std.testing.expectEqual(@as(u32, 2), t.getRefCount(id));
 }
 
-test "SymbolRef: semantic vs bundler 공간 구분" {
+test "SymbolRef: semantic vs alias 공간 구분" {
     const sem: SymbolRef = .{ .semantic = .{
         .module = @enumFromInt(1),
         .symbol = @enumFromInt(2),
     } };
-    const bnd: SymbolRef = .{ .bundler = .{
+    const bnd: SymbolRef = .{ .alias = .{
         .module = @enumFromInt(1),
         .symbol = @enumFromInt(2),
     } };
