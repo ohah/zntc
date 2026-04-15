@@ -71,7 +71,11 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
         if (key_node.tag != .string_literal) continue;
 
         const key_span = key_node.span;
-        const key_text = ast.source[key_span.start + 1 .. key_span.end - 1];
+        // JSON은 파서가 읽은 원문이라 합성 노드 아님 — string_table 참조일 수 없음.
+        // getText 경유 후 quote strip.
+        const key_raw = ast.getText(key_span);
+        if (key_raw.len < 2) continue;
+        const key_text = key_raw[1 .. key_raw.len - 1];
         if (!isValidIdentifier(key_text)) continue;
 
         const inner_span = Span{ .start = key_span.start + 1, .end = key_span.end - 1 };

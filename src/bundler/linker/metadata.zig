@@ -488,7 +488,7 @@ pub fn buildMetadataForAst(
                     if (source_idx.isNone()) continue;
                     const src_node = ast.getNode(source_idx);
                     if (src_node.tag != .string_literal) continue;
-                    const raw = ast.source[src_node.data.string_ref.start..src_node.data.string_ref.end];
+                    const raw = ast.getText(src_node.data.string_ref);
                     const spec = Ast.stripStringQuotes(raw);
                     if (hoisted_specifiers.contains(spec)) {
                         skip_nodes.set(inode_idx);

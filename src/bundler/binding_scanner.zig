@@ -170,7 +170,7 @@ pub fn extractImportBindings(
             const spec_node = ast.getNode(spec);
             switch (spec_node.tag) {
                 .import_default_specifier => {
-                    const name = ast.source[spec_node.span.start..spec_node.span.end];
+                    const name = ast.getText(spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .default,
                         .local_name = name,
@@ -180,7 +180,7 @@ pub fn extractImportBindings(
                     });
                 },
                 .import_namespace_specifier => {
-                    const name = ast.source[spec_node.span.start..spec_node.span.end];
+                    const name = ast.getText(spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .namespace,
                         .local_name = name,
@@ -198,13 +198,13 @@ pub fn extractImportBindings(
                     if (imported_idx.isNone()) continue;
 
                     const imported_node = ast.getNode(imported_idx);
-                    const imported_name = ast.source[imported_node.span.start..imported_node.span.end];
+                    const imported_name = ast.getText(imported_node.span);
 
                     const local_node = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
                         ast.getNode(local_idx)
                     else
                         imported_node;
-                    const local_name = ast.source[local_node.span.start..local_node.span.end];
+                    const local_name = ast.getText(local_node.span);
 
                     try bindings.append(allocator, .{
                         .kind = .named,
@@ -303,13 +303,13 @@ pub fn extractExportBindings(
                         if (local_idx.isNone()) continue;
 
                         const local_node = ast.getNode(local_idx);
-                        const local_name = ast.source[local_node.span.start..local_node.span.end];
+                        const local_name = ast.getText(local_node.span);
 
                         const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
                             ast.getNode(exported_idx)
                         else
                             local_node;
-                        const exported_name = ast.source[exported_node.span.start..exported_node.span.end];
+                        const exported_name = ast.getText(exported_node.span);
 
                         // Rolldown 방식: from 절이 없어도 local_name이 import binding이면
                         // barrel re-export로 분류 (import { X } from './a'; export { X })
@@ -355,7 +355,7 @@ pub fn extractExportBindings(
                             const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
                             if (!name_idx.isNone()) {
                                 const name_node = ast.getNode(name_idx);
-                                local_name = ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                                local_name = ast.getText(name_node.data.string_ref);
                             }
                         }
                     } else if (inner.tag == .identifier_reference) {
@@ -396,7 +396,7 @@ pub fn extractExportBindings(
                     // export * as ns from './mod' — namespace re-export
                     // exported_name = "ns", local_name = "ns" (preamble에서 var ns = {...} 생성)
                     const name_node = ast.getNode(exported_name_idx);
-                    const name_text = ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                    const name_text = ast.getText(name_node.data.string_ref);
                     try bindings.append(allocator, .{
                         .exported_name = name_text,
                         .local_name = name_text,
@@ -461,7 +461,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
                     try extractObjectPatternNames(&names, allocator, ast, name_node);
                 } else {
                     try names.append(allocator, .{
-                        .name = ast.source[name_node.span.start..name_node.span.end],
+                        .name = ast.getText(name_node.span),
                         .span = name_node.span,
                     });
                 }
@@ -474,7 +474,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             if (name_idx.isNone()) return names.toOwnedSlice(allocator);
             const name_node = ast.getNode(name_idx);
             try names.append(allocator, .{
-                .name = ast.source[name_node.span.start..name_node.span.end],
+                .name = ast.getText(name_node.span),
                 .span = name_node.span,
             });
         },
@@ -485,7 +485,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             if (name_idx.isNone()) return names.toOwnedSlice(allocator);
             const name_node = ast.getNode(name_idx);
             try names.append(allocator, .{
-                .name = ast.source[name_node.span.start..name_node.span.end],
+                .name = ast.getText(name_node.span),
                 .span = name_node.span,
             });
         },
@@ -517,7 +517,7 @@ fn extractObjectPatternNames(
                 // shorthand { X } → left == right (같은 노드), exported_name = "X"
                 // rename { X: Y } → left=key "X", right=value "Y", exported_name = key
                 const key = ast.getNode(prop.data.binary.left);
-                const exported_name = ast.source[key.span.start..key.span.end];
+                const exported_name = ast.getText(key.span);
                 try names.append(allocator, .{
                     .name = exported_name,
                     .span = key.span,
