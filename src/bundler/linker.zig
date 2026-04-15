@@ -1283,6 +1283,21 @@ pub const Linker = struct {
                     ib.symbol = eb.symbol;
                 }
             }
+
+            // .local export 중 binding_scanner가 채우지 않은(`_default` 합성/`re_export`
+            // 외) 일반 케이스의 eb.symbol을 scope_maps[0] 조회로 채움.
+            if (module_scope_opt) |module_scope| {
+                for (importer.export_bindings) |*eb| {
+                    if (eb.kind != .local) continue;
+                    if (eb.symbol.isValid()) continue; // 이미 채워짐
+                    if (module_scope.get(eb.local_name)) |sym_idx| {
+                        eb.symbol = .{ .semantic = .{
+                            .module = mod_idx,
+                            .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+                        } };
+                    }
+                }
+            }
         }
     }
 
