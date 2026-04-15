@@ -22,6 +22,7 @@ const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
+const bundler_symbol = @import("symbol.zig");
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -864,6 +865,31 @@ pub const Linker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, module_index, name);
         return self.canonical_names.get(key);
+    }
+
+    /// SymbolRef 기반 canonical name 조회 facade. #1338 Phase 4c-3.
+    /// alias: AliasTable이 이미 canonical_name을 소유 → 직접 반환.
+    /// semantic: 심볼 이름 추출 후 기존 string 기반 canonical_names 조회
+    ///   (4c-3 후속에서 semantic.Symbol에 canonical_name 필드 이전 예정).
+    /// 리네임 안 됐으면 null — caller가 원본 이름으로 fallback.
+    pub fn getCanonicalByRef(self: *const Linker, ref: bundler_symbol.SymbolRef) ?[]const u8 {
+        if (!ref.isValid()) return null;
+        const mod_i = @intFromEnum(ref.moduleIndex());
+        if (mod_i >= self.modules.len) return null;
+        const m = &self.modules[mod_i];
+        switch (ref) {
+            .alias => |a| {
+                const t = if (m.alias_table) |*at| at else return null;
+                return if (t.hasCanonicalName(a.symbol)) t.getCanonicalName(a.symbol) else null;
+            },
+            .semantic => |s| {
+                const sem = m.semantic orelse return null;
+                const idx: u32 = @intFromEnum(s.symbol);
+                if (idx >= sem.symbols.items.len) return null;
+                const name = sem.symbols.items[idx].nameText(m.source);
+                return self.getCanonicalName(mod_i, name);
+            },
+        }
     }
 
     // ================================================================

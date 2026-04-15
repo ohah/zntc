@@ -1382,3 +1382,33 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
     if (!found_default) return error.DefaultNotRegistered;
     try std.testing.expectEqual(@as(u32, 0), found_ref);
 }
+
+// #1338 Phase 4c-3: SymbolRef 기반 canonical name facade
+test "getCanonicalByRef: alias symbol의 canonical_name 반환" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export { default as Foo } from './b';");
+    try writeFile(tmp.dir, "b.ts", "export default 42;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    r.linker.populateReExportAliases(r.graph.modules.items);
+    r.linker.populateImportSymbols(r.graph.modules.items);
+
+    // a.ts의 barrel re-export alias symbol 찾기
+    const a = &r.graph.modules.items[0];
+    var alias_ref: ?@import("symbol.zig").SymbolRef = null;
+    for (a.export_bindings) |eb| {
+        if (eb.kind == .re_export and std.mem.eql(u8, eb.exported_name, "Foo")) {
+            alias_ref = eb.symbol;
+            break;
+        }
+    }
+    const ref = alias_ref orelse return error.AliasNotFound;
+    // alias는 canonical_name이 resolve된 상태 — facade가 non-null 반환해야 함
+    const name = r.linker.getCanonicalByRef(ref) orelse return error.NoCanonical;
+    try std.testing.expect(name.len > 0);
+}
