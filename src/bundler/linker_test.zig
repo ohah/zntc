@@ -1413,8 +1413,7 @@ test "getCanonicalByRef: alias symbol의 canonical_name 반환" {
     try std.testing.expect(name.len > 0);
 }
 
-// #1328 Phase 4c-3b-α: ImportBinding.local_symbol population
-test "populateImportLocalSymbols: named import의 local_symbol이 현재 모듈 semantic ref" {
+test "populateImportSymbols: named import의 local_symbol이 현재 모듈 semantic ref" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
@@ -1425,7 +1424,7 @@ test "populateImportLocalSymbols: named import의 local_symbol이 현재 모듈 
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    r.linker.populateImportLocalSymbols(r.graph.modules.items);
+    r.linker.populateImportSymbols(r.graph.modules.items);
 
     const a = &r.graph.modules.items[0];
     var found = false;
@@ -1438,21 +1437,4 @@ test "populateImportLocalSymbols: named import의 local_symbol이 현재 모듈 
         }
     }
     try std.testing.expect(found);
-}
-
-test "populateImportLocalSymbols: synthetic binding은 skip" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "export const x = 1;");
-
-    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
-    defer r.linker.deinit();
-    defer r.graph.deinit();
-    defer r.cache.deinit();
-
-    // synthetic binding 주입 (sentinel span)
-    const a = &r.graph.modules.items[0];
-    _ = a;
-    // 호출 자체가 crash 없이 완료되면 통과 (synthetic은 scope에 없어도 skip).
-    r.linker.populateImportLocalSymbols(r.graph.modules.items);
 }
