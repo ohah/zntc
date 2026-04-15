@@ -189,7 +189,7 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
     const arg_node = ast.getNode(arg_idx);
     if (arg_node.tag != .string_literal) return null;
 
-    const specifier = stripQuotes(ast.source[arg_node.span.start..arg_node.span.end]) orelse return null;
+    const specifier = stripQuotes(ast.getText(arg_node.span)) orelse return null;
 
     return .{
         .specifier = specifier,
@@ -289,7 +289,7 @@ fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     const node = ast.getNode(idx);
     if (node.tag != .string_literal) return null;
 
-    return stripQuotes(ast.source[node.span.start..node.span.end]);
+    return stripQuotes(ast.getText(node.span));
 }
 
 /// new Worker(new URL('./worker.ts', import.meta.url)) 패턴 감지.
@@ -449,7 +449,7 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
 
     // property: "glob"
     const prop = ast.getNode(prop_idx);
-    const prop_name = ast.source[prop.span.start..prop.span.end];
+    const prop_name = ast.getText(prop.span);
     if (!std.mem.eql(u8, prop_name, "glob")) return null;
 
     // args[0]: string_literal (패턴)
@@ -459,7 +459,7 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
     const arg0 = ast.getNode(arg0_idx);
     if (arg0.tag != .string_literal) return null;
 
-    const pattern = stripQuotes(ast.source[arg0.span.start..arg0.span.end]) orelse return null;
+    const pattern = stripQuotes(ast.getText(arg0.span)) orelse return null;
 
     const opts = parseGlobOptions(ast.nodes.items, ast.extra_data.items, ast.source, extras, args_start, args_len);
 
