@@ -851,11 +851,12 @@ pub const Linker = struct {
     }
 
     /// export의 실제 local_name을 조회. default export에서 "default" → "greet" 등.
+    /// #1338 Phase 4c-1: linker.export_map 해시 대신 Module 레지스트리 사용.
+    /// 모듈당 export 선형 스캔 (< 20개 수준).
     pub fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
-        var key_buf: [4096]u8 = undefined;
-        const key = makeExportKeyBuf(&key_buf, module_index, exported_name);
-        const entry = self.export_map.get(key) orelse return null;
-        return entry.binding.local_name;
+        if (module_index >= self.modules.len) return null;
+        const eb = self.modules[module_index].findExportBinding(exported_name) orelse return null;
+        return eb.local_name;
     }
 
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
