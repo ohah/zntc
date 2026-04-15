@@ -99,6 +99,11 @@ pub const ExportBinding = struct {
         pub fn isReExportAll(self: Kind) bool {
             return self == .re_export_star or self == .re_export_namespace;
         }
+
+        /// `.re_export` + `.re_export_*` 모두 포함 — 임의의 cross-module re-export.
+        pub fn isAnyReExport(self: Kind) bool {
+            return self == .re_export or self == .re_export_star or self == .re_export_namespace;
+        }
     };
 
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
