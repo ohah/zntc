@@ -15,8 +15,10 @@ const ModuleType = types.ModuleType;
 const ImportRecord = types.ImportRecord;
 const Ast = @import("../parser/ast.zig").Ast;
 const Span = @import("../lexer/token.zig").Span;
-const Symbol = @import("../semantic/symbol.zig").Symbol;
-const RefScopePair = @import("../semantic/symbol.zig").RefScopePair;
+const semantic_symbol = @import("../semantic/symbol.zig");
+const Symbol = semantic_symbol.Symbol;
+const RefScopePair = semantic_symbol.RefScopePair;
+const SemanticSymbolId = semantic_symbol.SymbolId;
 const Scope = @import("../semantic/scope.zig").Scope;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
@@ -85,12 +87,11 @@ pub const Module = struct {
     /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
     symbol_table: ?SymbolTable = null,
 
-    /// #1338 Phase 4e-2c: wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id
-    /// (semantic 공간). null = 미래핑 모듈 또는 semantic 없음 (fallback emit).
-    /// 이름은 `semantic.symbols[id].synthetic_name`.
-    init_symbol: ?@import("../semantic/symbol.zig").SymbolId = null,
-    /// #1338 Phase 4e-2c: wrap_kind != .none 모듈의 `exports_<path>` 객체 심볼 id.
-    exports_symbol: ?@import("../semantic/symbol.zig").SymbolId = null,
+    /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
+    /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).
+    init_symbol: ?SemanticSymbolId = null,
+    /// wrap_kind != .none 모듈의 `exports_<path>` 객체 심볼 id.
+    exports_symbol: ?SemanticSymbolId = null,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -169,10 +170,10 @@ pub const Module = struct {
         ready,
     };
 
-    /// wrap 모듈의 `init_<path>` 이름을 반환. 미등록/미래핑이면 null.
+    /// 등록된 합성 심볼의 이름(synthetic_name)을 반환. 미등록이면 null.
     /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
-    pub fn getInitName(self: *const Module) ?[]const u8 {
-        const id = self.init_symbol orelse return null;
+    fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId) ?[]const u8 {
+        const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;
         const idx: u32 = @intFromEnum(id);
         if (idx >= sem.symbols.items.len) return null;
@@ -180,14 +181,12 @@ pub const Module = struct {
         return if (name.len > 0) name else null;
     }
 
-    /// wrap 모듈의 `exports_<path>` 이름을 반환. 미등록/미래핑이면 null.
+    pub fn getInitName(self: *const Module) ?[]const u8 {
+        return self.syntheticName(self.init_symbol);
+    }
+
     pub fn getExportsName(self: *const Module) ?[]const u8 {
-        const id = self.exports_symbol orelse return null;
-        const sem = self.semantic orelse return null;
-        const idx: u32 = @intFromEnum(id);
-        if (idx >= sem.symbols.items.len) return null;
-        const name = sem.symbols.items[idx].synthetic_name;
-        return if (name.len > 0) name else null;
+        return self.syntheticName(self.exports_symbol);
     }
 
     /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.
@@ -197,7 +196,6 @@ pub const Module = struct {
         return types.makeInitVarName(allocator, self.path);
     }
 
-    /// `getExportsName()`의 할당 버전.
     pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
         if (self.getExportsName()) |n| return allocator.dupe(u8, n);
         return types.makeExportsVarName(allocator, self.path);
