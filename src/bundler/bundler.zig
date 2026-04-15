@@ -503,6 +503,7 @@ pub const Bundler = struct {
         }
         worker_linker.populateReExportAliases(worker_graph.modules.items);
         worker_linker.populateImportSymbols(worker_graph.modules.items);
+        worker_linker.populateImportLocalSymbols(worker_graph.modules.items);
         worker_linker.populateSymbolRefCounts(worker_graph.modules.items);
         defer worker_linker.deinit();
 
@@ -669,6 +670,8 @@ pub const Bundler = struct {
             l.populateReExportAliases(graph.modules.items);
             // Phase 4c-2 (#1328): ImportBinding.symbol을 source 모듈의 export SymbolRef로 채움.
             l.populateImportSymbols(graph.modules.items);
+            // Phase 4c-3b-α (#1328): ImportBinding.local_symbol을 현재 모듈 semantic ref로 채움.
+            l.populateImportLocalSymbols(graph.modules.items);
             // Phase 4d (#1328): symbol-level ref_count 수집. tree-shaking companion metric.
             l.populateSymbolRefCounts(graph.modules.items);
             break :blk l;

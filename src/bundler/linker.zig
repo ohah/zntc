@@ -1228,6 +1228,27 @@ pub const Linker = struct {
         }
     }
 
+    /// #1328 Phase 4c-3b-α: ImportBinding.local_symbol을 현재 모듈의 semantic
+    /// top-level 심볼 ref로 채운다. import preamble/rename 경로가 source-side
+    /// `ib.symbol` 대신 current-side SymbolRef로 canonical을 조회하게 하려는 준비.
+    /// 소비자는 4c-3b-β에서 붙는다 (이 PR에서는 필드 채움만).
+    pub fn populateImportLocalSymbols(_: *const Linker, modules: []Module) void {
+        for (modules, 0..) |*importer, i| {
+            const sem = importer.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            const module_scope = sem.scope_maps[0];
+            const mod_idx: bundler_symbol.ModuleIndex = @enumFromInt(i);
+            for (importer.import_bindings) |*ib| {
+                if (ib.isSynthetic()) continue;
+                const sym_idx = module_scope.get(ib.local_name) orelse continue;
+                ib.local_symbol = .{ .semantic = .{
+                    .module = mod_idx,
+                    .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+                } };
+            }
+        }
+    }
+
     /// "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
     /// codegen 합성 변수명(_default)의 canonical name으로 대체.
     fn safeIdentifierName(self: *const Linker, name: []const u8, module_index: u32) []const u8 {
