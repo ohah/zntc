@@ -125,13 +125,13 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             if (params_idx.isNone()) return self.ast.addNodeList(&.{});
             const params_node = self.ast.getNode(params_idx);
             return switch (params_node.tag) {
-                .formal_parameters => self.visitExtraList(params_node.data.list.start, params_node.data.list.len),
+                .formal_parameters => self.visitExtraList(params_node.data.list),
                 .parenthesized_expression => blk: {
                     const inner_idx = params_node.data.unary.operand;
                     if (inner_idx.isNone()) break :blk try self.ast.addNodeList(&.{});
                     const inner = self.ast.getNode(inner_idx);
                     if (inner.tag == .sequence_expression) {
-                        break :blk try self.visitExtraList(inner.data.list.start, inner.data.list.len);
+                        break :blk try self.visitExtraList(inner.data.list);
                     }
                     const new_param = try self.visitNode(inner_idx);
                     break :blk try self.ast.addNodeList(if (!new_param.isNone()) &.{new_param} else &.{});

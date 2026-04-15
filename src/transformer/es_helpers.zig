@@ -439,7 +439,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const params_len = params_list_old.len;
     const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[method_node.data.extra + 2]);
 
-    const new_params = try self.visitExtraList(params_start, params_len);
+    const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
     const new_body = try self.visitNode(body_idx);
 

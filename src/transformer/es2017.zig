@@ -48,7 +48,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
 
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             const gen_func = try es_helpers.buildGeneratorWrapper(self, new_body, node.span);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
@@ -143,7 +143,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_name = try self.visitNode(name_idx);
 
-            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
             const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
