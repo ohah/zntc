@@ -264,9 +264,8 @@ pub fn emitEsmWrappedModule(
     // 할당을 만들어내므로 hoisted_var 선언 필요. symbol table에 synthetic_default가
     // 등록돼 있으면 _default 변수가 실제로 emit된다는 뜻.
     {
-        const syms: []const semantic_symbol.Symbol = if (module.semantic) |sem| sem.symbols.items else &.{};
         for (module.export_bindings) |eb| {
-            if (eb.kind == .re_export and eb.hasSyntheticDefault(syms)) {
+            if (eb.kind == .re_export and eb.hasSyntheticDefault(module.semanticSymbols())) {
                 const def_name = if (metadata) |md| md.default_export_name else "_default";
                 try hoisted_var_names.append(allocator, def_name);
                 break;
@@ -570,10 +569,9 @@ pub fn emitEsmWrappedModule(
     // 소스 모듈의 wrap_kind에 따라 적절한 할당문을 직접 생성.
     var reexport_buf: std.ArrayList(u8) = .empty;
     defer reexport_buf.deinit(allocator);
-    const sem_syms: []const semantic_symbol.Symbol = if (module.semantic) |sem| sem.symbols.items else &.{};
     for (module.export_bindings) |eb| {
         if (eb.kind != .re_export) continue;
-        if (!eb.hasSyntheticDefault(sem_syms)) continue;
+        if (!eb.hasSyntheticDefault(module.semanticSymbols())) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= module.import_records.len) continue;
         const source_mod_idx = module.import_records[rec_idx].resolved;

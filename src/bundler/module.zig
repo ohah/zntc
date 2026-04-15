@@ -201,6 +201,13 @@ pub const Module = struct {
         return types.makeExportsVarName(allocator, self.path);
     }
 
+    /// Semantic 심볼 배열 slice. semantic이 없으면 빈 slice.
+    /// `hasSyntheticDefault` 등 semantic-aware predicate 호출 시 편의.
+    pub fn semanticSymbols(self: *const Module) []const Symbol {
+        const sem = self.semantic orelse return &.{};
+        return sem.symbols.items;
+    }
+
     /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
     /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
     pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {
