@@ -117,6 +117,8 @@ pub const ResolveCache = struct {
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
+        /// webpack resolve.fallback / Metro extraNodeModules 호환.
+        fallback: []const resolver_mod.FallbackEntry = &.{},
         resolve_extensions: []const []const u8 = &.{},
         main_fields: []const []const u8 = &.{},
         /// --packages=external: 모든 bare import를 external 처리
@@ -137,6 +139,7 @@ pub const ResolveCache = struct {
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
         r.alias = alias;
+        r.fallback = options.fallback;
         r.custom_extensions = options.resolve_extensions;
         r.main_fields = options.main_fields;
         r.node_paths = options.node_paths;

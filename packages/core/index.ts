@@ -210,6 +210,10 @@ interface BuildOptionsCommon {
   jsxImportSource?: string;
   define?: Record<string, string>;
   alias?: Record<string, string>;
+  /** Fallback resolution — 일반 해석이 **실패했을 때만** 적용됨 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
+   * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.
+   * 예: `{ crypto: "crypto-browserify", fs: false }` */
+  fallback?: Record<string, string | false>;
   inject?: string[];
   jobs?: number;
   plugins?: ZtsPlugin[];

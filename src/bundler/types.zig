@@ -53,6 +53,14 @@ pub const AliasEntry = struct {
     to: []const u8,
 };
 
+/// Fallback 엔트리 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
+/// alias와 달리 일반 해석이 **실패했을 때만** 적용된다 — 설치된 실제 패키지가 있으면 그것이 우선.
+/// `to == null`이면 빈 모듈로 대체 (webpack `false` 의미).
+pub const FallbackEntry = struct {
+    from: []const u8,
+    to: ?[]const u8,
+};
+
 // ============================================================
 // Import 종류
 // ============================================================

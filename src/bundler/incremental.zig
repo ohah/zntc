@@ -134,6 +134,7 @@ pub const IncrementalBundler = struct {
                 .custom_conditions = self.options.conditions,
                 .preserve_symlinks = self.options.preserve_symlinks,
                 .alias = self.options.alias,
+                .fallback = self.options.fallback,
                 .resolve_extensions = self.options.resolve_extensions,
                 .main_fields = self.options.main_fields,
             });
