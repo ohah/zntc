@@ -85,6 +85,7 @@ pub const Feature = enum(u5) {
     class_static_block,
     class_private_method,
     class_private_field,
+    top_level_await,
     // ES2023
     hashbang,
     // ES2025
@@ -100,7 +101,7 @@ pub const Feature = enum(u5) {
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
-            .class_static_block, .class_private_method, .class_private_field => .es2022,
+            .class_static_block, .class_private_method, .class_private_field, .top_level_await => .es2022,
             .hashbang => .es2023,
             .using => .es2025,
         };
@@ -140,12 +141,15 @@ pub const UnsupportedFeatures = packed struct(u32) {
     class_static_block: bool = false,
     class_private_method: bool = false,
     class_private_field: bool = false,
+    /// Top-level await (모듈 최상단 await). ES2022부터 지원. 미지원 타겟에서는
+    /// top-level 문장을 async IIFE 로 감싸 wrapping (esbuild 호환). (#1384)
+    top_level_await: bool = false,
     // ES2023
     hashbang: bool = false,
     // ES2025
     using: bool = false,
 
-    _: u9 = 0,
+    _: u8 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -425,6 +429,17 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .class_private_field, .engine = .ios, .major = 14, .minor = 5 },
     // hermes: private fields 미지원 → 항상 다운레벨링
 
+    // ── ES2022: top_level_await ──
+    // Top-level await (ES modules): Chrome 89, Firefox 89, Safari 15, Node 14.8
+    .{ .feature = .top_level_await, .engine = .chrome, .major = 89 },
+    .{ .feature = .top_level_await, .engine = .firefox, .major = 89 },
+    .{ .feature = .top_level_await, .engine = .safari, .major = 15 },
+    .{ .feature = .top_level_await, .engine = .edge, .major = 89 },
+    .{ .feature = .top_level_await, .engine = .node, .major = 14, .minor = 8 },
+    .{ .feature = .top_level_await, .engine = .deno, .major = 1 },
+    .{ .feature = .top_level_await, .engine = .ios, .major = 15 },
+    // hermes: 미지원 → 항상 다운레벨링
+
     // ── ES2023: hashbang (#!) ──
     .{ .feature = .hashbang, .engine = .chrome, .major = 74 },
     .{ .feature = .hashbang, .engine = .firefox, .major = 67 },
@@ -503,6 +518,7 @@ pub fn fromHermesPreset() UnsupportedFeatures {
         .class_static_block = true,
         .class_private_method = true,
         .class_private_field = true,
+        .top_level_await = true,
         // ES2023
         .hashbang = true,
         // ES2025
