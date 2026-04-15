@@ -394,7 +394,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
     try std.testing.expectEqual(m, r.export_bindings[0].symbol.moduleIndex());
     switch (r.export_bindings[0].symbol) {
-        .bundler => return error.UnexpectedSpace,
+        .alias => return error.UnexpectedSpace,
         .semantic => |s| {
             const idx: u32 = @intFromEnum(s.symbol);
             try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);

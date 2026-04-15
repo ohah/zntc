@@ -84,7 +84,7 @@ pub const ExportBinding = struct {
         symbols: []const SemanticSymbol,
     ) bool {
         return switch (self.symbol) {
-            .bundler => false,
+            .alias => false,
             .semantic => |s| blk: {
                 if (s.symbol.isNone()) break :blk false;
                 const idx: u32 = @intFromEnum(s.symbol);
@@ -646,7 +646,7 @@ pub fn populateSyntheticSymbols(
             // re_export_alias는 bundler 전용 — linker가 post-link 단계에서
             // resolveExportChain 결과를 canonical_name으로 저장한다.
             const id = try table.declare(eb.exported_name);
-            eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
+            eb.symbol = .{ .alias = .{ .module = module_index, .symbol = id } };
         }
     }
 }
