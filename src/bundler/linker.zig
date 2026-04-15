@@ -398,8 +398,9 @@ pub const Linker = struct {
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
-                if (module_scope.get(eb.local_name) == null) {
-                    try self.addNameOwner(name_to_owners, eb.local_name, owner);
+                const local = m.exportBindingLocalName(eb);
+                if (module_scope.get(local) == null) {
+                    try self.addNameOwner(name_to_owners, local, owner);
                 }
             }
         }
@@ -598,10 +599,10 @@ pub const Linker = struct {
         for (self.modules) |m| {
             for (m.export_bindings) |eb| {
                 try exported.put(eb.exported_name, {});
-                try exported.put(eb.local_name, {});
+                try exported.put(m.exportBindingLocalName(eb), {});
             }
             for (m.import_bindings) |ib| {
-                try exported.put(ib.local_name, {});
+                try exported.put(m.importBindingLocalName(ib), {});
             }
         }
 

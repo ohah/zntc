@@ -181,7 +181,7 @@ pub const TreeShaker = struct {
             if (has_local_reexport) {
                 var set = std.StringHashMap(void).init(self.allocator);
                 for (m.export_bindings) |eb| {
-                    if (eb.kind == .local) try set.put(eb.local_name, {});
+                    if (eb.kind == .local) try set.put(m.exportBindingLocalName(eb), {});
                 }
                 re_export_sets[i] = set;
             } else {
