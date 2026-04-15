@@ -1158,32 +1158,48 @@ pub const Linker = struct {
     /// 활용하도록 통합할 예정.
     ///
     /// link() + populateReExportAliases() 이후에 호출되어야 한다.
-    pub fn populateSymbolRefCounts(self: *const Linker, modules: []Module) void {
-        var key_buf: [4096]u8 = undefined;
+    /// #1338 Phase 4c-2: ib.symbol로 직접 전환 — export_map 해시 lookup 제거.
+    pub fn populateSymbolRefCounts(_: *const Linker, modules: []Module) void {
         for (modules) |*importer| {
             for (importer.import_bindings) |ib| {
-                if (ib.import_record_index >= importer.import_records.len) continue;
-                const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
-                if (source_mod_idx.isNone()) continue;
-                const source_i = @intFromEnum(source_mod_idx);
-                if (source_i >= modules.len) continue;
-
-                const key = makeExportKeyBuf(&key_buf, source_i, ib.imported_name);
-                const entry = self.export_map.get(key) orelse continue;
-                switch (entry.binding.symbol) {
+                switch (ib.symbol) {
                     .alias => |a| {
-                        if (a.symbol.isNone()) continue;
+                        if (a.symbol.isNone() or a.module.isNone()) continue;
+                        const source_i = @intFromEnum(a.module);
+                        if (source_i >= modules.len) continue;
                         const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
-                        // #1328 Phase 4e-2b: semantic 공간의 합성/정규 심볼 ref_count 증가.
-                        if (s.symbol.isNone()) continue;
+                        if (s.symbol.isNone() or s.module.isNone()) continue;
+                        const source_i = @intFromEnum(s.module);
+                        if (source_i >= modules.len) continue;
                         const sem_ptr = if (modules[source_i].semantic) |*sem| sem else continue;
                         const idx: u32 = @intFromEnum(s.symbol);
                         if (idx >= sem_ptr.symbols.items.len) continue;
                         sem_ptr.symbols.items[idx].reference_count += 1;
                     },
+                }
+            }
+        }
+    }
+
+    /// #1338 Phase 4c-2: 모든 모듈의 import_binding.symbol을 채운다.
+    /// 각 ImportBinding의 imported_name으로 source 모듈의 ExportBinding을 찾고
+    /// 그 SymbolRef를 복사. invalid 유지는 source 모듈이 해당 export를 갖지 않는 경우.
+    /// populateReExportAliases 이후에 호출되어야 alias canonical_name이 반영됨.
+    pub fn populateImportSymbols(_: *const Linker, modules: []Module) void {
+        for (modules) |*importer| {
+            for (importer.import_bindings) |*ib| {
+                if (ib.import_record_index >= importer.import_records.len) continue;
+                const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
+                if (source_mod_idx.isNone()) continue;
+                const source_i = @intFromEnum(source_mod_idx);
+                if (source_i >= modules.len) continue;
+                // namespace import는 개별 심볼이 아닌 모듈 전체를 가리킴 — skip.
+                if (ib.kind == .namespace) continue;
+                if (modules[source_i].findExportBinding(ib.imported_name)) |eb| {
+                    ib.symbol = eb.symbol;
                 }
             }
         }
