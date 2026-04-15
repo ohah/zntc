@@ -433,8 +433,7 @@ pub const TreeShaker = struct {
             var arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
             for (arr) |*a| a.* = null;
             for (mod.import_bindings, 0..) |ib, ib_idx| {
-                if (!ib.local_symbol.isValid()) continue;
-                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
                 if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
             }
             maps[i] = arr;
@@ -493,8 +492,7 @@ pub const TreeShaker = struct {
                 for (m.export_bindings) |eb| {
                     if (eb.kind.isReExportAll()) continue;
                     if (!self.entry_set.isSet(i) and !self.isExportUsed(mi, eb.exported_name)) continue;
-                    if (eb.symbol != .semantic) continue;
-                    const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                    const sym_idx = eb.symbol.semanticIndex() orelse continue;
                     if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
                         try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
                     }
@@ -539,8 +537,7 @@ pub const TreeShaker = struct {
             if (sem.scope_maps.len == 0) continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind.isReExportAll()) continue;
-                if (eb.symbol != .semantic) continue;
-                const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                const sym_idx = eb.symbol.semanticIndex() orelse continue;
                 if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
                     if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
                         try self.markExportUsed(@intCast(i), eb.exported_name);
@@ -898,8 +895,7 @@ pub const TreeShaker = struct {
 
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
-            if (ib.local_symbol.isValid()) {
-                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+            if (ib.local_symbol.semanticIndex()) |sym_idx| {
                 if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].reference_count > 0) return true;
             }
         } else return true;

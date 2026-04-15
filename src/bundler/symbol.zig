@@ -51,6 +51,15 @@ pub const SymbolRef = union(enum) {
         };
     }
 
+    /// `.semantic`이면 SymbolId를 u32로 반환. `.alias`나 invalid면 null.
+    /// `if (ref == .semantic) @intFromEnum(ref.semantic.symbol)` 반복 패턴 단축.
+    pub fn semanticIndex(self: SymbolRef) ?u32 {
+        return switch (self) {
+            .semantic => |s| if (s.symbol.isNone()) null else @intFromEnum(s.symbol),
+            .alias => null,
+        };
+    }
+
     pub fn eql(x: SymbolRef, y: SymbolRef) bool {
         return switch (x) {
             .semantic => |xs| switch (y) {

@@ -937,8 +937,7 @@ pub fn emitModule(
                                         } else {
                                             for (module.export_bindings) |eb| {
                                                 if (std.mem.eql(u8, eb.exported_name, name)) {
-                                                    if (eb.symbol == .semantic) {
-                                                        const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                                                    if (eb.symbol.semanticIndex()) |sym_idx| {
                                                         used_sym_buf.append(arena_alloc, sym_idx) catch {};
                                                     }
                                                     break;

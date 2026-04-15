@@ -958,8 +958,7 @@ pub fn computeAllUsedNames(
 
             // 크로스-모듈 BFS 도달성
             if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
-                if (eb.symbol == .semantic) {
-                    const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                if (eb.symbol.semanticIndex()) |sym_idx| {
                     if (ts_infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
                         if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
                     }

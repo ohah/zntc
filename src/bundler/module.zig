@@ -227,24 +227,25 @@ pub const Module = struct {
         return sem.symbols.items[idx].nameText(self.source);
     }
 
-    /// ImportBinding의 현재 모듈 로컬 이름. local_symbol을 우선 derive,
-    /// 미설정(synthetic 등) 시 ib.local_name 필드 fallback.
-    /// #1328 Phase 4c-4d: esbuild 패턴 — 이름은 Symbol 소유, binding은 Ref.
-    pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
-        if (ib.local_symbol == .semantic) {
-            if (self.symbolName(ib.local_symbol.semantic.symbol)) |n| return n;
-        }
-        return ib.local_name;
+    /// SymbolRef가 semantic을 가리키면 Symbol.nameText, 아니면 null.
+    fn refName(self: *const Module, ref: symbol_mod.SymbolRef) ?[]const u8 {
+        const idx = ref.semanticIndex() orelse return null;
+        const sem = self.semantic orelse return null;
+        if (idx >= sem.symbols.items.len) return null;
+        return sem.symbols.items[idx].nameText(self.source);
     }
 
-    /// ExportBinding의 로컬 이름. .local은 eb.symbol(semantic)에서 derive.
-    /// 그 외 kind는 eb.local_name 필드 fallback (re_export는 source 이름,
-    /// re_export_namespace는 ns alias, re_export_star는 "*").
+    /// ImportBinding의 현재 모듈 로컬 이름. local_symbol에서 derive 가능하면
+    /// Symbol.nameText, 아니면 ib.local_name 필드 fallback.
+    pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
+        return self.refName(ib.local_symbol) orelse ib.local_name;
+    }
+
+    /// ExportBinding의 로컬 이름. `.local` + semantic ref면 Symbol.nameText에서
+    /// derive, 그 외엔 eb.local_name 필드 그대로 반환.
     pub fn exportBindingLocalName(self: *const Module, eb: ExportBinding) []const u8 {
-        if (eb.kind == .local and eb.symbol == .semantic) {
-            if (self.symbolName(eb.symbol.semantic.symbol)) |n| return n;
-        }
-        return eb.local_name;
+        if (eb.kind != .local) return eb.local_name;
+        return self.refName(eb.symbol) orelse eb.local_name;
     }
 
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
