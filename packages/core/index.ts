@@ -273,6 +273,14 @@ interface BuildOptionsCommon {
   collectModuleCodes?: boolean;
   /** Object.defineProperty에 configurable: true 추가 (RN/Hermes 호환) */
   configurableExports?: boolean;
+  /** ESM 실행 순서 보장 — 함수 선언을 factory 내부 assignment로 다운그레이드해 호이스팅 방지.
+   * Rolldown의 strictExecutionOrder와 동일. React Native 플랫폼에서 자동 활성화. */
+  strictExecutionOrder?: boolean;
+  /** scope hoisting 활성화 (기본 true). 단일 chunk에서 모듈 경계를 제거하고 심볼을 평탄화. */
+  scopeHoist?: boolean;
+  /** Reanimated worklet 변환 — "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.
+   * React Native 플랫폼에서 자동 활성화. */
+  workletTransform?: boolean;
   /** worklet의 `__pluginVersion` 값 (Reanimated dev mode jsVersion 대조용).
    * 사용자 환경의 react-native-worklets 패키지 version을 전달해야 런타임 에러 없음. */
   workletPluginVersion?: string;
