@@ -957,13 +957,10 @@ pub fn computeAllUsedNames(
 
             // 크로스-모듈 BFS 도달성
             if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
-                if (m.semantic) |sem| {
-                    if (sem.scope_maps.len > 0) {
-                        if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                            if (ts_infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
-                                if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
-                            }
-                        }
+                if (eb.symbol == .semantic) {
+                    const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                    if (ts_infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+                        if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
                     }
                 }
             }
