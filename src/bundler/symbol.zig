@@ -40,25 +40,25 @@ pub const SymbolRef = union(enum) {
     pub fn isValid(self: SymbolRef) bool {
         return switch (self) {
             .semantic => |s| !s.module.isNone() and !s.symbol.isNone(),
-            .alias => |b| !b.module.isNone() and !b.symbol.isNone(),
+            .alias => |a| !a.module.isNone() and !a.symbol.isNone(),
         };
     }
 
     pub fn moduleIndex(self: SymbolRef) ModuleIndex {
         return switch (self) {
             .semantic => |s| s.module,
-            .alias => |b| b.module,
+            .alias => |a| a.module,
         };
     }
 
-    pub fn eql(a: SymbolRef, b: SymbolRef) bool {
-        return switch (a) {
-            .semantic => |sa| switch (b) {
-                .semantic => |sb| sa.module == sb.module and sa.symbol == sb.symbol,
+    pub fn eql(x: SymbolRef, y: SymbolRef) bool {
+        return switch (x) {
+            .semantic => |xs| switch (y) {
+                .semantic => |ys| xs.module == ys.module and xs.symbol == ys.symbol,
                 .alias => false,
             },
-            .alias => |ba| switch (b) {
-                .alias => |bb| ba.module == bb.module and ba.symbol == bb.symbol,
+            .alias => |xa| switch (y) {
+                .alias => |ya| xa.module == ya.module and xa.symbol == ya.symbol,
                 .semantic => false,
             },
         };
