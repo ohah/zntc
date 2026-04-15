@@ -37,6 +37,7 @@ const es2022 = @import("es2022.zig");
 const es2015_template = @import("es2015_template.zig");
 const es2015_shorthand = @import("es2015_shorthand.zig");
 const es2015_computed = @import("es2015_computed.zig");
+const es2015_object_methods = @import("es2015_object_methods.zig");
 const es2015_params = @import("es2015_params.zig");
 const es2015_spread = @import("es2015_spread.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
@@ -627,13 +628,26 @@ pub const Transformer = struct {
                 return self.visitListNode(node);
             },
 
-            // object_expression: spread(ES2018) 또는 computed property(ES2015) 다운레벨링
+            // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
             .object_expression => {
                 // Plugin visitor 훅 — 기본 방문 전 선취권 (null 반환 시 default 진행)
                 if (try self.dispatchVisitor(.on_object_expression, idx)) |replacement| return replacement;
                 if (self.options.unsupported.object_spread) {
                     if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
                         return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
+                    }
+                }
+                // method shorthand → { key: function() {} } 를 먼저 처리.
+                // function_expression 내부 async/generator lowering까지 visitNode 경로로 수행한 뒤,
+                // computed key가 남아 있으면 아래 ES2015Computed가 후속 처리한다.
+                if (self.options.unsupported.object_extensions) {
+                    if (es2015_object_methods.ES2015ObjectMethods(Transformer).hasObjectMethod(self, node)) {
+                        const lowered = try es2015_object_methods.ES2015ObjectMethods(Transformer).lowerObjectMethods(self, node);
+                        const lowered_node = self.ast.getNode(lowered);
+                        if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, lowered_node)) {
+                            return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, lowered_node);
+                        }
+                        return lowered;
                     }
                 }
                 if (self.options.unsupported.object_extensions) {
