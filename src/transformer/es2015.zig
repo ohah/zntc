@@ -29,6 +29,7 @@
 pub const es2015_template = @import("es2015_template.zig");
 pub const es2015_shorthand = @import("es2015_shorthand.zig");
 pub const es2015_computed = @import("es2015_computed.zig");
+pub const es2015_object_methods = @import("es2015_object_methods.zig");
 pub const es2015_params = @import("es2015_params.zig");
 pub const es2015_spread = @import("es2015_spread.zig");
 pub const es2015_arrow = @import("es2015_arrow.zig");
@@ -42,6 +43,7 @@ test {
     _ = es2015_template;
     _ = es2015_shorthand;
     _ = es2015_computed;
+    _ = es2015_object_methods;
     _ = es2015_params;
     _ = es2015_spread;
     _ = es2015_arrow;

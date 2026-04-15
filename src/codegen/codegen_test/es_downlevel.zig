@@ -796,6 +796,62 @@ test "ES2015: computed no transform on esnext" {
     try std.testing.expectEqualStrings("var o={[k]:v};", r.output);
 }
 
+// --- ES2015: object method shorthand (#1385) ---
+
+test "ES2015: object method shorthand → key:function" {
+    var r = try e2eTarget(std.testing.allocator, "var o={m(){return 1;}};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={m:function(){return 1;}};", r.output);
+}
+
+test "ES2015: object method shorthand + shorthand property mix" {
+    var r = try e2eTarget(std.testing.allocator, "var o={x,m(){return 1;}};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={x:x,m:function(){return 1;}};", r.output);
+}
+
+test "ES2015: object getter/setter preserved (ES5 supports)" {
+    var r = try e2eTarget(std.testing.allocator, "var o={get x(){return 1;},set x(v){},m(){return 2;}};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={get x(){return 1;},set x(v){},m:function(){return 2;}};", r.output);
+}
+
+test "ES2015: object computed method → bracket assignment with function" {
+    var r = try e2eTarget(std.testing.allocator, "var o={[k](){return 1;}};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[k]=function(){return 1;},_a);", r.output);
+}
+
+test "ES2015: object Symbol.dispose computed method" {
+    var r = try e2eTarget(std.testing.allocator, "var o={[Symbol.dispose](){}};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[Symbol.dispose]=function(){},_a);", r.output);
+}
+
+test "ES2015: object method no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "var o={m(){return 1;}};", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={m(){return 1;}};", r.output);
+}
+
+test "ES2015: object async method → state machine wrapped in function" {
+    var r = try e2eTarget(std.testing.allocator, "var o={async a(){return 1;}};", .es5);
+    defer r.deinit();
+    // a: function() { ... __async(...) ... }
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a:function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__async") != null);
+    // 메서드 shorthand 원형이 남아 있으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async a(") == null);
+}
+
+test "ES2015: object generator method → state machine wrapped in function" {
+    var r = try e2eTarget(std.testing.allocator, "var o={*g(){yield 1;}};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "g:function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "*g(") == null);
+}
+
 // --- ES2015: default/rest parameters ---
 
 test "ES2015: default parameter" {
