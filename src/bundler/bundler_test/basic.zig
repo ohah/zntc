@@ -961,6 +961,58 @@ test "Re-export resolves to canonical local (not global-identifier reserved, #13
     try std.testing.expect(std.mem.indexOf(u8, result.output, "URLSearchParams: () => URLSearchParams,") == null);
 }
 
+// ============================================================
+// #1404/#1407 회귀 가드 — 합성 노드 span 의 STRING_TABLE_BIT 처리
+// 번들러 단계에서 binding_scanner / linker 가 합성 identifier 의 이름을 추출할 때
+// `self.ast.source[..]` 직접 접근하면 OOB → SIGBUS. getText 일괄 치환 후 안전.
+// ============================================================
+
+test "Synthetic span: barrel re-export of async function — no SIGBUS at es5 (#1404/#1407)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export { run } from './a';");
+    try writeFile(tmp.dir, "a.ts",
+        \\export async function run() {
+        \\  for await (const v of g()) use(v);
+        \\}
+        \\async function* g() { yield 1; }
+        \\function use(_: any) {}
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__asyncValues") != null);
+}
+
+test "Synthetic span: object method shorthand + computed key — no SIGBUS at es5 (#1404/#1407)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const o = { async fn() { return 1; }, ["k"]: 2 };
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+}
+
 test "Bundler: AMD external dependencies in wrapper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -1590,7 +1590,11 @@ pub fn main() !void {
         if (!opts.allow_overwrite) {
             const entry_abs = abs_entry;
             if (opts.output_file) |out_path| {
-                const out_abs = std.fs.cwd().realpathAlloc(allocator, out_path) catch out_path;
+                // realpath 결과는 owned. fallback (out_path) 은 caller-owned 이므로
+                // 분기해서 owned 만 free.
+                const out_abs_owned = std.fs.cwd().realpathAlloc(allocator, out_path) catch null;
+                defer if (out_abs_owned) |p| allocator.free(p);
+                const out_abs = out_abs_owned orelse out_path;
                 if (std.mem.eql(u8, entry_abs, out_abs)) {
                     try stderr.print("zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n", .{out_path});
                     return error.TranspileFailed;
