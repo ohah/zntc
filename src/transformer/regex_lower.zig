@@ -47,31 +47,21 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
 
     if (!need_dotall and !need_named and !need_sticky) return .{ .text = null };
 
-    // pattern 변환
-    var pat_buf: std.ArrayList(u8) = .empty;
-    defer pat_buf.deinit(allocator);
-    try rewritePattern(allocator, &pat_buf, pattern, .{
+    // /pattern/flags 를 단일 버퍼로 조립. dotAll 치환을 고려해 +4 여유.
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, raw.len + 4);
+    try out.append(allocator, '/');
+    try rewritePattern(allocator, &out, pattern, .{
         .dotall = need_dotall,
         .strip_named = need_named,
     });
-
-    // flags 재구성: s, y 제거 (필요 시)
-    var flag_buf: std.ArrayList(u8) = .empty;
-    defer flag_buf.deinit(allocator);
+    try out.append(allocator, '/');
     for (flags) |c| {
         if (need_dotall and c == 's') continue;
         if (need_sticky and c == 'y') continue;
-        try flag_buf.append(allocator, c);
+        try out.append(allocator, c);
     }
-
-    // 결과 조립: /pat/flags
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, pat_buf.items.len + flag_buf.items.len + 2);
-    try out.append(allocator, '/');
-    try out.appendSlice(allocator, pat_buf.items);
-    try out.append(allocator, '/');
-    try out.appendSlice(allocator, flag_buf.items);
     return .{ .text = try out.toOwnedSlice(allocator) };
 }
 
