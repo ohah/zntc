@@ -7,7 +7,7 @@
  * **주의**: compat.zig를 수정하면 이 파일도 함께 업데이트.
  * 장기적으론 scripts/compat-from-kangax.ts를 확장해 자동 생성.
  *
- * Bit 레이아웃은 packages/shared/index.ts ES_TARGET_BITS와 동일 (0-22).
+ * Bit 레이아웃은 packages/shared/index.ts ES_TARGET_BITS와 동일 (0-27).
  */
 
 export type Engine =
@@ -52,10 +52,16 @@ export const FEATURES = [
   "class_static_block",
   "class_private_method",
   "class_private_field",
+  "top_level_await",
   // ES2023
   "hashbang",
   // ES2025
   "using",
+  // Regex / unicode escape (compat.zig 와 동일 후행 순서. esVersion 은 esbuild 대응)
+  "regex_sticky", // ES2015
+  "regex_dotall", // ES2018
+  "regex_named_groups", // ES2018
+  "unicode_brace_escape", // ES2015
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
