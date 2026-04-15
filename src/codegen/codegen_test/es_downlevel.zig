@@ -2194,3 +2194,60 @@ test "regex: esnext no-op (#1387)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "/a.b/s") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(?<y>") != null);
 }
+
+// --- unicode brace escape `\u{X}` (#1388) ---
+
+test "unicode_escape: astral string '\\u{1F600}' → surrogate pair (es5)" {
+    var r = try e2eTarget(std.testing.allocator, "const e = '\\u{1F600}';", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\uD83D\\uDE00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{") == null);
+}
+
+test "unicode_escape: BMP string '\\u{41}' → '\\u0041' (es5)" {
+    var r = try e2eTarget(std.testing.allocator, "const e = '\\u{41}';", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u0041") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{") == null);
+}
+
+test "unicode_escape: template literal astral (es2015 target — template 보존)" {
+    // es5는 template literal 자체를 문자열 concat으로 downlevel 하므로, template_element 보존을
+    // 위해 es2015 target 으로 확인. unicode_brace_escape 는 es2015 에서도 처리됨 (esVersion=es2015).
+    // ESTarget.es2015 → feature 도입 버전이 <= es2015 인 feature 는 unsupported가 아니지만,
+    // unicode_brace_escape 의 도입 버전이 es2015 라 es2015+ 에서는 no-op. 대신 es2015 하위 버전이
+    // ESTarget enum에 없으므로 es5 를 쓰되 문자열 리터럴로만 확인한다.
+    // (template 내부 lowering 은 이미 es2015_template 가 하위에서 처리하며, 그 이후 내려오는
+    //  문자열은 string_literal 경로로 들어간다.)
+    var r = try e2eTarget(std.testing.allocator, "const e = `\\u{1F600}`;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\uD83D\\uDE00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{") == null);
+}
+
+test "unicode_escape: plain '{abc}' 영향 없음 (es5)" {
+    var r = try e2eTarget(std.testing.allocator, "const e = '{abc}';", .es5);
+    defer r.deinit();
+    // quote style 은 기본 double.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"{abc}\"") != null);
+}
+
+test "unicode_escape: regex /[\\u{1F600}]/u → surrogate pair + u strip (es5)" {
+    var r = try e2eTarget(std.testing.allocator, "const r = /[\\u{1F600}]/u;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\uD83D\\uDE00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/u") == null);
+}
+
+test "unicode_escape: esnext 문자열 no-op" {
+    var r = try e2eTarget(std.testing.allocator, "const e = '\\u{1F600}';", .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{1F600}") != null);
+}
+
+test "unicode_escape: es2015 no-op" {
+    var r = try e2eTarget(std.testing.allocator, "const e = '\\u{1F600}';", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{1F600}") != null);
+}
