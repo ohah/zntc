@@ -731,6 +731,7 @@ pub const Linker = struct {
             if (self.canonical_names.getPtr(upd.key)) |ptr| {
                 self.allocator.free(ptr.*);
                 ptr.* = upd.val;
+                self.mirrorSymbolCanonicalFromKey(upd.key, upd.val);
             }
         }
 
@@ -744,8 +745,13 @@ pub const Linker = struct {
                 if (name_map.get(sym_name)) |mangled| {
                     const key = makeExportKey(self.allocator, @intCast(i), sym_name) catch continue;
                     if (!self.canonical_names.contains(key)) {
-                        self.canonical_names.put(key, self.allocator.dupe(u8, mangled) catch continue) catch {
+                        const dup = self.allocator.dupe(u8, mangled) catch {
                             self.allocator.free(key);
+                            continue;
+                        };
+                        self.putCanonicalName(key, dup) catch {
+                            self.allocator.free(key);
+                            self.allocator.free(dup);
                         };
                     } else {
                         self.allocator.free(key);
@@ -762,7 +768,8 @@ pub const Linker = struct {
         return self.canonical_names_used.contains(name);
     }
 
-    /// canonical_names에 put하면서 역방향 맵도 동기화.
+    /// canonical_names에 put하면서 역방향 맵 + semantic.Symbol.canonical_name 동기화.
+    /// #1328 Phase 4c-3c-2: semantic 미러는 4c-3c-3에서 reader가 소비.
     fn putCanonicalName(self: *Linker, key: []const u8, value: []const u8) !void {
         if (self.canonical_names.fetchRemove(key)) |old| {
             _ = self.canonical_names_used.fetchRemove(old.value);
@@ -771,6 +778,24 @@ pub const Linker = struct {
         }
         try self.canonical_names.put(key, value);
         try self.canonical_names_used.put(value, {});
+        self.mirrorSymbolCanonicalFromKey(key, value);
+    }
+
+    /// canonical_names key (4B module_index + 0x00 + name)에서 semantic.Symbol을
+    /// 찾아 canonical_name을 설정. lookup 실패는 silently ignore — synthetic 심볼
+    /// 등 scope_maps[0]에 없는 경우 거울 빈 채로 두고 기존 string map만 유효.
+    fn mirrorSymbolCanonicalFromKey(self: *Linker, key: []const u8, value: []const u8) void {
+        if (key.len < 5) return;
+        var module_index: u32 = undefined;
+        @memcpy(std.mem.asBytes(&module_index), key[0..4]);
+        const name = key[5..];
+        if (module_index >= self.modules.len) return;
+        const m = &self.modules[module_index];
+        const sem = m.semantic orelse return;
+        if (sem.scope_maps.len == 0) return;
+        const sym_idx = sem.scope_maps[0].get(name) orelse return;
+        if (sym_idx >= sem.symbols.items.len) return;
+        sem.symbols.items[sym_idx].canonical_name = value;
     }
 
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.

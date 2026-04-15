@@ -1413,6 +1413,33 @@ test "getCanonicalByRef: alias symbol의 canonical_name 반환" {
     try std.testing.expect(name.len > 0);
 }
 
+// #1328 Phase 4c-3c-2: putCanonicalName 미러
+test "computeRenames: rename된 심볼의 canonical_name이 semantic.Symbol에 미러됨" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 같은 이름 'x'가 두 모듈에서 export → 충돌 → 한 쪽이 x$1
+    try writeFile(tmp.dir, "a.ts", "export { x as a } from './m1'; export { x as b } from './m2';");
+    try writeFile(tmp.dir, "m1.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "m2.ts", "export const x = 2;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    try r.linker.computeRenames();
+
+    // m1 또는 m2 중 하나의 'x' 심볼이 canonical_name을 갖춰야 함
+    var renamed_count: u32 = 0;
+    for (r.graph.modules.items) |m| {
+        const sem = m.semantic orelse continue;
+        if (sem.scope_maps.len == 0) continue;
+        const sym_idx = sem.scope_maps[0].get("x") orelse continue;
+        if (sem.symbols.items[sym_idx].hasCanonicalName()) renamed_count += 1;
+    }
+    try std.testing.expect(renamed_count >= 1);
+}
+
 test "populateImportSymbols: named import의 local_symbol이 현재 모듈 semantic ref" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
