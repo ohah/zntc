@@ -867,6 +867,17 @@ pub const Linker = struct {
         return self.canonical_names.get(key);
     }
 
+    /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
+    /// `.local`은 `eb.symbol`(semantic) 기반 ref 조회; 그 외는 문자열 조회.
+    /// `.re_export` alias는 chain-resolved canonical을 쓰므로 final exports/scope
+    /// hoisting에서 원하는 "현재 모듈 rename"과 다름 → 문자열 경로 유지.
+    pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
+        if (eb.kind == .local) {
+            return self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
+        }
+        return self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+    }
+
     /// SymbolRef 기반 canonical name 조회 facade. #1338 Phase 4c-3.
     /// alias: AliasTable이 이미 canonical_name을 소유 → 직접 반환.
     /// semantic: 심볼 이름 추출 후 기존 string 기반 canonical_names 조회
@@ -1207,13 +1218,34 @@ pub const Linker = struct {
         }
     }
 
-    /// #1338 Phase 4c-2: 모든 모듈의 import_binding.symbol을 채운다.
-    /// 각 ImportBinding의 imported_name으로 source 모듈의 ExportBinding을 찾고
-    /// 그 SymbolRef를 복사. invalid 유지는 source 모듈이 해당 export를 갖지 않는 경우.
-    /// populateReExportAliases 이후에 호출되어야 alias canonical_name이 반영됨.
+    /// 모든 모듈의 ImportBinding 심볼 필드를 채운다:
+    ///   - `symbol`: source 모듈의 export SymbolRef (cross-module redirect).
+    ///     invalid 유지는 source 모듈이 해당 export를 갖지 않는 경우.
+    ///   - `local_symbol`: 현재 모듈 semantic top-level 심볼 (current-side 조회용).
+    /// `populateReExportAliases` 이후에 호출되어야 alias canonical이 반영됨.
     pub fn populateImportSymbols(_: *const Linker, modules: []Module) void {
-        for (modules) |*importer| {
+        for (modules, 0..) |*importer, i| {
+            const sem_opt = importer.semantic;
+            const module_scope_opt = if (sem_opt) |sem|
+                if (sem.scope_maps.len > 0) sem.scope_maps[0] else null
+            else
+                null;
+            const mod_idx: bundler_symbol.ModuleIndex = @enumFromInt(i);
+
             for (importer.import_bindings) |*ib| {
+                // current-side: scope_maps[0]에서 로컬 심볼 조회
+                if (module_scope_opt) |module_scope| {
+                    if (!ib.isSynthetic()) {
+                        if (module_scope.get(ib.local_name)) |sym_idx| {
+                            ib.local_symbol = .{ .semantic = .{
+                                .module = mod_idx,
+                                .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+                            } };
+                        }
+                    }
+                }
+
+                // source-side: import_record 따라 source 모듈의 export 심볼 복사
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
@@ -1224,27 +1256,6 @@ pub const Linker = struct {
                 if (modules[source_i].findExportBinding(ib.imported_name)) |eb| {
                     ib.symbol = eb.symbol;
                 }
-            }
-        }
-    }
-
-    /// #1328 Phase 4c-3b-α: ImportBinding.local_symbol을 현재 모듈의 semantic
-    /// top-level 심볼 ref로 채운다. import preamble/rename 경로가 source-side
-    /// `ib.symbol` 대신 current-side SymbolRef로 canonical을 조회하게 하려는 준비.
-    /// 소비자는 4c-3b-β에서 붙는다 (이 PR에서는 필드 채움만).
-    pub fn populateImportLocalSymbols(_: *const Linker, modules: []Module) void {
-        for (modules, 0..) |*importer, i| {
-            const sem = importer.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            const module_scope = sem.scope_maps[0];
-            const mod_idx: bundler_symbol.ModuleIndex = @enumFromInt(i);
-            for (importer.import_bindings) |*ib| {
-                if (ib.isSynthetic()) continue;
-                const sym_idx = module_scope.get(ib.local_name) orelse continue;
-                ib.local_symbol = .{ .semantic = .{
-                    .module = mod_idx,
-                    .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
-                } };
             }
         }
     }
@@ -1525,7 +1536,6 @@ pub const Linker = struct {
                         }
                     }
                 }
-                // .local else-blk: eb.symbol은 semantic → ref 기반 조회와 등가.
                 break :blk self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
             };
 
