@@ -66,21 +66,13 @@ pub const SymbolRef = union(enum) {
     }
 };
 
-/// 합성 심볼 종류.
+/// 합성 심볼 종류. #1338 Phase 4e-2d-a: 4e-2b/2c 마이그레이션 + fallback
+/// 제거 후 bundler 공간은 cross-module re-export 체인만 보관.
+/// 4e-2d-b에서 SymbolTable을 AliasTable로 축소 예정.
 pub const SymbolKind = enum(u8) {
-    /// `export default ...` 합성 변수 (`_default`, `_default$N`)
-    synthetic_default,
-    /// CJS 래퍼의 `exports_<module>` 객체
-    synthetic_exports,
-    /// ESM 래퍼의 `init_<module>` 함수
-    synthetic_init,
-    /// `import * as X` namespace 객체
-    synthetic_namespace,
     /// Re-export alias (`export { X } from './m'`, barrel 등).
     /// 자기 자신은 값을 갖지 않고 linker가 `canonical_name`에 체인 resolve 결과를 주입한다.
     re_export_alias,
-    /// Resolve 실패한 외부 import (node builtin 등)
-    unresolved_external,
 };
 
 /// 합성 심볼 레코드 (AoS 레이아웃 — 성능상 필요 시 내부 SoA로 전환 가능, R2).
@@ -221,9 +213,9 @@ test "SymbolTable: declare + get 기본" {
     var t = SymbolTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("_default", .synthetic_default, .{ .start = 0, .end = 0 });
+    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
     try std.testing.expectEqualStrings("_default", t.getName(id));
-    try std.testing.expectEqual(SymbolKind.synthetic_default, t.getKind(id));
+    try std.testing.expectEqual(SymbolKind.re_export_alias, t.getKind(id));
     try std.testing.expectEqual(@as(u32, 1), t.count());
 }
 
@@ -231,8 +223,8 @@ test "SymbolTable: declare 멱등 (같은 이름)" {
     var t = SymbolTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const a = try t.declare("init_X", .synthetic_init, .{ .start = 0, .end = 0 });
-    const b = try t.declare("init_X", .synthetic_init, .{ .start = 0, .end = 0 });
+    const a = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
+    const b = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
     try std.testing.expectEqual(a, b);
     try std.testing.expectEqual(@as(u32, 1), t.count());
 }
@@ -241,8 +233,8 @@ test "SymbolTable: find" {
     var t = SymbolTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("exports_Foo", .synthetic_exports, .{ .start = 0, .end = 0 });
-    try std.testing.expectEqual(@as(?SymbolId, id), t.find("exports_Foo"));
+    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
+    try std.testing.expectEqual(@as(?SymbolId, id), t.find("_default"));
     try std.testing.expectEqual(@as(?SymbolId, null), t.find("missing"));
 }
 
@@ -250,7 +242,7 @@ test "SymbolTable: canonical_name fallback" {
     var t = SymbolTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("_default", .synthetic_default, .{ .start = 0, .end = 0 });
+    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
     try std.testing.expectEqualStrings("_default", t.getCanonicalName(id));
     t.setCanonicalName(id, "_default$2");
     try std.testing.expectEqualStrings("_default$2", t.getCanonicalName(id));
@@ -260,7 +252,7 @@ test "SymbolTable: points_to + ref_count" {
     var t = SymbolTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("_default", .synthetic_default, .{ .start = 0, .end = 0 });
+    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
     try std.testing.expect(!t.getPointsTo(id).isValid());
 
     const target: SymbolRef = .{ .bundler = .{

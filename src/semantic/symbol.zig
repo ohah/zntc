@@ -195,8 +195,8 @@ pub const DeclFlags = packed struct(u16) {
 
 /// Bundler가 생성한 합성 심볼 종류. #1328 Phase 4e-2.
 /// 선언 소스가 AST에 없는 심볼 — linker가 cross-module 연결용으로 추가.
-/// `re_export_alias`/`unresolved_external`은 값 의미가 없어 semantic 공간에
-/// 얹지 않으며, bundler 전용 `AliasTable`에 남는다 (RFC #1338 결정).
+/// `re_export_alias`는 값 의미가 없어 semantic 공간에 얹지 않으며 bundler
+/// 전용 `AliasTable`에 남는다 (RFC #1338 결정).
 pub const SyntheticKind = enum(u8) {
     /// `export default ...` 합성 변수 (`_default`, `_default$N`)
     default_export,
@@ -204,8 +204,6 @@ pub const SyntheticKind = enum(u8) {
     cjs_exports,
     /// ESM 래퍼의 `init_<module>` 함수
     esm_init,
-    /// `import * as X` namespace 객체
-    namespace,
 };
 
 /// 컴파일 타임 상수 값. 번들러에서 크로스-모듈 인라인에 사용.
