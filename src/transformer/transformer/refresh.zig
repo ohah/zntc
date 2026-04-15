@@ -400,7 +400,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
                                     first_arg.span.start & 0x8000_0000 == 0)
                                 {
                                     try sig_buf.append(self.allocator, '(');
-                                    try sig_buf.appendSlice(self.allocator, self.ast.source[first_arg.span.start..first_arg.span.end]);
+                                    try sig_buf.appendSlice(self.allocator, self.ast.getText(first_arg.span));
                                     try sig_buf.append(self.allocator, ')');
                                 }
                             }
@@ -445,7 +445,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
             if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len) {
                 const lhs = self.ast.getNode(lhs_idx);
                 if (lhs.span.start < lhs.span.end and lhs.span.start & 0x8000_0000 == 0) {
-                    lhs_text = self.ast.source[lhs.span.start..lhs.span.end];
+                    lhs_text = self.ast.getText(lhs.span);
                 }
             }
 

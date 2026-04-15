@@ -444,7 +444,7 @@ fn onCallExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex
     if (args_len != 0 or callee_idx.isNone()) return null;
     const callee = t.ast.getNode(callee_idx);
     if (callee.tag != .identifier_reference) return null;
-    const name = t.ast.source[callee.span.start..callee.span.end];
+    const name = t.ast.getText(callee.span);
     for (WEB_PLATFORM_CHECK_NAMES) |n| {
         if (std.mem.eql(u8, n, name)) {
             const true_span = try t.ast.addString("true");
@@ -473,7 +473,7 @@ fn hasFileWorkletDirective(t: *Transformer, list_start: u32, list_len: u32) bool
         if (inner_idx.isNone()) return false;
         const inner = t.ast.getNode(inner_idx);
         if (inner.tag != .string_literal) return false;
-        const text = t.ast.source[inner.span.start..inner.span.end];
+        const text = t.ast.getText(inner.span);
         if (std.mem.eql(u8, text, "\"worklet\"") or std.mem.eql(u8, text, "'worklet'")) return true;
     }
     return false;
@@ -551,7 +551,7 @@ fn isCommonJSExport(t: *Transformer, node: Node) bool {
     if (obj_idx.isNone()) return false;
     const obj = t.ast.getNode(obj_idx);
     if (obj.tag != .identifier_reference) return false;
-    const obj_name = t.ast.source[obj.span.start..obj.span.end];
+    const obj_name = t.ast.getText(obj.span);
     return std.mem.eql(u8, obj_name, "exports");
 }
 
@@ -568,7 +568,7 @@ fn hasWorkletContextObjectMarker(t: *Transformer, node: Node) bool {
         if (key_idx.isNone()) continue;
         const key = t.ast.getNode(key_idx);
         if (key.tag != .identifier_reference) continue;
-        const name = t.ast.source[key.span.start..key.span.end];
+        const name = t.ast.getText(key.span);
         if (std.mem.eql(u8, name, "__workletContextObject")) return true;
     }
     return false;
@@ -591,7 +591,7 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
         if (prop.tag == .object_property) {
             const key = t.ast.getNode(prop.data.binary.left);
             if (key.tag == .identifier_reference) {
-                const name = t.ast.source[key.span.start..key.span.end];
+                const name = t.ast.getText(key.span);
                 is_marker = std.mem.eql(u8, name, "__workletContextObject");
             }
         }
@@ -650,7 +650,7 @@ fn buildContextObjectFactoryBody(t: *Transformer, list_start: u32, list_len: u32
         if (member.tag == .object_property) {
             const k = t.ast.getNode(member.data.binary.left);
             if (k.tag == .identifier_reference) {
-                const name = t.ast.source[k.span.start..k.span.end];
+                const name = t.ast.getText(k.span);
                 if (std.mem.eql(u8, name, "__workletContextObject")) continue;
             }
             try t.scratch.append(t.allocator, child_idx);
@@ -781,7 +781,7 @@ fn getClassName(t: *Transformer, node: Node) ?[]const u8 {
     if (name_idx.isNone()) return null;
     const name_node = t.ast.getNode(name_idx);
     if (name_node.tag != .binding_identifier) return null;
-    return t.ast.source[name_node.span.start..name_node.span.end];
+    return t.ast.getText(name_node.span);
 }
 
 fn hasWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) bool {
@@ -801,7 +801,7 @@ fn hasWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) bool {
         if (key_idx.isNone()) continue;
         const key = t.ast.getNode(key_idx);
         if (key.tag != .identifier_reference) continue;
-        const name = t.ast.source[key.span.start..key.span.end];
+        const name = t.ast.getText(key.span);
         if (std.mem.eql(u8, name, "__workletClass")) return true;
     }
     return false;
@@ -828,7 +828,7 @@ fn stripWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) !NodeIndex {
                 if (!key_idx.isNone()) {
                     const key = t.ast.getNode(key_idx);
                     if (key.tag == .identifier_reference) {
-                        const name = t.ast.source[key.span.start..key.span.end];
+                        const name = t.ast.getText(key.span);
                         is_marker = std.mem.eql(u8, name, "__workletClass");
                     }
                 }

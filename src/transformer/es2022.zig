@@ -209,7 +209,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) continue;
 
-                        const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
+                        const orig_name = self.ast.getText(key_node.span);
                         const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
                         try method_mappings.append(self.allocator, .{
                             .original_name = orig_name,
@@ -231,7 +231,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         if (is_static and class_name_text == null) continue;
 
                         const init_val: NodeIndex = self.readNodeIdx(pe, 1);
-                        const orig_name = self.ast.source[key_node.span.start..key_node.span.end];
+                        const orig_name = self.ast.getText(key_node.span);
                         const var_name = try es_helpers.makePrivateVarName(self.allocator, orig_name);
 
                         try field_mappings.append(self.allocator, .{
@@ -442,7 +442,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
 
-            const orig_name = self.ast.source[prop_node.span.start..prop_node.span.end];
+            const orig_name = self.ast.getText(prop_node.span);
 
             // current_private_methods에서 매핑 찾기
             const mapping = findPrivateMethodMapping(self, orig_name) orelse return null;
@@ -486,7 +486,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
 
-            const orig_name = self.ast.source[prop_node.span.start..prop_node.span.end];
+            const orig_name = self.ast.getText(prop_node.span);
             const mapping = findPrivateMethodMapping(self, orig_name) orelse return null;
 
             const new_obj = try self.visitNode(obj_idx);

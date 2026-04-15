@@ -426,7 +426,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
             switch (tag_node.tag) {
                 .jsx_identifier => {
-                    const text = self.ast.source[tag_node.span.start..tag_node.span.end];
+                    const text = self.ast.getText(tag_node.span);
                     if (text.len > 0 and text[0] >= 'a' and text[0] <= 'z') {
                         // 소문자 → string_literal (따옴표 포함: codegen의 writeStringLiteral이 기대)
                         const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{text});
@@ -454,7 +454,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 },
                 .jsx_namespaced_name => {
                     // <xml:lang> → string_literal "xml:lang"
-                    const text = self.ast.source[tag_node.span.start..tag_node.span.end];
+                    const text = self.ast.getText(tag_node.span);
                     const quoted = try quoteString(self, text);
                     const str_span = try self.ast.addString(quoted);
                     return self.ast.addNode(.{
@@ -480,7 +480,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 try lowerJSXMemberExpr(self, left_node)
             else blk: {
                 // jsx_identifier → identifier_reference (symbol_id 전파로 번들러 rename 반영)
-                const text = self.ast.source[left_node.span.start..left_node.span.end];
+                const text = self.ast.getText(left_node.span);
                 const id_span = try self.ast.addString(text);
                 const new_idx = try self.ast.addNode(.{
                     .tag = .identifier_reference,
@@ -654,7 +654,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const value_idx = attr.data.binary.right;
 
             const name_node = self.ast.getNode(name_idx);
-            const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+            const name_text = self.ast.getText(name_node.span);
 
             // key: identifier_reference로 생성
             const key_span = try self.ast.addString(name_text);
@@ -782,7 +782,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             for (indices) |raw_idx| {
                 const child = self.ast.getNode(@enumFromInt(raw_idx));
                 if (child.tag == .jsx_text) {
-                    const text = self.ast.source[child.span.start..child.span.end];
+                    const text = self.ast.getText(child.span);
                     const trimmed = std.mem.trim(u8, text, " \t\n\r");
                     if (trimmed.len == 0) continue;
                 } else if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) {
@@ -813,7 +813,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     seen_spread = true;
                 } else if (attr.tag == .jsx_attribute) {
                     const key_node = self.ast.getNode(attr.data.binary.left);
-                    const name = self.ast.source[key_node.span.start..key_node.span.end];
+                    const name = self.ast.getText(key_node.span);
                     if (std.mem.eql(u8, name, "key")) {
                         return .{ .key_idx = @intCast(i), .key_after_spread = seen_spread };
                     }

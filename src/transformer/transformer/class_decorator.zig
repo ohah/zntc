@@ -688,7 +688,7 @@ pub fn classifyMethodDefinition(
         const key_idx = self.readNodeIdx(me, 0);
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .identifier_reference) {
-            const name = self.ast.source[key_node.span.start..key_node.span.end];
+            const name = self.ast.getText(key_node.span);
             break :blk std.mem.eql(u8, name, "constructor");
         }
         break :blk false;
@@ -1488,7 +1488,7 @@ pub fn serializeTypeAnnotation(self: *Transformer, type_ann_idx: NodeIndex) Erro
 
         // 타입 참조 (MyClass, Promise 등) → typeof 런타임 체크 (SWC 호환)
         .ts_type_reference => blk: {
-            const src_text = self.ast.source[type_node.span.start..type_node.span.end];
+            const src_text = self.ast.getText(type_node.span);
             const name_end = std.mem.indexOfScalar(u8, src_text, '<') orelse src_text.len;
             const name_only = src_text[0..name_end];
             break :blk makeTypeofGuard(self, name_only);
@@ -2612,13 +2612,13 @@ pub fn memberKeyToStringLiteral(self: *Transformer, key: NodeIndex) Error!NodeIn
 
     // numeric_literal → "0" 형태의 string literal로 변환
     if (key_node.tag == .numeric_literal) {
-        const src = self.ast.source[key_node.span.start..key_node.span.end];
+        const src = self.ast.getText(key_node.span);
         return self.wrapInStringLiteral(src);
     }
 
     // bigint_literal → "2" 형태로 변환 (끝의 n 제거)
     if (key_node.tag == .bigint_literal) {
-        const src = self.ast.source[key_node.span.start..key_node.span.end];
+        const src = self.ast.getText(key_node.span);
         const without_n = if (src.len > 0 and src[src.len - 1] == 'n') src[0 .. src.len - 1] else src;
         return self.wrapInStringLiteral(without_n);
     }

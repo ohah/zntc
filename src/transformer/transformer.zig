@@ -1678,7 +1678,7 @@ pub const Transformer = struct {
             const pat_node = self.ast.getNode(pattern);
             const is_wildcard = blk: {
                 if (pat_node.tag == .identifier_reference) {
-                    const text = self.ast.source[pat_node.span.start..pat_node.span.end];
+                    const text = self.ast.getText(pat_node.span);
                     break :blk std.mem.eql(u8, text, "_");
                 }
                 break :blk false;
@@ -3165,7 +3165,7 @@ pub const Transformer = struct {
                 const key_idx = self.readNodeIdx(e, 0);
                 const key_node = self.ast.getNode(key_idx);
                 if (key_node.tag == .identifier_reference) {
-                    const name = self.ast.source[key_node.span.start..key_node.span.end];
+                    const name = self.ast.getText(key_node.span);
                     break :blk std.mem.eql(u8, name, "constructor");
                 }
                 break :blk false;
@@ -3240,7 +3240,7 @@ pub const Transformer = struct {
             if (key_idx.isNone()) break :blk null;
             const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .identifier_reference) {
-                break :blk self.ast.source[key_node.span.start..key_node.span.end];
+                break :blk self.ast.getText(key_node.span);
             }
             break :blk null;
         };
@@ -3573,9 +3573,12 @@ pub const Transformer = struct {
         if (callee_idx.isNone()) return null;
 
         const callee_node = self.ast.getNode(callee_idx);
+        // 합성된 노드(es2018_for_await 등이 만든 __asyncValues 등)는 span 이 string_table 인코딩.
+        // self.ast.source[..] 직접 접근 시 STRING_TABLE_BIT 가 set 되어 OOB → SIGBUS (#1404).
+        // self.ast.getText(span) 가 두 경로 모두 처리.
         const callee_name: []const u8 = switch (callee_node.tag) {
             // scheduleOnUI(...) 형태
-            .identifier_reference => self.ast.source[callee_node.span.start..callee_node.span.end],
+            .identifier_reference => self.ast.getText(callee_node.span),
             // obj.onBegin(...) 형태 — 프로퍼티 이름만 추출
             .static_member_expression => blk: {
                 const me = callee_node.data.extra;
@@ -3583,7 +3586,7 @@ pub const Transformer = struct {
                 const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
                 if (prop_idx.isNone()) break :blk "";
                 const prop = self.ast.getNode(prop_idx);
-                break :blk self.ast.source[prop.span.start..prop.span.end];
+                break :blk self.ast.getText(prop.span);
             },
             else => return null,
         };
@@ -3624,7 +3627,7 @@ pub const Transformer = struct {
 
         // Identifier — 클래스 이름 직접 매칭
         if (node.tag == .identifier_reference) {
-            const name = self.ast.source[node.span.start..node.span.end];
+            const name = self.ast.getText(node.span);
             for (wp.LAYOUT_ANIMATION_CLASSES) |c| {
                 if (std.mem.eql(u8, c, name)) return true;
             }
@@ -3648,7 +3651,7 @@ pub const Transformer = struct {
             const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
             if (prop_idx.isNone()) return false;
             const prop = self.ast.getNode(prop_idx);
-            const prop_name = self.ast.source[prop.span.start..prop.span.end];
+            const prop_name = self.ast.getText(prop.span);
             var chainable = false;
             for (wp.LAYOUT_ANIMATION_CHAINABLE_METHODS) |m| {
                 if (std.mem.eql(u8, m, prop_name)) {
@@ -3685,12 +3688,12 @@ pub const Transformer = struct {
 
         // 직접: `Gesture.Foo()` — object가 `Gesture` identifier + property가 gesture object 이름
         if (obj_node.tag == .identifier_reference) {
-            const obj_name = self.ast.source[obj_node.span.start..obj_node.span.end];
+            const obj_name = self.ast.getText(obj_node.span);
             if (!std.mem.eql(u8, obj_name, "Gesture")) return false;
             const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
             if (prop_idx.isNone()) return false;
             const prop = self.ast.getNode(prop_idx);
-            const prop_name = self.ast.source[prop.span.start..prop.span.end];
+            const prop_name = self.ast.getText(prop.span);
             const wp = @import("plugins/worklet_plugin.zig");
             for (wp.GESTURE_OBJECT_NAMES) |g| {
                 if (std.mem.eql(u8, g, prop_name)) return true;
