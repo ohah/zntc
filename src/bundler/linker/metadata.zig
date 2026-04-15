@@ -1150,11 +1150,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
 
-            const canonical_mod = @intFromEnum(rec.resolved);
-            const target_name = if (self.getCanonicalName(@intCast(canonical_mod), ib.imported_name)) |renamed|
-                renamed
-            else
-                ib.imported_name;
+            const target_name = self.getCanonicalByRef(ib.symbol) orelse ib.imported_name;
 
             if (!std.mem.eql(u8, ib.local_name, target_name)) {
                 // 모듈 스코프에서 import binding의 심볼 인덱스 찾기
