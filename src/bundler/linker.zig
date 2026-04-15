@@ -877,19 +877,19 @@ pub const Linker = struct {
         const mod_i = @intFromEnum(ref.moduleIndex());
         if (mod_i >= self.modules.len) return null;
         const m = &self.modules[mod_i];
-        switch (ref) {
-            .alias => |a| {
-                const t = if (m.alias_table) |*at| at else return null;
-                return if (t.hasCanonicalName(a.symbol)) t.getCanonicalName(a.symbol) else null;
+        return switch (ref) {
+            .alias => |a| blk: {
+                const t = if (m.alias_table) |*at| at else break :blk null;
+                break :blk if (t.hasCanonicalName(a.symbol)) t.getCanonicalName(a.symbol) else null;
             },
-            .semantic => |s| {
-                const sem = m.semantic orelse return null;
+            .semantic => |s| blk: {
+                const sem = m.semantic orelse break :blk null;
                 const idx: u32 = @intFromEnum(s.symbol);
-                if (idx >= sem.symbols.items.len) return null;
+                if (idx >= sem.symbols.items.len) break :blk null;
                 const name = sem.symbols.items[idx].nameText(m.source);
-                return self.getCanonicalName(mod_i, name);
+                break :blk self.getCanonicalName(mod_i, name);
             },
-        }
+        };
     }
 
     // ================================================================
