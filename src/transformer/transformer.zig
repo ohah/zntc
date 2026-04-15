@@ -49,6 +49,7 @@ const es2015_class = @import("es2015_class.zig");
 const es2015_generator = @import("es2015_generator.zig");
 const es2025_using = @import("es2025_using.zig");
 const regex_lower = @import("regex_lower.zig");
+const unicode_escape_lower = @import("unicode_escape_lower.zig");
 const es2022_tla = @import("es2022_tla.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
@@ -1089,12 +1090,30 @@ pub const Transformer = struct {
             .boolean_literal,
             .null_literal,
             .numeric_literal,
-            .string_literal,
             .bigint_literal,
             => self.copyNodeDirect(node),
+            .string_literal => blk: {
+                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(node);
+                const raw = self.ast.getText(node.span);
+                // raw는 따옴표를 포함. content 만 변환 후 다시 조립.
+                if (raw.len < 2) break :blk self.copyNodeDirect(node);
+                const quote = raw[0];
+                if (quote != '"' and quote != '\'') break :blk self.copyNodeDirect(node);
+                const content = raw[1 .. raw.len - 1];
+                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, content)) orelse break :blk self.copyNodeDirect(node);
+                defer self.allocator.free(lowered);
+                const new_raw = try std.fmt.allocPrint(self.allocator, "{c}{s}{c}", .{ quote, lowered, quote });
+                defer self.allocator.free(new_raw);
+                const new_span = try self.ast.addString(new_raw);
+                break :blk try self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = new_span,
+                    .data = .{ .string_ref = new_span },
+                });
+            },
             .regexp_literal => blk: {
                 const u = self.options.unsupported;
-                if (!(u.regex_dotall or u.regex_named_groups or u.regex_sticky)) {
+                if (!(u.regex_dotall or u.regex_named_groups or u.regex_sticky or u.unicode_brace_escape)) {
                     break :blk self.copyNodeDirect(node);
                 }
                 const raw = self.ast.getText(node.span);
@@ -1151,13 +1170,24 @@ pub const Transformer = struct {
                 }
                 return self.copyNodeDirect(node);
             },
+            .template_element => blk: {
+                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(node);
+                const raw = self.ast.getText(node.span);
+                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, raw)) orelse break :blk self.copyNodeDirect(node);
+                defer self.allocator.free(lowered);
+                const new_span = try self.ast.addString(lowered);
+                break :blk try self.ast.addNode(.{
+                    .tag = .template_element,
+                    .span = new_span,
+                    .data = node.data,
+                });
+            },
             .private_identifier,
             .empty_statement,
             .debugger_statement,
             .directive,
             .hashbang,
             .super_expression,
-            .template_element,
             .elision,
             .jsx_empty_expression,
             .jsx_identifier,

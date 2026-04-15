@@ -163,6 +163,18 @@ pub fn buildRawStringLiteral(self: anytype, text: []const u8) !NodeIndex {
 
     buf.appendAssumeCapacity('"');
 
+    // unicode brace escape lowering (#1388) — target 이 `\u{X}` 미지원이면 surrogate pair 로 치환.
+    if (self.options.unsupported.unicode_brace_escape) {
+        const unicode_escape_lower = @import("unicode_escape_lower.zig");
+        if (try unicode_escape_lower.lowerContent(self.allocator, buf.items[1 .. buf.items.len - 1])) |lowered| {
+            defer self.allocator.free(lowered);
+            buf.clearRetainingCapacity();
+            try buf.append(self.allocator, '"');
+            try buf.appendSlice(self.allocator, lowered);
+            try buf.append(self.allocator, '"');
+        }
+    }
+
     const str_span = try self.ast.addString(buf.items);
     return self.ast.addNode(.{
         .tag = .string_literal,
@@ -210,6 +222,17 @@ pub fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     }
 
     buf.appendAssumeCapacity('"');
+
+    if (self.options.unsupported.unicode_brace_escape) {
+        const unicode_escape_lower = @import("unicode_escape_lower.zig");
+        if (try unicode_escape_lower.lowerContent(self.allocator, buf.items[1 .. buf.items.len - 1])) |lowered| {
+            defer self.allocator.free(lowered);
+            buf.clearRetainingCapacity();
+            try buf.append(self.allocator, '"');
+            try buf.appendSlice(self.allocator, lowered);
+            try buf.append(self.allocator, '"');
+        }
+    }
 
     const str_span = try self.ast.addString(buf.items);
     return self.ast.addNode(.{

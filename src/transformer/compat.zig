@@ -95,11 +95,14 @@ pub const Feature = enum(u5) {
     regex_sticky, // /y flag (ES2015)
     regex_dotall, // /s flag (ES2018) — `.` → `[\s\S]` + flag strip
     regex_named_groups, // (?<name>...) (ES2018) — positional group으로 strip
+    /// `\u{X}` brace unicode escape (ES2015). 문자열/template 내부는 surrogate pair로,
+    /// regex 의 `u` flag + `\u{X}` 도 surrogate pair + flag strip (#1388).
+    unicode_brace_escape,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
         return switch (self) {
-            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target, .regex_sticky => .es2015,
+            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target, .regex_sticky, .unicode_brace_escape => .es2015,
             .exponentiation => .es2016,
             .async_await => .es2017,
             .object_spread, .regex_dotall, .regex_named_groups => .es2018,
@@ -157,8 +160,9 @@ pub const UnsupportedFeatures = packed struct(u32) {
     regex_sticky: bool = false,
     regex_dotall: bool = false,
     regex_named_groups: bool = false,
+    unicode_brace_escape: bool = false,
 
-    _: u5 = 0,
+    _: u4 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -487,6 +491,17 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .regex_dotall, .engine = .ios, .major = 11, .minor = 3 },
     // hermes: 미지원
 
+    // ── ES2015: unicode_brace_escape (`\u{XXXX}`) ──
+    // 문자열/regex의 brace unicode escape. ES2015 도입.
+    .{ .feature = .unicode_brace_escape, .engine = .chrome, .major = 44 },
+    .{ .feature = .unicode_brace_escape, .engine = .firefox, .major = 53 },
+    .{ .feature = .unicode_brace_escape, .engine = .safari, .major = 10 },
+    .{ .feature = .unicode_brace_escape, .engine = .edge, .major = 12 },
+    .{ .feature = .unicode_brace_escape, .engine = .node, .major = 4 },
+    .{ .feature = .unicode_brace_escape, .engine = .deno, .major = 1 },
+    .{ .feature = .unicode_brace_escape, .engine = .ios, .major = 10 },
+    .{ .feature = .unicode_brace_escape, .engine = .hermes, .major = 0 },
+
     // ── ES2018: regex_named_groups ──
     .{ .feature = .regex_named_groups, .engine = .chrome, .major = 64 },
     .{ .feature = .regex_named_groups, .engine = .firefox, .major = 78 },
@@ -566,6 +581,7 @@ pub fn fromHermesPreset() UnsupportedFeatures {
         .regex_sticky = true,
         .regex_dotall = true,
         .regex_named_groups = true,
+        .unicode_brace_escape = true,
     };
 }
 

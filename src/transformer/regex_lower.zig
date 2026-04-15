@@ -6,7 +6,7 @@
 //!     → positional group으로만 보존. `match.groups` 객체는 포기.
 //!   - /y (sticky, ES2015): 미지원 타겟에서 flag strip (런타임 동작 변경 있음 — 경고)
 //!
-//! `u` flag + `\u{...}` brace 는 범위 밖 (#1388).
+//! - `u` flag + `\u{...}` brace (ES2015): `\u{X}` → surrogate pair / BMP escape + `u` flag strip (#1388)
 //!
 //! 참고:
 //! - esbuild: internal/js_parser/js_parser.go — visitRegExpLiteral / js_lexer regex scanner
@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const compat = @import("compat.zig");
+const unicode_escape_lower = @import("unicode_escape_lower.zig");
 
 pub const Options = struct {
     unsupported: compat.UnsupportedFeatures,
@@ -40,26 +41,32 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
 
     const has_s = std.mem.indexOfScalar(u8, flags, 's') != null;
     const has_y = std.mem.indexOfScalar(u8, flags, 'y') != null;
+    const has_u = std.mem.indexOfScalar(u8, flags, 'u') != null;
 
     const need_dotall = has_s and opts.unsupported.regex_dotall;
     const need_named = opts.unsupported.regex_named_groups and hasNamedGroup(pattern);
     const need_sticky = has_y and opts.unsupported.regex_sticky;
+    // `u` flag 자체는 runtime 지원 대상이 아니지만, `\u{X}` brace escape 는 `u` flag 하에서만
+    // 허용된다. brace escape 를 surrogate pair 로 내리면서 flag 도 함께 strip 한다.
+    const need_unicode = has_u and opts.unsupported.unicode_brace_escape;
 
-    if (!need_dotall and !need_named and !need_sticky) return .{ .text = null };
+    if (!need_dotall and !need_named and !need_sticky and !need_unicode) return .{ .text = null };
 
-    // /pattern/flags 를 단일 버퍼로 조립. dotAll 치환을 고려해 +4 여유.
+    // /pattern/flags 를 단일 버퍼로 조립. dotAll/unicode 치환을 고려해 +8 여유.
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, raw.len + 4);
+    try out.ensureTotalCapacity(allocator, raw.len + 8);
     try out.append(allocator, '/');
     try rewritePattern(allocator, &out, pattern, .{
         .dotall = need_dotall,
         .strip_named = need_named,
+        .unicode_brace = need_unicode,
     });
     try out.append(allocator, '/');
     for (flags) |c| {
         if (need_dotall and c == 's') continue;
         if (need_sticky and c == 'y') continue;
+        if (need_unicode and c == 'u') continue;
         try out.append(allocator, c);
     }
     return .{ .text = try out.toOwnedSlice(allocator) };
@@ -68,6 +75,7 @@ pub fn lower(allocator: std.mem.Allocator, raw: []const u8, opts: Options) !Resu
 const PatternOpts = struct {
     dotall: bool,
     strip_named: bool,
+    unicode_brace: bool,
 };
 
 /// pattern 내부를 character class / escape 를 고려하며 순회하여 변환.
@@ -82,8 +90,16 @@ fn rewritePattern(
     while (i < pattern.len) {
         const c = pattern[i];
 
-        // escape: 그대로 복사.
+        // escape
         if (c == '\\') {
+            // `\u{XXXX}` brace unicode escape → surrogate pair / BMP escape
+            if (opts.unicode_brace and i + 2 < pattern.len and pattern[i + 1] == 'u' and pattern[i + 2] == '{') {
+                if (parseBraceHex(pattern, i + 2)) |r| {
+                    try appendCodepointEscape(allocator, out, r.cp);
+                    i = r.end;
+                    continue;
+                }
+            }
             try out.append(allocator, c);
             if (i + 1 < pattern.len) {
                 try out.append(allocator, pattern[i + 1]);
@@ -141,6 +157,46 @@ fn rewritePattern(
                 i += 1;
             },
         }
+    }
+}
+
+fn hexVal(c: u8) ?u32 {
+    return switch (c) {
+        '0'...'9' => @as(u32, c - '0'),
+        'a'...'f' => @as(u32, c - 'a' + 10),
+        'A'...'F' => @as(u32, c - 'A' + 10),
+        else => null,
+    };
+}
+
+/// `\u{` 바로 다음의 `{` 위치를 받아 hex 를 파싱. 닫는 `}` 까지 포함한 end 반환.
+fn parseBraceHex(s: []const u8, start_brace: usize) ?struct { cp: u32, end: usize } {
+    var i: usize = start_brace + 1;
+    var cp: u32 = 0;
+    var any: bool = false;
+    while (i < s.len and s[i] != '}') : (i += 1) {
+        const h = hexVal(s[i]) orelse return null;
+        cp = (cp << 4) | h;
+        if (cp > 0x10FFFF) return null;
+        any = true;
+    }
+    if (!any or i >= s.len or s[i] != '}') return null;
+    return .{ .cp = cp, .end = i + 1 };
+}
+
+fn appendHexUnit(allocator: std.mem.Allocator, out: *std.ArrayList(u8), unit: u32) !void {
+    var buf: [6]u8 = undefined;
+    _ = std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{unit}) catch unreachable;
+    try out.appendSlice(allocator, &buf);
+}
+
+fn appendCodepointEscape(allocator: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !void {
+    if (cp <= 0xFFFF) {
+        try appendHexUnit(allocator, out, cp);
+    } else {
+        const v = cp - 0x10000;
+        try appendHexUnit(allocator, out, 0xD800 | (v >> 10));
+        try appendHexUnit(allocator, out, 0xDC00 | (v & 0x3FF));
     }
 }
 
@@ -229,6 +285,29 @@ test "regex: dotAll + sticky 함께" {
     const out = (try runLower("/a.b/sy", .{ .regex_dotall = true, .regex_sticky = true })).?;
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("/a[\\s\\S]b/", out);
+}
+
+test "regex: u + \\u{1F600} → surrogate pair + u strip" {
+    const out = (try runLower("/\\u{1F600}/u", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/\\uD83D\\uDE00/", out);
+}
+
+test "regex: u + BMP \\u{41} → \\u0041 + u strip" {
+    const out = (try runLower("/\\u{41}/u", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/\\u0041/", out);
+}
+
+test "regex: u flag 없으면 no-op" {
+    const out = try runLower("/\\u0041/", .{ .unicode_brace_escape = true });
+    try testing.expect(out == null);
+}
+
+test "regex: u + character class" {
+    const out = (try runLower("/[\\u{1F600}]/u", .{ .unicode_brace_escape = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/[\\uD83D\\uDE00]/", out);
 }
 
 test "regex: esnext (미지원 없음) no-op" {
