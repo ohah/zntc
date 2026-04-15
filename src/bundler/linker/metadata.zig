@@ -193,7 +193,7 @@ pub fn buildMetadataForAst(
         var exported_locals = std.StringHashMap(void).init(self.allocator);
         defer exported_locals.deinit();
         for (m.export_bindings) |eb| {
-            if (eb.kind == .local) try exported_locals.put(eb.local_name, {});
+            if (eb.kind == .local) try exported_locals.put(m.exportBindingLocalName(eb), {});
         }
 
         // import 바인딩 → canonical 이름
