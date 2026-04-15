@@ -49,7 +49,7 @@ fn hexVal(c: u8) ?u32 {
 
 /// `\u{` 가 content[pos-1] (이미 `\` 에서 시작해 pos가 'u'의 위치 + 2) 에서 시작한다고 가정하고,
 /// 닫는 `}` 까지 파싱한 codepoint 와 `}` 직후 인덱스를 반환. 실패 시 null.
-fn parseBraceHex(content: []const u8, start_brace: usize) ?struct { cp: u32, end: usize } {
+pub fn parseBraceHex(content: []const u8, start_brace: usize) ?struct { cp: u32, end: usize } {
     // content[start_brace] == '{'
     var i: usize = start_brace + 1;
     var cp: u32 = 0;
@@ -65,13 +65,13 @@ fn parseBraceHex(content: []const u8, start_brace: usize) ?struct { cp: u32, end
     return .{ .cp = cp, .end = i + 1 };
 }
 
-fn appendUnit(out: *std.ArrayList(u8), allocator: std.mem.Allocator, unit: u32) !void {
+pub fn appendUnit(out: *std.ArrayList(u8), allocator: std.mem.Allocator, unit: u32) !void {
     var buf: [6]u8 = undefined;
     _ = std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{unit}) catch unreachable;
     try out.appendSlice(allocator, &buf);
 }
 
-fn appendCodepoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, cp: u32) !void {
+pub fn appendCodepoint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, cp: u32) !void {
     if (cp <= 0xFFFF) {
         try appendUnit(out, allocator, cp);
     } else {
