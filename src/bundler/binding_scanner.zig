@@ -40,6 +40,12 @@ pub const ImportBinding = struct {
     /// Phase 3에서 linker가 cross-module resolve로 채움. 기존 문자열 로직은
     /// 병존 (Phase 4에서 제거).
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
+    /// #1328 Phase 4c-3b: 현재 모듈의 로컬 바인딩 심볼 (semantic scope).
+    /// import preamble/rename 경로에서 "현재 모듈 기준" canonical 조회에 사용.
+    /// `symbol`은 source 모듈 쪽을 가리키므로 local 경로에는 쓸 수 없다.
+    /// linker.populateImportLocalSymbols가 채움. invalid = synthetic binding 등
+    /// semantic scope에 로컬이 없는 경우.
+    local_symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
     pub const Kind = enum {
         default,
