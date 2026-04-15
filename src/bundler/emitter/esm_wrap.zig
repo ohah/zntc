@@ -395,7 +395,7 @@ pub fn emitEsmWrappedModule(
             defer visited.deinit();
 
             for (module.export_bindings) |eb| {
-                if (eb.kind != .re_export_all) continue;
+                if (!eb.kind.isReExportAll()) continue;
                 const rec_idx = eb.import_record_index orelse continue;
                 if (rec_idx >= module.import_records.len) continue;
                 const source_mod_idx = module.import_records[rec_idx].resolved;
@@ -664,7 +664,7 @@ pub fn emitEsmWrappedModule(
         defer re_export_inited.deinit();
 
         for (module.export_bindings) |eb| {
-            if (eb.kind != .re_export_all and eb.kind != .re_export) continue;
+            if (!eb.kind.isReExportAll() and eb.kind != .re_export) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= module.import_records.len) continue;
             const source_mod_idx = module.import_records[rec_idx].resolved;
@@ -953,7 +953,7 @@ fn collectStarExportNames(
 
     // 직접 선언된 export 수집 (local + re_export + named re_export_all)
     for (m.export_bindings) |eb| {
-        if (eb.kind == .re_export_all and std.mem.eql(u8, eb.exported_name, "*")) continue;
+        if (eb.kind == .re_export_star) continue;
         if (!seen.contains(eb.exported_name)) {
             try seen.put(eb.exported_name, {});
         }
@@ -961,7 +961,7 @@ fn collectStarExportNames(
 
     // export * from 재귀 — 소스 모듈의 export도 수집
     for (m.export_bindings) |eb| {
-        if (eb.kind != .re_export_all) continue;
+        if (!eb.kind.isReExportAll()) continue;
         if (!std.mem.eql(u8, eb.exported_name, "*")) continue;
         const rec_idx = eb.import_record_index orelse continue;
         if (rec_idx >= m.import_records.len) continue;

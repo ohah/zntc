@@ -887,7 +887,7 @@ pub fn computeAllUsedNames(
 
         // export_bindings 중 re_export / re_export_all → 타겟 모듈로 역매핑
         for (importer.export_bindings) |ieb| {
-            if (ieb.kind != .re_export_all and ieb.kind != .re_export) continue;
+            if (!ieb.kind.isReExportAll() and ieb.kind != .re_export) continue;
             const rec_idx = ieb.import_record_index orelse continue;
             if (rec_idx >= importer.import_records.len) continue;
             const target = importer.import_records[rec_idx].resolved;
@@ -900,7 +900,7 @@ pub fn computeAllUsedNames(
                 .imported_name = ieb.local_name,
                 .local_name = ieb.local_name,
                 .exported_name = ieb.exported_name,
-                .kind = if (ieb.kind == .re_export_all) .re_export_all else .re_export,
+                .kind = if (ieb.kind.isReExportAll()) .re_export_all else .re_export,
             });
         }
 
@@ -940,7 +940,7 @@ pub fn computeAllUsedNames(
             &.{};
 
         for (m.export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
+            if (eb.kind.isReExportAll()) continue;
             if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
             // 크로스-모듈 BFS 도달성

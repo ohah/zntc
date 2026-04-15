@@ -173,7 +173,7 @@ test "export binding: export all" {
 
     try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
     try std.testing.expectEqualStrings("*", r.export_bindings[0].exported_name);
-    try std.testing.expectEqual(ExportBinding.Kind.re_export_all, r.export_bindings[0].kind);
+    try std.testing.expectEqual(ExportBinding.Kind.re_export_star, r.export_bindings[0].kind);
 }
 
 test "export binding: export function" {

@@ -78,9 +78,19 @@ pub const ExportBinding = struct {
     symbol: symbol_mod.SymbolRef = symbol_mod.SymbolRef.invalid,
 
     pub const Kind = enum {
+        /// 현재 모듈에서 직접 선언/할당된 export.
         local,
+        /// source에서 명시적으로 가져온 named re-export (예: `export { x } from`).
         re_export,
-        re_export_all,
+        /// `export * from './m'` — 모든 export 합치기 (alias 없음).
+        re_export_star,
+        /// `export * as ns from './m'` — namespace 객체로 노출.
+        re_export_namespace,
+
+        /// `re_export_star`/`re_export_namespace` 통칭 (구 `re_export_all`).
+        pub fn isReExportAll(self: Kind) bool {
+            return self == .re_export_star or self == .re_export_namespace;
+        }
     };
 
     /// 이 export 때문에 현재 모듈에 `_default` 합성 변수가 생기는지 확인.
@@ -378,7 +388,7 @@ pub fn extractExportBindings(
                         .exported_name = name_text,
                         .local_name = name_text,
                         .local_span = node.span,
-                        .kind = .re_export_all,
+                        .kind = .re_export_namespace,
                         .import_record_index = rec_idx,
                     });
                 } else {
@@ -387,7 +397,7 @@ pub fn extractExportBindings(
                         .exported_name = "*",
                         .local_name = "*",
                         .local_span = node.span,
-                        .kind = .re_export_all,
+                        .kind = .re_export_star,
                         .import_record_index = rec_idx,
                     });
                 }

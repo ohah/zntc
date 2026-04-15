@@ -491,7 +491,7 @@ pub const TreeShaker = struct {
                 if (sem.scope_maps.len == 0) continue;
                 const mi: u32 = @intCast(i);
                 for (m.export_bindings) |eb| {
-                    if (eb.kind == .re_export_all) continue;
+                    if (eb.kind.isReExportAll()) continue;
                     if (!self.entry_set.isSet(i) and !self.isExportUsed(mi, eb.exported_name)) continue;
                     if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
                         if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
@@ -538,7 +538,7 @@ pub const TreeShaker = struct {
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
             for (m.export_bindings) |eb| {
-                if (eb.kind == .re_export_all) continue;
+                if (eb.kind.isReExportAll()) continue;
                 if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
                     if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
                         if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
@@ -732,12 +732,12 @@ pub const TreeShaker = struct {
         }
         // re-export 처리
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+            if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {
                     const src = @intFromEnum(m.import_records[rec_idx].resolved);
                     if (src >= self.modules.len) continue;
-                    if (eb.kind == .re_export_all) {
+                    if (eb.kind.isReExportAll()) {
                         try self.markAllExportsUsed(@intCast(src));
                         self.included.set(src);
                         try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
@@ -779,12 +779,12 @@ pub const TreeShaker = struct {
         if (mod_idx >= self.modules.len) return;
         const m = self.modules[mod_idx];
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+            if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= m.import_records.len) continue;
             const src = @intFromEnum(m.import_records[rec_idx].resolved);
             if (src >= self.modules.len) continue;
-            if (eb.kind == .re_export_all) {
+            if (eb.kind.isReExportAll()) {
                 self.included.set(src);
                 try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
             } else {
@@ -809,7 +809,7 @@ pub const TreeShaker = struct {
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             for (m.export_bindings) |eb| {
-                if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+                if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
                 if (check_used and !self.isExportUsed(@intCast(i), eb.exported_name)) continue;
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
@@ -819,7 +819,7 @@ pub const TreeShaker = struct {
                                 self.included.set(src);
                                 changed = true;
                             }
-                            if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                            if (eb.kind == .re_export_namespace) {
                                 try self.markAllExportsUsed(@intCast(src));
                             } else if (!check_used) {
                                 try self.markAllExportsUsed(@intCast(src));
@@ -936,13 +936,13 @@ pub const TreeShaker = struct {
         const m = self.modules[module_index];
         for (m.export_bindings) |eb| {
             // re-export 소스 include는 "*" skip 전에 처리
-            if (eb.kind == .re_export_all or eb.kind == .re_export) {
+            if (eb.kind.isReExportAll() or eb.kind == .re_export) {
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const source_mod = @intFromEnum(m.import_records[rec_idx].resolved);
                         if (source_mod < self.modules.len) {
                             if (!self.included.isSet(source_mod)) self.included.set(source_mod);
-                            if (eb.kind == .re_export_all) {
+                            if (eb.kind.isReExportAll()) {
                                 try self.markAllExportsUsed(@intCast(source_mod));
                             } else {
                                 // named re-export: canonical 모듈도 include
@@ -961,7 +961,7 @@ pub const TreeShaker = struct {
                         }
                     }
                 }
-                if (eb.kind == .re_export_all) continue;
+                if (eb.kind.isReExportAll()) continue;
             }
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
@@ -972,7 +972,7 @@ pub const TreeShaker = struct {
     fn hasAnyUsedExport(self: *const TreeShaker, module_index: u32) bool {
         if (module_index >= self.modules.len) return false;
         for (self.modules[module_index].export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
+            if (eb.kind.isReExportAll()) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
             if (self.isExportUsed(module_index, eb.exported_name)) return true;
         }
