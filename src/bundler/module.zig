@@ -208,6 +208,23 @@ pub const Module = struct {
         return sem.symbols.items;
     }
 
+    /// exported_name으로 ExportBinding을 찾는다. #1338 Phase 4c-1 Export Registry.
+    /// 선형 스캔 — 일반적으로 모듈당 export 수가 < 20 수준이라 충분히 빠름.
+    /// 성능 프로파일에서 병목이 되면 내부적으로 HashMap 구축 가능 (R1 캡슐화).
+    pub fn findExportBinding(self: *const Module, exported_name: []const u8) ?*const ExportBinding {
+        for (self.export_bindings) |*eb| {
+            if (std.mem.eql(u8, eb.exported_name, exported_name)) return eb;
+        }
+        return null;
+    }
+
+    /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
+    /// #1338 Phase 4c-1: 문자열 기반 lookup을 SymbolRef로 승격하기 위한 진입점.
+    pub fn findExportSymbol(self: *const Module, exported_name: []const u8) symbol_mod.SymbolRef {
+        if (self.findExportBinding(exported_name)) |eb| return eb.symbol;
+        return symbol_mod.SymbolRef.invalid;
+    }
+
     /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
     /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
     pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {
