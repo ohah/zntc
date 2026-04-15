@@ -39,6 +39,7 @@ pub const module_store = @import("module_store.zig");
 pub const css_scanner = @import("css_scanner.zig");
 pub const css_emitter = @import("css_emitter.zig");
 pub const symbol = @import("symbol.zig");
+pub const asset_meta = @import("asset_meta.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -65,6 +66,7 @@ pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
 pub const RN_BOOL_PRESET = bundler_core.RN_BOOL_PRESET;
+pub const RN_DEFAULT_ASSET_REGISTRY = bundler_core.RN_DEFAULT_ASSET_REGISTRY;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
 pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
@@ -115,6 +117,7 @@ test {
     _ = @import("types_test.zig");
     _ = @import("module_test.zig");
     _ = @import("plugin_test.zig");
+    _ = asset_meta;
     _ = incremental;
     _ = @import("incremental_test.zig");
 }

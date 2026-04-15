@@ -2099,6 +2099,28 @@ fn parseBuildOptions(
     const entry_names = ownStr(env, opts_obj, "entryNames", owned_strings);
     const chunk_names = ownStr(env, opts_obj, "chunkNames", owned_strings);
     const asset_names = ownStr(env, opts_obj, "assetNames", owned_strings);
+    // assetRegistry: string (경로), null/undefined (플랫폼 프리셋 결정), false (명시적 off).
+    // false를 구분하기 위해 boolean 타입을 별도 체크.
+    const asset_registry: ?[]const u8 = blk: {
+        if (getNamedProperty(env, opts_obj, "assetRegistry")) |v| {
+            var t: c.napi_valuetype = undefined;
+            _ = c.napi_typeof(env, v, &t);
+            if (t == c.napi_boolean) {
+                var b: bool = false;
+                _ = c.napi_get_value_bool(env, v, &b);
+                if (!b) break :blk null; // false → off (RN preset도 덮음)
+            } else if (t == c.napi_string) {
+                const s = getStringArg(env, v, native_alloc) orelse break :blk null;
+                if (!trackStr(owned_strings, s)) return null;
+                break :blk s;
+            }
+        }
+        // 미지정 + RN 플랫폼 → 기본 경로. 그 외 → null.
+        if (platform == .react_native) {
+            break :blk bundler_mod.RN_DEFAULT_ASSET_REGISTRY;
+        }
+        break :blk null;
+    };
 
     // JSX
     const jsx_str = ownStr(env, opts_obj, "jsx", owned_strings);
@@ -2301,6 +2323,7 @@ fn parseBuildOptions(
         .entry_names = entry_names orelse "[name]",
         .chunk_names = chunk_names orelse "[name]-[hash]",
         .asset_names = asset_names orelse "[name]-[hash]",
+        .asset_registry = asset_registry,
         .jsx_runtime = jsx_runtime,
         .jsx_factory = jsx_factory orelse "React.createElement",
         .jsx_fragment = jsx_fragment orelse "React.Fragment",
