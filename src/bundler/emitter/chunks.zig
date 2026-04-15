@@ -860,14 +860,22 @@ pub fn computeAllUsedNames(
     // target_module_index → 해당 모듈을 import하는 바인딩 목록
     // 기존: 매 모듈의 export마다 모든 importer × 모든 binding을 순회 (O(n × e × i × b))
     // 최적화: 맵을 한 번 구축하여 O(1) 룩업 (O(n × relevant_bindings))
-    const RevKind = enum { import_binding_named, import_binding_other, re_export, re_export_all };
+    const RevKind = enum {
+        import_binding_named,
+        import_binding_other,
+        re_export,
+        /// `export * from './m'` (alias 없음).
+        re_export_star,
+        /// `export * as ns from './m'` (named namespace).
+        re_export_namespace,
+    };
     const RevEntry = struct {
         importer_module_index: u32,
         /// import_binding: imported_name / re_export: local_name (= 소스 모듈의 exported_name)
         imported_name: []const u8,
         /// import_binding: local_name (importer 내 바인딩 이름)
         local_name: []const u8,
-        /// re_export_all인 경우 importer의 exported_name ("*"이면 unnamed re_export_all)
+        /// re_export_namespace의 노출 이름. 다른 kind에서는 사용되지 않음.
         exported_name: []const u8,
         kind: RevKind,
     };
@@ -900,7 +908,11 @@ pub fn computeAllUsedNames(
                 .imported_name = ieb.local_name,
                 .local_name = ieb.local_name,
                 .exported_name = ieb.exported_name,
-                .kind = if (ieb.kind.isReExportAll()) .re_export_all else .re_export,
+                .kind = switch (ieb.kind) {
+                    .re_export_star => .re_export_star,
+                    .re_export_namespace => .re_export_namespace,
+                    else => .re_export,
+                },
             });
         }
 
@@ -963,8 +975,8 @@ pub fn computeAllUsedNames(
                     var found_any = false;
                     for (rev_entries) |re| {
                         switch (re.kind) {
-                            // re_export_all: 이 모듈 전체를 re-export → dead 아님
-                            .re_export_all => break :is_dead false,
+                            // 모듈 전체를 re-export → dead 아님
+                            .re_export_star, .re_export_namespace => break :is_dead false,
                             // re_export: imported_name이 이 export의 exported_name과 같으면 dead 아님
                             .re_export => {
                                 if (std.mem.eql(u8, re.imported_name, eb.exported_name))
@@ -1001,11 +1013,10 @@ pub fn computeAllUsedNames(
             for (rev_entries) |re| {
                 if (all_used) break;
                 switch (re.kind) {
-                    .re_export_all => {
-                        // re_export_all with exported_name != "*" → all_used
-                        if (!std.mem.eql(u8, re.exported_name, "*")) {
-                            all_used = true;
-                        }
+                    .re_export_star => {},
+                    .re_export_namespace => {
+                        // namespace 객체로 노출되는 경우 소스 모듈 전체 export 사용.
+                        all_used = true;
                     },
                     .re_export => {},
                     .import_binding_named => {
