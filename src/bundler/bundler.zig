@@ -82,6 +82,8 @@ pub const BundleOptions = struct {
     preserve_symlinks: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
     alias: []const types.AliasEntry = &.{},
+    /// Fallback (webpack resolve.fallback / Metro extraNodeModules). 해석 실패 시에만 적용.
+    fallback: []const types.FallbackEntry = &.{},
     /// 에셋/청크 URL prefix (--public-path). 동적 import 경로에 적용.
     public_path: []const u8 = "",
     /// 번들 출력 앞에 삽입할 텍스트 (--banner:js)
@@ -337,6 +339,7 @@ pub const Bundler = struct {
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
                 .alias = options.alias,
+                .fallback = options.fallback,
                 .resolve_extensions = options.resolve_extensions,
                 .main_fields = options.main_fields,
                 .packages_external = options.packages_external,

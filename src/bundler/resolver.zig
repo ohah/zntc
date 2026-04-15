@@ -59,6 +59,7 @@ const ts_extension_map: []const struct { from: []const u8, to: []const []const u
 const index_files: []const []const u8 = &.{ "index.ts", "index.tsx", "index.js", "index.jsx" };
 
 pub const AliasEntry = types.AliasEntry;
+pub const FallbackEntry = types.FallbackEntry;
 
 /// 디렉토리 엔트리 캐시 (esbuild 방식).
 /// 디렉토리를 처음 접근할 때 readdir()로 파일 목록을 통째로 읽어 캐시.
@@ -194,6 +195,10 @@ pub const Resolver = struct {
     /// 정확 매칭: "react" → "preact/compat"
     /// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
     alias: []const AliasEntry = &.{},
+    /// Fallback 엔트리 (webpack `resolve.fallback` / Metro `extraNodeModules` 호환).
+    /// alias와 달리 일반 해석이 **실패했을 때만** 적용. 정확 매칭만 지원 (webpack과 동일).
+    /// `to == null`이면 빈 모듈(disabled result)로 대체.
+    fallback: []const FallbackEntry = &.{},
     /// 커스텀 확장자 탐색 순서 (--resolve-extensions). 비어있으면 default_extensions 사용.
     /// RN 예: .ios.ts, .ios.tsx, .native.ts, .native.tsx, .ts, .tsx, .js, .jsx, .json
     custom_extensions: []const []const u8 = &.{},
@@ -234,6 +239,26 @@ pub const Resolver = struct {
         return null;
     }
 
+    /// fallback 매핑을 specifier에 적용. bare 해석 실패 시에만 호출됨.
+    /// 정확 매칭만 (webpack/Metro 동작). to=null이면 빈 모듈, to=path/name이면 재해석.
+    fn applyFallback(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!?ResolveResult {
+        for (self.fallback) |entry| {
+            if (!std.mem.eql(u8, specifier, entry.from)) continue;
+            if (entry.to) |target| {
+                // target을 새로운 specifier로 보고 재해석. fallback 재귀는 막기 위해
+                // 임시로 fallback을 비워 resolve한다 (잘못된 fallback chain 방지).
+                const saved = self.fallback;
+                self.fallback = &.{};
+                defer self.fallback = saved;
+                return try self.resolve(source_dir, target);
+            }
+            // target=null → 빈 모듈 (webpack `false`)
+            const path_dup = self.allocator.dupe(u8, specifier) catch return error.OutOfMemory;
+            return .{ .path = path_dup, .module_type = .javascript, .disabled = true };
+        }
+        return null;
+    }
+
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         // alias 치환 (resolve 맨 처음에 적용, esbuild 동작과 동일)
         const effective_specifier = if (self.alias.len > 0)
@@ -250,7 +275,12 @@ pub const Resolver = struct {
 
         // bare specifier → node_modules 탐색
         if (!isRelativeOrAbsolute(effective_specifier)) {
-            return self.resolveNodeModules(source_dir, effective_specifier);
+            return self.resolveNodeModules(source_dir, effective_specifier) catch |err| {
+                if (err == error.ModuleNotFound and self.fallback.len > 0) {
+                    if (try self.applyFallback(source_dir, effective_specifier)) |r| return r;
+                }
+                return err;
+            };
         }
 
         // 경로 조합

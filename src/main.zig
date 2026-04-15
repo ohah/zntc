@@ -72,6 +72,9 @@ const CliOptions = struct {
     timing: bool = false,
     preserve_symlinks: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
+    /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
+    /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
+    fallback_list: std.ArrayList(FallbackEntry) = .empty,
     public_path: ?[]const u8 = null,
     banner_js: ?[]const u8 = null,
     footer_js: ?[]const u8 = null,
@@ -176,6 +179,7 @@ const CliOptions = struct {
     };
 
     const AliasEntry = BundleOptions.AliasEntry;
+    const FallbackEntry = @import("zts_lib").bundler.types.FallbackEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
     const LoaderEnum = @import("zts_lib").bundler.types.Loader;
     const LegalCommentsEnum = @import("zts_lib").bundler.types.LegalComments;
@@ -195,6 +199,7 @@ const CliOptions = struct {
         self.define_list.deinit(alloc);
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
+        self.fallback_list.deinit(alloc);
         self.loader_list.deinit(alloc);
         for (self.inject_list.items) |p| alloc.free(p);
         self.inject_list.deinit(alloc);
@@ -501,6 +506,20 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 });
             } else {
                 try stderr.print("zts: --alias requires FROM=TO format: {s}\n", .{arg});
+                std.process.exit(1);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--fallback:")) {
+            // --fallback:crypto=crypto-browserify (webpack resolve.fallback 호환)
+            // --fallback:fs=false → 빈 모듈
+            const kv = arg["--fallback:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                const value = kv[eq_pos + 1 ..];
+                try opts.fallback_list.append(allocator, .{
+                    .from = kv[0..eq_pos],
+                    .to = if (std.mem.eql(u8, value, "false")) null else value,
+                });
+            } else {
+                try stderr.print("zts: --fallback requires NAME=PATH or NAME=false: {s}\n", .{arg});
                 std.process.exit(1);
             }
         } else if (std.mem.startsWith(u8, arg, "--public-path=")) {
@@ -1386,6 +1405,7 @@ pub fn main() !void {
             .timing = opts.timing,
             .preserve_symlinks = opts.preserve_symlinks,
             .alias = opts.alias_list.items,
+            .fallback = opts.fallback_list.items,
             .public_path = opts.public_path orelse "",
             .banner_js = opts.banner_js,
             .footer_js = opts.footer_js,
@@ -1738,6 +1758,7 @@ pub fn main() !void {
                 .custom_conditions = bundle_opts.conditions,
                 .preserve_symlinks = bundle_opts.preserve_symlinks,
                 .alias = bundle_opts.alias,
+                .fallback = bundle_opts.fallback,
                 .resolve_extensions = bundle_opts.resolve_extensions,
                 .main_fields = bundle_opts.main_fields,
                 .packages_external = bundle_opts.packages_external,

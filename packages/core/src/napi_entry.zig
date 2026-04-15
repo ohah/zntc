@@ -275,6 +275,58 @@ fn getObjectKeyValuePairs(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8
     return result[0..count];
 }
 
+/// fallback 옵션용 — 값이 boolean false이면 null 저장, 문자열이면 그대로. 그 외엔 스킵.
+fn getObjectKeyValuePairsWithNullable(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]struct { []const u8, ?[]const u8 } {
+    const val = getNamedProperty(env, obj, key) orelse return null;
+
+    var prop_names: c.napi_value = undefined;
+    if (c.napi_get_property_names(env, val, &prop_names) != c.napi_ok) return null;
+    var len: u32 = 0;
+    _ = c.napi_get_array_length(env, prop_names, &len);
+    if (len == 0) return null;
+
+    const Pair = struct { []const u8, ?[]const u8 };
+    const result = alloc.alloc(Pair, len) catch return null;
+    var count: u32 = 0;
+    for (0..len) |i| {
+        var prop_key: c.napi_value = undefined;
+        if (c.napi_get_element(env, prop_names, @intCast(i), &prop_key) != c.napi_ok) continue;
+        const k = getStringArg(env, prop_key, alloc) orelse continue;
+
+        var prop_val: c.napi_value = undefined;
+        if (c.napi_get_property(env, val, prop_key, &prop_val) != c.napi_ok) {
+            alloc.free(k);
+            continue;
+        }
+        var val_type: c.napi_valuetype = undefined;
+        _ = c.napi_typeof(env, prop_val, &val_type);
+
+        if (val_type == c.napi_boolean) {
+            var b: bool = false;
+            _ = c.napi_get_value_bool(env, prop_val, &b);
+            // false만 의미 있음 (빈 모듈). true는 "기본값"으로 해석 — 스킵.
+            if (b) {
+                alloc.free(k);
+                continue;
+            }
+            result[count] = .{ k, null };
+            count += 1;
+        } else {
+            const v = getStringArg(env, prop_val, alloc) orelse {
+                alloc.free(k);
+                continue;
+            };
+            result[count] = .{ k, v };
+            count += 1;
+        }
+    }
+    if (count == 0) {
+        alloc.free(result);
+        return null;
+    }
+    return result[0..count];
+}
+
 fn resolveEntryPoint(alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
     const resolved = std.fs.cwd().realpathAlloc(alloc, path) catch return alloc.dupe(u8, path) catch null;
     return resolved;
@@ -1416,6 +1468,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         .custom_conditions = bundle_opts.conditions,
         .preserve_symlinks = bundle_opts.preserve_symlinks,
         .alias = bundle_opts.alias,
+        .fallback = bundle_opts.fallback,
         .resolve_extensions = bundle_opts.resolve_extensions,
         .main_fields = bundle_opts.main_fields,
         .packages_external = bundle_opts.packages_external,
@@ -2093,6 +2146,21 @@ fn parseBuildOptions(
         alias_entries = als;
     }
 
+    // fallback: { "crypto": "crypto-browserify", "fs": false } → []FallbackEntry
+    // 값이 `false`면 빈 모듈, 문자열이면 해당 specifier로 재해석.
+    const fallback_pairs = getObjectKeyValuePairsWithNullable(env, opts_obj, "fallback", native_alloc);
+    var fallback_entries: []const bundler_mod.types.FallbackEntry = &.{};
+    if (fallback_pairs) |pairs| {
+        const fbs = native_alloc.alloc(bundler_mod.types.FallbackEntry, pairs.len) catch return null;
+        for (pairs, 0..) |pair, idx| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (pair[1]) |v| if (!trackStr(owned_strings, v)) return null;
+            fbs[idx] = .{ .from = pair[0], .to = pair[1] };
+        }
+        native_alloc.free(pairs);
+        fallback_entries = fbs;
+    }
+
     // loader: { ".png": "file", ".svg": "text" } → []LoaderOverride
     const loader_pairs = getObjectKeyValuePairs(env, opts_obj, "loader", native_alloc);
     var loader_overrides: []const bundler_mod.types.LoaderOverride = &.{};
@@ -2207,6 +2275,7 @@ fn parseBuildOptions(
         .external = external orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
+        .fallback = fallback_entries,
         .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
         .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
