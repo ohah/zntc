@@ -261,7 +261,7 @@ test "rename: no conflict — no rename" {
     defer r.cache.deinit();
 
     // x는 b.ts에만 있으므로 충돌 없음 → canonical_names 비어 있음
-    try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_names.count());
+    try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_strings.items.len);
 }
 
 test "rename: two modules same name — second gets $1" {
@@ -277,13 +277,12 @@ test "rename: two modules same name — second gets $1" {
 
     // b.ts(exec_index 낮음)가 원본 유지, a.ts가 count$1
     // 또는 a.ts가 원본이고 b.ts가 $1 (exec_index에 따라)
-    try std.testing.expect(r.linker.canonical_names.count() > 0);
+    try std.testing.expect(r.linker.canonical_strings.items.len > 0);
 
     // 하나는 리네임됨
     var has_rename = false;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "count$")) has_rename = true;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "count$")) has_rename = true;
     }
     try std.testing.expect(has_rename);
 }
@@ -302,9 +301,8 @@ test "rename: three modules same name — $1 and $2" {
 
     // 3개 중 2개 리네임
     var rename_count: u32 = 0;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "name$")) rename_count += 1;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "name$")) rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 2), rename_count);
 }
@@ -320,7 +318,7 @@ test "rename: different names — no conflict" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_names.count());
+    try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_strings.items.len);
 }
 
 test "rename: getCanonicalName returns renamed" {
@@ -368,9 +366,8 @@ test "rename: non-exported top-level variables also detected (C1)" {
 
     // helper가 두 모듈에서 충돌 → 하나가 리네임됨
     var has_helper_rename = false;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "helper$")) has_helper_rename = true;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "helper$")) has_helper_rename = true;
     }
     try std.testing.expect(has_helper_rename);
 }
@@ -389,12 +386,11 @@ test "rename: nested scope conflict avoidance (hasNestedBinding)" {
 
     // x가 충돌. 리네임된 쪽이 x$1을 건너뛰고 x$2가 되어야 함
     // (nested scope에 x$1이 이미 있으므로)
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "x$")) {
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "x$")) {
             // x$1이 아닌 다른 값이어야 함 (nested scope에 x$1 있으므로)
             // 단, semantic analyzer가 parameter를 어떤 scope에 넣는지에 따라 다를 수 있음
-            try std.testing.expect(val.*.len > 0);
+            try std.testing.expect(val.len > 0);
         }
     }
 }
@@ -412,9 +408,8 @@ test "rename: default export local name conflict (L5)" {
 
     // foo가 두 모듈에서 충돌 (a.ts: default export의 local name, b.ts: named export)
     var has_foo_rename = false;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "foo$")) has_foo_rename = true;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "foo$")) has_foo_rename = true;
     }
     try std.testing.expect(has_foo_rename);
 }
@@ -583,11 +578,11 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     try linker.computeRenames();
 
     // rename 결과가 있어야 함
-    try std.testing.expect(linker.canonical_names.count() > 0);
+    try std.testing.expect(linker.canonical_strings.items.len > 0);
 
     // 초기화 후 비어있어야 함
     linker.clearCanonicalNames();
-    try std.testing.expectEqual(@as(usize, 0), linker.canonical_names.count());
+    try std.testing.expectEqual(@as(usize, 0), linker.canonical_strings.items.len);
 }
 
 // ============================================================
@@ -722,9 +717,8 @@ test "rename: multiple export default identifiers use original names — no coll
 
     // x, y, z는 각각 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
     var rename_count: u32 = 0;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 0), rename_count);
 }
@@ -878,9 +872,8 @@ test "rename: mixed function + expression defaults — identifier collision" {
 
     // expr1, expr2 모두 val → 하나가 val$1로 리네임
     var val_rename_count: u32 = 0;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |v| {
-        if (std.mem.startsWith(u8, v.*, "val$")) val_rename_count += 1;
+    for (r.linker.canonical_strings.items) |v| {
+        if (std.mem.startsWith(u8, v, "val$")) val_rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 1), val_rename_count);
 }
@@ -900,9 +893,8 @@ test "rename: default identifier reuses name — no _default collision" {
 
     // x, y는 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
     var rename_count: u32 = 0;
-    var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
+    for (r.linker.canonical_strings.items) |val| {
+        if (std.mem.startsWith(u8, val, "_default$")) rename_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 0), rename_count);
 }
