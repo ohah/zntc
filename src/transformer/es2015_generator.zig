@@ -345,7 +345,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const label_idx = stmt.data.unary.operand;
                     if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
                         const label_node = self.ast.getNode(label_idx);
-                        const label_text = self.ast.source[label_node.span.start..label_node.span.end];
+                        const label_text = self.ast.getText(label_node.span);
                         const stack = self.generator_label_stack.items;
                         var found = false;
                         var i = stack.len;
@@ -758,7 +758,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const label_name = if (!label_idx.isNone()) blk: {
                 const label_node = self.ast.getNode(label_idx);
-                break :blk self.ast.source[label_node.span.start..label_node.span.end];
+                break :blk self.ast.getText(label_node.span);
             } else "";
 
             const body_node = self.ast.getNode(body_idx);
@@ -1302,7 +1302,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 !node.data.unary.operand.isNone() and self.generator_label_stack.items.len > 0)
             {
                 const label_node = self.ast.getNode(node.data.unary.operand);
-                const label_text = self.ast.source[label_node.span.start..label_node.span.end];
+                const label_text = self.ast.getText(label_node.span);
                 for (self.generator_label_stack.items) |entry| {
                     if (std.mem.eql(u8, entry.name, label_text)) return true;
                 }

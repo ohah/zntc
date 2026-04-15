@@ -1900,6 +1900,18 @@ test "ES2018: for-await-of preserved at esnext" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") == null);
 }
 
+// --- #1404: 합성 노드 span 의 STRING_TABLE_BIT 처리 회귀 가드 ---
+// for-await lowering 이 만든 __asyncValues / _iter 등 합성 identifier_reference 는
+// span 이 string_table 인코딩 (start | 0x80000000). 워크릿 auto-detect 가
+// self.ast.source[span.start..span.end] 로 직접 읽으면 OOB → SIGBUS.
+// platform=react-native + 합성 호출 패턴 으로 재현 → 크래시 안 나면 통과.
+
+test "ES2018: for-await-of with synthetic call — no SIGBUS in worklet auto-detect (#1404)" {
+    var r = try e2eTarget(std.testing.allocator, "async function*g(){yield 1;}async function f(){let t=0;for await(const v of g())t+=v;return t;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+}
+
 // --- spread edge cases ---
 
 test "ES2015: spread in new with apply" {

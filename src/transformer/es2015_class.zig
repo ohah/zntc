@@ -833,7 +833,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (prop_idx.isNone()) return null;
             const prop_node = self.ast.getNode(prop_idx);
             if (prop_node.tag != .private_identifier) return null;
-            const orig = self.ast.source[prop_node.span.start..prop_node.span.end];
+            const orig = self.ast.getText(prop_node.span);
             for (self.current_private_fields) |pf| {
                 if (std.mem.eql(u8, pf.original_name, orig)) return pf;
             }
@@ -874,7 +874,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const left_node = self.ast.getNode(left_idx);
             if (left_node.tag != .private_identifier) return null;
 
-            const orig = self.ast.source[left_node.span.start..left_node.span.end];
+            const orig = self.ast.getText(left_node.span);
 
             // instance field / static field 매핑 우선 조회
             for (self.current_private_fields) |pf| {
@@ -951,8 +951,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (a.isNone() or b.isNone()) return false;
             const na = self.ast.getNode(a);
             const nb = self.ast.getNode(b);
-            const ta = self.ast.source[na.span.start..na.span.end];
-            const tb = self.ast.source[nb.span.start..nb.span.end];
+            const ta = self.ast.getText(na.span);
+            const tb = self.ast.getText(nb.span);
             return std.mem.eql(u8, ta, tb);
         }
 
@@ -1115,7 +1115,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (!key.isNone()) {
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag == .private_identifier) {
-                            const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#bar"
+                            const orig_name = self.ast.getText(key_node.span); // "#bar"
 
                             const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
 
@@ -1151,7 +1151,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // private field (#x) → instance: WeakMap, static: descriptor 객체
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
-                        const orig_name = self.ast.source[key_node.span.start..key_node.span.end]; // "#x"
+                        const orig_name = self.ast.getText(key_node.span); // "#x"
                         const field_info = PrivateFieldInfo{
                             .name = try es_helpers.makePrivateVarName(self.allocator, orig_name),
                             .original_name = orig_name,
@@ -1931,7 +1931,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 // key string literal
                 const old_key_node = self.ast.getNode(key_idx);
-                const key_text = self.ast.source[old_key_node.span.start..old_key_node.span.end];
+                const key_text = self.ast.getText(old_key_node.span);
                 var quoted_buf: [256]u8 = undefined;
                 quoted_buf[0] = '"';
                 @memcpy(quoted_buf[1 .. 1 + key_text.len], key_text);
