@@ -1397,19 +1397,10 @@ pub const ModuleGraph = struct {
                 for (self.modules.items) |m| {
                     if (m.wrap_kind == .none) continue;
                     for (m.export_bindings) |eb| {
-                        if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
+                        if (!eb.kind.isAnyReExport()) continue;
                         const rec_idx = eb.import_record_index orelse continue;
-                        if (rec_idx >= m.import_records.len) continue;
-                        const target_mod_idx = m.import_records[rec_idx].resolved;
-                        if (target_mod_idx.isNone()) continue;
-                        const target_idx = @intFromEnum(target_mod_idx);
-                        if (target_idx >= self.modules.items.len) continue;
-                        var target = &self.modules.items[target_idx];
-                        if (target.wrap_kind != .none) continue;
-                        if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
-                            target.wrap_kind = .esm;
-                            changed = true;
-                        }
+                        const target = self.resolveImportTarget(m, rec_idx) orelse continue;
+                        if (promoteToEsmWrap(target)) changed = true;
                     }
                 }
             }
@@ -1461,6 +1452,26 @@ pub const ModuleGraph = struct {
                 Span.EMPTY,
             ) catch null;
         }
+    }
+
+    /// `m.import_records[rec_idx].resolved`를 따라 target Module 포인터를 얻는다.
+    /// bounds/none 체크 실패 시 null. wrap_kind 결정 패스들의 공통 진입점.
+    fn resolveImportTarget(self: *ModuleGraph, m: anytype, rec_idx: usize) ?*Module {
+        if (rec_idx >= m.import_records.len) return null;
+        const target_mod_idx = m.import_records[rec_idx].resolved;
+        if (target_mod_idx.isNone()) return null;
+        const target_idx = @intFromEnum(target_mod_idx);
+        if (target_idx >= self.modules.items.len) return null;
+        return &self.modules.items[target_idx];
+    }
+
+    /// `.none` 상태의 ESM 모듈을 `.esm`으로 promote. 이미 래핑됐거나 ESM이 아니면
+    /// no-op. 변경 발생 시 true (Pass 2.5 fixpoint loop의 changed 플래그용).
+    fn promoteToEsmWrap(target: *Module) bool {
+        if (target.wrap_kind != .none) return false;
+        if (target.exports_kind != .esm and target.exports_kind != .esm_with_dynamic_fallback) return false;
+        target.wrap_kind = .esm;
+        return true;
     }
 
     /// node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주.

@@ -1083,9 +1083,11 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.exitCode).toBe(0);
     // foo가 __esm으로 래핑되어 init_foo 안에서 _default 할당이 일어나야 한다
     expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
-    expect(bundle.stdout).toMatch(/_default\$?\d*\s*=\s*"fooValue"/);
+    expect(bundle.stdout).toMatch(/_default(?:\$\d+)?\s*=\s*"fooValue"/);
     // barrel의 init body가 init_foo()를 호출해야 한다 (lazy 체인 보존)
-    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm[\s\S]*?init_foo\(\)/);
+    // init_barrel의 __esm body 안에 init_foo() 호출이 있는지 — body는 `__esm({...})` 안.
+    // {...} 닫힘 직전까지만 매칭하도록 anchor (다른 모듈 init이 끼어드는 false-positive 방지).
+    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm\(\{[\s\S]*?init_foo\(\)[\s\S]*?\}\)/);
   });
 
   test("export { default } from re-export가 __esm 래퍼에서 할당된다 (#705, #1340)", async () => {
@@ -1100,9 +1102,11 @@ describe("_default 합성 변수 충돌 방지", () => {
     expect(bundle.exitCode).toBe(0);
     // foo가 __esm으로 래핑되고 init_foo 안에서 _default 할당이 있어야 함
     expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
-    expect(bundle.stdout).toMatch(/_default\$?\d*\s*=\s*"fooValue"/);
+    expect(bundle.stdout).toMatch(/_default(?:\$\d+)?\s*=\s*"fooValue"/);
     // barrel의 init body가 init_foo()를 호출 (lazy 체인 보존)
-    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm[\s\S]*?init_foo\(\)/);
+    // init_barrel의 __esm body 안에 init_foo() 호출이 있는지 — body는 `__esm({...})` 안.
+    // {...} 닫힘 직전까지만 매칭하도록 anchor (다른 모듈 init이 끼어드는 false-positive 방지).
+    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm\(\{[\s\S]*?init_foo\(\)[\s\S]*?\}\)/);
   });
 
   test("export default <identifier>가 mangling 시 할당문을 생성한다", async () => {
