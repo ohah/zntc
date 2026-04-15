@@ -85,6 +85,13 @@ pub const Module = struct {
     /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
     symbol_table: ?SymbolTable = null,
 
+    /// #1338 Phase 4e-2c: wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id
+    /// (semantic 공간). null = 미래핑 모듈 또는 semantic 없음 (fallback emit).
+    /// 이름은 `semantic.symbols[id].synthetic_name`.
+    init_symbol: ?@import("../semantic/symbol.zig").SymbolId = null,
+    /// #1338 Phase 4e-2c: wrap_kind != .none 모듈의 `exports_<path>` 객체 심볼 id.
+    exports_symbol: ?@import("../semantic/symbol.zig").SymbolId = null,
+
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
     /// 나를 import하는 모듈들 (역방향, D078 HMR용)

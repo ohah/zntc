@@ -336,6 +336,7 @@ pub const ModuleGraph = struct {
         }
 
         self.promoteExportsKinds();
+        self.registerWrapperSymbols();
         self.propagateTopLevelAwait();
     }
 
@@ -1404,6 +1405,42 @@ pub const ModuleGraph = struct {
                     m.wrap_kind = .esm;
                 }
             }
+        }
+    }
+
+    /// #1338 Phase 4e-2c: wrap_kind 확정 후 모든 래핑 모듈에 대해 `init_<path>`
+    /// + `exports_<path>` 합성 심볼을 semantic 공간에 등록한다. Emitter/linker가
+    /// `module.init_symbol`/`exports_symbol`로 이름을 조회해 중복 할당을 피한다.
+    /// OOM/semantic 없음 → 조용히 skip (fallback: makeInitVarName 재할당).
+    fn registerWrapperSymbols(self: *ModuleGraph) void {
+        const semantic_sym = @import("../semantic/symbol.zig");
+        for (self.modules.items) |*m| {
+            if (m.wrap_kind == .none) continue;
+            // incremental rebuild: 이미 등록된 모듈은 skip.
+            if (m.init_symbol != null or m.exports_symbol != null) continue;
+            const sem_ptr = if (m.semantic) |*s| s else continue;
+            const arena = if (m.parse_arena) |*a| a.allocator() else continue;
+
+            const init_name = types.makeInitVarName(arena, m.path) catch continue;
+            const exports_name = types.makeExportsVarName(arena, m.path) catch continue;
+
+            m.init_symbol = semantic_sym.extendSymbol(
+                arena,
+                &sem_ptr.symbols,
+                .function_decl,
+                .esm_init,
+                init_name,
+                Span.EMPTY,
+            ) catch null;
+
+            m.exports_symbol = semantic_sym.extendSymbol(
+                arena,
+                &sem_ptr.symbols,
+                .variable_var,
+                .cjs_exports,
+                exports_name,
+                Span.EMPTY,
+            ) catch null;
         }
     }
 
