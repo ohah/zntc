@@ -1318,8 +1318,32 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
     _ = c.napi_call_function(env, js_undefined, js_func, 1, &call_args, &js_result);
 }
 
-/// watch 워커 스레드: 초기 빌드 → ready 이벤트 → 폴링 루프 → rebuild 이벤트
-/// watchFolders 루트를 재귀 스캔해 tracked에 등록. include/exclude glob은 루트 기준 상대.
+/// 경로 세그먼트에 node_modules/.git가 있으면 true (부분문자열 아닌 '/' 경계 매칭).
+fn hasSkippedSegment(rel: []const u8) bool {
+    var it = std.mem.splitScalar(u8, rel, '/');
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, "node_modules")) return true;
+        if (std.mem.eql(u8, seg, ".git")) return true;
+    }
+    return false;
+}
+
+/// include가 지정되면 최소 하나 매칭 필요, exclude 매칭은 즉시 제외.
+fn passesWatchGlobFilter(rel: []const u8, include: []const []const u8, exclude: []const []const u8) bool {
+    const matchGlob = zts_lib.bundler.resolve_cache.matchGlob;
+    if (include.len > 0) {
+        var any = false;
+        for (include) |pat| if (matchGlob(pat, rel)) {
+            any = true;
+            break;
+        };
+        if (!any) return false;
+    }
+    for (exclude) |pat| if (matchGlob(pat, rel)) return false;
+    return true;
+}
+
+/// watchFolders 루트를 재귀 스캔해 tracked에 등록.
 fn addWatchRootFiles(
     allocator: std.mem.Allocator,
     root: []const u8,
@@ -1328,7 +1352,6 @@ fn addWatchRootFiles(
     tracked: *zts_lib.server.TrackedFileSet,
     count: *usize,
 ) void {
-    const matchGlob = zts_lib.bundler.resolve_cache.matchGlob;
     var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
     defer dir.close();
     var walker = dir.walk(allocator) catch return;
@@ -1336,28 +1359,10 @@ fn addWatchRootFiles(
 
     while (walker.next() catch null) |entry| {
         if (entry.kind != .file) continue;
-        const rel = entry.path;
-        if (std.mem.indexOf(u8, rel, "node_modules") != null) continue;
-        if (std.mem.indexOf(u8, rel, ".git/") != null) continue;
+        if (hasSkippedSegment(entry.path)) continue;
+        if (!passesWatchGlobFilter(entry.path, include, exclude)) continue;
 
-        if (include.len > 0) {
-            var any = false;
-            for (include) |pat| if (matchGlob(pat, rel)) {
-                any = true;
-                break;
-            };
-            if (!any) continue;
-        }
-        if (exclude.len > 0) {
-            var skip = false;
-            for (exclude) |pat| if (matchGlob(pat, rel)) {
-                skip = true;
-                break;
-            };
-            if (skip) continue;
-        }
-
-        const full_path = std.fs.path.join(allocator, &.{ root, rel }) catch continue;
+        const full_path = std.fs.path.join(allocator, &.{ root, entry.path }) catch continue;
         defer allocator.free(full_path);
         if (tracked.addPath(full_path, true)) count.* += 1;
     }
