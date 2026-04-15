@@ -1057,6 +1057,87 @@ test "ES2015: nested for-of unique variable names" {
     try std.testing.expect(std.mem.indexOf(u8, r.output[first + 1 ..], "Symbol.iterator") != null);
 }
 
+// --- ES2015: for-of body destructuring (#1383) ---
+// `var [a, b] = _e.value` 와 같은 var + pattern 조합은 ES5 문법 오류 →
+// 반드시 임시 변수 + element/prop 접근 declarator 로 전개되어야 한다.
+
+fn expectNoVarPattern(output: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, output, "var [") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var  [") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var  {") == null);
+}
+
+test "ES2015: for-of array destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [a,b] of arr){use(a,b);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    // _t = _e.value, a = _t[0], b = _t[1]
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
+}
+
+test "ES2015: for-of object destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(const {x,y} of items){use(x,y);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".y") != null);
+}
+
+test "ES2015: for-of nested destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [i,{x,y}] of pts){use(i,x,y);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".x") != null);
+}
+
+test "ES2015: for-of rest destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [a,...rest] of arr){use(a,rest);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".slice(1)") != null);
+}
+
+test "ES2015: for-of default destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [a=1,b=2] of arr){use(a,b);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") != null);
+}
+
+test "ES2015: for-of let destructuring body lowered" {
+    var r = try e2eTarget(std.testing.allocator, "for(let {a,b} of xs){use(a,b);}", .es5);
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".b") != null);
+}
+
+test "ES2015: for-of destructuring not lowered on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [a,b] of arr){}", .esnext);
+    defer r.deinit();
+    // esnext: 변환 없이 원본 그대로
+    try std.testing.expectEqualStrings("for(const [a,b] of arr){}", r.output);
+}
+
+test "ES2018: for-await destructuring body lowered at es2015 target (#1382)" {
+    // for-await 가 while 로 낮아지면서 body 에 var-pattern 이 남지 않아야 함
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f(){ for await(const [a,b] of xs){use(a,b);} }",
+        .es2015,
+    );
+    defer r.deinit();
+    try expectNoVarPattern(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[1]") != null);
+}
+
 // --- ES2015: destructuring ---
 
 test "ES2015: object destructuring" {

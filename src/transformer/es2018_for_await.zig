@@ -398,10 +398,38 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 if (first_decl.tag != .variable_declarator) return es_helpers.makeExprStmt(self, elem, span);
 
                 const binding_idx: NodeIndex = self.readNodeIdx(first_decl.data.extra, 0);
-                const binding_name = try self.visitNode(binding_idx);
+                if (binding_idx.isNone()) return es_helpers.makeExprStmt(self, elem, span);
+                const binding_node = self.ast.getNode(binding_idx);
 
+                if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
+                    // Destructuring — 임시 변수 + element/prop 접근 declarator로 전개
+                    // (`var [a, b] = _step.value` 는 ES5에서 문법 오류)
+                    const temp_span = try es_helpers.makeTempVarSpan(self);
+                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                    const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, elem, span);
+
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    try self.scratch.append(self.allocator, temp_decl);
+
+                    const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                    try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span);
+
+                    return es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
+                }
+
+                const binding_name = try self.visitNode(binding_idx);
                 const declarator = try es_helpers.makeDeclarator(self, binding_name, elem, span);
                 return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
+            } else if (left_node.tag == .array_assignment_target or left_node.tag == .object_assignment_target) {
+                const assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = left, .right = elem, .flags = 0 } },
+                });
+                const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+                const lowered_seq = try es2015_destruct.lowerDestructuringAssignment(self, self.ast.getNode(assign));
+                return es_helpers.makeExprStmt(self, lowered_seq, span);
             } else {
                 const new_left = try self.visitNode(left);
                 const assign = try self.ast.addNode(.{
