@@ -278,6 +278,13 @@ pub const Transformer = struct {
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
 
+    /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
+    /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.
+    /// 헤더에선 루프가 매 반복 바인딩에 쓰므로 TDZ 흉내가 불필요하고,
+    /// `var k = void 0` 를 hoist해 `k = void 0; for(var k in ...)` 로 뽑아내면
+    /// strict mode에서 `var k` 선언 전 접근으로 ReferenceError (#1386).
+    in_for_in_of_header: bool = false,
+
     /// 플러그인별 runtime state. 각 plugin은 자기 sub-struct만 접근.
     /// 상세 규칙은 `plugin_state.zig` 참조.
     plugins: PluginState = .{},
@@ -874,7 +881,7 @@ pub const Transformer = struct {
                         }
                     }
                 }
-                return self.visitTernaryNode(node);
+                return self.visitForInOfTernary(node);
             },
             .try_statement,
             => self.visitTernaryNode(node),
@@ -885,13 +892,13 @@ pub const Transformer = struct {
                 if (self.options.unsupported.async_await) {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, node);
                 }
-                return self.visitTernaryNode(node);
+                return self.visitForInOfTernary(node);
             },
             .for_of_statement => {
                 if (self.options.unsupported.for_of) {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
                 }
-                return self.visitTernaryNode(node);
+                return self.visitForInOfTernary(node);
             },
             .labeled_statement => {
                 // for-of/for-await-of를 block으로 lowering할 때, label이 block에 남으면
@@ -1387,6 +1394,23 @@ pub const Transformer = struct {
     /// 삼항 노드: a, b, c를 재귀 방문 후 복사.
     fn visitTernaryNode(self: *Transformer, node: Node) Error!NodeIndex {
         const new_a = try self.visitNode(node.data.ternary.a);
+        const new_b = try self.visitNode(node.data.ternary.b);
+        const new_c = try self.visitNode(node.data.ternary.c);
+        return self.ast.addNode(.{
+            .tag = node.tag,
+            .span = node.span,
+            .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
+        });
+    }
+
+    /// for-in/for-of/for-await-of 헤더 전용 ternary visit.
+    /// `a`(left) 방문 시 in_for_in_of_header 플래그를 켜서, block_scoping 다운레벨로
+    /// let/const → var 변환 시 불필요한 `= void 0` init 주입을 막는다 (#1386).
+    fn visitForInOfTernary(self: *Transformer, node: Node) Error!NodeIndex {
+        const saved = self.in_for_in_of_header;
+        self.in_for_in_of_header = true;
+        const new_a = try self.visitNode(node.data.ternary.a);
+        self.in_for_in_of_header = saved;
         const new_b = try self.visitNode(node.data.ternary.b);
         const new_c = try self.visitNode(node.data.ternary.c);
         return self.ast.addNode(.{
@@ -1990,7 +2014,14 @@ pub const Transformer = struct {
         // let/const → var 변환 시: 초기화 없는 declarator에 = void 0 추가.
         // let은 블록 스코프로 매 반복 새 바인딩이지만, var는 hoisted되어 이전 값 유지.
         // Metro(Babel)와 동일하게 명시적 undefined 초기화로 의미론 보존.
-        const needs_void_init = self.options.unsupported.block_scoping and orig_kind.isLexical();
+        //
+        // 단, for-in/for-of/for-await-of 헤더의 left는 매 반복 루프가 바인딩에 쓰므로
+        // `= void 0`이 불필요하고, 오히려 `for (var k = void 0 in obj)` 는 Annex B
+        // legacy 구문(for-in 전용, 비-strict)이라 codegen이 `k = void 0;` 로 hoist해
+        // 선언 전에 토해내 strict mode ReferenceError를 유발 (#1386).
+        const needs_void_init = self.options.unsupported.block_scoping and
+            orig_kind.isLexical() and
+            !self.in_for_in_of_header;
 
         const list_start = self.readU32(e, 1);
         const list_len = self.readU32(e, 2);

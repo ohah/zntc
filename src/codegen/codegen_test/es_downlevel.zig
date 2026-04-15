@@ -2109,3 +2109,44 @@ test "useDefineForClassFields=false: no-init fields removed" {
     // class body에 y, w가 없어야 함 (method만 있음)
     try std.testing.expect(std.mem.indexOf(u8, r.output, ";y") == null);
 }
+
+// #1386: for-in/for-of 헤더의 let/const → var 다운레벨 시 `= void 0` init 주입 금지.
+// 주입하면 codegen이 `k=void 0; for(var k in ...)` 로 hoist해 strict mode에서
+// `var k` 선언 전 접근이 되어 ReferenceError.
+test "ES2015: for-in let produces var without void 0 hoist (#1386)" {
+    var r = try e2eTarget(std.testing.allocator, "for(let k in obj){use(k);}", .es5);
+    defer r.deinit();
+    // `k = void 0` 같은 hoist 아티팩트가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "k=void 0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "k = void 0") == null);
+    // for-in 자체는 var 로 다운레벨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(var k in") != null or
+        std.mem.indexOf(u8, r.output, "for (var k in") != null);
+}
+
+test "ES2015: for-in const produces var without void 0 hoist (#1386)" {
+    var r = try e2eTarget(std.testing.allocator, "for(const k in obj){use(k);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "k=void 0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "k = void 0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(var k in") != null or
+        std.mem.indexOf(u8, r.output, "for (var k in") != null);
+}
+
+test "ES2015: for-in var unchanged (#1386)" {
+    // var 는 기존부터 init 없음 — 동작 변경 없음 확인
+    var r = try e2eTarget(std.testing.allocator, "for(var k in obj){use(k);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "k=void 0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(var k in") != null or
+        std.mem.indexOf(u8, r.output, "for (var k in") != null);
+}
+
+test "ES2015: for-in let esnext preserved (#1386)" {
+    // esnext 타겟에선 let 그대로 유지
+    var r = try e2eTarget(std.testing.allocator, "for(let k in obj){use(k);}", .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(let k in") != null or
+        std.mem.indexOf(u8, r.output, "for (let k in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") == null);
+}
