@@ -621,13 +621,12 @@ pub fn emitEsmWrappedModule(
                     .cjs => {
                         // preamble에서 이미 __toESM으로 바인딩된 변수가 있으면
                         // 중복 require 호출 없이 해당 변수를 참조한다.
-                        const mi: u32 = @intFromEnum(module.index);
                         var found_preamble_var: ?[]const u8 = null;
                         for (module.import_bindings) |ib| {
                             if (ib.import_record_index == rec_idx and
                                 std.mem.eql(u8, ib.imported_name, "default"))
                             {
-                                found_preamble_var = l.getCanonicalName(mi, ib.local_name) orelse ib.local_name;
+                                found_preamble_var = l.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
                                 break;
                             }
                         }
