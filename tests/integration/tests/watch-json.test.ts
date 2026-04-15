@@ -233,4 +233,45 @@ describe("--watch-json", () => {
       await cleanup();
     }
   });
+
+  test("--watch-folder: 그래프 밖 파일 변경도 rebuild 트리거", { timeout: 30000 }, async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `export const v = "initial";`,
+      "assets/config.json": `{"k":1}`,
+    });
+    const outFile = join(dir, "out.js");
+    const jsonOut = join(dir, "ndjson.txt");
+    const assetsDir = join(dir, "assets");
+
+    const proc = spawnWatchJson(
+      [
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--watch-json",
+        `--watch-folder=${assetsDir}`,
+      ],
+      jsonOut,
+    );
+
+    try {
+      const readyEvents = await waitForNdjsonLines(jsonOut, 1);
+      expect(readyEvents[0].type).toBe("ready");
+      // entry 파일 1개만 그래프에 있지만 watch-folder로 config.json도 감시 대상에 추가됨
+      expect((readyEvents[0].files as number) >= 2).toBe(true);
+
+      // 그래프 밖 파일 변경
+      await new Promise((r) => setTimeout(r, 1000));
+      writeFileSync(join(assetsDir, "config.json"), `{"k":2}`);
+
+      const events = await waitForNdjsonLines(jsonOut, 2, 15000);
+      const rebuild = events[1];
+      expect(rebuild.type).toBe("rebuild");
+      expect(rebuild.success).toBe(true);
+    } finally {
+      await killAndWait(proc);
+      await cleanup();
+    }
+  });
 });

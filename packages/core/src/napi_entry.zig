@@ -1102,6 +1102,12 @@ const WatchAsyncData = struct {
     ready_tsfn: c.napi_threadsafe_function,
     rebuild_tsfn: c.napi_threadsafe_function,
     stop_flag: std.atomic.Value(bool),
+    /// Metro watchFolders 호환. 그래프 밖 감시 루트(절대/상대 경로).
+    watch_roots: []const []const u8 = &.{},
+    /// watch_roots 스캔 시 포함할 파일 glob (루트 기준 상대).
+    watch_include: []const []const u8 = &.{},
+    /// watch_roots 스캔 시 제외할 파일 glob (루트 기준 상대).
+    watch_exclude: []const []const u8 = &.{},
 
     fn deinit(self: *WatchAsyncData) void {
         // 소유된 문자열 해제
@@ -1313,6 +1319,50 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
 }
 
 /// watch 워커 스레드: 초기 빌드 → ready 이벤트 → 폴링 루프 → rebuild 이벤트
+/// watchFolders 루트를 재귀 스캔해 tracked에 등록. include/exclude glob은 루트 기준 상대.
+fn addWatchRootFiles(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    include: []const []const u8,
+    exclude: []const []const u8,
+    tracked: *zts_lib.server.TrackedFileSet,
+    count: *usize,
+) void {
+    const matchGlob = zts_lib.bundler.resolve_cache.matchGlob;
+    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var walker = dir.walk(allocator) catch return;
+    defer walker.deinit();
+
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const rel = entry.path;
+        if (std.mem.indexOf(u8, rel, "node_modules") != null) continue;
+        if (std.mem.indexOf(u8, rel, ".git/") != null) continue;
+
+        if (include.len > 0) {
+            var any = false;
+            for (include) |pat| if (matchGlob(pat, rel)) {
+                any = true;
+                break;
+            };
+            if (!any) continue;
+        }
+        if (exclude.len > 0) {
+            var skip = false;
+            for (exclude) |pat| if (matchGlob(pat, rel)) {
+                skip = true;
+                break;
+            };
+            if (skip) continue;
+        }
+
+        const full_path = std.fs.path.join(allocator, &.{ root, rel }) catch continue;
+        defer allocator.free(full_path);
+        if (tracked.addPath(full_path, true)) count.* += 1;
+    }
+}
+
 fn watchWorkerThread(async_data: *WatchAsyncData) void {
     const allocator = native_alloc;
     const bundle_opts = async_data.options;
@@ -1423,6 +1473,18 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         for (paths) |p| {
             if (tracked.addPath(p, true)) initial_watch_count += 1;
         }
+    }
+
+    // watchFolders: 번들 그래프 밖 루트를 재귀 스캔해 tracked에 추가
+    for (async_data.watch_roots) |root| {
+        addWatchRootFiles(
+            allocator,
+            root,
+            async_data.watch_include,
+            async_data.watch_exclude,
+            &tracked,
+            &initial_watch_count,
+        );
     }
 
     // 초기 빌드 결과를 파일에 쓰기 (onReady 전에 완료해야 서버가 읽을 수 있음)
@@ -1767,6 +1829,26 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         .rebuild_tsfn = undefined,
         .stop_flag = std.atomic.Value(bool).init(false),
     };
+
+    // watchFolders/watchInclude/watchExclude 파싱 (parseBuildOptions 바깥에서 수집)
+    inline for (.{
+        .{ "watchFolders", "watch_roots" },
+        .{ "watchInclude", "watch_include" },
+        .{ "watchExclude", "watch_exclude" },
+    }) |pair| {
+        if (getObjectStringArray(env, argv[0], pair[0], native_alloc)) |arr| {
+            const ok = blk: {
+                for (arr) |s| async_data.owned_strings.append(native_alloc, s) catch break :blk false;
+                async_data.owned_string_arrays.append(native_alloc, arr) catch break :blk false;
+                break :blk true;
+            };
+            if (!ok) {
+                native_alloc.destroy(async_data);
+                return throwError(env, "OutOfMemory");
+            }
+            @field(async_data.*, pair[1]) = arr;
+        }
+    }
 
     // 옵션 파싱
     var opts = parseBuildOptions(env, argv[0], &async_data.owned_strings, &async_data.owned_string_arrays) orelse {

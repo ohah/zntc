@@ -152,6 +152,14 @@ const CliOptions = struct {
     node_paths_list: std.ArrayList([]const u8) = .empty,
     /// --watch-delay=MS: watch 리빌드 디바운스 지연 (밀리초)
     watch_delay_ms: u32 = 100,
+    /// --watch-folder=DIR (반복): 번들 그래프 밖의 디렉토리를 감시 루트에 추가.
+    /// Metro의 watchFolders에 대응. 내부 표현은 roots + include/exclude로 일반화되어
+    /// 나중에 Rollup/Vite의 watch.include/exclude 스펙도 같은 필드로 매핑된다.
+    watch_roots_list: std.ArrayList([]const u8) = .empty,
+    /// --watch-include=GLOB (반복): roots 스캔 시 포함할 파일 glob 화이트리스트.
+    watch_include_list: std.ArrayList([]const u8) = .empty,
+    /// --watch-exclude=GLOB (반복): roots 스캔 시 제외할 파일 glob.
+    watch_exclude_list: std.ArrayList([]const u8) = .empty,
     /// --clean: 빌드 전 출력 디렉토리 정리
     clean: bool = false,
     /// --jobs=N: 병렬 워커 스레드 수 (0=기본값/CPU코어수, 1=단일스레드)
@@ -202,6 +210,10 @@ const CliOptions = struct {
         self.drop_labels_list.deinit(alloc);
         self.pure_list.deinit(alloc);
         self.node_paths_list.deinit(alloc);
+        for (self.watch_roots_list.items) |p| alloc.free(p);
+        self.watch_roots_list.deinit(alloc);
+        self.watch_include_list.deinit(alloc);
+        self.watch_exclude_list.deinit(alloc);
     }
 };
 
@@ -578,6 +590,17 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: --watch-delay requires a number (ms): {s}\n", .{val});
                 std.process.exit(1);
             };
+        } else if (std.mem.startsWith(u8, arg, "--watch-folder=")) {
+            const raw = arg["--watch-folder=".len..];
+            const abs = std.fs.cwd().realpathAlloc(allocator, raw) catch {
+                try stderr.print("zts: cannot resolve --watch-folder path: {s}\n", .{raw});
+                std.process.exit(1);
+            };
+            try opts.watch_roots_list.append(allocator, abs);
+        } else if (std.mem.startsWith(u8, arg, "--watch-include=")) {
+            try opts.watch_include_list.append(allocator, arg["--watch-include=".len..]);
+        } else if (std.mem.startsWith(u8, arg, "--watch-exclude=")) {
+            try opts.watch_exclude_list.append(allocator, arg["--watch-exclude=".len..]);
         } else if (std.mem.eql(u8, arg, "--clean")) {
             opts.clean = true;
         } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
@@ -1746,6 +1769,19 @@ pub fn main() !void {
                 }
             }
 
+            // --watch-folder: 번들 그래프 밖 루트를 재귀 스캔해 감시 대상에 추가
+            for (opts.watch_roots_list.items) |root| {
+                collectWatchRootMtimes(
+                    allocator,
+                    root,
+                    opts.watch_include_list.items,
+                    opts.watch_exclude_list.items,
+                    &mtime_map,
+                ) catch |err| {
+                    try stderr.print("[watch] failed to scan --watch-folder '{s}': {}\n", .{ root, err });
+                };
+            }
+
             // config 파일도 감시 대상에 추가
             for (opts.plugin_paths.items) |config_path| {
                 const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
@@ -2264,6 +2300,65 @@ fn collectMtimes(
         };
 
         // full_path를 키로 소유권 이전
+        mtime_map.put(full_path, mtime) catch {
+            allocator.free(full_path);
+            continue;
+        };
+    }
+}
+
+/// --watch-folder로 지정된 루트를 재귀 스캔해 모든 파일의 mtime을 수집한다.
+/// include/exclude glob은 루트 기준 상대 경로에 대해 매칭한다 (둘 다 비어있으면 전부 포함).
+/// node_modules, .git 은 기본 제외.
+fn collectWatchRootMtimes(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    include: []const []const u8,
+    exclude: []const []const u8,
+    mtime_map: *std.StringHashMap(i128),
+) !void {
+    const matchGlob = @import("zts_lib").bundler.resolve_cache.matchGlob;
+
+    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
+        return err;
+    };
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        const rel = entry.path;
+        if (std.mem.indexOf(u8, rel, "node_modules") != null) continue;
+        if (std.mem.indexOf(u8, rel, ".git/") != null) continue;
+
+        if (include.len > 0) {
+            var any = false;
+            for (include) |pat| if (matchGlob(pat, rel)) {
+                any = true;
+                break;
+            };
+            if (!any) continue;
+        }
+        if (exclude.len > 0) {
+            var skip = false;
+            for (exclude) |pat| if (matchGlob(pat, rel)) {
+                skip = true;
+                break;
+            };
+            if (skip) continue;
+        }
+
+        const full_path = try std.fs.path.join(allocator, &.{ root, rel });
+        if (mtime_map.contains(full_path)) {
+            allocator.free(full_path);
+            continue;
+        }
+        const mtime = getFileMtime(full_path) catch {
+            allocator.free(full_path);
+            continue;
+        };
         mtime_map.put(full_path, mtime) catch {
             allocator.free(full_path);
             continue;
