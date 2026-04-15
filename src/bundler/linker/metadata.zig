@@ -555,9 +555,8 @@ pub fn buildMetadataForAst(
 
     // collectModuleNames에서 등록한 _default 충돌의 canonical name을 조회.
     var default_export_name: []const u8 = "_default";
-    const sem_syms: []const semantic_symbol.Symbol = if (m.semantic) |s| s.symbols.items else &.{};
     for (m.export_bindings) |eb| {
-        if (eb.hasSyntheticDefault(sem_syms)) {
+        if (eb.hasSyntheticDefault(m.semanticSymbols())) {
             default_export_name = self.getCanonicalName(module_index, "_default") orelse "_default";
             break;
         }

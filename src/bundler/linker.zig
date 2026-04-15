@@ -391,9 +391,8 @@ pub const Linker = struct {
         // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
         // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
         const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index };
-        const sem_syms: []const semantic_symbol.Symbol = if (m.semantic) |s| s.symbols.items else &.{};
         for (m.export_bindings) |eb| {
-            if (eb.hasSyntheticDefault(sem_syms)) {
+            if (eb.hasSyntheticDefault(m.semanticSymbols())) {
                 try self.addNameOwner(name_to_owners, "_default", owner);
                 continue;
             }
