@@ -41,6 +41,7 @@ const es2015_params = @import("es2015_params.zig");
 const es2015_spread = @import("es2015_spread.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_for_of = @import("es2015_for_of.zig");
+const es2018_for_await = @import("es2018_for_await.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
@@ -166,7 +167,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     class_static_private_field: bool = false,
     /// __esDecorate/__runInitializers: TC39 Stage 3 decorator 변환 (TypeScript 5.0+)
     es_decorator: bool = false,
-    _padding: u16 = 0,
+    /// __asyncValues: for-await-of → while 루프 변환 (ES2018)
+    async_values: bool = false,
+    _padding: u15 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -859,9 +862,17 @@ pub const Transformer = struct {
                 }
                 return self.visitTernaryNode(node);
             },
-            .for_await_of_statement,
             .try_statement,
             => self.visitTernaryNode(node),
+            .for_await_of_statement => {
+                // for-await 키워드는 ES2018. async_await 자체를 다운레벨링해야 하는 타겟
+                // (Hermes / ES5 등)은 for-await 파싱도 불가 — async function wrap 전에
+                // 미리 __asyncValues + while 로 변환. (#1381)
+                if (self.options.unsupported.async_await) {
+                    return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, node);
+                }
+                return self.visitTernaryNode(node);
+            },
             .for_of_statement => {
                 if (self.options.unsupported.for_of) {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
@@ -869,17 +880,19 @@ pub const Transformer = struct {
                 return self.visitTernaryNode(node);
             },
             .labeled_statement => {
-                // for-of를 ES5 block으로 lowering할 때, label이 block에 남으면
+                // for-of/for-await-of를 block으로 lowering할 때, label이 block에 남으면
                 // 바디의 `continue LABEL` 이 iteration statement를 못 찾는다.
-                // label을 lowered inner for_statement에 직접 부여해 이를 회피.
-                if (self.options.unsupported.for_of) {
-                    const child_idx = node.data.binary.right;
-                    if (!child_idx.isNone()) {
-                        const child = self.ast.getNode(child_idx);
-                        if (child.tag == .for_of_statement) {
-                            const new_label = try self.visitNode(node.data.binary.left);
-                            return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
-                        }
+                // label을 lowered inner while/for_statement에 직접 부여해 이를 회피.
+                const child_idx = node.data.binary.right;
+                if (!child_idx.isNone()) {
+                    const child = self.ast.getNode(child_idx);
+                    if (self.options.unsupported.async_await and child.tag == .for_await_of_statement) {
+                        const new_label = try self.visitNode(node.data.binary.left);
+                        return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, new_label);
+                    }
+                    if (self.options.unsupported.for_of and child.tag == .for_of_statement) {
+                        const new_label = try self.visitNode(node.data.binary.left);
+                        return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
                     }
                 }
                 return self.visitBinaryNode(node);

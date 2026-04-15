@@ -285,6 +285,39 @@ pub const ASYNC_RUNTIME_ES5 =
 ;
 pub const ASYNC_RUNTIME_ES5_MIN = "var __async=function(fn){return function(){var args=Array.prototype.slice.call(arguments);var self=this;return new Promise(function(resolve,reject){var gen=fn.apply(self,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(function(val){step(\"next\",val)},function(err){step(\"throw\",err)})}step(\"next\")})}};";
 
+/// __asyncValues: for-await-of 다운레벨 시 주입 (tslib 호환).
+/// Async iterator (Symbol.asyncIterator) 가 있으면 그대로 사용, 아니면 sync iterator 를
+/// async wrapper 로 래핑. (ES2018 for-await-of 스펙의 GetIterator 와 동일 동작.)
+///
+/// ES2015 preset (Promise / Symbol 필수) — 순수 ES5 환경에서는 Promise 폴리필 필요.
+/// Hermes 는 Promise/Symbol.iterator 지원하므로 문제 없음.
+pub const ASYNC_VALUES_RUNTIME =
+    \\var __asyncValues = function(o) {
+    \\  if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    \\  var m = o[Symbol.asyncIterator], i;
+    \\  return m ? m.call(o) : (o = typeof __values === "function" ? __values(o) : o[Symbol.iterator](),
+    \\    i = {},
+    \\    verb("next"),
+    \\    verb("throw"),
+    \\    verb("return"),
+    \\    i[Symbol.asyncIterator] = function() { return this; },
+    \\    i);
+    \\  function verb(n) {
+    \\    i[n] = o[n] && function(v) {
+    \\      return new Promise(function(resolve, reject) {
+    \\        v = o[n](v);
+    \\        settle(resolve, reject, v.done, v.value);
+    \\      });
+    \\    };
+    \\  }
+    \\  function settle(resolve, reject, d, v) {
+    \\    Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject);
+    \\  }
+    \\};
+    \\
+;
+pub const ASYNC_VALUES_RUNTIME_MIN = "var __asyncValues=function(o){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var m=o[Symbol.asyncIterator],i;return m?m.call(o):(o=typeof __values===\"function\"?__values(o):o[Symbol.iterator](),i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i);function verb(n){i[n]=o[n]&&function(v){return new Promise(function(resolve,reject){v=o[n](v);settle(resolve,reject,v.done,v.value)})}}function settle(resolve,reject,d,v){Promise.resolve(v).then(function(v){resolve({value:v,done:d})},reject)}};";
+
 /// __extends: class 상속 prototype chain (ES2015). TypeScript __extends 호환.
 pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
 pub const EXTENDS_RUNTIME_MIN = "var __extends=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
@@ -750,6 +783,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
         } else {
             try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
         }
+    }
+    if (helpers.async_values) {
+        try buf.appendSlice(allocator, if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME);
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
