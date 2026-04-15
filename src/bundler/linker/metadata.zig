@@ -213,7 +213,7 @@ pub fn buildMetadataForAst(
                         // UMD/AMD: factory 매개변수에서 직접 참조
                         const param_name = try types.specifierToParamName(self.allocator, rec.specifier);
                         defer self.allocator.free(param_name);
-                        if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
+                        if (ib.kind == .namespace or ib.importsDefault()) {
                             // import * as React / import React → factory param 직접 사용
                             if (!std.mem.eql(u8, preamble_name, param_name)) {
                                 try preamble.write("var ");

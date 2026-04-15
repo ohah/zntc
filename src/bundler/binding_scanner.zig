@@ -60,6 +60,14 @@ pub const ImportBinding = struct {
     pub fn isSynthetic(self: ImportBinding) bool {
         return self.local_span.start >= SYNTHETIC_SPAN_BASE;
     }
+
+    /// `import x from './m'` (kind=.default) 또는 `import { default as X }`
+    /// (kind=.named, imported_name="default") 어느 쪽이든 source의 default를
+    /// import하는 케이스 통칭.
+    pub fn importsDefault(self: ImportBinding) bool {
+        return self.kind == .default or
+            (self.kind == .named and std.mem.eql(u8, self.imported_name, "default"));
+    }
 };
 
 pub const ExportBinding = struct {

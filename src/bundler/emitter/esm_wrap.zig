@@ -623,9 +623,7 @@ pub fn emitEsmWrappedModule(
                         // 중복 require 호출 없이 해당 변수를 참조한다.
                         var found_preamble_var: ?[]const u8 = null;
                         for (module.import_bindings) |ib| {
-                            if (ib.import_record_index == rec_idx and
-                                std.mem.eql(u8, ib.imported_name, "default"))
-                            {
+                            if (ib.import_record_index == rec_idx and ib.importsDefault()) {
                                 found_preamble_var = l.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
                                 break;
                             }
