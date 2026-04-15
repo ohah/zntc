@@ -272,10 +272,11 @@ pub fn buildMetadataForAst(
                         break :blk ns_name;
                     };
 
-                    if (module_scope.get(ib.local_name)) |sym_idx| {
+                    if (ib.local_symbol == .semantic) {
+                        const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
                         const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
                         try owned_nested_renames.append(self.allocator, rename);
-                        try renames.put(@intCast(sym_idx), rename);
+                        try renames.put(sym_idx, rename);
                     }
                 }
                 continue;
@@ -321,19 +322,21 @@ pub fn buildMetadataForAst(
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
             // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.
             if (ib.kind == .namespace) {
-                const ns_sym_id = module_scope.get(ib.local_name) orelse continue;
+                if (ib.local_symbol != .semantic) continue;
+                const ns_sym_id: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                const local_name = m.importBindingLocalName(ib);
                 const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
                 // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
                 // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
-                const need_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, @intCast(ns_sym_id)) or
-                    exported_locals.contains(ib.local_name);
+                const need_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, ns_sym_id) or
+                    exported_locals.contains(local_name);
                 try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
                     if (need_inline) &ns_inline_list else null,
-                    @intCast(ns_sym_id),
+                    ns_sym_id,
                     @intCast(canonical_mod),
-                    ib.local_name,
+                    local_name,
                     &ns_export_cache,
                     &ns_inline_cache,
                 );
@@ -439,14 +442,15 @@ pub fn buildMetadataForAst(
             // 항상 renames에 등록하여 codegen이 target 변수를 참조하도록 함.
             // 중첩 스코프 충돌은 resolveNestedShadowConflicts에서 이미 처리됨.
             if (!isReservedName(target_name)) {
-                if (module_scope.get(ib.local_name)) |sym_idx| {
-                    try renames.put(@intCast(sym_idx), target_name);
+                if (ib.local_symbol == .semantic) {
+                    const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                    try renames.put(sym_idx, target_name);
                     // __esm → __esm live binding: __export getter override 등록 +
                     // 자체 rename 루프에서 덮어쓰기 방지
                     if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
                         self.modules[canonical_mod].wrap_kind == .esm)
                     {
-                        try export_getter_overrides.put(self.allocator, ib.local_name, target_name);
+                        try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), target_name);
                     }
                 }
             }
@@ -1143,19 +1147,18 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
     // 3. import 바인딩: import된 심볼을 canonical 이름으로 치환
     // import binding의 심볼 인덱스를 모듈 스코프에서 이름으로 조회
     if (sem.scope_maps.len > 0) {
-        const module_scope = sem.scope_maps[0];
         for (m.import_bindings) |ib| {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
+            if (ib.local_symbol != .semantic) continue;
 
             const target_name = self.getCanonicalByRef(ib.symbol) orelse ib.imported_name;
+            const local_name = m.importBindingLocalName(ib);
 
-            if (!std.mem.eql(u8, ib.local_name, target_name)) {
-                // 모듈 스코프에서 import binding의 심볼 인덱스 찾기
-                if (module_scope.get(ib.local_name)) |sym_idx| {
-                    try renames.put(@intCast(sym_idx), target_name);
-                }
+            if (!std.mem.eql(u8, local_name, target_name)) {
+                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                try renames.put(sym_idx, target_name);
             }
         }
     }
