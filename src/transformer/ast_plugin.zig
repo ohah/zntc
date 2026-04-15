@@ -246,7 +246,7 @@ pub const AstTransformCtx = struct {
 
         // 소스 텍스트 참조 → string_table로 복사 (span이 src_ast.source를 참조하므로)
         var new_span = src_node.span;
-        if (src_node.span.start & 0x8000_0000 == 0 and
+        if (src_node.span.start & ast_mod.Ast.STRING_TABLE_BIT == 0 and
             src_node.span.start < src_node.span.end and
             src_node.span.end <= @as(u32, @intCast(src_ast.source.len)))
         {
