@@ -325,7 +325,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
     const id = table.find("_default") orelse return error.NotFound;
     try std.testing.expectEqual(symbol.SymbolKind.synthetic_default, table.getKind(id));
 }
@@ -342,7 +342,7 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
     try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
 }
 
@@ -357,7 +357,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
     try std.testing.expectEqual(@as(u32, 0), table.count());
     try std.testing.expectEqual(@as(?symbol.SymbolId, null), table.find("_default"));
 }
@@ -374,7 +374,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     defer table.deinit();
 
     const m: types.ModuleIndex = @enumFromInt(7);
-    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, null, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, null, alloc);
 
     // default export가 bundler ref로 채워졌는지
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
@@ -399,7 +399,7 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     var table = symbol.SymbolTable.init(alloc);
     defer table.deinit();
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, null, alloc);
+    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, null, alloc);
 
     // 일반 named export는 Phase 2에선 아직 미연결 (Phase 3에서 semantic 심볼과 연결)
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());

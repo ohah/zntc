@@ -626,7 +626,7 @@ pub fn collectNamespaceAccesses(
 /// Cross-module re-export 연결은 linker가 `populateReExportAliases`에서 수행.
 ///
 /// #1328 Phase 4e-2b: `synthetic_default`는 semantic 공간으로 이전됨.
-/// `sem_symbols`/`sem_names`가 주어지면 semantic에 등록하고 ExportBinding.symbol은
+/// `sem_symbols`가 주어지면 semantic에 등록하고 ExportBinding.symbol은
 /// `.semantic` variant. null이면 기존 bundler 경로 (테스트/semantic 분석 실패 fallback).
 /// `re_export_alias`는 semantic 의미와 맞지 않아 항상 bundler 공간에 유지 (RFC #1338).
 pub fn populateSyntheticSymbols(
@@ -634,7 +634,6 @@ pub fn populateSyntheticSymbols(
     module_index: ModuleIndex,
     export_bindings: []ExportBinding,
     sem_symbols: ?*std.ArrayList(SemanticSymbol),
-    sem_names: ?*std.AutoHashMap(u32, []const u8),
     arena: std.mem.Allocator,
 ) !void {
     for (export_bindings) |*eb| {
@@ -643,11 +642,10 @@ pub fn populateSyntheticSymbols(
             std.mem.eql(u8, eb.exported_name, "default") and
             (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
         {
-            if (sem_symbols) |syms_ptr| if (sem_names) |names_ptr| {
+            if (sem_symbols) |syms_ptr| {
                 const sem_id = try semantic_symbol.extendSymbol(
                     arena,
                     syms_ptr,
-                    names_ptr,
                     .variable_var,
                     .default_export,
                     "_default",
@@ -655,7 +653,7 @@ pub fn populateSyntheticSymbols(
                 );
                 eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sem_id } };
                 continue;
-            };
+            }
             // Fallback (semantic 없음): bundler 공간에 등록.
             const id = try table.declare("_default", .synthetic_default, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
