@@ -149,6 +149,21 @@ pub const Module = struct {
         output_name: []const u8,
         /// 원본 확장자 (dot 포함, 예: ".png")
         ext: []const u8,
+        /// RN scale variants — 항상 오름차순. @2x/@3x 파일 발견 시 [1,2,3].
+        /// Metro AssetRegistry의 `scales` 필드에 직렬화.
+        scales: []const u32 = &.{1},
+        /// scale > 1 variant 파일들. 각 항목이 별개 OutputFile로 emit되어
+        /// RN 네이티브가 `logo@2x.png` 등의 이름으로 로드 가능하다.
+        scale_variants: []const ScaleVariant = &.{},
+    };
+
+    pub const ScaleVariant = struct {
+        /// 변형 배율 (2, 3, ...). 1은 base asset이므로 여기 포함되지 않는다.
+        scale: u32,
+        /// 출력 파일명 (예: "logo@2x-a1b2c3d4.png"). parse_arena 할당.
+        output_name: []const u8,
+        /// 원본 파일 내용.
+        raw_content: []const u8,
     };
 
     /// CSS 번들링 메타데이터. parseCssModule에서 설정.
