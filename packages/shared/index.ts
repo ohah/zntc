@@ -88,24 +88,36 @@ export interface TranspileResult {
 
 // ─── ES Target → UnsupportedFeatures bitmask ───
 
-// compat.zig UnsupportedFeatures 비트 레이아웃:
-//   0-10 = ES2015 features, 11 = ES2016, 12 = ES2017, 13 = ES2018,
-//   14 = ES2019, 15-16 = ES2020, 17 = ES2021,
-//   18-20 = ES2022 (class_static_block, class_private_method, class_private_field),
-//   21 = ES2023 (hashbang), 22 = ES2025 (using).
-// 타겟 T에 대해 "T 이후 도입된" 모든 feature 비트를 set한다.
+// compat.zig Feature enum 순서와 1:1 대응 (총 28 bits, src/transformer/compat.zig 참조):
+//   0-10  ES2015 (arrow, class, template_literal, destructuring, for_of, spread,
+//                  object_extensions, default_params, block_scoping, generator, new_target)
+//   11    ES2016 (exponentiation)
+//   12    ES2017 (async_await)
+//   13    ES2018 (object_spread)
+//   14    ES2019 (optional_catch_binding)
+//   15-16 ES2020 (nullish_coalescing, optional_chaining)
+//   17    ES2021 (logical_assignment)
+//   18-21 ES2022 (class_static_block, class_private_method, class_private_field, top_level_await)
+//   22    ES2023 (hashbang)
+//   23    ES2025 (using)
+//   24    ES2015 (regex_sticky)
+//   25-26 ES2018 (regex_dotall, regex_named_groups)
+//   27    ES2015 (unicode_brace_escape)
+//
+// 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
+// Feature 추가 시 compat.zig 와 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
-  es5: 0x7fffff, // bit 0-22
-  es2015: 0x7ff800, // bit 11-22
-  es2016: 0x7ff000, // bit 12-22
-  es2017: 0x7fe000, // bit 13-22
-  es2018: 0x7fc000, // bit 14-22
-  es2019: 0x7f8000, // bit 15-22
-  es2020: 0x7e0000, // bit 17-22
-  es2021: 0x7c0000, // bit 18-22
-  es2022: 0x600000, // bit 21-22 (hashbang + using)
-  es2023: 0x400000, // bit 22 (using only)
-  es2024: 0x400000, // bit 22 (ES2024에 구문 변환 기능 없음)
+  es5: 0x0fffffff, // bits 0-27 (모든 feature)
+  es2015: 0x06fff800, // bits 11-23, 25, 26 (ES2015/regex_sticky/unicode_brace_escape 제외)
+  es2016: 0x06fff000, // bits 12-23, 25, 26
+  es2017: 0x06ffe000, // bits 13-23, 25, 26
+  es2018: 0x00ffc000, // bits 14-23 (ES2018 features 도 제외)
+  es2019: 0x00ff8000, // bits 15-23
+  es2020: 0x00fe0000, // bits 17-23
+  es2021: 0x00fc0000, // bits 18-23
+  es2022: 0x00c00000, // bits 22-23 (hashbang + using)
+  es2023: 0x00800000, // bit 23 (using only)
+  es2024: 0x00800000, // ES2024 에 구문 변환 기능 없음
   es2025: 0x0,
   esnext: 0x0,
 };
