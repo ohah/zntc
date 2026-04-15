@@ -886,7 +886,22 @@ pub const Linker = struct {
     }
 
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
+    /// #1328 Phase 4c-3c-3: semantic.Symbol.canonical_name 우선 조회, 거기에
+    /// 없으면 기존 string map fallback (synthetic 등 mirror 안 된 케이스).
     pub fn getCanonicalName(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
+        if (module_index < self.modules.len) {
+            const m = &self.modules[module_index];
+            if (m.semantic) |sem| {
+                if (sem.scope_maps.len > 0) {
+                    if (sem.scope_maps[0].get(name)) |sym_idx| {
+                        if (sym_idx < sem.symbols.items.len) {
+                            const sym = &sem.symbols.items[sym_idx];
+                            if (sym.hasCanonicalName()) return sym.canonical_name;
+                        }
+                    }
+                }
+            }
+        }
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, module_index, name);
         return self.canonical_names.get(key);
@@ -903,10 +918,10 @@ pub const Linker = struct {
         return self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
     }
 
-    /// SymbolRef 기반 canonical name 조회 facade. #1338 Phase 4c-3.
-    /// alias: AliasTable이 이미 canonical_name을 소유 → 직접 반환.
-    /// semantic: 심볼 이름 추출 후 기존 string 기반 canonical_names 조회
-    ///   (4c-3 후속에서 semantic.Symbol에 canonical_name 필드 이전 예정).
+    /// SymbolRef 기반 canonical name 조회 facade. #1328 Phase 4c-3.
+    /// - alias: AliasTable이 canonical_name 소유 → 직접 반환.
+    /// - semantic: Symbol.canonical_name 직접 조회. 미설정 시 string map fallback
+    ///   (synthetic 심볼 등 mirror 안 된 케이스).
     /// 리네임 안 됐으면 null — caller가 원본 이름으로 fallback.
     pub fn getCanonicalByRef(self: *const Linker, ref: bundler_symbol.SymbolRef) ?[]const u8 {
         if (!ref.isValid()) return null;
@@ -922,8 +937,13 @@ pub const Linker = struct {
                 const sem = m.semantic orelse break :blk null;
                 const idx: u32 = @intFromEnum(s.symbol);
                 if (idx >= sem.symbols.items.len) break :blk null;
-                const name = sem.symbols.items[idx].nameText(m.source);
-                break :blk self.getCanonicalName(mod_i, name);
+                const sym = &sem.symbols.items[idx];
+                if (sym.hasCanonicalName()) break :blk sym.canonical_name;
+                // synthetic 등 mirror 안 된 케이스: string map fallback
+                const name = sym.nameText(m.source);
+                var key_buf: [4096]u8 = undefined;
+                const key = makeExportKeyBuf(&key_buf, mod_i, name);
+                break :blk self.canonical_names.get(key);
             },
         };
     }
@@ -1634,6 +1654,13 @@ pub const Linker = struct {
         }
         self.canonical_names.clearRetainingCapacity();
         self.canonical_names_used.clearRetainingCapacity();
+        // semantic 거울도 초기화 — 4c-3c-3 reader가 symbol 우선 읽으므로 stale 방지.
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            for (sem.symbols.items) |*sym| {
+                sym.canonical_name = "";
+            }
+        }
     }
 
     /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.
