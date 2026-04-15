@@ -282,6 +282,13 @@ interface BuildOptionsCommon {
   polyfills?: string[];
   /** 엔트리 모듈 직전에 실행할 모듈 경로 */
   runBeforeMain?: string[];
+  /** 번들 그래프 밖의 디렉토리를 감시 루트에 추가 (Metro watchFolders 호환).
+   * 절대/상대 경로 모두 허용. 지정된 경로는 재귀 스캔되어 감시 대상에 포함된다. */
+  watchFolders?: string[];
+  /** watchFolders 스캔 시 포함할 파일 glob 화이트리스트 (루트 기준 상대 경로). */
+  watchInclude?: string[];
+  /** watchFolders 스캔 시 제외할 파일 glob (루트 기준 상대 경로). */
+  watchExclude?: string[];
   /** watch 모드 빌드 완료 콜백 */
   onReady?: (event: WatchReadyEvent) => void;
   /** watch 모드 리빌드 콜백 */
