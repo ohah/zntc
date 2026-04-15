@@ -742,7 +742,7 @@ pub const TreeShaker = struct {
                         self.included.set(src);
                         try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
                     } else {
-                        try self.seedExport(src, eb.local_name, queue, module_stmt_infos, reachable_stmts);
+                        try self.seedExport(src, m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
                     }
                 }
             }
@@ -788,7 +788,7 @@ pub const TreeShaker = struct {
                 self.included.set(src);
                 try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
             } else {
-                try self.seedExport(src, eb.local_name, queue, module_stmt_infos, reachable_stmts);
+                try self.seedExport(src, m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
             }
         }
         // namespace import 전파: import * as X에서 X가 사용되면 소스 모듈도 시드
@@ -947,7 +947,7 @@ pub const TreeShaker = struct {
                                 // named re-export: canonical 모듈도 include
                                 if (self.linker.resolveExportChain(
                                     m.import_records[rec_idx].resolved,
-                                    eb.local_name,
+                                    m.exportBindingLocalName(eb),
                                     0,
                                 )) |canonical| {
                                     const canon_idx = @intFromEnum(canonical.module_index);
