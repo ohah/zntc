@@ -120,7 +120,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const step_done = try es_helpers.makeStaticMember(self, paren_step, done_prop, span);
 
             // !(...)
-            const not_done = try makeUnaryNot(self, step_done, span);
+            const not_done = try es_helpers.makeUnaryNot(self, step_done, span);
 
             // =====================================================
             // 3. while body: var v = _step.value; body;
@@ -131,7 +131,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             const new_body = try self.visitNode(body);
 
-            const elem_stmt = try buildLoopVarAssign(self, left, step_value, span);
+            const elem_stmt = try es_helpers.buildForOfLoopVarAssign(self, left, step_value, span);
 
             const while_body_block = if (!new_body.isNone())
                 try self.prependStatementsToBody(new_body, &.{elem_stmt})
@@ -221,7 +221,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const step_ref_f2 = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
             const done_prop2 = try es_helpers.makeIdentifierRef(self, "done");
             const step_done2 = try es_helpers.makeStaticMember(self, step_ref_f2, done_prop2, span);
-            const not_step_done = try makeUnaryNot(self, step_done2, span);
+            const not_step_done = try es_helpers.makeUnaryNot(self, step_done2, span);
 
             // _step && !_step.done
             const and1 = try self.ast.addNode(.{
@@ -348,97 +348,6 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = wrapper_list },
             });
-        }
-
-        // ================================================================
-        // 헬퍼
-        // ================================================================
-
-        fn makeUnaryNot(self: *Transformer, operand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const extra = try self.ast.addExtras(&.{
-                @intFromEnum(operand),
-                @intFromEnum(token_mod.Kind.bang),
-            });
-            return self.ast.addNode(.{
-                .tag = .unary_expression,
-                .span = span,
-                .data = .{ .extra = extra },
-            });
-        }
-
-        /// for-await 의 left (variable_declaration 또는 expression) → `<left> = _step.value;` 문장.
-        ///
-        /// variable_declaration:
-        ///   var v = _step.value;
-        ///   (const/let 도 var 로 강등 — ES2015 미만 block-scoping 미지원 타겟에서도 안전.
-        ///    TDZ 의미는 잃지만, 실전 코드에서 for-await head 가 TDZ 를 기대하는 경우는 없음.)
-        ///
-        /// expression:
-        ///   (left) = _step.value;
-        ///
-        /// 현재는 head binding 이 단순 identifier 인 경우만 완전 지원.
-        /// destructuring pattern (`for await (const [k, v] of iter)`) 은 binding identifier 를
-        /// 그대로 body 로 옮기므로 ES2015 destructuring 미지원 타겟에서는 후속 destructuring
-        /// lowering 이 필요하다. (#1383)
-        fn buildLoopVarAssign(self: *Transformer, left: NodeIndex, elem: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (left.isNone()) {
-                // for await (;;) 은 문법적으로 불가하지만 방어.
-                return es_helpers.makeExprStmt(self, elem, span);
-            }
-            const left_node = self.ast.getNode(left);
-
-            if (left_node.tag == .variable_declaration) {
-                const le = left_node.data.extra;
-                const list_start = self.readU32(le, 1);
-                const list_len = self.readU32(le, 2);
-                if (list_len == 0) return es_helpers.makeExprStmt(self, elem, span);
-
-                const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
-                const first_decl = self.ast.getNode(first_decl_idx);
-                if (first_decl.tag != .variable_declarator) return es_helpers.makeExprStmt(self, elem, span);
-
-                const binding_idx: NodeIndex = self.readNodeIdx(first_decl.data.extra, 0);
-                if (binding_idx.isNone()) return es_helpers.makeExprStmt(self, elem, span);
-                const binding_node = self.ast.getNode(binding_idx);
-
-                if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
-                    // Destructuring — 임시 변수 + element/prop 접근 declarator로 전개
-                    // (`var [a, b] = _step.value` 는 ES5에서 문법 오류)
-                    const temp_span = try es_helpers.makeTempVarSpan(self);
-                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
-                    const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, elem, span);
-
-                    const scratch_top = self.scratch.items.len;
-                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    try self.scratch.append(self.allocator, temp_decl);
-
-                    const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-                    try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span);
-
-                    return es_helpers.makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
-                }
-
-                const binding_name = try self.visitNode(binding_idx);
-                const declarator = try es_helpers.makeDeclarator(self, binding_name, elem, span);
-                return es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
-            } else if (left_node.tag == .array_assignment_target or left_node.tag == .object_assignment_target) {
-                const assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = left, .right = elem, .flags = 0 } },
-                });
-                const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-                const lowered_seq = try es2015_destruct.lowerDestructuringAssignment(self, self.ast.getNode(assign));
-                return es_helpers.makeExprStmt(self, lowered_seq, span);
-            } else {
-                const new_left = try self.visitNode(left);
-                const assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = new_left, .right = elem, .flags = 0 } },
-                });
-                return es_helpers.makeExprStmt(self, assign, span);
-            }
         }
     };
 }

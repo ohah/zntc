@@ -291,6 +291,89 @@ pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
     });
 }
 
+/// `!operand` unary expression 노드 생성.
+pub fn makeUnaryNot(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(operand),
+        @intFromEnum(token_mod.Kind.bang),
+    });
+    return self.ast.addNode(.{
+        .tag = .unary_expression,
+        .span = span,
+        .data = .{ .extra = extra },
+    });
+}
+
+/// for-of / for-await-of 의 left 를 loop body 에 prepend 할 statement 로 변환.
+///
+/// - `variable_declaration` (const/let/var) → `var <binding> = elem;` (kind 는 항상 `.var` 로 강등)
+///   TDZ 의미는 잃지만 for-of / for-await head 가 TDZ 를 기대하는 경우는 실전에 없음.
+/// - Destructuring pattern (`[a, b]` / `{a, b}`) → 임시 변수 + element/prop 접근 declarator 로 전개.
+///   `var [a, b] = elem` 이 ES5 `var` 에서 문법 오류이므로 `var _t = elem, a = _t[0], b = _t[1]` 형태로 전개.
+/// - `array_assignment_target` / `object_assignment_target` → `lowerDestructuringAssignment` 로 sequence expr 생성 후 expression_statement 로 감쌈.
+/// - 그 외 (단순 identifier 등) → `<left> = elem;` expression_statement.
+///
+/// 그래머상 불가능한 방어 케이스 (left=none, list_len=0, first 가 declarator 가 아님 등) 에서도
+/// 항상 유효한 statement 를 반환 (`elem;`).
+pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, span: Span) !NodeIndex {
+    if (left.isNone()) return makeExprStmt(self, elem, span);
+    const left_node = self.ast.getNode(left);
+
+    if (left_node.tag == .variable_declaration) {
+        const le = left_node.data.extra;
+        const list_start = self.readU32(le, 1);
+        const list_len = self.readU32(le, 2);
+        if (list_len == 0) return makeExprStmt(self, elem, span);
+
+        const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+        const first_decl = self.ast.getNode(first_decl_idx);
+        if (first_decl.tag != .variable_declarator) return makeExprStmt(self, elem, span);
+
+        const binding_idx: NodeIndex = self.readNodeIdx(first_decl.data.extra, 0);
+        if (binding_idx.isNone()) return makeExprStmt(self, elem, span);
+        const binding_node = self.ast.getNode(binding_idx);
+
+        if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
+            // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
+            const temp_span = try makeTempVarSpan(self);
+            const temp_binding = try makeBindingIdentifier(self, temp_span);
+            const temp_decl = try makeDeclarator(self, temp_binding, elem, span);
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            try self.scratch.append(self.allocator, temp_decl);
+
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
+            try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span);
+
+            return makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
+        }
+
+        const binding_name = try self.visitNode(binding_idx);
+        const declarator = try makeDeclarator(self, binding_name, elem, span);
+        return makeVarDeclaration(self, &.{declarator}, .@"var", span);
+    } else if (left_node.tag == .array_assignment_target or left_node.tag == .object_assignment_target) {
+        // Assignment destructuring: `for ([a,b] of ...)` → _t = elem; a = _t[0]; ...
+        // 기존 lowerDestructuringAssignment 경로(sequence expression) 재사용.
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = span,
+            .data = .{ .binary = .{ .left = left, .right = elem, .flags = 0 } },
+        });
+        const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
+        const lowered_seq = try es2015_destruct.lowerDestructuringAssignment(self, self.ast.getNode(assign));
+        return makeExprStmt(self, lowered_seq, span);
+    } else {
+        const new_left = try self.visitNode(left);
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = span,
+            .data = .{ .binary = .{ .left = new_left, .right = elem, .flags = 0 } },
+        });
+        return makeExprStmt(self, assign, span);
+    }
+}
+
 // ============================================================
 // Object spread lowering 공용 헬퍼
 // ============================================================
