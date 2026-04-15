@@ -1267,10 +1267,7 @@ pub const Linker = struct {
                 if (module_scope_opt) |module_scope| {
                     if (!ib.isSynthetic()) {
                         if (module_scope.get(ib.local_name)) |sym_idx| {
-                            ib.local_symbol = .{ .semantic = .{
-                                .module = mod_idx,
-                                .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
-                            } };
+                            ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(mod_idx, sym_idx);
                         }
                     }
                 }

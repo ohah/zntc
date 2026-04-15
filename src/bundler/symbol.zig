@@ -37,6 +37,14 @@ pub const SymbolRef = union(enum) {
 
     pub const invalid: SymbolRef = .{ .alias = .{ .module = .none, .symbol = .none } };
 
+    /// `.semantic` 변형 생성. `sym_idx`는 usize/u32 모두 허용 (intCast).
+    pub fn makeSemantic(module: ModuleIndex, sym_idx: anytype) SymbolRef {
+        return .{ .semantic = .{
+            .module = module,
+            .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+        } };
+    }
+
     pub fn isValid(self: SymbolRef) bool {
         return switch (self) {
             .semantic => |s| !s.module.isNone() and !s.symbol.isNone(),

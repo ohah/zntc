@@ -639,11 +639,11 @@ pub fn collectNamespaceAccesses(
     }
 }
 
-/// export bindings를 훑어 합성 심볼을 등록하고 `ExportBinding.symbol`을 채운다.
-/// Cross-module re-export 연결은 linker가 `populateReExportAliases`에서 수행.
-///
-/// #1338 Phase 4e-2d-a: `synthetic_default`는 항상 semantic 공간에 등록.
-/// `re_export_alias`는 값 의미가 없어 bundler 전용 (RFC #1338).
+/// 모든 ExportBinding의 `symbol` 필드를 채운다. 세 경로:
+///   1. `_default = <expr>` 패턴 → semantic 합성 심볼(`default_export`) 등록
+///   2. `.re_export` → AliasTable에 alias 등록
+///   3. `.local` → `module_scope`에서 동명 심볼 lookup → semantic ref
+/// Cross-module re-export 체인 resolve는 linker가 `populateReExportAliases`에서 수행.
 pub fn populateSyntheticSymbols(
     table: *AliasTable,
     module_index: ModuleIndex,
@@ -680,10 +680,7 @@ pub fn populateSyntheticSymbols(
             // synthetic_default 케이스는 위에서 이미 처리됨.
             const scope = module_scope orelse continue;
             const sym_idx = scope.get(eb.local_name) orelse continue;
-            eb.symbol = .{ .semantic = .{
-                .module = module_index,
-                .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
-            } };
+            eb.symbol = symbol_mod.SymbolRef.makeSemantic(module_index, sym_idx);
         }
     }
 }
