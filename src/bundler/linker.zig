@@ -877,8 +877,9 @@ pub const Linker = struct {
     /// 모듈당 export 선형 스캔 (< 20개 수준).
     pub fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
         if (module_index >= self.modules.len) return null;
-        const eb = self.modules[module_index].findExportBinding(exported_name) orelse return null;
-        return eb.local_name;
+        const m = &self.modules[module_index];
+        const eb = m.findExportBinding(exported_name) orelse return null;
+        return m.exportBindingLocalName(eb.*);
     }
 
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
@@ -898,10 +899,12 @@ pub const Linker = struct {
     /// `.re_export` alias는 chain-resolved canonical을 쓰므로 final exports/scope
     /// hoisting에서 원하는 "현재 모듈 rename"과 다름 → 문자열 경로 유지.
     pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
+        const m = &self.modules[module_index];
+        const local = m.exportBindingLocalName(eb);
         if (eb.kind == .local) {
-            return self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
+            return self.getCanonicalByRef(eb.symbol) orelse local;
         }
-        return self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+        return self.getCanonicalName(module_index, local) orelse local;
     }
 
     /// SymbolRef 기반 canonical name 조회 facade. #1328 Phase 4c-3.
@@ -1532,6 +1535,7 @@ pub const Linker = struct {
             if (seen.contains(eb.exported_name)) continue;
             try seen.put(eb.exported_name, {});
 
+            const eb_local = m.exportBindingLocalName(eb);
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 // export * as ns — 소스 모듈의 인라인 객체를 생성 (재귀)
                 if (eb.import_record_index) |rec_idx| {
@@ -1542,7 +1546,7 @@ pub const Linker = struct {
                         }
                     }
                 }
-                break :blk eb.local_name;
+                break :blk eb_local;
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
                     // canonical이 export * as ns 패턴인지 확인
@@ -1566,11 +1570,11 @@ pub const Linker = struct {
                     }
                     break :blk self.resolveToLocalName(canonical);
                 }
-                break :blk eb.local_name;
+                break :blk eb_local;
             } else blk: {
                 // .local export: namespace import를 re-export하는 경우 인라인 객체 생성
                 // 예: import * as X from './Module'; export { X }
-                if (ns_imports.get(eb.local_name)) |rec_idx| {
+                if (ns_imports.get(eb_local)) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const src = m.import_records[rec_idx].resolved;
                         if (!src.isNone()) {
@@ -1578,7 +1582,7 @@ pub const Linker = struct {
                         }
                     }
                 }
-                break :blk self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
+                break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
             };
 
             const safe_local = self.safeIdentifierName(actual_local, @intCast(mod_i));
