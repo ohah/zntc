@@ -91,9 +91,9 @@ pub fn emitEsmWrappedModule(
 ) !EsmEmitResult {
     const basename = module.wrapperId();
 
-    const init_name = try types.makeInitVarName(allocator, module.path);
+    const init_name = try module.allocInitName(allocator);
     defer allocator.free(init_name);
-    const exports_name = try types.makeExportsVarName(allocator, module.path);
+    const exports_name = try module.allocExportsName(allocator);
     defer allocator.free(exports_name);
 
     // AST top-level 문장을 분류
@@ -435,7 +435,7 @@ pub fn emitEsmWrappedModule(
                     // export * as ns from './dep' → namespace re-export
                     // getter는 소스 모듈의 exports 객체 자체를 참조
                     const getter_val = switch (src_mod.wrap_kind) {
-                        .esm, .none => try types.makeExportsVarName(allocator, src_mod.path),
+                        .esm, .none => try src_mod.allocExportsName(allocator),
                         .cjs => blk: {
                             const rv = try types.makeRequireVarName(allocator, src_mod.path);
                             defer allocator.free(rv);
@@ -617,9 +617,9 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
-                            const iv = try types.makeInitVarName(allocator, source_mod.path);
+                            const iv = try source_mod.allocInitName(allocator);
                             defer allocator.free(iv);
-                            const ev = try types.makeExportsVarName(allocator, source_mod.path);
+                            const ev = try source_mod.allocExportsName(allocator);
                             defer allocator.free(ev);
                             try reexport_buf.appendSlice(allocator, iv);
                             try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
@@ -904,7 +904,7 @@ fn appendWrappedInitCall(
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn();\n");
             } else {
-                const iv = try types.makeInitVarName(allocator, src_mod.path);
+                const iv = try src_mod.allocInitName(allocator);
                 defer allocator.free(iv);
                 try buf.appendSlice(allocator, iv);
                 try buf.appendSlice(allocator, "();\n");
@@ -1009,7 +1009,7 @@ fn makeStarGetterValue(
                 const canonical_mod = &l.modules[canonical_mod_i];
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
-                    const ev = try types.makeExportsVarName(allocator, canonical_mod.path);
+                    const ev = try canonical_mod.allocExportsName(allocator);
                     defer allocator.free(ev);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
                 }
@@ -1030,7 +1030,7 @@ fn makeStarGetterValue(
             return try allocator.dupe(u8, name);
         },
         .esm => {
-            const ev = try types.makeExportsVarName(allocator, src_mod.path);
+            const ev = try src_mod.allocExportsName(allocator);
             defer allocator.free(ev);
             return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
         },

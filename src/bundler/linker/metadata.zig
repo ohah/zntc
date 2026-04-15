@@ -308,7 +308,7 @@ pub fn buildMetadataForAst(
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn();\n");
                     } else {
-                        const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
+                        const init_name = try target_mod.allocInitName(self.allocator);
                         defer self.allocator.free(init_name);
                         try preamble.write(init_name);
                         try preamble.write("();\n");
@@ -641,7 +641,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
                 if (require_rewrites.get(rec.specifier)) |old| {
                     self.allocator.free(old);
                 }
-                const exports_name = try types.makeExportsVarName(self.allocator, m.path);
+                const exports_name = try m.allocExportsName(self.allocator);
                 defer self.allocator.free(exports_name);
                 const call_expr = try std.fmt.allocPrint(self.allocator, "__toCommonJS({s})", .{exports_name});
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
@@ -671,9 +671,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
                 const call_expr = try types.fmtDevRequireExpr(self.allocator, target_mod.dev_id);
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {
-                const init_name = try types.makeInitVarName(self.allocator, target_mod.path);
+                const init_name = try target_mod.allocInitName(self.allocator);
                 defer self.allocator.free(init_name);
-                const exports_name = try types.makeExportsVarName(self.allocator, target_mod.path);
+                const exports_name = try target_mod.allocExportsName(self.allocator);
                 defer self.allocator.free(exports_name);
                 const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), __toCommonJS({s}))", .{ init_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
