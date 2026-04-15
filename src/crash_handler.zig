@@ -16,8 +16,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// GitHub issue tracker base. 새 이슈 URL로 직접 보내 라벨/제목 프리필.
-const ISSUE_NEW_URL = "https://github.com/ohah/zts/issues/new";
+/// GitHub repo URL — 사용자가 직접 issues 탭에서 검색/신고하도록.
+const REPO_URL = "https://github.com/ohah/zts";
 
 /// 진입점에서 best-effort로 채워 두는 크래시 컨텍스트.
 /// panic 출력에 현재 변환 중인 파일/타겟을 포함시키기 위함.
@@ -70,61 +70,16 @@ fn printBanner(out: anytype, msg: []const u8) !void {
 
     try out.writeAll(
         \\
-        \\This is a bug in zts. Please file an issue with the stack trace below:
+        \\This is a bug in zts. Please report at:
         \\
     );
-    try printIssueUrl(out, msg, ctx);
-    try out.writeAll("\n\n");
-}
-
-/// GitHub "new issue" URL에 title/labels 프리필.
-fn printIssueUrl(out: anytype, msg: []const u8, ctx: Context) !void {
-    try out.writeAll(ISSUE_NEW_URL);
-    try out.writeAll("?labels=crash&title=");
-
-    // 제목: "panic: <msg 첫 80자> (<entry>, input=<file>)"
-    try writeUrlEncoded(out, "panic: ");
-    const msg_cut = if (msg.len > 80) msg[0..80] else msg;
-    try writeUrlEncoded(out, msg_cut);
-    if (ctx.entry) |e| {
-        try writeUrlEncoded(out, " (");
-        try writeUrlEncoded(out, e);
-        if (ctx.input_file) |f| {
-            try writeUrlEncoded(out, ", input=");
-            try writeUrlEncoded(out, f);
-        }
-        try writeUrlEncoded(out, ")");
-    }
-}
-
-/// RFC3986 unreserved + 숫자/하이픈/밑줄/점/물결은 그대로, 그 외는 `%HH`.
-/// 공백은 `+`로.
-fn writeUrlEncoded(out: anytype, s: []const u8) !void {
-    const hex = "0123456789ABCDEF";
-    for (s) |c| {
-        switch (c) {
-            'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => try out.writeByte(c),
-            ' ' => try out.writeByte('+'),
-            else => {
-                try out.writeByte('%');
-                try out.writeByte(hex[(c >> 4) & 0xF]);
-                try out.writeByte(hex[c & 0xF]);
-            },
-        }
-    }
+    try out.print("  {s}\n\n", .{REPO_URL});
 }
 
 /// 진입점에서 `pub const panic = crash_handler.panic;`로 사용.
 pub const panic = std.debug.FullPanic(panicFn);
 
 // ─── 테스트 ───
-
-test "writeUrlEncoded: unreserved passthrough + space as plus + percent encode" {
-    var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try writeUrlEncoded(fbs.writer(), "Hello World/foo.ts");
-    try std.testing.expectEqualStrings("Hello+World%2Ffoo.ts", fbs.getWritten());
-}
 
 test "setContext/getContext roundtrip" {
     setContext(.{ .input_file = "a.ts", .target = "es5", .entry = "cli" });
