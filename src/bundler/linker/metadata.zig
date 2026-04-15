@@ -204,7 +204,7 @@ pub fn buildMetadataForAst(
             // resolve 미완료: external 또는 resolve 실패.
             if (rec.resolved.isNone()) {
                 if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
+                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     // synthetic binding(JSX runtime 등) + ESM-wrapped 모듈 조합에서는
                     // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.
                     // init 함수 본문에서 `var`로 재선언하면 outer scope를 shadow → #1209.
@@ -283,7 +283,7 @@ pub fn buildMetadataForAst(
 
             // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
             if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
-                const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
+                const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
                 // ESM-wrapped + synthetic binding: top-level에 이미 var 선언됨 → 할당만
@@ -346,7 +346,7 @@ pub fn buildMetadataForAst(
             // 롤다운 shimMissingExports 호환: 소스 모듈에 해당 export가 없으면
             // strict mode ReferenceError 대신 undefined를 반환하도록 shim 생성.
             if (resolved == null and self.shim_missing_exports) {
-                const shim_name = self.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
+                const shim_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 try preamble.write("var ");
                 try preamble.write(shim_name);
                 try preamble.write(" = void 0;\n");
@@ -361,7 +361,7 @@ pub fn buildMetadataForAst(
             if (resolved) |rb| {
                 const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                 if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
-                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
+                    const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                     const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
                     const effective_name = rb.canonical.export_name;
