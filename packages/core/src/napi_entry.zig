@@ -10,6 +10,10 @@
 
 const std = @import("std");
 const zts_lib = @import("zts_lib");
+
+/// Bun 스타일 crash report: NAPI addon에서 panic이 터지면 Node 프로세스 전체가
+/// 죽는다 — 그 전에 ZTS 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
+pub const panic = zts_lib.crash_handler.panic;
 const transpile_mod = zts_lib.transpile;
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;

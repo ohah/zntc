@@ -23,6 +23,7 @@ pub const server = @import("server/mod.zig");
 pub const transpile = @import("transpile.zig");
 pub const string_escape = @import("string_escape.zig");
 pub const util = @import("util/mod.zig");
+pub const crash_handler = @import("crash_handler.zig");
 
 test {
     _ = lexer;
@@ -43,6 +44,8 @@ test {
     _ = diagnostic_renderer;
     _ = levenshtein;
     _ = error_codes;
+
+    _ = crash_handler;
 
     // test files
     _ = @import("config_test.zig");
