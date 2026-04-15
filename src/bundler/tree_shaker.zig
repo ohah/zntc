@@ -493,10 +493,10 @@ pub const TreeShaker = struct {
                 for (m.export_bindings) |eb| {
                     if (eb.kind.isReExportAll()) continue;
                     if (!self.entry_set.isSet(i) and !self.isExportUsed(mi, eb.exported_name)) continue;
-                    if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                        if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
-                            try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
-                        }
+                    if (eb.symbol != .semantic) continue;
+                    const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                    if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+                        try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
                     }
                 }
                 if (self.entry_set.isSet(i)) {
@@ -539,11 +539,11 @@ pub const TreeShaker = struct {
             if (sem.scope_maps.len == 0) continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind.isReExportAll()) continue;
-                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                    if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
-                        if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
-                            try self.markExportUsed(@intCast(i), eb.exported_name);
-                        }
+                if (eb.symbol != .semantic) continue;
+                const sym_idx: u32 = @intFromEnum(eb.symbol.semantic.symbol);
+                if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+                    if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
+                        try self.markExportUsed(@intCast(i), eb.exported_name);
                     }
                 }
             }
