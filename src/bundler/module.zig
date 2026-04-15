@@ -169,6 +169,40 @@ pub const Module = struct {
         ready,
     };
 
+    /// wrap 모듈의 `init_<path>` 이름을 반환. 미등록/미래핑이면 null.
+    /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
+    pub fn getInitName(self: *const Module) ?[]const u8 {
+        const id = self.init_symbol orelse return null;
+        const sem = self.semantic orelse return null;
+        const idx: u32 = @intFromEnum(id);
+        if (idx >= sem.symbols.items.len) return null;
+        const name = sem.symbols.items[idx].synthetic_name;
+        return if (name.len > 0) name else null;
+    }
+
+    /// wrap 모듈의 `exports_<path>` 이름을 반환. 미등록/미래핑이면 null.
+    pub fn getExportsName(self: *const Module) ?[]const u8 {
+        const id = self.exports_symbol orelse return null;
+        const sem = self.semantic orelse return null;
+        const idx: u32 = @intFromEnum(id);
+        if (idx >= sem.symbols.items.len) return null;
+        const name = sem.symbols.items[idx].synthetic_name;
+        return if (name.len > 0) name else null;
+    }
+
+    /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.
+    /// 기존 `types.makeInitVarName(alloc, path)` 호출지의 drop-in 대체.
+    pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.getInitName()) |n| return allocator.dupe(u8, n);
+        return types.makeInitVarName(allocator, self.path);
+    }
+
+    /// `getExportsName()`의 할당 버전.
+    pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.getExportsName()) |n| return allocator.dupe(u8, n);
+        return types.makeExportsVarName(allocator, self.path);
+    }
+
     /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
     /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
     pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {

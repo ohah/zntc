@@ -728,7 +728,7 @@ pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator
     const call_name = if (mod.wrap_kind == .cjs)
         types.makeRequireVarName(allocator, mod.path) catch return
     else
-        types.makeInitVarName(allocator, mod.path) catch return;
+        mod.allocInitName(allocator) catch return;
     defer allocator.free(call_name);
     if (mod.wrap_kind != .cjs and mod.uses_top_level_await) {
         try output.appendSlice(allocator, "await ");
