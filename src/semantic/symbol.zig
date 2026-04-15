@@ -265,9 +265,8 @@ pub const Symbol = struct {
     synthetic_name: []const u8 = "",
 
     /// 번들러 linker/mangler가 주입한 canonical (rename된) 이름. 빈 문자열 =
-    /// 미지정 (원본 이름 유지). 소유권은 linker (`self.allocator`) — Symbol은
-    /// non-owning slice만 보유. 따라서 linker가 살아있는 동안만 유효.
-    /// #1328 Phase 4c-3c: 기존 `linker.canonical_names: StringHashMap` 대체 준비.
+    /// 미지정 (원본 이름 유지). 소유권은 linker (`canonical_strings` ArrayList)
+    /// — Symbol은 non-owning slice만 보유. linker가 살아있는 동안만 유효.
     canonical_name: []const u8 = "",
 
     /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
