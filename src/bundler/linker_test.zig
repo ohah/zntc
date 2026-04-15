@@ -1333,6 +1333,7 @@ test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증�
     defer r.cache.deinit();
 
     r.linker.populateReExportAliases(r.graph.modules.items);
+    r.linker.populateImportSymbols(r.graph.modules.items);
     r.linker.populateSymbolRefCounts(r.graph.modules.items);
 
     // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
@@ -1363,6 +1364,7 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
     defer r.cache.deinit();
 
     r.linker.populateReExportAliases(r.graph.modules.items);
+    r.linker.populateImportSymbols(r.graph.modules.items);
     r.linker.populateSymbolRefCounts(r.graph.modules.items);
 
     const b = &r.graph.modules.items[1];
