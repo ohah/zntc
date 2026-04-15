@@ -36,7 +36,7 @@ const appendModuleCall = parent.appendModuleCall;
 
 /// SymbolRef가 `mod` 소유의 bundler 심볼일 때 SymbolId를 반환. 다른 모듈/공간이거나
 /// invalid면 null. 아래 두 helper의 공통 unpack 단계.
-fn localBundlerSymbol(ref: SymbolRef, mod: *const Module) ?symbol_mod.SymbolId {
+fn localBundlerSymbol(ref: SymbolRef, mod: *const Module) ?symbol_mod.AliasId {
     return switch (ref) {
         .bundler => |b| if (b.module == mod.index and !b.symbol.isNone()) b.symbol else null,
         .semantic => null,
@@ -63,8 +63,7 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
 /// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
     const id = localBundlerSymbol(ref, mod) orelse return null;
-    const table = mod.symbol_table orelse return null;
-    if (table.getKind(id) != .re_export_alias) return null;
+    const table = mod.alias_table orelse return null;
     if (!table.hasCanonicalName(id)) return null;
     return table.getCanonicalName(id);
 }

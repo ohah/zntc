@@ -1129,14 +1129,13 @@ pub const Linker = struct {
     pub fn populateReExportAliases(self: *const Linker, modules: []Module) void {
         for (modules, 0..) |*m, idx| {
             const mod_idx: ModuleIndex = @enumFromInt(idx);
-            const table_ptr = if (m.symbol_table) |*t| t else continue;
+            const table_ptr = if (m.alias_table) |*t| t else continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export) continue;
                 const sym_id = switch (eb.symbol) {
                     .bundler => |b| blk: {
                         if (b.module != mod_idx) break :blk null;
                         if (b.symbol.isNone()) break :blk null;
-                        if (table_ptr.getKind(b.symbol) != .re_export_alias) break :blk null;
                         break :blk b.symbol;
                     },
                     else => null,
@@ -1173,7 +1172,7 @@ pub const Linker = struct {
                 switch (entry.binding.symbol) {
                     .bundler => |b| {
                         if (b.symbol.isNone()) continue;
-                        const table_ptr = if (modules[source_i].symbol_table) |*t| t else continue;
+                        const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
                         table_ptr.incRefCount(b.symbol);
                     },
                     .semantic => |s| {

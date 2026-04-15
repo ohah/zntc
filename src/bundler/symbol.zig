@@ -1,13 +1,14 @@
-//! Bundler Symbol Table — cross-module linking layer.
+//! Bundler Alias Table — cross-module re-export chain layer.
 //!
-//! Semantic은 단일 모듈의 선언/스코프 분석을 담당한다. 이 파일은 그 위에
-//! cross-module linking(import/export 체인, 합성 심볼)을 얹는 bundler-local
-//! 테이블이다. 역할 분리는 issue #1328의 "Semantic 공존 모델" 참조.
+//! Semantic은 단일 모듈의 선언/스코프 분석 + bundler 합성 심볼(_default,
+//! init_X, exports_X)을 담당한다 (#1338 Phase 4e-2b/2c). 이 파일은 그 위에
+//! cross-module re-export chain(`export { X } from './m'`)의 alias만 별도로
+//! 관리한다. Alias는 "선언"이 아니라 "다른 모듈 심볼로의 redirect"라
+//! semantic 공간에 얹지 않는다 (RFC #1338 결정).
 //!
 //! 규약(R1):
-//!   consumer는 반드시 getter/setter 함수만 사용. 내부 필드
-//!   (`symbols`, `by_name` 등) 직접 접근 금지. 내부 레이아웃(AoS/SoA)
-//!   을 무손실로 교체하기 위한 캡슐화.
+//!   consumer는 반드시 getter/setter 함수만 사용. 내부 필드(`aliases`)
+//!   직접 접근 금지. 내부 레이아웃(AoS/SoA)을 무손실로 교체하기 위한 캡슐화.
 
 const std = @import("std");
 const Span = @import("../lexer/token.zig").Span;
@@ -17,24 +18,23 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 pub const ModuleIndex = types.ModuleIndex;
 pub const SemanticSymbolId = semantic_symbol.SymbolId;
 
-/// Bundler 합성 심볼 id. 모듈-로컬 고유.
-/// semantic의 SymbolId와는 별개 공간 — `SymbolRef`를 통해 통합 참조.
-pub const SymbolId = enum(u32) {
+/// Bundler alias id. 모듈-로컬 고유.
+pub const AliasId = enum(u32) {
     none = std.math.maxInt(u32),
     _,
 
-    pub fn isNone(self: SymbolId) bool {
+    pub fn isNone(self: AliasId) bool {
         return self == .none;
     }
 };
 
-/// Cross-module 심볼 참조. semantic/bundler 두 공간을 구분.
-/// issue #1328 "Semantic 공존 모델 — SymbolRef 옵션 1(union)".
+/// Cross-module 심볼 참조. semantic 선언/합성 vs bundler alias 공간을 구분.
+/// 4e-2d-c에서 union 평탄화 예정.
 pub const SymbolRef = union(enum) {
-    /// semantic이 소유한 선언 심볼 (var/let/const/function/class/import/parameter/catch)
+    /// semantic이 소유한 선언/합성 심볼
     semantic: struct { module: ModuleIndex, symbol: SemanticSymbolId },
-    /// bundler가 만든 합성 심볼 (_default$N, exports_X, init_X, __ns_X)
-    bundler: struct { module: ModuleIndex, symbol: SymbolId },
+    /// bundler alias (re-export chain)
+    bundler: struct { module: ModuleIndex, symbol: AliasId },
 
     pub const invalid: SymbolRef = .{ .bundler = .{ .module = .none, .symbol = .none } };
 
@@ -66,203 +66,96 @@ pub const SymbolRef = union(enum) {
     }
 };
 
-/// 합성 심볼 종류. #1338 Phase 4e-2d-a: 4e-2b/2c 마이그레이션 + fallback
-/// 제거 후 bundler 공간은 cross-module re-export 체인만 보관.
-/// 4e-2d-b에서 SymbolTable을 AliasTable로 축소 예정.
-pub const SymbolKind = enum(u8) {
-    /// Re-export alias (`export { X } from './m'`, barrel 등).
-    /// 자기 자신은 값을 갖지 않고 linker가 `canonical_name`에 체인 resolve 결과를 주입한다.
-    re_export_alias,
-};
-
-/// 합성 심볼 레코드 (AoS 레이아웃 — 성능상 필요 시 내부 SoA로 전환 가능, R2).
-pub const Symbol = struct {
+/// Re-export alias 레코드.
+/// `name`은 exported_name(barrel 기준). `canonical_name`은 체인 resolve 후
+/// linker가 주입한 최종 참조 이름. `ref_count`는 symbol-level tree-shaking 용.
+pub const Alias = struct {
     name: []const u8,
-    kind: SymbolKind,
     span: Span,
-    /// Re-export 체인의 다음 hop을 가리키는 SymbolRef. 현재 미사용 — Phase 3b는
-    /// canonical_name 문자열 캐시로 체인 resolve를 처리한다.
-    ///
-    /// Tree-shaking과 semantic symbol 통합 시 재활성화 예정(#1328 Phase 4d+):
-    /// 이름 기반 lookup 대신 points_to 체인을 walk해 ref_count 전파. 세부는 이슈 참조.
-    points_to: SymbolRef = SymbolRef.invalid,
-    /// Linker renaming 후 최종 emit 이름. 빈 문자열이면 `name` 사용.
     canonical_name: []const u8 = "",
-    /// Tree-shaking usage count. 현재 미사용 — Phase 4d에서 수집 시작 예정.
     ref_count: u32 = 0,
 };
 
-/// 모듈별 합성 심볼 저장소.
-///
-/// R1: 외부는 getter/setter만 사용. `symbols`/`by_name` 직접 접근 금지.
-pub const SymbolTable = struct {
-    symbols: std.ArrayList(Symbol),
-    by_name: std.StringHashMap(SymbolId),
+/// 모듈별 re-export alias 저장소.
+pub const AliasTable = struct {
+    aliases: std.ArrayList(Alias),
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) SymbolTable {
-        return .{
-            .symbols = .empty,
-            .by_name = std.StringHashMap(SymbolId).init(allocator),
-            .allocator = allocator,
-        };
+    pub fn init(allocator: std.mem.Allocator) AliasTable {
+        return .{ .aliases = .empty, .allocator = allocator };
     }
 
-    pub fn deinit(self: *SymbolTable) void {
-        self.symbols.deinit(self.allocator);
-        self.by_name.deinit();
+    pub fn deinit(self: *AliasTable) void {
+        self.aliases.deinit(self.allocator);
     }
 
-    // ── mutation ──────────────────────────────────────────────
-
-    /// 합성 심볼을 등록하고 새 id를 반환.
-    /// 같은 이름이 이미 있으면 기존 id 반환 (멱등) — bundler 합성은 모듈당 1개 전제.
-    pub fn declare(
-        self: *SymbolTable,
-        name: []const u8,
-        kind: SymbolKind,
-        span: Span,
-    ) !SymbolId {
-        if (self.by_name.get(name)) |existing| return existing;
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
-        try self.symbols.append(self.allocator, .{
-            .name = name,
-            .kind = kind,
-            .span = span,
-        });
-        try self.by_name.put(name, id);
+    /// Alias 등록. 같은 exported_name이 여러 export 문에서 나올 수 있으므로 항상 new id.
+    pub fn declare(self: *AliasTable, name: []const u8, span: Span) !AliasId {
+        const id: AliasId = @enumFromInt(@as(u32, @intCast(self.aliases.items.len)));
+        try self.aliases.append(self.allocator, .{ .name = name, .span = span });
         return id;
     }
 
-    /// 이름 기반 조회 없이 익명 심볼 등록. re_export_alias처럼 같은 exported_name이
-    /// 여러 개 올 수 있거나, name으로 lookup이 필요 없는 경우에 사용.
-    pub fn declareAnonymous(
-        self: *SymbolTable,
-        name: []const u8,
-        kind: SymbolKind,
-        span: Span,
-    ) !SymbolId {
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
-        try self.symbols.append(self.allocator, .{
-            .name = name,
-            .kind = kind,
-            .span = span,
-        });
-        return id;
+    pub fn setCanonicalName(self: *AliasTable, id: AliasId, name: []const u8) void {
+        self.aliases.items[@intFromEnum(id)].canonical_name = name;
     }
 
-    pub fn setPointsTo(self: *SymbolTable, id: SymbolId, target: SymbolRef) void {
-        self.symbols.items[@intFromEnum(id)].points_to = target;
+    pub fn incRefCount(self: *AliasTable, id: AliasId) void {
+        self.aliases.items[@intFromEnum(id)].ref_count += 1;
     }
 
-    pub fn setCanonicalName(self: *SymbolTable, id: SymbolId, name: []const u8) void {
-        self.symbols.items[@intFromEnum(id)].canonical_name = name;
+    pub fn count(self: *const AliasTable) u32 {
+        return @intCast(self.aliases.items.len);
     }
 
-    pub fn incRefCount(self: *SymbolTable, id: SymbolId) void {
-        self.symbols.items[@intFromEnum(id)].ref_count += 1;
-    }
-
-    // ── read ──────────────────────────────────────────────────
-
-    pub fn count(self: *const SymbolTable) u32 {
-        return @intCast(self.symbols.items.len);
-    }
-
-    pub fn find(self: *const SymbolTable, name: []const u8) ?SymbolId {
-        return self.by_name.get(name);
-    }
-
-    pub fn getName(self: *const SymbolTable, id: SymbolId) []const u8 {
-        return self.symbols.items[@intFromEnum(id)].name;
-    }
-
-    pub fn getKind(self: *const SymbolTable, id: SymbolId) SymbolKind {
-        return self.symbols.items[@intFromEnum(id)].kind;
-    }
-
-    pub fn getSpan(self: *const SymbolTable, id: SymbolId) Span {
-        return self.symbols.items[@intFromEnum(id)].span;
-    }
-
-    pub fn getPointsTo(self: *const SymbolTable, id: SymbolId) SymbolRef {
-        return self.symbols.items[@intFromEnum(id)].points_to;
+    pub fn getName(self: *const AliasTable, id: AliasId) []const u8 {
+        return self.aliases.items[@intFromEnum(id)].name;
     }
 
     /// canonical_name이 비어있으면 원본 name 반환.
-    pub fn getCanonicalName(self: *const SymbolTable, id: SymbolId) []const u8 {
-        const s = &self.symbols.items[@intFromEnum(id)];
-        return if (s.canonical_name.len > 0) s.canonical_name else s.name;
+    pub fn getCanonicalName(self: *const AliasTable, id: AliasId) []const u8 {
+        const a = &self.aliases.items[@intFromEnum(id)];
+        return if (a.canonical_name.len > 0) a.canonical_name else a.name;
     }
 
-    /// `setCanonicalName`이 호출된 적 있는지 여부. re_export_alias의 체인 resolve
-    /// 완료를 판정할 때 fallback("" → name) 때문에 `getCanonicalName`만으로는 구분
-    /// 불가하므로 별도 API.
-    pub fn hasCanonicalName(self: *const SymbolTable, id: SymbolId) bool {
-        return self.symbols.items[@intFromEnum(id)].canonical_name.len > 0;
+    /// `setCanonicalName`이 호출된 적 있는지 — 체인 resolve 완료 판정.
+    pub fn hasCanonicalName(self: *const AliasTable, id: AliasId) bool {
+        return self.aliases.items[@intFromEnum(id)].canonical_name.len > 0;
     }
 
-    pub fn getRefCount(self: *const SymbolTable, id: SymbolId) u32 {
-        return self.symbols.items[@intFromEnum(id)].ref_count;
+    pub fn getRefCount(self: *const AliasTable, id: AliasId) u32 {
+        return self.aliases.items[@intFromEnum(id)].ref_count;
     }
 };
 
 // ── tests ─────────────────────────────────────────────────────
 
-test "SymbolTable: declare + get 기본" {
-    var t = SymbolTable.init(std.testing.allocator);
+test "AliasTable: declare + get 기본" {
+    var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    try std.testing.expectEqualStrings("_default", t.getName(id));
-    try std.testing.expectEqual(SymbolKind.re_export_alias, t.getKind(id));
+    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
+    try std.testing.expectEqualStrings("Foo", t.getName(id));
     try std.testing.expectEqual(@as(u32, 1), t.count());
 }
 
-test "SymbolTable: declare 멱등 (같은 이름)" {
-    var t = SymbolTable.init(std.testing.allocator);
+test "AliasTable: canonical_name fallback" {
+    var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const a = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    const b = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    try std.testing.expectEqual(a, b);
-    try std.testing.expectEqual(@as(u32, 1), t.count());
+    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
+    try std.testing.expectEqualStrings("Foo", t.getCanonicalName(id));
+    try std.testing.expect(!t.hasCanonicalName(id));
+    t.setCanonicalName(id, "Foo$2");
+    try std.testing.expectEqualStrings("Foo$2", t.getCanonicalName(id));
+    try std.testing.expect(t.hasCanonicalName(id));
 }
 
-test "SymbolTable: find" {
-    var t = SymbolTable.init(std.testing.allocator);
+test "AliasTable: ref_count" {
+    var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    try std.testing.expectEqual(@as(?SymbolId, id), t.find("_default"));
-    try std.testing.expectEqual(@as(?SymbolId, null), t.find("missing"));
-}
-
-test "SymbolTable: canonical_name fallback" {
-    var t = SymbolTable.init(std.testing.allocator);
-    defer t.deinit();
-
-    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    try std.testing.expectEqualStrings("_default", t.getCanonicalName(id));
-    t.setCanonicalName(id, "_default$2");
-    try std.testing.expectEqualStrings("_default$2", t.getCanonicalName(id));
-}
-
-test "SymbolTable: points_to + ref_count" {
-    var t = SymbolTable.init(std.testing.allocator);
-    defer t.deinit();
-
-    const id = try t.declare("_default", .re_export_alias, .{ .start = 0, .end = 0 });
-    try std.testing.expect(!t.getPointsTo(id).isValid());
-
-    const target: SymbolRef = .{ .bundler = .{
-        .module = @enumFromInt(7),
-        .symbol = @enumFromInt(3),
-    } };
-    t.setPointsTo(id, target);
-    try std.testing.expect(t.getPointsTo(id).isValid());
-    try std.testing.expect(t.getPointsTo(id).eql(target));
-
+    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
     try std.testing.expectEqual(@as(u32, 0), t.getRefCount(id));
     t.incRefCount(id);
     t.incRefCount(id);
@@ -278,7 +171,6 @@ test "SymbolRef: semantic vs bundler 공간 구분" {
         .module = @enumFromInt(1),
         .symbol = @enumFromInt(2),
     } };
-    // 같은 숫자라도 다른 공간이면 다른 ref
     try std.testing.expect(!sem.eql(bnd));
     try std.testing.expect(sem.eql(sem));
     try std.testing.expect(!SymbolRef.invalid.isValid());

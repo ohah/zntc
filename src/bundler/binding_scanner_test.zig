@@ -330,7 +330,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    var table = symbol.SymbolTable.init(alloc);
+    var table = symbol.AliasTable.init(alloc);
     defer table.deinit();
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
@@ -348,7 +348,7 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    var table = symbol.SymbolTable.init(alloc);
+    var table = symbol.AliasTable.init(alloc);
     defer table.deinit();
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
@@ -365,7 +365,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    var table = symbol.SymbolTable.init(alloc);
+    var table = symbol.AliasTable.init(alloc);
     defer table.deinit();
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
@@ -383,7 +383,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    var table = symbol.SymbolTable.init(alloc);
+    var table = symbol.AliasTable.init(alloc);
     defer table.deinit();
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
@@ -412,7 +412,7 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
 
-    var table = symbol.SymbolTable.init(alloc);
+    var table = symbol.AliasTable.init(alloc);
     defer table.deinit();
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
