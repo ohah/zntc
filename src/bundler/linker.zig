@@ -182,10 +182,12 @@ pub const Linker = struct {
 
     diagnostics: std.ArrayList(BundlerDiagnostic),
 
-    /// 이름 충돌 해결 결과: (module_index, export_name) → canonical_name.
-    /// 충돌 없으면 원본 이름 유지 (엔트리 없음).
-    canonical_names: std.StringHashMap([]const u8),
-    /// canonical_names 값의 역방향 조회용. 리네임 후보가 기존 할당과 충돌하는지 O(1) 확인.
+    /// canonical_name 문자열 소유 리스트. semantic.Symbol/AliasTable의
+    /// `canonical_name` 슬라이스가 가리키는 backing 저장소. linker.deinit에서
+    /// 일괄 해제. #1328 Phase 4c-3c-4b: 기존 `canonical_names: StringHashMap` 대체.
+    canonical_strings: std.ArrayList([]const u8) = .empty,
+    /// 충돌 검사용 set. 리네임 후보가 기존 canonical로 사용 중인지 O(1) 확인.
+    /// 키는 canonical_strings가 소유 — 이 맵은 borrowed.
     canonical_names_used: std.StringHashMap(void),
 
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
@@ -256,7 +258,6 @@ pub const Linker = struct {
             .export_map = std.StringHashMap(ExportEntry).init(allocator),
             .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
             .diagnostics = .empty,
-            .canonical_names = std.StringHashMap([]const u8).init(allocator),
             .canonical_names_used = std.StringHashMap(void).init(allocator),
             .reserved_globals = std.StringHashMap(void).init(allocator),
             .global_identifiers = global_identifiers,
@@ -270,13 +271,9 @@ pub const Linker = struct {
         }
         self.export_map.deinit();
         self.resolved_bindings.deinit();
-        // canonical_names의 키(makeExportKey 할당)와 값(fmt.allocPrint 할당) 해제
-        var cit = self.canonical_names.iterator();
-        while (cit.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.canonical_names.deinit();
+        // canonical_strings: Symbol.canonical_name backing 저장소 일괄 해제.
+        for (self.canonical_strings.items) |s| self.allocator.free(s);
+        self.canonical_strings.deinit(self.allocator);
         self.canonical_names_used.deinit();
         self.reserved_globals.deinit();
         for (self.nested_name_sets) |*set| {
@@ -464,8 +461,7 @@ pub const Linker = struct {
                     // 후보 이름도 예약어/다른 top-level/nested scope와 충돌할 수 있으므로 검증.
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
-                    const key = try makeExportKey(self.allocator, owner.module_index, name);
-                    try self.putCanonicalName(key, candidate);
+                    try self.putCanonicalName(owner.module_index, name, candidate);
                 }
                 continue;
             }
@@ -490,8 +486,7 @@ pub const Linker = struct {
                 // 충돌 없는 후보 이름 검색
                 const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
 
-                const key = try makeExportKey(self.allocator, owner.module_index, name);
-                try self.putCanonicalName(key, candidate);
+                try self.putCanonicalName(owner.module_index, name, candidate);
                 suffix += 1;
             }
         }
@@ -561,12 +556,11 @@ pub const Linker = struct {
                     // target module의 canonical name을 한 단계 더 rename
                     const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
                     const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
-                    const key = try makeExportKey(self.allocator, cmod, export_local);
 
                     // 새 이름: target_name$N (기존 이름 충돌 없는 것)
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(target_name, cmod, &suffix, name_to_owners);
-                    try self.putCanonicalName(key, candidate);
+                    try self.putCanonicalName(cmod, export_local, candidate);
                 }
             }
         }
@@ -681,9 +675,9 @@ pub const Linker = struct {
                 }
             }
         }
-        var cit = self.canonical_names.valueIterator();
-        while (cit.next()) |v| {
-            try all_names.put(v.*, {});
+        // 이미 할당된 canonical 이름들도 충돌 후보에서 제외.
+        for (self.canonical_strings.items) |v| {
+            try all_names.put(v, {});
         }
 
         var name_map = std.StringHashMap([]const u8).init(self.allocator);
@@ -713,49 +707,35 @@ pub const Linker = struct {
             }
         }
 
-        // 3. canonical_names 업데이트 — 기존 rename된 이름도 mangling
-        var update_list: std.ArrayList(struct { key: []const u8, val: []const u8 }) = .empty;
-        defer update_list.deinit(self.allocator);
-
-        var cnit = self.canonical_names.iterator();
-        while (cnit.next()) |cn_entry| {
-            const current_name = cn_entry.value_ptr.*;
-            if (name_map.get(current_name)) |mangled| {
-                try update_list.append(self.allocator, .{
-                    .key = cn_entry.key_ptr.*,
-                    .val = try self.allocator.dupe(u8, mangled),
-                });
-            }
-        }
-        for (update_list.items) |upd| {
-            if (self.canonical_names.getPtr(upd.key)) |ptr| {
-                self.allocator.free(ptr.*);
-                ptr.* = upd.val;
-                self.mirrorSymbolCanonicalFromKey(upd.key, upd.val);
+        // 3. 기존 canonical_name이 mangling 대상이면 새 이름으로 교체.
+        //    Symbol을 직접 순회 — name_map은 (원본 또는 기존 canonical) → mangled.
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            for (sem.symbols.items) |*sym| {
+                if (sym.canonical_name.len == 0) continue;
+                if (name_map.get(sym.canonical_name)) |mangled| {
+                    const dup = try self.allocator.dupe(u8, mangled);
+                    _ = self.canonical_names_used.fetchRemove(sym.canonical_name);
+                    try self.canonical_strings.append(self.allocator, dup);
+                    try self.canonical_names_used.put(dup, {});
+                    sym.canonical_name = dup;
+                }
             }
         }
 
-        // 4. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
+        // 4. 아직 canonical 미설정인 top-level 심볼에 mangled 이름 적용.
         for (self.modules, 0..) |m, i| {
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
             var sit = sem.scope_maps[0].iterator();
             while (sit.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
+                const sym_idx = scope_entry.value_ptr.*;
+                if (sym_idx >= sem.symbols.items.len) continue;
+                if (sem.symbols.items[sym_idx].canonical_name.len > 0) continue;
                 if (name_map.get(sym_name)) |mangled| {
-                    const key = makeExportKey(self.allocator, @intCast(i), sym_name) catch continue;
-                    if (!self.canonical_names.contains(key)) {
-                        const dup = self.allocator.dupe(u8, mangled) catch {
-                            self.allocator.free(key);
-                            continue;
-                        };
-                        self.putCanonicalName(key, dup) catch {
-                            self.allocator.free(key);
-                            self.allocator.free(dup);
-                        };
-                    } else {
-                        self.allocator.free(key);
-                    }
+                    const dup = self.allocator.dupe(u8, mangled) catch continue;
+                    self.putCanonicalName(@intCast(i), sym_name, dup) catch {};
                 }
             }
         }
@@ -768,46 +748,42 @@ pub const Linker = struct {
         return self.canonical_names_used.contains(name);
     }
 
-    /// canonical_names에 put하면서 역방향 맵 + semantic.Symbol.canonical_name 동기화.
-    /// #1328 Phase 4c-3c-2: semantic 미러는 4c-3c-3에서 reader가 소비.
-    fn putCanonicalName(self: *Linker, key: []const u8, value: []const u8) !void {
-        if (self.canonical_names.fetchRemove(key)) |old| {
-            _ = self.canonical_names_used.fetchRemove(old.value);
-            self.allocator.free(old.key);
-            self.allocator.free(old.value);
+    /// (module_index, local_name)의 canonical_name을 설정. 호출자는 이미
+    /// duped value를 넘기며 이 함수가 ownership(canonical_strings)을 가져간다.
+    /// scope_maps[0] → synthetic_name 순으로 Symbol을 찾아 직접 기록.
+    /// Symbol을 못 찾으면 value를 free하고 ownership 등록도 안 함 (silently noop).
+    fn putCanonicalName(self: *Linker, module_index: u32, name: []const u8, value: []const u8) !void {
+        const sym = self.findSymbolMutable(module_index, name) orelse {
+            self.allocator.free(value);
+            return;
+        };
+        if (sym.canonical_name.len > 0) {
+            _ = self.canonical_names_used.fetchRemove(sym.canonical_name);
+            // 기존 value는 canonical_strings가 소유 — deinit에서 일괄 해제.
         }
-        try self.canonical_names.put(key, value);
+        try self.canonical_strings.append(self.allocator, value);
         try self.canonical_names_used.put(value, {});
-        self.mirrorSymbolCanonicalFromKey(key, value);
+        sym.canonical_name = value;
     }
 
-    /// canonical_names key (4B module_index + 0x00 + name)에서 semantic.Symbol을
-    /// 찾아 canonical_name을 설정. scope_maps[0] 조회 실패 시 synthetic_name으로
-    /// 선형 탐색 (synthetic 심볼은 scope_maps에 등록되지 않음 — extendSymbol 참조).
-    /// 양쪽 모두 실패는 silently ignore.
-    fn mirrorSymbolCanonicalFromKey(self: *Linker, key: []const u8, value: []const u8) void {
-        if (key.len < 5) return;
-        var module_index: u32 = undefined;
-        @memcpy(std.mem.asBytes(&module_index), key[0..4]);
-        const name = key[5..];
-        if (module_index >= self.modules.len) return;
+    /// scope_maps[0] → synthetic_name fallback으로 mutable Symbol 찾기.
+    fn findSymbolMutable(self: *Linker, module_index: u32, name: []const u8) ?*semantic_symbol.Symbol {
+        if (module_index >= self.modules.len) return null;
         const m = &self.modules[module_index];
-        const sem = m.semantic orelse return;
+        const sem = m.semantic orelse return null;
         if (sem.scope_maps.len > 0) {
             if (sem.scope_maps[0].get(name)) |sym_idx| {
                 if (sym_idx < sem.symbols.items.len) {
-                    sem.symbols.items[sym_idx].canonical_name = value;
-                    return;
+                    return &sem.symbols.items[sym_idx];
                 }
             }
         }
-        // Synthetic fallback: scope_maps에 없으므로 synthetic_name으로 매칭.
         for (sem.symbols.items) |*sym| {
             if (sym.synthetic_kind != null and std.mem.eql(u8, sym.synthetic_name, name)) {
-                sym.canonical_name = value;
-                return;
+                return sym;
             }
         }
+        return null;
     }
 
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
@@ -898,13 +874,9 @@ pub const Linker = struct {
     }
 
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
-    /// scope_maps[0] → synthetic_name 순으로 Symbol 탐색. 둘 다 미발견이거나
-    /// canonical_name 미설정 시 string map fallback.
+    /// scope_maps[0] → synthetic_name 순으로 Symbol 탐색.
     pub fn getCanonicalName(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
-        if (self.lookupSymbolCanonical(module_index, name)) |c| return c;
-        var key_buf: [4096]u8 = undefined;
-        const key = makeExportKeyBuf(&key_buf, module_index, name);
-        return self.canonical_names.get(key);
+        return self.lookupSymbolCanonical(module_index, name);
     }
 
     /// (module, name) → Symbol.canonical_name 조회. scope_maps[0] 우선,
@@ -1667,14 +1639,9 @@ pub const Linker = struct {
     /// canonical_names를 초기화한다. 키와 값의 메모리를 해제하고 맵을 비운다.
     /// per-chunk rename에서 이전 청크의 결과를 제거할 때 사용.
     pub fn clearCanonicalNames(self: *Linker) void {
-        var cit = self.canonical_names.iterator();
-        while (cit.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.canonical_names.clearRetainingCapacity();
+        for (self.canonical_strings.items) |s| self.allocator.free(s);
+        self.canonical_strings.clearRetainingCapacity();
         self.canonical_names_used.clearRetainingCapacity();
-        // semantic 거울도 초기화 — 4c-3c-3 reader가 symbol 우선 읽으므로 stale 방지.
         for (self.modules) |m| {
             const sem = m.semantic orelse continue;
             for (sem.symbols.items) |*sym| {
