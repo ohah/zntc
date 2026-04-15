@@ -19,7 +19,7 @@ const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
-const SymbolTable = symbol_mod.SymbolTable;
+const AliasTable = symbol_mod.AliasTable;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const SemanticSymbol = semantic_symbol.Symbol;
 
@@ -621,7 +621,7 @@ pub fn collectNamespaceAccesses(
 /// #1338 Phase 4e-2d-a: `synthetic_default`는 항상 semantic 공간에 등록.
 /// `re_export_alias`는 값 의미가 없어 bundler 전용 (RFC #1338).
 pub fn populateSyntheticSymbols(
-    table: *SymbolTable,
+    table: *AliasTable,
     module_index: ModuleIndex,
     export_bindings: []ExportBinding,
     sem_symbols: *std.ArrayList(SemanticSymbol),
@@ -645,7 +645,7 @@ pub fn populateSyntheticSymbols(
         } else if (eb.kind == .re_export) {
             // re_export_alias는 bundler 전용 — linker가 post-link 단계에서
             // resolveExportChain 결과를 canonical_name으로 저장한다.
-            const id = try table.declareAnonymous(eb.exported_name, .re_export_alias, eb.local_span);
+            const id = try table.declare(eb.exported_name, eb.local_span);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         }
     }

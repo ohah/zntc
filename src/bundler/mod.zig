@@ -72,7 +72,7 @@ pub const PersistentModuleStore = module_store.PersistentModuleStore;
 pub const SymbolId = symbol.SymbolId;
 pub const SymbolRef = symbol.SymbolRef;
 pub const SymbolKind = symbol.SymbolKind;
-pub const SymbolTable = symbol.SymbolTable;
+pub const AliasTable = symbol.AliasTable;
 pub const incremental = @import("incremental.zig");
 pub const IncrementalBundler = incremental.IncrementalBundler;
 

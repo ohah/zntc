@@ -767,10 +767,10 @@ pub const ModuleGraph = struct {
             module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
 
             // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
-            module.ensureSymbolTable(self.allocator);
+            module.ensureAliasTable(self.allocator);
             if (module.semantic) |*sem| {
                 binding_scanner_mod.populateSyntheticSymbols(
-                    &module.symbol_table.?,
+                    &module.alias_table.?,
                     module.index,
                     module.export_bindings,
                     &sem.symbols,
@@ -1043,10 +1043,10 @@ pub const ModuleGraph = struct {
 
             // Phase 1-3b (#1328): 합성 심볼 테이블 초기화 + re_export_alias 등록
             // + semantic 공간에 synthetic_default 등록.
-            module.ensureSymbolTable(self.allocator);
+            module.ensureAliasTable(self.allocator);
             if (module.semantic) |*sem| {
                 binding_scanner_mod.populateSyntheticSymbols(
-                    &module.symbol_table.?,
+                    &module.alias_table.?,
                     module.index,
                     module.export_bindings,
                     &sem.symbols,
