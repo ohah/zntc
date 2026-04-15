@@ -2282,6 +2282,13 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // blockList: string[] (JS 쪽에서 RegExp는 .source로 변환해서 전달)
+    const block_list = getObjectStringArray(env, opts_obj, "blockList", native_alloc);
+    if (block_list) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
     // nodePaths: string[]
     const node_paths = getObjectStringArray(env, opts_obj, "nodePaths", native_alloc);
     if (node_paths) |arr| {
@@ -2298,6 +2305,15 @@ fn parseBuildOptions(
         .define = define_entries,
         .alias = alias_entries,
         .fallback = fallback_entries,
+        .block_list = blk: {
+            const user = block_list orelse &.{};
+            if (platform == .react_native) {
+                const merged = std.mem.concat(native_alloc, []const u8, &.{ bundler_mod.RN_DEFAULT_BLOCK_LIST, user }) catch return null;
+                if (!trackArr(owned_string_arrays, merged)) return null;
+                break :blk merged;
+            }
+            break :blk user;
+        },
         .minify_whitespace = if (minify) true else getObjectBool(env, opts_obj, "minifyWhitespace", false),
         .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),

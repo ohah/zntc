@@ -220,6 +220,16 @@ interface BuildOptionsCommon {
    * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.
    * 예: `{ crypto: "crypto-browserify", fs: false }` */
   fallback?: Record<string, string | false>;
+  /** 해석 차단 패턴 (Metro `resolver.blockList` / webpack `IgnorePlugin` 호환).
+   * 매칭되는 절대 경로는 resolver가 해석 실패시켜 번들 그래프에 포함되지 않는다.
+   * - `RegExp`: `.source`를 추출해 패턴으로 사용
+   * - `string`: regex 문자열 그대로 사용
+   *
+   * 지원 구문: 리터럴, `.*`, `^`, `$`, `\x` 이스케이프. `|`, `[]`, `()`, `+?`, `\w\d`는 미지원.
+   *
+   * `platform: "react-native"` 시 Metro 기본 패턴들(`__tests__`, iOS/Android 빌드 폴더 등)이
+   * 자동 prepend된다. 사용자 패턴은 그 뒤에 append. */
+  blockList?: (RegExp | string)[];
   inject?: string[];
   jobs?: number;
   plugins?: ZtsPlugin[];
@@ -579,6 +589,14 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   delete napiOptions.outdir;
   delete napiOptions.plugins;
   delete napiOptions.allowOverwrite;
+  // blockList: RegExp는 .source로 추출해 string[]으로 넘긴다 (NAPI는 string만).
+  if (options.blockList) {
+    napiOptions.blockList = options.blockList.map((p) => {
+      if (p instanceof RegExp) return p.source;
+      if (typeof p === "string") return p;
+      throw new TypeError(`blockList entries must be RegExp or string, got ${typeof p}`);
+    });
+  }
   // browserslist → unsupported bitmask. transpile과 동일한 resolveUnsupported 재사용.
   if (options.browserslist) {
     napiOptions.unsupported = resolveUnsupported({ browserslist: options.browserslist });

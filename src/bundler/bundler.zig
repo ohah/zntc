@@ -44,6 +44,16 @@ pub const RN_BOOL_PRESET: ReactNativeBoolPreset = .{};
 /// RN 코어가 제공하는 표준 경로 (Metro와 동일).
 pub const RN_DEFAULT_ASSET_REGISTRY: []const u8 = "react-native/Libraries/Image/AssetRegistry";
 
+/// RN 프리셋의 기본 blockList 패턴. Metro의 `metro-config/defaults/exclusionList.js`와 동등.
+/// 사용자가 추가 패턴 주면 이 기본값에 append된다.
+pub const RN_DEFAULT_BLOCK_LIST: []const []const u8 = &.{
+    "\\/android\\/app\\/build\\/",
+    "\\/ios\\/Pods\\/",
+    "\\/ios\\/build\\/",
+    "\\/__tests__\\/",
+    "\\/__fixtures__\\/",
+};
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,
@@ -88,6 +98,8 @@ pub const BundleOptions = struct {
     alias: []const types.AliasEntry = &.{},
     /// Fallback (webpack resolve.fallback / Metro extraNodeModules). 해석 실패 시에만 적용.
     fallback: []const types.FallbackEntry = &.{},
+    /// Metro resolver.blockList 호환 — 매칭되는 절대 경로는 해석 차단.
+    block_list: []const []const u8 = &.{},
     /// Metro AssetRegistry 모듈 경로. null이면 일반 URL 문자열 export (웹/esbuild 방식).
     /// 설정 시 file/copy 로더가 `module.exports = require("<path>").registerAsset({...})` 형태로 래핑.
     /// RN 플랫폼 프리셋에서 "react-native/Libraries/Image/AssetRegistry"로 자동 설정.
@@ -348,6 +360,7 @@ pub const Bundler = struct {
                 .preserve_symlinks = options.preserve_symlinks,
                 .alias = options.alias,
                 .fallback = options.fallback,
+                .block_list = options.block_list,
                 .resolve_extensions = options.resolve_extensions,
                 .main_fields = options.main_fields,
                 .packages_external = options.packages_external,

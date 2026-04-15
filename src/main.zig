@@ -75,6 +75,9 @@ const CliOptions = struct {
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
     /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
     fallback_list: std.ArrayList(FallbackEntry) = .empty,
+    /// --block-list=PATTERN (반복). Metro resolver.blockList 호환.
+    /// JS regex source 스타일 문자열 (`\/ios\/`, `\.bak$` 등).
+    block_list: std.ArrayList([]const u8) = .empty,
     public_path: ?[]const u8 = null,
     banner_js: ?[]const u8 = null,
     footer_js: ?[]const u8 = null,
@@ -205,6 +208,7 @@ const CliOptions = struct {
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
         self.fallback_list.deinit(alloc);
+        self.block_list.deinit(alloc);
         self.loader_list.deinit(alloc);
         for (self.inject_list.items) |p| alloc.free(p);
         self.inject_list.deinit(alloc);
@@ -513,6 +517,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: --alias requires FROM=TO format: {s}\n", .{arg});
                 std.process.exit(1);
             }
+        } else if (std.mem.startsWith(u8, arg, "--block-list=")) {
+            try opts.block_list.append(allocator, arg["--block-list=".len..]);
         } else if (std.mem.startsWith(u8, arg, "--fallback:")) {
             // --fallback:crypto=crypto-browserify (webpack resolve.fallback 호환)
             // --fallback:fs=false → 빈 모듈
@@ -1345,6 +1351,8 @@ pub fn main() !void {
             if (opts.asset_registry == null and !opts.asset_registry_explicit_off) {
                 opts.asset_registry = lib.bundler.RN_DEFAULT_ASSET_REGISTRY;
             }
+            // RN blockList 기본 패턴을 사용자 목록 앞에 prepend (Metro 동작과 동일).
+            try opts.block_list.insertSlice(allocator, 0, lib.bundler.RN_DEFAULT_BLOCK_LIST);
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
@@ -1420,6 +1428,7 @@ pub fn main() !void {
             .preserve_symlinks = opts.preserve_symlinks,
             .alias = opts.alias_list.items,
             .fallback = opts.fallback_list.items,
+            .block_list = opts.block_list.items,
             .public_path = opts.public_path orelse "",
             .banner_js = opts.banner_js,
             .footer_js = opts.footer_js,

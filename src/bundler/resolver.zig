@@ -199,6 +199,9 @@ pub const Resolver = struct {
     /// alias와 달리 일반 해석이 **실패했을 때만** 적용. 정확 매칭만 지원 (webpack과 동일).
     /// `to == null`이면 빈 모듈(disabled result)로 대체.
     fallback: []const FallbackEntry = &.{},
+    /// blockList — Metro resolver.blockList 호환. 매칭되는 절대 경로는 ModuleNotFound 처리.
+    /// 패턴 구문은 `block_list.zig` 참조 (regex 최소 서브셋).
+    block_list: []const []const u8 = &.{},
     /// 커스텀 확장자 탐색 순서 (--resolve-extensions). 비어있으면 default_extensions 사용.
     /// RN 예: .ios.ts, .ios.tsx, .native.ts, .native.tsx, .ts, .tsx, .js, .jsx, .json
     custom_extensions: []const []const u8 = &.{},
@@ -260,6 +263,20 @@ pub const Resolver = struct {
     }
 
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        const result = try self.resolveInner(source_dir, specifier);
+        if (self.block_list.len > 0 and !result.disabled) {
+            const bl = @import("block_list.zig");
+            for (self.block_list) |pat| {
+                if (bl.matches(pat, result.path)) {
+                    self.allocator.free(result.path);
+                    return error.ModuleNotFound;
+                }
+            }
+        }
+        return result;
+    }
+
+    fn resolveInner(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         // alias 치환 (resolve 맨 처음에 적용, esbuild 동작과 동일)
         const effective_specifier = if (self.alias.len > 0)
             (applyAlias(self.allocator, self.alias, specifier) catch return error.OutOfMemory) orelse specifier
