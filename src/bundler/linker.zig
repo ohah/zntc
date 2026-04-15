@@ -1162,18 +1162,15 @@ pub const Linker = struct {
     pub fn populateSymbolRefCounts(_: *const Linker, modules: []Module) void {
         for (modules) |*importer| {
             for (importer.import_bindings) |ib| {
+                if (!ib.symbol.isValid()) continue;
+                const source_i = @intFromEnum(ib.symbol.moduleIndex());
+                if (source_i >= modules.len) continue;
                 switch (ib.symbol) {
                     .alias => |a| {
-                        if (a.symbol.isNone() or a.module.isNone()) continue;
-                        const source_i = @intFromEnum(a.module);
-                        if (source_i >= modules.len) continue;
                         const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
-                        if (s.symbol.isNone() or s.module.isNone()) continue;
-                        const source_i = @intFromEnum(s.module);
-                        if (source_i >= modules.len) continue;
                         const sem_ptr = if (modules[source_i].semantic) |*sem| sem else continue;
                         const idx: u32 = @intFromEnum(s.symbol);
                         if (idx >= sem_ptr.symbols.items.len) continue;
