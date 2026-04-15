@@ -295,6 +295,9 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         const slot_id = maybe_slot orelse continue;
         const new_name = slot_names[slot_id] orelse continue;
         const sym = symbols[sym_idx];
+        // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
+        // rename은 parser AST의 identifier 노드를 바꾸는 것이라 무의미 — skip.
+        if (sym.isSynthetic()) continue;
         const orig_name = source[sym.name.start..sym.name.end];
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
