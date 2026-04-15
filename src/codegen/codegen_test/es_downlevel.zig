@@ -1706,6 +1706,34 @@ test "ES2015: for-of with break" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "break") != null);
 }
 
+// --- for-await-of var init suppress (#1379) ---
+// ES2015 block-scoping 다운레벨이 `const/let x` → `var x = void 0` 로 바꾼 뒤,
+// for-await 헤드에 `var x = void 0 of ...` 가 그대로 출력되면 문법 오류.
+// emitForAwaitOf 가 emitForInOf 와 동일하게 init hoist + skip 해야 함.
+
+test "ES2015: for-await-of const — no `var x = void 0 of`" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter)g(v);}", .es5);
+    defer r.deinit();
+    // 버그 재현 시 "void 0 of" 문자열이 나옴 — 수정 후엔 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
+    // for-await 헤드는 `var v of` 형태로 유지.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await (var v of") != null or
+        std.mem.indexOf(u8, r.output, "for await(var v of") != null);
+}
+
+test "ES2015: for-await-of let — no `var x = void 0 of`" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(let v of iter)g(v);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
+}
+
+test "ES2015: for-await-of var with no init — unchanged" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(var v of iter)g(v);}", .es5);
+    defer r.deinit();
+    // var + init 없음 → 헤드에 init 주입도 없어야 함 (대조군).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
+}
+
 // --- spread edge cases ---
 
 test "ES2015: spread in new with apply" {
