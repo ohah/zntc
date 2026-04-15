@@ -1071,7 +1071,7 @@ describe("_default 합성 변수 충돌 방지", () => {
     }
   });
 
-  test("export { default as X } from re-export가 __esm 래퍼에서 할당된다 (#705)", async () => {
+  test("export { default as X } from re-export가 __esm 래퍼에서 할당된다 (#705, #1340)", async () => {
     const fixture = await createFixture({
       "index.ts": `const b = require("./barrel"); console.log(b.Foo);`,
       "barrel.ts": `export { default as Foo } from "./foo";`,
@@ -1081,11 +1081,14 @@ describe("_default 합성 변수 충돌 방지", () => {
 
     const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts")]);
     expect(bundle.exitCode).toBe(0);
-    // __esm body에 할당문이 있어야 한다
-    expect(bundle.stdout).toContain("= _default");
+    // foo가 __esm으로 래핑되어 init_foo 안에서 _default 할당이 일어나야 한다
+    expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
+    expect(bundle.stdout).toMatch(/_default\$?\d*\s*=\s*"fooValue"/);
+    // barrel의 init body가 init_foo()를 호출해야 한다 (lazy 체인 보존)
+    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm[\s\S]*?init_foo\(\)/);
   });
 
-  test("export { default } from re-export가 __esm 래퍼에서 할당된다 (#705)", async () => {
+  test("export { default } from re-export가 __esm 래퍼에서 할당된다 (#705, #1340)", async () => {
     const fixture = await createFixture({
       "index.ts": `const b = require("./barrel"); console.log(b.default);`,
       "barrel.ts": `export { default } from "./foo";`,
@@ -1095,7 +1098,11 @@ describe("_default 합성 변수 충돌 방지", () => {
 
     const bundle = await runZts(["--bundle", join(fixture.dir, "index.ts")]);
     expect(bundle.exitCode).toBe(0);
-    expect(bundle.stdout).toContain("= _default");
+    // foo가 __esm으로 래핑되고 init_foo 안에서 _default 할당이 있어야 함
+    expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
+    expect(bundle.stdout).toMatch(/_default\$?\d*\s*=\s*"fooValue"/);
+    // barrel의 init body가 init_foo()를 호출 (lazy 체인 보존)
+    expect(bundle.stdout).toMatch(/init_barrel\s*=\s*__esm[\s\S]*?init_foo\(\)/);
   });
 
   test("export default <identifier>가 mangling 시 할당문을 생성한다", async () => {

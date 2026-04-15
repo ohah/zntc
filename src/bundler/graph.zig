@@ -1385,6 +1385,36 @@ pub const ModuleGraph = struct {
             }
         }
 
+        // Pass 2.5: 래핑된 모듈의 re_export source는 lazy 체인 보존을 위해
+        // __esm 래핑 (#1340). barrel `export { default as X } from './m'` 패턴에서
+        // m이 scope-hoist되면 barrel의 init body가 비고 `_default = ...` 할당이
+        // 누락된다. re_export만 cascade — static_import는 binding rewrite로 해결됨.
+        // wrap_kind 변경이 또 다른 모듈을 promote할 수 있어 iterative 수행.
+        {
+            var changed = true;
+            while (changed) {
+                changed = false;
+                for (self.modules.items) |m| {
+                    if (m.wrap_kind == .none) continue;
+                    for (m.export_bindings) |eb| {
+                        if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
+                        const rec_idx = eb.import_record_index orelse continue;
+                        if (rec_idx >= m.import_records.len) continue;
+                        const target_mod_idx = m.import_records[rec_idx].resolved;
+                        if (target_mod_idx.isNone()) continue;
+                        const target_idx = @intFromEnum(target_mod_idx);
+                        if (target_idx >= self.modules.items.len) continue;
+                        var target = &self.modules.items[target_idx];
+                        if (target.wrap_kind != .none) continue;
+                        if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                            target.wrap_kind = .esm;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Pass 3: 모든 ESM 모듈을 __esm 래핑 (RN + dev mode).
         // - RN: circular dep 체인에서 초기화 순서 보장 (Rolldown 호환 lazy loading)
         // - dev mode: HMR을 위해 모든 모듈이 개별 팩토리 함수로 래핑되어야 함
