@@ -556,7 +556,7 @@ pub const Codegen = struct {
     fn addSourceMapping(self: *Codegen, span: Span) !void {
         if (self.sm_builder) |*sm| {
             // 합성 노드(string_table) 또는 빈 span → 소스맵 매핑 스킵
-            if (span.start & 0x8000_0000 != 0 or (span.start == 0 and span.end == 0)) return;
+            if (span.start & Ast.STRING_TABLE_BIT != 0 or (span.start == 0 and span.end == 0)) return;
             // byte offset → 줄/열 변환 (Scanner의 line_offsets 사용)
             const lc = self.getOriginalLineColumn(span.start);
             try sm.addMapping(.{

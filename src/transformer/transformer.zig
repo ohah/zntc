@@ -1828,7 +1828,7 @@ pub const Transformer = struct {
         const obj = self.ast.getNode(obj_idx);
         if (obj.tag != .identifier_reference) return false;
 
-        const obj_text = self.ast.source[obj.data.string_ref.start..obj.data.string_ref.end];
+        const obj_text = self.ast.getText(obj.data.string_ref);
         return std.mem.eql(u8, obj_text, "console");
     }
 

@@ -55,7 +55,7 @@ pub fn isConstructorKey(self: anytype, key_idx: NodeIndex) bool {
     if (key_idx.isNone()) return false;
     const key = self.ast.getNode(key_idx);
     if (key.tag != .identifier_reference and key.tag != .binding_identifier) return false;
-    const text = self.ast.source[key.data.string_ref.start..key.data.string_ref.end];
+    const text = self.ast.getText(key.data.string_ref);
     return std.mem.eql(u8, text, "constructor");
 }
 

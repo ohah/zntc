@@ -1912,6 +1912,18 @@ test "ES2018: for-await-of with synthetic call — no SIGBUS in worklet auto-det
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
 }
 
+test "ES2015: object method shorthand + computed key — no SIGBUS (#1404 원본)" {
+    var r = try e2eTarget(std.testing.allocator, "const o = { async fn() { return 1; }, [\"k\"]: 2 };", .es5);
+    defer r.deinit();
+    try std.testing.expect(r.output.len > 0);
+}
+
+test "ES2015: generator method shorthand + computed method — no SIGBUS (#1404)" {
+    var r = try e2eTarget(std.testing.allocator, "const o = { *gen() { yield 1; }, [\"k\"]() { return 2; } };", .es5);
+    defer r.deinit();
+    try std.testing.expect(r.output.len > 0);
+}
+
 // --- spread edge cases ---
 
 test "ES2015: spread in new with apply" {
