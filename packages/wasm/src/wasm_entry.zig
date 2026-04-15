@@ -16,6 +16,10 @@ const Scanner = @import("zts_lib").lexer.Scanner;
 const Diagnostic = @import("zts_lib").diagnostic.Diagnostic;
 const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
 
+/// Bun 스타일 crash report: WASM에는 signal이 없지만 panic은 여전히 터질 수 있다.
+/// 호스트 콘솔(WASI stderr)로 배너 + 이슈 URL 출력.
+pub const panic = @import("zts_lib").crash_handler.panic;
+
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;
 

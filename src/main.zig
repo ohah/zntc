@@ -14,6 +14,10 @@ const emitter = lib.bundler.emitter;
 const SubprocessPlugin = lib.bundler.SubprocessPlugin;
 const plugin_mod = lib.bundler.plugin;
 
+/// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
+/// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
+pub const panic = lib.crash_handler.panic;
+
 /// CLI 인자를 파싱한 결과를 담는 구조체.
 /// main()에서 개별 변수 30여 개로 흩어져 있던 옵션을 하나로 모은다.
 const CliOptions = struct {
@@ -992,6 +996,13 @@ pub fn main() !void {
 
     var opts = try parseCliArguments(args, allocator) orelse return;
     defer opts.deinit(allocator);
+
+    // crash report 컨텍스트: panic 시 어떤 입력/타겟에서 죽었는지 알려 준다.
+    lib.crash_handler.setContext(.{
+        .entry = "cli",
+        .input_file = opts.input_file,
+        .target = if (opts.es_target) |t| @tagName(t) else null,
+    });
 
     // zts.config.{js,ts,mjs,mts,cjs,cts} 자동 탐색 (--plugin 미지정 시)
     if (opts.plugin_paths.items.len == 0 and (opts.is_bundle or opts.is_serve)) {
