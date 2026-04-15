@@ -204,6 +204,12 @@ interface BuildOptionsCommon {
   entryNames?: string;
   chunkNames?: string;
   assetNames?: string;
+  /** Metro AssetRegistry 모듈 경로 (React Native 전용 레이어).
+   * - `undefined`: 플랫폼 프리셋 결정 (`platform: "react-native"`이면 기본 경로 자동)
+   * - `string`: 해당 경로의 registerAsset을 사용해 `module.exports = require(path).registerAsset({...})`로 래핑
+   * - `false`: 비활성화 (웹과 동일한 URL 문자열 export)
+   * 기본 경로: `"react-native/Libraries/Image/AssetRegistry"` */
+  assetRegistry?: string | false;
   jsx?: "classic" | "automatic" | "automatic-dev";
   jsxFactory?: string;
   jsxFragment?: string;

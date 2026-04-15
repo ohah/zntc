@@ -71,6 +71,8 @@ pub const ModuleGraph = struct {
     public_path: []const u8 = "",
     /// 에셋 파일명 패턴 (--asset-names). asset 로더에서 사용.
     asset_names: []const u8 = "[name]-[hash]",
+    /// Metro AssetRegistry 모듈 경로. null이면 URL 문자열, 값이 있으면 registerAsset 래핑.
+    asset_registry: ?[]const u8 = null,
     /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.
     /// entry point들의 공통 부모 디렉토리 (esbuild --outbase에 해당).
     entry_dir: []const u8 = "",
@@ -1713,10 +1715,16 @@ pub const ModuleGraph = struct {
                         return;
                     };
 
-                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
-                    module.state = .ready;
-                    return;
-                };
+                module.source = if (self.asset_registry) |registry_path|
+                    emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url) catch {
+                        module.state = .ready;
+                        return;
+                    }
+                else
+                    std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
+                        module.state = .ready;
+                        return;
+                    };
             },
             .empty => {
                 module.source = "undefined";
@@ -1863,6 +1871,49 @@ fn applyAssetNamingPattern(
     // 확장자 추가
     try buf.appendSlice(allocator, ext);
     return buf.toOwnedSlice(allocator);
+}
+
+/// Metro AssetRegistry.registerAsset() 호출식을 생성.
+/// RN 런타임은 이 객체의 키를 정확히 요구하므로 shape를 Metro 1:1로 맞춘다.
+/// 스코프 주의: scales는 MVP에서 [1]로 고정. @2x/@3x 자동 그룹화는 후속 작업.
+fn emitAssetRegistryCall(
+    alloc: std.mem.Allocator,
+    registry_path: []const u8,
+    abs_path: []const u8,
+    bytes: []const u8,
+    hash: *const [8]u8,
+    ext: []const u8,
+    name_without_ext: []const u8,
+    url: []const u8,
+) ![]const u8 {
+    const asset_meta = @import("asset_meta.zig");
+    const dims = asset_meta.extractDimensions(bytes);
+    const width = if (dims) |d| d.width else 0;
+    const height = if (dims) |d| d.height else 0;
+    const asset_type = asset_meta.AssetType.fromExtension(ext);
+    const type_name = asset_type.typeName(ext);
+
+    // httpServerLocation: url의 앞부분(파일명 제외). dev server가 제공하는 path.
+    const http_loc = std.fs.path.dirname(url) orelse ".";
+    const fs_dir = std.fs.path.dirname(abs_path) orelse ".";
+
+    // hash는 8바이트 이진 → 16자리 hex 문자열
+    var hash_hex: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&hash_hex, "{x:0>16}", .{std.mem.readInt(u64, hash, .big)}) catch unreachable;
+
+    return try std.fmt.allocPrint(alloc,
+        \\module.exports = require("{s}").registerAsset({{
+        \\  "__packager_asset": true,
+        \\  "httpServerLocation": "{s}",
+        \\  "width": {d},
+        \\  "height": {d},
+        \\  "scales": [1],
+        \\  "hash": "{s}",
+        \\  "name": "{s}",
+        \\  "type": "{s}",
+        \\  "fileSystemLocation": "{s}"
+        \\}})
+    , .{ registry_path, http_loc, width, height, &hash_hex, name_without_ext, type_name, fs_dir });
 }
 
 /// asset 파일의 entry_dir 기준 상대 디렉토리 경로를 계산한다.

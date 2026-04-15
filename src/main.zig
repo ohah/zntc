@@ -87,6 +87,11 @@ const CliOptions = struct {
     entry_names: []const u8 = "[name]",
     chunk_names: []const u8 = "[name]-[hash]",
     asset_names: []const u8 = "[name]-[hash]",
+    /// --asset-registry=PATH: Metro AssetRegistry 모듈 경로. null=일반 URL, ""(명시적 off),
+    /// RN 플랫폼은 미지정 시 기본 경로 자동 적용.
+    asset_registry: ?[]const u8 = null,
+    /// 사용자가 명시적으로 --no-asset-registry를 전달했는지 (RN 프리셋 자동 적용 억제용).
+    asset_registry_explicit_off: bool = false,
     loader_list: std.ArrayList(LoaderOverride) = .empty,
     metafile_path: ?[]const u8 = null,
     analyze: bool = false,
@@ -554,6 +559,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.chunk_names = arg["--chunk-names=".len..];
         } else if (std.mem.startsWith(u8, arg, "--asset-names=")) {
             opts.asset_names = arg["--asset-names=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--asset-registry=")) {
+            opts.asset_registry = arg["--asset-registry=".len..];
+        } else if (std.mem.eql(u8, arg, "--no-asset-registry")) {
+            opts.asset_registry = null;
+            opts.asset_registry_explicit_off = true;
         } else if (std.mem.startsWith(u8, arg, "--metafile=")) {
             opts.metafile_path = arg["--metafile=".len..];
         } else if (std.mem.eql(u8, arg, "--metafile")) {
@@ -1331,6 +1341,10 @@ pub fn main() !void {
             opts.configurable_exports = rn_preset.configurable_exports;
             opts.strict_execution_order = rn_preset.strict_execution_order;
             opts.worklet_transform = rn_preset.worklet_transform;
+            // RN: 사용자가 --asset-registry/--no-asset-registry를 명시하지 않았으면 Metro 표준 경로 자동 적용.
+            if (opts.asset_registry == null and !opts.asset_registry_explicit_off) {
+                opts.asset_registry = lib.bundler.RN_DEFAULT_ASSET_REGISTRY;
+            }
             // Metro는 automatic JSX transform 사용 — 사용자가 명시하지 않았으면 자동 설정
             if (opts.jsx_runtime == null) {
                 opts.jsx_runtime = .automatic;
@@ -1417,6 +1431,7 @@ pub fn main() !void {
             .entry_names = opts.entry_names,
             .chunk_names = opts.chunk_names,
             .asset_names = opts.asset_names,
+            .asset_registry = opts.asset_registry,
             .loader_overrides = opts.loader_list.items,
             .metafile = opts.metafile_path != null or opts.analyze,
             .analyze = opts.analyze,

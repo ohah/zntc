@@ -40,6 +40,10 @@ pub const ReactNativeBoolPreset = struct {
 };
 pub const RN_BOOL_PRESET: ReactNativeBoolPreset = .{};
 
+/// RN 프리셋에서 asset_registry 미지정 시 사용할 기본 AssetRegistry 모듈 경로.
+/// RN 코어가 제공하는 표준 경로 (Metro와 동일).
+pub const RN_DEFAULT_ASSET_REGISTRY: []const u8 = "react-native/Libraries/Image/AssetRegistry";
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,
@@ -84,6 +88,10 @@ pub const BundleOptions = struct {
     alias: []const types.AliasEntry = &.{},
     /// Fallback (webpack resolve.fallback / Metro extraNodeModules). 해석 실패 시에만 적용.
     fallback: []const types.FallbackEntry = &.{},
+    /// Metro AssetRegistry 모듈 경로. null이면 일반 URL 문자열 export (웹/esbuild 방식).
+    /// 설정 시 file/copy 로더가 `module.exports = require("<path>").registerAsset({...})` 형태로 래핑.
+    /// RN 플랫폼 프리셋에서 "react-native/Libraries/Image/AssetRegistry"로 자동 설정.
+    asset_registry: ?[]const u8 = null,
     /// 에셋/청크 URL prefix (--public-path). 동적 import 경로에 적용.
     public_path: []const u8 = "",
     /// 번들 출력 앞에 삽입할 텍스트 (--banner:js)
@@ -598,6 +606,7 @@ pub const Bundler = struct {
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.asset_names = self.options.asset_names;
+        graph.asset_registry = self.options.asset_registry;
         // --inject와 --run-before-main을 합쳐서 엔트리 의존성으로 추가 (실행 순서: inject → run-before-main → entry)
         const combined_inject = if (self.options.run_before_main.len > 0)
             try std.mem.concat(self.allocator, []const u8, &.{ self.options.inject, self.options.run_before_main })
