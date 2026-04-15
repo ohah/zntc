@@ -218,6 +218,35 @@ pub const Module = struct {
         return null;
     }
 
+    /// SymbolId → 이름. semantic Symbol.nameText 호출의 short-cut.
+    /// 인덱스 범위 밖이거나 semantic 없으면 null.
+    pub fn symbolName(self: *const Module, id: SemanticSymbolId) ?[]const u8 {
+        const sem = self.semantic orelse return null;
+        const idx: u32 = @intFromEnum(id);
+        if (idx >= sem.symbols.items.len) return null;
+        return sem.symbols.items[idx].nameText(self.source);
+    }
+
+    /// ImportBinding의 현재 모듈 로컬 이름. local_symbol을 우선 derive,
+    /// 미설정(synthetic 등) 시 ib.local_name 필드 fallback.
+    /// #1328 Phase 4c-4d: esbuild 패턴 — 이름은 Symbol 소유, binding은 Ref.
+    pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
+        if (ib.local_symbol == .semantic) {
+            if (self.symbolName(ib.local_symbol.semantic.symbol)) |n| return n;
+        }
+        return ib.local_name;
+    }
+
+    /// ExportBinding의 로컬 이름. .local은 eb.symbol(semantic)에서 derive.
+    /// 그 외 kind는 eb.local_name 필드 fallback (re_export는 source 이름,
+    /// re_export_namespace는 ns alias, re_export_star는 "*").
+    pub fn exportBindingLocalName(self: *const Module, eb: ExportBinding) []const u8 {
+        if (eb.kind == .local and eb.symbol == .semantic) {
+            if (self.symbolName(eb.symbol.semantic.symbol)) |n| return n;
+        }
+        return eb.local_name;
+    }
+
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
     /// #1338 Phase 4c-1: 문자열 기반 lookup을 SymbolRef로 승격하기 위한 진입점.
     pub fn findExportSymbol(self: *const Module, exported_name: []const u8) symbol_mod.SymbolRef {
