@@ -1706,32 +1706,61 @@ test "ES2015: for-of with break" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "break") != null);
 }
 
-// --- for-await-of var init suppress (#1379) ---
-// ES2015 block-scoping 다운레벨이 `const/let x` → `var x = void 0` 로 바꾼 뒤,
-// for-await 헤드에 `var x = void 0 of ...` 가 그대로 출력되면 문법 오류.
-// emitForAwaitOf 가 emitForInOf 와 동일하게 init hoist + skip 해야 함.
+// --- for-await-of ES5 lowering (#1381) ---
+// ES5/Hermes 는 `for await` 키워드 자체를 파싱 못 하므로, async_await 미지원 타겟에서는
+// __asyncValues + while 루프로 변환해야 한다 (#1381).
+// 부수적으로 #1379 의 `var x = void 0 of` 도 해결됨 (for-await 헤드가 사라지므로).
 
-test "ES2015: for-await-of const — no `var x = void 0 of`" {
+test "ES2018: for-await-of const — lowered to __asyncValues + while (#1381)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter)g(v);}", .es5);
     defer r.deinit();
-    // 버그 재현 시 "void 0 of" 문자열이 나옴 — 수정 후엔 없어야 함.
+    // for await 키워드가 출력에 남으면 Hermes 파싱 실패.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    // __asyncValues 호출이 나타나야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+    // while 루프로 변환.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "while") != null or
+        std.mem.indexOf(u8, r.output, ".done") != null);
+    // 바깥 async function 은 __async + generator 로 변환되므로 await → yield.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
-    // for-await 헤드는 `var v of` 형태로 유지.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await (var v of") != null or
-        std.mem.indexOf(u8, r.output, "for await(var v of") != null);
 }
 
-test "ES2015: for-await-of let — no `var x = void 0 of`" {
+test "ES2018: for-await-of let — lowered (#1381)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(let v of iter)g(v);}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
 }
 
-test "ES2015: for-await-of var with no init — unchanged" {
+test "ES2018: for-await-of var — lowered (#1381)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(var v of iter)g(v);}", .es5);
     defer r.deinit();
-    // var + init 없음 → 헤드에 init 주입도 없어야 함 (대조군).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0 of") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+}
+
+test "ES2018: for-await-of assignment head — lowered (#1381)" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){var v;for await(v of iter)g(v);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") != null);
+}
+
+test "ES2018: for-await-of with break — lowered (#1381)" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter){if(v)break;g(v);}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "break") != null);
+    // iterator.return 호출 (finally 안).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".return") != null);
+}
+
+test "ES2018: for-await-of preserved at esnext" {
+    var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter)g(v);}", .esnext);
+    defer r.deinit();
+    // esnext 는 변환 없음 — for await 유지.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncValues") == null);
 }
 
 // --- spread edge cases ---

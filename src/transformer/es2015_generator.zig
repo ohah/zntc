@@ -330,6 +330,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         }
                     }
                 },
+                .for_await_of_statement => {
+                    // async_await 미지원 타겟(ES5/Hermes)에서 for-await 는 ES2018 lowering 으로
+                    // while 루프 + yield 로 풀어진다. visitNode 로 변환하면 결과 block 이
+                    // .statement 로 통째로 묻혀 내부 yield 가 state machine 에 안 보이므로,
+                    // 여기서 변환 결과 block 의 자식 문장을 재귀적으로 collect 한다. (#1381)
+                    const es2018 = @import("es2018_for_await.zig");
+                    const lowered = try es2018.ES2018ForAwait(Transformer).lowerForAwaitOf(self, stmt);
+                    if (!lowered.isNone()) {
+                        try collectBodyOperations(self, lowered, ops, next_label);
+                    }
+                },
                 .break_statement, .continue_statement => {
                     const label_idx = stmt.data.unary.operand;
                     if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
