@@ -1098,17 +1098,15 @@ pub const Transformer = struct {
                     break :blk self.copyNodeDirect(node);
                 }
                 const raw = self.ast.getText(node.span);
-                const result = regex_lower.lower(self.allocator, raw, .{ .unsupported = u }) catch break :blk self.copyNodeDirect(node);
-                if (result.text) |new_text| {
-                    defer self.allocator.free(new_text);
-                    const new_span = try self.ast.addString(new_text);
-                    break :blk try self.ast.addNode(.{
-                        .tag = .regexp_literal,
-                        .span = new_span,
-                        .data = .{ .string_ref = new_span },
-                    });
-                }
-                break :blk self.copyNodeDirect(node);
+                const result = try regex_lower.lower(self.allocator, raw, .{ .unsupported = u });
+                const new_text = result.text orelse break :blk self.copyNodeDirect(node);
+                defer self.allocator.free(new_text);
+                const new_span = try self.ast.addString(new_text);
+                break :blk try self.ast.addNode(.{
+                    .tag = .regexp_literal,
+                    .span = new_span,
+                    .data = .{ .string_ref = new_span },
+                });
             },
             .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
