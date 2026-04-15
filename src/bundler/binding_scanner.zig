@@ -650,6 +650,10 @@ pub fn populateSyntheticSymbols(
     export_bindings: []ExportBinding,
     sem_symbols: *std.ArrayList(SemanticSymbol),
     arena: std.mem.Allocator,
+    /// 모듈 top-level scope (scope_maps[0]). 일반 .local export의 eb.symbol을
+    /// scope_maps에서 lookup해 미리 채우는 데 사용. null이면 skip — linker가
+    /// 후속 패스에서 fallback 처리.
+    module_scope: ?std.StringHashMap(usize),
 ) !void {
     for (export_bindings) |*eb| {
         // codegen이 `_default = <expr>` 할당을 emit하는 export만 synthetic_default 등록.
@@ -671,6 +675,15 @@ pub fn populateSyntheticSymbols(
             // resolveExportChain 결과를 canonical_name으로 저장한다.
             const id = try table.declare(eb.exported_name);
             eb.symbol = .{ .alias = .{ .module = module_index, .symbol = id } };
+        } else if (eb.kind == .local) {
+            // 일반 .local export: scope_maps[0]에서 로컬 심볼 lookup → semantic ref.
+            // synthetic_default 케이스는 위에서 이미 처리됨.
+            const scope = module_scope orelse continue;
+            const sym_idx = scope.get(eb.local_name) orelse continue;
+            eb.symbol = .{ .semantic = .{
+                .module = module_index,
+                .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+            } };
         }
     }
 }
