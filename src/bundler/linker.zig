@@ -1133,10 +1133,10 @@ pub const Linker = struct {
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export) continue;
                 const sym_id = switch (eb.symbol) {
-                    .alias => |b| blk: {
-                        if (b.module != mod_idx) break :blk null;
-                        if (b.symbol.isNone()) break :blk null;
-                        break :blk b.symbol;
+                    .alias => |a| blk: {
+                        if (a.module != mod_idx) break :blk null;
+                        if (a.symbol.isNone()) break :blk null;
+                        break :blk a.symbol;
                     },
                     else => null,
                 } orelse continue;
@@ -1170,10 +1170,10 @@ pub const Linker = struct {
                 const key = makeExportKeyBuf(&key_buf, source_i, ib.imported_name);
                 const entry = self.export_map.get(key) orelse continue;
                 switch (entry.binding.symbol) {
-                    .alias => |b| {
-                        if (b.symbol.isNone()) continue;
+                    .alias => |a| {
+                        if (a.symbol.isNone()) continue;
                         const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
-                        table_ptr.incRefCount(b.symbol);
+                        table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
                         // #1328 Phase 4e-2b: semantic 공간의 합성/정규 심볼 ref_count 증가.
