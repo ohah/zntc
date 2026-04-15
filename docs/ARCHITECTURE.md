@@ -63,6 +63,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - Test262로 정합성 검증
 - **Context**: packed struct(u8) — ECMAScript 문법 파라미터 8개만. SavedState로 함수 경계 save/restore.
 - **Cover Grammar**: expression → assignment target 노드 변환. setTag로 24B 노드의 태그만 교체.
+- **AST 정규화**: function/method/arrow params는 모두 `formal_parameters` 노드로 wrap (arrow 기준 통일). `Ast.functionParamsList()` 로 태그 무관 unwrap. 범용 리스트 순회는 `visitExtraList(NodeList)` 시그니처. Class `get x() {} / set x() {}` 는 object와 동일하게 `method_definition + flags 0x02/0x04` (별도 태그 없음). `accessor_property` 태그는 TC39 auto-accessor 필드 전용.
 
 ### TypeScript/Flow Handling (D002, D005, D024)
 - 타입 체크 안 함 (스트리핑만)
@@ -89,7 +90,8 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - 번들러 소스맵: AST span으로 원본→최종 직접 매핑 (esbuild 방식, 체이닝 불필요)
 
 ### Bundler Scope Hoisting & Interop
-- **이름 충돌 해결**: canonical_names + canonical_names_used 역방향 맵으로 O(1) 충돌 확인
+- **Symbol table** (#1328 완료): bundler 합성 심볼(default_export, cjs_exports, esm_init 등)은 전부 `semantic.Symbol`로 이전. bundler 잔여는 `AliasTable`(cross-module re-export redirect 전용). `SymbolRef = union { semantic, alias }`. mangler/rename 결정은 SymbolRef 기반이고 `Symbol.canonical_name` 필드에 저장 — 문자열 이름 기반 해시맵(canonical_names) 폐기로 `"default"` 같은 예약어 충돌 원천 봉쇄
+- **이름 충돌 해결**: `Symbol.canonical_name` + `canonical_symbols` dirty list로 O(1) 등록/충돌 확인
 - **CJS→ESM Interop**: Rolldown 방식 — Interop enum (babel/node) + ModuleDefFormat enum
   - ESM importer (.mjs/.mts/type:module) → `__toESM(req(), 1)` (Node 모드)
   - 기타 importer → `__toESM(req())` (Babel 모드, __esModule 존중)
