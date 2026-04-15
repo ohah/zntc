@@ -71,7 +71,6 @@ pub const SymbolRef = union(enum) {
 /// linker가 주입한 최종 참조 이름. `ref_count`는 symbol-level tree-shaking 용.
 pub const Alias = struct {
     name: []const u8,
-    span: Span,
     canonical_name: []const u8 = "",
     ref_count: u32 = 0,
 };
@@ -90,9 +89,9 @@ pub const AliasTable = struct {
     }
 
     /// Alias 등록. 같은 exported_name이 여러 export 문에서 나올 수 있으므로 항상 new id.
-    pub fn declare(self: *AliasTable, name: []const u8, span: Span) !AliasId {
+    pub fn declare(self: *AliasTable, name: []const u8) !AliasId {
         const id: AliasId = @enumFromInt(@as(u32, @intCast(self.aliases.items.len)));
-        try self.aliases.append(self.allocator, .{ .name = name, .span = span });
+        try self.aliases.append(self.allocator, .{ .name = name });
         return id;
     }
 
@@ -134,7 +133,7 @@ test "AliasTable: declare + get 기본" {
     var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
+    const id = try t.declare("Foo");
     try std.testing.expectEqualStrings("Foo", t.getName(id));
     try std.testing.expectEqual(@as(u32, 1), t.count());
 }
@@ -143,7 +142,7 @@ test "AliasTable: canonical_name fallback" {
     var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
+    const id = try t.declare("Foo");
     try std.testing.expectEqualStrings("Foo", t.getCanonicalName(id));
     try std.testing.expect(!t.hasCanonicalName(id));
     t.setCanonicalName(id, "Foo$2");
@@ -155,7 +154,7 @@ test "AliasTable: ref_count" {
     var t = AliasTable.init(std.testing.allocator);
     defer t.deinit();
 
-    const id = try t.declare("Foo", .{ .start = 0, .end = 0 });
+    const id = try t.declare("Foo");
     try std.testing.expectEqual(@as(u32, 0), t.getRefCount(id));
     t.incRefCount(id);
     t.incRefCount(id);

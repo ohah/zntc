@@ -645,7 +645,7 @@ pub fn populateSyntheticSymbols(
         } else if (eb.kind == .re_export) {
             // re_export_alias는 bundler 전용 — linker가 post-link 단계에서
             // resolveExportChain 결과를 canonical_name으로 저장한다.
-            const id = try table.declare(eb.exported_name, eb.local_span);
+            const id = try table.declare(eb.exported_name);
             eb.symbol = .{ .bundler = .{ .module = module_index, .symbol = id } };
         }
     }
