@@ -720,7 +720,7 @@ pub fn buildFinalExports(
 pub fn buildCrossModuleConstValues(
     self: *const Linker,
     m: *const Module,
-    sem: @import("../module.zig").ModuleSemanticData,
+    _: @import("../module.zig").ModuleSemanticData,
 ) !std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) {
     var const_values: std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) = .{};
     for (m.import_bindings) |ib| {
@@ -746,10 +746,9 @@ pub fn buildCrossModuleConstValues(
         const cv = target_sem.symbols.items[target_sym_idx].const_value;
         if (cv.kind == .none or !cv.isSafeToInline()) continue;
         // import binding의 local symbol에 매핑
-        if (sem.scope_maps.len > 0) {
-            if (sem.scope_maps[0].get(ib.local_name)) |local_sym| {
-                try const_values.put(self.allocator, @intCast(local_sym), cv);
-            }
+        if (ib.local_symbol.isValid()) {
+            const local_sym: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+            try const_values.put(self.allocator, local_sym, cv);
         }
     }
     return const_values;

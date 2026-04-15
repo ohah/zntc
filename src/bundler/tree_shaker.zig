@@ -433,9 +433,9 @@ pub const TreeShaker = struct {
             var arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
             for (arr) |*a| a.* = null;
             for (mod.import_bindings, 0..) |ib, ib_idx| {
-                if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
-                    if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
-                }
+                if (!ib.local_symbol.isValid()) continue;
+                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
             }
             maps[i] = arr;
         }
@@ -898,10 +898,9 @@ pub const TreeShaker = struct {
 
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
-            if (sem.scope_maps.len > 0) {
-                if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
-                    if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].reference_count > 0) return true;
-                }
+            if (ib.local_symbol.isValid()) {
+                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].reference_count > 0) return true;
             }
         } else return true;
 

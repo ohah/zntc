@@ -59,6 +59,7 @@ fn buildAndShakeWithOpts(
 
     var linker = Linker.init(allocator, graph.modules.items, .esm);
     try linker.link();
+    linker.populateImportSymbols(graph.modules.items);
 
     var shaker = try TreeShaker.init(allocator, graph.modules.items, &linker);
     try shaker.analyze(&.{entry});
@@ -204,6 +205,7 @@ test "tree-shaking: empty module graph" {
     var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
     defer linker.deinit();
     try linker.link();
+    linker.populateImportSymbols(graph.modules.items);
 
     var shaker = try TreeShaker.init(std.testing.allocator, graph.modules.items, &linker);
     defer shaker.deinit();
