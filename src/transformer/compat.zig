@@ -90,14 +90,19 @@ pub const Feature = enum(u5) {
     hashbang,
     // ES2025
     using,
+    // Regex feature flags (esbuild 대응: RegExpStickyAndUnicodeFlags / DotAllFlag / NamedCaptureGroups)
+    // 다운레벨링은 regex pattern/flag 치환(src/transformer/regex_lower.zig)으로 수행한다.
+    regex_sticky, // /y flag (ES2015)
+    regex_dotall, // /s flag (ES2018) — `.` → `[\s\S]` + flag strip
+    regex_named_groups, // (?<name>...) (ES2018) — positional group으로 strip
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
         return switch (self) {
-            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target => .es2015,
+            .arrow, .class, .template_literal, .destructuring, .for_of, .spread, .object_extensions, .default_params, .block_scoping, .generator, .new_target, .regex_sticky => .es2015,
             .exponentiation => .es2016,
             .async_await => .es2017,
-            .object_spread => .es2018,
+            .object_spread, .regex_dotall, .regex_named_groups => .es2018,
             .optional_catch_binding => .es2019,
             .nullish_coalescing, .optional_chaining => .es2020,
             .logical_assignment => .es2021,
@@ -148,8 +153,12 @@ pub const UnsupportedFeatures = packed struct(u32) {
     hashbang: bool = false,
     // ES2025
     using: bool = false,
+    // Regex features
+    regex_sticky: bool = false,
+    regex_dotall: bool = false,
+    regex_named_groups: bool = false,
 
-    _: u8 = 0,
+    _: u5 = 0,
 
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
@@ -457,6 +466,36 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .using, .engine = .node, .major = 22 },
     .{ .feature = .using, .engine = .deno, .major = 1, .minor = 38 },
     // edge, ios, hermes: 미지원 → compat_table에 없음 → 항상 다운레벨링
+
+    // ── ES2015: regex_sticky (/y) ──
+    .{ .feature = .regex_sticky, .engine = .chrome, .major = 49 },
+    .{ .feature = .regex_sticky, .engine = .firefox, .major = 3 },
+    .{ .feature = .regex_sticky, .engine = .safari, .major = 10 },
+    .{ .feature = .regex_sticky, .engine = .edge, .major = 13 },
+    .{ .feature = .regex_sticky, .engine = .node, .major = 6 },
+    .{ .feature = .regex_sticky, .engine = .deno, .major = 1 },
+    .{ .feature = .regex_sticky, .engine = .ios, .major = 10 },
+    .{ .feature = .regex_sticky, .engine = .hermes, .major = 0, .minor = 7 },
+
+    // ── ES2018: regex_dotall (/s) ──
+    .{ .feature = .regex_dotall, .engine = .chrome, .major = 62 },
+    .{ .feature = .regex_dotall, .engine = .firefox, .major = 78 },
+    .{ .feature = .regex_dotall, .engine = .safari, .major = 11, .minor = 1 },
+    .{ .feature = .regex_dotall, .engine = .edge, .major = 79 },
+    .{ .feature = .regex_dotall, .engine = .node, .major = 8, .minor = 10 },
+    .{ .feature = .regex_dotall, .engine = .deno, .major = 1 },
+    .{ .feature = .regex_dotall, .engine = .ios, .major = 11, .minor = 3 },
+    // hermes: 미지원
+
+    // ── ES2018: regex_named_groups ──
+    .{ .feature = .regex_named_groups, .engine = .chrome, .major = 64 },
+    .{ .feature = .regex_named_groups, .engine = .firefox, .major = 78 },
+    .{ .feature = .regex_named_groups, .engine = .safari, .major = 11, .minor = 1 },
+    .{ .feature = .regex_named_groups, .engine = .edge, .major = 79 },
+    .{ .feature = .regex_named_groups, .engine = .node, .major = 10 },
+    .{ .feature = .regex_named_groups, .engine = .deno, .major = 1 },
+    .{ .feature = .regex_named_groups, .engine = .ios, .major = 11, .minor = 3 },
+    // hermes: 미지원
 };
 
 // ─── 변환 함수 ───
@@ -523,6 +562,10 @@ pub fn fromHermesPreset() UnsupportedFeatures {
         .hashbang = true,
         // ES2025
         .using = true,
+        // Regex
+        .regex_sticky = true,
+        .regex_dotall = true,
+        .regex_named_groups = true,
     };
 }
 

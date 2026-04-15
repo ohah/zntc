@@ -2150,3 +2150,47 @@ test "ES2015: for-in let esnext preserved (#1386)" {
         std.mem.indexOf(u8, r.output, "for (let k in") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0") == null);
 }
+
+// --- regex dotAll / named capture / sticky (#1387) ---
+
+test "regex: dotAll /a.b/s → /a[\\s\\S]b/ (es2017)" {
+    var r = try e2eTarget(std.testing.allocator, "const a = /a.b/s;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/a[\\s\\S]b/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/s") == null);
+}
+
+test "regex: dotAll escape 된 . 는 변환 X (#1387)" {
+    var r = try e2eTarget(std.testing.allocator, "const a = /a\\.b/s;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/a\\.b/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\\s\\S]") == null);
+}
+
+test "regex: dotAll character class 내부 . 는 그대로 (#1387)" {
+    var r = try e2eTarget(std.testing.allocator, "const a = /[a.]b/s;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/[a.]b/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\\s\\S]") == null);
+}
+
+test "regex: named capture → positional (#1387)" {
+    var r = try e2eTarget(std.testing.allocator, "const d = /(?<year>\\d{4})/;", .es2017);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/(\\d{4})/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "?<") == null);
+}
+
+test "regex: sticky /y flag strip at es5 (#1387)" {
+    var r = try e2eTarget(std.testing.allocator, "const a = /foo/y;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/foo/;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/y") == null);
+}
+
+test "regex: esnext no-op (#1387)" {
+    var r = try e2eTarget(std.testing.allocator, "const a = /a.b/s; const d = /(?<y>\\d)/;", .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/a.b/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(?<y>") != null);
+}

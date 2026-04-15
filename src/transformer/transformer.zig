@@ -48,6 +48,7 @@ const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
 const es2015_generator = @import("es2015_generator.zig");
 const es2025_using = @import("es2025_using.zig");
+const regex_lower = @import("regex_lower.zig");
 const es2022_tla = @import("es2022_tla.zig");
 const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
@@ -1090,8 +1091,25 @@ pub const Transformer = struct {
             .numeric_literal,
             .string_literal,
             .bigint_literal,
-            .regexp_literal,
             => self.copyNodeDirect(node),
+            .regexp_literal => blk: {
+                const u = self.options.unsupported;
+                if (!(u.regex_dotall or u.regex_named_groups or u.regex_sticky)) {
+                    break :blk self.copyNodeDirect(node);
+                }
+                const raw = self.ast.getText(node.span);
+                const result = regex_lower.lower(self.allocator, raw, .{ .unsupported = u }) catch break :blk self.copyNodeDirect(node);
+                if (result.text) |new_text| {
+                    defer self.allocator.free(new_text);
+                    const new_span = try self.ast.addString(new_text);
+                    break :blk try self.ast.addNode(.{
+                        .tag = .regexp_literal,
+                        .span = new_span,
+                        .data = .{ .string_ref = new_span },
+                    });
+                }
+                break :blk self.copyNodeDirect(node);
+            },
             .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
                 if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
