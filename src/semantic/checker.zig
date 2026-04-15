@@ -111,12 +111,13 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
     const key_node = ast.getNode(key_idx);
 
     if (key_node.tag == .identifier_reference) {
-        return std.mem.eql(u8, ast.source[key_node.span.start..key_node.span.end], target);
+        return std.mem.eql(u8, ast.getText(key_node.span), target);
     }
     if (key_node.tag == .string_literal) {
         // 따옴표 제거: "name" → name
-        if (key_node.span.end > key_node.span.start + 2) {
-            const inner = ast.source[key_node.span.start + 1 .. key_node.span.end - 1];
+        const raw = ast.getText(key_node.span);
+        if (raw.len >= 2) {
+            const inner = raw[1 .. raw.len - 1];
             return std.mem.eql(u8, inner, target);
         }
     }
@@ -203,7 +204,7 @@ fn checkPrivateKeyStaticConflict(
     const key_node = ast.getNode(key_idx);
     if (key_node.tag != .private_identifier) return;
 
-    const name = ast.source[key_node.span.start..key_node.span.end];
+    const name = ast.getText(key_node.span);
 
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
@@ -373,7 +374,7 @@ fn collectBindingNames(
 
     switch (node.tag) {
         .binding_identifier => {
-            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.getText(node.span), node.span, seen, errors, allocator);
         },
         .array_pattern, .object_pattern => {
             // list of elements/properties
@@ -435,7 +436,7 @@ fn collectArrowParamNames(
 
     switch (node.tag) {
         .binding_identifier => {
-            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.getText(node.span), node.span, seen, errors, allocator);
         },
         // parser가 정규화한 formal_parameters list (#1283 이후 항상 이 형태)
         .formal_parameters => {
@@ -447,7 +448,7 @@ fn collectArrowParamNames(
             }
         },
         .identifier_reference, .assignment_target_identifier => {
-            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.getText(node.span), node.span, seen, errors, allocator);
         },
         // destructuring 패턴 (cover grammar 변환 전후 모두 처리)
         .array_pattern,

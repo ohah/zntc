@@ -542,7 +542,7 @@ pub const SemanticAnalyzer = struct {
             if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
                 const prop_node = self.ast.getNode(prop_idx);
                 if (prop_node.tag == .private_identifier) {
-                    const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
+                    const raw = self.ast.getText(prop_node.span);
                     const name = try self.resolvePrivateName(raw);
                     try self.usePrivateNameWithUsage(name, prop_node.span, usage);
                 }
@@ -564,7 +564,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn declareSymbolWithNode(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span, node_idx: ?u32) AllocError!void {
-        const name_text = self.ast.source[name_span.start..name_span.end];
+        const name_text = self.ast.getText(name_span);
 
         // function-like 선언의 스코핑 규칙:
         // - var scope(global/function/module) 안에서 직접 선언: var scope에 등록 (호이스팅)
@@ -869,7 +869,7 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프에서 이름으로 symbol을 찾아 no_side_effects 플래그를 설정.
     /// 현재 스코프에서 이름으로 심볼 인덱스를 찾는다.
     fn findSymbolInCurrentScope(self: *const SemanticAnalyzer, name_span: Span) ?usize {
-        const name = self.ast.source[name_span.start..name_span.end];
+        const name = self.ast.getText(name_span);
         const scope_idx = self.current_scope.toIndex();
         if (scope_idx >= self.scope_maps.items.len) return null;
         const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return null;
@@ -943,17 +943,17 @@ pub const SemanticAnalyzer = struct {
     fn extractConstValue(self: *const SemanticAnalyzer, node: Node) ConstValue {
         return switch (node.tag) {
             .boolean_literal => blk: {
-                const text = self.ast.source[node.span.start..node.span.end];
+                const text = self.ast.getText(node.span);
                 break :blk .{ .kind = if (std.mem.eql(u8, text, "true")) .true_ else .false_ };
             },
             .null_literal => .{ .kind = .null_ },
             .identifier_reference => blk: {
-                const text = self.ast.source[node.span.start..node.span.end];
+                const text = self.ast.getText(node.span);
                 if (std.mem.eql(u8, text, "undefined")) break :blk ConstValue{ .kind = .undefined_ };
                 break :blk ConstValue{};
             },
             .unary_expression => blk: {
-                const text = self.ast.source[node.span.start..node.span.end];
+                const text = self.ast.getText(node.span);
                 if (std.mem.eql(u8, text, "void 0")) break :blk ConstValue{ .kind = .undefined_ };
                 break :blk ConstValue{};
             },
@@ -1327,7 +1327,7 @@ pub const SemanticAnalyzer = struct {
             // class body 안이면 collectPrivateNames가 선언을 등록했으므로 usePrivateName 통과,
             // class 밖이면 에러 보고
             .private_identifier => {
-                const raw = self.ast.source[node.span.start..node.span.end];
+                const raw = self.ast.getText(node.span);
                 const name = try self.resolvePrivateName(raw);
                 try self.usePrivateName(name, node.span);
             },
@@ -1713,7 +1713,7 @@ pub const SemanticAnalyzer = struct {
             const fn_predeclared = if (self.isInPredeclaredScope()) true else blk: {
                 // 함수 body 내 predeclare로 이미 등록된 함수인지 확인
                 const name_node = self.ast.getNode(name_idx);
-                const fname = self.ast.source[name_node.span.start..name_node.span.end];
+                const fname = self.ast.getText(name_node.span);
                 const var_scope = self.findVarScope();
                 if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
                     break :blk self.scope_maps.items[var_scope.toIndex()].contains(fname);
@@ -2071,7 +2071,7 @@ pub const SemanticAnalyzer = struct {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .private_identifier) {
-            const raw = self.ast.source[key_node.span.start..key_node.span.end];
+            const raw = self.ast.getText(key_node.span);
             const name = try self.resolvePrivateName(raw);
             try self.declarePrivateName(name, key_node.span, kind);
         }
@@ -2109,7 +2109,7 @@ pub const SemanticAnalyzer = struct {
 
         if (!label_idx.isNone()) {
             const label_node = self.ast.getNode(label_idx);
-            const name = self.ast.source[label_node.span.start..label_node.span.end];
+            const name = self.ast.getText(label_node.span);
 
             // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
             if (self.findLabel(name) != null) {
@@ -2139,7 +2139,7 @@ pub const SemanticAnalyzer = struct {
         if (label_idx.isNone()) return; // label 없는 break/continue는 파서에서 이미 검증
 
         const label_node = self.ast.getNode(label_idx);
-        const name = self.ast.source[label_node.span.start..label_node.span.end];
+        const name = self.ast.getText(label_node.span);
 
         if (self.findLabel(name)) |entry| {
             // continue는 loop label만 가능
@@ -2217,9 +2217,9 @@ pub const SemanticAnalyzer = struct {
         switch (node.tag) {
             .binding_identifier => {
                 // Check for duplicate
-                const name_text = self.ast.source[node.span.start..node.span.end];
+                const name_text = self.ast.getText(node.span);
                 for (names.*[0..count.*]) |existing_span| {
-                    const existing_text = self.ast.source[existing_span.start..existing_span.end];
+                    const existing_text = self.ast.getText(existing_span);
                     if (std.mem.eql(u8, name_text, existing_text)) {
                         try self.addError(node.span, name_text);
                         return;
@@ -2278,9 +2278,9 @@ pub const SemanticAnalyzer = struct {
             // Annex B: if/else body의 function declaration은 catch parameter와 충돌하지 않는다.
             // ECMAScript B.3.5: var-like hoisting이 적용되는 함수는 catch parameter를 shadow 가능.
             if (sym.decl_flags.is_annex_b_function) continue;
-            const sym_name = self.ast.source[sym.name.start..sym.name.end];
+            const sym_name = self.ast.getText(sym.name);
             for (catch_names) |catch_span| {
-                const catch_name = self.ast.source[catch_span.start..catch_span.end];
+                const catch_name = self.ast.getText(catch_span);
                 if (std.mem.eql(u8, sym_name, catch_name)) {
                     try self.addError(sym.declaration_span, sym_name);
                     return;
@@ -2347,7 +2347,7 @@ pub const SemanticAnalyzer = struct {
                     if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
                         const bnode = self.ast.getNode(binding_idx);
                         if (bnode.tag == .binding_identifier or bnode.tag == .assignment_target_identifier) {
-                            const bname = self.ast.source[bnode.span.start..bnode.span.end];
+                            const bname = self.ast.getText(bnode.span);
                             const var_scope = self.findVarScope();
                             if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
                                 if (self.scope_maps.items[var_scope.toIndex()].contains(bname)) {
@@ -2439,7 +2439,7 @@ pub const SemanticAnalyzer = struct {
     /// module code는 항상 strict mode.
     fn checkStrictBindingName(self: *SemanticAnalyzer, span: Span) AllocError!void {
         if (!self.isCurrentStrict()) return;
-        const name = self.ast.source[span.start..span.end];
+        const name = self.ast.getText(span);
         if (std.mem.eql(u8, name, "eval") or std.mem.eql(u8, name, "arguments")) {
             try self.addErrorMsgCode(span, try std.fmt.allocPrint(
                 self.allocator,
@@ -2471,7 +2471,7 @@ pub const SemanticAnalyzer = struct {
                     const exported_idx = spec_node.data.binary.right;
                     if (!exported_idx.isNone() and @intFromEnum(exported_idx) < self.ast.nodes.items.len) {
                         const exported_node = self.ast.getNode(exported_idx);
-                        const name = self.ast.source[exported_node.span.start..exported_node.span.end];
+                        const name = self.ast.getText(exported_node.span);
                         // string literal은 따옴표 제거
                         const effective_name = if (name.len >= 2 and (name[0] == '\'' or name[0] == '"'))
                             name[1 .. name.len - 1]
@@ -2486,7 +2486,7 @@ pub const SemanticAnalyzer = struct {
                         if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                             const local_node = self.ast.getNode(local_idx);
                             if (local_node.tag != .string_literal) {
-                                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+                                const local_name = self.ast.getText(local_node.span);
                                 try self.checkExportBinding(local_name, local_node.span);
                             }
                         }
@@ -2579,7 +2579,7 @@ pub const SemanticAnalyzer = struct {
         const name_idx = node.data.binary.left;
         if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
             const name_node = self.ast.getNode(name_idx);
-            const name = self.ast.source[name_node.span.start..name_node.span.end];
+            const name = self.ast.getText(name_node.span);
             const effective_name = if (name.len >= 2 and (name[0] == '\'' or name[0] == '"'))
                 name[1 .. name.len - 1]
             else
@@ -2615,7 +2615,7 @@ pub const SemanticAnalyzer = struct {
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
                 if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    const name = self.ast.getText(name_node.span);
                     try self.registerExportedName(name, name_node.span);
                 }
             },
@@ -2625,7 +2625,7 @@ pub const SemanticAnalyzer = struct {
                 const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
                 if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    const name = self.ast.getText(name_node.span);
                     try self.registerExportedName(name, name_node.span);
                 }
             },
@@ -2638,7 +2638,7 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         if (node.tag == .binding_identifier) {
-            const name = self.ast.source[node.span.start..node.span.end];
+            const name = self.ast.getText(node.span);
             try self.registerExportedName(name, node.span);
         }
     }
@@ -2667,7 +2667,7 @@ pub const SemanticAnalyzer = struct {
     fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         // 현재 module scope에서 해당 이름의 심볼을 찾는다
         for (self.symbols.items) |sym| {
-            const sym_name = self.ast.source[sym.name.start..sym.name.end];
+            const sym_name = self.ast.getText(sym.name);
             if (std.mem.eql(u8, sym_name, name)) return; // 존재
         }
         // 찾지 못함 → 에러
