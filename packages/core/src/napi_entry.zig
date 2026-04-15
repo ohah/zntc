@@ -1318,32 +1318,8 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
     _ = c.napi_call_function(env, js_undefined, js_func, 1, &call_args, &js_result);
 }
 
-/// 경로 세그먼트에 node_modules/.git가 있으면 true (부분문자열 아닌 '/' 경계 매칭).
-fn hasSkippedSegment(rel: []const u8) bool {
-    var it = std.mem.splitScalar(u8, rel, '/');
-    while (it.next()) |seg| {
-        if (std.mem.eql(u8, seg, "node_modules")) return true;
-        if (std.mem.eql(u8, seg, ".git")) return true;
-    }
-    return false;
-}
-
-/// include가 지정되면 최소 하나 매칭 필요, exclude 매칭은 즉시 제외.
-fn passesWatchGlobFilter(rel: []const u8, include: []const []const u8, exclude: []const []const u8) bool {
-    const matchGlob = zts_lib.bundler.resolve_cache.matchGlob;
-    if (include.len > 0) {
-        var any = false;
-        for (include) |pat| if (matchGlob(pat, rel)) {
-            any = true;
-            break;
-        };
-        if (!any) return false;
-    }
-    for (exclude) |pat| if (matchGlob(pat, rel)) return false;
-    return true;
-}
-
-/// watchFolders 루트를 재귀 스캔해 tracked에 등록.
+/// watchFolders 루트를 재귀 스캔해 TrackedFileSet에 등록.
+/// tracked.addPath가 내부에서 key를 dupe하므로 visitor는 false로 walker가 free하게 둔다.
 fn addWatchRootFiles(
     allocator: std.mem.Allocator,
     root: []const u8,
@@ -1352,20 +1328,20 @@ fn addWatchRootFiles(
     tracked: *zts_lib.server.TrackedFileSet,
     count: *usize,
 ) void {
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
-    defer dir.close();
-    var walker = dir.walk(allocator) catch return;
-    defer walker.deinit();
-
-    while (walker.next() catch null) |entry| {
-        if (entry.kind != .file) continue;
-        if (hasSkippedSegment(entry.path)) continue;
-        if (!passesWatchGlobFilter(entry.path, include, exclude)) continue;
-
-        const full_path = std.fs.path.join(allocator, &.{ root, entry.path }) catch continue;
-        defer allocator.free(full_path);
-        if (tracked.addPath(full_path, true)) count.* += 1;
-    }
+    const Ctx = struct { tracked: *zts_lib.server.TrackedFileSet, count: *usize };
+    const visit = struct {
+        fn f(ctx: Ctx, full_path: []const u8) bool {
+            if (ctx.tracked.addPath(full_path, true)) ctx.count.* += 1;
+            return false;
+        }
+    }.f;
+    zts_lib.server.watch_scan.scanRoot(
+        allocator,
+        root,
+        .{ .include = include, .exclude = exclude },
+        Ctx{ .tracked = tracked, .count = count },
+        visit,
+    ) catch {};
 }
 
 fn watchWorkerThread(async_data: *WatchAsyncData) void {

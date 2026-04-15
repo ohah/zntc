@@ -2307,33 +2307,8 @@ fn collectMtimes(
     }
 }
 
-/// 경로에 node_modules/.git 세그먼트가 포함되어 있으면 true.
-/// 부분문자열이 아닌 '/' 경계 매칭 — `my_node_modules_doc.txt`는 스킵되지 않는다.
-fn hasSkippedSegment(rel: []const u8) bool {
-    var it = std.mem.splitScalar(u8, rel, '/');
-    while (it.next()) |seg| {
-        if (std.mem.eql(u8, seg, "node_modules")) return true;
-        if (std.mem.eql(u8, seg, ".git")) return true;
-    }
-    return false;
-}
-
-/// include가 지정되면 최소 하나 매칭 필요, exclude 매칭은 즉시 제외.
-fn passesWatchGlobFilter(rel: []const u8, include: []const []const u8, exclude: []const []const u8) bool {
-    const matchGlob = @import("zts_lib").bundler.resolve_cache.matchGlob;
-    if (include.len > 0) {
-        var any = false;
-        for (include) |pat| if (matchGlob(pat, rel)) {
-            any = true;
-            break;
-        };
-        if (!any) return false;
-    }
-    for (exclude) |pat| if (matchGlob(pat, rel)) return false;
-    return true;
-}
-
-/// watchFolder 루트를 재귀 스캔해 파일 mtime을 수집. include/exclude는 루트 기준 상대.
+/// watchFolder 루트를 재귀 스캔해 파일 mtime을 mtime_map에 등록.
+/// visitor는 true 반환으로 full_path 소유권을 map 키로 이전한다.
 fn collectWatchRootMtimes(
     allocator: std.mem.Allocator,
     root: []const u8,
@@ -2341,32 +2316,25 @@ fn collectWatchRootMtimes(
     exclude: []const []const u8,
     mtime_map: *std.StringHashMap(i128),
 ) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
-
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (hasSkippedSegment(entry.path)) continue;
-        if (!passesWatchGlobFilter(entry.path, include, exclude)) continue;
-
-        const full_path = try std.fs.path.join(allocator, &.{ root, entry.path });
-        const gop = mtime_map.getOrPut(full_path) catch {
-            allocator.free(full_path);
-            continue;
-        };
-        if (gop.found_existing) {
-            allocator.free(full_path);
-            continue;
+    const Ctx = struct { map: *std.StringHashMap(i128) };
+    const visit = struct {
+        fn f(ctx: Ctx, full_path: []const u8) bool {
+            const gop = ctx.map.getOrPut(full_path) catch return false;
+            if (gop.found_existing) return false;
+            gop.value_ptr.* = getFileMtime(full_path) catch {
+                _ = ctx.map.remove(full_path);
+                return false;
+            };
+            return true;
         }
-        gop.value_ptr.* = getFileMtime(full_path) catch {
-            _ = mtime_map.remove(full_path);
-            allocator.free(full_path);
-            continue;
-        };
-    }
+    }.f;
+    try @import("zts_lib").server.watch_scan.scanRoot(
+        allocator,
+        root,
+        .{ .include = include, .exclude = exclude },
+        Ctx{ .map = mtime_map },
+        visit,
+    );
 }
 
 /// 에러 코드 프레임 출력 (D012).
