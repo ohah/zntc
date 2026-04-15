@@ -94,8 +94,8 @@ fn rewritePattern(
         if (c == '\\') {
             // `\u{XXXX}` brace unicode escape → surrogate pair / BMP escape
             if (opts.unicode_brace and i + 2 < pattern.len and pattern[i + 1] == 'u' and pattern[i + 2] == '{') {
-                if (parseBraceHex(pattern, i + 2)) |r| {
-                    try appendCodepointEscape(allocator, out, r.cp);
+                if (unicode_escape_lower.parseBraceHex(pattern, i + 2)) |r| {
+                    try unicode_escape_lower.appendCodepoint(out, allocator, r.cp);
                     i = r.end;
                     continue;
                 }
@@ -157,46 +157,6 @@ fn rewritePattern(
                 i += 1;
             },
         }
-    }
-}
-
-fn hexVal(c: u8) ?u32 {
-    return switch (c) {
-        '0'...'9' => @as(u32, c - '0'),
-        'a'...'f' => @as(u32, c - 'a' + 10),
-        'A'...'F' => @as(u32, c - 'A' + 10),
-        else => null,
-    };
-}
-
-/// `\u{` 바로 다음의 `{` 위치를 받아 hex 를 파싱. 닫는 `}` 까지 포함한 end 반환.
-fn parseBraceHex(s: []const u8, start_brace: usize) ?struct { cp: u32, end: usize } {
-    var i: usize = start_brace + 1;
-    var cp: u32 = 0;
-    var any: bool = false;
-    while (i < s.len and s[i] != '}') : (i += 1) {
-        const h = hexVal(s[i]) orelse return null;
-        cp = (cp << 4) | h;
-        if (cp > 0x10FFFF) return null;
-        any = true;
-    }
-    if (!any or i >= s.len or s[i] != '}') return null;
-    return .{ .cp = cp, .end = i + 1 };
-}
-
-fn appendHexUnit(allocator: std.mem.Allocator, out: *std.ArrayList(u8), unit: u32) !void {
-    var buf: [6]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "\\u{X:0>4}", .{unit}) catch unreachable;
-    try out.appendSlice(allocator, &buf);
-}
-
-fn appendCodepointEscape(allocator: std.mem.Allocator, out: *std.ArrayList(u8), cp: u32) !void {
-    if (cp <= 0xFFFF) {
-        try appendHexUnit(allocator, out, cp);
-    } else {
-        const v = cp - 0x10000;
-        try appendHexUnit(allocator, out, 0xD800 | (v >> 10));
-        try appendHexUnit(allocator, out, 0xDC00 | (v & 0x3FF));
     }
 }
 
