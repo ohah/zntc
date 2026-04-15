@@ -1214,10 +1214,19 @@ pub const Codegen = struct {
 
     fn emitForAwaitOf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
+        // for-in/of 와 동일한 var initializer hoist/skip 처리.
+        // ES2015 block-scoping 다운레벨이 `const/let x` → `var x = void 0` 로 바꾼
+        // 경우 for-await 헤드에 `var x = void 0 of ...` 가 그대로 출력되면 문법 오류.
+        if (try self.tryHoistForInVarInit(t.a)) {
+            try self.writeNewline();
+            try self.writeIndent();
+        }
         if (self.options.minify_whitespace) try self.write("for await(") else try self.write("for await (");
         self.in_for_init = true;
+        self.skip_var_init = try self.shouldSkipVarInit(t.a);
         try self.emitNode(t.a);
         self.in_for_init = false;
+        self.skip_var_init = false;
         try self.write(" of ");
         try self.emitNode(t.b);
         try self.writeByte(')');
