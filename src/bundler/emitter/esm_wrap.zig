@@ -465,17 +465,18 @@ pub fn emitEsmWrappedModule(
                         if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
                             break :blk canon;
                         }
+                        const local_name = module.exportBindingLocalName(eb);
                         // live binding override: import binding이 canonical name으로 변경된 경우
                         if (metadata) |md| {
-                            if (md.export_getter_overrides.get(eb.local_name)) |override|
+                            if (md.export_getter_overrides.get(local_name)) |override|
                                 break :blk override;
                         }
                         if (linker) |l| {
                             const mi: u32 = @intFromEnum(module.index);
-                            if (l.getCanonicalName(mi, eb.local_name)) |renamed|
+                            if (l.getCanonicalName(mi, local_name)) |renamed|
                                 break :blk renamed;
                         }
-                        break :blk eb.local_name;
+                        break :blk local_name;
                     }, options.configurable_exports);
                 }
             }

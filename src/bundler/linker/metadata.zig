@@ -561,7 +561,7 @@ pub fn buildMetadataForAst(
             break;
         }
         if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
-            default_export_name = self.getCanonicalByRef(eb.symbol) orelse eb.local_name;
+            default_export_name = self.getCanonicalByRef(eb.symbol) orelse m.exportBindingLocalName(eb);
             break;
         }
     }
@@ -737,7 +737,7 @@ pub fn buildCrossModuleConstValues(
         var local_name = canon.export_name;
         for (target_module.export_bindings) |eb| {
             if (std.mem.eql(u8, eb.exported_name, canon.export_name)) {
-                local_name = eb.local_name;
+                local_name = target_module.exportBindingLocalName(eb);
                 break;
             }
         }
@@ -1014,7 +1014,7 @@ pub fn buildDevMetadataForAst(
                             try buf.appendSlice(self.allocator, " = __zts_require(\"");
                             try buf.appendSlice(self.allocator, re_path);
                             try buf.appendSlice(self.allocator, "\").");
-                            try buf.appendSlice(self.allocator, eb.local_name);
+                            try buf.appendSlice(self.allocator, m.exportBindingLocalName(eb));
                             try buf.appendSlice(self.allocator, ";\n");
                             continue;
                         }
@@ -1025,7 +1025,7 @@ pub fn buildDevMetadataForAst(
             try buf.appendSlice(self.allocator, "exports.");
             try buf.appendSlice(self.allocator, eb.exported_name);
             try buf.appendSlice(self.allocator, " = ");
-            try buf.appendSlice(self.allocator, eb.local_name);
+            try buf.appendSlice(self.allocator, m.exportBindingLocalName(eb));
             try buf.appendSlice(self.allocator, ";\n");
         }
 
