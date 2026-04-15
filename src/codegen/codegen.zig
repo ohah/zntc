@@ -755,6 +755,7 @@ pub const Codegen = struct {
                 self.next_comment_idx += 1;
                 continue;
             }
+            // 주석은 lexer가 직접 수집한 원문 span — 합성 노드 아님 (#1407 safe).
             try self.write(self.ast.source[comment.start..comment.end]);
             try self.writeNewline();
             self.next_comment_idx += 1;
@@ -1682,7 +1683,7 @@ pub const Codegen = struct {
                 }
             }
         }
-        const ref_text = self.ast.source[inner_node.span.start..inner_node.span.end];
+        const ref_text = self.ast.getText(inner_node.span);
         return std.mem.eql(u8, ref_text, def_name);
     }
 
@@ -1724,7 +1725,7 @@ pub const Codegen = struct {
                     if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
                         if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {
                             const prop_node = self.ast.getNode(property);
-                            const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+                            const prop_text = self.ast.getText(prop_node.data.string_ref);
                             if (inner_map.get(prop_text)) |canonical_name| {
                                 // 인라인 객체({...})는 statement 위치에서 block으로
                                 // 파싱되므로 괄호로 감싸야 함: ({a: a}).prop
@@ -1856,7 +1857,7 @@ pub const Codegen = struct {
         if (obj_node.tag != .meta_property or obj_node.data.none != 0) return false;
 
         const prop_node = self.ast.getNode(prop_idx);
-        const prop_name = self.ast.source[prop_node.span.start..prop_node.span.end];
+        const prop_name = self.ast.getText(prop_node.span);
         if (!std.mem.eql(u8, prop_name, "glob")) return false;
 
         // 첫 번째 인수에서 패턴 추출
@@ -1865,7 +1866,7 @@ pub const Codegen = struct {
         if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
         const arg0_node = self.ast.getNode(arg0_idx);
         if (arg0_node.tag != .string_literal) return false;
-        const raw = self.ast.source[arg0_node.span.start..arg0_node.span.end];
+        const raw = self.ast.getText(arg0_node.span);
         const pattern = Ast.stripStringQuotes(raw);
 
         // import_records에서 매칭되는 glob 레코드 찾기
@@ -1932,7 +1933,7 @@ pub const Codegen = struct {
         const node = self.ast.getNode(source);
         if (node.tag != .string_literal) return null;
 
-        const raw = self.ast.source[node.data.string_ref.start..node.data.string_ref.end];
+        const raw = self.ast.getText(node.data.string_ref);
         const specifier = Ast.stripStringQuotes(raw);
 
         return meta.require_rewrites.get(specifier);
@@ -2037,14 +2038,14 @@ pub const Codegen = struct {
     fn resolveImportMetaProp(self: *const Codegen, object: NodeIndex, property: NodeIndex) ?[]const u8 {
         const obj_node = self.ast.getNode(object);
         if (obj_node.tag != .meta_property) return null;
-        const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
+        const obj_text = self.ast.getText(obj_node.span);
         if (!std.mem.eql(u8, obj_text, "import.meta")) return null;
         const prop_node = self.ast.getNode(property);
-        return self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+        return self.ast.getText(prop_node.data.string_ref);
     }
 
     fn emitMetaProperty(self: *Codegen, node: Node) !void {
-        const text = self.ast.source[node.span.start..node.span.end];
+        const text = self.ast.getText(node.span);
         if (std.mem.eql(u8, text, "import.meta")) {
             if (self.options.module_format == .cjs or self.options.replace_import_meta) {
                 if (self.options.platform == .node) {
@@ -2772,8 +2773,8 @@ pub const Codegen = struct {
         const needs_rename = blk: {
             if (local.isNone() or @intFromEnum(local) == @intFromEnum(imported)) break :blk false;
             // 원본 텍스트가 다르면 항상 rename 필요 (import { foo as bar })
-            const imp_text = self.ast.source[self.ast.getNode(imported).span.start..self.ast.getNode(imported).span.end];
-            const loc_text = self.ast.source[self.ast.getNode(local).span.start..self.ast.getNode(local).span.end];
+            const imp_text = self.ast.getText(self.ast.getNode(imported).span);
+            const loc_text = self.ast.getText(self.ast.getNode(local).span);
             if (!std.mem.eql(u8, imp_text, loc_text)) break :blk true;
             // 원본 텍스트가 같아도 linker가 rename했으면 separator 필요
             // (e.g., import { Foo } → {Foo: Foo$1})
@@ -2902,7 +2903,7 @@ pub const Codegen = struct {
                     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
                     if (!name_idx.isNone()) {
                         const name_node = self.ast.getNode(name_idx);
-                        const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                        const name = self.ast.getText(name_node.data.string_ref);
                         // linker가 rename한 경우 변수 참조는 rename된 이름을 사용해야 함
                         // (예: JSON named export에서 $id → $id$1로 충돌 회피 시)
                         const ref_name = if (self.options.linking_metadata) |meta|
@@ -2925,7 +2926,7 @@ pub const Codegen = struct {
                 const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 if (!name_idx.isNone()) {
                     const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                    const name = self.ast.getText(name_node.data.string_ref);
                     const ref_name = if (self.options.linking_metadata) |meta|
                         if (self.resolveSymbolId(name_idx, meta)) |sid|
                             (meta.renames.get(sid) orelse name)
