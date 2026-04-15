@@ -2307,9 +2307,33 @@ fn collectMtimes(
     }
 }
 
-/// --watch-folder로 지정된 루트를 재귀 스캔해 모든 파일의 mtime을 수집한다.
-/// include/exclude glob은 루트 기준 상대 경로에 대해 매칭한다 (둘 다 비어있으면 전부 포함).
-/// node_modules, .git 은 기본 제외.
+/// 경로에 node_modules/.git 세그먼트가 포함되어 있으면 true.
+/// 부분문자열이 아닌 '/' 경계 매칭 — `my_node_modules_doc.txt`는 스킵되지 않는다.
+fn hasSkippedSegment(rel: []const u8) bool {
+    var it = std.mem.splitScalar(u8, rel, '/');
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, "node_modules")) return true;
+        if (std.mem.eql(u8, seg, ".git")) return true;
+    }
+    return false;
+}
+
+/// include가 지정되면 최소 하나 매칭 필요, exclude 매칭은 즉시 제외.
+fn passesWatchGlobFilter(rel: []const u8, include: []const []const u8, exclude: []const []const u8) bool {
+    const matchGlob = @import("zts_lib").bundler.resolve_cache.matchGlob;
+    if (include.len > 0) {
+        var any = false;
+        for (include) |pat| if (matchGlob(pat, rel)) {
+            any = true;
+            break;
+        };
+        if (!any) return false;
+    }
+    for (exclude) |pat| if (matchGlob(pat, rel)) return false;
+    return true;
+}
+
+/// watchFolder 루트를 재귀 스캔해 파일 mtime을 수집. include/exclude는 루트 기준 상대.
 fn collectWatchRootMtimes(
     allocator: std.mem.Allocator,
     root: []const u8,
@@ -2317,11 +2341,7 @@ fn collectWatchRootMtimes(
     exclude: []const []const u8,
     mtime_map: *std.StringHashMap(i128),
 ) !void {
-    const matchGlob = @import("zts_lib").bundler.resolve_cache.matchGlob;
-
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |err| {
-        return err;
-    };
+    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
     var walker = try dir.walk(allocator);
@@ -2329,37 +2349,20 @@ fn collectWatchRootMtimes(
 
     while (try walker.next()) |entry| {
         if (entry.kind != .file) continue;
-        const rel = entry.path;
-        if (std.mem.indexOf(u8, rel, "node_modules") != null) continue;
-        if (std.mem.indexOf(u8, rel, ".git/") != null) continue;
+        if (hasSkippedSegment(entry.path)) continue;
+        if (!passesWatchGlobFilter(entry.path, include, exclude)) continue;
 
-        if (include.len > 0) {
-            var any = false;
-            for (include) |pat| if (matchGlob(pat, rel)) {
-                any = true;
-                break;
-            };
-            if (!any) continue;
-        }
-        if (exclude.len > 0) {
-            var skip = false;
-            for (exclude) |pat| if (matchGlob(pat, rel)) {
-                skip = true;
-                break;
-            };
-            if (skip) continue;
-        }
-
-        const full_path = try std.fs.path.join(allocator, &.{ root, rel });
-        if (mtime_map.contains(full_path)) {
-            allocator.free(full_path);
-            continue;
-        }
-        const mtime = getFileMtime(full_path) catch {
+        const full_path = try std.fs.path.join(allocator, &.{ root, entry.path });
+        const gop = mtime_map.getOrPut(full_path) catch {
             allocator.free(full_path);
             continue;
         };
-        mtime_map.put(full_path, mtime) catch {
+        if (gop.found_existing) {
+            allocator.free(full_path);
+            continue;
+        }
+        gop.value_ptr.* = getFileMtime(full_path) catch {
+            _ = mtime_map.remove(full_path);
             allocator.free(full_path);
             continue;
         };
