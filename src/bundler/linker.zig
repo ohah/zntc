@@ -782,8 +782,9 @@ pub const Linker = struct {
     }
 
     /// canonical_names key (4B module_index + 0x00 + name)에서 semantic.Symbol을
-    /// 찾아 canonical_name을 설정. lookup 실패는 silently ignore — synthetic 심볼
-    /// 등 scope_maps[0]에 없는 경우 거울 빈 채로 두고 기존 string map만 유효.
+    /// 찾아 canonical_name을 설정. scope_maps[0] 조회 실패 시 synthetic_name으로
+    /// 선형 탐색 (synthetic 심볼은 scope_maps에 등록되지 않음 — extendSymbol 참조).
+    /// 양쪽 모두 실패는 silently ignore.
     fn mirrorSymbolCanonicalFromKey(self: *Linker, key: []const u8, value: []const u8) void {
         if (key.len < 5) return;
         var module_index: u32 = undefined;
@@ -792,10 +793,21 @@ pub const Linker = struct {
         if (module_index >= self.modules.len) return;
         const m = &self.modules[module_index];
         const sem = m.semantic orelse return;
-        if (sem.scope_maps.len == 0) return;
-        const sym_idx = sem.scope_maps[0].get(name) orelse return;
-        if (sym_idx >= sem.symbols.items.len) return;
-        sem.symbols.items[sym_idx].canonical_name = value;
+        if (sem.scope_maps.len > 0) {
+            if (sem.scope_maps[0].get(name)) |sym_idx| {
+                if (sym_idx < sem.symbols.items.len) {
+                    sem.symbols.items[sym_idx].canonical_name = value;
+                    return;
+                }
+            }
+        }
+        // Synthetic fallback: scope_maps에 없으므로 synthetic_name으로 매칭.
+        for (sem.symbols.items) |*sym| {
+            if (sym.synthetic_kind != null and std.mem.eql(u8, sym.synthetic_name, name)) {
+                sym.canonical_name = value;
+                return;
+            }
+        }
     }
 
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
@@ -886,25 +898,37 @@ pub const Linker = struct {
     }
 
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
-    /// #1328 Phase 4c-3c-3: semantic.Symbol.canonical_name 우선 조회, 거기에
-    /// 없으면 기존 string map fallback (synthetic 등 mirror 안 된 케이스).
+    /// scope_maps[0] → synthetic_name 순으로 Symbol 탐색. 둘 다 미발견이거나
+    /// canonical_name 미설정 시 string map fallback.
     pub fn getCanonicalName(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
-        if (module_index < self.modules.len) {
-            const m = &self.modules[module_index];
-            if (m.semantic) |sem| {
-                if (sem.scope_maps.len > 0) {
-                    if (sem.scope_maps[0].get(name)) |sym_idx| {
-                        if (sym_idx < sem.symbols.items.len) {
-                            const sym = &sem.symbols.items[sym_idx];
-                            if (sym.hasCanonicalName()) return sym.canonical_name;
-                        }
-                    }
-                }
-            }
-        }
+        if (self.lookupSymbolCanonical(module_index, name)) |c| return c;
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, module_index, name);
         return self.canonical_names.get(key);
+    }
+
+    /// (module, name) → Symbol.canonical_name 조회. scope_maps[0] 우선,
+    /// synthetic_name fallback. 둘 다 실패 또는 canonical_name 미설정 시 null.
+    fn lookupSymbolCanonical(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
+        if (module_index >= self.modules.len) return null;
+        const m = &self.modules[module_index];
+        const sem = m.semantic orelse return null;
+        if (sem.scope_maps.len > 0) {
+            if (sem.scope_maps[0].get(name)) |sym_idx| {
+                if (sym_idx < sem.symbols.items.len) {
+                    const sym = &sem.symbols.items[sym_idx];
+                    if (sym.hasCanonicalName()) return sym.canonical_name;
+                    return null; // scope에 있는데 canonical 미설정 → 원본 유지
+                }
+            }
+        }
+        for (sem.symbols.items) |*sym| {
+            if (sym.synthetic_kind != null and std.mem.eql(u8, sym.synthetic_name, name)) {
+                if (sym.hasCanonicalName()) return sym.canonical_name;
+                return null;
+            }
+        }
+        return null;
     }
 
     /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
@@ -939,11 +963,7 @@ pub const Linker = struct {
                 if (idx >= sem.symbols.items.len) break :blk null;
                 const sym = &sem.symbols.items[idx];
                 if (sym.hasCanonicalName()) break :blk sym.canonical_name;
-                // synthetic 등 mirror 안 된 케이스: string map fallback
-                const name = sym.nameText(m.source);
-                var key_buf: [4096]u8 = undefined;
-                const key = makeExportKeyBuf(&key_buf, mod_i, name);
-                break :blk self.canonical_names.get(key);
+                break :blk null;
             },
         };
     }
