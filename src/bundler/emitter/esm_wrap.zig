@@ -278,7 +278,7 @@ pub fn emitEsmWrappedModule(
     // init 안에서 _jsxDEV = ... (할당만)으로 처리해야 함.
     for (module.import_bindings) |ib| {
         if (ib.isSynthetic()) {
-            try hoisted_var_names.append(allocator, ib.local_name);
+            try hoisted_var_names.append(allocator, module.importBindingLocalName(ib));
         }
     }
 
@@ -625,7 +625,7 @@ pub fn emitEsmWrappedModule(
                         var found_preamble_var: ?[]const u8 = null;
                         for (module.import_bindings) |ib| {
                             if (ib.import_record_index == rec_idx and ib.importsDefault()) {
-                                found_preamble_var = l.getCanonicalByRef(ib.local_symbol) orelse ib.local_name;
+                                found_preamble_var = l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
                                 break;
                             }
                         }
