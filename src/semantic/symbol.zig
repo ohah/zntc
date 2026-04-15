@@ -261,10 +261,14 @@ pub const Symbol = struct {
     /// #1328 Phase 4e-2: `extendSymbol`로 추가된 심볼만 non-null.
     synthetic_kind: ?SyntheticKind = null,
 
-    /// 이 심볼의 이름을 소스에서 읽는다.
-    /// 합성 심볼(`synthetic_kind != null`)은 `span`이 소스 범위 밖을 가리킬 수 있어
-    /// caller는 `isSynthetic()`을 먼저 확인해야 한다.
+    /// 합성 심볼의 이름 (소스 span이 없으므로 직접 저장). 정규 심볼은 빈 문자열.
+    /// #1338 Phase 4e-2c: HashMap 사이드카 대체 — ArrayList 수명과 일치시켜
+    /// incremental rebuild 시 arena 불일치 방지.
+    synthetic_name: []const u8 = "",
+
+    /// 이 심볼의 이름을 반환. 합성은 `synthetic_name`, 정규는 source Span에서.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
+        if (self.synthetic_name.len > 0) return self.synthetic_name;
         return source[self.name.start..self.name.end];
     }
 
@@ -276,18 +280,17 @@ pub const Symbol = struct {
 /// Bundler가 post-semantic 단계에서 합성 심볼을 semantic 공간에 추가한다.
 /// #1328 Phase 4e-2 / RFC #1338.
 ///
-/// `list`는 `ModuleSemanticData.symbols`의 ArrayList, `names`는 같은 data의
-/// 합성 이름 사이드카 맵이어야 한다. `allocator`는 해당 모듈의 `parse_arena`.
+/// `list`는 `ModuleSemanticData.symbols`의 ArrayList이어야 하고,
+/// `allocator`는 해당 모듈의 `parse_arena`여야 한다.
 ///
-/// 합성 심볼은 소스 범위의 name span을 갖지 않으므로 `Symbol.name`은
-/// 빈 Span으로 두고 실제 이름은 `synthetic_names` 맵에 저장한다.
-/// 조회는 `ModuleSemanticData.symbolName(id, source)` 경유 (옵션 B).
+/// 합성 심볼은 소스 범위의 name span이 없으므로 `Symbol.name`은 빈 Span,
+/// 실제 이름은 `Symbol.synthetic_name` 필드에 직접 저장한다 (ArrayList 수명
+/// 과 일치 — incremental rebuild 시 HashMap 수명 문제 회피).
 ///
 /// 반환된 SymbolId로 `SymbolRef { .semantic = { module, id } }` 구성 가능.
 pub fn extendSymbol(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(Symbol),
-    names: *std.AutoHashMap(u32, []const u8),
     kind: SymbolKind,
     synthetic: SyntheticKind,
     name_text: []const u8,
@@ -301,8 +304,8 @@ pub fn extendSymbol(
         .decl_flags = kind.declFlags(),
         .declaration_span = declaration_span,
         .synthetic_kind = synthetic,
+        .synthetic_name = name_text,
     });
-    try names.put(id_u32, name_text);
     return @enumFromInt(id_u32);
 }
 

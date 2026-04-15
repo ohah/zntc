@@ -46,18 +46,10 @@ pub const ModuleSemanticData = struct {
     /// mangler용 참조 scope 페어. liveness BitSet 계산에 사용.
     ref_scope_pairs: []const RefScopePair = &.{},
 
-    /// 합성 심볼(`Symbol.synthetic_kind != null`)의 이름 사이드카.
-    /// #1338 옵션 B: 합성 심볼만 이 맵에 기록 — 정규 심볼은 Symbol.name(source Span)만
-    /// 사용하므로 메모리 오버헤드 zero. key = symbol id(u32), value = 이름 문자열
-    /// (parse_arena가 소유하거나 정적 문자열).
-    synthetic_names: std.AutoHashMap(u32, []const u8),
-
-    /// 심볼 id에 해당하는 이름을 반환. 합성은 사이드카에서, 정규는 source Span에서.
+    /// 심볼 id에 해당하는 이름을 반환. `Symbol.nameText` 래퍼.
     pub fn symbolName(self: *const ModuleSemanticData, id: u32, source: []const u8) []const u8 {
-        if (self.synthetic_names.get(id)) |name| return name;
         if (id >= self.symbols.items.len) return "";
-        const s = self.symbols.items[id];
-        return source[s.name.start..s.name.end];
+        return self.symbols.items[id].nameText(source);
     }
 };
 
