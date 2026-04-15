@@ -272,8 +272,7 @@ pub fn buildMetadataForAst(
                         break :blk ns_name;
                     };
 
-                    if (ib.local_symbol == .semantic) {
-                        const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                    if (ib.local_symbol.semanticIndex()) |sym_idx| {
                         const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
                         try owned_nested_renames.append(self.allocator, rename);
                         try renames.put(sym_idx, rename);
@@ -322,8 +321,7 @@ pub fn buildMetadataForAst(
             // __esm 타겟도 동일: rolldown 방식으로 변수가 래퍼 밖에 호이스팅되므로
             // canonical name으로 직접 치환 가능. exports_xxx rename은 변수 덮어쓰기 버그 유발.
             if (ib.kind == .namespace) {
-                if (ib.local_symbol != .semantic) continue;
-                const ns_sym_id: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                const ns_sym_id = ib.local_symbol.semanticIndex() orelse continue;
                 const local_name = m.importBindingLocalName(ib);
                 const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
@@ -442,8 +440,7 @@ pub fn buildMetadataForAst(
             // 항상 renames에 등록하여 codegen이 target 변수를 참조하도록 함.
             // 중첩 스코프 충돌은 resolveNestedShadowConflicts에서 이미 처리됨.
             if (!isReservedName(target_name)) {
-                if (ib.local_symbol == .semantic) {
-                    const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+                if (ib.local_symbol.semanticIndex()) |sym_idx| {
                     try renames.put(sym_idx, target_name);
                     // __esm → __esm live binding: __export getter override 등록 +
                     // 자체 rename 루프에서 덮어쓰기 방지
@@ -750,8 +747,7 @@ pub fn buildCrossModuleConstValues(
         const cv = target_sem.symbols.items[target_sym_idx].const_value;
         if (cv.kind == .none or !cv.isSafeToInline()) continue;
         // import binding의 local symbol에 매핑
-        if (ib.local_symbol.isValid()) {
-            const local_sym: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
+        if (ib.local_symbol.semanticIndex()) |local_sym| {
             try const_values.put(self.allocator, local_sym, cv);
         }
     }
@@ -1151,13 +1147,12 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            if (ib.local_symbol != .semantic) continue;
+            const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
 
             const target_name = self.getCanonicalByRef(ib.symbol) orelse ib.imported_name;
             const local_name = m.importBindingLocalName(ib);
 
             if (!std.mem.eql(u8, local_name, target_name)) {
-                const sym_idx: u32 = @intFromEnum(ib.local_symbol.semantic.symbol);
                 try renames.put(sym_idx, target_name);
             }
         }
