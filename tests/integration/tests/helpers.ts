@@ -1,10 +1,11 @@
 import { spawn } from "bun";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 export const ZTS_BIN = join(PROJECT_ROOT, "zig-out/bin/zts");
+const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, "../node_modules");
 
 export async function createFixture(
   files: Record<string, string>,
@@ -38,6 +39,56 @@ export async function createRNFixture(
     "node_modules/react-native/package.json": '{"name": "react-native", "main": "index.js"}',
     ...files,
   });
+}
+
+const REACT_STUB =
+  "exports.useState = function(init) { return [init, function() {}]; };\n" +
+  "exports.useEffect = function() {};\n" +
+  "exports.useMemo = function(fn) { return fn(); };\n" +
+  "exports.useRef = function(init) { return { current: init }; };\n" +
+  "exports.useCallback = function(fn) { return fn; };\n" +
+  "exports.useContext = function() { return null; };\n" +
+  "exports.useReducer = function(_, init) { return [init, function() {}]; };\n" +
+  "exports.createElement = function() { return {}; };\n" +
+  "exports.createContext = function() { return { Provider: null, Consumer: null }; };\n" +
+  "exports.Fragment = Symbol('Fragment');\n" +
+  "exports.forwardRef = function(fn) { return fn; };\n" +
+  "exports.memo = function(c) { return c; };\n" +
+  "module.exports.default = exports;\n";
+
+/// `react`만 stub으로 필요한 fixture (RSC, sourcemap 등). 실제 react 패키지를 install
+/// 하지 않아도 import만 resolve되면 충분한 케이스용. fixture에 더 많은 패키지가 필요하면
+/// `linkNodeModules`로 PROJECT_ROOT의 node_modules를 symlink해 사용한다.
+export async function createReactStubFixture(
+  files: Record<string, string>,
+): Promise<{ dir: string; cleanup: () => Promise<void> }> {
+  return createFixture({
+    "node_modules/react/package.json": '{"name": "react", "main": "index.js"}',
+    "node_modules/react/index.js": REACT_STUB,
+    ...files,
+  });
+}
+
+/// 실제 패키지를 fixture dir로 symlink. plugin host(Node)가 직접 dynamic import할 때
+/// (예: Vue/Svelte plugin이 `vue/compiler-sfc`를 가져올 때) 사용.
+/// PROJECT_ROOT/node_modules 우선, 없으면 tests/integration/node_modules 시도.
+/// emotion 같은 transitive deps는 hoist 안 되므로 tests/integration devDep에서 link.
+export async function linkNodeModules(dir: string, packages: string[]): Promise<void> {
+  const nmDir = join(dir, "node_modules");
+  await mkdir(nmDir, { recursive: true });
+  const roots = [join(PROJECT_ROOT, "node_modules"), INTEGRATION_NODE_MODULES];
+  for (const pkg of packages) {
+    if (pkg.startsWith("@")) {
+      await mkdir(join(nmDir, pkg.split("/")[0]), { recursive: true });
+    }
+    for (const root of roots) {
+      const src = join(root, pkg);
+      try {
+        await symlink(src, join(nmDir, pkg));
+        break;
+      } catch {}
+    }
+  }
 }
 
 async function runCmd(

@@ -1,6 +1,6 @@
 'use client'
 
-import { useSlotContext } from './SlotContext'
+import { useSlotContext } from './slot-context'
 
 export interface ClientSlotProps {
   slot: string

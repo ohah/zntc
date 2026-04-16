@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { runZts, runZtsInDir, createFixture, ZTS_BIN } from "./helpers";
+import { runZts, runZtsInDir, createFixture, createReactStubFixture, ZTS_BIN } from "./helpers";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -41,7 +41,7 @@ describe("RSC 디렉티브 보존", () => {
   test('--bundle --preserve-modules: "use client"가 import 위에 옴', async () => {
     const outdir = await mkdtemp(join(tmpdir(), "zts-rsc-pm-"));
     try {
-      const { dir } = await createFixture({
+      const { dir } = await createReactStubFixture({
         "client.tsx": `"use client";\nimport { useState } from "react";\nexport default function C(){const[n]=useState(0);return n;}`,
         "server.ts": `"use server";\nexport async function act(){return 1;}`,
         "entry.tsx": `"use client";\nimport C from "./client";\nimport { act } from "./server";\nexport default function E(){act();return <C/>;}`,
@@ -150,7 +150,7 @@ describe("RSC 디렉티브 보존", () => {
   test("preserve-modules: 비-entry 모듈도 자기 디렉티브 보존", async () => {
     const outdir = await mkdtemp(join(tmpdir(), "zts-rsc-pm2-"));
     try {
-      const { dir } = await createFixture({
+      const { dir } = await createReactStubFixture({
         "client-comp.tsx": `"use client";\nimport { useState } from "react";\nexport default function C(){return useState(0)[0];}`,
         "entry.tsx": `import C from "./client-comp";\nexport default function E(){return <C/>;}`,
       });
