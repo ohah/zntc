@@ -406,10 +406,15 @@ type HookResult<T> = T | null | undefined | Promise<T | null | undefined>;
 export interface PluginBuild {
   onResolve(
     options: { filter: RegExp },
-    callback: (args: {
-      path: string;
-      importer: string | null;
-    }) => HookResult<{ path: string; external?: boolean }>,
+    callback: (args: { path: string; importer: string | null }) => HookResult<{
+      path?: string;
+      /** import 문을 그대로 유지 — 런타임이 해석 (esbuild 호환). */
+      external?: boolean;
+      /** 모듈을 빈 객체(`module.exports = {}`)로 대체.
+       * Metro `resolveRequest`가 `{ type: 'empty' }` 반환할 때, webpack `resolve.fallback`이
+       * `false`일 때 매핑용. `path` 생략 시 specifier가 식별자로 사용됨. */
+      disabled?: boolean;
+    }>,
   ): void;
   onLoad(
     options: { filter: RegExp },
