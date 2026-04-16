@@ -1653,6 +1653,12 @@ pub fn main() !void {
             }
         }
 
+        // 에러 진단이 있으면 출력 생략 + exit 1 (watch 모드는 다음 변경 대기).
+        // esbuild/rolldown 동작과 동일하게 빌드 실패를 exit code로 신호.
+        if (result.hasErrors() and !opts.watch and !opts.is_serve) {
+            std.process.exit(1);
+        }
+
         // --allow-overwrite 체크: 출력 파일이 입력 파일을 덮어쓰지 않도록
         if (!opts.allow_overwrite) {
             const entry_abs = abs_entry;
