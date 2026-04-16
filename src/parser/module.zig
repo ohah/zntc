@@ -160,7 +160,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 self.advance() catch break :blk false; // skip 'from'
                 const after_from = self.current();
                 self.restoreState(saved);
-                self.errors.shrinkRetainingCapacity(err_count);
+                self.rollbackErrors(err_count);
                 break :blk after_from != .string_literal;
             }))
         {

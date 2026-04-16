@@ -370,7 +370,7 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
         self.ast.nodes.items.len = saved_nodes_len;
         self.ast.extra_data.items.len = saved_extra_len;
         self.restoreScratch(saved_scratch);
-        self.errors.shrinkRetainingCapacity(saved_errors_len);
+        self.rollbackErrors(saved_errors_len);
         if (!type_args_ok) {
             // 파싱 실패 시 상태 복원
             self.restoreState(saved_scanner);
@@ -552,7 +552,7 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
             }
             // 'is'가 아니면 일반 타입 — 상태 복원 후 parseType에 위임
             self.restoreState(saved);
-            self.errors.shrinkRetainingCapacity(err_count);
+            self.rollbackErrors(err_count);
         }
     }
 
@@ -732,7 +732,7 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
                 // 외부 컨텍스트가 disallow가 아닌데 ? 가 오면 → extends는 조건부 타입의 것
                 if (!ctx_saved.disallow_conditional_types and self.current() == .question) {
                     self.restoreState(infer_saved);
-                    self.errors.shrinkRetainingCapacity(infer_err_count);
+                    self.rollbackErrors(infer_err_count);
                     constraint = NodeIndex.none;
                 }
             }
@@ -1198,7 +1198,7 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
         // () 뒤에 => 없음 — 복원
         self.ast.nodes.items.len = nodes_before;
         self.ast.extra_data.items.len = extras_before;
-        self.errors.shrinkRetainingCapacity(errors_before);
+        self.rollbackErrors(errors_before);
         self.restoreState(saved);
         return null;
     }
@@ -1228,12 +1228,12 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
             // 에러 발생 — 함수 타입이 아님, 복원하여 괄호 타입으로 폴백
             self.ast.nodes.items.len = inner_nodes;
             self.ast.extra_data.items.len = inner_extras;
-            self.errors.shrinkRetainingCapacity(inner_errors);
+            self.rollbackErrors(inner_errors);
             self.restoreState(inner_saved);
             // 외부 saved로도 복원
             self.ast.nodes.items.len = nodes_before;
             self.ast.extra_data.items.len = extras_before;
-            self.errors.shrinkRetainingCapacity(errors_before);
+            self.rollbackErrors(errors_before);
             self.restoreState(saved);
             return null;
         }
@@ -1278,7 +1278,7 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
     // 파라미터로 파싱 실패 — 복원
     self.ast.nodes.items.len = nodes_before;
     self.ast.extra_data.items.len = extras_before;
-    self.errors.shrinkRetainingCapacity(errors_before);
+    self.rollbackErrors(errors_before);
     self.restoreState(saved);
     return null;
 }
@@ -1719,7 +1719,7 @@ fn parseTupleElementInner(self: *Parser) ParseError2!NodeIndex {
             self.advance() catch break :blk false; // skip ?
             const after_question = self.current();
             self.restoreState(saved);
-            self.errors.shrinkRetainingCapacity(err_count);
+            self.rollbackErrors(err_count);
             break :blk after_question == .colon;
         });
         if (is_labeled) {
@@ -1769,7 +1769,7 @@ fn isMappedType(self: *Parser) ParseError2!bool {
     defer {
         self.restoreState(state);
         // lookahead 중 추가된 에러 되돌리기
-        self.errors.shrinkRetainingCapacity(err_count);
+        self.rollbackErrors(err_count);
     }
 
     try self.advance(); // skip {

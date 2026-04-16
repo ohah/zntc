@@ -23,7 +23,8 @@ const NodeList = ast_mod.NodeList;
 const jsx = @import("jsx.zig");
 const ts = @import("ts.zig");
 const flow = @import("flow.zig");
-pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const diagnostic = @import("../diagnostic.zig");
+pub const Diagnostic = diagnostic.Diagnostic;
 const scan_results_mod = @import("scan_results.zig");
 pub const scan_results = scan_results_mod;
 
@@ -330,7 +331,9 @@ pub const Parser = struct {
 
     pub fn deinit(self: *Parser) void {
         self.ast.deinit();
+        for (self.errors.items) |err| if (err.labels.len > 0) self.allocator.free(err.labels);
         self.errors.deinit(self.allocator);
+        for (self.deferred_module_errors.items) |err| if (err.labels.len > 0) self.allocator.free(err.labels);
         self.deferred_module_errors.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
         self.scan_import_records.deinit(self.allocator);
@@ -339,6 +342,16 @@ pub const Parser = struct {
         self.scan_import_binding_map.deinit(self.allocator);
         self.param_name_spans.deinit(self.allocator);
         self.bracket_stack.deinit(self.allocator);
+    }
+
+    /// Speculative 파싱 실패 시 errors를 mark까지 롤백한다. 제거되는 에러가
+    /// 소유한 labels 배열도 함께 free — `errors.shrinkRetainingCapacity` 대신 사용.
+    pub fn rollbackErrors(self: *Parser, mark: usize) void {
+        if (mark >= self.errors.items.len) return;
+        for (self.errors.items[mark..]) |err| {
+            if (err.labels.len > 0) self.allocator.free(err.labels);
+        }
+        self.errors.shrinkRetainingCapacity(mark);
     }
 
     // ================================================================
@@ -397,17 +410,23 @@ pub const Parser = struct {
     pub fn expect(self: *Parser, expected: Kind) !void {
         if (!try self.eat(expected)) {
             const opening = self.findMatchingOpenBracket(expected);
-            try self.errors.append(self.allocator, .{
-                .span = self.currentSpan(),
-                .message = expected.symbol(),
-                .found = self.current().symbol(),
-                .related_span = if (opening) |o| o.span else null,
-                .related_label = if (opening) |o| switch (o.kind) {
+            const labels: []const diagnostic.Label = if (opening) |o| blk: {
+                const label_msg: ?[]const u8 = switch (o.kind) {
                     .l_paren => "opening '(' is here",
                     .l_bracket => "opening '[' is here",
                     .l_curly => "opening '{' is here",
                     else => null,
-                } else null,
+                };
+                if (label_msg == null) break :blk &.{};
+                const buf = try self.allocator.alloc(diagnostic.Label, 1);
+                buf[0] = .{ .span = o.span, .message = label_msg };
+                break :blk buf;
+            } else &.{};
+            try self.errors.append(self.allocator, .{
+                .span = self.currentSpan(),
+                .message = expected.symbol(),
+                .found = self.current().symbol(),
+                .labels = labels,
             });
         }
     }
@@ -2128,7 +2147,7 @@ pub const Parser = struct {
         self.in_formal_parameters = false;
         if (self.current() != .r_paren) {
             self.restoreScratch(scratch_top);
-            self.errors.shrinkRetainingCapacity(errors_before);
+            self.rollbackErrors(errors_before);
             self.restoreState(saved);
             return null;
         }
@@ -2144,7 +2163,7 @@ pub const Parser = struct {
         // => 확인
         if (self.current() != .arrow or self.scanner.token.has_newline_before) {
             self.restoreScratch(scratch_top);
-            self.errors.shrinkRetainingCapacity(errors_before);
+            self.rollbackErrors(errors_before);
             self.restoreState(saved);
             return null;
         }

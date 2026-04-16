@@ -78,7 +78,8 @@ describe("@zts/wasm", () => {
   });
 
   test("파싱 에러", () => {
-    expect(() => transpile("const = ;")).toThrow("error:");
+    // miette 스타일 렌더: "× <message> [ZTS코드]"
+    expect(() => transpile("const = ;")).toThrow(/\[ZTS\d{4}\]/);
   });
 
   test("Flow 스트리핑", () => {

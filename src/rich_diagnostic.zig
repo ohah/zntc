@@ -14,9 +14,12 @@
 
 const std = @import("std");
 const Span = @import("lexer/token.zig").Span;
-const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const diag_mod = @import("diagnostic.zig");
+const Diagnostic = diag_mod.Diagnostic;
 const BundlerDiagnostic = @import("bundler/types.zig").BundlerDiagnostic;
 const error_codes = @import("error_codes.zig");
+
+pub const Label = diag_mod.Label;
 
 /// 통합 진단 정보. 렌더러가 이 타입을 받아 포맷팅한다.
 pub const RichDiagnostic = struct {
@@ -41,16 +44,6 @@ pub const RichDiagnostic = struct {
         @"error",
         warning,
         info,
-    };
-
-    /// 소스 코드의 특정 위치에 붙이는 라벨.
-    /// 주 span 외에 "여기서 선언됨", "여기서 참조됨" 등을 표시할 때 사용.
-    pub const Label = struct {
-        span: Span,
-        /// 라벨 메시지. null이면 밑줄만 표시.
-        message: ?[]const u8 = null,
-        /// primary=true: ^^^ (주 원인), false: --- (보조 정보)
-        primary: bool = false,
     };
 };
 
@@ -120,22 +113,16 @@ pub const SourceInfo = struct {
 // ─── 변환 함수 ───
 
 /// 파서/시맨틱 Diagnostic을 RichDiagnostic으로 변환한다.
-///
 /// Diagnostic에는 severity가 없으므로 항상 .error로 설정한다.
-/// related_span이 있으면 related_label을 RichDiagnostic.note로 전달한다.
-/// (멀티 스팬 labels는 allocator가 필요하므로, 단순 변환에서는 note로 대체)
 pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
-    // related_span이 있으면 note로 위치 정보를 포함
-    const note_text: ?[]const u8 = if (d.related_label) |label| label else null;
-
     return .{
         .severity = .@"error",
         .code = if (d.code) |c| c.format() else null,
         .message = d.message,
         .span = d.span,
         .file_path = file_path,
+        .labels = d.labels,
         .help = d.hint,
-        .note = note_text,
     };
 }
 
@@ -248,16 +235,18 @@ test "fromDiagnostic: uses explicit error code" {
     try std.testing.expectEqualStrings("ZTS0300", rich.code.?);
 }
 
-test "fromDiagnostic: includes related span as note" {
+test "fromDiagnostic: forwards labels" {
+    const labels = [_]Label{
+        .{ .span = .{ .start = 5, .end = 6 }, .message = "opening '{' is here" },
+    };
     const d = Diagnostic{
         .span = .{ .start = 20, .end = 25 },
         .message = "Unexpected '}'",
-        .related_span = .{ .start = 5, .end = 6 },
-        .related_label = "opening '{' is here",
+        .labels = &labels,
         .kind = .parse,
     };
     const rich = fromDiagnostic(d, "test.ts");
 
-    try std.testing.expect(rich.note != null);
-    try std.testing.expectEqualStrings("opening '{' is here", rich.note.?);
+    try std.testing.expectEqual(@as(usize, 1), rich.labels.len);
+    try std.testing.expectEqualStrings("opening '{' is here", rich.labels[0].message.?);
 }
