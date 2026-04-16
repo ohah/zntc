@@ -84,6 +84,12 @@ export interface TranspileResult {
   code: string;
   /** 소스맵 JSON (sourcemap: true 시) */
   map?: string;
+  /**
+   * 시맨틱 에러가 있을 때 CLI와 동일한 포맷으로 렌더된 전체 에러 텍스트.
+   * tsc 호환 정책: 에러가 있어도 code는 함께 반환된다.
+   * 플레이그라운드/IDE는 이 필드를 파싱해 마커로 표시한다.
+   */
+  errors?: string;
 }
 
 // ─── ES Target → UnsupportedFeatures bitmask ───

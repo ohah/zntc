@@ -21,6 +21,7 @@ const Mangler = @import("codegen/mod.zig").mangler;
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const OwnedDiagnostic = @import("diagnostic.zig").OwnedDiagnostic;
 
 pub const TranspileOptions = struct {
     // --- 파싱 ---
@@ -133,12 +134,20 @@ pub const TranspileResult = struct {
     sourcemap: ?[]const u8 = null,
     /// 런타임 헬퍼 포함 여부
     has_helpers: bool = false,
-    /// 시맨틱 에러 여부 (tsc 호환: 에러가 있어도 output 생성)
-    has_errors: bool = false,
+    /// 시맨틱 에러 목록 (tsc 호환: codegen과 함께 반환).
+    /// allocator 소유. 각 항목은 arena에서 복사된 OwnedDiagnostic.
+    /// 파서 에러는 throw 경로라 여기 담기지 않는다 — on_error 콜백 참조.
+    diagnostics: []const OwnedDiagnostic = &.{},
+    /// 소스의 줄 시작 오프셋. diagnostics 렌더링에 필요.
+    /// allocator 소유. diagnostics가 비었으면 비어 있을 수 있다.
+    line_offsets: []const u32 = &.{},
 
     pub fn deinit(self: *TranspileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
         if (self.sourcemap) |sm| allocator.free(sm);
+        for (self.diagnostics) |d| d.deinit(allocator);
+        if (self.diagnostics.len > 0) allocator.free(self.diagnostics);
+        if (self.line_offsets.len > 0) allocator.free(self.line_offsets);
     }
 };
 
@@ -346,10 +355,39 @@ pub fn transpileWithCallback(
     // Arena 밖으로 복제 (arena는 함수 종료 시 defer로 해제 — line 167).
     // mangle_metadata.skip_nodes는 arena-owned이므로 별도 deinit 불필요.
     const result_code = allocator.dupe(u8, final_output) catch return error.OutOfMemory;
+    errdefer allocator.free(result_code);
+
+    // 시맨틱 에러 복사: arena → allocator. 실패 시 이미 복사된 항목들 roll back.
+    const semantic_errors = analyzer.errors.items;
+    const owned_diagnostics: []const OwnedDiagnostic = if (semantic_errors.len == 0) &.{} else blk: {
+        const buf = allocator.alloc(OwnedDiagnostic, semantic_errors.len) catch return error.OutOfMemory;
+        var filled: usize = 0;
+        errdefer {
+            for (buf[0..filled]) |d| d.deinit(allocator);
+            allocator.free(buf);
+        }
+        for (semantic_errors) |d| {
+            buf[filled] = try OwnedDiagnostic.init(d, allocator);
+            filled += 1;
+        }
+        break :blk buf;
+    };
+    errdefer {
+        for (owned_diagnostics) |d| d.deinit(allocator);
+        if (owned_diagnostics.len > 0) allocator.free(owned_diagnostics);
+    }
+
+    // line_offsets도 복사 (diagnostics 렌더링용). 에러 없으면 생략.
+    const owned_line_offsets: []const u32 = if (semantic_errors.len == 0)
+        &.{}
+    else
+        allocator.dupe(u32, scanner.line_offsets.items) catch return error.OutOfMemory;
+
     return .{
         .code = result_code,
         .sourcemap = sourcemap_json,
         .has_helpers = has_helpers,
-        .has_errors = analyzer.errors.items.len > 0,
+        .diagnostics = owned_diagnostics,
+        .line_offsets = owned_line_offsets,
     };
 }
