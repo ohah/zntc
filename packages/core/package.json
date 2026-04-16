@@ -25,6 +25,7 @@
     "build:js": "bun build index.ts --outdir dist --format esm --target node",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js && bun run build:dts",
+    "postinstall": "[ -f ../../zig-out/lib/zts.node ] && cp ../../zig-out/lib/zts.node . || true",
     "test": "bun test"
   },
   "optionalDependencies": {
