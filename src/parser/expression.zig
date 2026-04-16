@@ -545,7 +545,7 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
     // Check for `=>` — if present, this is a typed arrow function
     if (self.current() != .arrow or self.scanner.token.has_newline_before) {
         // Not a typed arrow — restore and let the caller treat `:` as ternary separator
-        self.errors.shrinkRetainingCapacity(errors_before);
+        self.rollbackErrors(errors_before);
         self.restoreState(saved);
         return null;
     }
@@ -1079,7 +1079,7 @@ fn trySkipTypeArgsSpeculative(self: *Parser, comptime strict: bool, comptime fol
     self.ast.nodes.items.len = saved_nodes_len;
     self.ast.extra_data.items.len = saved_extra_len;
     self.restoreScratch(saved_scratch);
-    self.errors.shrinkRetainingCapacity(saved_errors_len);
+    self.rollbackErrors(saved_errors_len);
     self.restoreState(scanner_after);
     return type_args_ok;
 }
@@ -1966,7 +1966,7 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
         if (try self.isTypedArrowFunction()) {
             if (try self.parseTypedArrowParams(self.currentSpan().start, false)) |arrow| return arrow;
             self.restoreState(saved);
-            self.errors.shrinkRetainingCapacity(err_count);
+            self.rollbackErrors(err_count);
         }
 
         // 빈 파라미터 arrow: <Type>() => body
@@ -1984,7 +1984,7 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
                 });
             }
             self.restoreState(saved);
-            self.errors.shrinkRetainingCapacity(err_count);
+            self.rollbackErrors(err_count);
         }
 
         // 파라미터가 있는 arrow: <Type>(x, y) => body
@@ -2082,7 +2082,7 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
         self.ast.nodes.items.len = saved_nodes_len;
         self.ast.extra_data.shrinkRetainingCapacity(saved_extra_len);
         self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
+        self.rollbackErrors(err_count);
         return null;
     }
 
@@ -2103,7 +2103,7 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
     if (self.current() != .r_paren) {
         self.restoreScratch(scratch_top);
         self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
+        self.rollbackErrors(err_count);
         return null;
     }
     try self.advance(); // skip )
@@ -2119,7 +2119,7 @@ fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
     if (self.current() != .arrow or self.scanner.token.has_newline_before) {
         self.restoreScratch(scratch_top);
         self.restoreState(saved);
-        self.errors.shrinkRetainingCapacity(err_count);
+        self.rollbackErrors(err_count);
         return null;
     }
 

@@ -27,7 +27,8 @@ const SymbolId = symbol_mod.SymbolId;
 const SymbolKind = symbol_mod.SymbolKind;
 const Symbol = symbol_mod.Symbol;
 const checker = @import("checker.zig");
-pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const diagnostic = @import("../diagnostic.zig");
+pub const Diagnostic = diagnostic.Diagnostic;
 const ErrorCode = @import("../error_codes.zig").Code;
 
 const AllocError = std.mem.Allocator.Error;
@@ -207,6 +208,7 @@ pub const SemanticAnalyzer = struct {
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
             if (err.hint) |hint| self.allocator.free(hint);
+            if (err.labels.len > 0) self.allocator.free(err.labels);
         }
         self.scopes.deinit(self.allocator);
         self.symbols.deinit(self.allocator);
@@ -593,7 +595,7 @@ pub const SemanticAnalyzer = struct {
         if (!is_annex_b_fn) {
             if (self.findSymbolInScope(target_scope, name_text)) |existing| {
                 if (!self.canRedeclare(existing.kind, kind, target_scope)) {
-                    try self.addError(decl_span, name_text);
+                    try self.addRedeclarationError(decl_span, name_text, existing.declaration_span);
                     return;
                 }
             }
@@ -682,7 +684,7 @@ pub const SemanticAnalyzer = struct {
                 // block scope의 let/const/class와 충돌하거나,
                 // block scope의 function-like 선언과도 충돌
                 if (existing.kind.isBlockScoped() or existing.kind.isFunctionLike()) {
-                    try self.addError(decl_span, name);
+                    try self.addRedeclarationError(decl_span, name, existing.declaration_span);
                     return true;
                 }
             }
@@ -707,7 +709,7 @@ pub const SemanticAnalyzer = struct {
         // { { var f; } let f; } → var의 origin=inner, let의 scope=outer → inner는 outer의 자식이므로 충돌
         // { let f; } 밖의 var f → var의 origin=global, let의 scope=block → 충돌 아님
         if (self.isScopeDescendantOf(sym.origin_scope, lexical_scope)) {
-            try self.addError(decl_span, name);
+            try self.addRedeclarationError(decl_span, name, sym.declaration_span);
             return true;
         }
         return false;
@@ -992,7 +994,26 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
-        try self.addErrorMsgCode(span, try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}), .identifier_redeclared);
+        try self.addRedeclarationError(span, name, null);
+    }
+
+    /// 재선언 에러 + "previously declared here" secondary label.
+    /// existing_span이 null이면 label 없이 기본 에러.
+    fn addRedeclarationError(self: *SemanticAnalyzer, span: Span, name: []const u8, existing_span: ?Span) AllocError!void {
+        const msg = try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name});
+        errdefer self.allocator.free(msg);
+        const labels: []const diagnostic.Label = if (existing_span) |ex| blk: {
+            const buf = try self.allocator.alloc(diagnostic.Label, 1);
+            buf[0] = .{ .span = ex, .message = "previously declared here" };
+            break :blk buf;
+        } else &.{};
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = msg,
+            .kind = .semantic,
+            .code = .identifier_redeclared,
+            .labels = labels,
+        });
     }
 
     fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
@@ -2221,7 +2242,7 @@ pub const SemanticAnalyzer = struct {
                 for (names.*[0..count.*]) |existing_span| {
                     const existing_text = self.ast.getText(existing_span);
                     if (std.mem.eql(u8, name_text, existing_text)) {
-                        try self.addError(node.span, name_text);
+                        try self.addRedeclarationError(node.span, name_text, existing_span);
                         return;
                     }
                 }
@@ -2282,7 +2303,7 @@ pub const SemanticAnalyzer = struct {
             for (catch_names) |catch_span| {
                 const catch_name = self.ast.getText(catch_span);
                 if (std.mem.eql(u8, sym_name, catch_name)) {
-                    try self.addError(sym.declaration_span, sym_name);
+                    try self.addRedeclarationError(sym.declaration_span, sym_name, catch_span);
                     return;
                 }
             }

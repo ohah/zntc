@@ -72,9 +72,24 @@ pub fn render(
     try ansi.styled(writer, .cyan, diag.file_path, color);
     try writer.print(":{d}:{d}]\n", .{ err_line + 1, err_col + 1 });
 
+    // label이 이미 차지한 줄은 context에서 생략 (중복 방지)
+    const label_before_err = err_line > 0 and hasLabelOnLine(diag.labels, source_info, err_line - 1);
+    const label_after_err = err_line + 1 < source_info.line_offsets.len and hasLabelOnLine(diag.labels, source_info, err_line + 1);
+
     // ── 3. 컨텍스트 줄: 에러 줄 전 1줄 ──
-    if (err_line > 0) {
+    if (err_line > 0 and !label_before_err) {
         try renderSourceLine(writer, source_info, err_line - 1, gutter_width, color, options.unicode);
+    }
+
+    // primary 위쪽 label 먼저 출력 (줄 번호 오름차순 유지)
+    if (label_before_err) {
+        for (diag.labels) |label| {
+            const l_lc = source_info.getLineColumn(label.span.start);
+            if (l_lc.line == err_line - 1) {
+                try renderSourceLine(writer, source_info, l_lc.line, gutter_width, color, options.unicode);
+                try renderLabelUnderline(writer, source_info, label, l_lc.line, l_lc.column, gutter_width, color, options.unicode);
+            }
+        }
     }
 
     // ── 4. 에러 줄 ──
@@ -83,8 +98,16 @@ pub fn render(
     // ── 5. 밑줄 + 라벨 ──
     try renderUnderline(writer, source_info, diag, err_line, err_col, gutter_width, color, options.unicode);
 
-    // ── 6. 에러 줄 후 1줄 (있으면) ──
-    if (err_line + 1 < source_info.line_offsets.len) {
+    // ── 5.5. primary 아래쪽 label 출력 (err_line보다 뒤) ──
+    for (diag.labels) |label| {
+        const l_lc = source_info.getLineColumn(label.span.start);
+        if (l_lc.line <= err_line) continue; // 위쪽/같은 줄은 위에서 처리 또는 생략
+        try renderSourceLine(writer, source_info, l_lc.line, gutter_width, color, options.unicode);
+        try renderLabelUnderline(writer, source_info, label, l_lc.line, l_lc.column, gutter_width, color, options.unicode);
+    }
+
+    // ── 6. 에러 줄 후 1줄 (label이 이미 차지하지 않은 경우) ──
+    if (err_line + 1 < source_info.line_offsets.len and !label_after_err) {
         try renderSourceLine(writer, source_info, err_line + 1, gutter_width, color, options.unicode);
     }
 
@@ -278,6 +301,52 @@ fn renderUnderline(
         try writer.writeByte('^');
     }
     try ansi.setStyle(writer, .reset, color);
+    try writer.writeByte('\n');
+}
+
+/// labels 중 주어진 줄에 걸린 것이 하나라도 있는지.
+fn hasLabelOnLine(labels: []const rich_diagnostic.Label, source_info: SourceInfo, line: u32) bool {
+    for (labels) |label| {
+        if (source_info.getLineColumn(label.span.start).line == line) return true;
+    }
+    return false;
+}
+
+/// Secondary label의 밑줄: ─── (primary의 ^^^ 대비). 메시지가 있으면 밑줄 뒤에 이어 출력.
+fn renderLabelUnderline(
+    writer: anytype,
+    source_info: SourceInfo,
+    label: anytype,
+    line: u32,
+    col: u32,
+    gutter_width: u32,
+    color: bool,
+    unicode: bool,
+) !void {
+    const line_text = source_info.getLineText(line);
+    const span_len = if (label.span.end > label.span.start)
+        @min(label.span.end - label.span.start, @as(u32, @intCast(line_text.len)) -| col)
+    else
+        1;
+
+    try writeGutter(writer, gutter_width, null, color);
+    if (unicode) try writer.writeAll(" \xc2\xb7 ") else try writer.writeAll(" . "); // ·
+
+    var i: u32 = 0;
+    while (i < col) : (i += 1) {
+        if (i < line_text.len and line_text[i] == '\t') try writer.writeByte('\t') else try writer.writeByte(' ');
+    }
+
+    try ansi.setStyle(writer, .cyan, color);
+    const underline_char: []const u8 = if (unicode) "\xe2\x94\x80" else "-"; // ─
+    i = 0;
+    while (i < span_len) : (i += 1) try writer.writeAll(underline_char);
+    try ansi.setStyle(writer, .reset, color);
+
+    if (label.message) |msg| {
+        try writer.writeByte(' ');
+        try ansi.styled(writer, .cyan, msg, color);
+    }
     try writer.writeByte('\n');
 }
 

@@ -198,10 +198,14 @@ const TestResult = struct {
 /// 테스트 헬퍼: 소스 코드를 파싱 → transformer 실행.
 fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
+    errdefer allocator.destroy(scanner_ptr);
     scanner_ptr.* = try Scanner.init(allocator, source);
+    errdefer scanner_ptr.deinit();
 
     const parser_ptr = try allocator.create(Parser);
+    errdefer allocator.destroy(parser_ptr);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
+    errdefer parser_ptr.deinit();
 
     _ = try parser_ptr.parse();
 
@@ -270,10 +274,14 @@ test "Transformer: isTypeOnlyNode covers all TS type tags" {
 /// 테스트 헬퍼: TransformOptions를 지정하여 파싱 → transformer 실행.
 pub fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8, options: TransformOptions) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
+    errdefer allocator.destroy(scanner_ptr);
     scanner_ptr.* = try Scanner.init(allocator, source);
+    errdefer scanner_ptr.deinit();
 
     const parser_ptr = try allocator.create(Parser);
+    errdefer allocator.destroy(parser_ptr);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
+    errdefer parser_ptr.deinit();
 
     _ = try parser_ptr.parse();
 

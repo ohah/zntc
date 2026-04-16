@@ -1932,25 +1932,19 @@ test "CoverGrammar: arrow params rest-init is error" {
 // ================================================================
 
 /// 테스트 헬퍼: 특정 message를 가진 에러가 있는지 확인한다.
-/// 추가로 found, related_label, hint 필드를 검증할 수 있다.
+/// found, labels, hint 필드를 검증할 수 있다.
 const ErrorCheck = struct {
-    /// 에러 message (정확 일치)
     message: ?[]const u8 = null,
-    /// 에러 message (부분 일치)
     message_contains: ?[]const u8 = null,
-    /// found 필드가 non-null이어야 하는지
     has_found: ?bool = null,
-    /// related_span이 non-null이어야 하는지
-    has_related_span: ?bool = null,
-    /// related_label 기대값 (정확 일치)
-    related_label: ?[]const u8 = null,
-    /// hint가 non-null이어야 하는지
+    /// labels 배열이 비어 있는지 여부
+    has_labels: ?bool = null,
+    /// 라벨 중 하나가 이 message와 일치해야 함
+    label_message: ?[]const u8 = null,
     has_hint: ?bool = null,
-    /// hint 기대값 (정확 일치)
     hint: ?[]const u8 = null,
 };
 
-/// 테스트 헬퍼: 소스를 파싱하고 조건에 맞는 에러가 있는지 검증한다.
 fn expectParseError(source: []const u8, check: ErrorCheck) !void {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
@@ -1965,21 +1959,27 @@ fn expectParseError(source: []const u8, check: ErrorCheck) !void {
         const contains_match = if (check.message_contains) |c| std.mem.indexOf(u8, err.message, c) != null else true;
         if (!msg_match or !contains_match) continue;
 
-        // message 매칭된 에러를 찾음 — 나머지 필드 검증
         if (check.has_found) |hf| try std.testing.expectEqual(hf, err.found != null);
-        if (check.has_related_span) |hr| try std.testing.expectEqual(hr, err.related_span != null);
-        if (check.related_label) |rl| {
-            try std.testing.expect(err.related_label != null);
-            try std.testing.expectEqualStrings(rl, err.related_label.?);
+        if (check.has_labels) |hl| try std.testing.expectEqual(hl, err.labels.len > 0);
+        if (check.label_message) |lm| {
+            var found_label = false;
+            for (err.labels) |l| {
+                if (l.message) |m| {
+                    if (std.mem.eql(u8, m, lm)) {
+                        found_label = true;
+                        break;
+                    }
+                }
+            }
+            try std.testing.expect(found_label);
         }
         if (check.has_hint) |hh| try std.testing.expectEqual(hh, err.hint != null);
         if (check.hint) |h| {
             try std.testing.expect(err.hint != null);
             try std.testing.expectEqualStrings(h, err.hint.?);
         }
-        return; // 검증 성공
+        return;
     }
-    // 매칭되는 에러를 못 찾음
     return error.TestUnexpectedResult;
 }
 
@@ -2004,30 +2004,27 @@ test "ErrorMsg: expect() shows found for curly brace" {
     try expectParseError("if (true) {", .{ .message = "}", .has_found = true });
 }
 
-test "ErrorMsg: bracket matching shows related_span for paren" {
-    // `function f(a, b ]` → Expected ')' but found ']', opening '(' is here
+test "ErrorMsg: bracket matching label for paren" {
     try expectParseError("function f(a, b ]", .{
         .message = ")",
-        .has_related_span = true,
-        .related_label = "opening '(' is here",
+        .has_labels = true,
+        .label_message = "opening '(' is here",
     });
 }
 
-test "ErrorMsg: bracket matching shows related_span for curly" {
-    // `if (true) { var x = 1;` → EOF에서 '}' 기대, opening '{' is here
+test "ErrorMsg: bracket matching label for curly" {
     try expectParseError("if (true) { var x = 1;", .{
         .message = "}",
-        .has_related_span = true,
-        .related_label = "opening '{' is here",
+        .has_labels = true,
+        .label_message = "opening '{' is here",
     });
 }
 
-test "ErrorMsg: bracket matching shows related_span for bracket" {
-    // `var a = [1, 2` → EOF에서 ']' 기대, opening '[' is here
+test "ErrorMsg: bracket matching label for bracket" {
     try expectParseError("var a = [1, 2", .{
         .message = "]",
-        .has_related_span = true,
-        .related_label = "opening '[' is here",
+        .has_labels = true,
+        .label_message = "opening '[' is here",
     });
 }
 
@@ -2079,14 +2076,14 @@ test "ErrorMsg: nested brackets track correctly" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len > 0);
-    var has_related = false;
+    var has_labels = false;
     for (parser.errors.items) |err| {
-        if (err.related_span != null) {
-            has_related = true;
+        if (err.labels.len > 0) {
+            has_labels = true;
             break;
         }
     }
-    try std.testing.expect(has_related);
+    try std.testing.expect(has_labels);
 }
 
 test "ErrorMsg: valid code has no errors (regression)" {
