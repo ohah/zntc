@@ -1,5 +1,5 @@
 import { spawn } from "bun";
-import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from "node:fs/promises";
 import { readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -87,7 +87,7 @@ export async function linkNodeModules(dir: string, packages: string[]): Promise<
       for (const root of LOOKUP_ROOTS) {
         const target = join(root, pkg);
         try {
-          statSync(join(target, "package.json"));
+          await stat(join(target, "package.json"));
         } catch {
           continue;
         }

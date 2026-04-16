@@ -1338,9 +1338,7 @@ pub fn main() !void {
                     },
                 }
             }
-            if (opts.main_fields_list.items.len == 0) {
-                try opts.main_fields_list.appendSlice(allocator, &.{ "react-native", "browser", "module", "main" });
-            }
+            // RN main_fields 기본값은 ResolveCache.defaultMainFieldsFor에서 플랫폼별로 적용.
             const rn_preset = lib.bundler.RN_BOOL_PRESET;
             opts.flow = rn_preset.flow;
             opts.jsx_in_js = rn_preset.jsx_in_js;
