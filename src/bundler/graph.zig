@@ -341,6 +341,26 @@ pub const ModuleGraph = struct {
         self.promoteExportsKinds();
         self.registerWrapperSymbols();
         self.propagateTopLevelAwait();
+        self.checkSelfReExport();
+    }
+
+    /// `export { x } from 'y'`에서 alias/resolver 결과 source가 자기 자신이면
+    /// emit 단계에서 `exports_self.x` 자기 참조 getter가 만들어져 무한 재귀.
+    /// rolldown CIRCULAR_REEXPORT와 동일하게 빌드 단계에서 거부.
+    /// default re-export(`export default X` where X is self-import) 패턴은
+    /// 5.2 reexport_buf에서 이미 안전하게 skip하므로 named re-export만 대상.
+    fn checkSelfReExport(self: *ModuleGraph) void {
+        for (self.modules.items, 0..) |*m, i| {
+            const self_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+            for (m.export_bindings) |eb| {
+                if (eb.kind != .re_export) continue;
+                if (std.mem.eql(u8, eb.exported_name, "default")) continue;
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= m.import_records.len) continue;
+                if (m.import_records[rec_idx].resolved != self_idx) continue;
+                self.addDiag(.circular_reexport, .@"error", m.path, eb.local_span, .link, "Re-export source resolves to the module itself (self-cycle)", "Check resolver alias / plugin onResolve — the import source must point to a different module.");
+            }
+        }
     }
 
     /// 증분 빌드 결과.

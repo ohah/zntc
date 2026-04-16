@@ -473,6 +473,10 @@ pub fn emitEsmWrappedModule(
                             if (rec_idx >= module.import_records.len) break :re_export;
                             const src_idx = module.import_records[rec_idx].resolved;
                             if (src_idx.isNone()) break :re_export;
+                            // self-cycle: graph 단계에서 circular_reexport로 진단되며,
+                            // 빌드는 실패하지만 codegen이 계속 호출되더라도 자기 참조 getter가
+                            // 만들어지지 않도록 폴백 경로로 처리.
+                            if (src_idx == module.index) break :re_export;
                             const si = @intFromEnum(src_idx);
                             if (si >= l.modules.len) break :re_export;
                             const src_mod = &l.modules[si];

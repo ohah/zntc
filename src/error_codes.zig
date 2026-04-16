@@ -33,6 +33,7 @@ pub const Code = enum(u16) {
     missing_export = 101,
     circular_dependency = 102,
     resolve_error = 103,
+    circular_reexport = 104,
 
     // ═══════════════════════════════════════════════════════
     // 0200-0299: 번들러 — 파일/로더
@@ -233,6 +234,7 @@ pub const Code = enum(u16) {
             .missing_export => "Export not found in module",
             .circular_dependency => "Circular dependency detected",
             .resolve_error => "Module resolution failed",
+            .circular_reexport => "Re-export references the module itself (self-cycle)",
             .read_error => "Failed to read file",
             .json_parse_error => "Failed to parse JSON",
             .no_loader => "No loader is configured for this file type",

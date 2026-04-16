@@ -1624,6 +1624,47 @@ test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_source.helper") != null);
 }
 
+test "ESM re-export: self re-export emits circular_reexport diagnostic (#1425 follow-up)" {
+    // alias/resolver가 source를 자기 자신으로 redirect한 경우 (예: bungae alias 패턴)
+    // emit 단계에서 자기 참조 getter가 생성되어 무한 재귀가 발생한다.
+    // graph 빌드 단계에서 진단으로 거부 (rolldown CIRCULAR_REEXPORT).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "self.js",
+        \\export { foo } from './self.js';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as ns from './self.js';
+        \\console.log(Object.keys(ns));
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // self-cycle은 error로 거부
+    try std.testing.expect(result.hasErrors());
+    var found_diag = false;
+    if (result.diagnostics) |diags| {
+        for (diags) |d| {
+            if (d.code == .circular_reexport) {
+                found_diag = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(found_diag);
+    // 출력에 자기 참조 getter가 만들어지지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "return exports_self.foo") == null);
+}
+
 test "CJS: Flow export type alias + module.exports stays CJS (regression)" {
     // export type Foo = ... (type alias) + module.exports
     var tmp = std.testing.tmpDir(.{});
