@@ -790,8 +790,11 @@ pub const ModuleGraph = struct {
         // Asset 로더: 파일을 읽어서 fake JS 모듈로 변환 (rolldown 방식)
         // 플러그인이 이미 소스를 반환한 경우 건너뜀 (플러그인 우선)
         if (module.loader.isAsset() and module.source.len == 0) {
-            self.parseAssetModule(module);
-            return;
+            // asset_registry 모드일 때는 source에 require() 호출이 포함되므로
+            // 일반 JS 파이프라인을 거쳐 ImportRecord를 추출해야 linker가
+            // require → require_xxx() 변환을 할 수 있다.
+            if (!self.parseAssetModule(module)) return;
+            // fall through to JS pipeline
         }
 
         // CSS 모듈: @import 추출 → 모듈 그래프에 등록
@@ -1613,7 +1616,11 @@ pub const ModuleGraph = struct {
     /// Asset 로더 모듈을 파싱한다.
     /// 파일을 읽어서 로더 타입에 따라 fake JS 소스를 생성하고,
     /// module_type을 .javascript로 바꿔서 기존 파이프라인을 그대로 탄다.
-    fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
+    ///
+    /// 반환값: true면 호출자가 일반 JS 파이프라인으로 fall through해야 함
+    /// (asset_registry 모드의 file/copy 로더 — source에 require() 호출 포함).
+    /// false면 source가 단순 값 표현식이라 linker가 그대로 wrap하면 됨.
+    fn parseAssetModule(self: *ModuleGraph, module: *Module) bool {
         module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 
@@ -1623,17 +1630,17 @@ pub const ModuleGraph = struct {
                 const content = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 const escaped = escapeJsString(arena_alloc, content) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 // source에는 값 표현식만 저장 (JSON 모듈과 동일 패턴)
                 // emitter에서 var asset_X = <source>; 형태로 출력
                 module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{escaped}) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
             },
             .dataurl => {
@@ -1641,11 +1648,11 @@ pub const ModuleGraph = struct {
                 const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 const encoded = base64Encode(arena_alloc, raw) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 const full_mime = mime.fromExtension(module.path);
                 const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
@@ -1655,7 +1662,7 @@ pub const ModuleGraph = struct {
 
                 module.source = std.fmt.allocPrint(arena_alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
             },
             .binary => {
@@ -1663,15 +1670,15 @@ pub const ModuleGraph = struct {
                 const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 const encoded = base64Encode(arena_alloc, raw) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 module.source = std.fmt.allocPrint(arena_alloc, "__toBinary(\"{s}\")", .{encoded}) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
             },
             .file, .copy => {
@@ -1679,7 +1686,7 @@ pub const ModuleGraph = struct {
                 const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
                     self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
                     module.state = .ready;
-                    return;
+                    return false;
                 };
                 const hash = contentHash(raw);
                 const ext = std.fs.path.extension(module.path);
@@ -1694,7 +1701,7 @@ pub const ModuleGraph = struct {
 
                 const output_name = applyAssetNamingPattern(arena_alloc, self.asset_names, name_without_ext, &hash, ext, dir) catch {
                     module.state = .ready;
-                    return;
+                    return false;
                 };
 
                 // RN scale variants (@2x, @3x): asset_registry 활성화 시에만 스캔.
@@ -1716,31 +1723,38 @@ pub const ModuleGraph = struct {
                 const url = if (self.public_path.len > 0)
                     std.fmt.allocPrint(arena_alloc, "{s}{s}", .{ self.public_path, output_name }) catch {
                         module.state = .ready;
-                        return;
+                        return false;
                     }
                 else
                     std.fmt.allocPrint(arena_alloc, "./{s}", .{output_name}) catch {
                         module.state = .ready;
-                        return;
+                        return false;
                     };
 
-                module.source = if (self.asset_registry) |registry_path|
-                    emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales) catch {
+                if (self.asset_registry) |registry_path| {
+                    // asset_registry 모드: source가 require() 호출을 포함 → 일반 JS 파이프라인
+                    // 으로 fall through하여 import_scanner가 ImportRecord를 추출하게 한다.
+                    // wrap_kind/exports_kind는 import_scanner가 .cjs로 자동 결정.
+                    module.source = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales) catch {
                         module.state = .ready;
-                        return;
-                    }
-                else
-                    std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
-                        module.state = .ready;
-                        return;
+                        return false;
                     };
+                    module.module_type = .javascript;
+                    module.loader = .javascript;
+                    return true;
+                }
+
+                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{url}) catch {
+                    module.state = .ready;
+                    return false;
+                };
             },
             .empty => {
                 module.source = "undefined";
             },
             else => {
                 module.state = .ready;
-                return;
+                return false;
             },
         }
 
@@ -1751,6 +1765,7 @@ pub const ModuleGraph = struct {
         module.wrap_kind = .cjs;
         module.side_effects = false;
         module.state = .ready;
+        return false;
     }
 
     fn addDiag(
