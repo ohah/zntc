@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
+import type { TranspileResult } from "../../../packages/shared/index";
 
 const EXAMPLES: { label: string; code: string }[] = [
   {
@@ -84,7 +85,7 @@ const DEFAULT_CODE = EXAMPLES[0].code;
 type TranspileFn = (
   source: string,
   options?: Record<string, unknown>,
-) => { code: string; map?: string };
+) => TranspileResult;
 
 interface Options {
   filename: string;
@@ -176,7 +177,9 @@ function doTranspile(
       jsxFragment: opts.jsxFragment || undefined,
       jsxImportSource: opts.jsxImportSource || undefined,
     });
-    return { output: result.code, sourcemap: result.map || "", error: "" };
+    // tsc 호환: 시맨틱 에러가 있어도 code는 함께 반환된다.
+    // result.errors가 있으면 에러 마커를 표시하되 변환 결과는 유지.
+    return { output: result.code, sourcemap: result.map || "", error: result.errors || "" };
   } catch (err) {
     return { output: "", sourcemap: "", error: String(err) };
   }

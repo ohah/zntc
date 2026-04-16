@@ -908,7 +908,7 @@ fn transpileFile(
     }
 
     // 시맨틱 에러가 있었으면 exit 1 (tsc 호환: output은 생성하되 에러 코드 반환)
-    if (result.has_errors) return error.TranspileFailed;
+    if (result.diagnostics.len > 0) return error.TranspileFailed;
 
     // --timing
     if (options.timing) {

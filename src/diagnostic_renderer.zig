@@ -22,8 +22,10 @@
 
 const std = @import("std");
 const ansi = @import("ansi.zig");
-const RichDiagnostic = @import("rich_diagnostic.zig").RichDiagnostic;
-const SourceInfo = @import("rich_diagnostic.zig").SourceInfo;
+const rich_diagnostic = @import("rich_diagnostic.zig");
+const RichDiagnostic = rich_diagnostic.RichDiagnostic;
+const SourceInfo = rich_diagnostic.SourceInfo;
+const Diagnostic = @import("diagnostic.zig").Diagnostic;
 
 pub const RenderOptions = struct {
     /// ANSI 컬러 코드 활성화 여부. isTty()로 자동 감지 가능.
@@ -110,6 +112,23 @@ pub fn render(
 
     // 빈 줄로 구분
     try writer.writeByte('\n');
+}
+
+/// 여러 Diagnostic을 순차로 렌더링한다. CLI/WASM/NAPI가 공용으로 쓰는 진입점.
+/// OwnedDiagnostic 등 `asDiagnostic()` 메서드가 있는 타입도 같은 함수로 받는다.
+/// 첫 에러 렌더 실패 시 루프를 중단한다 (writer가 망가진 상태).
+pub fn renderAll(
+    writer: anytype,
+    diagnostics: anytype,
+    source_info: SourceInfo,
+    file_path: []const u8,
+    options: RenderOptions,
+) !void {
+    for (diagnostics) |d| {
+        const diag: Diagnostic = if (@TypeOf(d) == Diagnostic) d else d.asDiagnostic();
+        const rich = rich_diagnostic.fromDiagnostic(diag, file_path);
+        try render(writer, rich, source_info, options);
+    }
 }
 
 /// 소스 코드 없이 간단하게 렌더링한다.

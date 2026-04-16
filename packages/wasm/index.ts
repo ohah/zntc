@@ -11,7 +11,7 @@
  */
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
-import type { TranspileOptions } from "../shared/index";
+import type { TranspileOptions, TranspileResult } from "../shared/index";
 import { encodeFlags, targetToUnsupported } from "../shared/index";
 
 // ─── WASM Instance ───
@@ -199,22 +199,25 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     const outPtr = Number(packed >> 32n);
     const outLen = Number(packed & 0xffffffffn);
 
+    // tsc 호환: 시맨틱 에러는 code와 함께 반환되므로 성공 경로에서도 확인.
+    // 핫패스(에러 없음)에서는 get_error_len 한 번만 호출 — 0이면 ptr/readString 스킵.
+    const errLen = wasm.get_error_len();
+    const errMsg = errLen === 0 ? "" : readString(wasm.get_error_ptr(), errLen);
+
     if (outPtr === 0) {
-      const errPtr = wasm.get_error_ptr();
-      const errLen = wasm.get_error_len();
-      const errMsg = errPtr ? readString(errPtr, errLen) : "unknown error";
-      throw new Error(`zts-wasm: ${errMsg}`);
+      throw new Error(`zts-wasm: ${errMsg || "unknown error"}`);
     }
 
     const raw = readString(outPtr, outLen);
     wasm.dealloc(outPtr, outLen);
 
     const nullIdx = options.sourcemap ? raw.indexOf("\0") : -1;
-    if (nullIdx !== -1) {
-      return { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) };
-    }
+    const result: TranspileResult = nullIdx !== -1
+      ? { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) }
+      : { code: raw };
 
-    return { code: raw };
+    if (errMsg) result.errors = errMsg;
+    return result;
   } finally {
     wasm.dealloc(srcPtr, srcLen);
     if (filePtr) wasm.dealloc(filePtr, fileLen);

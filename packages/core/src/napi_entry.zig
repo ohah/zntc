@@ -15,6 +15,9 @@ const zts_lib = @import("zts_lib");
 /// 죽는다 — 그 전에 ZTS 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
 pub const panic = zts_lib.crash_handler.panic;
 const transpile_mod = zts_lib.transpile;
+const rich_diagnostic = zts_lib.rich_diagnostic;
+const diagnostic_renderer = zts_lib.diagnostic_renderer;
+const napi_render_opts: diagnostic_renderer.RenderOptions = .{ .color = false, .unicode = true };
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const TrackedFileSet = zts_lib.server.TrackedFileSet;
@@ -169,6 +172,24 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
             return throwError(env, "failed to create sourcemap string");
         }
         _ = c.napi_set_named_property(env, js_result, "map", js_map);
+    }
+
+    // errors (선택적, tsc 호환): 시맨틱 에러가 있으면 CLI와 동일한 포맷으로
+    // 렌더링하여 string으로 노출. WASM 바인딩과 일치하는 schema.
+    if (result.diagnostics.len > 0) {
+        const source_info: rich_diagnostic.SourceInfo = .{
+            .source = source,
+            .line_offsets = result.line_offsets,
+        };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(native_alloc);
+        diagnostic_renderer.renderAll(buf.writer(native_alloc), result.diagnostics, source_info, filename, napi_render_opts) catch {};
+        if (buf.items.len > 0) {
+            var js_errors: c.napi_value = undefined;
+            if (c.napi_create_string_utf8(env, buf.items.ptr, buf.items.len, &js_errors) == c.napi_ok) {
+                _ = c.napi_set_named_property(env, js_result, "errors", js_errors);
+            }
+        }
     }
 
     return js_result;

@@ -10,11 +10,15 @@
 //!   4. 결과 읽기 후 dealloc()으로 해제
 
 const std = @import("std");
-const transpile_mod = @import("zts_lib").transpile;
+const zts_lib = @import("zts_lib");
+const transpile_mod = zts_lib.transpile;
 const TranspileOptions = transpile_mod.TranspileOptions;
-const Scanner = @import("zts_lib").lexer.Scanner;
-const Diagnostic = @import("zts_lib").diagnostic.Diagnostic;
-const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
+const Scanner = zts_lib.lexer.Scanner;
+const Diagnostic = zts_lib.diagnostic.Diagnostic;
+const OwnedDiagnostic = zts_lib.diagnostic.OwnedDiagnostic;
+const rich_diagnostic = zts_lib.rich_diagnostic;
+const diagnostic_renderer = zts_lib.diagnostic_renderer;
+const compat = zts_lib.transformer.transformer.TransformOptions.compat;
 
 /// Bun 스타일 crash report: WASM에는 signal이 없지만 panic은 여전히 터질 수 있다.
 /// 호스트 콘솔(WASI stderr)로 배너 + 이슈 URL 출력.
@@ -36,70 +40,30 @@ fn clearError() void {
     last_error_buf = null;
 }
 
-/// 파서/시맨틱 에러를 SWC/tsc 스타일로 포맷하여 last_error_buf에 저장.
-/// 형식: "<file>:<line>:<col>: error: <message>\n  <line_num> | <source_line>\n    | <caret>"
-fn formatErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const Diagnostic) void {
-    if (errors.len == 0) return;
+const wasm_render_opts: diagnostic_renderer.RenderOptions = .{ .color = false, .unicode = true };
+
+/// 진단 목록을 렌더링해 last_error_buf에 저장한다. Diagnostic(파서 콜백)과
+/// OwnedDiagnostic(transpile 성공 반환 시 시맨틱 에러) 양쪽 호출자 공용.
+fn bufferDiagnostics(
+    source: []const u8,
+    file_path: []const u8,
+    line_offsets: []const u32,
+    diagnostics: anytype,
+) void {
+    if (diagnostics.len == 0) return;
+    const source_info: rich_diagnostic.SourceInfo = .{ .source = source, .line_offsets = line_offsets };
     var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(wasm_alloc);
-    // 첫 번째 에러만 표시 — 후속 에러는 복구 과정의 노이즈인 경우가 많음
-    formatSingleError(writer, source, file_path, scanner, errors[0]) catch return;
+    diagnostic_renderer.renderAll(writer, diagnostics, source_info, file_path, wasm_render_opts) catch {};
     if (buf.items.len > 0) {
         if (last_error_buf) |old| wasm_alloc.free(old);
         last_error_buf = buf.toOwnedSlice(wasm_alloc) catch null;
     }
 }
 
-fn formatSingleError(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: Diagnostic) !void {
-    const lc = scanner.getLineColumn(err.span.start);
-    const line_num = lc.line + 1;
-    const col_num = lc.column + 1;
-
-    // 에러 헤더: "file:line:col: error: message"
-    const kind_label: []const u8 = switch (err.kind) {
-        .parse => "error",
-        .semantic => "error[semantic]",
-    };
-    if (err.found) |found| {
-        try writer.print("{s}:{d}:{d}: {s}: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, kind_label, err.message, found });
-    } else {
-        try writer.print("{s}:{d}:{d}: {s}: {s}\n", .{ file_path, line_num, col_num, kind_label, err.message });
-    }
-
-    // 해당 줄 텍스트 추출
-    const line_start = if (lc.line < scanner.line_offsets.items.len) scanner.line_offsets.items[lc.line] else 0;
-    var line_end = line_start;
-    while (line_end < source.len and source[line_end] != '\n' and source[line_end] != '\r') {
-        line_end += 1;
-    }
-    const line_text = source[line_start..line_end];
-
-    // 소스 줄 출력
-    try writer.print("  {d} | {s}\n", .{ line_num, line_text });
-
-    // 캐럿 위치 출력
-    var num_width: usize = 0;
-    var n = line_num;
-    while (n > 0) : (n /= 10) {
-        num_width += 1;
-    }
-    var i: usize = 0;
-    while (i < num_width + 2) : (i += 1) try writer.writeByte(' ');
-    try writer.writeAll("| ");
-    i = 0;
-    while (i < lc.column) : (i += 1) {
-        if (line_start + i < source.len and source[line_start + i] == '\t')
-            try writer.writeByte('\t')
-        else
-            try writer.writeByte(' ');
-    }
-    const err_len = if (err.span.end > err.span.start)
-        @min(err.span.end - err.span.start, line_end - (line_start + lc.column))
-    else
-        1;
-    i = 0;
-    while (i < err_len) : (i += 1) try writer.writeByte('^');
-    try writer.writeByte('\n');
+/// 파서 콜백 — 파서/시맨틱 에러를 last_error_buf에 저장.
+fn formatErrors(source: []const u8, file_path: []const u8, scanner: *const Scanner, errors: []const Diagnostic) void {
+    bufferDiagnostics(source, file_path, scanner.line_offsets.items, errors);
 }
 
 fn readStr(ptr: u32, len: u32) []const u8 {
@@ -187,7 +151,14 @@ export fn transpile(
         return 0;
     };
 
-    // 소스맵이 있으면 코드 뒤에 구분자(\0)와 소스맵을 붙여서 반환
+    // 시맨틱 에러는 result와 함께 반환된다 (tsc 호환). JS는 get_error_ptr로 조회.
+    if (result.diagnostics.len > 0) {
+        bufferDiagnostics(source, file_path, result.line_offsets, result.diagnostics);
+    }
+
+    // 소스맵이 있으면 코드 뒤에 구분자(\0)와 소스맵을 붙여서 반환.
+    // sourcemap 없는 경로는 result.code 포인터만 JS로 ownership transfer하고
+    // 나머지(diagnostics/line_offsets)는 여기서 해제해야 누수가 없다.
     const output = if (result.sourcemap) |sm| blk: {
         const total = result.code.len + 1 + sm.len;
         const combined = wasm_alloc.alloc(u8, total) catch {
@@ -200,7 +171,13 @@ export fn transpile(
         @memcpy(combined[result.code.len + 1 ..], sm);
         result.deinit(wasm_alloc);
         break :blk combined;
-    } else result.code;
+    } else blk: {
+        // code만 JS로 넘기고 부가 버퍼는 해제.
+        for (result.diagnostics) |d| d.deinit(wasm_alloc);
+        if (result.diagnostics.len > 0) wasm_alloc.free(result.diagnostics);
+        if (result.line_offsets.len > 0) wasm_alloc.free(result.line_offsets);
+        break :blk result.code;
+    };
 
     const ptr: u32 = @intFromPtr(output.ptr);
     const len: u32 = @intCast(output.len);
