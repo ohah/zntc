@@ -344,11 +344,10 @@ pub const ModuleGraph = struct {
         self.checkSelfReExport();
     }
 
-    /// `export { x } from 'y'`에서 alias/resolver 결과 source가 자기 자신이면
-    /// emit 단계에서 `exports_self.x` 자기 참조 getter가 만들어져 무한 재귀.
-    /// rolldown CIRCULAR_REEXPORT와 동일하게 빌드 단계에서 거부.
-    /// default re-export(`export default X` where X is self-import) 패턴은
-    /// 5.2 reexport_buf에서 이미 안전하게 skip하므로 named re-export만 대상.
+    /// Self-cycle named re-export 진단. alias/onResolve가 source를 자기 자신으로
+    /// redirect하면 emit이 `exports_self.X` 자기 참조 getter를 생성해 평가 시 무한
+    /// 재귀. rolldown CIRCULAR_REEXPORT처럼 빌드 단계에서 거부. default re-export는
+    /// 별도 경로에서 이미 안전 처리되므로 제외.
     fn checkSelfReExport(self: *ModuleGraph) void {
         for (self.modules.items, 0..) |*m, i| {
             const self_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
@@ -358,7 +357,15 @@ pub const ModuleGraph = struct {
                 const rec_idx = eb.import_record_index orelse continue;
                 if (rec_idx >= m.import_records.len) continue;
                 if (m.import_records[rec_idx].resolved != self_idx) continue;
-                self.addDiag(.circular_reexport, .@"error", m.path, eb.local_span, .link, "Re-export source resolves to the module itself (self-cycle)", "Check resolver alias / plugin onResolve — the import source must point to a different module.");
+                self.addDiag(
+                    .circular_reexport,
+                    .@"error",
+                    m.path,
+                    eb.local_span,
+                    .link,
+                    "Re-export source resolves to the module itself (self-cycle)",
+                    "Check resolver alias / plugin onResolve — the import source must point to a different module.",
+                );
             }
         }
     }
