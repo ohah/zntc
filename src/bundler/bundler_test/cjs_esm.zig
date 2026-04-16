@@ -1558,6 +1558,72 @@ test "CJS: export type re-export + module.exports stays CJS (regression)" {
     try std.testing.expect(found);
 }
 
+test "ESM re-export: named re-export from CJS binds via require getter (#1425)" {
+    // RN AssetRegistry 패턴: 래핑된 source의 exports를 getter가 직접 참조해야
+    // ReferenceError 회피.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "registry.js",
+        \\const assets = [];
+        \\function registerAsset(asset) { return assets.push(asset); }
+        \\function getAssetByID(id) { return assets[id - 1]; }
+        \\module.exports = { registerAsset, getAssetByID };
+    );
+    try writeFile(tmp.dir, "AssetRegistry.js",
+        \\export { registerAsset, getAssetByID } from './registry.js';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { registerAsset } from './AssetRegistry.js';
+        \\registerAsset({ name: 'test' });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __export getter가 require_registry().X 패턴을 사용해야 함 (자유변수 참조 X)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().registerAsset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_registry().getAssetByID") != null);
+}
+
+test "ESM re-export: named re-export from ESM binds via exports getter (#1425)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "source.js",
+        \\export function helper() { return 42; }
+    );
+    try writeFile(tmp.dir, "barrel.js",
+        \\export { helper } from './source.js';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { helper } from './barrel.js';
+        \\console.log(helper());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM 래핑 source: exports_source.helper 패턴
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_source.helper") != null);
+}
+
 test "CJS: Flow export type alias + module.exports stays CJS (regression)" {
     // export type Foo = ... (type alias) + module.exports
     var tmp = std.testing.tmpDir(.{});
