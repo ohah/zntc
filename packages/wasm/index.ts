@@ -212,9 +212,8 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     wasm.dealloc(outPtr, outLen);
 
     const nullIdx = options.sourcemap ? raw.indexOf("\0") : -1;
-    const result: TranspileResult = nullIdx !== -1
-      ? { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) }
-      : { code: raw };
+    const result: TranspileResult =
+      nullIdx !== -1 ? { code: raw.slice(0, nullIdx), map: raw.slice(nullIdx + 1) } : { code: raw };
 
     if (errMsg) result.errors = errMsg;
     return result;
