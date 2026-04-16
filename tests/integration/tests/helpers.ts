@@ -74,6 +74,9 @@ export async function createReactStubFixture(
 
 /// LOOKUP_ROOTS에서 패키지를 찾아 fixture dir로 symlink. 패키지 단위 병렬 실행.
 /// plugin host의 dynamic import + ZTS 번들 resolve 양쪽에서 사용.
+///
+/// symlink 자체는 존재하지 않는 target으로도 생성되므로, 먼저 target 존재를
+/// 확인한 뒤에 심볼릭 링크를 만든다 (broken symlink 방지).
 export async function linkNodeModules(dir: string, packages: string[]): Promise<void> {
   const nmDir = join(dir, "node_modules");
   await mkdir(nmDir, { recursive: true });
@@ -82,8 +85,14 @@ export async function linkNodeModules(dir: string, packages: string[]): Promise<
   await Promise.all(
     packages.map(async (pkg) => {
       for (const root of LOOKUP_ROOTS) {
+        const target = join(root, pkg);
         try {
-          await symlink(join(root, pkg), join(nmDir, pkg));
+          statSync(join(target, "package.json"));
+        } catch {
+          continue;
+        }
+        try {
+          await symlink(target, join(nmDir, pkg));
           return;
         } catch {}
       }

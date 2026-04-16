@@ -89,6 +89,18 @@ pub const ResolveCache = struct {
         };
     }
 
+    /// 플랫폼별 기본 main_fields 순서. 사용자가 --main-fields를 지정하지 않으면 적용.
+    /// esbuild/rolldown 호환: browser는 "browser" 필드(string)로 main을 교체해야 debug 같은
+    /// 패키지가 올바르게 브라우저 빌드로 해석된다.
+    fn defaultMainFieldsFor(platform: Platform) []const []const u8 {
+        return switch (platform) {
+            .browser => &.{ "browser", "module", "main" },
+            .node => &.{ "main", "module" },
+            .neutral => &.{ "main", "module" },
+            .react_native => &.{ "react-native", "browser", "module", "main" },
+        };
+    }
+
     /// 기본 조건에 커스텀 조건을 병합한 배열을 생성한다.
     /// 커스텀 조건은 "default" 앞에 삽입 (esbuild 동작: 커스텀 조건이 default보다 우선).
     fn buildConditions(allocator: std.mem.Allocator, base: []const []const u8, custom: []const []const u8) ![]const []const u8 {
@@ -144,7 +156,7 @@ pub const ResolveCache = struct {
         r.fallback = options.fallback;
         r.block_list = options.block_list;
         r.custom_extensions = options.resolve_extensions;
-        r.main_fields = options.main_fields;
+        r.main_fields = if (options.main_fields.len == 0) defaultMainFieldsFor(platform) else options.main_fields;
         r.node_paths = options.node_paths;
         const has_custom = custom_conditions.len > 0;
         const cond_import = if (has_custom)
