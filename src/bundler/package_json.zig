@@ -96,8 +96,9 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
 
     const obj = root.object;
 
-    // "browser" 필드: object 형태만 browser_map으로 저장.
-    // string 형태("browser": "lib/browser.js")는 main 대체이므로 별도 처리 불필요 (exports/main에서 커버).
+    // "browser" 필드: object 형태만 browser_map으로 저장 (경로별 매핑/비활성화용).
+    // string 형태("browser": "lib/browser.js")는 main 대체로 사용 — resolveByMainFields가
+    // main_fields 순서에 따라 getStr(obj, "browser")로 읽으므로 별도 필드 저장 불필요.
     const browser_map: ?std.json.Value = if (obj.get("browser")) |b| switch (b) {
         .object => b,
         else => null,
