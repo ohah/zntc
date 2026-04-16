@@ -25,6 +25,31 @@
 
 const std = @import("std");
 
+/// package.json 필드명 / exports conditions 문자열 상수.
+/// main_fields 순서 지정과 conditional exports 해석 양쪽에서 재사용된다.
+/// 타입이 아닌 값이 typo되어도 컴파일 에러가 나지 않는 문제를 방지하기 위해
+/// 리터럴 대신 이 상수를 쓴다.
+pub const field = struct {
+    pub const name: []const u8 = "name";
+    pub const main: []const u8 = "main";
+    pub const module: []const u8 = "module";
+    pub const browser: []const u8 = "browser";
+    pub const react_native: []const u8 = "react-native";
+    pub const type_: []const u8 = "type";
+    pub const exports_: []const u8 = "exports";
+    pub const imports_: []const u8 = "imports";
+};
+
+pub const condition = struct {
+    pub const import: []const u8 = "import";
+    pub const require: []const u8 = "require";
+    pub const default: []const u8 = "default";
+    pub const node: []const u8 = "node";
+    pub const browser: []const u8 = "browser";
+    pub const module: []const u8 = "module";
+    pub const react_native: []const u8 = "react-native";
+};
+
 pub const PackageJson = struct {
     name: ?[]const u8 = null,
     main: ?[]const u8 = null,
@@ -58,7 +83,7 @@ pub const PackageJson = struct {
     /// package.json이 ESM 패키지인지 판별.
     pub fn isModule(self: *const PackageJson) bool {
         if (self.type_field) |t| {
-            return std.mem.eql(u8, t, "module");
+            return std.mem.eql(u8, t, field.module);
         }
         return false;
     }
@@ -98,20 +123,20 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
 
     // "browser" 필드: object 형태만 browser_map으로 저장 (경로별 매핑/비활성화용).
     // string 형태("browser": "lib/browser.js")는 main 대체로 사용 — resolveByMainFields가
-    // main_fields 순서에 따라 getStr(obj, "browser")로 읽으므로 별도 필드 저장 불필요.
-    const browser_map: ?std.json.Value = if (obj.get("browser")) |b| switch (b) {
+    // main_fields 순서에 따라 getStr(obj, field.browser)로 읽으므로 별도 필드 저장 불필요.
+    const browser_map: ?std.json.Value = if (obj.get(field.browser)) |b| switch (b) {
         .object => b,
         else => null,
     } else null;
 
     return .{
         .pkg = .{
-            .name = getStr(obj, "name"),
-            .main = getStr(obj, "main"),
-            .module = getStr(obj, "module"),
-            .type_field = getStr(obj, "type"),
-            .exports = obj.get("exports"),
-            .imports = obj.get("imports"),
+            .name = getStr(obj, field.name),
+            .main = getStr(obj, field.main),
+            .module = getStr(obj, field.module),
+            .type_field = getStr(obj, field.type_),
+            .exports = obj.get(field.exports_),
+            .imports = obj.get(field.imports_),
             .browser_map = browser_map,
             .side_effects = parseSideEffects(obj, allocator),
         },
