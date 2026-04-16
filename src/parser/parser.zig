@@ -1443,7 +1443,7 @@ pub const Parser = struct {
                 return self.isSimpleArrowParams(node.data.unary.operand);
             },
             // 콤마 리스트: (a, b, c) → 각 요소 확인
-            .sequence_expression => {
+            .sequence_expression, .formal_parameters => {
                 const list = node.data.list;
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {

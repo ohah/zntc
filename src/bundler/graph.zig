@@ -76,6 +76,10 @@ pub const ModuleGraph = struct {
     /// 엔트리 포인트 기준 디렉토리. [dir] 패턴 치환에 사용.
     /// entry point들의 공통 부모 디렉토리 (esbuild --outbase에 해당).
     entry_dir: []const u8 = "",
+    /// Metro `projectRoot` 호환 — asset httpServerLocation 계산의 기준점.
+    /// 미설정 시 build() 호출 중 entry_dir에서 위로 올라가며 첫 package.json
+    /// 위치를 자동 감지. RN CLI의 기본 동작과 동일.
+    project_root: []const u8 = "",
     /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
     inject_files: []const []const u8 = &.{},
     /// 플러그인 배열. bundler에서 전파.
@@ -155,6 +159,10 @@ pub const ModuleGraph = struct {
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        }
+        // project_root 자동 감지 (미지정 시): entry_dir에서 위로 올라가며 첫 package.json
+        if (self.project_root.len == 0 and self.entry_dir.len > 0) {
+            self.project_root = findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
         }
 
         // --inject 파일을 먼저 모듈 그래프에 추가
@@ -389,6 +397,9 @@ pub const ModuleGraph = struct {
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
+        }
+        if (self.project_root.len == 0 and self.entry_dir.len > 0) {
+            self.project_root = findProjectRoot(self.allocator, self.entry_dir) catch self.entry_dir;
         }
 
         // --inject 파일을 먼저 모듈 그래프에 추가
@@ -1761,7 +1772,7 @@ pub const ModuleGraph = struct {
                     // loader=.javascript는 호출자의 fall-through 신호.
                     // import_scanner가 source의 require()를 ImportRecord로 추출하고
                     // wrap_kind/exports_kind를 .cjs로 자동 결정한다.
-                    module.source = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales) catch {
+                    module.source = emitAssetRegistryCall(arena_alloc, registry_path, module.path, raw, &hash, ext, name_without_ext, url, scales_result.scales, self.project_root) catch {
                         module.state = .ready;
                         return;
                     };
@@ -1922,6 +1933,26 @@ fn applyAssetNamingPattern(
     return buf.toOwnedSlice(allocator);
 }
 
+/// 디렉토리에서 위로 올라가며 첫 `package.json` 위치를 찾는다.
+/// Metro/RN CLI의 projectRoot 자동 감지와 동일 — 모노레포의 packages/app/처럼
+/// entry가 깊은 곳에 있어도 그 패키지의 루트를 정확히 찾아낸다. 발견 못 하면
+/// caller 입력(start_dir)을 fallback으로 반환.
+/// 반환 slice는 입력 start_dir의 prefix이므로 caller가 free하지 않는다.
+fn findProjectRoot(alloc: std.mem.Allocator, start_dir: []const u8) ![]const u8 {
+    var dir: []const u8 = start_dir;
+    while (dir.len > 0) {
+        const candidate = try std.fs.path.join(alloc, &.{ dir, "package.json" });
+        defer alloc.free(candidate);
+        if (std.fs.cwd().access(candidate, .{})) |_| {
+            return dir;
+        } else |_| {}
+        const parent = std.fs.path.dirname(dir) orelse break;
+        if (parent.len == dir.len) break; // 루트 (e.g. "/")
+        dir = parent;
+    }
+    return start_dir;
+}
+
 /// Metro AssetRegistry.registerAsset() 호출식을 생성.
 /// RN 런타임은 이 객체의 키를 정확히 요구하므로 shape를 Metro 1:1로 맞춘다.
 fn emitAssetRegistryCall(
@@ -1934,6 +1965,7 @@ fn emitAssetRegistryCall(
     name_without_ext: []const u8,
     url: []const u8,
     scales: []const u32,
+    project_root: []const u8,
 ) ![]const u8 {
     const asset_meta = @import("asset_meta.zig");
     const dims = asset_meta.extractDimensions(bytes);
@@ -1942,7 +1974,16 @@ fn emitAssetRegistryCall(
     const asset_type = asset_meta.AssetType.fromExtension(ext);
     const type_name = asset_type.typeName(ext);
 
-    const http_loc_raw = std.fs.path.dirname(url) orelse ".";
+    // Metro 호환: httpServerLocation = `/assets/` + projectRoot 기준 상대 경로의 dirname.
+    // RN 런타임이 `<dev-server>:<port><httpServerLocation>/<name>.<hash>.<type>` 형태로
+    // URL을 만들기 때문에 `.`만 있으면 dev server가 파일을 찾지 못한다 (#1428).
+    const http_loc_raw = blk: {
+        if (project_root.len == 0) break :blk std.fs.path.dirname(url) orelse ".";
+        const rel = std.fs.path.relative(alloc, project_root, abs_path) catch break :blk ".";
+        defer alloc.free(rel);
+        const rel_dir = std.fs.path.dirname(rel) orelse ".";
+        break :blk std.fmt.allocPrint(alloc, "/assets/{s}", .{rel_dir}) catch ".";
+    };
     const fs_dir_raw = std.fs.path.dirname(abs_path) orelse ".";
 
     // 사용자 경로/식별자에 따옴표·역슬래시·개행이 포함되면 JSON 파싱이 깨지므로 escape 필수.
@@ -1952,8 +1993,19 @@ fn emitAssetRegistryCall(
     const name_esc = try escapeJsString(alloc, name_without_ext);
     const registry_esc = try escapeJsString(alloc, registry_path);
 
-    var hash_hex: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&hash_hex, "{x:0>16}", .{std.mem.readInt(u64, hash, .big)}) catch unreachable;
+    // Metro 호환: asset hash는 raw bytes의 MD5 32자 hex (Metro `Assets.js`의 hashFiles 결과).
+    // RN 런타임/빌드 시스템이 캐시 키, 디스크 자산명 등에서 32자를 가정하므로
+    // 8byte wyhash hex로는 충돌 확률 + Metro 호환성 모두 부족 (#1428).
+    // 인자의 hash(`*const [8]u8`)는 기존 caller 호환을 위해 남겨두지만 미사용.
+    _ = hash;
+    var md5_digest: [16]u8 = undefined;
+    std.crypto.hash.Md5.hash(bytes, &md5_digest, .{});
+    var hash_hex: [32]u8 = undefined;
+    const hex_chars = "0123456789abcdef";
+    for (md5_digest, 0..) |b, i| {
+        hash_hex[i * 2] = hex_chars[b >> 4];
+        hash_hex[i * 2 + 1] = hex_chars[b & 0x0F];
+    }
 
     // scales 배열 직렬화. 일반적으로 [1,2,3] 정도라 스택 버퍼로 충분.
     var scales_stack_buf: [128]u8 = undefined;
@@ -2210,4 +2262,92 @@ fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord
             record.glob_matches = expandGlob(allocator, source_dir, record.specifier) catch &.{};
         }
     }
+}
+
+// ============================================================
+// findProjectRoot: 패키지 매니저별 디렉토리 레이아웃 단위 테스트
+// ============================================================
+
+const test_helpers = @import("test_helpers.zig");
+const writeFile = test_helpers.writeFile;
+const absPath = test_helpers.absPath;
+
+test "findProjectRoot: 일반 npm — src/index.ts → root는 package.json 위치" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{}");
+    try writeFile(tmp.dir, "src/index.ts", "");
+
+    const start = try absPath(&tmp, "src");
+    defer std.testing.allocator.free(start);
+    const expected = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(expected);
+
+    const root = try findProjectRoot(std.testing.allocator, start);
+    try std.testing.expectEqualStrings(expected, root);
+}
+
+test "findProjectRoot: npm workspace — packages/app/index.ts → app의 package.json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"workspaces\": [\"packages/*\"]}");
+    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
+    try writeFile(tmp.dir, "packages/app/index.ts", "");
+
+    const start = try absPath(&tmp, "packages/app");
+    defer std.testing.allocator.free(start);
+
+    const root = try findProjectRoot(std.testing.allocator, start);
+    try std.testing.expectEqualStrings(start, root);
+}
+
+test "findProjectRoot: pnpm workspace — packages/app/src/index.ts → app의 package.json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n");
+    try writeFile(tmp.dir, "package.json", "{}");
+    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
+    try writeFile(tmp.dir, "packages/app/src/index.ts", "");
+
+    const start = try absPath(&tmp, "packages/app/src");
+    defer std.testing.allocator.free(start);
+    const expected = try absPath(&tmp, "packages/app");
+    defer std.testing.allocator.free(expected);
+
+    const root = try findProjectRoot(std.testing.allocator, start);
+    try std.testing.expectEqualStrings(expected, root);
+}
+
+test "findProjectRoot: bun workspace — packages/app/src/index.ts → app의 package.json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{\"workspaces\": [\"packages/*\"]}");
+    try writeFile(tmp.dir, "bun.lockb", "");
+    try writeFile(tmp.dir, "packages/app/package.json", "{\"name\": \"app\"}");
+    try writeFile(tmp.dir, "packages/app/src/index.ts", "");
+
+    const start = try absPath(&tmp, "packages/app/src");
+    defer std.testing.allocator.free(start);
+    const expected = try absPath(&tmp, "packages/app");
+    defer std.testing.allocator.free(expected);
+
+    const root = try findProjectRoot(std.testing.allocator, start);
+    try std.testing.expectEqualStrings(expected, root);
+}
+
+test "findProjectRoot: yarn pnp — .pnp.cjs + package.json 단일 패키지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json", "{}");
+    try writeFile(tmp.dir, ".pnp.cjs", "");
+    try writeFile(tmp.dir, ".yarnrc.yml", "nodeLinker: pnp\n");
+    try writeFile(tmp.dir, "src/index.ts", "");
+
+    const start = try absPath(&tmp, "src");
+    defer std.testing.allocator.free(start);
+    const expected = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(expected);
+
+    const root = try findProjectRoot(std.testing.allocator, start);
+    try std.testing.expectEqualStrings(expected, root);
 }

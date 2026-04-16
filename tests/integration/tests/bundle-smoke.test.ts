@@ -1,5 +1,12 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun, runZts, runZtsInDir, createFixture, ZTS_BIN } from "./helpers";
+import {
+  bundleAndRun,
+  runZts,
+  runZtsInDir,
+  createFixture,
+  createRNFixture,
+  ZTS_BIN,
+} from "./helpers";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -1731,7 +1738,7 @@ describe("에셋 로더 + RN 프리셋", () => {
   });
 
   test("--platform=react-native 시 .png 자동 처리", async () => {
-    const fixture = await createFixture({
+    const fixture = await createRNFixture({
       "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
     });
     cleanup = fixture.cleanup;
@@ -1747,7 +1754,7 @@ describe("에셋 로더 + RN 프리셋", () => {
   });
 
   test("--platform=react-native 사용자 로더 우선", async () => {
-    const fixture = await createFixture({
+    const fixture = await createRNFixture({
       "entry.ts": `const icon = require('./icon.png');\nconsole.log(icon);`,
     });
     cleanup = fixture.cleanup;
@@ -1765,7 +1772,7 @@ describe("에셋 로더 + RN 프리셋", () => {
   });
 
   test("--platform=react-native 비이미지 에셋 (.mp3) 자동 처리", async () => {
-    const fixture = await createFixture({
+    const fixture = await createRNFixture({
       "entry.ts": `const audio = require('./sound.mp3');\nconsole.log(audio);`,
     });
     cleanup = fixture.cleanup;
