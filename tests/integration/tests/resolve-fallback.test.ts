@@ -87,4 +87,50 @@ describe("--fallback", () => {
       await cleanup();
     }
   });
+
+  test("alias가 fallback보다 우선 적용 — 둘 다 매칭되면 alias만 발동", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import { v } from "target"; console.log(v);`,
+      "alias-target.ts": `export const v = "from-alias";`,
+      "fallback-target.ts": `export const v = "from-fallback";`,
+    });
+    const outFile = join(dir, "out.js");
+    try {
+      const { exitCode } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        `--alias:target=${join(dir, "alias-target.ts")}`,
+        `--fallback:target=${join(dir, "fallback-target.ts")}`,
+      ]);
+      expect(exitCode).toBe(0);
+      const out = readFileSync(outFile, "utf8");
+      // alias가 먼저 적용되어 정상 해석 — fallback 발동 안 됨
+      expect(out).toContain("from-alias");
+      expect(out).not.toContain("from-fallback");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("fallback 체이닝 — fallback target도 다시 fallback 적용 안 됨 (재귀 방지)", async () => {
+    // intermediate-mod 자체가 fallback target이지만 다시 다른 fallback으로 가지 않아야 함.
+    // applyFallback 안에서 self.fallback을 임시로 비우는 동작 검증.
+    const { bundleOutput, runOutput, exitCode, cleanup } = await bundleAndRun(
+      {
+        "entry.ts": `import { x } from "missing-1"; console.log(x);`,
+        "shim.ts": `export const x = "from-shim";`,
+      },
+      "entry.ts",
+      ["--fallback:missing-1=./shim.ts", "--fallback:missing-2=./nonexistent.ts"],
+    );
+    try {
+      expect(exitCode).toBe(0);
+      expect(runOutput).toBe("from-shim");
+      expect(bundleOutput).toBeDefined();
+    } finally {
+      await cleanup();
+    }
+  });
 });

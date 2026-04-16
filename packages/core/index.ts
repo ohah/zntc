@@ -214,7 +214,14 @@ interface BuildOptionsCommon {
   jsxFactory?: string;
   jsxFragment?: string;
   jsxImportSource?: string;
+  /** 컴파일 타임 상수 치환 (esbuild `define` 호환).
+   * 키는 식별자 또는 `obj.prop` 같은 멤버 표현식, 값은 JS 표현식 문자열.
+   * 예: `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
   define?: Record<string, string>;
+  /** Import 경로 별칭 (esbuild `alias` 호환).
+   * 일반 해석 **전에 무조건** 치환됨 — 설치된 실제 패키지가 있어도 무시.
+   * Optional shim 용도로는 `fallback`을 쓸 것 (실패 시에만 적용).
+   * 예: `{ react: "preact/compat", "react-dom": "preact/compat" }` */
   alias?: Record<string, string>;
   /** Fallback resolution — 일반 해석이 **실패했을 때만** 적용됨 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
    * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.

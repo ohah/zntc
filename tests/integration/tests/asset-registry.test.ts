@@ -187,4 +187,83 @@ describe("--asset-registry", () => {
       await cleanup();
     }
   });
+
+  test("손상된 PNG 헤더 — width/height=0이지만 빌드는 성공", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import logo from "./broken.png"; console.log(logo);`,
+    });
+    // PNG signature 없이 임의 바이트 — extractDimensions가 null 반환 → width/height=0
+    writeFileSync(join(dir, "broken.png"), Buffer.from("not a real png file content"));
+
+    const outFile = join(dir, "out.js");
+    try {
+      const { exitCode } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--platform=react-native",
+        "--loader:.png=file",
+      ]);
+      expect(exitCode).toBe(0);
+      const bundle = readFileSync(outFile, "utf8");
+      // 손상된 헤더라도 registerAsset 호출은 emit. 단 dimension은 0.
+      expect(bundle).toContain("registerAsset");
+      expect(bundle).toContain('"width": 0');
+      expect(bundle).toContain('"height": 0');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("확장자 대소문자 — .PNG도 file loader 매칭", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import logo from "./LOGO.PNG"; console.log(logo);`,
+    });
+    writeFileSync(join(dir, "LOGO.PNG"), PNG_1x1);
+
+    const outFile = join(dir, "out.js");
+    try {
+      const { exitCode } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--platform=react-native",
+        "--loader:.PNG=file",
+      ]);
+      expect(exitCode).toBe(0);
+      const bundle = readFileSync(outFile, "utf8");
+      // .PNG 로더가 매칭되어 registerAsset emit (react-native 패키지 require 자체는
+      // fixture에 RN 없어도 emit은 됨 — 대소문자 매칭 검증 목적이므로 OK)
+      expect(bundle).toContain("registerAsset");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("base 없이 @2x만 있으면 base 모듈 import는 실패", async () => {
+    const { dir, cleanup } = await createFixture({
+      "entry.ts": `import logo from "./assets/logo.png"; console.log(logo);`,
+      "assets/.gitkeep": "",
+    });
+    // base는 없고 @2x만
+    writeFileSync(join(dir, "assets/logo@2x.png"), PNG_1x1);
+
+    const outFile = join(dir, "out.js");
+    try {
+      const { stderr } = await runZts([
+        "--bundle",
+        join(dir, "entry.ts"),
+        "-o",
+        outFile,
+        "--platform=react-native",
+        "--loader:.png=file",
+      ]);
+      // base 파일 없으니 resolve 자체가 실패해야 함
+      expect(stderr.toLowerCase()).toContain("cannot resolve");
+    } finally {
+      await cleanup();
+    }
+  });
 });

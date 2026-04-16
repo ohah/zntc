@@ -1915,21 +1915,30 @@ fn emitAssetRegistryCall(
     const asset_type = asset_meta.AssetType.fromExtension(ext);
     const type_name = asset_type.typeName(ext);
 
-    const http_loc = std.fs.path.dirname(url) orelse ".";
-    const fs_dir = std.fs.path.dirname(abs_path) orelse ".";
+    const http_loc_raw = std.fs.path.dirname(url) orelse ".";
+    const fs_dir_raw = std.fs.path.dirname(abs_path) orelse ".";
+
+    // 사용자 경로/식별자에 따옴표·역슬래시·개행이 포함되면 JSON 파싱이 깨지므로 escape 필수.
+    // RN/Metro에서 파일명에 특수문자 있을 가능성은 낮지만 안전하게 처리.
+    const http_loc = try escapeJsString(alloc, http_loc_raw);
+    const fs_dir = try escapeJsString(alloc, fs_dir_raw);
+    const name_esc = try escapeJsString(alloc, name_without_ext);
+    const registry_esc = try escapeJsString(alloc, registry_path);
 
     var hash_hex: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&hash_hex, "{x:0>16}", .{std.mem.readInt(u64, hash, .big)}) catch unreachable;
 
-    // scales 배열 직렬화
-    var scales_buf: std.ArrayList(u8) = .empty;
-    defer scales_buf.deinit(alloc);
-    try scales_buf.append(alloc, '[');
+    // scales 배열 직렬화. 일반적으로 [1,2,3] 정도라 스택 버퍼로 충분.
+    var scales_stack_buf: [128]u8 = undefined;
+    var scales_stream = std.io.fixedBufferStream(&scales_stack_buf);
+    const sw = scales_stream.writer();
+    sw.writeByte('[') catch return error.OutOfMemory;
     for (scales, 0..) |s, i| {
-        if (i > 0) try scales_buf.appendSlice(alloc, ", ");
-        try std.fmt.format(scales_buf.writer(alloc), "{d}", .{s});
+        if (i > 0) sw.writeAll(", ") catch return error.OutOfMemory;
+        std.fmt.format(sw, "{d}", .{s}) catch return error.OutOfMemory;
     }
-    try scales_buf.append(alloc, ']');
+    sw.writeByte(']') catch return error.OutOfMemory;
+    const scales_str = scales_stream.getWritten();
 
     return try std.fmt.allocPrint(alloc,
         \\module.exports = require("{s}").registerAsset({{
@@ -1943,7 +1952,7 @@ fn emitAssetRegistryCall(
         \\  "type": "{s}",
         \\  "fileSystemLocation": "{s}"
         \\}})
-    , .{ registry_path, http_loc, width, height, scales_buf.items, &hash_hex, name_without_ext, type_name, fs_dir });
+    , .{ registry_esc, http_loc, width, height, scales_str, &hash_hex, name_esc, type_name, fs_dir });
 }
 
 const ScaleCollection = struct {
@@ -1971,6 +1980,7 @@ fn collectScaleVariants(
     defer variants.deinit(alloc);
 
     // @2x부터 @4x까지 검사 (RN 실전 최대치). @1x 명시는 base와 중복이므로 무시.
+    // stat으로 존재 여부 먼저 확인 — 없으면 readFileAlloc의 큰 alloc + read 시도 회피.
     var scale: u32 = 2;
     while (scale <= 4) : (scale += 1) {
         const variant_name = try std.fmt.allocPrint(alloc, "{s}@{d}x{s}", .{ name_without_ext, scale, ext });
@@ -1978,6 +1988,7 @@ fn collectScaleVariants(
         const variant_path = try std.fs.path.join(alloc, &.{ fs_dir, variant_name });
         defer alloc.free(variant_path);
 
+        std.fs.cwd().access(variant_path, .{}) catch continue;
         const raw = std.fs.cwd().readFileAlloc(alloc, variant_path, 100 * 1024 * 1024) catch continue;
         const hash = contentHash(raw);
         const variant_basename = try std.fmt.allocPrint(alloc, "{s}@{d}x", .{ name_without_ext, scale });
