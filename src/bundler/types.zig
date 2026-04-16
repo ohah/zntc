@@ -397,6 +397,8 @@ pub const BundlerDiagnostic = struct {
         missing_export,
         /// 순환 참조 감지
         circular_dependency,
+        /// re-export source가 자기 자신으로 resolve (alias/plugin 잘못)
+        circular_reexport,
         /// 파일 파싱 실패
         parse_error,
         /// 파일 읽기 실패
