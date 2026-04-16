@@ -40,8 +40,8 @@ Rollup/Vite 어댑터: `vitePlugin({...})` (모든 훅 async 지원).
 1. 작업 단위 작게 (하나의 PR = 하나의 기능)
 2. 독립 작업은 서브에이전트로 병렬
 3. main 직접 push 금지 — feature branch → PR → merge
-4. PR 후 `/simplify` 필수 (파일 간 상호작용까지 검토)
-5. 구현 전 Test262/유닛 테스트 먼저
+4. PR 올리기 **전** `/simplify` 필수 (파일 간 상호작용까지 검토 → 이후 PR 생성)
+5. `gh pr create` 시 `--label`, `--assignee` 항상 지정
 6. Zig 초보자에게 설명 포함
 
 ## Memory ownership
