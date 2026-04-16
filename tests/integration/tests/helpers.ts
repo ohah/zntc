@@ -1,11 +1,24 @@
 import { spawn } from "bun";
 import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 export const ZTS_BIN = join(PROJECT_ROOT, "zig-out/bin/zts");
 const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, "../node_modules");
+const LOOKUP_ROOTS = [join(PROJECT_ROOT, "node_modules"), INTEGRATION_NODE_MODULES];
+
+/// PROJECT_ROOT/node_modules 우선, tests/integration/node_modules fallback으로 패키지 존재 검사.
+export function hasPackage(name: string): boolean {
+  for (const root of LOOKUP_ROOTS) {
+    try {
+      statSync(join(root, name, "package.json"));
+      return true;
+    } catch {}
+  }
+  return false;
+}
 
 export async function createFixture(
   files: Record<string, string>,
@@ -41,24 +54,14 @@ export async function createRNFixture(
   });
 }
 
-const REACT_STUB =
-  "exports.useState = function(init) { return [init, function() {}]; };\n" +
-  "exports.useEffect = function() {};\n" +
-  "exports.useMemo = function(fn) { return fn(); };\n" +
-  "exports.useRef = function(init) { return { current: init }; };\n" +
-  "exports.useCallback = function(fn) { return fn; };\n" +
-  "exports.useContext = function() { return null; };\n" +
-  "exports.useReducer = function(_, init) { return [init, function() {}]; };\n" +
-  "exports.createElement = function() { return {}; };\n" +
-  "exports.createContext = function() { return { Provider: null, Consumer: null }; };\n" +
-  "exports.Fragment = Symbol('Fragment');\n" +
-  "exports.forwardRef = function(fn) { return fn; };\n" +
-  "exports.memo = function(c) { return c; };\n" +
-  "module.exports.default = exports;\n";
+// fixture 파일에 영구 commit된 stub을 single source로 사용 (TanStack 테스트와 공유).
+const REACT_STUB = readFileSync(
+  resolve(import.meta.dir, "fixtures/rsc-directives/node_modules/react/index.js"),
+  "utf-8",
+);
 
-/// `react`만 stub으로 필요한 fixture (RSC, sourcemap 등). 실제 react 패키지를 install
-/// 하지 않아도 import만 resolve되면 충분한 케이스용. fixture에 더 많은 패키지가 필요하면
-/// `linkNodeModules`로 PROJECT_ROOT의 node_modules를 symlink해 사용한다.
+/// react import만 resolve되면 충분한 케이스(RSC, sourcemap 등)용 react stub fixture.
+/// 더 많은 패키지가 필요하면 linkNodeModules 활용.
 export async function createReactStubFixture(
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
@@ -69,26 +72,23 @@ export async function createReactStubFixture(
   });
 }
 
-/// 실제 패키지를 fixture dir로 symlink. plugin host(Node)가 직접 dynamic import할 때
-/// (예: Vue/Svelte plugin이 `vue/compiler-sfc`를 가져올 때) 사용.
-/// PROJECT_ROOT/node_modules 우선, 없으면 tests/integration/node_modules 시도.
-/// emotion 같은 transitive deps는 hoist 안 되므로 tests/integration devDep에서 link.
+/// LOOKUP_ROOTS에서 패키지를 찾아 fixture dir로 symlink. 패키지 단위 병렬 실행.
+/// plugin host의 dynamic import + ZTS 번들 resolve 양쪽에서 사용.
 export async function linkNodeModules(dir: string, packages: string[]): Promise<void> {
   const nmDir = join(dir, "node_modules");
   await mkdir(nmDir, { recursive: true });
-  const roots = [join(PROJECT_ROOT, "node_modules"), INTEGRATION_NODE_MODULES];
-  for (const pkg of packages) {
-    if (pkg.startsWith("@")) {
-      await mkdir(join(nmDir, pkg.split("/")[0]), { recursive: true });
-    }
-    for (const root of roots) {
-      const src = join(root, pkg);
-      try {
-        await symlink(src, join(nmDir, pkg));
-        break;
-      } catch {}
-    }
-  }
+  const scopes = new Set(packages.filter((p) => p.startsWith("@")).map((p) => p.split("/")[0]));
+  await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
+  await Promise.all(
+    packages.map(async (pkg) => {
+      for (const root of LOOKUP_ROOTS) {
+        try {
+          await symlink(join(root, pkg), join(nmDir, pkg));
+          return;
+        } catch {}
+      }
+    }),
+  );
 }
 
 async function runCmd(

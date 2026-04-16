@@ -1,30 +1,11 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { createFixture, linkNodeModules, runZts } from "./helpers";
-import { join, resolve } from "node:path";
+import { createFixture, hasPackage, linkNodeModules, runZts } from "./helpers";
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 
 // CSS 라이브러리 스모크 테스트
 // Tailwind CSS, Emotion, Styled-Components를 ZTS로 번들링 성공 검증
 // 런타임 동작은 브라우저 환경이 필요하므로 e2e 테스트로 분리
-
-const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
-const INTEGRATION_ROOT = resolve(import.meta.dir, "..");
-
-function hasPackage(name: string): boolean {
-  try {
-    const { statSync } = require("node:fs");
-    statSync(join(PROJECT_ROOT, "node_modules", name, "package.json"));
-    return true;
-  } catch {
-    try {
-      const { statSync } = require("node:fs");
-      statSync(join(INTEGRATION_ROOT, "node_modules", name, "package.json"));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
 
 const hasEmotion = hasPackage("@emotion/css");
 const hasEmotionReact = hasPackage("@emotion/react");

@@ -6,7 +6,6 @@ zig-cache/
 # Node/Bun
 node_modules/
 # 단, fixture에 영구 추가된 stub 패키지는 commit (RSC TanStack 등이 의존)
-!tests/integration/tests/fixtures/**/node_modules/
 !tests/integration/tests/fixtures/**/node_modules/**
 
 # Playwright
