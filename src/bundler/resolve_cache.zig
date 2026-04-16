@@ -73,18 +73,19 @@ pub const ResolveCache = struct {
 
     /// 플랫폼 + import kind에 따른 기본 조건 세트.
     fn baseConditionsFor(platform: Platform, kind: ImportKind) []const []const u8 {
+        const c = pkg_json.condition;
         return switch (kind) {
             .require => switch (platform) {
-                .node => &.{ "require", "node", "default" },
-                .browser => &.{ "require", "browser", "default" },
-                .neutral => &.{ "require", "default" },
-                .react_native => &.{ "require", "react-native", "browser", "default" },
+                .node => &.{ c.require, c.node, c.default },
+                .browser => &.{ c.require, c.browser, c.default },
+                .neutral => &.{ c.require, c.default },
+                .react_native => &.{ c.require, c.react_native, c.browser, c.default },
             },
             else => switch (platform) {
-                .node => &.{ "node", "import", "module", "default" },
-                .browser => &.{ "browser", "import", "module", "default" },
-                .neutral => &.{ "import", "module", "default" },
-                .react_native => &.{ "react-native", "browser", "import", "module", "default" },
+                .node => &.{ c.node, c.import, c.module, c.default },
+                .browser => &.{ c.browser, c.import, c.module, c.default },
+                .neutral => &.{ c.import, c.module, c.default },
+                .react_native => &.{ c.react_native, c.browser, c.import, c.module, c.default },
             },
         };
     }
@@ -93,11 +94,12 @@ pub const ResolveCache = struct {
     /// esbuild/rolldown 호환: browser는 "browser" 필드(string)로 main을 교체해야 debug 같은
     /// 패키지가 올바르게 브라우저 빌드로 해석된다.
     fn defaultMainFieldsFor(platform: Platform) []const []const u8 {
+        const f = pkg_json.field;
         return switch (platform) {
-            .browser => &.{ "browser", "module", "main" },
-            .node => &.{ "main", "module" },
-            .neutral => &.{ "main", "module" },
-            .react_native => &.{ "react-native", "browser", "module", "main" },
+            .browser => &.{ f.browser, f.module, f.main },
+            .node => &.{ f.main, f.module },
+            .neutral => &.{ f.main, f.module },
+            .react_native => &.{ f.react_native, f.browser, f.module, f.main },
         };
     }
 
