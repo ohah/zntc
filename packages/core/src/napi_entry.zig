@@ -524,6 +524,9 @@ const NapiPlugin = struct {
     const PluginResponse = struct {
         resolved_path: ?[]const u8 = null,
         is_external: bool = false,
+        /// 빈 모듈로 처리 (Metro `{ type: 'empty' }`, webpack `false` 폴백 매핑용).
+        /// resolveId가 `{ disabled: true }` 반환 시 ZTS가 `module.exports = {}` 처리.
+        is_disabled: bool = false,
         code: ?[]const u8 = null,
         /// AST plugin: 제거할 디렉티브 이름
         strip_directive: ?[]const u8 = null,
@@ -557,6 +560,7 @@ const NapiPlugin = struct {
             resp.resolved_path = path;
         }
         resp.is_external = getObjectBool(env, js_result, "external", false);
+        resp.is_disabled = getObjectBool(env, js_result, "disabled", false);
         if (getObjectString(env, js_result, "contents", native_alloc)) |contents| {
             resp.code = contents;
         }
@@ -740,6 +744,17 @@ const NapiPlugin = struct {
         defer {
             if (resp.resolved_path) |p| native_alloc.free(p);
             if (resp.code) |co| native_alloc.free(co);
+        }
+
+        // disabled: 빈 모듈로 처리. path는 식별용 — resolved_path 또는 specifier 그대로.
+        // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
+        if (resp.is_disabled) {
+            const id_path = resp.resolved_path orelse specifier;
+            return .{
+                .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
+                .module_type = .javascript,
+                .disabled = true,
+            };
         }
 
         if (resp.resolved_path) |path| {
