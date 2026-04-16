@@ -1,13 +1,14 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { createFixture, runZts } from "./helpers";
+import { createFixture, linkNodeModules, runZts } from "./helpers";
 import { join, resolve } from "node:path";
-import { readFile, symlink, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 // CSS 라이브러리 스모크 테스트
 // Tailwind CSS, Emotion, Styled-Components를 ZTS로 번들링 성공 검증
 // 런타임 동작은 브라우저 환경이 필요하므로 e2e 테스트로 분리
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
+const INTEGRATION_ROOT = resolve(import.meta.dir, "..");
 
 function hasPackage(name: string): boolean {
   try {
@@ -15,7 +16,13 @@ function hasPackage(name: string): boolean {
     statSync(join(PROJECT_ROOT, "node_modules", name, "package.json"));
     return true;
   } catch {
-    return false;
+    try {
+      const { statSync } = require("node:fs");
+      statSync(join(INTEGRATION_ROOT, "node_modules", name, "package.json"));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -23,20 +30,6 @@ const hasEmotion = hasPackage("@emotion/css");
 const hasEmotionReact = hasPackage("@emotion/react");
 const hasStyledComponents = hasPackage("styled-components");
 const hasTailwind = hasPackage("tailwindcss");
-
-async function linkNodeModules(dir: string, packages: string[]) {
-  const nmDir = join(dir, "node_modules");
-  await mkdir(nmDir, { recursive: true });
-  for (const pkg of packages) {
-    const src = join(PROJECT_ROOT, "node_modules", pkg);
-    if (pkg.startsWith("@")) {
-      await mkdir(join(nmDir, pkg.split("/")[0]), { recursive: true });
-    }
-    try {
-      await symlink(src, join(nmDir, pkg));
-    } catch {}
-  }
-}
 
 // ─── ZTS 네이티브 CSS 번들링 + 외부 CSS 라이브러리 패턴 ───
 

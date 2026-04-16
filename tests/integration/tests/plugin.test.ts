@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts, runZtsInDir, ZTS_BIN } from "./helpers";
+import { createFixture, linkNodeModules, runZts, runZtsInDir, ZTS_BIN } from "./helpers";
 import { join, resolve } from "node:path";
 
 const CORE_PATH = resolve(import.meta.dir, "../../../packages/plugin/index.ts");
@@ -581,6 +581,9 @@ describe("Plugin: auto config detection", () => {
         }] });
       `,
     });
+    // plugin host(Node)가 dynamic import할 vue 패키지 + ZTS가 번들 시 resolve할
+    // `vue` runtime 모두 fixture/node_modules에 link
+    await linkNodeModules(dir, ["vue"]);
 
     try {
       const result = await runZts([
@@ -633,6 +636,7 @@ describe("Plugin: auto config detection", () => {
         }] });
       `,
     });
+    await linkNodeModules(dir, ["vue"]);
 
     try {
       const result = await runZts([
@@ -675,6 +679,8 @@ describe("Plugin: auto config detection", () => {
         }] });
       `,
     });
+    // 컴파일된 .svelte 출력에 svelte runtime import가 포함되므로 svelte 패키지 link
+    await linkNodeModules(dir, ["svelte"]);
 
     try {
       const result = await runZts([

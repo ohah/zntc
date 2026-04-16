@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, runZts } from "./helpers";
+import { createFixture, createReactStubFixture, runZts } from "./helpers";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -305,7 +305,7 @@ describe("소스맵", () => {
   });
 
   test("TypeScript type 선언이 있어도 소스맵 줄 번호가 정확하다 (#954)", async () => {
-    const fixture = await createFixture({
+    const fixture = await createReactStubFixture({
       "index.ts": `import { App } from "./app";\nconsole.log(App("test"));`,
       "app.ts": [
         `import React from "react";`, // line 1
