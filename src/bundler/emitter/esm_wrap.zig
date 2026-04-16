@@ -462,6 +462,32 @@ pub fn emitEsmWrappedModule(
                         if (isSyntheticDefault(eb.symbol, module)) {
                             break :blk if (metadata) |md| md.default_export_name else "_default";
                         }
+                        // source가 __esm/__commonJS 래핑이면 현재 모듈에 변수가 선언되지
+                        // 않아 getter가 source의 exports를 직접 참조해야 한다 (#1425).
+                        // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
+                        // .re_export + local_name=ib.imported_name으로 정규화하므로(#1321),
+                        // 매칭되는 import binding이 있으면 기존 경로로 폴백.
+                        if (eb.kind == .re_export) re_export: {
+                            const l = linker orelse break :re_export;
+                            const rec_idx = eb.import_record_index orelse break :re_export;
+                            if (rec_idx >= module.import_records.len) break :re_export;
+                            const src_idx = module.import_records[rec_idx].resolved;
+                            if (src_idx.isNone()) break :re_export;
+                            const si = @intFromEnum(src_idx);
+                            if (si >= l.modules.len) break :re_export;
+                            const src_mod = &l.modules[si];
+                            if (!src_mod.wrap_kind.isWrapped()) break :re_export;
+
+                            const local_name = module.exportBindingLocalName(eb);
+                            for (module.import_bindings) |ib| {
+                                if (ib.import_record_index != rec_idx) continue;
+                                if (std.mem.eql(u8, ib.imported_name, local_name)) break :re_export;
+                            }
+
+                            const getter_val = try makeStarGetterValue(allocator, l, src_mod, si, local_name);
+                            try star_owned.append(allocator, getter_val);
+                            break :blk getter_val;
+                        }
                         if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
                             break :blk canon;
                         }
