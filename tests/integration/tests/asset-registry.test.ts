@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "./helpers";
+import { createFixture, createRNFixture, runZts } from "./helpers";
 import { join } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -24,7 +24,7 @@ const PNG_1x1 = Buffer.from([
 
 describe("--asset-registry", () => {
   test("RN 플랫폼 프리셋 → 기본 registry 경로 자동 주입", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
     });
     writeFileSync(join(dir, "logo.png"), PNG_1x1);
@@ -42,7 +42,8 @@ describe("--asset-registry", () => {
       expect(exitCode).toBe(0);
       expect(stderr).not.toContain("error:");
       const bundle = readFileSync(outFile, "utf8");
-      expect(bundle).toContain("react-native/Libraries/Image/AssetRegistry");
+      // RN 프리셋이 react-native/Libraries/Image/AssetRegistry를 require_xxx 함수로 변환
+      expect(bundle).toMatch(/require_+react_native[A-Za-z_]*AssetRegistry/);
       expect(bundle).toContain("registerAsset");
       expect(bundle).toContain("__packager_asset");
       expect(bundle).toContain('"width": 1');
@@ -56,6 +57,10 @@ describe("--asset-registry", () => {
   test("--asset-registry=PATH로 커스텀 registry 경로 지정 가능", async () => {
     const { dir, cleanup } = await createFixture({
       "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
+      "node_modules/@my/custom-registry/package.json":
+        '{"name": "@my/custom-registry", "main": "index.js"}',
+      "node_modules/@my/custom-registry/index.js":
+        "module.exports = { registerAsset: function(a) { return a; }, getAssetByID: function() { return null; } };\n",
     });
     writeFileSync(join(dir, "logo.png"), PNG_1x1);
 
@@ -71,7 +76,8 @@ describe("--asset-registry", () => {
       ]);
       expect(exitCode).toBe(0);
       const bundle = readFileSync(outFile, "utf8");
-      expect(bundle).toContain("@my/custom-registry");
+      // custom registry path가 require_xxx 함수로 변환
+      expect(bundle).toMatch(/require_+my_custom_registry/);
       expect(bundle).toContain("registerAsset");
     } finally {
       await cleanup();
@@ -79,7 +85,7 @@ describe("--asset-registry", () => {
   });
 
   test("--no-asset-registry로 RN 프리셋 덮기 (URL 문자열만)", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
     });
     writeFileSync(join(dir, "logo.png"), PNG_1x1);
@@ -107,7 +113,7 @@ describe("--asset-registry", () => {
   });
 
   test("@2x/@3x sibling 자동 감지 → scales 배열 + variant 파일 emit", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./assets/logo.png"; console.log(logo);`,
       "assets/.gitkeep": "",
     });
@@ -142,7 +148,7 @@ describe("--asset-registry", () => {
   });
 
   test("variant 없이 base만 있으면 scales=[1]", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./logo.png"; console.log(logo);`,
     });
     writeFileSync(join(dir, "logo.png"), PNG_1x1);
@@ -189,7 +195,7 @@ describe("--asset-registry", () => {
   });
 
   test("손상된 PNG 헤더 — width/height=0이지만 빌드는 성공", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./broken.png"; console.log(logo);`,
     });
     // PNG signature 없이 임의 바이트 — extractDimensions가 null 반환 → width/height=0
@@ -217,7 +223,7 @@ describe("--asset-registry", () => {
   });
 
   test("확장자 대소문자 — .PNG도 file loader 매칭", async () => {
-    const { dir, cleanup } = await createFixture({
+    const { dir, cleanup } = await createRNFixture({
       "entry.ts": `import logo from "./LOGO.PNG"; console.log(logo);`,
     });
     writeFileSync(join(dir, "LOGO.PNG"), PNG_1x1);

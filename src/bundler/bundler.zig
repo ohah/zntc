@@ -104,6 +104,10 @@ pub const BundleOptions = struct {
     /// 설정 시 file/copy 로더가 `module.exports = require("<path>").registerAsset({...})` 형태로 래핑.
     /// RN 플랫폼 프리셋에서 "react-native/Libraries/Image/AssetRegistry"로 자동 설정.
     asset_registry: ?[]const u8 = null,
+    /// Metro `projectRoot` 호환 — asset httpServerLocation 계산의 기준 디렉토리.
+    /// 미설정 시 entry_dir에서 위로 올라가며 첫 package.json 위치를 자동 감지.
+    /// 모노레포의 packages/app/처럼 entry가 깊을 때 정확한 패키지 루트를 잡는다.
+    project_root: []const u8 = "",
     /// 에셋/청크 URL prefix (--public-path). 동적 import 경로에 적용.
     public_path: []const u8 = "",
     /// 번들 출력 앞에 삽입할 텍스트 (--banner:js)
@@ -506,6 +510,7 @@ pub const Bundler = struct {
         var worker_graph = ModuleGraph.init(arena_alloc, &worker_resolve_cache);
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
+        worker_graph.project_root = self.options.project_root;
         worker_graph.plugins = self.options.plugins;
         worker_graph.max_threads = self.options.max_threads;
         worker_graph.flow = self.options.flow;
@@ -618,6 +623,7 @@ pub const Bundler = struct {
         graph.timing = timing;
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
+        graph.project_root = self.options.project_root;
         graph.asset_names = self.options.asset_names;
         graph.asset_registry = self.options.asset_registry;
         // --inject와 --run-before-main을 합쳐서 엔트리 의존성으로 추가 (실행 순서: inject → run-before-main → entry)

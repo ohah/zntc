@@ -25,6 +25,21 @@ export async function createFixture(
   };
 }
 
+const RN_ASSET_REGISTRY_STUB =
+  "module.exports = { registerAsset: function(a) { return a; }, getAssetByID: function() { return null; } };\n";
+
+/// RN 프리셋 사용 fixture 생성 — `react-native/Libraries/Image/AssetRegistry`가 자동 주입되므로
+/// fixture 안에 stub 모듈을 미리 만들어 둬야 unresolved_import 진단(에러)이 발생하지 않는다.
+export async function createRNFixture(
+  files: Record<string, string>,
+): Promise<{ dir: string; cleanup: () => Promise<void> }> {
+  return createFixture({
+    "node_modules/react-native/Libraries/Image/AssetRegistry.js": RN_ASSET_REGISTRY_STUB,
+    "node_modules/react-native/package.json": '{"name": "react-native", "main": "index.js"}',
+    ...files,
+  });
+}
+
 async function runCmd(
   cmd: string[],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
