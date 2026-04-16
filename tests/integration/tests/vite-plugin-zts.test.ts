@@ -1,21 +1,11 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { createFixture } from "./helpers";
+import { createFixture, hasPackage } from "./helpers";
 import { join, resolve } from "node:path";
 
 // vite-plugin-zts 스모크 테스트
 // Vite 빌드에서 ZTS가 esbuild 대신 TS/JSX를 트랜스파일하는지 검증
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
-
-function hasPackage(name: string): boolean {
-  try {
-    const { statSync } = require("node:fs");
-    statSync(join(PROJECT_ROOT, "node_modules", name, "package.json"));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const hasVite = hasPackage("vite");
 
