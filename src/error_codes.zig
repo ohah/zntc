@@ -215,10 +215,11 @@ pub const Code = enum(u16) {
     }
 
     /// 이 코드에 해당하는 문서 URL. comptime const 반환, 할당 없음.
+    /// 문서 사이트 라우트는 소문자 `zts` 폴더를 사용 (사이트 빌더가 소문자 slug).
     pub fn docsUrl(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
         return switch (self) {
-            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "ZTS{d:0>4}/", .{@intFromEnum(v)}),
+            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "zts{d:0>4}/", .{@intFromEnum(v)}),
         };
     }
 
