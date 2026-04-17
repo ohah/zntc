@@ -758,6 +758,8 @@ pub const Codegen = struct {
             // 주석은 lexer가 직접 수집한 원문 span — 합성 노드 아님 (#1407 safe).
             try self.write(self.ast.source[comment.start..comment.end]);
             try self.writeNewline();
+            // writeNewline 이 indent 를 먹으므로 후속 content 위해 복원 (#1508).
+            try self.writeIndent();
             self.next_comment_idx += 1;
         }
     }

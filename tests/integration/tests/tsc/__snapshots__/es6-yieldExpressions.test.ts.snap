@@ -756,7 +756,7 @@ export function strategy(stratName,gen) {
 export const Nothing = strategy("Nothing", function*(state) {
 	yield 1;
 	// number isn't a \`State\`, so this should error.
-return state;
+	return state;
 });
 // \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
 export const Nothing1 = strategy("Nothing", function*(state) {

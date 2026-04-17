@@ -350,7 +350,7 @@ exports[`TSC: es6/Symbols symbolProperty46 1`] = `
 		return "";
 	}
 	// Should take a string
-set [Symbol.hasInstance](x) {
+	set [Symbol.hasInstance](x) {
 	}
 }
 (new C())[Symbol.hasInstance] = 0;
@@ -364,7 +364,7 @@ exports[`TSC: es6/Symbols symbolProperty47 1`] = `
 		return "";
 	}
 	// Should take a string
-set [Symbol.hasInstance](x) {
+	set [Symbol.hasInstance](x) {
 	}
 }
 (new C())[Symbol.hasInstance] = 0;

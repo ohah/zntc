@@ -600,7 +600,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames29_ES5 1`] = `
 			} };
 		};
 		// needs capture
-return 0;
+		return 0;
 	}
 }
 "
@@ -614,7 +614,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames29_ES6 1`] = `
 			} };
 		};
 		// needs capture
-return 0;
+		return 0;
 	}
 }
 "
@@ -628,9 +628,9 @@ class C extends Base {
 		super();
 		() => {
 			var obj = { // Ideally, we would capture this. But the reference is
-// illegal, and not capturing this is consistent with
-//treatment of other similar violations.
-[(super(),"prop")]() {
+			// illegal, and not capturing this is consistent with
+			//treatment of other similar violations.
+			[(super(),"prop")]() {
 			} };
 		};
 	}
@@ -646,9 +646,9 @@ class C extends Base {
 		super();
 		() => {
 			var obj = { // Ideally, we would capture this. But the reference is
-// illegal, and not capturing this is consistent with
-//treatment of other similar violations.
-[(super(),"prop")]() {
+			// illegal, and not capturing this is consistent with
+			//treatment of other similar violations.
+			[(super(),"prop")]() {
 			} };
 		};
 	}
@@ -669,7 +669,7 @@ class C extends Base {
 			} };
 		};
 		// needs capture
-return 0;
+		return 0;
 	}
 }
 "
@@ -688,7 +688,7 @@ class C extends Base {
 			} };
 		};
 		// needs capture
-return 0;
+		return 0;
 	}
 }
 "
@@ -788,7 +788,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -807,7 +807,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -826,7 +826,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -845,7 +845,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -864,7 +864,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get [1 << 6]() {
+	get [1 << 6]() {
 		return new Foo();
 	}
 	set [1 << 6](p) {
@@ -883,7 +883,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get [1 << 6]() {
+	get [1 << 6]() {
 		return new Foo();
 	}
 	set [1 << 6](p) {
@@ -902,7 +902,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get [1 << 6]() {
+	get [1 << 6]() {
 		return new Foo();
 	}
 	set [1 << 6](p) {
@@ -921,7 +921,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-get [1 << 6]() {
+	get [1 << 6]() {
 		return new Foo();
 	}
 	set [1 << 6](p) {
@@ -956,7 +956,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-[""]() {
+	[""]() {
 		return new Foo();
 	}
 	[""]() {
@@ -976,7 +976,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-[""]() {
+	[""]() {
 		return new Foo();
 	}
 	[""]() {
@@ -996,7 +996,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-static [""]() {
+	static [""]() {
 		return new Foo();
 	}
 }
@@ -1013,7 +1013,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-static [""]() {
+	static [""]() {
 		return new Foo();
 	}
 }
@@ -1030,7 +1030,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-[""];
+	[""];
 }
 "
 `;
@@ -1045,7 +1045,7 @@ class Foo2 {
 }
 class C {
 	// Computed properties
-[""];
+	[""];
 }
 "
 `;
@@ -1062,7 +1062,7 @@ class C {
 }
 class D extends C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -1083,7 +1083,7 @@ class C {
 }
 class D extends C {
 	// Computed properties
-get ["get1"]() {
+	get ["get1"]() {
 		return new Foo();
 	}
 	set ["set1"](p) {
@@ -1147,7 +1147,7 @@ class C {
 }
 class D extends C {
 	// No error when the indexer is in a class more derived than the computed property
-set ["set1"](p) {
+	set ["set1"](p) {
 	}
 }
 "
@@ -1168,7 +1168,7 @@ class C {
 }
 class D extends C {
 	// No error when the indexer is in a class more derived than the computed property
-set ["set1"](p) {
+	set ["set1"](p) {
 	}
 }
 "
@@ -1229,7 +1229,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames49_ES5 1`] = `
 	return 10;
 }, set [1 + 1]() {
 	// just throw
-throw 10;
+	throw 10;
 }, get foo() {
 	if (1 == 1) {
 		return 10;
@@ -1249,7 +1249,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames49_ES6 1`] = `
 	return 10;
 }, set [1 + 1]() {
 	// just throw
-throw 10;
+	throw 10;
 }, get foo() {
 	if (1 == 1) {
 		return 10;
@@ -1281,7 +1281,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames50_ES5 1`] = `
 	throw 10;
 }, set [1 + 1]() {
 	// just throw
-throw 10;
+	throw 10;
 }, get [1 + 1]() {
 	return 10;
 }, get foo() {
@@ -1301,7 +1301,7 @@ exports[`TSC: es6/computedProperties computedPropertyNames50_ES6 1`] = `
 	throw 10;
 }, set [1 + 1]() {
 	// just throw
-throw 10;
+	throw 10;
 }, get [1 + 1]() {
 	return 10;
 }, get foo() {

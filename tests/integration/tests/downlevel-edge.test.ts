@@ -1734,6 +1734,117 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("3");
     });
+
+    // #1508: class 멤버 직전 leading comment 가 `X.prototype.foo` 토큰 사이에
+    // 끼면 syntax error. 원본 member span 을 expression_statement 에 전파해서
+    // codegen 이 statement 앞에서 comment 를 flush 하는지 회귀 가드.
+    test("member 직전 line comment (#1508 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              // leading comment
+              foo() { return 1; }
+            }
+            console.log(new X().foo());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("여러 member 사이 line/JSDoc comment 혼합 (#1508 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Y {
+              // c1
+              a() { return 1; }
+              /**
+               * JSDoc
+               * @returns number
+               */
+              b() { return 2; }
+              // c3
+              static s() { return 3; }
+            }
+            const y = new Y();
+            console.log(y.a() + y.b() + Y.s());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    test("class extends 의 member 앞 comment (#1508 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base { b() { return 10; } }
+            class Z extends Base {
+              // override comment
+              b() { return super.b() + 1; }
+            }
+            console.log(new Z().b());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("11");
+    });
+
+    test("class expression member 앞 comment (#1508 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const C = class Named {
+              // expression member
+              run() { return 7; }
+            };
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("연속 line comment + 마지막 member (#1508 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class W {
+              first() { return 1; }
+              // c1
+              // c2
+              // c3
+              last() { return 9; }
+            }
+            const w = new W();
+            console.log(w.first() + w.last());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
   });
 
   describe("TS-specific", () => {
