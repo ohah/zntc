@@ -39,6 +39,9 @@ pub const RichDiagnostic = struct {
     help: ?[]const u8 = null,
     /// 추가 정보 (예: "Top-level await is an ES2022 feature")
     note: ?[]const u8 = null,
+    /// 에러 문서 URL. 렌더러가 "url: ..." 줄로 표시.
+    /// RichDiagnostic 생성 시 호출자가 소유 문자열을 주입 (정적 또는 bufPrint 버퍼).
+    url: ?[]const u8 = null,
 
     pub const Severity = enum {
         @"error",
@@ -114,6 +117,8 @@ pub const SourceInfo = struct {
 
 /// 파서/시맨틱 Diagnostic을 RichDiagnostic으로 변환한다.
 /// Diagnostic에는 severity가 없으므로 항상 .error로 설정한다.
+/// Diagnostic에 hint가 없으면 Code.help()에서 자동 수정 힌트를 주입.
+/// code가 있으면 docsUrl도 자동 주입.
 pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
     return .{
         .severity = .@"error",
@@ -122,7 +127,8 @@ pub fn fromDiagnostic(d: Diagnostic, file_path: []const u8) RichDiagnostic {
         .span = d.span,
         .file_path = file_path,
         .labels = d.labels,
-        .help = d.hint,
+        .help = d.hint orelse if (d.code) |c| c.help() else null,
+        .url = if (d.code) |c| c.docsUrl() else null,
     };
 }
 

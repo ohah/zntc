@@ -19,6 +19,9 @@
 //!   1200-1299  시맨틱: export/label
 //!   1300-1399  시맨틱: class/getter/setter/object
 
+/// 문서 사이트 에러 레퍼런스 base URL. Code.docsUrl이 여기에 코드를 붙여 전체 URL 생성.
+const docs_url_base = "https://ohah.github.io/zts/reference/errors/";
+
 /// 에러 코드. 각 항목은 고유한 번호를 가진다.
 pub const Code = enum(u16) {
     // ═══════════════════════════════════════════════════════
@@ -208,6 +211,41 @@ pub const Code = enum(u16) {
         @setEvalBranchQuota(100_000);
         return switch (self) {
             inline else => |v| comptime std.fmt.comptimePrint("ZTS{d:0>4}", .{@intFromEnum(v)}),
+        };
+    }
+
+    /// 이 코드에 해당하는 문서 URL. comptime const 반환, 할당 없음.
+    pub fn docsUrl(self: Code) []const u8 {
+        @setEvalBranchQuota(100_000);
+        return switch (self) {
+            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "ZTS{d:0>4}/", .{@intFromEnum(v)}),
+        };
+    }
+
+    /// 에러 수정 힌트. 없으면 null.
+    /// comptime const 문자열만 반환 — 할당 없음. 렌더러가 "help: ..." 로 출력.
+    pub fn help(self: Code) ?[]const u8 {
+        return switch (self) {
+            // 시맨틱 재선언/참조 (PR 2/2.5/3에서 커버한 에러들)
+            .identifier_redeclared => "Use a different identifier, or change 'let'/'const' to 'var' if redeclaration is intended.",
+            .private_redeclared => "Private field names must be unique within a class. Rename one of the declarations.",
+            .private_undeclared => "Private fields must be declared in an enclosing class body before being referenced.",
+            .private_getter_only => "Private member has only a getter. Add a 'set' accessor to allow assignment.",
+            .private_setter_only => "Private member has only a setter. Add a 'get' accessor to allow reading.",
+            .duplicate_export => "Rename one of the exports, or use a single 'export { x as a, y as b }' form.",
+            .export_not_defined => "Ensure the exported name is declared in module scope before the export statement.",
+            .label_redeclared => "Label names must be unique within the enclosing function. Rename the inner label.",
+            .undefined_label => "The 'break'/'continue' label must match a label declared in an enclosing statement.",
+            .continue_non_loop_label => "'continue' requires the target label to be attached to a loop (for/while/do).",
+            .duplicate_constructor => "Merge the constructor bodies into a single 'constructor()' method.",
+            .duplicate_parameter => "Parameter names must be unique in strict mode and within destructuring patterns.",
+            .switch_duplicate_default => "A 'switch' can have at most one 'default' case — remove the duplicate.",
+            // 타겟
+            .top_level_await_target => "Set --target=es2022 or later, or wrap the code in an 'async' function.",
+            // 번들러
+            .unresolved_import => "Check the import path spelling and confirm the file exists.",
+            .missing_export => "Verify the exported name. Use 'export * from' or named re-exports if needed.",
+            else => null,
         };
     }
 

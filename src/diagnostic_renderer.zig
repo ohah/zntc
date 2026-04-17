@@ -127,7 +127,7 @@ pub fn render(
         try writer.writeAll(" +----\n");
     }
 
-    // ── 8. help/note ──
+    // ── 8. help/note/url ──
     if (diag.help) |help_text| {
         try ansi.styled(writer, .bold_cyan, "  help", color);
         try writer.writeAll(": ");
@@ -138,6 +138,12 @@ pub fn render(
         try ansi.styled(writer, .bold_blue, "  note", color);
         try writer.writeAll(": ");
         try writer.writeAll(note_text);
+        try writer.writeByte('\n');
+    }
+    if (diag.url) |url_text| {
+        try ansi.styled(writer, .dim, "  url", color);
+        try writer.writeAll(": ");
+        try ansi.styled(writer, .dim, url_text, color);
         try writer.writeByte('\n');
     }
 
@@ -204,6 +210,12 @@ pub fn renderSimple(
         try ansi.styled(writer, .bold_blue, "  note", color);
         try writer.writeAll(": ");
         try writer.writeAll(note_text);
+        try writer.writeByte('\n');
+    }
+    if (diag.url) |url_text| {
+        try ansi.styled(writer, .dim, "  url", color);
+        try writer.writeAll(": ");
+        try ansi.styled(writer, .dim, url_text, color);
         try writer.writeByte('\n');
     }
 
