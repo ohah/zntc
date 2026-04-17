@@ -990,6 +990,52 @@ pub fn insertFieldAssignmentsIntoConstructor(
     });
 }
 
+/// block_statement body에서 첫 super() 호출 뒤에 stmt를 삽입한 새 block_statement 반환.
+/// super() 없으면 body 시작에 prepend.
+fn insertAfterSuperCall(self: *Transformer, body_idx: NodeIndex, stmt: NodeIndex) Error!NodeIndex {
+    if (body_idx.isNone()) return body_idx;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement) {
+        return self.prependStatementsToBody(body_idx, &.{stmt});
+    }
+    const old_list = body.data.list;
+    const old_stmts_start = old_list.start;
+    const old_stmts_len = old_list.len;
+
+    var insert_pos: u32 = 0;
+    {
+        const old_stmts = self.ast.extra_data.items[old_stmts_start .. old_stmts_start + old_stmts_len];
+        for (old_stmts, 0..) |raw_idx, idx| {
+            if (self.isSuperCallStatement(@enumFromInt(raw_idx))) {
+                insert_pos = @intCast(idx + 1);
+                break;
+            }
+        }
+    }
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var i_pre: u32 = 0;
+    while (i_pre < insert_pos) : (i_pre += 1) {
+        const raw_idx = self.ast.extra_data.items[old_stmts_start + i_pre];
+        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    }
+    try self.scratch.append(self.allocator, stmt);
+    var i_post: u32 = insert_pos;
+    while (i_post < old_stmts_len) : (i_post += 1) {
+        const raw_idx = self.ast.extra_data.items[old_stmts_start + i_post];
+        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    }
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = body.span,
+        .data = .{ .list = new_list },
+    });
+}
+
 /// super() 호출 expression_statement인지 판별
 pub fn isSuperCallStatement(self: *const Transformer, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
@@ -2385,6 +2431,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
         });
 
+        const has_super = !super_idx.isNone();
+
         if (has_constructor) {
             // new_members에서 constructor를 key 기반으로 탐색 (static block 삽입에 무관)
             for (new_members.items, 0..) |member_node_idx, mi| {
@@ -2398,9 +2446,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 if (m_key.tag != .identifier_reference and m_key.tag != .binding_identifier) continue;
                 if (!std.mem.eql(u8, self.ast.getText(m_key.data.string_ref), "constructor")) continue;
 
-                // prependStatementsToBody로 기존 body 앞에 삽입
                 const old_body_idx = self.readNodeIdx(m.data.extra, 2);
-                const new_body_ctor = try self.prependStatementsToBody(old_body_idx, &.{run_init_stmt});
+                const new_body_ctor = if (has_super)
+                    try insertAfterSuperCall(self, old_body_idx, run_init_stmt)
+                else
+                    try self.prependStatementsToBody(old_body_idx, &.{run_init_stmt});
                 const empty_decos = try self.ast.addNodeList(&.{});
                 // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
                 const new_ctor_method = try self.addExtraNode(.method_definition, m.span, &.{
@@ -2415,8 +2465,59 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 break;
             }
         } else {
-            // 빈 constructor 생성
-            const ctor_body_list = try self.ast.addNodeList(&.{run_init_stmt});
+            // 합성 constructor: derived면 `constructor(...args) { super(...args); __runInitializers(...); }`,
+            // 아니면 `constructor() { __runInitializers(...); }`. super stmt는 scratch에 push, params는 반환.
+            const stmts_scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(stmts_scratch_top);
+
+            const ctor_params_node: NodeIndex = if (has_super) blk: {
+                const args_span = try self.ast.addString("args");
+                const args_id = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = args_span,
+                    .data = .{ .string_ref = args_span },
+                });
+                const rest = try self.ast.addNode(.{
+                    .tag = .rest_element,
+                    .span = zero_span,
+                    .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
+                });
+                const params_list = try self.ast.addNodeList(&.{rest});
+                const params_node = try self.ast.addFormalParameters(params_list, zero_span);
+
+                const super_expr = try self.ast.addNode(.{
+                    .tag = .super_expression,
+                    .span = zero_span,
+                    .data = .{ .none = 0 },
+                });
+                const args_ref = try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = args_span,
+                    .data = .{ .string_ref = args_span },
+                });
+                const spread_args = try self.ast.addNode(.{
+                    .tag = .spread_element,
+                    .span = zero_span,
+                    .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
+                });
+                const call_args = try self.ast.addNodeList(&.{spread_args});
+                const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
+                    @intFromEnum(super_expr), call_args.start, call_args.len, 0,
+                });
+                const super_stmt = try self.ast.addNode(.{
+                    .tag = .expression_statement,
+                    .span = zero_span,
+                    .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, super_stmt);
+                break :blk params_node;
+            } else blk: {
+                const empty_params = try self.ast.addNodeList(&.{});
+                break :blk try self.ast.addFormalParameters(empty_params, zero_span);
+            };
+            try self.scratch.append(self.allocator, run_init_stmt);
+
+            const ctor_body_list = try self.ast.addNodeList(self.scratch.items[stmts_scratch_top..]);
             const ctor_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = zero_span,
@@ -2428,12 +2529,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 .span = ctor_key_span,
                 .data = .{ .string_ref = ctor_key_span },
             });
-            const empty_params = try self.ast.addNodeList(&.{});
-            const empty_params_node = try self.ast.addFormalParameters(empty_params, zero_span);
             const empty_decos = try self.ast.addNodeList(&.{});
             const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
                 @intFromEnum(ctor_key),
-                @intFromEnum(empty_params_node),
+                @intFromEnum(ctor_params_node),
                 @intFromEnum(ctor_body),
                 0, // flags (no static/getter/setter)
                 empty_decos.start,

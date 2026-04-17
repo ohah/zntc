@@ -1135,4 +1135,137 @@ describe("Stage 3 Decorators", () => {
     expect(result.runOutput).toContain("stamp:method");
     expect(result.runOutput).toContain("1 2");
   });
+
+  // --- Derived class constructor (super() injection 회귀) ---
+  // 이전: transformStage3Decorators의 합성 constructor가 extends 여부 무시 → super() 누락
+  // → ReferenceError: 'super()' must be called... . 또한 user-written constructor 경로는
+  // prependStatementsToBody가 super() 앞에 __runInitializers를 삽입해 this before super 오류.
+
+  it("derived class: synthesized constructor injects super(...args)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { baseVal: number; constructor(n: number = 0) { this.baseVal = n; } }
+        class Derived extends Base {
+          @deco("x") accessor x = 10;
+          @deco("foo") foo() { return 1; }
+        }
+        const d: any = new (Derived as any)(5);
+        console.log(d.baseVal, d.x, d.foo());
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("5 10 1");
+  });
+
+  it("derived class: user-written constructor — __runInitializers inserted after super()", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { baseVal: number; constructor(n: number) { this.baseVal = n; } }
+        class Derived extends Base {
+          @deco("x") accessor x = 10;
+          constructor() {
+            super(99);
+            console.log("user ctor");
+          }
+        }
+        const d: any = new Derived();
+        console.log(d.baseVal, d.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("user ctor");
+    expect(result.runOutput).toContain("99 10");
+  });
+
+  it("derived class: super() after pre-computation in user ctor", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { baseVal: number; constructor(n: number) { this.baseVal = n; } }
+        class Derived extends Base {
+          @deco("x") accessor x = 10;
+          constructor() {
+            const computed = 42;
+            super(computed);
+            console.log("after-super");
+          }
+        }
+        const d: any = new Derived();
+        console.log(d.baseVal, d.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("42 10");
+  });
+
+  it("derived class: multi-level inheritance (Base → Mid → Derived)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { v: number; constructor(n: number = 0) { this.v = n; } }
+        class Mid extends Base {
+          @deco("m") mid = "M";
+        }
+        class Leaf extends Mid {
+          @deco("l") accessor x = 10;
+        }
+        const l: any = new (Leaf as any)(7);
+        console.log(l.v, l.mid, l.x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("7 M 10");
+  });
+
+  it("derived class: extends expression (not simple identifier)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { val: number; constructor(n: number = 0) { this.val = n; } }
+        function getBase() { return Base; }
+        class E extends getBase() {
+          @deco("z") accessor z = 30;
+        }
+        const e: any = new (E as any)(77);
+        console.log(e.val, e.z);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("77 30");
+  });
+
+  it("derived class: super.method() in decorated method", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function deco(arg: string): any {
+          return function(target: any, ctx: any) { return target; };
+        }
+        class Base { greet() { return "base"; } }
+        class J extends Base {
+          @deco("g") greet() { return "derived-" + super.greet(); }
+        }
+        console.log(new J().greet());
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("derived-base");
+  });
 });
