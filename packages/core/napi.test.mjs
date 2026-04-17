@@ -18,16 +18,9 @@ const require = createRequire(import.meta.url);
 const addonPath = join(__dirname, "../../zig-out/lib/zts.node");
 const native = require(addonPath);
 
-// 플래그 비트마스크 상수 (encodeFlags 비트 레이아웃 참조)
-const F = {
-  SOURCEMAP: 1 << 0,
-  JSX_AUTOMATIC: 1 << 4,
-  DROP_CONSOLE: 1 << 6,
-  CJS: 1 << 12,
-  USE_DEFINE: 1 << 16, // useDefineForClassFields (기본 true)
-  SOURCES_CONTENT: 1 << 22, // sourcesContent (기본 true)
-};
-const DEFAULT_FLAGS = F.USE_DEFINE | F.SOURCES_CONTENT;
+// 옵션은 단일 JSON payload (camelCase, Zig TranspileOptionsDto와 매핑).
+// 기본값(useDefineForClassFields, sourcesContent 등)은 Zig 측에서 처리하므로 생략 가능.
+const call = (src, filename, opts = {}) => native.transpile(src, filename, JSON.stringify(opts));
 
 describe("@zts/core NAPI (Node.js)", () => {
   it("모듈이 transpile 함수를 export한다", () => {
@@ -35,44 +28,24 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("기본 TypeScript 트랜스파일", () => {
-    const flags = DEFAULT_FLAGS; // useDefineForClassFields + sourcesContent
-    const result = native.transpile("const x: number = 1;", "input.ts", flags, 0, "", "", "");
+    const result = call("const x: number = 1;", "input.ts");
     assert.ok(result.code.includes("const x = 1;"));
     assert.equal(result.map, undefined);
   });
 
   it("인터페이스 스트리핑", () => {
-    const flags = DEFAULT_FLAGS;
-    const result = native.transpile(
-      "interface Foo { bar: string; }\nconst x = 1;",
-      "input.ts",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call("interface Foo { bar: string; }\nconst x = 1;", "input.ts");
     assert.ok(!result.code.includes("interface"));
     assert.ok(result.code.includes("const x = 1;"));
   });
 
   it("타입 어노테이션 제거", () => {
-    const flags = DEFAULT_FLAGS;
-    const result = native.transpile(
-      "function add(a: number, b: number): number { return a + b; }",
-      "input.ts",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call("function add(a: number, b: number): number { return a + b; }", "input.ts");
     assert.ok(!result.code.includes(": number"));
   });
 
   it("소스맵 생성", () => {
-    const flags = F.SOURCEMAP | DEFAULT_FLAGS; // sourcemap + defaults
-    const result = native.transpile("const x: number = 1;", "input.ts", flags, 0, "", "", "");
+    const result = call("const x: number = 1;", "input.ts", { sourcemap: true });
     assert.ok(result.code.includes("const x = 1;"));
     assert.ok(result.map !== undefined);
     const map = JSON.parse(result.map);
@@ -81,111 +54,53 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("CJS 포맷", () => {
-    const flags = F.CJS | DEFAULT_FLAGS; // cjs + defaults
-    const result = native.transpile(
-      'export const x = 1; export default "hello";',
-      "input.ts",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call('export const x = 1; export default "hello";', "input.ts", { format: "cjs" });
     assert.ok(result.code.includes("exports"));
   });
 
   it("JSX 트랜스파일 (classic)", () => {
-    const flags = DEFAULT_FLAGS;
-    const result = native.transpile(
-      '<div className="app">hello</div>',
-      "app.tsx",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call('<div className="app">hello</div>', "app.tsx");
     assert.ok(result.code.includes("React.createElement"));
   });
 
   it("JSX 트랜스파일 (automatic)", () => {
-    const flags = F.JSX_AUTOMATIC | DEFAULT_FLAGS; // automatic jsx
-    const result = native.transpile(
-      '<div className="app">hello</div>',
-      "app.tsx",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call('<div className="app">hello</div>', "app.tsx", { jsx: "automatic" });
     assert.ok(result.code.includes("jsx"));
   });
 
   it("jsxFactory 커스텀", () => {
-    const flags = DEFAULT_FLAGS;
-    const result = native.transpile("<div />", "app.tsx", flags, 0, "h", "", "");
+    const result = call("<div />", "app.tsx", { jsxFactory: "h" });
     assert.ok(result.code.includes("h("));
     assert.ok(!result.code.includes("React.createElement"));
   });
 
   it("jsxImportSource 커스텀", () => {
-    const flags = F.JSX_AUTOMATIC | DEFAULT_FLAGS; // automatic jsx
-    const result = native.transpile("<div />", "app.tsx", flags, 0, "", "", "preact");
+    const result = call("<div />", "app.tsx", { jsx: "automatic", jsxImportSource: "preact" });
     assert.ok(result.code.includes("preact"));
   });
 
   it("ES5 다운레벨링", () => {
-    const flags = DEFAULT_FLAGS;
-    const unsupported = 0x3fffff; // es5 (bit 0-21)
-    const result = native.transpile(
-      "const x = () => 1;",
-      "input.ts",
-      flags,
-      unsupported,
-      "",
-      "",
-      "",
-    );
+    const result = call("const x = () => 1;", "input.ts", { target: "es5" });
     assert.ok(!result.code.includes("=>"));
     assert.ok(result.code.includes("function"));
   });
 
   it("drop console", () => {
-    const flags = F.DROP_CONSOLE | DEFAULT_FLAGS; // drop_console + defaults
-    const result = native.transpile(
-      'console.log("hello"); const x = 1;',
-      "input.ts",
-      flags,
-      0,
-      "",
-      "",
-      "",
-    );
+    const result = call('console.log("hello"); const x = 1;', "input.ts", { dropConsole: true });
     assert.ok(!result.code.includes("console.log"));
     assert.ok(result.code.includes("const x = 1;"));
   });
 
   it("파싱 에러 시 throw", () => {
-    const flags = DEFAULT_FLAGS;
     assert.throws(
-      () => native.transpile("const = ;", "input.ts", flags, 0, "", "", ""),
+      () => call("const = ;", "input.ts"),
       (err) => err.message.includes("ParseError"),
     );
   });
 
   it("반복 호출 안정성", () => {
-    const flags = DEFAULT_FLAGS;
     for (let i = 0; i < 100; i++) {
-      const result = native.transpile(
-        `const x${i}: number = ${i};`,
-        "input.ts",
-        flags,
-        0,
-        "",
-        "",
-        "",
-      );
+      const result = call(`const x${i}: number = ${i};`, "input.ts");
       assert.ok(result.code.includes(`const x${i} = ${i};`));
     }
   });

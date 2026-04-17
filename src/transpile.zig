@@ -64,50 +64,105 @@ pub const TranspileOptions = struct {
     es_target: ?@import("transformer/compat.zig").ESTarget = null,
 };
 
-/// WASM/FFI 진입점 공용 플래그 디코더.
-/// 비트마스크 → TranspileOptions 변환 (비트 레이아웃은 packages/wasm, packages/core 참조).
-pub fn decodeFlags(flags: u32) TranspileOptions {
-    return .{
-        .sourcemap = flags & (1 << 0) != 0,
-        .minify_whitespace = flags & (1 << 1) != 0,
-        .minify_identifiers = flags & (1 << 2) != 0,
-        .minify_syntax = flags & (1 << 3) != 0,
-        .jsx_runtime = if (flags & (1 << 5) != 0)
-            .automatic_dev
-        else if (flags & (1 << 4) != 0)
-            .automatic
-        else
-            .classic,
-        .drop_console = flags & (1 << 6) != 0,
-        .drop_debugger = flags & (1 << 7) != 0,
-        .ascii_only = flags & (1 << 8) != 0,
-        .flow = flags & (1 << 9) != 0,
-        .experimental_decorators = flags & (1 << 10) != 0,
-        .emit_decorator_metadata = flags & (1 << 11) != 0,
-        .module_format = switch ((flags >> 12) & 0x3) {
-            0 => .esm,
-            1 => .cjs,
-            else => .esm,
-        },
-        .quote_style = switch ((flags >> 14) & 0x3) {
-            0 => .double,
-            1 => .single,
-            2 => .preserve,
-            else => .double,
-        },
-        .use_define_for_class_fields = flags & (1 << 16) != 0,
-        .charset_utf8 = flags & (1 << 17) != 0,
-        .platform = switch ((flags >> 18) & 0x3) {
-            0 => .browser,
-            1 => .node,
-            2 => .neutral,
-            3 => .react_native,
-            else => .browser,
-        },
-        .jsx_in_js = flags & (1 << 20) != 0,
-        .sourcemap_debug_ids = flags & (1 << 21) != 0,
-        .sources_content = flags & (1 << 22) != 0,
+/// WASM/NAPI 진입점 공용 JSON payload DTO.
+/// TS 쪽 TranspileOptions와 camelCase 필드명으로 매핑된다.
+/// 모든 필드가 optional이라 누락되어도 기본값 유지.
+///
+/// JSON에서 enum은 Zig enum name과 정확히 일치하는 string이어야 한다:
+///   - platform: "browser" | "node" | "neutral" | "react_native"
+///   - format: "esm" | "cjs"
+///   - quotes: "double" | "single" | "preserve"
+///   - jsx: "classic" | "automatic" | "automatic_dev"
+///   - target: "es5" | "es2015"..."es2025" | "esnext"
+/// JS 래퍼가 필요 시 하이픈/대시를 언더스코어로 변환해 전달한다.
+const TranspileOptionsDto = struct {
+    target: ?[]const u8 = null,
+    unsupported: ?u32 = null,
+    flow: ?bool = null,
+    jsxInJs: ?bool = null,
+    jsx: ?[]const u8 = null,
+    jsxFactory: ?[]const u8 = null,
+    jsxFragment: ?[]const u8 = null,
+    jsxImportSource: ?[]const u8 = null,
+    dropConsole: ?bool = null,
+    dropDebugger: ?bool = null,
+    asciiOnly: ?bool = null,
+    charsetUtf8: ?bool = null,
+    experimentalDecorators: ?bool = null,
+    emitDecoratorMetadata: ?bool = null,
+    useDefineForClassFields: ?bool = null,
+    format: ?[]const u8 = null,
+    quotes: ?[]const u8 = null,
+    platform: ?[]const u8 = null,
+    minifyWhitespace: ?bool = null,
+    minifyIdentifiers: ?bool = null,
+    minifySyntax: ?bool = null,
+    sourcemap: ?bool = null,
+    sourcemapDebugIds: ?bool = null,
+    sourcesContent: ?bool = null,
+    sourceRoot: ?[]const u8 = null,
+    define: ?[]const DefineEntry = null,
+};
+
+/// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
+/// allocator는 arena 권장 — 반환된 값의 문자열/슬라이스 수명을 책임진다.
+///
+/// 오류: JSON 파싱 실패 / 알 수 없는 enum 문자열 → error 반환.
+pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !TranspileOptions {
+    const parsed = std.json.parseFromSliceLeaky(TranspileOptionsDto, allocator, json, .{ .ignore_unknown_fields = true }) catch return error.InvalidOptions;
+
+    var opts: TranspileOptions = .{};
+    const compat = @import("transformer/compat.zig");
+    const codegen = @import("codegen/codegen.zig");
+
+    if (parsed.target) |t| opts.es_target = std.meta.stringToEnum(compat.ESTarget, t);
+    if (parsed.unsupported) |u| {
+        opts.unsupported = @bitCast(u);
+    } else if (opts.es_target) |t| {
+        opts.unsupported = compat.fromESTarget(t);
+    }
+    if (parsed.flow) |v| opts.flow = v;
+    if (parsed.jsxInJs) |v| opts.jsx_in_js = v;
+    if (parsed.jsx) |s| {
+        if (std.meta.stringToEnum(codegen.JsxRuntime, s)) |e| opts.jsx_runtime = e;
+    }
+    if (parsed.jsxFactory) |s| if (s.len > 0) {
+        opts.jsx_factory = s;
     };
+    if (parsed.jsxFragment) |s| if (s.len > 0) {
+        opts.jsx_fragment = s;
+    };
+    if (parsed.jsxImportSource) |s| if (s.len > 0) {
+        opts.jsx_import_source = s;
+    };
+    if (parsed.dropConsole) |v| opts.drop_console = v;
+    if (parsed.dropDebugger) |v| opts.drop_debugger = v;
+    if (parsed.asciiOnly) |v| opts.ascii_only = v;
+    if (parsed.charsetUtf8) |v| opts.charset_utf8 = v;
+    if (parsed.experimentalDecorators) |v| opts.experimental_decorators = v;
+    if (parsed.emitDecoratorMetadata) |v| opts.emit_decorator_metadata = v;
+    if (parsed.useDefineForClassFields) |v| opts.use_define_for_class_fields = v;
+    if (parsed.format) |s| {
+        if (std.meta.stringToEnum(codegen.ModuleFormat, s)) |e| opts.module_format = e;
+    }
+    if (parsed.quotes) |s| {
+        if (std.meta.stringToEnum(codegen.QuoteStyle, s)) |e| opts.quote_style = e;
+    }
+    if (parsed.platform) |s| {
+        if (std.meta.stringToEnum(codegen.Platform, s)) |e| opts.platform = e;
+    }
+    if (parsed.minifyWhitespace) |v| opts.minify_whitespace = v;
+    if (parsed.minifyIdentifiers) |v| opts.minify_identifiers = v;
+    if (parsed.minifySyntax) |v| opts.minify_syntax = v;
+    if (parsed.sourcemap) |v| opts.sourcemap = v;
+    if (parsed.sourcemapDebugIds) |v| opts.sourcemap_debug_ids = v;
+    if (parsed.sourcesContent) |v| opts.sources_content = v;
+    if (parsed.sourceRoot) |s| if (s.len > 0) {
+        opts.source_root = s;
+    };
+    if (parsed.define) |d| opts.define = d;
+
+    return opts;
 }
 
 pub const TranspileError = error{

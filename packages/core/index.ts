@@ -20,7 +20,7 @@ import { fileURLToPath } from "url";
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
 import type { TranspileOptions, TranspileResult } from "../shared/index";
-import { encodeFlags, ES_TARGET_BITS, browserslistToUnsupported } from "../shared/index";
+import { buildOptionsJson, ES_TARGET_BITS, browserslistToUnsupported } from "../shared/index";
 
 // ─── NAPI Module ───
 
@@ -51,12 +51,8 @@ interface NativeModule {
   transpile(
     source: string,
     filename: string,
-    flags: number,
-    unsupported: number,
-    jsxFactory: string,
-    jsxFragment: string,
-    jsxImportSource: string,
-  ): { code: string; map?: string };
+    optionsJson: string,
+  ): { code: string; map?: string; errors?: string };
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   build(options: Record<string, unknown>): Promise<NativeBuildResult>;
   watch(options: Record<string, unknown>): NativeWatchHandle;
@@ -153,19 +149,8 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!source) throw new Error("@zts/core: empty source");
 
-  const flags = encodeFlags(options);
-  const unsupported = resolveUnsupported(options);
-
-  return native.transpile(
-    source,
-    options.filename ?? "input.ts",
-    flags,
-    unsupported,
-    options.jsxFactory ?? "",
-    options.jsxFragment ?? "",
-    options.jsxImportSource ?? "",
-    options.sourceRoot ?? "",
-  );
+  const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
+  return native.transpile(source, options.filename ?? "input.ts", optionsJson);
 }
 
 // ─── Build API ───

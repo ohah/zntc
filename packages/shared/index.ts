@@ -130,39 +130,54 @@ export const ES_TARGET_BITS: Record<string, number> = {
   esnext: 0x0,
 };
 
-// ─── 옵션 인코딩 (Zig decodeFlags와 동일한 비트 레이아웃) ───
-
-export function encodeFlags(opts: TranspileOptions = {}): number {
-  let flags = 0;
-  if (opts.sourcemap) flags |= 1 << 0;
-  if (opts.minifyWhitespace || opts.minify) flags |= 1 << 1;
-  if (opts.minifyIdentifiers || opts.minify) flags |= 1 << 2;
-  if (opts.minifySyntax || opts.minify) flags |= 1 << 3;
-  if (opts.jsx === "automatic") flags |= 1 << 4;
-  if (opts.jsx === "automatic-dev") flags |= 1 << 5;
-  if (opts.dropConsole) flags |= 1 << 6;
-  if (opts.dropDebugger) flags |= 1 << 7;
-  if (opts.asciiOnly) flags |= 1 << 8;
-  if (opts.flow) flags |= 1 << 9;
-  if (opts.experimentalDecorators) flags |= 1 << 10;
-  if (opts.emitDecoratorMetadata) flags |= 1 << 11;
-  if (opts.format === "cjs") flags |= 1 << 12;
-  if (opts.quotes === "single") flags |= 1 << 14;
-  if (opts.quotes === "preserve") flags |= 2 << 14;
-  if (opts.useDefineForClassFields !== false) flags |= 1 << 16;
-  if (opts.charsetUtf8) flags |= 1 << 17;
-  if (opts.platform === "node") flags |= 1 << 18;
-  if (opts.platform === "neutral") flags |= 2 << 18;
-  if (opts.platform === "react-native") flags |= 3 << 18;
-  if (opts.jsxInJs) flags |= 1 << 20;
-  if (opts.sourcemapDebugIds) flags |= 1 << 21;
-  if (opts.sourcesContent !== false) flags |= 1 << 22;
-  return flags;
-}
-
 export function targetToUnsupported(target?: Target): number {
   if (!target) return 0;
   return ES_TARGET_BITS[target] ?? 0;
+}
+
+// ─── JSON payload 구성 (Zig optionsFromJson과 1:1 매핑) ───
+
+/**
+ * TranspileOptions를 Zig `TranspileOptionsDto` JSON으로 직렬화한다.
+ *
+ * - 기본값은 생략 (payload 크기 최소화)
+ * - enum 키는 Zig enum name과 일치 (예: "react-native" → "react_native")
+ * - browserslist 해석 결과는 `unsupportedOverride` 숫자로 주입 가능.
+ *   지정 시 Zig에서 `target` 기반 fallback보다 우선.
+ * - `define`은 `[{ key, value }]` 배열로 직렬화 (Zig DefineEntry와 호환).
+ */
+export function buildOptionsJson(opts: TranspileOptions = {}, unsupportedOverride?: number): string {
+  const payload: Record<string, unknown> = {};
+  if (opts.target) payload.target = opts.target;
+  if (unsupportedOverride !== undefined && unsupportedOverride !== 0) payload.unsupported = unsupportedOverride;
+  if (opts.flow) payload.flow = true;
+  if (opts.jsxInJs) payload.jsxInJs = true;
+  if (opts.jsx === "automatic") payload.jsx = "automatic";
+  else if (opts.jsx === "automatic-dev") payload.jsx = "automatic_dev";
+  else if (opts.jsx === "classic") payload.jsx = "classic";
+  if (opts.jsxFactory) payload.jsxFactory = opts.jsxFactory;
+  if (opts.jsxFragment) payload.jsxFragment = opts.jsxFragment;
+  if (opts.jsxImportSource) payload.jsxImportSource = opts.jsxImportSource;
+  if (opts.dropConsole) payload.dropConsole = true;
+  if (opts.dropDebugger) payload.dropDebugger = true;
+  if (opts.asciiOnly) payload.asciiOnly = true;
+  if (opts.charsetUtf8) payload.charsetUtf8 = true;
+  if (opts.experimentalDecorators) payload.experimentalDecorators = true;
+  if (opts.emitDecoratorMetadata) payload.emitDecoratorMetadata = true;
+  if (opts.useDefineForClassFields === false) payload.useDefineForClassFields = false;
+  if (opts.format) payload.format = opts.format;
+  if (opts.quotes) payload.quotes = opts.quotes;
+  if (opts.platform === "react-native") payload.platform = "react_native";
+  else if (opts.platform) payload.platform = opts.platform;
+  if (opts.minifyWhitespace || opts.minify) payload.minifyWhitespace = true;
+  if (opts.minifyIdentifiers || opts.minify) payload.minifyIdentifiers = true;
+  if (opts.minifySyntax || opts.minify) payload.minifySyntax = true;
+  if (opts.sourcemap) payload.sourcemap = true;
+  if (opts.sourcemapDebugIds) payload.sourcemapDebugIds = true;
+  // sourcesContent Zig 기본 true — false일 때만 명시 전달
+  if (opts.sourcesContent === false) payload.sourcesContent = false;
+  if (opts.sourceRoot) payload.sourceRoot = opts.sourceRoot;
+  return JSON.stringify(payload);
 }
 
 // ─── browserslist → UnsupportedFeatures ───

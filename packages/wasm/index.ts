@@ -12,7 +12,7 @@
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
 import type { TranspileOptions, TranspileResult } from "../shared/index";
-import { encodeFlags, targetToUnsupported } from "../shared/index";
+import { buildOptionsJson, targetToUnsupported } from "../shared/index";
 
 // ─── WASM Instance ───
 
@@ -25,16 +25,8 @@ interface WasmExports {
     srcLen: number,
     filePtr: number,
     fileLen: number,
-    flags: number,
-    unsupported: number,
-    jsxFactoryPtr: number,
-    jsxFactoryLen: number,
-    jsxFragmentPtr: number,
-    jsxFragmentLen: number,
-    jsxImportSourcePtr: number,
-    jsxImportSourceLen: number,
-    sourceRootPtr: number,
-    sourceRootLen: number,
+    optsJsonPtr: number,
+    optsJsonLen: number,
   ): bigint;
   get_error_ptr(): number;
   get_error_len(): number;
@@ -175,31 +167,11 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
 
   const [srcPtr, srcLen] = writeString(source);
   const [filePtr, fileLen] = options.filename ? writeString(options.filename) : [0, 0];
-  const [factoryPtr, factoryLen] = writeOptionalString(options.jsxFactory);
-  const [fragmentPtr, fragmentLen] = writeOptionalString(options.jsxFragment);
-  const [importSourcePtr, importSourceLen] = writeOptionalString(options.jsxImportSource);
-  const [sourceRootPtr, sourceRootLen] = writeOptionalString(options.sourceRoot);
-
-  const flags = encodeFlags(options);
-  const unsupported = targetToUnsupported(options.target);
+  const optsJson = buildOptionsJson(options, targetToUnsupported(options.target));
+  const [optsPtr, optsLen] = writeString(optsJson);
 
   try {
-    const packed = wasm.transpile(
-      srcPtr,
-      srcLen,
-      filePtr,
-      fileLen,
-      flags,
-      unsupported,
-      factoryPtr,
-      factoryLen,
-      fragmentPtr,
-      fragmentLen,
-      importSourcePtr,
-      importSourceLen,
-      sourceRootPtr,
-      sourceRootLen,
-    );
+    const packed = wasm.transpile(srcPtr, srcLen, filePtr, fileLen, optsPtr, optsLen);
 
     const outPtr = Number(packed >> 32n);
     const outLen = Number(packed & 0xffffffffn);
@@ -225,9 +197,6 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   } finally {
     wasm.dealloc(srcPtr, srcLen);
     if (filePtr) wasm.dealloc(filePtr, fileLen);
-    if (factoryPtr) wasm.dealloc(factoryPtr, factoryLen);
-    if (fragmentPtr) wasm.dealloc(fragmentPtr, fragmentLen);
-    if (importSourcePtr) wasm.dealloc(importSourcePtr, importSourceLen);
-    if (sourceRootPtr) wasm.dealloc(sourceRootPtr, sourceRootLen);
+    wasm.dealloc(optsPtr, optsLen);
   }
 }
