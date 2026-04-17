@@ -1446,10 +1446,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .private_identifier or key_node.tag == .computed_property_key) {
-                std.debug.panic(
-                    "classifyMembers: accessor_property with {s} key: unsupported in ES5 lowering; requires decorator path",
+                // private/computed accessor는 ES5 direct path 미구현 — drop + warn (별도 이슈).
+                std.log.warn(
+                    "ES5 target: accessor_property with {s} key is not yet lowered — member dropped",
                     .{@tagName(key_node.tag)},
                 );
+                return;
             }
 
             const raw_key = self.ast.getText(key_node.span);

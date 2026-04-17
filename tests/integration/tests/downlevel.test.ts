@@ -563,6 +563,81 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("100 200");
     });
 
+    test("#1389: Stage 3 member decorator + ES5 target — decorator applied", async () => {
+      // 이전엔 unsupported.class 분기가 visitClass(→Stage3 dispatch)를 bypass해서 decorator drop.
+      // 이제 dispatch가 Stage 3를 먼저 돌리고 결과 IIFE를 재방문해 inner class_expression을 ES5 lower.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function logged(target: any, ctx: ClassMemberDecoratorContext) {
+              return function (this: any, ...args: any[]) {
+                console.log('wrapped:' + String(ctx.name));
+                return (target as any).apply(this, args);
+              };
+            }
+            class C {
+              @logged tick() { return 42; }
+            }
+            console.log('result:' + new C().tick());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("wrapped:tick\nresult:42");
+    });
+
+    test("#1389: Stage 3 class decorator + ES5 target — class wrapped", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag<T extends new (...args: any[]) => any>(ctor: T, ctx: ClassDecoratorContext) {
+              return class extends ctor {
+                tagged = true;
+              };
+            }
+            @tag
+            class C {
+              x = 1;
+            }
+            const c: any = new C();
+            console.log(c.tagged, c.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true 1");
+    });
+
+    test("#1389: Stage 3 decorator + accessor field + ES5 target — both transformed", async () => {
+      // #1389 (decorator dispatch) + #1398 (accessor expansion) 상호작용 확인.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function logged(target: any, ctx: ClassMemberDecoratorContext) {
+              return function (this: any, ...args: any[]) { return (target as any).apply(this, args); };
+            }
+            class C {
+              accessor counter = 10;
+              @logged tick() { this.counter += 1; return this.counter; }
+            }
+            const c = new C();
+            console.log(c.tick(), c.counter);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("11 11");
+    });
+
     test("nested arrow this capture", async () => {
       const result = await bundleAndRun(
         {
