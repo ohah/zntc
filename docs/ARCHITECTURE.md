@@ -132,3 +132,14 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - 파서에서 구문 컨텍스트 추적, Semantic 패스에서 스코프/심볼
 - 스코프: 플랫 배열 + 부모 인덱스. 심볼: 최소 모델 (name/scope/kind/flags/span)
 - Strict mode는 파서에서 추적 ("use strict" directive + module mode)
+
+### Diagnostic System
+- **Diagnostic 구조**: 단일 primary span + 옵션 multi-span labels (예: "previously declared here", "referenced from") + 옵션 help hint + `ZTSxxxx` 에러 코드 + docs URL
+- **Rendering**: `src/rich_diagnostic.zig` + `src/diagnostic_renderer.zig` — 파일 경로, 라인/컬럼, 코드 프레임, ANSI 컬러, Levenshtein "did you mean?" 제안
+- **Exposure paths**
+  - CLI: stderr로 렌더된 텍스트 + exit 1
+  - NAPI `transpile()`: `TranspileResult.errors`에 같은 렌더 문자열 (tsc 호환 — 에러 있어도 `code` 반환)
+  - NAPI `build()`: `{ errors, warnings }` 구조화 배열 (각 항목 `{ text, location }`)
+  - WASM: 같은 렌더 함수를 공유하여 문자열 버퍼로 반환
+- **Docs URL**: 각 에러 코드(`ZTSxxxx`)는 `documents/` Starlight 사이트의 `reference/errors/ZTSxxxx` 페이지로 연결. 소문자 `zts` 세그먼트 사용 (deploy된 라우트와 일치)
+- **Crash handling**: panic 시 Bun 스타일 crash report — 재현 정보 + GitHub 레포 링크 안내
