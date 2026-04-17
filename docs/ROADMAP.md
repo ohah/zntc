@@ -47,7 +47,7 @@
 | 34. 플러그인 훅 확장 | renderChunk/generateBundle NAPI 노출 + vitePlugin 매핑 | ✅ |
 | 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
 | 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |
-| 37. Stage 3 decorators | TC39 Stage 3 데코레이터 (method/getter/setter/field/accessor/class, MobX 6 호환, target ≥ ES2015 한정 — ES5 lowering은 #1389) | ✅ |
+| 37. Stage 3 decorators | TC39 Stage 3 데코레이터 (method/getter/setter/field/accessor/class, MobX 6 호환). ES5 타겟 lowering 포함 완료 — 단 `accessor #x` / `accessor [k]` 는 미구현 (실사용 라이브러리 없음, 필요 시 추가) | ✅ |
 | 38. CSS 번들링 | @import 인라이닝, 별도 .css 파일 emit, Lightning CSS minify 연동 | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
@@ -196,7 +196,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - **mangleProps** — `XL` | 선행: 없음 | 배치: 단독
 - ~~**import.meta.glob**~~ — ✅ 완료. Vite 호환 `import.meta.glob()` (eager/import 옵션 지원)
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
-- ~~**Stage 3 decorators**~~ — ✅ 완료 (target ≥ ES2015). TC39 Stage 3 데코레이터 다운레벨링 (method/getter/setter/field/accessor/class, initializer 체이닝, MobX 6 호환). ES5 타겟 lowering은 #1389 참고.
+- ~~**Stage 3 decorators**~~ — ✅ 완료. TC39 Stage 3 데코레이터 다운레벨링 (method/getter/setter/field/accessor/class, initializer 체이닝, MobX 6 호환). ES5 타겟 포함 (dispatch 수정 #1389). **알려진 제약**: `accessor #x` (private key) / `accessor [k]` (computed key) 는 ES5 direct path에서 미구현 — Babel/esbuild/oxc는 지원하나 프로덕션 라이브러리 (MobX 6, Lit, Angular signals 등) 모두 공개 키 accessor만 사용하므로 실사용 사례 없음. 필요 시 추가 구현.
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
 - **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
 - **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
