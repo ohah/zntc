@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { createFixture, runNode, runZts, runZtsInDir } from "./helpers";
 import { join, basename } from "node:path";
-import { realpathSync, symlinkSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 
 /// CJS/Node 프리셋으로 번들하고 outFile 경로 반환. 번들 실패 시 throw.
 async function bundleCjsNode(dir: string, entry: string, outName = "out.cjs"): Promise<string> {
@@ -134,6 +134,99 @@ describe("Node.js 호환 edge case", () => {
       const run = await runNode(outFile);
       expect(run.stdout).toMatch(/^file:\/\//);
       expect(run.stdout).toContain(basename(outFile));
+    });
+  });
+
+  describe("ESM+CJS interop (#1456)", () => {
+    test("shim injected for platform=node + CJS wrap", async () => {
+      const f = await createFixture({
+        "app.ts": `import dep from 'cjs-dep';\nconsole.log(dep.hostname);`,
+        "package.json": `{"type": "module"}`,
+        "node_modules/cjs-dep/package.json": `{"name":"cjs-dep","main":"index.cjs"}`,
+        "node_modules/cjs-dep/index.cjs": `const os = require('os');\nmodule.exports = { hostname: os.hostname() };`,
+      });
+      cleanup = f.cleanup;
+      const outFile = join(f.dir, "out.mjs");
+      const bundle = await runZts([
+        "--bundle",
+        join(f.dir, "app.ts"),
+        "--format=esm",
+        "--platform=node",
+        "-o",
+        outFile,
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      const bundled = readFileSync(outFile, "utf8");
+      expect(bundled).toContain('import { createRequire } from "node:module"');
+      const run = await runNode(outFile);
+      expect(run.stdout.length).toBeGreaterThan(0);
+    });
+
+    test("shim NOT injected for pure ESM", async () => {
+      const f = await createFixture({ "app.ts": `export const v = 1;\nconsole.log(v);` });
+      cleanup = f.cleanup;
+      const outFile = join(f.dir, "out.mjs");
+      const bundle = await runZts([
+        "--bundle",
+        join(f.dir, "app.ts"),
+        "--format=esm",
+        "--platform=node",
+        "-o",
+        outFile,
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      expect(readFileSync(outFile, "utf8")).not.toContain("createRequire");
+    });
+
+    test("shim NOT injected for platform=browser", async () => {
+      const f = await createFixture({
+        "app.ts": `import dep from 'cjs-dep';\nconsole.log(dep.x);`,
+        "node_modules/cjs-dep/package.json": `{"name":"cjs-dep","main":"index.cjs"}`,
+        "node_modules/cjs-dep/index.cjs": `module.exports = { x: 1 };`,
+      });
+      cleanup = f.cleanup;
+      const outFile = join(f.dir, "out.mjs");
+      const bundle = await runZts([
+        "--bundle",
+        join(f.dir, "app.ts"),
+        "--format=esm",
+        "--platform=browser",
+        "-o",
+        outFile,
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+      const bundled = readFileSync(outFile, "utf8");
+      expect(bundled).not.toContain("node:module");
+      expect(bundled).not.toContain("createRequire");
+    });
+
+    test("code splitting: shim injected in chunk containing CJS wrap", async () => {
+      const f = await createFixture({
+        "app.ts": `const lazy = import('./lazy');\nlazy.then((m) => console.log(m.run()));`,
+        "lazy.ts": `import dep from 'cjs-dep';\nexport function run() { return dep.x; }`,
+        "package.json": `{"type": "module"}`,
+        "node_modules/cjs-dep/package.json": `{"name":"cjs-dep","main":"index.cjs"}`,
+        "node_modules/cjs-dep/index.cjs": `module.exports = { x: 42 };`,
+      });
+      cleanup = f.cleanup;
+
+      const outDir = join(f.dir, "dist");
+      const bundle = await runZts([
+        "--bundle",
+        join(f.dir, "app.ts"),
+        "--format=esm",
+        "--platform=node",
+        "--splitting",
+        "--outdir",
+        outDir,
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+
+      const outputs = readdirSync(outDir).filter((n) => n.endsWith(".js") || n.endsWith(".mjs"));
+      const hasShim = outputs.some((n) =>
+        readFileSync(join(outDir, n), "utf8").includes("createRequire(import.meta.url)"),
+      );
+      expect(hasShim).toBe(true);
     });
   });
 });
