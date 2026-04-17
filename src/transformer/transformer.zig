@@ -932,6 +932,9 @@ pub const Transformer = struct {
 
             // === 삼항 노드: 자식 3개 재귀 방문 ===
             .if_statement, .conditional_expression, .for_in_statement => {
+                if (node.tag == .for_in_statement and self.current_private_fields.len > 0) {
+                    if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
+                }
                 if (self.options.unsupported.destructuring) {
                     // for (var [i,j,k] in obj) → for (var _ref in obj) { var i=_ref[0],...; body }
                     const left = node.data.ternary.a;
@@ -958,6 +961,11 @@ pub const Transformer = struct {
                 return self.visitForInOfTernary(node);
             },
             .for_of_statement => {
+                // private field target은 그대로 두면 `for (_x.get(this) of arr)` → invalid.
+                // 임시 binding + body prefix assignment 패턴으로 변환 (#1491).
+                if (self.current_private_fields.len > 0) {
+                    if (try self.tryLowerForInOfPrivateTarget(node)) |result| return result;
+                }
                 if (self.options.unsupported.for_of) {
                     return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
                 }
@@ -1541,6 +1549,86 @@ pub const Transformer = struct {
             .span = node.span,
             .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
         });
+    }
+
+    /// for-of/for-in의 left에 private_field 가 포함되면 임시 binding + body prefix
+    /// assignment 로 재구성 (#1491). 그렇지 않으면 null.
+    /// - `for (this.#x of arr) BODY` → `for (var _t of arr) { this.#x = _t; BODY }`
+    /// - `for ({x: this.#x} of arr) BODY` → `for (var _t of arr) { ({x: this.#x} = _t); BODY }`
+    /// body prefix의 assignment 는 이후 일반 assignment_expression lowering 경로를 거쳐
+    /// __classPrivateFieldSet / destructuring helper 로 변환됨.
+    fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeIndex {
+        const left_idx = node.data.ternary.a;
+        if (left_idx.isNone()) return null;
+        const left_node = self.ast.getNode(left_idx);
+        const has_private = switch (left_node.tag) {
+            .private_field_expression => true,
+            .object_assignment_target, .array_assignment_target => es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx),
+            else => false,
+        };
+        if (!has_private) return null;
+
+        const span = node.span;
+        const temp_span = try es_helpers.makeTempVarSpan(self);
+        // var _t;
+        const binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+        const declarator = try es_helpers.makeDeclarator(self, binding, NodeIndex.none, span);
+        const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
+
+        // (LHS = _t) assignment_expression — 이후 방문 시 lowerPrivateFieldSet / destructuring 경로 거침.
+        const tmp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+        const prefix_assign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = span,
+            .data = .{ .binary = .{
+                .left = left_idx,
+                .right = tmp_ref,
+                .flags = @intFromEnum(token_mod.Kind.eq),
+            } },
+        });
+        const prefix_stmt = try self.ast.addNode(.{
+            .tag = .expression_statement,
+            .span = span,
+            .data = .{ .unary = .{ .operand = prefix_assign, .flags = 0 } },
+        });
+
+        // 원본 body 의 자식을 prefix_stmt 와 묶어 block_statement 생성 (body 내부는 일반 visit).
+        const body_idx = node.data.ternary.c;
+        const new_body = try self.buildForBodyWithPrefix(body_idx, prefix_stmt, span);
+
+        // for (var _t ... ) new_body 로 재조립한 뒤, 표준 visit로 하위 변환 적용.
+        const rewritten = try self.ast.addNode(.{
+            .tag = node.tag,
+            .span = span,
+            .data = .{ .ternary = .{ .a = var_decl, .b = node.data.ternary.b, .c = new_body } },
+        });
+        return try self.visitNode(rewritten);
+    }
+
+    /// for-loop body 앞에 prefix statement를 삽입해 새 block_statement 생성.
+    /// body 가 이미 block_statement면 기존 자식 앞에 prefix를 끼우고, 아니면 [prefix, body] 두 개로 감쌈.
+    fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: NodeIndex, span: Span) Error!NodeIndex {
+        if (body_idx.isNone()) {
+            const list = try self.ast.addNodeList(&.{prefix_stmt});
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+        }
+        const body_node = self.ast.getNode(body_idx);
+        if (body_node.tag != .block_statement) {
+            const list = try self.ast.addNodeList(&.{ prefix_stmt, body_idx });
+            return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
+        }
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        try self.scratch.append(self.allocator, prefix_stmt);
+        const start = body_node.data.list.start;
+        const len = body_node.data.list.len;
+        var i: u32 = 0;
+        while (i < len) : (i += 1) {
+            const child_raw = self.ast.extra_data.items[start + i];
+            try self.scratch.append(self.allocator, @enumFromInt(child_raw));
+        }
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
     }
 
     /// 리스트 노드: 각 자식을 방문, .none이 아닌 것만 새 리스트로 수집.

@@ -529,6 +529,63 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("10,U");
     });
 
+    test("for-of / for-in binding이 private field (#1491)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #x = 0;
+              #k = "";
+              static #s = 0;
+              consumeOf(arr: number[]) { for (this.#x of arr) {} }
+              consumeIn(obj: any) { for (this.#k in obj) {} }
+              consumeDestr(arr: Array<{x: number}>) { for ({x: this.#x} of arr) {} }
+              static consumeStatic(arr: number[]) { for (C.#s of arr) {} }
+              get vx() { return this.#x; }
+              get vk() { return this.#k; }
+              static get vs() { return C.#s; }
+            }
+            const c = new C();
+            c.consumeOf([1, 2, 3]); const a = c.vx;                    // 3
+            c.consumeIn({ a: 1, b: 2, c: 3 }); const b = c.vk;         // "c"
+            c.consumeDestr([{x: 10}, {x: 20}, {x: 30}]); const d = c.vx; // 30
+            C.consumeStatic([4, 5, 6]); const e = C.vs;                // 6
+            console.log(a + "," + b + "," + d + "," + e);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3,c,30,6");
+    });
+
+    test("for-of body가 block이 아닌 single-statement + private target", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #x = 0;
+              get v() { return this.#x; }
+              consume(arr: number[]) {
+                // 빈 body: private target 후처리만 실행
+                for (this.#x of arr);
+              }
+            }
+            const c = new C();
+            c.consume([7, 8, 9]);
+            console.log(c.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("9");
+    });
+
     test("private method + private field 상호 호출", async () => {
       const result = await bundleAndRun(
         {
