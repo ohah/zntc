@@ -3625,8 +3625,9 @@ pub const Transformer = struct {
             const sym_id = self.getSymbolIdAt(name_idx) orelse continue;
             const owned_pattern = try self.allocator.dupe(u8, raw[1..last_slash]);
             errdefer self.allocator.free(owned_pattern);
-            // 중복 선언 (eg. block-shadow) 시 이전 entry 해제.
-            if (self.regex_var_map.fetchPut(self.allocator, sym_id, owned_pattern) catch null) |old| {
+            // 중복 선언 (eg. block-shadow) 시 이전 entry 해제. OOM 은 상위로 전파 — 조용히 삼키면
+            // 후속 lookup 이 실패해 #1473 변환이 silent 누락되는 regression.
+            if (try self.regex_var_map.fetchPut(self.allocator, sym_id, owned_pattern)) |old| {
                 self.allocator.free(old.value);
             }
         }
