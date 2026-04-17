@@ -1411,6 +1411,71 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("15/01/2020");
     });
 
+    test("const 변수 regex + replace의 $<name> 추적", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const re = /(?<y>\\d{4})-(?<m>\\d{2})-(?<d>\\d{2})/;
+            console.log('2020-01-15'.replace(re, '$<d>/$<m>/$<y>'));
+          `,
+        },
+        "index.ts",
+        ["--target=es2017"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("15/01/2020");
+    });
+
+    test("template literal replacement (보간 없음)의 $<name>", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const r = 'hello'.replace(/(?<word>\\w+)/, \`<\$<word>>\`);
+            console.log(r);
+          `,
+        },
+        "index.ts",
+        ["--target=es2017"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("<hello>");
+    });
+
+    test("const 변수 regex + template literal 조합", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const re = /(?<a>\\w+)-(?<b>\\d+)/;
+            console.log('foo-42'.replace(re, \`[\$<b>:\$<a>]\`));
+          `,
+        },
+        "index.ts",
+        ["--target=es2017"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[42:foo]");
+    });
+
+    test("let 변수 regex는 추적 안 됨 (재할당 가능)", async () => {
+      // let 은 재할당 가능 → 추적 비활성. ES2018+ 타겟이라 named group 그대로 유지.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let re = /(?<n>\\d+)/;
+            console.log('a1'.replace(re, '<$<n>>'));
+          `,
+        },
+        "index.ts",
+        ["--target=es2018"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a<1>");
+    });
+
     test("regex literal escape in character class", async () => {
       const result = await bundleAndRun(
         {
@@ -1448,6 +1513,261 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
         expect(result.runOutput).toBe("4,5");
       });
     }
+  });
+
+  describe("추가 일반 엣지 케이스", () => {
+    test("arrow returning object literal `() => ({})`", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const fn = (x: number) => ({ value: x * 2 });
+            console.log(fn(5).value);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("logical assignment in deep member access", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj: any = { a: { b: { c: null } } };
+            obj.a.b.c ??= compute();
+            function compute() { return 42; }
+            console.log(obj.a.b.c);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("try-catch-finally + return: finally가 catch보다 우선", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function fn(): string {
+              try {
+                throw new Error('boom');
+              } catch (e: any) {
+                return 'caught:' + e.message;
+              } finally {
+                return 'finally-wins';
+              }
+            }
+            console.log(fn());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("finally-wins");
+    });
+
+    // skip: ES5 generator state machine의 for loop + break op 시퀀스 빌드 오류 — #1480
+    test.skip("generator + yield in for loop with break", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              for (let i = 0; i < 10; i++) {
+                if (i === 5) break;
+                yield i;
+              }
+            }
+            const arr = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,2,3,4");
+    });
+
+    test("tagged template + 다중 expression", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag(strs: TemplateStringsArray, ...vals: any[]): string {
+              let out = '';
+              for (let i = 0; i < strs.length; i++) {
+                out += strs[i];
+                if (i < vals.length) out += '<' + vals[i] + '>';
+              }
+              return out;
+            }
+            const a = 1, b = 2, c = 3;
+            console.log(tag\`x=\${a},y=\${b},z=\${c}\`);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("x=<1>,y=<2>,z=<3>");
+    });
+
+    test("computed class method name + key 표현식", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = 'greet';
+            class C {
+              [k + '!']() { return 'hi'; }
+              [\`get_\${k}\`]() { return 'getter'; }
+            }
+            const c: any = new C();
+            console.log(c['greet!'](), c['get_greet']());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi getter");
+    });
+
+    test("async arrow + try-catch-finally", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const fn = async () => {
+              try { return await Promise.resolve('a'); }
+              catch (e) { return 'err'; }
+              finally { /* no-op */ }
+            };
+            fn().then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a");
+    });
+
+    test("destructuring in for-of with rest", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const data: number[][] = [[1, 2, 3], [4, 5, 6]];
+            const out: string[] = [];
+            for (const [first, ...rest] of data) {
+              out.push(first + ':' + rest.join('+'));
+            }
+            console.log(out.join('|'));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1:2+3|4:5+6");
+    });
+
+    test("Symbol.iterator 직접 구현 + spread + for-of", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj = {
+              [Symbol.iterator]() {
+                let i = 0;
+                return {
+                  next() { return i < 3 ? { value: i++, done: false } : { value: undefined, done: true }; }
+                };
+              }
+            };
+            const a = [...(obj as any)];
+            const b: number[] = [];
+            for (const v of obj as any) b.push(v);
+            console.log(a.join(','), b.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,2 0,1,2");
+    });
+
+    test("async generator + yield* 위임 (ES2018+)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function* inner() { yield 1; yield 2; }
+            async function* outer() { yield 0; yield* inner(); yield 3; }
+            (async () => {
+              const arr: number[] = [];
+              for await (const v of outer()) arr.push(v);
+              console.log(arr.join(','));
+            })();
+          `,
+        },
+        "index.ts",
+        ["--target=es2018"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,2,3");
+    });
+
+    test("nullish coalescing chain with falsy values", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a = 0;
+            const b = '';
+            const c = false;
+            const d = null;
+            console.log(a ?? 'A', b ?? 'B', c ?? 'C', d ?? 'D');
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0  false D");
+    });
+
+    // skip: ES5 class expression(mixin) lowering이 corrupted name 출력 — #1481
+    test.skip("class extends 표현식 (computed class)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const mixin = (Base: any) => class extends Base { extra() { return 'mixin'; } };
+            class P { greet() { return 'hi'; } }
+            class C extends mixin(P) {}
+            const c: any = new C();
+            console.log(c.greet(), c.extra());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi mixin");
+    });
   });
 
   describe("미해결 (알려진 한계)", () => {
