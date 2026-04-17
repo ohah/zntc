@@ -733,27 +733,27 @@ function foo(t,u) {
 	let g;
 	let f;
 	// type parameter as left operand
-var r1 = t + a;
+	var r1 = t + a;
 	// ok, one operand is any
-var r2 = t + b;
+	var r2 = t + b;
 	var r3 = t + c;
 	var r4 = t + d;
 	// ok, one operand is string
-var r5 = t + e;
+	var r5 = t + e;
 	var r6 = t + g;
 	var r7 = t + f;
 	// type parameter as right operand
-var r8 = a + t;
+	var r8 = a + t;
 	// ok, one operand is any
-var r9 = b + t;
+	var r9 = b + t;
 	var r10 = c + t;
 	var r11 = d + t;
 	// ok, one operand is string
-var r12 = e + t;
+	var r12 = e + t;
 	var r13 = g + t;
 	var r14 = f + t;
 	// other cases
-var r15 = t + null;
+	var r15 = t + null;
 	var r16 = t + undefined;
 	var r17 = t + t;
 	var r18 = t + u;
@@ -3576,7 +3576,7 @@ function foo(t,u) {
 	var r7 = t === u;
 	var r8 = t !== u;
 	// operator <
-var r1a1 = t < a;
+	var r1a1 = t < a;
 	var r1a2 = t < b;
 	var r1a3 = t < c;
 	var r1a4 = t < d;
@@ -3591,7 +3591,7 @@ var r1a1 = t < a;
 	var r1b6 = f < t;
 	var r1b7 = g < t;
 	// operator >
-var r2a1 = t < a;
+	var r2a1 = t < a;
 	var r2a2 = t < b;
 	var r2a3 = t < c;
 	var r2a4 = t < d;
@@ -3606,7 +3606,7 @@ var r2a1 = t < a;
 	var r2b6 = f < t;
 	var r2b7 = g < t;
 	// operator <=
-var r3a1 = t < a;
+	var r3a1 = t < a;
 	var r3a2 = t < b;
 	var r3a3 = t < c;
 	var r3a4 = t < d;
@@ -3621,7 +3621,7 @@ var r3a1 = t < a;
 	var r3b6 = f < t;
 	var r3b7 = g < t;
 	// operator >=
-var r4a1 = t < a;
+	var r4a1 = t < a;
 	var r4a2 = t < b;
 	var r4a3 = t < c;
 	var r4a4 = t < d;
@@ -3636,7 +3636,7 @@ var r4a1 = t < a;
 	var r4b6 = f < t;
 	var r4b7 = g < t;
 	// operator ==
-var r5a1 = t < a;
+	var r5a1 = t < a;
 	var r5a2 = t < b;
 	var r5a3 = t < c;
 	var r5a4 = t < d;
@@ -3651,7 +3651,7 @@ var r5a1 = t < a;
 	var r5b6 = f < t;
 	var r5b7 = g < t;
 	// operator !=
-var r6a1 = t < a;
+	var r6a1 = t < a;
 	var r6a2 = t < b;
 	var r6a3 = t < c;
 	var r6a4 = t < d;
@@ -3666,7 +3666,7 @@ var r6a1 = t < a;
 	var r6b6 = f < t;
 	var r6b7 = g < t;
 	// operator ===
-var r7a1 = t < a;
+	var r7a1 = t < a;
 	var r7a2 = t < b;
 	var r7a3 = t < c;
 	var r7a4 = t < d;
@@ -3681,7 +3681,7 @@ var r7a1 = t < a;
 	var r7b6 = f < t;
 	var r7b7 = g < t;
 	// operator !==
-var r8a1 = t < a;
+	var r8a1 = t < a;
 	var r8a2 = t < b;
 	var r8a3 = t < c;
 	var r8a4 = t < d;
@@ -5180,7 +5180,7 @@ function foo(/* extends T*/
 /* extends U*/
 t,u,v) {
 	// errors
-var ra1 = t < u;
+	var ra1 = t < u;
 	var ra2 = t > u;
 	var ra3 = t <= u;
 	var ra4 = t >= u;
@@ -5213,7 +5213,7 @@ var ra1 = t < u;
 	var rd7 = v === t;
 	var rd8 = v !== t;
 	// ok
-var re1 = t < a;
+	var re1 = t < a;
 	var re2 = t > a;
 	var re3 = t <= a;
 	var re4 = t >= a;
@@ -5852,7 +5852,7 @@ function fn2(/* extends T*/
 t,u,v) {
 	var r1 = t || u;
 	//var r2: T = t || u;
-var r3 = u || u;
+	var r3 = u || u;
 	var r4 = u || u;
 	var r5 = u || v;
 	var r6 = u || v;
@@ -6643,7 +6643,7 @@ class C {
 		return "string";
 	}
 	// Error; get contextual type by set accessor parameter type annotation
-set Y(y) {
+	set Y(y) {
 	}
 	get Y() {
 		return true;
@@ -6714,7 +6714,7 @@ class A {
 }
 class B extends A {
 	// Ensure 'value' is of type 'number (and not '{}') by using its 'toExponential()' method.
-constructor() {
+	constructor() {
 		super((value) => String(value.toExponential()));
 	}
 }
@@ -6730,7 +6730,7 @@ class A {
 }
 class C extends A {
 	// Ensure 'value' is not of type 'any' by invoking it with type arguments.
-constructor() {
+	constructor() {
 		super((value) => String(value()));
 	}
 }
@@ -6748,13 +6748,13 @@ class CBase {
 class C extends CBase {
 	constructor() {
 		// Should be okay.
-// 'p' should have type 'string'.
-super({ method(p) {
+		// 'p' should have type 'string'.
+		super({ method(p) {
 			p.length;
 		} });
 		// Should be okay.
-// 'p' should have type 'string'.
-super.foo({ method(p) {
+		// 'p' should have type 'string'.
+		super.foo({ method(p) {
 			p.length;
 		} });
 	}
@@ -8131,13 +8131,13 @@ exports[`TSC: expressions contextuallyTypedFunctionExpressionsAndReturnAnnotatio
 foo((y) => {
 	var z = y.charAt(0);
 	// Should be string
-return null;
+	return null;
 });
 foo((y) => {
 	return (y2) => {
 		var z = y2.toFixed();
 		// Should be string
-return 0;
+		return 0;
 	};
 });
 "
@@ -8950,9 +8950,9 @@ exports[`TSC: expressions privateIdentifierChain.1 1`] = `
 	constructor() {
 		this?.#b;
 		// Error
-this?.a.#b;
+		this?.a.#b;
 		// Error
-this?.getA().#b;
+		this?.getA().#b;
 	}
 }
 // Error
@@ -9115,11 +9115,11 @@ function g2(headerNames) {
 function foo(options) {
 	let x1 = (options || {}).a;
 	// Object type not widened
-let x2 = (options || {})["a"];
+	let x2 = (options || {})["a"];
 	// Object type not widened
-(options || {}).a = 1;
+	(options || {}).a = 1;
 	// Object type widened, error
-(options || {})["a"] = 1;
+	(options || {})["a"] = 1;
 }
 // Object type widened, error
 "
@@ -9135,11 +9135,11 @@ function v() {
 }
 class Derived extends Base {
 	//super call in class constructor of derived type
-constructor(q) {
+	constructor(q) {
 		this.q = q;
 		super("");
 		//type of super call expression is void
-var p = super("");
+		var p = super("");
 		var p = v();
 	}
 }
@@ -9306,7 +9306,7 @@ exports[`TSC: expressions thisInInvalidContexts 1`] = `
 class ClassWithNoInitializer extends BaseErrClass {
 	t;
 	//'this' in optional super call
-constructor() {
+	constructor() {
 		super(this);
 	}
 }
@@ -9314,7 +9314,7 @@ constructor() {
 class ClassWithInitializer extends BaseErrClass {
 	t = 4;
 	//'this' in required super call
-constructor() {
+	constructor() {
 		super(this);
 	}
 }
@@ -9346,7 +9346,7 @@ exports[`TSC: expressions thisInInvalidContextsExternalModule 1`] = `
 class ClassWithNoInitializer extends BaseErrClass {
 	t;
 	//'this' in optional super call
-constructor() {
+	constructor() {
 		super(this);
 	}
 }
@@ -9354,7 +9354,7 @@ constructor() {
 class ClassWithInitializer extends BaseErrClass {
 	t = 4;
 	//'this' in required super call
-constructor() {
+	constructor() {
 		super(this);
 	}
 }
@@ -9384,7 +9384,7 @@ exports[`TSC: expressions thisInObjectLiterals 1`] = `
 	t;
 	fn() {
 		//type of 'this' in an object literal is the containing scope's this
-var t = { x: this, y: this.t };
+		var t = { x: this, y: this.t };
 		var t;
 	}
 }
@@ -9402,19 +9402,19 @@ exports[`TSC: expressions typeOfThisGeneral 1`] = `
 	static staticCanary;
 	constructor() {
 		//type of 'this' in constructor body is the class instance type
-var p = this.canary;
+		var p = this.canary;
 		var p;
 		this.canary = 3;
 	}
 	//type of 'this' in member function param list is the class instance type
-memberFunc(t=this) {
+	memberFunc(t=this) {
 		var t;
 		//type of 'this' in member function body is the class instance type
-var p = this;
+		var p = this;
 		var p;
 	}
 	//type of 'this' in member accessor(get and set) body is the class instance type
-get prop() {
+	get prop() {
 		var p = this;
 		var p;
 		return this;
@@ -9427,23 +9427,23 @@ get prop() {
 	}
 	someFunc = () => {
 		//type of 'this' in member variable initializer is the class instance type
-var t = this;
+		var t = this;
 		var t;
 	};
 	//type of 'this' in static function param list is constructor function type
-static staticFn(t=this) {
+	static staticFn(t=this) {
 		var t;
 		var t = MyTestClass;
 		t.staticCanary;
 		//type of 'this' in static function body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyTestClass;
 		p.staticCanary;
 	}
 	static get staticProp() {
 		//type of 'this' in static accessor body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyTestClass;
 		p.staticCanary;
@@ -9451,7 +9451,7 @@ var p = this;
 	}
 	static set staticProp(v) {
 		//type of 'this' in static accessor body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyTestClass;
 		p.staticCanary;
@@ -9462,19 +9462,19 @@ class MyGenericTestClass {
 	static staticCanary;
 	constructor() {
 		//type of 'this' in constructor body is the class instance type
-var p = this.canary;
+		var p = this.canary;
 		var p;
 		this.canary = 3;
 	}
 	//type of 'this' in member function param list is the class instance type
-memberFunc(t=this) {
+	memberFunc(t=this) {
 		var t;
 		//type of 'this' in member function body is the class instance type
-var p = this;
+		var p = this;
 		var p;
 	}
 	//type of 'this' in member accessor(get and set) body is the class instance type
-get prop() {
+	get prop() {
 		var p = this;
 		var p;
 		return this;
@@ -9487,23 +9487,23 @@ get prop() {
 	}
 	someFunc = () => {
 		//type of 'this' in member variable initializer is the class instance type
-var t = this;
+		var t = this;
 		var t;
 	};
 	//type of 'this' in static function param list is constructor function type
-static staticFn(t=this) {
+	static staticFn(t=this) {
 		var t;
 		var t = MyGenericTestClass;
 		t.staticCanary;
 		//type of 'this' in static function body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyGenericTestClass;
 		p.staticCanary;
 	}
 	static get staticProp() {
 		//type of 'this' in static accessor body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyGenericTestClass;
 		p.staticCanary;
@@ -9511,7 +9511,7 @@ var p = this;
 	}
 	static set staticProp(v) {
 		//type of 'this' in static accessor body is constructor function type
-var p = this;
+		var p = this;
 		var p;
 		var p = MyGenericTestClass;
 		p.staticCanary;
@@ -9522,7 +9522,7 @@ function fn(s=this) {
 	var s;
 	s.spaaaaaaace = 4;
 	//type of 'this' in a function declaration body is Any
-var t;
+	var t;
 	var t = this;
 	this.spaaaaace = 4;
 }
@@ -9531,7 +9531,7 @@ var q1 = function(s=this) {
 	var s;
 	s.spaaaaaaace = 4;
 	//type of 'this' in a function expression body is Any
-var t;
+	var t;
 	var t = this;
 	this.spaaaaace = 4;
 };
@@ -9540,7 +9540,7 @@ var q2 = (s = this) => {
 	var s;
 	s.spaaaaaaace = 4;
 	//type of 'this' in a fat arrow expression body is typeof globalThis
-var t;
+	var t;
 	var t = this;
 	this.spaaaaace = 4;
 };
@@ -9555,7 +9555,7 @@ exports[`TSC: expressions typeOfThisInConstructorParamList 1`] = `
 "//type of 'this' in constructor param list is the class instance type (error)
 class ErrClass {
 	// Should be an error
-constructor(f=this) {
+	constructor(f=this) {
 	}
 }
 "
@@ -9988,9 +9988,9 @@ function hasWings(x) {
 // Function to identify a given beast by detecting its features
 function identifyBeast(beast) {
 	// All beasts with legs
-if (hasLegs(beast)) {
+	if (hasLegs(beast)) {
 		// All winged beasts with legs
-if (hasWings(beast)) {
+		if (hasWings(beast)) {
 			if (beast.legs === 4) {
 				log(\`pegasus - 4 legs, wings\`);
 			} else if (beast.legs === 2) {
@@ -9999,11 +9999,11 @@ if (hasWings(beast)) {
 				log(\`unknown - \${beast.legs} legs, wings\`);
 			}
 		} else // All non-winged beasts with legs
-{
+		{
 			log(\`manbearpig - \${beast.legs} legs, no wings\`);
 		}
 	} else // All beasts without legs    
-{
+	{
 		if (hasWings(beast)) {
 			log(\`quetzalcoatl - no legs, wings\`);
 		} else {
@@ -10015,7 +10015,7 @@ function beastFoo(beast) {
 	if (hasWings(beast) && hasLegs(beast)) {
 		beast;
 	} else // Winged & Legged
-{
+	{
 		beast;
 	}
 	if (hasLegs(beast) && hasWings(beast)) {
@@ -10115,12 +10115,12 @@ if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "numbe
 if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "number" && typeof strOrNumOrBool === "boolean") {
 	cOrBool = strOrNumOrBoolOrC;
 	// C | boolean
-bool = strOrNumOrBool;
+	bool = strOrNumOrBool;
 } else // boolean
 {
 	var r1 = strOrNumOrBoolOrC;
 	// string | number | boolean | C
-var r2 = strOrNumOrBool;
+	var r2 = strOrNumOrBool;
 }
 // (typeguard1) && simpleExpr
 if (typeof strOrNumOrBool !== "string" && numOrBool !== strOrNumOrBool) {
@@ -10170,11 +10170,11 @@ if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "numbe
 if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "number" || typeof strOrNumOrBool !== "boolean") {
 	var r1 = strOrNumOrBoolOrC;
 	// string | number | boolean | C
-var r2 = strOrNumOrBool;
+	var r2 = strOrNumOrBool;
 } else {
 	cOrBool = strOrNumOrBoolOrC;
 	// C | boolean
-bool = strOrNumOrBool;
+	bool = strOrNumOrBool;
 }
 // boolean
 // (typeguard1) || simpleExpr
@@ -10623,7 +10623,7 @@ function f10(x) {
 	if (typeof x === "function") {
 		x;
 	} else // () => string
-{
+	{
 		x;
 	}
 }
@@ -10632,7 +10632,7 @@ function f11(x) {
 	if (typeof x === "function") {
 		x;
 	} else // () => string
-{
+	{
 		x;
 	}
 }
@@ -10641,7 +10641,7 @@ function f12(x) {
 	if (typeof x === "function") {
 		x;
 	} else // never
-{
+	{
 		x;
 	}
 }
@@ -10872,7 +10872,7 @@ if (typeof boolOrC === "Object") {
 // boolean
 if (typeof strOrC === "Object") {
 	// comparison is OK with cast
-c = strOrC;
+	c = strOrC;
 } else // error: but no narrowing to C
 {
 	var r5 = strOrC;
@@ -11164,7 +11164,7 @@ function foo(x) {
 		f();
 		return x.length;
 	} else // string
-{
+	{
 		return x++;
 	}
 }
@@ -11173,7 +11173,7 @@ function foo2(x) {
 	if (typeof x === "string") {
 		return x.length;
 	} else // string
-{
+	{
 		var f = function() {
 			return x * x;
 		};
@@ -11185,7 +11185,7 @@ function foo3(x) {
 	if (typeof x === "string") {
 		return x.length;
 	} else // string
-{
+	{
 		var f = () => x * x;
 	}
 	x = "hello";
@@ -11203,98 +11203,98 @@ var strOrNum;
 var var1;
 class ClassWithAccessors {
 	// Inside public accessor getter
-get p1() {
+	get p1() {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-return strOrNum;
+		return strOrNum;
 	}
 	// Inside public accessor setter
-set p1(param) {
+	set p1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// parameter of function declaration
-num = typeof param === "string" && param.length;
+		// parameter of function declaration
+		num = typeof param === "string" && param.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 	}
 	// string
-// Inside private accessor getter
-get pp1() {
+	// Inside private accessor getter
+	get pp1() {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-return strOrNum;
+		return strOrNum;
 	}
 	// Inside private accessor setter
-set pp1(param) {
+	set pp1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// parameter of function declaration
-num = typeof param === "string" && param.length;
+		// parameter of function declaration
+		num = typeof param === "string" && param.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 	}
 	// string
-// Inside static accessor getter
-static get s1() {
+	// Inside static accessor getter
+	static get s1() {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-return strOrNum;
+		return strOrNum;
 	}
 	// Inside static accessor setter
-static set s1(param) {
+	static set s1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// parameter of function declaration
-num = typeof param === "string" && param.length;
+		// parameter of function declaration
+		num = typeof param === "string" && param.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 	}
 	// string
-// Inside private static accessor getter
-static get ss1() {
+	// Inside private static accessor getter
+	static get ss1() {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-return strOrNum;
+		return strOrNum;
 	}
 	// Inside private static accessor setter
-static set ss1(param) {
+	static set ss1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// parameter of function declaration
-num = typeof param === "string" && param.length;
+		// parameter of function declaration
+		num = typeof param === "string" && param.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 	}
 }
@@ -11311,66 +11311,66 @@ var var1;
 class C1 {
 	constructor(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+		// parameters in function declaration
+		num = typeof param === "string" && param.length;
 	}
 	// string
-// Inside function declaration
-p1(param) {
+	// Inside function declaration
+	p1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+		// parameters in function declaration
+		num = typeof param === "string" && param.length;
 	}
 	// string
-// Inside function declaration
-p2(param) {
+	// Inside function declaration
+	p2(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+		// parameters in function declaration
+		num = typeof param === "string" && param.length;
 	}
 	// string
-// Inside function declaration
-static s1(param) {
+	// Inside function declaration
+	static s1(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+		// parameters in function declaration
+		num = typeof param === "string" && param.length;
 	}
 	// string
-// Inside function declaration
-static s2(param) {
+	// Inside function declaration
+	static s2(param) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables in function declaration
-var var2;
+		// variables in function declaration
+		var var2;
 		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+		// parameters in function declaration
+		num = typeof param === "string" && param.length;
 	}
 }
 // string
@@ -11386,84 +11386,84 @@ exports[`TSC: expressions typeGuardsInConditionalExpression 1`] = `
 // provided the false expression contains no assignments to the variable or parameter.
 function foo(x) {
 	return typeof x === "string" ? x.length : // string
-x++;
+	x++;
 }
 // number
 function foo2(x) {
 	return typeof x === "string" ? ((x = "hello") && x) : // string
-x;
+	x;
 }
 // number
 function foo3(x) {
 	return typeof x === "string" ? ((x = 10) && x) : // number
-x;
+	x;
 }
 // number
 function foo4(x) {
 	return typeof x === "string" ? x : // string
-// string
-((x = 10) && x);
+	// string
+	((x = 10) && x);
 }
 // number
 function foo5(x) {
 	return typeof x === "string" ? x : // string
-// string
-((x = "hello") && x);
+	// string
+	((x = "hello") && x);
 }
 // string
 function foo6(x) {
 	// Modify in both branches
-return typeof x === "string" ? ((x = 10) && x) : // number
-((x = "hello") && x);
+	return typeof x === "string" ? ((x = 10) && x) : // number
+	((x = "hello") && x);
 }
 // string
 function foo7(x) {
 	return typeof x === "string" ? x === "hello" : // boolean
-typeof x === "boolean" ? x : // boolean
-// boolean
-x == 10;
+	typeof x === "boolean" ? x : // boolean
+	// boolean
+	x == 10;
 }
 // boolean
 function foo8(x) {
 	var b;
 	return typeof x === "string" ? x === "hello" : ((b = x) && //  number | boolean
-(typeof x === "boolean" ? x : // boolean
-// boolean
-x == 10));
+	(typeof x === "boolean" ? x : // boolean
+	// boolean
+	x == 10));
 }
 // boolean
 function foo9(x) {
 	var y = 10;
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
-return typeof x === "string" ? ((y = x.length) && x === "hello") : // boolean
-x === 10;
+	return typeof x === "string" ? ((y = x.length) && x === "hello") : // boolean
+	x === 10;
 }
 // boolean
 function foo10(x) {
 	// Mixing typeguards
-var b;
+	var b;
 	return typeof x === "string" ? x : // string
-// string
-((b = x) && // x is number | boolean
-typeof x === "number" && x.toString());
+	// string
+	((b = x) && // x is number | boolean
+	typeof x === "number" && x.toString());
 }
 // x is number
 function foo11(x) {
 	// Mixing typeguards
-var b;
+	var b;
 	return typeof x === "string" ? x : // string
-// string
-((b = x) && // x is number | boolean
-typeof x === "number" && (x = 10) && // assignment to x
-x);
+	// string
+	((b = x) && // x is number | boolean
+	typeof x === "number" && (x = 10) && // assignment to x
+	x);
 }
 // x is number
 function foo12(x) {
 	// Mixing typeguards
-var b;
+	var b;
 	return typeof x === "string" ? ((x = 10) && x.toString().length) : // number
-((b = x) && // x is number | boolean
-typeof x === "number" && x);
+	((b = x) && // x is number | boolean
+	typeof x === "number" && x);
 }
 // x is number
 "
@@ -11476,7 +11476,7 @@ function a(x) {
 	do {
 		x;
 		// boolean | string
-x = undefined;
+		x = undefined;
 	} while (typeof x === "string");
 	x;
 }
@@ -11486,7 +11486,7 @@ function b(x) {
 	do {
 		x;
 		// boolean | string
-if (cond)continue;
+		if (cond)continue;
 		x = undefined;
 	} while (typeof x === "string");
 	x;
@@ -11497,7 +11497,7 @@ function c(x) {
 	do {
 		x;
 		// string
-if (cond)break;
+		if (cond)break;
 		x = undefined;
 	} while (typeof x === "string");
 	x;
@@ -11524,7 +11524,7 @@ var strOrNum;
 export var var2;
 if (typeof var2 === "string") {
 	// export makes the var property and not variable
-strOrNum = var2;
+	strOrNum = var2;
 } else // string | number
 {
 	strOrNum = var2;
@@ -11540,14 +11540,14 @@ function a(x) {
 		x;
 	}
 	// string
-x;
+	x;
 }
 // number
 function b(x) {
 	for (x = undefined; typeof x !== "number"; x = undefined) {
 		x;
 		// string
-if (cond)continue;
+		if (cond)continue;
 	}
 	x;
 }
@@ -11556,7 +11556,7 @@ function c(x) {
 	for (x = undefined; typeof x !== "number"; x = undefined) {
 		x;
 		// string
-if (cond)break;
+		if (cond)break;
 	}
 	x;
 }
@@ -11573,14 +11573,14 @@ var var1;
 // Inside function declaration
 function f(param) {
 	// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+	num = typeof var1 === "string" && var1.length;
 	// string
-// variables in function declaration
-var var2;
+	// variables in function declaration
+	var var2;
 	num = typeof var2 === "string" && var2.length;
 	// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+	// parameters in function declaration
+	num = typeof param === "string" && param.length;
 }
 // string
 // local function declaration
@@ -11588,67 +11588,67 @@ function f1(param) {
 	var var2;
 	function f2(param1) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables from outer function declaration
-num = typeof var2 === "string" && var2.length;
+		// variables from outer function declaration
+		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in outer declaration
-num = typeof param === "string" && param.length;
+		// parameters in outer declaration
+		num = typeof param === "string" && param.length;
 		// string
-// local
-var var3;
+		// local
+		var var3;
 		num = typeof var3 === "string" && var3.length;
 		// string
-num = typeof param1 === "string" && param1.length;
+		num = typeof param1 === "string" && param1.length;
 	}
 }
 // string
 // Function expression
 function f2(param) {
 	// variables in function declaration
-var var2;
+	var var2;
 	// variables in function expressions
-var r = function(param1) {
+	var r = function(param1) {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables from outer function declaration
-num = typeof var2 === "string" && var2.length;
+		// variables from outer function declaration
+		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in outer declaration
-num = typeof param === "string" && param.length;
+		// parameters in outer declaration
+		num = typeof param === "string" && param.length;
 		// string
-// local
-var var3;
+		// local
+		var var3;
 		num = typeof var3 === "string" && var3.length;
 		// string
-num = typeof param1 === "string" && param1.length;
+		num = typeof param1 === "string" && param1.length;
 	}(// string
-param);
+	param);
 }
 // Arrow expression
 function f3(param) {
 	// variables in function declaration
-var var2;
+	var var2;
 	// variables in function expressions
-var r = ((param1) => {
+	var r = ((param1) => {
 		// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+		num = typeof var1 === "string" && var1.length;
 		// string
-// variables from outer function declaration
-num = typeof var2 === "string" && var2.length;
+		// variables from outer function declaration
+		num = typeof var2 === "string" && var2.length;
 		// string
-// parameters in outer declaration
-num = typeof param === "string" && param.length;
+		// parameters in outer declaration
+		num = typeof param === "string" && param.length;
 		// string
-// local
-var var3;
+		// local
+		var var3;
 		num = typeof var3 === "string" && var3.length;
 		// string
-num = typeof param1 === "string" && param1.length;
+		num = typeof param1 === "string" && param1.length;
 	})(// string
-param);
+	param);
 }
 // Return type of function
 // Inside function declaration
@@ -11668,8 +11668,8 @@ function foo(x) {
 	return typeof x === "string" ? x : function f() {
 		var b = x;
 		// number | boolean
-return typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+		return typeof x === "boolean" ? x.toString() : // boolean
+		x.toString();
 	}();
 }
 // number
@@ -11677,18 +11677,18 @@ function foo2(x) {
 	return typeof x === "string" ? x : function f(a) {
 		var b = x;
 		// new scope - number | boolean
-return typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+		return typeof x === "boolean" ? x.toString() : // boolean
+		x.toString();
 	}(// number
-x);
+	x);
 }
 // x here is narrowed to number | boolean
 function foo3(x) {
 	return typeof x === "string" ? x : (() => {
 		var b = x;
 		// new scope - number | boolean
-return typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+		return typeof x === "boolean" ? x.toString() : // boolean
+		x.toString();
 	})();
 }
 // number
@@ -11696,10 +11696,10 @@ function foo4(x) {
 	return typeof x === "string" ? x : ((a) => {
 		var b = x;
 		// new scope - number | boolean
-return typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+		return typeof x === "boolean" ? x.toString() : // boolean
+		x.toString();
 	})(// number
-x);
+	x);
 }
 // x here is narrowed to number | boolean
 // Type guards do not affect nested function declarations
@@ -11707,7 +11707,7 @@ function foo5(x) {
 	if (typeof x === "string") {
 		var y = x;
 		// string;
-function foo() {
+		function foo() {
 			var z = x;
 		}
 	}
@@ -11720,7 +11720,7 @@ var y;if (typeof x === "string") {
 // string;
 {
 	y = typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+	x.toString();
 }})(m2 = m.m2 || (m.m2 = {}));})(m || (m = {}));
 // number
 var m1;((m1) => {var x;let m2;((m2) => {let m3;((m3) => {var b = x;// new scope - number | boolean | string
@@ -11730,7 +11730,7 @@ var y;if (typeof x === "string") {
 // string;
 {
 	y = typeof x === "boolean" ? x.toString() : // boolean
-x.toString();
+	x.toString();
 }})(m3 = m2.m3 || (m2.m3 = {}));})(m2 = m1.m2 || (m1.m2 = {}));})(m1 || (m1 = {}));
 // number
 "
@@ -11761,7 +11761,7 @@ function foo(x) {
 	if (typeof x === "string") {
 		return x.length;
 	} else // string
-{
+	{
 		return x++;
 	}
 }
@@ -11771,7 +11771,7 @@ function foo2(x) {
 		x = 10;
 		return x;
 	} else // number
-{
+	{
 		return x;
 	}
 }
@@ -11781,7 +11781,7 @@ function foo3(x) {
 		x = "Hello";
 		return x;
 	} else // string
-{
+	{
 		return x;
 	}
 }
@@ -11790,7 +11790,7 @@ function foo4(x) {
 	if (typeof x === "string") {
 		return x;
 	} else // string
-{
+	{
 		x = 10;
 		return x;
 	}
@@ -11800,7 +11800,7 @@ function foo5(x) {
 	if (typeof x === "string") {
 		return x;
 	} else // string
-{
+	{
 		x = "hello";
 		return x;
 	}
@@ -11811,7 +11811,7 @@ function foo6(x) {
 		x = 10;
 		return x;
 	} else // number
-{
+	{
 		x = "hello";
 		return x;
 	}
@@ -11821,10 +11821,10 @@ function foo7(x) {
 	if (typeof x === "string") {
 		return x === "hello";
 	} else // string
-if (typeof x === "boolean") {
+	if (typeof x === "boolean") {
 		return x;
 	} else // boolean
-{
+	{
 		return x == 10;
 	}
 }
@@ -11833,13 +11833,13 @@ function foo8(x) {
 	if (typeof x === "string") {
 		return x === "hello";
 	} else // string
-{
+	{
 		var b = x;
 		//  number | boolean
-if (typeof x === "boolean") {
+		if (typeof x === "boolean") {
 			return x;
 		} else // boolean
-{
+		{
 			return x == 10;
 		}
 	}
@@ -11849,63 +11849,63 @@ function foo9(x) {
 	var y = 10;
 	if (typeof x === "string") {
 		// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
-y = x.length;
+		y = x.length;
 		return x === "hello";
 	} else // string
-{
+	{
 		return x == 10;
 	}
 }
 // number
 function foo10(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
-if (typeof x === "string") {
+	if (typeof x === "string") {
 		return x === "hello";
 	} else // string
-{
+	{
 		var y;
 		var b = x;
 		// number | boolean
-return typeof x === "number" ? x === 10 : // number
-x;
+		return typeof x === "number" ? x === 10 : // number
+		x;
 	}
 }
 // x should be boolean
 function foo11(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
-// Assigning value to x deep inside another guard stops narrowing of type too
-if (typeof x === "string") {
+	// Assigning value to x deep inside another guard stops narrowing of type too
+	if (typeof x === "string") {
 		return x;
 	} else // string | number | boolean - x changed in else branch
-{
+	{
 		var y;
 		var b = x;
 		// number | boolean | string - because below we are changing value of x in if statement
-return typeof x === "number" ? (// change value of x
-// change value of x
-// change value of x
-x = 10 && x.toString()) : // number | boolean | string
-(// do not change value
-// do not change value
-// do not change value
-// do not change value
-// do not change value
-y = x && x.toString());
+		return typeof x === "number" ? (// change value of x
+		// change value of x
+		// change value of x
+		x = 10 && x.toString()) : // number | boolean | string
+		(// do not change value
+		// do not change value
+		// do not change value
+		// do not change value
+		// do not change value
+		y = x && x.toString());
 	}
 }
 // number | boolean | string
 function foo12(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
-// Assigning value to x in outer guard shouldn't stop narrowing in the inner expression
-if (typeof x === "string") {
+	// Assigning value to x in outer guard shouldn't stop narrowing in the inner expression
+	if (typeof x === "string") {
 		return x.toString();
 	} else // string | number | boolean - x changed in else branch
-{
+	{
 		x = 10;
 		var b = x;
 		// number | boolean | string
-return typeof x === "number" ? x.toString() : // number
-x.toString();
+		return typeof x === "number" ? x.toString() : // number
+		x.toString();
 	}
 }
 // boolean | string
@@ -11989,15 +11989,15 @@ class C1 {
 	pp1;
 	pp2;
 	// Inside public accessor getter
-get pp3() {
+	get pp3() {
 		return strOrNum;
 	}
 	method() {
 		strOrNum = typeof this.pp1 === "string" && this.pp1;
 		// string | number
-strOrNum = typeof this.pp2 === "string" && this.pp2;
+		strOrNum = typeof this.pp2 === "string" && this.pp2;
 		// string | number
-strOrNum = typeof this.pp3 === "string" && this.pp3;
+		strOrNum = typeof this.pp3 === "string" && this.pp3;
 	}
 }
 // string | number
@@ -12021,46 +12021,46 @@ function foo(x) {
 // string
 function foo2(x) {
 	// modify x in right hand operand
-return typeof x === "string" && ((x = 10) && x);
+	return typeof x === "string" && ((x = 10) && x);
 }
 // string | number
 function foo3(x) {
 	// modify x in right hand operand with string type itself
-return typeof x === "string" && ((x = "hello") && x);
+	return typeof x === "string" && ((x = "hello") && x);
 }
 // string | number
 function foo4(x) {
 	return typeof x !== "string" && // string | number | boolean
-typeof x !== "number" && // number | boolean
-x;
+	typeof x !== "number" && // number | boolean
+	x;
 }
 // boolean
 function foo5(x) {
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
-var b;
+	var b;
 	return typeof x !== "string" && // string | number | boolean
-((b = x) && (typeof x !== "number" && // number | boolean
-x));
+	((b = x) && (typeof x !== "number" && // number | boolean
+	x));
 }
 // boolean
 function foo6(x) {
 	// Mixing typeguard narrowing in if statement with conditional expression typeguard
-return typeof x !== "string" && // string | number | boolean
-(typeof x !== "number" ? // number | boolean
-x : // boolean
-// boolean
-x === 10);
+	return typeof x !== "string" && // string | number | boolean
+	(typeof x !== "number" ? // number | boolean
+	x : // boolean
+	// boolean
+	x === 10);
 }
 // number 
 function foo7(x) {
 	var y;
 	var z;
 	// Mixing typeguard narrowing
-return typeof x !== "string" && ((z = x) && // number | boolean
-(typeof x === "number" ? // change value of x
-((x = 10) && x.toString()) : // x is number
-// do not change value
-((y = x) && x.toString())));
+	return typeof x !== "string" && ((z = x) && // number | boolean
+	(typeof x === "number" ? // change value of x
+	((x = 10) && x.toString()) : // x is number
+	// do not change value
+	((y = x) && x.toString())));
 }
 // x is boolean
 "
@@ -12076,46 +12076,46 @@ function foo(x) {
 // string
 function foo2(x) {
 	// modify x in right hand operand
-return typeof x !== "string" || ((x = 10) || x);
+	return typeof x !== "string" || ((x = 10) || x);
 }
 // string | number
 function foo3(x) {
 	// modify x in right hand operand with string type itself
-return typeof x !== "string" || ((x = "hello") || x);
+	return typeof x !== "string" || ((x = "hello") || x);
 }
 // string | number
 function foo4(x) {
 	return typeof x === "string" || // string | number | boolean
-typeof x === "number" || // number | boolean
-x;
+	typeof x === "number" || // number | boolean
+	x;
 }
 // boolean
 function foo5(x) {
 	// usage of x or assignment to separate variable shouldn't cause narrowing of type to stop
-var b;
+	var b;
 	return typeof x === "string" || // string | number | boolean
-((b = x) || (typeof x === "number" || // number | boolean
-x));
+	((b = x) || (typeof x === "number" || // number | boolean
+	x));
 }
 // boolean
 function foo6(x) {
 	// Mixing typeguard
-return typeof x === "string" || // string | number | boolean
-(typeof x !== "number" ? // number | boolean
-x : // boolean
-// boolean
-x === 10);
+	return typeof x === "string" || // string | number | boolean
+	(typeof x !== "number" ? // number | boolean
+	x : // boolean
+	// boolean
+	x === 10);
 }
 // number 
 function foo7(x) {
 	var y;
 	var z;
 	// Mixing typeguard narrowing
-return typeof x === "string" || ((z = x) || // number | boolean
-(typeof x === "number" ? // change value of x
-((x = 10) && x.toString()) : // number | boolean | string
-// do not change value
-((y = x) && x.toString())));
+	return typeof x === "string" || ((z = x) || // number | boolean
+	(typeof x === "number" ? // change value of x
+	((x = 10) && x.toString()) : // number | boolean | string
+	// do not change value
+	((y = x) && x.toString())));
 }
 // number | boolean | string
 "
@@ -12127,7 +12127,7 @@ function a(x) {
 	while (typeof x === "string") {
 		x;
 		// string
-x = undefined;
+		x = undefined;
 	}
 	x;
 }
@@ -12137,7 +12137,7 @@ function b(x) {
 		if (cond)continue;
 		x;
 		// string
-x = undefined;
+		x = undefined;
 	}
 	x;
 }
@@ -12147,7 +12147,7 @@ function c(x) {
 		if (cond)break;
 		x;
 		// string
-x = undefined;
+		x = undefined;
 	}
 	x;
 }
@@ -12165,35 +12165,35 @@ var var1;
 var obj1 = { // Inside method
 method(param) {
 	// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+	num = typeof var1 === "string" && var1.length;
 	// string
-// variables in function declaration
-var var2;
+	// variables in function declaration
+	var var2;
 	num = typeof var2 === "string" && var2.length;
 	// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+	// parameters in function declaration
+	num = typeof param === "string" && param.length;
 	// string
-return strOrNum;
+	return strOrNum;
 }, get prop() {
 	// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+	num = typeof var1 === "string" && var1.length;
 	// string
-// variables in function declaration
-var var2;
+	// variables in function declaration
+	var var2;
 	num = typeof var2 === "string" && var2.length;
 	// string
-return strOrNum;
+	return strOrNum;
 }, set prop(param) {
 	// global vars in function declaration
-num = typeof var1 === "string" && var1.length;
+	num = typeof var1 === "string" && var1.length;
 	// string
-// variables in function declaration
-var var2;
+	// variables in function declaration
+	var var2;
 	num = typeof var2 === "string" && var2.length;
 	// string
-// parameters in function declaration
-num = typeof param === "string" && param.length;
+	// parameters in function declaration
+	num = typeof param === "string" && param.length;
 } };
 // string
 // return expression of the method
@@ -12288,25 +12288,25 @@ function foo() {
 		v;
 	}
 	// Validator & Partial<OnChanges> & C
-// Validator & Partial<OnChanges> & C
-// Validator & Partial<OnChanges> & C
-v;
+	// Validator & Partial<OnChanges> & C
+	// Validator & Partial<OnChanges> & C
+	v;
 	// Validator & Partial<OnChanges> via subtype reduction
-// In 4.1, we introduced a change which _fixed_ a bug with CFA
-// correctly setting this to be the right object. With 4.2,
-// we reverted that fix in #42231 which brought behavior back to
-// before 4.1.
-// Validator & Partial<OnChanges> via subtype reduction
-// In 4.1, we introduced a change which _fixed_ a bug with CFA
-// correctly setting this to be the right object. With 4.2,
-// we reverted that fix in #42231 which brought behavior back to
-// before 4.1.
-// Validator & Partial<OnChanges> via subtype reduction
-// In 4.1, we introduced a change which _fixed_ a bug with CFA
-// correctly setting this to be the right object. With 4.2,
-// we reverted that fix in #42231 which brought behavior back to
-// before 4.1.
-if (v.onChanges) {
+	// In 4.1, we introduced a change which _fixed_ a bug with CFA
+	// correctly setting this to be the right object. With 4.2,
+	// we reverted that fix in #42231 which brought behavior back to
+	// before 4.1.
+	// Validator & Partial<OnChanges> via subtype reduction
+	// In 4.1, we introduced a change which _fixed_ a bug with CFA
+	// correctly setting this to be the right object. With 4.2,
+	// we reverted that fix in #42231 which brought behavior back to
+	// before 4.1.
+	// Validator & Partial<OnChanges> via subtype reduction
+	// In 4.1, we introduced a change which _fixed_ a bug with CFA
+	// correctly setting this to be the right object. With 4.2,
+	// we reverted that fix in #42231 which brought behavior back to
+	// before 4.1.
+	if (v.onChanges) {
 		v.onChanges({});
 	}
 }
@@ -12316,7 +12316,7 @@ if (v.onChanges) {
 exports[`TSC: expressions typeGuardsWithInstanceOfByConstructorSignature 1`] = `
 "if (obj1 instanceof A) {
 	// narrowed to A.
-obj1.foo;
+	obj1.foo;
 	obj1.bar;
 }
 if (obj2 instanceof A) {
@@ -12326,7 +12326,7 @@ if (obj2 instanceof A) {
 // a construct signature with generics
 if (obj3 instanceof B) {
 	// narrowed to B<number>.
-obj3.foo = 1;
+	obj3.foo = 1;
 	obj3.foo = "str";
 	obj3.bar = "str";
 }
@@ -12338,7 +12338,7 @@ if (obj4 instanceof B) {
 // has multiple construct signature
 if (obj5 instanceof C) {
 	// narrowed to C1.
-obj5.foo;
+	obj5.foo;
 	obj5.c;
 	obj5.bar1;
 	obj5.bar2;
@@ -12351,7 +12351,7 @@ if (obj6 instanceof C) {
 // with object type literal
 if (obj7 instanceof D) {
 	// narrowed to D.
-obj7.foo;
+	obj7.foo;
 	obj7.bar;
 }
 if (obj8 instanceof D) {
@@ -12361,7 +12361,7 @@ if (obj8 instanceof D) {
 // a construct signature that returns a union type
 if (obj9 instanceof E) {
 	// narrowed to E1
-obj9.foo;
+	obj9.foo;
 	obj9.bar1;
 	obj9.bar2;
 }
@@ -12373,7 +12373,7 @@ if (obj10 instanceof E) {
 // a construct signature that returns any
 if (obj11 instanceof F) {
 	// can't type narrowing, construct signature returns any.
-obj11.foo;
+	obj11.foo;
 	obj11.bar;
 }
 if (obj12 instanceof F) {
@@ -12385,7 +12385,7 @@ if (obj12 instanceof F) {
 // low priority
 if (obj13 instanceof G) {
 	// narrowed to G1. G1 is return type of prototype property.
-obj13.foo1;
+	obj13.foo1;
 	obj13.foo2;
 }
 if (obj14 instanceof G) {
@@ -12397,7 +12397,7 @@ if (obj14 instanceof G) {
 // low priority
 if (obj15 instanceof H) {
 	// narrowed to H.
-obj15.foo;
+	obj15.foo;
 	obj15.bar;
 }
 if (obj16 instanceof H) {
@@ -12406,12 +12406,12 @@ if (obj16 instanceof H) {
 }
 if (obj17 instanceof Object) {
 	// can't narrow type from 'any' to 'Object'
-obj17.foo1;
+	obj17.foo1;
 	obj17.foo2;
 }
 if (obj18 instanceof Function) {
 	// can't narrow type from 'any' to 'Function'
-obj18.foo1;
+	obj18.foo1;
 	obj18.foo2;
 }
 "
@@ -14281,29 +14281,29 @@ function fn2(x,y) {
 	x = 3;
 	(x) = 3;
 	// OK
-x = "";
+	x = "";
 	// Error
-(x) = "";
+	(x) = "";
 	// Error
-(y).t = 3;
+	(y).t = 3;
 	// OK
-(y.t) = 3;
+	(y.t) = 3;
 	// OK
-(y).t = "";
+	(y).t = "";
 	// Error
-(y.t) = "";
+	(y.t) = "";
 	// Error
-y["t"] = 3;
+	y["t"] = 3;
 	// OK
-(y)["t"] = 3;
+	(y)["t"] = 3;
 	// OK
-(y["t"]) = 3;
+	(y["t"]) = 3;
 	// OK
-y["t"] = "";
+	y["t"] = "";
 	// Error
-(y)["t"] = "";
+	(y)["t"] = "";
 	// Error
-(y["t"]) = "";
+	(y["t"]) = "";
 }
 // Error
 var E = /* @__PURE__ */ ((E) => {E[E["A"]=0]="A";return E;})(E || {});

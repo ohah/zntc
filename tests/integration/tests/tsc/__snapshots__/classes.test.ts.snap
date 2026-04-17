@@ -114,13 +114,13 @@ class D extends A {
 // error -- inherits abstract methods
 class E extends A {
 	// error -- doesn't implement bar
-foo() {
+	foo() {
 		return this.t;
 	}
 }
 class F extends A {
 	// error -- doesn't implement foo
-bar(t) {
+	bar(t) {
 	}
 }
 class G extends A {
@@ -233,7 +233,7 @@ class D extends B {
 // okay
 class E extends B {
 	// okay -- implements abstract method
-bar() {
+	bar() {
 		return 1;
 	}
 }
@@ -376,7 +376,7 @@ class C extends B {
 		return super.foo() || super.foo;
 	}
 	// 2 errors, foo is abstract
-norf() {
+	norf() {
 		return super.bar();
 	}
 }
@@ -463,7 +463,7 @@ var C = "";
 // error
 var M;((M) => {class D {
 	// error
-bar;
+	bar;
 }var D = 1;})(M || (M = {}));
 // error
 "
@@ -733,7 +733,7 @@ exports[`TSC: classes classExtendsShadowedConstructorFunction 1`] = `
 }
 var M;((M) => {var C = 1;class D extends C {
 	// error, C must evaluate to constructor function
-bar;
+	bar;
 }})(M || (M = {}));
 "
 `;
@@ -770,11 +770,11 @@ exports[`TSC: classes constructorFunctionTypeIsAssignableToBaseType 1`] = `
 }
 class Derived extends Base {
 	// ok
-static foo;
+	static foo;
 }
 class Derived2 extends Base {
 	// ok, use assignability here
-static foo;
+	static foo;
 }
 "
 `;
@@ -788,7 +788,7 @@ class Base {
 }
 class Derived extends Base {
 	// ok
-static foo;
+	static foo;
 	constructor(x) {
 		super(x);
 	}
@@ -796,7 +796,7 @@ static foo;
 class Derived2 extends Base {
 	static foo;
 	// ok, not enforcing assignability relation on this
-constructor(x) {
+	constructor(x) {
 		super(x);
 		return 1;
 	}
@@ -830,15 +830,15 @@ exports[`TSC: classes classImplementsMergedClassInterface 1`] = `
 // error -- missing x
 class C3 {
 	// error -- missing y
-x;
+	x;
 }
 class C4 {
 	// error -- missing x
-y;
+	y;
 }
 class C5 {
 	// okay
-x;
+	x;
 	y;
 }
 "
@@ -1113,7 +1113,7 @@ class A {
 }
 function B1() {
 	// class expression can use T
-return class extends A {
+	return class extends A {
 	};
 }
 class B2 {
@@ -1339,7 +1339,7 @@ class B {
 	constructor(a) {
 		const x = friendA.getX(a);
 		// ok
-friendA.setX(a, x + 1);
+		friendA.setX(a, x + 1);
 	}
 }
 // ok
@@ -1407,7 +1407,7 @@ class C {
 exports[`TSC: classes classStaticBlock21 1`] = `
 "class C {
 	/* jsdocs */
-static {
+	static {
         // something
     }
 
@@ -1612,7 +1612,7 @@ exports[`TSC: classes classStaticBlockUseBeforeDef3 1`] = `
 
     
 	// should not error
-static doSomething() {
+	static doSomething() {
 		console.log("gotcha!");
 	}
 }
@@ -1640,7 +1640,7 @@ class CFA {
 
     
 	// should be "BAR"
-static t = 1;
+	static t = 1;
 	static doSomething() {
 	}
 	static {
@@ -1910,14 +1910,14 @@ class DerivedB extends BaseB {
 		new BaseB(8);
 	}
 	// ok
-static staticBaseInstance() {
+	static staticBaseInstance() {
 		new BaseB(9);
 	}
 }
 // ok
 class DerivedC extends BaseC {
 	// error
-constructor(x) {
+	constructor(x) {
 		this.x = x;
 		super(x);
 	}
@@ -1928,7 +1928,7 @@ constructor(x) {
 		new BaseC(10);
 	}
 	// error
-static staticBaseInstance() {
+	static staticBaseInstance() {
 		new BaseC(11);
 	}
 }
@@ -1997,7 +1997,7 @@ exports[`TSC: classes classConstructorAccessibility4 1`] = `
 			}
 		}
 		// OK
-class C extends A {
+		class C extends A {
 		}
 	}
 }
@@ -2012,7 +2012,7 @@ class D {
 			}
 		}
 		// OK
-class F extends D {
+		class F extends D {
 		}
 	}
 }
@@ -2043,13 +2043,13 @@ class Unrelated {
 exports[`TSC: classes classConstructorOverloadsAccessibility 1`] = `
 "class A {
 	// error
-// error
-constructor() {
+	// error
+	constructor() {
 	}
 }
 class B {
 	// error
-constructor() {
+	constructor() {
 	}
 }
 class C {
@@ -2152,7 +2152,7 @@ exports[`TSC: classes classWithTwoConstructorDefinitions 1`] = `
 	constructor() {
 	}
 	// error
-constructor(x) {
+	constructor(x) {
 	}
 }
 // error
@@ -2160,7 +2160,7 @@ class D {
 	constructor(x) {
 	}
 	// error
-constructor(x,y) {
+	constructor(x,y) {
 	}
 }
 // error
@@ -2214,20 +2214,20 @@ exports[`TSC: classes constructorImplementationWithDefaultValues2 1`] = `
 	constructor(x=1) {
 		this.x=1 = x=1;
 		// error
-var y = x;
+		var y = x;
 	}
 }
 class D {
 	constructor(x=1,y=x) {
 		this.y=x = y=x;
 		// error
-var z = x;
+		var z = x;
 	}
 }
 class E {
 	constructor(x=new Date()) {
 		// error
-var y = x;
+		var y = x;
 	}
 }
 "
@@ -2237,13 +2237,13 @@ exports[`TSC: classes constructorOverloadsWithDefaultValues 1`] = `
 "class C {
 	foo;
 	// error
-constructor() {
+	constructor() {
 	}
 }
 class D {
 	foo;
 	// error
-constructor() {
+	constructor() {
 	}
 }
 "
@@ -2351,13 +2351,13 @@ class B extends A {
 	constructor(x) {
 		super(x);
 		// Fails, x is readonly
-this.x = 1;
+		this.x = 1;
 	}
 }
 class C extends A {
 	// This is the usual behavior of readonly properties:
-// if one is redeclared in a base class, then it can be assigned to.
-constructor(x) {
+	// if one is redeclared in a base class, then it can be assigned to.
+	constructor(x) {
 		this.x = x;
 		super(x);
 		this.x = 1;
@@ -3098,13 +3098,13 @@ class DerivedComments extends Object {
 	x;
 	constructor() {
 		// c1
-console.log();
+		console.log();
 		// c2
-// c3
-super();
+		// c3
+		super();
 		// c4
-// c5
-this.x = null;
+		// c5
+		this.x = null;
 	}
 }
 // c6
@@ -3113,15 +3113,15 @@ class DerivedCommentsInvalidThis extends Object {
 	x;
 	constructor() {
 		// c0
-this;
+		this;
 		// c1
-console.log();
+		console.log();
 		// c2
-// c3
-super();
+		// c3
+		super();
 		// c4
-// c5
-this.x = null;
+		// c5
+		this.x = null;
 	}
 }
 // c6
@@ -3170,22 +3170,22 @@ exports[`TSC: classes emitStatementsBeforeSuperCall 1`] = `
 }
 class Sub extends Base {
 	// @ts-ignore
-constructor(p) {
+	constructor(p) {
 		this.p = p;
 		console.log("hi");
 		// should emit before super
-super();
+		super();
 	}
 	field = 0;
 }
 class Test extends Base {
 	prop;
 	// @ts-ignore
-constructor(p) {
+	constructor(p) {
 		this.p = p;
 		1;
 		// should emit before super
-super();
+		super();
 		this.prop = 1;
 	}
 }
@@ -3197,7 +3197,7 @@ exports[`TSC: classes emitStatementsBeforeSuperCallWithDefineFields 1`] = `
 }
 class Sub extends Base {
 	// @ts-ignore
-constructor(p) {
+	constructor(p) {
 		this.p = p;
 		console.log("hi");
 		super();
@@ -3207,7 +3207,7 @@ constructor(p) {
 class Test extends Base {
 	prop;
 	// @ts-ignore
-constructor(p) {
+	constructor(p) {
 		this.p = p;
 		1;
 		super();
@@ -3486,7 +3486,7 @@ exports[`TSC: classes privateProtectedMembersAreNotAccessibleDestructuring 1`] =
 	m() {
 		let { priv:a, prot:b } = this;
 		// ok
-let { priv:priv, prot:prot } = new K();
+		let { priv:priv, prot:prot } = new K();
 	}
 }
 // ok
@@ -3494,7 +3494,7 @@ class C extends K {
 	m2() {
 		let { priv:a } = this;
 		// error
-let { prot:b } = this;
+		let { prot:b } = this;
 	}
 }
 // ok
@@ -3519,7 +3519,7 @@ exports[`TSC: classes privateStaticMemberAccessibility 1`] = `
 class Derived extends Base {
 	static bar = Base.foo;
 	// error
-bing = () => Base.foo;
+	bing = () => Base.foo;
 }
 // error
 "
@@ -3699,7 +3699,7 @@ class C extends B {
 				var c4 = c.bar;
 				var c5 = c.z;
 				// error
-var sc1 = C.x;
+				var sc1 = C.x;
 				var sc2 = C.y;
 				var sc3 = C.foo;
 				var sc4 = C.bar;
@@ -3726,13 +3726,13 @@ exports[`TSC: classes protectedClassPropertyAccessibleWithinNestedSubclass1 1`] 
 				var d4 = undefined;
 				b.x;
 				// OK, accessed within their declaring class
-d1.x;
+				d1.x;
 				// OK, accessed within their declaring class
-d2.x;
+				d2.x;
 				// OK, accessed within their declaring class
-d3.x;
+				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+				d4.x;
 			}
 		}
 	}
@@ -3749,13 +3749,13 @@ class Derived1 extends Base {
 				var d4 = undefined;
 				b.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+				d1.x;
 				// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
-d2.x;
+				d2.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+				d4.x;
 			}
 		}
 	}
@@ -3772,13 +3772,13 @@ class Derived2 extends Base {
 				var d4 = undefined;
 				b.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+				d1.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+				d2.x;
 				// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
-d3.x;
+				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+				d4.x;
 			}
 		}
 	}
@@ -3796,13 +3796,13 @@ class Derived3 extends Derived1 {
 				var d4 = undefined;
 				b.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+				d1.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+				d2.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+				d3.x;
 				// OK, accessed within their declaring class
-d4.x;
+				d4.x;
 			}
 		}
 	}
@@ -3819,13 +3819,13 @@ class Derived4 extends Derived2 {
 				var d4 = undefined;
 				b.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+				d1.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+				d2.x;
 				// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+				d3.x;
 				// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+				d4.x;
 			}
 		}
 	}
@@ -3895,13 +3895,13 @@ exports[`TSC: classes protectedClassPropertyAccessibleWithinSubclass2 1`] = `
 		var d4 = undefined;
 		b.x;
 		// OK, accessed within their declaring class
-d1.x;
+		d1.x;
 		// OK, accessed within their declaring class
-d2.x;
+		d2.x;
 		// OK, accessed within their declaring class
-d3.x;
+		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+		d4.x;
 	}
 }
 // OK, accessed within their declaring class
@@ -3914,13 +3914,13 @@ class Derived1 extends Base {
 		var d4 = undefined;
 		b.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+		d1.x;
 		// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
-d2.x;
+		d2.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+		d4.x;
 	}
 }
 // Error, isn't accessed through an instance of the enclosing class
@@ -3933,13 +3933,13 @@ class Derived2 extends Base {
 		var d4 = undefined;
 		b.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+		d1.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+		d2.x;
 		// OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
-d3.x;
+		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+		d4.x;
 	}
 }
 // OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class or one of its subclasses
@@ -3953,13 +3953,13 @@ class Derived3 extends Derived1 {
 		var d4 = undefined;
 		b.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+		d1.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+		d2.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+		d3.x;
 		// OK, accessed within their declaring class
-d4.x;
+		d4.x;
 	}
 }
 // Error, isn't accessed through an instance of the enclosing class
@@ -3972,13 +3972,13 @@ class Derived4 extends Derived2 {
 		var d4 = undefined;
 		b.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d1.x;
+		d1.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d2.x;
+		d2.x;
 		// Error, isn't accessed through an instance of the enclosing class
-d3.x;
+		d3.x;
 		// Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
-d4.x;
+		d4.x;
 	}
 }
 // OK, accessed within a class derived from their declaring class, and through an instance of the enclosing class
@@ -4012,7 +4012,7 @@ class Derived extends Base {
 	method1() {
 		this.x;
 		// OK, accessed within a subclass of the declaring class
-super.x;
+		super.x;
 	}
 }
 // Error, x is not public
@@ -4034,36 +4034,36 @@ class B extends A {
 		var t3 = this.y;
 		var t4 = this.z;
 		// error
-var s1 = super.x;
+		var s1 = super.x;
 		// error
-var s2 = super.f();
+		var s2 = super.f();
 		var s3 = super.y;
 		// error
-var s4 = super.z;
+		var s4 = super.z;
 		// error
-var a = undefined;
+		var a = undefined;
 		var a1 = a.x;
 		// error
-var a2 = a.f();
+		var a2 = a.f();
 		// error
-var a3 = a.y;
+		var a3 = a.y;
 		// error
-var a4 = a.z;
+		var a4 = a.z;
 		// error
-var b = undefined;
+		var b = undefined;
 		var b1 = b.x;
 		var b2 = b.f();
 		var b3 = b.y;
 		var b4 = b.z;
 		// error
-var c = undefined;
+		var c = undefined;
 		var c1 = c.x;
 		// error
-var c2 = c.f();
+		var c2 = c.f();
 		// error
-var c3 = c.y;
+		var c3 = c.y;
 		// error
-var c4 = c.z;
+		var c4 = c.z;
 	}
 }
 // error
@@ -4079,11 +4079,11 @@ exports[`TSC: classes protectedStaticClassPropertyAccessibleWithinSubclass 1`] =
 	static staticMethod() {
 		Base.x;
 		// OK, accessed within their declaring class
-Derived1.x;
+		Derived1.x;
 		// OK, accessed within their declaring class
-Derived2.x;
+		Derived2.x;
 		// OK, accessed within their declaring class
-Derived3.x;
+		Derived3.x;
 	}
 }
 // Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
@@ -4091,11 +4091,11 @@ class Derived1 extends Base {
 	static staticMethod1() {
 		Base.x;
 		// OK, accessed within a class derived from their declaring class
-Derived1.x;
+		Derived1.x;
 		// OK, accessed within a class derived from their declaring class
-Derived2.x;
+		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
-Derived3.x;
+		Derived3.x;
 	}
 }
 // Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
@@ -4103,11 +4103,11 @@ class Derived2 extends Base {
 	static staticMethod2() {
 		Base.x;
 		// OK, accessed within a class derived from their declaring class
-Derived1.x;
+		Derived1.x;
 		// OK, accessed within a class derived from their declaring class
-Derived2.x;
+		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
-Derived3.x;
+		Derived3.x;
 	}
 }
 // Error, redefined in a subclass, can only be accessed in the declaring class or one of its subclasses
@@ -4116,11 +4116,11 @@ class Derived3 extends Derived1 {
 	static staticMethod3() {
 		Base.x;
 		// OK, accessed within a class derived from their declaring class
-Derived1.x;
+		Derived1.x;
 		// OK, accessed within a class derived from their declaring class
-Derived2.x;
+		Derived2.x;
 		// OK, accessed within a class derived from their declaring class
-Derived3.x;
+		Derived3.x;
 	}
 }
 // OK, accessed within their declaring class
@@ -4147,7 +4147,7 @@ class Derived1 extends Base {
 	static staticMethod1() {
 		this.x;
 		// OK, accessed within a class derived from their declaring class
-super.x;
+		super.x;
 	}
 }
 // Error, x is not public
@@ -4156,7 +4156,7 @@ class Derived2 extends Derived1 {
 	static staticMethod3() {
 		this.x;
 		// OK, accessed within a class derived from their declaring class
-super.x;
+		super.x;
 	}
 }
 // Error, x is not public
@@ -4201,11 +4201,11 @@ exports[`TSC: classes genericSetterInClassTypeJsDoc 1`] = `
 class Box {
 	#value;
 	/** @param {T} initialValue */
-constructor(initialValue) {
+	constructor(initialValue) {
 		this.#value = initialValue;
 	}
 	/** @type {T} */
-get value() {
+	get value() {
 		return this.#value;
 	}
 	set value(value) {
@@ -5226,7 +5226,7 @@ class E extends D {
 		return "";
 	}
 	// error
-foo() {
+	foo() {
 		return "";
 	}
 }
@@ -5267,7 +5267,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers1 1`] = `
 	static z17 = super.a++;
 	static z18 = super.a\`\`;
 	// these should be unaffected
-x = 1;
+	x = 1;
 	y = this.x;
 	z = super.f();
 }
@@ -5303,7 +5303,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers2 1`] = `
 	static z17 = super.a++;
 	static z18 = super.a\`\`;
 	// these should be unaffected
-x = 1;
+	x = 1;
 	y = this.x;
 	z = super.f();
 }
@@ -5321,7 +5321,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers3 1`] = `
 	static z3 = super.f();
 	static z4 = super["f"]();
 	// these should be unaffected
-x = 1;
+	x = 1;
 	y = this.x;
 	z = super.f();
 }
@@ -5339,7 +5339,7 @@ exports[`TSC: classes thisAndSuperInStaticMembers4 1`] = `
 	static z3 = super.f();
 	static z4 = super["f"]();
 	// these should be unaffected
-x = 1;
+	x = 1;
 	y = this.x;
 	z = super.f();
 }
@@ -5448,7 +5448,7 @@ exports[`TSC: classes typeOfThisInStaticMembers 1`] = `
 	static foo;
 	static bar() {
 		// type of this is the constructor function type
-var t = this;
+		var t = this;
 		return this;
 	}
 }
@@ -5464,7 +5464,7 @@ class C2 {
 	static foo;
 	static bar() {
 		// type of this is the constructor function type
-var t = this;
+		var t = this;
 		return this;
 	}
 }
@@ -5850,7 +5850,7 @@ exports[`TSC: classes privateNameAccessors 1`] = `
 		this.#prop = "";
 		this.#roProp = "";
 		// Error
-console.log(this.#prop);
+		console.log(this.#prop);
 		console.log(this.#roProp);
 	}
 }
@@ -5950,11 +5950,11 @@ exports[`TSC: classes privateNameAndAny 1`] = `
 	method(thing) {
 		thing.#foo;
 		// OK
-thing.#m();
+		thing.#m();
 		thing.#baz;
 		thing.#bar;
 		// Error
-thing.#foo();
+		thing.#foo();
 	}
 	methodU(thing) {
 		thing.#foo;
@@ -5980,10 +5980,10 @@ exports[`TSC: classes privateNameAndIndexSignature 1`] = `
 	#foo = 3;
 	["#bar"] = this["#bar"];
 	// Error (private identifiers should not prevent circularity checking for computeds)
-constructor(message) {
+	constructor(message) {
 		this.#f = 3;
 		// Error (index signatures do not implicitly declare private names)
-this["#foo"] = 3;
+		this["#foo"] = 3;
 	}
 }
 // Okay (type has index signature and "#foo" does not collide with private identifier #foo)
@@ -6035,7 +6035,7 @@ class C {
 	constructor() {
 		exports.#bar = 6;
 		// Error
-this.#foo = 3;
+		this.#foo = 3;
 	}
 }
 // Error (undeclared)
@@ -6210,7 +6210,7 @@ class C {
 		const c = new C();
 		c.#x;
 		// OK
-const d = new C();
+		const d = new C();
 		d.#x;
 	}
 }
@@ -6221,49 +6221,49 @@ const d = new C();
 exports[`TSC: classes privateNameDuplicateField 1`] = `
 "function Field() {
 	// Error
-class A_Field_Field {
+	class A_Field_Field {
 		#foo = "foo";
 		#foo = "foo";
 	}
 	// Error
-class A_Field_Method {
+	class A_Field_Method {
 		#foo = "foo";
 		#foo() {
 		}
 	}
 	// Error
-class A_Field_Getter {
+	class A_Field_Getter {
 		#foo = "foo";
 		get #foo() {
 			return "";
 		}
 	}
 	// Error
-class A_Field_Setter {
+	class A_Field_Setter {
 		#foo = "foo";
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_Field_StaticField {
+	class A_Field_StaticField {
 		#foo = "foo";
 		static #foo = "foo";
 	}
 	// Error
-class A_Field_StaticMethod {
+	class A_Field_StaticMethod {
 		#foo = "foo";
 		static #foo() {
 		}
 	}
 	// Error
-class A_Field_StaticGetter {
+	class A_Field_StaticGetter {
 		#foo = "foo";
 		static get #foo() {
 			return "";
 		}
 	}
 	// Error
-class A_Field_StaticSetter {
+	class A_Field_StaticSetter {
 		#foo = "foo";
 		static set #foo(value) {
 		}
@@ -6271,20 +6271,20 @@ class A_Field_StaticSetter {
 }
 function Method() {
 	// Error
-class A_Method_Field {
+	class A_Method_Field {
 		#foo() {
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_Method_Method {
+	class A_Method_Method {
 		#foo() {
 		}
 		#foo() {
 		}
 	}
 	// Error
-class A_Method_Getter {
+	class A_Method_Getter {
 		#foo() {
 		}
 		get #foo() {
@@ -6292,27 +6292,27 @@ class A_Method_Getter {
 		}
 	}
 	// Error
-class A_Method_Setter {
+	class A_Method_Setter {
 		#foo() {
 		}
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_Method_StaticField {
+	class A_Method_StaticField {
 		#foo() {
 		}
 		static #foo = "foo";
 	}
 	// Error
-class A_Method_StaticMethod {
+	class A_Method_StaticMethod {
 		#foo() {
 		}
 		static #foo() {
 		}
 	}
 	// Error
-class A_Method_StaticGetter {
+	class A_Method_StaticGetter {
 		#foo() {
 		}
 		static get #foo() {
@@ -6320,7 +6320,7 @@ class A_Method_StaticGetter {
 		}
 	}
 	// Error
-class A_Method_StaticSetter {
+	class A_Method_StaticSetter {
 		#foo() {
 		}
 		static set #foo(value) {
@@ -6329,14 +6329,14 @@ class A_Method_StaticSetter {
 }
 function Getter() {
 	// Error
-class A_Getter_Field {
+	class A_Getter_Field {
 		get #foo() {
 			return "";
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_Getter_Method {
+	class A_Getter_Method {
 		get #foo() {
 			return "";
 		}
@@ -6344,7 +6344,7 @@ class A_Getter_Method {
 		}
 	}
 	// Error
-class A_Getter_Getter {
+	class A_Getter_Getter {
 		get #foo() {
 			return "";
 		}
@@ -6353,7 +6353,7 @@ class A_Getter_Getter {
 		}
 	}
 	//OK
-class A_Getter_Setter {
+	class A_Getter_Setter {
 		get #foo() {
 			return "";
 		}
@@ -6361,7 +6361,7 @@ class A_Getter_Setter {
 		}
 	}
 	// Error
-class A_Getter_StaticField {
+	class A_Getter_StaticField {
 		get #foo() {
 			return "";
 		}
@@ -6369,7 +6369,7 @@ class A_Getter_StaticField {
 		}
 	}
 	// Error
-class A_Getter_StaticMethod {
+	class A_Getter_StaticMethod {
 		get #foo() {
 			return "";
 		}
@@ -6377,7 +6377,7 @@ class A_Getter_StaticMethod {
 		}
 	}
 	// Error
-class A_Getter_StaticGetter {
+	class A_Getter_StaticGetter {
 		get #foo() {
 			return "";
 		}
@@ -6386,7 +6386,7 @@ class A_Getter_StaticGetter {
 		}
 	}
 	// Error
-class A_Getter_StaticSetter {
+	class A_Getter_StaticSetter {
 		get #foo() {
 			return "";
 		}
@@ -6396,20 +6396,20 @@ class A_Getter_StaticSetter {
 }
 function Setter() {
 	// Error
-class A_Setter_Field {
+	class A_Setter_Field {
 		set #foo(value) {
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_Setter_Method {
+	class A_Setter_Method {
 		set #foo(value) {
 		}
 		#foo() {
 		}
 	}
 	// OK
-class A_Setter_Getter {
+	class A_Setter_Getter {
 		set #foo(value) {
 		}
 		get #foo() {
@@ -6417,27 +6417,27 @@ class A_Setter_Getter {
 		}
 	}
 	// Error
-class A_Setter_Setter {
+	class A_Setter_Setter {
 		set #foo(value) {
 		}
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_Setter_StaticField {
+	class A_Setter_StaticField {
 		set #foo(value) {
 		}
 		static #foo = "foo";
 	}
 	// Error
-class A_Setter_StaticMethod {
+	class A_Setter_StaticMethod {
 		set #foo(value) {
 		}
 		static #foo() {
 		}
 	}
 	// Error
-class A_Setter_StaticGetter {
+	class A_Setter_StaticGetter {
 		set #foo(value) {
 		}
 		static get #foo() {
@@ -6445,7 +6445,7 @@ class A_Setter_StaticGetter {
 		}
 	}
 	// Error
-class A_Setter_StaticSetter {
+	class A_Setter_StaticSetter {
 		set #foo(value) {
 		}
 		static set #foo(value) {
@@ -6454,49 +6454,49 @@ class A_Setter_StaticSetter {
 }
 function StaticField() {
 	// Error
-class A_StaticField_Field {
+	class A_StaticField_Field {
 		static #foo = "foo";
 		#foo = "foo";
 	}
 	// Error
-class A_StaticField_Method {
+	class A_StaticField_Method {
 		static #foo = "foo";
 		#foo() {
 		}
 	}
 	// Error
-class A_StaticField_Getter {
+	class A_StaticField_Getter {
 		static #foo = "foo";
 		get #foo() {
 			return "";
 		}
 	}
 	// Error
-class A_StaticField_Setter {
+	class A_StaticField_Setter {
 		static #foo = "foo";
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_StaticField_StaticField {
+	class A_StaticField_StaticField {
 		static #foo = "foo";
 		static #foo = "foo";
 	}
 	// Error
-class A_StaticField_StaticMethod {
+	class A_StaticField_StaticMethod {
 		static #foo = "foo";
 		static #foo() {
 		}
 	}
 	// Error
-class A_StaticField_StaticGetter {
+	class A_StaticField_StaticGetter {
 		static #foo = "foo";
 		static get #foo() {
 			return "";
 		}
 	}
 	// Error
-class A_StaticField_StaticSetter {
+	class A_StaticField_StaticSetter {
 		static #foo = "foo";
 		static set #foo(value) {
 		}
@@ -6504,20 +6504,20 @@ class A_StaticField_StaticSetter {
 }
 function StaticMethod() {
 	// Error
-class A_StaticMethod_Field {
+	class A_StaticMethod_Field {
 		static #foo() {
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_StaticMethod_Method {
+	class A_StaticMethod_Method {
 		static #foo() {
 		}
 		#foo() {
 		}
 	}
 	// Error
-class A_StaticMethod_Getter {
+	class A_StaticMethod_Getter {
 		static #foo() {
 		}
 		get #foo() {
@@ -6525,27 +6525,27 @@ class A_StaticMethod_Getter {
 		}
 	}
 	// Error
-class A_StaticMethod_Setter {
+	class A_StaticMethod_Setter {
 		static #foo() {
 		}
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_StaticMethod_StaticField {
+	class A_StaticMethod_StaticField {
 		static #foo() {
 		}
 		static #foo = "foo";
 	}
 	// Error
-class A_StaticMethod_StaticMethod {
+	class A_StaticMethod_StaticMethod {
 		static #foo() {
 		}
 		static #foo() {
 		}
 	}
 	// Error
-class A_StaticMethod_StaticGetter {
+	class A_StaticMethod_StaticGetter {
 		static #foo() {
 		}
 		static get #foo() {
@@ -6553,7 +6553,7 @@ class A_StaticMethod_StaticGetter {
 		}
 	}
 	// Error
-class A_StaticMethod_StaticSetter {
+	class A_StaticMethod_StaticSetter {
 		static #foo() {
 		}
 		static set #foo(value) {
@@ -6562,14 +6562,14 @@ class A_StaticMethod_StaticSetter {
 }
 function StaticGetter() {
 	// Error
-class A_StaticGetter_Field {
+	class A_StaticGetter_Field {
 		static get #foo() {
 			return "";
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_StaticGetter_Method {
+	class A_StaticGetter_Method {
 		static get #foo() {
 			return "";
 		}
@@ -6577,7 +6577,7 @@ class A_StaticGetter_Method {
 		}
 	}
 	// Error
-class A_StaticGetter_Getter {
+	class A_StaticGetter_Getter {
 		static get #foo() {
 			return "";
 		}
@@ -6586,7 +6586,7 @@ class A_StaticGetter_Getter {
 		}
 	}
 	// Error
-class A_StaticGetter_Setter {
+	class A_StaticGetter_Setter {
 		static get #foo() {
 			return "";
 		}
@@ -6594,7 +6594,7 @@ class A_StaticGetter_Setter {
 		}
 	}
 	// Error
-class A_StaticGetter_StaticField {
+	class A_StaticGetter_StaticField {
 		static get #foo() {
 			return "";
 		}
@@ -6602,7 +6602,7 @@ class A_StaticGetter_StaticField {
 		}
 	}
 	// Error
-class A_StaticGetter_StaticMethod {
+	class A_StaticGetter_StaticMethod {
 		static get #foo() {
 			return "";
 		}
@@ -6610,7 +6610,7 @@ class A_StaticGetter_StaticMethod {
 		}
 	}
 	// Error
-class A_StaticGetter_StaticGetter {
+	class A_StaticGetter_StaticGetter {
 		static get #foo() {
 			return "";
 		}
@@ -6619,7 +6619,7 @@ class A_StaticGetter_StaticGetter {
 		}
 	}
 	// OK
-class A_StaticGetter_StaticSetter {
+	class A_StaticGetter_StaticSetter {
 		static get #foo() {
 			return "";
 		}
@@ -6629,20 +6629,20 @@ class A_StaticGetter_StaticSetter {
 }
 function StaticSetter() {
 	// Error
-class A_StaticSetter_Field {
+	class A_StaticSetter_Field {
 		static set #foo(value) {
 		}
 		#foo = "foo";
 	}
 	// Error
-class A_StaticSetter_Method {
+	class A_StaticSetter_Method {
 		static set #foo(value) {
 		}
 		#foo() {
 		}
 	}
 	// Error
-class A_StaticSetter_Getter {
+	class A_StaticSetter_Getter {
 		static set #foo(value) {
 		}
 		get #foo() {
@@ -6650,27 +6650,27 @@ class A_StaticSetter_Getter {
 		}
 	}
 	// Error
-class A_StaticSetter_Setter {
+	class A_StaticSetter_Setter {
 		static set #foo(value) {
 		}
 		set #foo(value) {
 		}
 	}
 	// Error
-class A_StaticSetter_StaticField {
+	class A_StaticSetter_StaticField {
 		static set #foo(value) {
 		}
 		static #foo = "foo";
 	}
 	// Error
-class A_StaticSetter_StaticMethod {
+	class A_StaticSetter_StaticMethod {
 		static set #foo(value) {
 		}
 		static #foo() {
 		}
 	}
 	// OK
-class A_StaticSetter_StaticGetter {
+	class A_StaticSetter_StaticGetter {
 		static set #foo(value) {
 		}
 		static get #foo() {
@@ -6678,7 +6678,7 @@ class A_StaticSetter_StaticGetter {
 		}
 	}
 	// Error
-class A_StaticSetter_StaticSetter {
+	class A_StaticSetter_StaticSetter {
 		static set #foo(value) {
 		}
 		static set #foo(value) {
@@ -6991,7 +6991,7 @@ exports[`TSC: classes privateNameImplicitDeclaration 1`] = `
 "class C {
 	constructor() {
 		/** @type {string} */
-this.#x;
+		this.#x;
 	}
 }
 "
@@ -7001,11 +7001,11 @@ exports[`TSC: classes privateNameInInExpressionUnused 1`] = `
 "class Foo {
 	#unused;
 	// expect unused error
-#brand;
+	#brand;
 	// expect no error
-isFoo(v) {
+	isFoo(v) {
 		// This should count as using/reading '#brand'
-return #brand in v;
+		return #brand in v;
 	}
 }
 "
@@ -7091,7 +7091,7 @@ exports[`TSC: classes privateNameMethod 1`] = `
 		this.#method("");
 		this.#method(1);
 		// Error
-this.#method();
+		this.#method();
 	}
 }
 // Error 
@@ -7134,16 +7134,16 @@ exports[`TSC: classes privateNameMethodAssignment 1`] = `
 		this.#method = () => {
 		};
 		// Error, not writable 
-a.#method = () => {
+		a.#method = () => {
 		};
 		// Error, not writable 
-b.#method = () => {
+		b.#method = () => {
 		};
 		//Error, not writable 
-({ x:this.#method } = { x: () => {
+		({ x:this.#method } = { x: () => {
 		} });
 		//Error, not writable 
-let x = this.#method;
+		let x = this.#method;
 		b.#method++;
 	}
 }
@@ -7188,12 +7188,12 @@ exports[`TSC: classes privateNameMethodCallExpression 1`] = `
 		this.#method2(0, ...arr, 3);
 		const b = new this.#method2(0, ...arr, 3);
 		//Error 
-const str = this.#method2\`head\${1}middle\${2}tail\`;
+		const str = this.#method2\`head\${1}middle\${2}tail\`;
 		this.getInstance().#method2\`test\${1}and\${2}\`;
 		this.getInstance().#method2(0, ...arr, 3);
 		const b2 = new (this.getInstance().#method2)(0, ...arr, 3);
 		//Error 
-const str2 = this.getInstance().#method2\`head\${1}middle\${2}tail\`;
+		const str2 = this.getInstance().#method2\`head\${1}middle\${2}tail\`;
 	}
 	getInstance() {
 		return new AA();
@@ -7340,7 +7340,7 @@ exports[`TSC: classes privateNameNestedMethodAccess 1`] = `
 				new C().#foo;
 				new C().#bar;
 				// Error
-new C().#baz;
+				new C().#baz;
 				new D().#bar;
 			}
 			n(x) {
@@ -7433,9 +7433,9 @@ let A = (() => {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
 			_foo_decorators = [dec];
 			_bar_decorators = [// Error
-dec];
+			dec];
 			__esDecorate(this, _private_bar_descriptor = { value: __setFunctionName(function()// Error
-{
+			{
 			}, "#bar") }, _bar_decorators, { kind: "method", name: "#bar", static: false, private: true, access: { has: (obj) => #bar in obj, get: (obj) => obj.#bar }, metadata: _metadata }, null, _instanceExtraInitializers);
 			__esDecorate(null, null, _foo_decorators, { kind: "field", name: "#foo", static: false, private: true, access: { has: (obj) => #foo in obj, get: (obj) => obj.#foo, set: function(obj,value) {
 				obj.#foo = value;
@@ -7582,7 +7582,7 @@ exports[`TSC: classes privateNamesAndStaticFields 1`] = `
 		A.#foo = 3;
 		B.#foo;
 		// Error
-B.#bar;
+		B.#bar;
 	}
 }
 // Error
@@ -7669,14 +7669,14 @@ exports[`TSC: classes privateNamesConstructorChain-1 1`] = `
 	accessChildProps() {
 		new Child().#foo;
 		// OK (\`#foo\` was added when \`Parent\`'s constructor was called on \`child\`)
-Child.#bar;
+		Child.#bar;
 	}
 }
 // Error: not found
 class Child extends Parent {
 	#foo = "foo";
 	// OK (Child's #foo does not conflict, as \`Parent\`'s \`#foo\` is not accessible)
-#bar = "bar";
+	#bar = "bar";
 }
 // OK
 "
@@ -7689,14 +7689,14 @@ exports[`TSC: classes privateNamesConstructorChain-2 1`] = `
 	accessChildProps() {
 		new Child().#foo;
 		// OK (\`#foo\` was added when \`Parent\`'s constructor was called on \`child\`)
-Child.#bar;
+		Child.#bar;
 	}
 }
 // Error: not found
 class Child extends Parent {
 	#foo = "foo";
 	// OK (Child's #foo does not conflict, as \`Parent\`'s \`#foo\` is not accessible)
-#bar = "bar";
+	#bar = "bar";
 }
 // OK
 new Parent().accessChildProps();
@@ -7735,65 +7735,65 @@ exports[`TSC: classes privateNamesIncompatibleModifiersJs 1`] = `
 	/**
      * @public
      */
-#a = 1;
+	#a = 1;
 	/**
      * @private
      */
-#b = 1;
+	#b = 1;
 	/**
      * @protected
      */
-#c = 1;
+	#c = 1;
 	/**
      * @public
      */
-#aMethod() {
+	#aMethod() {
 		return 1;
 	}
 	/**
      * @private
      */
-#bMethod() {
+	#bMethod() {
 		return 1;
 	}
 	/**
      * @protected
      */
-#cMethod() {
+	#cMethod() {
 		return 1;
 	}
 	/**
      * @public
      */
-get #aProp() {
+	get #aProp() {
 		return 1;
 	}
 	/**
      * @public
      */
-set #aProp(value) {
+	set #aProp(value) {
 	}
 	/**
      * @private
      */
-get #bProp() {
+	get #bProp() {
 		return 1;
 	}
 	/**
      * @private
      */
-set #bProp(value) {
+	set #bProp(value) {
 	}
 	/**
     * @protected
     */
-get #cProp() {
+	get #cProp() {
 		return 1;
 	}
 	/**
      * @protected
      */
-set #cProp(value) {
+	set #cProp(value) {
 	}
 }
 "
@@ -7815,35 +7815,35 @@ exports[`TSC: classes privateNamesInGenericClasses 1`] = `
 		return x.#foo;
 	}
 	// OK
-bar2(x) {
+	bar2(x) {
 		return x.#method();
 	}
 	// OK
-bar3(x) {
+	bar3(x) {
 		return x.#prop;
 	}
 	// OK
-baz(x) {
+	baz(x) {
 		return x.#foo;
 	}
 	// OK
-baz2(x) {
+	baz2(x) {
 		return x.#method;
 	}
 	// OK
-baz3(x) {
+	baz3(x) {
 		return x.#prop;
 	}
 	// OK
-quux(x) {
+	quux(x) {
 		return x.#foo;
 	}
 	// OK
-quux2(x) {
+	quux2(x) {
 		return x.#method;
 	}
 	// OK
-quux3(x) {
+	quux3(x) {
 		return x.#prop;
 	}
 }
@@ -7872,16 +7872,16 @@ exports[`TSC: classes privateNamesInNestedClasses-1 1`] = `
 				a.#foo;
 			}
 			// OK, no compile-time error, don't know what \`a\` is
-baz(a) {
+			baz(a) {
 				a.#foo;
 			}
 			// compile-time error, shadowed
-quux(b) {
+			quux(b) {
 				b.#foo;
 			}
 		}
 		// OK
-const a = new A();
+		const a = new A();
 		new B().bar(a);
 		new B().baz(a);
 		const b = new B();
@@ -7939,7 +7939,7 @@ exports[`TSC: classes privateNameStaticAccessors 1`] = `
 		A1.#prop = "";
 		A1.#roProp = "";
 		// Error
-console.log(A1.#prop);
+		console.log(A1.#prop);
 		console.log(A1.#roProp);
 	}
 }
@@ -8051,7 +8051,7 @@ exports[`TSC: classes privateNameStaticFieldAccess 1`] = `
 	constructor() {
 		console.log(A.#myField);
 		//Ok
-console.log(this.#myField);
+		console.log(this.#myField);
 	}
 }
 //Error
@@ -8151,7 +8151,7 @@ exports[`TSC: classes privateNameStaticFieldDerivedClasses 1`] = `
 	static method(x) {
 		Derived.#derivedProp;
 		// error
-Base.#prop = 10;
+		Base.#prop = 10;
 	}
 }
 class Derived extends Base {
@@ -8257,7 +8257,7 @@ exports[`TSC: classes privateNameStaticMethod 1`] = `
 		A1.#method("");
 		A1.#method(1);
 		// Error
-A1.#method();
+		A1.#method();
 	}
 }
 // Error 
@@ -8272,16 +8272,16 @@ exports[`TSC: classes privateNameStaticMethodAssignment 1`] = `
 		A3.#method = () => {
 		};
 		// Error, not writable 
-a.#method = () => {
+		a.#method = () => {
 		};
 		// Error, not writable 
-b.#method = () => {
+		b.#method = () => {
 		};
 		//Error, not writable 
-({ x:A3.#method } = { x: () => {
+		({ x:A3.#method } = { x: () => {
 		} });
 		//Error, not writable 
-let x = A3.#method;
+		let x = A3.#method;
 		b.#method++;
 	}
 }
@@ -8306,12 +8306,12 @@ exports[`TSC: classes privateNameStaticMethodCallExpression 1`] = `
 		AA.#method2(0, ...arr, 3);
 		const b = new AA.#method2(0, ...arr, 3);
 		//Error 
-const str = AA.#method2\`head\${1}middle\${2}tail\`;
+		const str = AA.#method2\`head\${1}middle\${2}tail\`;
 		AA.getClass().#method2\`test\${1}and\${2}\`;
 		AA.getClass().#method2(0, ...arr, 3);
 		const b2 = new (AA.getClass().#method2)(0, ...arr, 3);
 		//Error 
-const str2 = AA.getClass().#method2\`head\${1}middle\${2}tail\`;
+		const str2 = AA.getClass().#method2\`head\${1}middle\${2}tail\`;
 	}
 	static getClass() {
 		return AA;
@@ -8444,26 +8444,26 @@ exports[`TSC: classes privateNamesUseBeforeDef 1`] = `
 "class A {
 	#foo = this.#bar;
 	// Error
-#bar = 3;
+	#bar = 3;
 }
 class A2 {
 	#foo = this.#bar();
 	// No Error
-#bar() {
+	#bar() {
 		return 3;
 	}
 }
 class A3 {
 	#foo = this.#bar;
 	// No Error
-get #bar() {
+	get #bar() {
 		return 3;
 	}
 }
 class B {
 	#foo = this.#bar;
 	// Error
-#bar = this.#foo;
+	#bar = this.#foo;
 }
 "
 `;
@@ -8519,26 +8519,26 @@ exports[`TSC: classes privateNameWhenNotUseDefineForClassFieldsInEsNext 1`] = `
 	#prop = 0;
 	static dd = new TestWithStatics().#prop;
 	// OK
-static ["X_ z_ zz"] = class Inner {
+	static ["X_ z_ zz"] = class Inner {
 		#foo = 10;
 		m() {
 			new TestWithStatics().#prop;
 		}
 		// OK
-static C = class InnerInner {
+		static C = class InnerInner {
 			m() {
 				new TestWithStatics().#prop;
 				// OK
-new Inner().#foo;
+				new Inner().#foo;
 			}
 		};
 		// OK
-static M() {
+		static M() {
 			return class {
 				m() {
 					new TestWithStatics().#prop;
 					// OK
-new Inner().#foo;
+					new Inner().#foo;
 				}
 			};
 		}
@@ -8549,26 +8549,26 @@ class TestNonStatics {
 	#prop = 0;
 	dd = new TestNonStatics().#prop;
 	// OK
-["X_ z_ zz"] = class Inner {
+	["X_ z_ zz"] = class Inner {
 		#foo = 10;
 		m() {
 			new TestNonStatics().#prop;
 		}
 		// Ok
-C = class InnerInner {
+		C = class InnerInner {
 			m() {
 				new TestNonStatics().#prop;
 				// Ok
-new Inner().#foo;
+				new Inner().#foo;
 			}
 		};
 		// Ok
-static M() {
+		static M() {
 			return class {
 				m() {
 					new TestNonStatics().#prop;
 					// OK
-new Inner().#foo;
+					new Inner().#foo;
 				}
 			};
 		}
@@ -8587,11 +8587,11 @@ exports[`TSC: classes privateStaticNameShadowing 1`] = `
 	static #m() {
 		const X = {};
 		// shadow the class
-const _a = {};
+		const _a = {};
 		// shadow the first generated var
-X.#m();
+		X.#m();
 		// Should check with X as the receiver with _b as the class constructor 
-return 1;
+		return 1;
 	}
 }
 "
@@ -8611,23 +8611,23 @@ exports[`TSC: classes privateWriteOnlyAccessorRead 1`] = `
 		const foo = { bar: 1 };
 		console.log(this.#value);
 		// error
-this.#value = { foo };
+		this.#value = { foo };
 		// ok
-this.#value = { foo };
+		this.#value = { foo };
 		// ok
-this.#value.foo = foo;
+		this.#value.foo = foo;
 		// error
-({ o:this.#value } = { o: { foo } });
+		({ o:this.#value } = { o: { foo } });
 		//ok
-({ ...this.#value } = { foo });
+		({ ...this.#value } = { foo });
 		//ok
-({ foo:this.#value.foo } = { foo });
+		({ foo:this.#value.foo } = { foo });
 		//error
-({ foo:{ ...this.#value.foo } } = { foo });
+		({ foo:{ ...this.#value.foo } } = { foo });
 		//error
-let r = { o: this.#value };
+		let r = { o: this.#value };
 		//error
-[this.#valueOne, ...this.#valueRest] = [1, 2, 3];
+		[this.#valueOne, ...this.#valueRest] = [1, 2, 3];
 		let arr = [this.#valueOne, ...this.#valueRest];
 		this.#valueCompound += 3;
 	}
@@ -8651,9 +8651,9 @@ exports[`TSC: classes typeFromPrivatePropertyAssignment 1`] = `
 exports[`TSC: classes typeFromPrivatePropertyAssignmentJs 1`] = `
 "class C {
 	/** @type {{ foo?: string } | undefined } */
-#a;
+	#a;
 	/** @type {{ foo?: string } | undefined } */
-#b;
+	#b;
 	m() {
 		const a = this.#a || {};
 		this.#b = this.#b || {};
@@ -8666,7 +8666,7 @@ exports[`TSC: classes optionalMethodDeclarations 1`] = `
 "// https://github.com/microsoft/TypeScript/issues/34952#issuecomment-552025027
 class C {
 	// ? should be removed in emit
-method() {
+	method() {
 	}
 }
 "
@@ -8675,7 +8675,7 @@ method() {
 exports[`TSC: classes mixinAbstractClasses.2 1`] = `
 "function Mixin(baseClass) {
 	// error expected: A mixin class that extends from a type variable containing an abstract construct signature must also be declared 'abstract'.
-class MixinClass extends baseClass {
+	class MixinClass extends baseClass {
 		mixinMethod() {
 		}
 	}
@@ -8726,8 +8726,8 @@ exports[`TSC: classes mixinAbstractClassesReturnTypeInference 1`] = `
 }
 function Mixin2(baseClass) {
 	// must be \`abstract\` because we cannot know *all* of the possible abstract members that need to be
-// implemented for this to be concrete.
-class MixinClass extends baseClass {
+	// implemented for this to be concrete.
+	class MixinClass extends baseClass {
 		mixinMethod() {
 		}
 		static staticMixinMethod() {
@@ -8824,13 +8824,13 @@ class C5 extends Mix(Protected, Public) {
 	f(c4,c5,c6) {
 		c4.p;
 		// Error, not in class deriving from Protected2
-c5.p;
+		c5.p;
 		c6.p;
 	}
 	static g() {
 		C4.s;
 		// Error, not in class deriving from Protected2
-C5.s;
+		C5.s;
 		C6.s;
 	}
 }
@@ -8838,13 +8838,13 @@ class C6 extends Mix(Public, Public2) {
 	f(c4,c5,c6) {
 		c4.p;
 		// Error, not in class deriving from Protected2
-c5.p;
+		c5.p;
 		c6.p;
 	}
 	static g() {
 		C4.s;
 		// Error, not in class deriving from Protected2
-C5.s;
+		C5.s;
 		C6.s;
 	}
 }
@@ -8863,19 +8863,19 @@ class ProtectedGeneric2 {
 function f7(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
-x.protectedMethod();
+	x.protectedMethod();
 }
 // Error, protected when all constituents are protected
 function f8(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
-x.protectedMethod();
+	x.protectedMethod();
 }
 // Error, protected when all constituents are protected
 function f9(x) {
 	x.privateMethod();
 	// Error, private constituent makes method inaccessible
-x.protectedMethod();
+	x.protectedMethod();
 }
 // Error, protected when all constituents are protected
 "
@@ -9283,7 +9283,7 @@ class D extends C {
 		return this._secret;
 	}
 	// error
-set p(value) {
+	set p(value) {
 		this._secret = value;
 	}
 }
@@ -9314,7 +9314,7 @@ class Derived extends Base {
 		return 2;
 	}
 	// should be an error
-set x(value) {
+	set x(value) {
 		console.log(\`x was set to \${value}\`);
 	}
 }
@@ -9332,7 +9332,7 @@ exports[`TSC: classes accessorsOverrideProperty3 1`] = `
 		return this._sound;
 	}
 	// error here
-set sound(val) {
+	set sound(val) {
 		this._sound = val;
 	}
 }
@@ -9384,7 +9384,7 @@ class D extends C {
 		return this._secret;
 	}
 	// error
-set p(value) {
+	set p(value) {
 		this._secret = value;
 	}
 }
@@ -9449,7 +9449,7 @@ function ApiItemContainerMixin(baseClass) {
 // Subclass inheriting from mixin
 export class ApiEnum extends ApiItemContainerMixin(ApiItem) {
 	// This worked prior to TypeScript 4.0:
-get members() {
+	get members() {
 		return [];
 	}
 }
@@ -9460,30 +9460,30 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationES2022 1`] = `
 "class C {
 	qux = this.bar;
 	// should error
-bar = this.foo;
+	bar = this.foo;
 	// should error
-quiz = this.bar;
+	quiz = this.bar;
 	// ok
-quench = this.m1();
+	quench = this.m1();
 	// ok
-quanch = this.m3();
+	quanch = this.m3();
 	// should error
-m1() {
+	m1() {
 		this.foo;
 	}
 	// ok
-m3 = function() {
+	m3 = function() {
 	};
 	constructor(foo) {
 		this.foo = foo;
 	}
 	quim = this.baz;
 	// should error
-baz = this.foo;
+	baz = this.foo;
 	// should error
-quid = this.baz;
+	quid = this.baz;
 	// ok
-m2() {
+	m2() {
 		this.foo;
 	}
 }
@@ -9495,7 +9495,7 @@ class D extends C {
 class E {
 	bar = () => this.foo1 + this.foo2;
 	// both ok
-foo1 = "";
+	foo1 = "";
 	constructor(foo2) {
 		this.foo2 = foo2;
 	}
@@ -9530,30 +9530,30 @@ exports[`TSC: classes assignParameterPropertyToPropertyDeclarationESNext 1`] = `
 "class C {
 	qux = this.bar;
 	// should error
-bar = this.foo;
+	bar = this.foo;
 	// should error
-quiz = this.bar;
+	quiz = this.bar;
 	// ok
-quench = this.m1();
+	quench = this.m1();
 	// ok
-quanch = this.m3();
+	quanch = this.m3();
 	// should error
-m1() {
+	m1() {
 		this.foo;
 	}
 	// ok
-m3 = function() {
+	m3 = function() {
 	};
 	constructor(foo) {
 		this.foo = foo;
 	}
 	quim = this.baz;
 	// should error
-baz = this.foo;
+	baz = this.foo;
 	// should error
-quid = this.baz;
+	quid = this.baz;
 	// ok
-m2() {
+	m2() {
 		this.foo;
 	}
 }
@@ -9565,7 +9565,7 @@ class D extends C {
 class E {
 	bar = () => this.foo1 + this.foo2;
 	// both ok
-foo1 = "";
+	foo1 = "";
 	constructor(foo2) {
 		this.foo2 = foo2;
 	}
@@ -9852,7 +9852,7 @@ var x = 1;
 class C {
 	b = x;
 	// error, evaluated in scope of constructor, cannot reference x
-constructor(x) {
+	constructor(x) {
 		x = 2;
 	}
 }
@@ -9861,7 +9861,7 @@ var y = 1;
 class D {
 	b = y;
 	// error, evaluated in scope of constructor, cannot reference y
-constructor(x) {
+	constructor(x) {
 		var y = "";
 	}
 }
@@ -9882,21 +9882,21 @@ var x = 1;
 class C {
 	b = x;
 	// ok
-constructor(x) {
+	constructor(x) {
 	}
 }
 var y = 1;
 class D {
 	b = y;
 	// ok
-constructor(x) {
+	constructor(x) {
 		var y = "";
 	}
 }
 class E {
 	b = z;
 	// not ok
-constructor(z) {
+	constructor(z) {
 	}
 }
 "
@@ -9987,7 +9987,7 @@ class J {
 class K extends J {
 	q;
 	// ok, extends a property from an interface
-r;
+	r;
 }
 // error, from class
 // #35327
@@ -10029,26 +10029,26 @@ exports[`TSC: classes initializerReferencingConstructorLocals 1`] = `
 class C {
 	a = z;
 	// error
-b;
+	b;
 	// error
-c = this.z;
+	c = this.z;
 	// error
-d;
+	d;
 	// error
-constructor(x) {
+	constructor(x) {
 		z = 1;
 	}
 }
 class D {
 	a = z;
 	// error
-b;
+	b;
 	// error
-c = this.z;
+	c = this.z;
 	// error
-d;
+	d;
 	// error
-constructor(x) {
+	constructor(x) {
 		z = 1;
 	}
 }
@@ -10060,35 +10060,35 @@ exports[`TSC: classes initializerReferencingConstructorParameters 1`] = `
 class C {
 	a = x;
 	// error
-b;
+	b;
 	// error
-constructor(x) {
+	constructor(x) {
 	}
 }
 class D {
 	a = x;
 	// error
-b;
+	b;
 	// error
-constructor(x) {
+	constructor(x) {
 		this.x = x;
 	}
 }
 class E {
 	a = this.x;
 	// ok
-b;
+	b;
 	// ok
-constructor(x) {
+	constructor(x) {
 		this.x = x;
 	}
 }
 class F {
 	a = this.x;
 	// ok
-b = x;
+	b = x;
 	// error
-constructor(x) {
+	constructor(x) {
 		this.x = x;
 	}
 }
@@ -10211,12 +10211,12 @@ exports[`TSC: classes typeOfThisInAccessor 1`] = `
 	get x() {
 		var r = this;
 		// C
-return 1;
+		return 1;
 	}
 	static get y() {
 		var r2 = this;
 		// typeof C
-return 1;
+		return 1;
 	}
 }
 class D {
@@ -10224,18 +10224,18 @@ class D {
 	get x() {
 		var r = this;
 		// D<T>
-return 1;
+		return 1;
 	}
 	static get y() {
 		var r2 = this;
 		// typeof D
-return 1;
+		return 1;
 	}
 }
 var x = { get a() {
 	var r3 = this;
 	// any
-return 1;
+	return 1;
 } };
 "
 `;
@@ -10253,9 +10253,9 @@ class Derived extends Base {
 	bar() {
 		var r = super.foo({ a: 1 });
 		// { a: number }
-var r2 = super.foo({ a: 1, b: 2 });
+		var r2 = super.foo({ a: 1, b: 2 });
 		// { a: number }
-var r3 = this.foo({ a: 1, b: 2 });
+		var r3 = this.foo({ a: 1, b: 2 });
 	}
 }
 // { a: number; b: number; }
@@ -10272,11 +10272,11 @@ exports[`TSC: classes instanceMemberAssignsToClassPrototype 1`] = `
 		C.prototype.bar = () => {
 		};
 		// error
-C.prototype.bar = (x) => x;
+		C.prototype.bar = (x) => x;
 		// ok
-C.prototype.bar = (x) => 1;
+		C.prototype.bar = (x) => 1;
 		// ok
-return 1;
+		return 1;
 	}
 }
 "
@@ -10357,43 +10357,43 @@ class D {
 exports[`TSC: classes memberFunctionsWithPublicPrivateOverloads 1`] = `
 "class C {
 	// error
-foo(x,y) {
+	foo(x,y) {
 	}
 	// error
-bar(x,y) {
+	bar(x,y) {
 	}
 	// error
-static foo(x,y) {
+	static foo(x,y) {
 	}
 	// error
-// error
-baz(x,y) {
+	// error
+	baz(x,y) {
 	}
 	// error
-static bar(x,y) {
+	static bar(x,y) {
 	}
 	// error
-static baz(x,y) {
+	static baz(x,y) {
 	}
 }
 class D {
 	// error
-foo(x,y) {
+	foo(x,y) {
 	}
 	// error
-bar(x,y) {
+	bar(x,y) {
 	}
 	// error
-baz(x,y) {
+	baz(x,y) {
 	}
 	// error
-static foo(x,y) {
+	static foo(x,y) {
 	}
 	// error
-static bar(x,y) {
+	static bar(x,y) {
 	}
 	// error
-static baz(x,y) {
+	static baz(x,y) {
 	}
 }
 var r = c.foo(1);
@@ -10432,11 +10432,11 @@ exports[`TSC: classes staticMemberAssignsToConstructorFunctionMembers 1`] = `
 		C.bar = () => {
 		};
 		// error
-C.bar = (x) => x;
+		C.bar = (x) => x;
 		// ok
-C.bar = (x) => 1;
+		C.bar = (x) => 1;
 		// ok
-return 1;
+		return 1;
 	}
 }
 "
@@ -10490,7 +10490,7 @@ exports[`TSC: classes optionalProperty 1`] = `
 exports[`TSC: classes overrideInterfaceProperty 1`] = `
 "class Sizz extends Mup {
 	// ok, because Mup is an interface
-get size() {
+	get size() {
 		return 0;
 	}
 }
@@ -10505,7 +10505,7 @@ exports[`TSC: classes propertyAndAccessorWithSameName 1`] = `
 	x;
 	get x() {
 		// error
-return 1;
+		return 1;
 	}
 }
 class D {
@@ -10518,7 +10518,7 @@ class E {
 	x;
 	get x() {
 		// error
-return 1;
+		return 1;
 	}
 	set x(v) {
 	}
@@ -10531,7 +10531,7 @@ exports[`TSC: classes propertyAndFunctionWithSameName 1`] = `
 	x;
 	x() {
 		// error
-return 1;
+		return 1;
 	}
 }
 class D {
@@ -10598,7 +10598,7 @@ exports[`TSC: classes propertyOverridesAccessors3 1`] = `
 		this._sound = val;
 	}
 	/* some important code here, perhaps tracking known sounds, etc */
-makeSound() {
+	makeSound() {
 		console.log(this._sound);
 	}
 }
@@ -10685,7 +10685,7 @@ exports[`TSC: classes redefinedPararameterProperty 1`] = `
 class Derived extends Base {
 	b = this.a;
 	/*undefined*/
-constructor(a) {
+	constructor(a) {
 		this.a = a;
 		super();
 	}
@@ -10709,9 +10709,9 @@ exports[`TSC: classes staticAutoAccessors 1`] = `
 "// https://github.com/microsoft/TypeScript/issues/53752
 class A {
 	// uses class reference
-static accessor x = 1;
+	static accessor x = 1;
 	// uses 'this'
-accessor y = 2;
+	accessor y = 2;
 }
 "
 `;
@@ -10775,10 +10775,10 @@ let A = (() => {
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
 			_x_decorators = [// uses class reference
-((t, c) => {
+			((t, c) => {
 			})];
 			_y_decorators = [// uses 'this'
-((t, c) => {
+			((t, c) => {
 			})];
 			__esDecorate(this, null, _x_decorators, { kind: "accessor", name: "x", static: true, private: false, access: { has: (obj) => "x" in obj, get: (obj) => obj.x, set: function(obj,value) {
 				obj.x = value;
@@ -10840,16 +10840,16 @@ exports[`TSC: classes strictPropertyInitialization 1`] = `
 class C1 {
 	a;
 	// Error
-b;
+	b;
 	c;
 	// Error
-d;
+	d;
 	#f;
 	//Error
-#g;
+	#g;
 	#h;
 	//Error
-#i;
+	#i;
 }
 // No strict initialization checks in ambient contexts
 // No strict initialization checks for static members
@@ -10881,7 +10881,7 @@ class C5 {
 class C6 {
 	a;
 	// Error
-#b;
+	#b;
 	constructor(cond) {
 		if (cond) {
 			return;
@@ -10907,7 +10907,7 @@ class C7 {
 class C8 {
 	a;
 	// Error
-"b";
+	"b";
 	0;
 }
 // No strict initialization checks for abstract members
@@ -10923,11 +10923,11 @@ class C10 {
 	constructor() {
 		let x = this.a;
 		// Error
-this.a = this.b;
+		this.a = this.b;
 		// Error
-this.b = this.#d;
+		this.b = this.#d;
 		//Error
-this.b = x;
+		this.b = x;
 		this.#d = x;
 		let y = this.c;
 	}

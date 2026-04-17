@@ -33,33 +33,33 @@ for (_ of g2);
 // ok
 async function asyncfn() {
 	// for-await-of over iterable
-for await (_ of g1);
+	for await (_ of g1);
 	// error
-for await (_ of g2);
+	for await (_ of g2);
 	// ok
-// for-await-of over asynciterable
-for await (_ of g4);
+	// for-await-of over asynciterable
+	for await (_ of g4);
 	// error
-for await (_ of g5);
+	for await (_ of g5);
 }
 // ok
 function* f1() {
 	// yield* over iterable
-yield* g1;
+	yield* g1;
 	// error
-yield* g3;
+	yield* g3;
 }
 // ok
 async function* f2() {
 	// yield* over iterable
-yield* g1;
+	yield* g1;
 	// error
-yield* g3;
+	yield* g3;
 	// ok
-// yield* over asynciterable
-yield* g4;
+	// yield* over asynciterable
+	yield* g4;
 	// error
-yield* g6;
+	yield* g6;
 }
 // ok
 async function f3() {
@@ -78,11 +78,11 @@ exports[`TSC: generators generatorExplicitReturnType 1`] = `
 "function* g1() {
 	yield;
 	// error
-yield "a";
+	yield "a";
 	// error
-const x = yield 1;
+	const x = yield 1;
 	// error
-return 10;
+	return 10;
 }
 // error
 function* g2() {
@@ -92,7 +92,7 @@ function* g2() {
 function* g3() {
 	const x = yield* generator;
 	// error
-return true;
+	return true;
 }
 function* g4() {
 	const x = yield* generator;
@@ -116,17 +116,17 @@ function* g3() {
 function* g4() {
 	yield;
 	// ok, result is unused
-yield,noop();
+	yield,noop();
 	// ok, result is unused
-noop(),yield,noop();
+	noop(),yield,noop();
 	// ok, result is unused
-(yield);
+	(yield);
 	// ok, result is unused
-(yield,noop()),noop();
+	(yield,noop()),noop();
 	// ok, result is unused
-for (yield; false; yield);
+	for (yield; false; yield);
 	// ok, results are unused
-void (yield);
+	void (yield);
 }
 // ok, results are unused
 function* g5() {
@@ -229,120 +229,120 @@ exports[`TSC: generators generatorReturnTypeInference 1`] = `
 // 'yield' iteration type inference
 function* g001() {
 	// Generator<undefined, void, unknown>
-yield;
+	yield;
 }
 function* g002() {
 	// Generator<number, void, unknown>
-yield 1;
+	yield 1;
 }
 function* g003() {
 	// Generator<never, void, undefined>
-yield* [];
+	yield* [];
 }
 function* g004() {
 	// Generator<number, void, undefined>
-yield* iterableIterator;
+	yield* iterableIterator;
 }
 function* g005() {
 	// Generator<number, void, boolean>
-const x = yield* generator;
+	const x = yield* generator;
 }
 function* g006() {
 	// Generator<1 | 2, void, unknown>
-yield 1;
+	yield 1;
 	yield 2;
 }
 function* g007() {
 	// Generator<never, void, unknown>
-yield never;
+	yield never;
 }
 // 'return' iteration type inference
 function* g102() {
 	// Generator<never, number, unknown>
-return 1;
+	return 1;
 }
 function* g103() {
 	// Generator<never, 1 | 2, unknown>
-if (Math.random())return 1;
+	if (Math.random())return 1;
 	return 2;
 }
 function* g104() {
 	// Generator<never, never, unknown>
-return never;
+	return never;
 }
 // 'next' iteration type inference
 function* g201() {
 	// Generator<number, void, string>
-let a = yield 1;
+	let a = yield 1;
 }
 function* g202() {
 	// Generator<1 | 2, void, never>
-let a = yield 1;
+	let a = yield 1;
 	let b = yield 2;
 }
 function* g203() {
 	// Generator<number, void, string>
-const x = f1(yield 1);
+	const x = f1(yield 1);
 }
 function* g204() {
 	// Generator<number, void, any>
-const x = f2(yield 1);
+	const x = f2(yield 1);
 }
 // mixed iteration types inference
 function* g301() {
 	// Generator<undefined, void, unknown>
-yield;
+	yield;
 	return;
 }
 function* g302() {
 	// Generator<number, void, unknown>
-yield 1;
+	yield 1;
 	return;
 }
 function* g303() {
 	// Generator<undefined, string, unknown>
-yield;
+	yield;
 	return "a";
 }
 function* g304() {
 	// Generator<number, string, unknown>
-yield 1;
+	yield 1;
 	return "a";
 }
 function* g305() {
 	// Generator<1 | 2, "a" | "b", unknown>
-if (Math.random())yield 1;
+	if (Math.random())yield 1;
 	yield 2;
 	if (Math.random())return "a";
 	return "b";
 }
 function* g306() {
 	// Generator<number, boolean, "hi">
-const a = yield 1;
+	const a = yield 1;
 	return true;
 }
 function* g307() {
 	// Generator<number, T, T>
-const a = yield 0;
+	const a = yield 0;
 	return a;
 }
 function* g308(x) {
 	// Generator<T, T, T>
-const a = yield x;
+	const a = yield x;
 	return a;
 }
 function* g309(x,y) {
 	// Generator<T, U, V>
-const a = yield x;
+	const a = yield x;
 	return y;
 }
 function* g310() {
 	// Generator<undefined, void, [(1 | undefined)?, (2 | undefined)?]>
-const [a=1, b=2] = yield;
+	const [a=1, b=2] = yield;
 }
 function* g311() {
 	// Generator<undefined, void, string>
-yield* (function*() {
+	yield* (function*() {
 		const y = yield;
 	})();
 }
@@ -356,122 +356,122 @@ exports[`TSC: generators generatorReturnTypeInferenceNonStrict 1`] = `
 // 'yield' iteration type inference
 function* g001() {
 	// Generator<any (implicit), void, unknown>
-yield;
+	yield;
 }
 function* g002() {
 	// Generator<number, void, unknown>
-yield 1;
+	yield 1;
 }
 function* g003() {
 	// Generator<any (implicit), void, unknown>
-// NOTE: In strict mode, \`[]\` produces the type \`never[]\`.
-//       In non-strict mode, \`[]\` produces the type \`undefined[]\` which is implicitly any.
-yield* [];
+	// NOTE: In strict mode, \`[]\` produces the type \`never[]\`.
+	//       In non-strict mode, \`[]\` produces the type \`undefined[]\` which is implicitly any.
+	yield* [];
 }
 function* g004() {
 	// Generator<number, void, undefined>
-yield* iterableIterator;
+	yield* iterableIterator;
 }
 function* g005() {
 	// Generator<number, void, boolean>
-const x = yield* generator;
+	const x = yield* generator;
 }
 function* g006() {
 	// Generator<1 | 2, void, unknown>
-yield 1;
+	yield 1;
 	yield 2;
 }
 function* g007() {
 	// Generator<never, void, unknown>
-yield never;
+	yield never;
 }
 // 'return' iteration type inference
 function* g102() {
 	// Generator<never, number, unknown>
-return 1;
+	return 1;
 }
 function* g103() {
 	// Generator<never, 1 | 2, unknown>
-if (Math.random())return 1;
+	if (Math.random())return 1;
 	return 2;
 }
 function* g104() {
 	// Generator<never, never, unknown>
-return never;
+	return never;
 }
 // 'next' iteration type inference
 function* g201() {
 	// Generator<number, void, string>
-let a = yield 1;
+	let a = yield 1;
 }
 function* g202() {
 	// Generator<1 | 2, void, never>
-let a = yield 1;
+	let a = yield 1;
 	let b = yield 2;
 }
 function* g203() {
 	// Generator<number, void, string>
-const x = f1(yield 1);
+	const x = f1(yield 1);
 }
 function* g204() {
 	// Generator<number, void, any>
-const x = f2(yield 1);
+	const x = f2(yield 1);
 }
 // mixed iteration types inference
 function* g301() {
 	// Generator<any (implicit), void, unknown>
-yield;
+	yield;
 	return;
 }
 function* g302() {
 	// Generator<number, void, unknown>
-yield 1;
+	yield 1;
 	return;
 }
 function* g303() {
 	// Generator<any (implicit), string, unknown>
-yield;
+	yield;
 	return "a";
 }
 function* g304() {
 	// Generator<number, string, unknown>
-yield 1;
+	yield 1;
 	return "a";
 }
 function* g305() {
 	// Generator<1 | 2, "a" | "b", unknown>
-if (Math.random())yield 1;
+	if (Math.random())yield 1;
 	yield 2;
 	if (Math.random())return "a";
 	return "b";
 }
 function* g306() {
 	// Generator<number, boolean, "hi">
-const a = yield 1;
+	const a = yield 1;
 	return true;
 }
 function* g307() {
 	// Generator<number, T, T>
-const a = yield 0;
+	const a = yield 0;
 	return a;
 }
 function* g308(x) {
 	// Generator<T, T, T>
-const a = yield x;
+	const a = yield x;
 	return a;
 }
 function* g309(x,y) {
 	// Generator<T, U, V>
-const a = yield x;
+	const a = yield x;
 	return y;
 }
 function* g310() {
 	// Generator<any (implicit), void, [(1 | undefined)?, (2 | undefined)?]>
-const [a=1, b=2] = yield;
+	const [a=1, b=2] = yield;
 }
 function* g311() {
 	// Generator<any (implicit), void, string>
-yield* (function*() {
+	yield* (function*() {
 		const y = yield;
 	})();
 }
@@ -518,63 +518,63 @@ function* mergeStringLists(...strings) {
 exports[`TSC: generators yieldStatementNoAsiAfterTransform 1`] = `
 "function* t1() {
 	yield // comment
-// comment
-// comment
-a;
+	// comment
+	// comment
+	a;
 }
 function* t2() {
 	yield // comment
-// comment
-// comment
-a + 1;
+	// comment
+	// comment
+	a + 1;
 }
 function* t3() {
 	yield // comment
-// comment
-// comment
-a ? 0 : 1;
+	// comment
+	// comment
+	a ? 0 : 1;
 }
 function* t4() {
 	yield // comment
-// comment
-// comment
-a.b;
+	// comment
+	// comment
+	a.b;
 }
 function* t5() {
 	yield // comment
-// comment
-// comment
-a[a];
+	// comment
+	// comment
+	a[a];
 }
 function* t6() {
 	yield // comment
-// comment
-// comment
-a();
+	// comment
+	// comment
+	a();
 }
 function* t7() {
 	yield // comment
-// comment
-// comment
-a\`\`;
+	// comment
+	// comment
+	a\`\`;
 }
 function* t8() {
 	yield // comment
-// comment
-// comment
-a;
+	// comment
+	// comment
+	a;
 }
 function* t9() {
 	yield // comment
-// comment
-// comment
-a;
+	// comment
+	// comment
+	a;
 }
 function* t10() {
 	yield // comment
-// comment
-// comment
-a;
+	// comment
+	// comment
+	a;
 }
 "
 `;

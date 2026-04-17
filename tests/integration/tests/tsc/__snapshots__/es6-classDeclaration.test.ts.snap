@@ -369,9 +369,9 @@ class D extends Base {
 		};
 		x();
 		// no error; we only check super is called before this when the container is a constructor
-this._t;
+		this._t;
 		// error
-super(undefined);
+		super(undefined);
 	}
 }
 "

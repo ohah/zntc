@@ -111,7 +111,7 @@ exports[`TSC: es6/restParameters readonlyRestParameters 1`] = `
 function f1(...args) {
 	f0(...args);
 	// Error
-f1("abc", "def");
+	f1("abc", "def");
 	f1("abc", ...args);
 	f1(...args);
 }
@@ -123,7 +123,7 @@ function f2(...args) {
 	f2("abc", "def");
 	f2("abc", ...args);
 	// Error
-f2(...args);
+	f2(...args);
 }
 function f4(...args) {
 	args[0] = "abc";

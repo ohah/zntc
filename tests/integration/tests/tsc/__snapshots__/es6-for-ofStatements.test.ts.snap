@@ -294,7 +294,7 @@ exports[`TSC: es6/for-ofStatements for-of31 1`] = `
 class MyStringIterator {
 	next() {
 		return { // no done property
-value: "" };
+		value: "" };
 	}
 	[Symbol.iterator]() {
 		return this;

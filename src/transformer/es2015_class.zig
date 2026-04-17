@@ -1178,6 +1178,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const MethodInfo = struct {
             member_idx: NodeIndex,
             is_static: bool,
+            // prototype assignment statement 의 span 으로 사용 — leading comment 가
+            // `X.prototype.foo` 토큰 사이가 아니라 statement 앞에서 flush 되도록 (#1508).
+            member_span: Span,
         };
 
         const FieldInfo = struct {
@@ -1348,6 +1351,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try cm.methods.append(self.allocator, .{
                             .member_idx = @enumFromInt(raw_idx),
                             .is_static = is_static,
+                            .member_span = member.span,
                         });
                     }
                 } else if (member.tag == .property_definition) {
@@ -2214,7 +2218,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
             return self.ast.addNode(.{
                 .tag = .expression_statement,
-                .span = span,
+                .span = info.member_span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
         }
