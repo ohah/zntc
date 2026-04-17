@@ -1007,7 +1007,7 @@ var E = /* @__PURE__ */ ((E) => {E[E["a"]=0]="a";E[E["b"]=1]="b";return E;})(E |
 function foo1(...a) {
 }
 foo1(1, 2, 3, E.a);
-foo1(1, 2, 3, E1.a, E.b);
+foo1(1, 2, 3, 0, E.b);
 "
 `;
 
@@ -1056,7 +1056,7 @@ var E = /* @__PURE__ */ ((E) => {E[E["a"]=0]="a";E[E["b"]=1]="b";return E;})(E |
 function foo1(...a) {
 }
 foo1(1, 2, 3, E.a);
-foo1(1, 2, 3, E1.a, E.b);
+foo1(1, 2, 3, 0, E.b);
 "
 `;
 
@@ -1105,7 +1105,7 @@ var E = /* @__PURE__ */ ((E) => {E[E["a"]=0]="a";E[E["b"]=1]="b";return E;})(E |
 function foo1(...a) {
 }
 foo1(1, 2, 3, E.a);
-foo1(1, 2, 3, E1.a, E.b);
+foo1(1, 2, 3, 0, E.b);
 "
 `;
 

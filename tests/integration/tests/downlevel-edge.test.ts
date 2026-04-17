@@ -1252,8 +1252,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("Red 2");
     });
 
-    // skip: `const enum` 멤버 참조가 컴파일타임 인라인되지 않고 그대로 남음 — #1472
-    test.skip("const enum inline", async () => {
+    test("const enum inline", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `

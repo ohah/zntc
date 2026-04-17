@@ -333,6 +333,11 @@ pub const Transformer = struct {
     /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
     trailing_nodes: std.ArrayList(NodeIndex) = .empty,
 
+    /// TS const enum: 선언 시 멤버 값을 미리 평가하여 보관.
+    /// 후속 visitMemberExpression에서 `E.A` 형태 참조를 literal로 인라인.
+    /// 단순 케이스(numeric/string literal + auto-increment)만 지원.
+    const_enums: std.ArrayList(ConstEnumDecl) = .empty,
+
     pub const BlockRenameEntry = struct {
         old_name: []const u8,
         new_name: []const u8,
@@ -349,6 +354,22 @@ pub const Transformer = struct {
         constructor, // class constructor: new.target → this.constructor
         method, // class method: new.target → void 0
         function_named: Span, // function Fn: new.target → this instanceof Fn ? this.constructor : void 0
+    };
+
+    pub const ConstEnumValue = union(enum) {
+        number: i64,
+        /// quote 미포함 raw 문자열. AST 출력 시 quote 추가.
+        string: []const u8,
+    };
+
+    pub const ConstEnumMember = struct {
+        name: []const u8,
+        value: ConstEnumValue,
+    };
+
+    pub const ConstEnumDecl = struct {
+        name: []const u8,
+        members: []const ConstEnumMember,
     };
 
     pub const PrivateFieldMapping = struct {
@@ -414,6 +435,15 @@ pub const Transformer = struct {
         for (self.block_rename_stack.items) |entry| self.allocator.free(entry.new_name);
         self.block_rename_stack.deinit(self.allocator);
         self.scope_var_names.deinit(self.allocator);
+        for (self.const_enums.items) |decl| {
+            self.allocator.free(decl.name);
+            for (decl.members) |m| {
+                self.allocator.free(m.name);
+                if (m.value == .string) self.allocator.free(m.value.string);
+            }
+            self.allocator.free(decl.members);
+        }
+        self.const_enums.deinit(self.allocator);
     }
 
     /// semantic analyzer의 symbol_ids를 통합 배열로 복사한다.
@@ -1445,6 +1475,10 @@ pub const Transformer = struct {
     pub fn visitMemberExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
+
+        // const enum 인라인: `EnumName.Member` → literal
+        if (try self.tryInlineConstEnumMember(node)) |inlined| return inlined;
+
         const left_idx = self.readNodeIdx(e, 0);
         const right_idx = self.readNodeIdx(e, 1);
         const flags = self.readU32(e, 2);
@@ -1906,18 +1940,17 @@ pub const Transformer = struct {
     // TS enum 변환
     // ================================================================
 
-    /// ts_enum_declaration: extra = [name, members_start, members_len]
-    /// enum 노드를 새 AST에 복사. codegen에서 IIFE 패턴으로 출력.
-    /// extra = [name, members_start, members_len, flags]
-    /// flags: 0=일반 enum, 1=const enum
+    /// ts_enum_declaration: extra = [name, members_start, members_len, flags]
+    /// flags: 0=일반 enum (codegen에서 IIFE), 1=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → visitMemberExpression 에서 literal 인라인).
     fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const flags = self.readU32(e, 3);
 
-        // const enum (flags=1): isolatedModules 모드에서는 삭제 (D011)
-        // 같은 파일 내 인라이닝은 향후 구현
         if (flags == 1) {
-            return .none; // const enum 선언 삭제
+            // 평가 가능한 단순 케이스만 등록. 실패해도 선언은 삭제 (참조는 그대로 남아 ReferenceError가 나지만,
+            // 기존 동작과 동일하므로 회귀가 아님 — 인라인 가능 케이스만 새로 동작 추가).
+            self.collectConstEnum(node) catch {};
+            return .none;
         }
 
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
@@ -1925,6 +1958,166 @@ pub const Transformer = struct {
         return self.addExtraNode(.ts_enum_declaration, node.span, &.{
             @intFromEnum(new_name), new_members.start, new_members.len, flags,
         });
+    }
+
+    /// const enum 멤버를 평가하여 self.const_enums 에 추가.
+    /// 지원: numeric_literal, string_literal, 단항 `-` numeric, 빈 init(직전 값 + 1).
+    /// 그 외 (computed expression, 비트연산 등)는 평가 실패로 처리하고 해당 enum 전체를 등록하지 않음.
+    fn collectConstEnum(self: *Transformer, node: Node) Error!void {
+        const e = node.data.extra;
+        const name_idx = self.readNodeIdx(e, 0);
+        if (name_idx.isNone()) return;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return;
+        const enum_name_src = self.ast.getText(name_node.span);
+
+        const members_start = self.readU32(e, 1);
+        const members_len = self.readU32(e, 2);
+
+        var collected: std.ArrayList(ConstEnumMember) = .empty;
+        errdefer {
+            for (collected.items) |m| {
+                self.allocator.free(m.name);
+                if (m.value == .string) self.allocator.free(m.value.string);
+            }
+            collected.deinit(self.allocator);
+        }
+
+        var prev_number: ?i64 = null;
+        var i: u32 = 0;
+        while (i < members_len) : (i += 1) {
+            const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[members_start + i]);
+            const member_node = self.ast.getNode(member_idx);
+            if (member_node.tag != .ts_enum_member) return;
+
+            const key_idx = member_node.data.binary.left;
+            const init_idx = member_node.data.binary.right;
+            if (key_idx.isNone()) return;
+            const key_node = self.ast.getNode(key_idx);
+            const member_name_src = switch (key_node.tag) {
+                .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
+                .string_literal => blk: {
+                    const raw = self.ast.getText(key_node.data.string_ref);
+                    if (raw.len < 2) return;
+                    break :blk raw[1 .. raw.len - 1];
+                },
+                else => return,
+            };
+
+            var value: ConstEnumValue = undefined;
+            if (init_idx.isNone()) {
+                const next: i64 = if (prev_number) |pv| pv + 1 else 0;
+                value = .{ .number = next };
+            } else {
+                value = (try self.evalConstEnumInit(init_idx)) orelse return;
+            }
+            switch (value) {
+                .number => |n| prev_number = n,
+                .string => prev_number = null,
+            }
+
+            const owned_name = try self.allocator.dupe(u8, member_name_src);
+            errdefer self.allocator.free(owned_name);
+            const owned_value: ConstEnumValue = switch (value) {
+                .number => |n| .{ .number = n },
+                .string => |s| .{ .string = try self.allocator.dupe(u8, s) },
+            };
+            try collected.append(self.allocator, .{ .name = owned_name, .value = owned_value });
+        }
+
+        const owned_enum_name = try self.allocator.dupe(u8, enum_name_src);
+        errdefer self.allocator.free(owned_enum_name);
+        const members_owned = try collected.toOwnedSlice(self.allocator);
+        try self.const_enums.append(self.allocator, .{ .name = owned_enum_name, .members = members_owned });
+    }
+
+    /// numeric_literal / string_literal / unary `-` numeric_literal 평가.
+    /// 평가 불가 시 null.
+    fn evalConstEnumInit(self: *Transformer, init_idx: NodeIndex) Error!?ConstEnumValue {
+        const init_node = self.ast.getNode(init_idx);
+        switch (init_node.tag) {
+            .numeric_literal => {
+                const text = self.ast.getText(init_node.span);
+                const n = std.fmt.parseInt(i64, text, 0) catch return null;
+                return .{ .number = n };
+            },
+            .string_literal => {
+                const raw = self.ast.getText(init_node.data.string_ref);
+                if (raw.len < 2) return null;
+                return .{ .string = raw[1 .. raw.len - 1] };
+            },
+            .unary_expression => {
+                const ue = init_node.data.extra;
+                if (ue + 1 >= self.ast.extra_data.items.len) return null;
+                const operand_idx = self.readNodeIdx(ue, 0);
+                const op_flags = self.readU32(ue, 1);
+                if ((op_flags & 0xff) != @intFromEnum(token_mod.Kind.minus)) return null;
+                const operand = self.ast.getNode(operand_idx);
+                if (operand.tag != .numeric_literal) return null;
+                const text = self.ast.getText(operand.span);
+                const n = std.fmt.parseInt(i64, text, 0) catch return null;
+                return .{ .number = -n };
+            },
+            else => return null,
+        }
+    }
+
+    /// `EnumName.Member` 형태이면 미리 평가한 literal 노드로 치환. 매칭 실패 시 null.
+    fn tryInlineConstEnumMember(self: *Transformer, node: Node) Error!?NodeIndex {
+        if (self.const_enums.items.len == 0) return null;
+        if (node.tag != .static_member_expression) return null;
+        const e = node.data.extra;
+        if (e + 1 >= self.ast.extra_data.items.len) return null;
+        const obj_idx = self.readNodeIdx(e, 0);
+        const prop_idx = self.readNodeIdx(e, 1);
+        if (obj_idx.isNone() or prop_idx.isNone()) return null;
+
+        const obj_node = self.ast.getNode(obj_idx);
+        if (obj_node.tag != .identifier_reference) return null;
+        const obj_name = self.ast.getText(obj_node.span);
+
+        const prop_node = self.ast.getNode(prop_idx);
+        if (prop_node.tag != .identifier_reference) return null;
+        const prop_name = self.ast.getText(prop_node.span);
+
+        for (self.const_enums.items) |decl| {
+            if (!std.mem.eql(u8, decl.name, obj_name)) continue;
+            for (decl.members) |m| {
+                if (!std.mem.eql(u8, m.name, prop_name)) continue;
+                return try self.makeConstEnumLiteralNode(m.value, node.span);
+            }
+        }
+        return null;
+    }
+
+    fn makeConstEnumLiteralNode(self: *Transformer, value: ConstEnumValue, span: Span) Error!NodeIndex {
+        switch (value) {
+            .number => |n| {
+                var buf: [32]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return Error.OutOfMemory;
+                const num_span = try self.ast.addString(s);
+                return self.ast.addNode(.{
+                    .tag = .numeric_literal,
+                    .span = num_span,
+                    .data = .{ .none = 0 },
+                });
+            },
+            .string => |raw| {
+                var buf: std.ArrayList(u8) = .empty;
+                defer buf.deinit(self.allocator);
+                try buf.ensureTotalCapacity(self.allocator, raw.len + 2);
+                try buf.append(self.allocator, '"');
+                try buf.appendSlice(self.allocator, raw);
+                try buf.append(self.allocator, '"');
+                const str_span = try self.ast.addString(buf.items);
+                _ = span;
+                return self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = str_span,
+                    .data = .{ .string_ref = str_span },
+                });
+            },
+        }
     }
 
     // ================================================================
