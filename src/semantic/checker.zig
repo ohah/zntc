@@ -26,15 +26,12 @@ const ErrorCode = @import("../error_codes.zig").Code;
 
 const AllocError = std.mem.Allocator.Error;
 
-// ====================================================================
-// method_definition flags 상수 (parser.zig와 동일)
-// extra_data[extra_start + 4]에 저장됨
-// ====================================================================
-const METHOD_FLAG_STATIC = 0x01;
-const METHOD_FLAG_GETTER = 0x02;
-const METHOD_FLAG_SETTER = 0x04;
-const METHOD_FLAG_ASYNC = 0x08;
-const METHOD_FLAG_GENERATOR = 0x10;
+// method_definition flags — ast.MethodFlags 재export (가독성 위해 짧은 이름 유지).
+const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
+const METHOD_FLAG_GETTER = ast_mod.MethodFlags.is_getter;
+const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
+const METHOD_FLAG_ASYNC = ast_mod.MethodFlags.is_async;
+const METHOD_FLAG_GENERATOR = ast_mod.MethodFlags.is_generator;
 
 // ====================================================================
 // 1. 중복 생성자 검증

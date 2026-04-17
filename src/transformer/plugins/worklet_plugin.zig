@@ -26,12 +26,11 @@ const PluginError = plugin_mod.PluginError;
 const AutoWorkletCallee = plugin_mod.AutoWorkletCallee;
 const Transformer = @import("../transformer.zig").Transformer;
 
-// method_definition flags (parser/object.zig와 동일 인코딩).
-const METHOD_FLAG_STATIC = 0x01;
-const METHOD_FLAG_GETTER = 0x02;
-const METHOD_FLAG_SETTER = 0x04;
-const METHOD_FLAG_ASYNC = 0x08;
-const METHOD_FLAG_GENERATOR = 0x10;
+const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
+const METHOD_FLAG_GETTER = ast_mod.MethodFlags.is_getter;
+const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
+const METHOD_FLAG_ASYNC = ast_mod.MethodFlags.is_async;
+const METHOD_FLAG_GENERATOR = ast_mod.MethodFlags.is_generator;
 
 pub fn plugin() Plugin {
     return .{
