@@ -68,19 +68,17 @@ pub const TranspileOptions = struct {
 /// TS 쪽 TranspileOptions와 camelCase 필드명으로 매핑된다.
 /// 모든 필드가 optional이라 누락되어도 기본값 유지.
 ///
-/// JSON에서 enum은 Zig enum name과 정확히 일치하는 string이어야 한다:
-///   - platform: "browser" | "node" | "neutral" | "react_native"
-///   - format: "esm" | "cjs"
-///   - quotes: "double" | "single" | "preserve"
-///   - jsx: "classic" | "automatic" | "automatic_dev"
-///   - target: "es5" | "es2015"..."es2025" | "esnext"
-/// JS 래퍼가 필요 시 하이픈/대시를 언더스코어로 변환해 전달한다.
-const TranspileOptionsDto = struct {
-    target: ?[]const u8 = null,
+/// enum 타입은 Zig enum을 직접 사용 — std.json이 enum tag name으로 parse.
+/// JS 래퍼가 kebab-case "react-native" → "react_native"로 변환해 전달한다.
+///
+/// 이 struct는 JSON schema emitter(tools/emit_schema.zig)가 comptime
+/// `@typeInfo`로 반사해 단일 소스 보장. 필드를 바꾸면 schema도 함께 재생성.
+pub const TranspileOptionsDto = struct {
+    target: ?@import("transformer/compat.zig").ESTarget = null,
     unsupported: ?u32 = null,
     flow: ?bool = null,
     jsxInJs: ?bool = null,
-    jsx: ?[]const u8 = null,
+    jsx: ?@import("codegen/codegen.zig").JsxRuntime = null,
     jsxFactory: ?[]const u8 = null,
     jsxFragment: ?[]const u8 = null,
     jsxImportSource: ?[]const u8 = null,
@@ -91,9 +89,9 @@ const TranspileOptionsDto = struct {
     experimentalDecorators: ?bool = null,
     emitDecoratorMetadata: ?bool = null,
     useDefineForClassFields: ?bool = null,
-    format: ?[]const u8 = null,
-    quotes: ?[]const u8 = null,
-    platform: ?[]const u8 = null,
+    format: ?@import("codegen/codegen.zig").ModuleFormat = null,
+    quotes: ?@import("codegen/codegen.zig").QuoteStyle = null,
+    platform: ?@import("codegen/codegen.zig").Platform = null,
     minifyWhitespace: ?bool = null,
     minifyIdentifiers: ?bool = null,
     minifySyntax: ?bool = null,
@@ -113,9 +111,8 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
 
     var opts: TranspileOptions = .{};
     const compat = @import("transformer/compat.zig");
-    const codegen = @import("codegen/codegen.zig");
 
-    if (parsed.target) |t| opts.es_target = std.meta.stringToEnum(compat.ESTarget, t);
+    if (parsed.target) |t| opts.es_target = t;
     if (parsed.unsupported) |u| {
         opts.unsupported = @bitCast(u);
     } else if (opts.es_target) |t| {
@@ -123,9 +120,7 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     }
     if (parsed.flow) |v| opts.flow = v;
     if (parsed.jsxInJs) |v| opts.jsx_in_js = v;
-    if (parsed.jsx) |s| {
-        if (std.meta.stringToEnum(codegen.JsxRuntime, s)) |e| opts.jsx_runtime = e;
-    }
+    if (parsed.jsx) |v| opts.jsx_runtime = v;
     if (parsed.jsxFactory) |s| if (s.len > 0) {
         opts.jsx_factory = s;
     };
@@ -142,15 +137,9 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     if (parsed.experimentalDecorators) |v| opts.experimental_decorators = v;
     if (parsed.emitDecoratorMetadata) |v| opts.emit_decorator_metadata = v;
     if (parsed.useDefineForClassFields) |v| opts.use_define_for_class_fields = v;
-    if (parsed.format) |s| {
-        if (std.meta.stringToEnum(codegen.ModuleFormat, s)) |e| opts.module_format = e;
-    }
-    if (parsed.quotes) |s| {
-        if (std.meta.stringToEnum(codegen.QuoteStyle, s)) |e| opts.quote_style = e;
-    }
-    if (parsed.platform) |s| {
-        if (std.meta.stringToEnum(codegen.Platform, s)) |e| opts.platform = e;
-    }
+    if (parsed.format) |v| opts.module_format = v;
+    if (parsed.quotes) |v| opts.quote_style = v;
+    if (parsed.platform) |v| opts.platform = v;
     if (parsed.minifyWhitespace) |v| opts.minify_whitespace = v;
     if (parsed.minifyIdentifiers) |v| opts.minify_identifiers = v;
     if (parsed.minifySyntax) |v| opts.minify_syntax = v;

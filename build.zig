@@ -252,4 +252,22 @@ pub fn build(b: *std.Build) void {
     }
     const test262_run_step = b.step("test262-run", "Run Test262 parser tests (pass rate)");
     test262_run_step.dependOn(&test262_run_cmd.step);
+
+    // JSON Schema 생성기 — tools/emit_schema.zig가 TranspileOptionsDto를 comptime
+    // reflection으로 읽어 schemas/transpile-options.schema.json 을 생성.
+    // 실행: `zig build schema`. DTO 수정 후 반드시 재실행할 것.
+    const schema_mod = b.createModule(.{
+        .root_source_file = b.path("tools/emit_schema.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    schema_mod.addImport("zts_lib", lib_mod);
+    const schema_exe = b.addExecutable(.{
+        .name = "emit_schema",
+        .root_module = schema_mod,
+    });
+    const schema_run = b.addRunArtifact(schema_exe);
+    schema_run.addArg("documents/public/schemas/transpile-options.schema.json");
+    const schema_step = b.step("schema", "Generate JSON schema for TranspileOptions");
+    schema_step.dependOn(&schema_run.step);
 }
