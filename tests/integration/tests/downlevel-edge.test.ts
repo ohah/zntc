@@ -442,7 +442,9 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
   });
 
   describe("spread / rest 경계", () => {
-    test("spread를 new 표현식 인자로", async () => {
+    test("spread를 new 표현식 인자로 (+ parameter property)", async () => {
+      // 두 직교 기능 동시 검증: spread `...args` 와 TS parameter property `public x` 가
+      // ES5 다운레벨링 시 함께 동작하는지. 이전엔 parameter property `this.x = x` 누락으로 실패 (#1471).
       const result = await bundleAndRun(
         {
           "index.ts": `
