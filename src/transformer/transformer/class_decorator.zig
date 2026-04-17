@@ -926,60 +926,16 @@ pub fn insertFieldAssignmentsIntoConstructor(
     const body_idx: NodeIndex = @enumFromInt(ctor_e2);
 
     if (body_idx.isNone()) return ctor_idx;
+    if (self.ast.getNode(body_idx).tag != .block_statement) return ctor_idx;
 
-    const body = self.ast.getNode(body_idx);
-    if (body.tag != .block_statement) return ctor_idx;
+    const insert_pos: u32 = if (has_super) (findSuperCallInsertPos(self, body_idx) orelse 0) else 0;
 
-    const old_list = body.data.list;
-    const old_stmts_start = old_list.start;
-    const old_stmts_len = old_list.len;
+    // field assignments 를 먼저 빌드 (buildThisAssignment 가 AST 변형 — splice 전에 완료).
+    const field_stmts = try self.allocator.alloc(NodeIndex, fields.len);
+    defer self.allocator.free(field_stmts);
+    for (fields, 0..) |field, i| field_stmts[i] = try self.buildThisAssignment(field);
 
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-    // super() 호출을 찾아서 그 뒤에 삽입
-    // isSuperCallStatement는 읽기만 하므로 슬라이스 안전
-    var insert_pos: u32 = 0;
-    if (has_super) {
-        const old_stmts = self.ast.extra_data.items[old_stmts_start .. old_stmts_start + old_stmts_len];
-        for (old_stmts, 0..) |raw_idx, idx| {
-            if (self.isSuperCallStatement(@enumFromInt(raw_idx))) {
-                insert_pos = @intCast(idx + 1);
-                break;
-            }
-        }
-    }
-
-    // insert_pos 전의 문장들 (읽기만, AST 변형 없음)
-    {
-        var i_pre: u32 = 0;
-        while (i_pre < insert_pos) : (i_pre += 1) {
-            const raw_idx = self.ast.extra_data.items[old_stmts_start + i_pre];
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-        }
-    }
-
-    // field assignments 삽입 (buildThisAssignment가 AST를 변형)
-    for (fields) |field| {
-        const assign_stmt = try self.buildThisAssignment(field);
-        try self.scratch.append(self.allocator, assign_stmt);
-    }
-
-    // insert_pos 후의 문장들 (buildThisAssignment 이후이므로 인덱스로 접근)
-    {
-        var i_post: u32 = insert_pos;
-        while (i_post < old_stmts_len) : (i_post += 1) {
-            const raw_idx = self.ast.extra_data.items[old_stmts_start + i_post];
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-        }
-    }
-
-    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    const new_body = try self.ast.addNode(.{
-        .tag = .block_statement,
-        .span = body.span,
-        .data = .{ .list = new_list },
-    });
+    const new_body = try spliceBlockStmtsAt(self, body_idx, insert_pos, field_stmts);
 
     // constructor method_definition을 새 body로 재생성
     // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
@@ -1011,49 +967,14 @@ fn makeThisPrivateField(self: *Transformer, storage_span: Span) Error!NodeIndex 
 }
 
 /// block_statement body에서 첫 super() 호출 뒤에 stmt를 삽입한 새 block_statement 반환.
-/// super() 없으면 body 시작에 prepend.
+/// super() 없으면 body 시작에 prepend. block_statement 가 아니면 prependStatementsToBody fallback.
 fn insertAfterSuperCall(self: *Transformer, body_idx: NodeIndex, stmt: NodeIndex) Error!NodeIndex {
     if (body_idx.isNone()) return body_idx;
-    const body = self.ast.getNode(body_idx);
-    if (body.tag != .block_statement) {
+    if (self.ast.getNode(body_idx).tag != .block_statement) {
         return self.prependStatementsToBody(body_idx, &.{stmt});
     }
-    const old_list = body.data.list;
-    const old_stmts_start = old_list.start;
-    const old_stmts_len = old_list.len;
-
-    var insert_pos: u32 = 0;
-    {
-        const old_stmts = self.ast.extra_data.items[old_stmts_start .. old_stmts_start + old_stmts_len];
-        for (old_stmts, 0..) |raw_idx, idx| {
-            if (self.isSuperCallStatement(@enumFromInt(raw_idx))) {
-                insert_pos = @intCast(idx + 1);
-                break;
-            }
-        }
-    }
-
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-    var i_pre: u32 = 0;
-    while (i_pre < insert_pos) : (i_pre += 1) {
-        const raw_idx = self.ast.extra_data.items[old_stmts_start + i_pre];
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-    }
-    try self.scratch.append(self.allocator, stmt);
-    var i_post: u32 = insert_pos;
-    while (i_post < old_stmts_len) : (i_post += 1) {
-        const raw_idx = self.ast.extra_data.items[old_stmts_start + i_post];
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-    }
-
-    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    return self.ast.addNode(.{
-        .tag = .block_statement,
-        .span = body.span,
-        .data = .{ .list = new_list },
-    });
+    const insert_pos = findSuperCallInsertPos(self, body_idx) orelse 0;
+    return spliceBlockStmtsAt(self, body_idx, insert_pos, &.{stmt});
 }
 
 /// super() 호출 expression_statement인지 판별
@@ -1072,6 +993,62 @@ pub fn isSuperCallStatement(self: *const Transformer, idx: NodeIndex) bool {
     if (callee_idx.isNone()) return false;
     const callee = self.ast.getNode(callee_idx);
     return callee.tag == .super_expression;
+}
+
+/// block_statement body 에서 첫 super() 호출 stmt 직후 인덱스 반환. 없으면 null.
+/// body_idx 가 block_statement 가 아니면 null.
+fn findSuperCallInsertPos(self: *const Transformer, body_idx: NodeIndex) ?u32 {
+    if (body_idx.isNone()) return null;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement) return null;
+    const list = body.data.list;
+    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
+    for (stmts, 0..) |raw, idx| {
+        if (self.isSuperCallStatement(@enumFromInt(raw))) return @intCast(idx + 1);
+    }
+    return null;
+}
+
+/// block_statement body 에 new_stmts 를 insert_pos 위치에 splice 한 새 block_statement 반환.
+/// body 가 block_statement 가 아니면 body_idx 그대로 반환 (caller 가 fallback 처리).
+/// 선행 조건: new_stmts 생성 시 발생하는 AST 변형은 이 함수 호출 전에 완료되어야 함 —
+/// 본 함수는 old stmts 인덱스를 extra_data 재할당 후에도 `self.ast.extra_data.items` 로
+/// 재접근하여 읽기만 수행.
+fn spliceBlockStmtsAt(
+    self: *Transformer,
+    body_idx: NodeIndex,
+    insert_pos: u32,
+    new_stmts: []const NodeIndex,
+) Error!NodeIndex {
+    if (body_idx.isNone()) return body_idx;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement) return body_idx;
+
+    const old_list = body.data.list;
+    const old_start = old_list.start;
+    const old_len = old_list.len;
+    const clamped: u32 = if (insert_pos > old_len) old_len else insert_pos;
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var i: u32 = 0;
+    while (i < clamped) : (i += 1) {
+        const raw = self.ast.extra_data.items[old_start + i];
+        try self.scratch.append(self.allocator, @enumFromInt(raw));
+    }
+    for (new_stmts) |s| try self.scratch.append(self.allocator, s);
+    while (i < old_len) : (i += 1) {
+        const raw = self.ast.extra_data.items[old_start + i];
+        try self.scratch.append(self.allocator, @enumFromInt(raw));
+    }
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = body.span,
+        .data = .{ .list = new_list },
+    });
 }
 
 /// useDefineForClassFields=false: constructor가 없을 때 새로 생성.
