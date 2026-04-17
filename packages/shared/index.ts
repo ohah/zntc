@@ -79,6 +79,11 @@ export interface TranspileOptions {
   browserslist?: string | string[];
   /** 소스맵의 sourceRoot 필드 (기본: 빈 문자열) */
   sourceRoot?: string;
+  /**
+   * 식별자 치환 쌍. `value`는 raw JSON (문자열은 반드시 따옴표 포함).
+   * 예: `[{ key: "process.env.NODE_ENV", value: "\"production\"" }]`
+   */
+  define?: Array<{ key: string; value: string }>;
 }
 
 export interface TranspileResult {
@@ -181,6 +186,7 @@ export function buildOptionsJson(
   // sourcesContent Zig 기본 true — false일 때만 명시 전달
   if (opts.sourcesContent === false) payload.sourcesContent = false;
   if (opts.sourceRoot) payload.sourceRoot = opts.sourceRoot;
+  if (opts.define && opts.define.length > 0) payload.define = opts.define;
   return JSON.stringify(payload);
 }
 
