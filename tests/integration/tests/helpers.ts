@@ -129,6 +129,94 @@ export async function runNode(file: string): Promise<{ stdout: string; stderr: s
   return { stdout: stdout.trim(), stderr };
 }
 
+// ─── watch-json 테스트 공용 헬퍼 ───
+
+/// `zts --watch-json ...`을 shell 경유로 spawn하고 stdout을 jsonOutPath로 리다이렉트.
+/// bun test가 child process stdout pipe를 제대로 처리 못 해서 파일 리다이렉트 방식 사용.
+export function spawnWatchJson(
+  args: string[],
+  jsonOutPath: string,
+): import("node:child_process").ChildProcess {
+  const { spawn: spawnChild } = require("node:child_process");
+  const quoted = args.map((a) => `"${a}"`).join(" ");
+  return spawnChild("sh", ["-c", `"${ZTS_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
+}
+
+/// watch 프로세스를 kill하고 종료를 기다림. 2초 후 SIGKILL fallback — 좀비 방지.
+export function killAndWait(proc: import("node:child_process").ChildProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (proc.exitCode !== null) {
+      resolve();
+      return;
+    }
+    const timeout = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+      resolve();
+    }, 2000);
+    proc.on("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    proc.kill();
+  });
+}
+
+/** 증분 파싱 상태 — waitForNdjsonLines의 offset/parsedCount를 호출부에서 유지하기 위함. */
+export interface NdjsonTail<T = Record<string, unknown>> {
+  parsed: T[];
+  offset: number;
+}
+
+/** NdjsonTail 초기 상태. */
+export function createNdjsonTail<T = Record<string, unknown>>(): NdjsonTail<T> {
+  return { parsed: [], offset: 0 };
+}
+
+/// ndjson 파일을 폴링하며 `tail`에 새 라인을 누적 파싱. `minLines` 충족 시 반환.
+/// 루프에서 호출하면 매번 전체 파일이 아닌 offset 이후만 재파싱 (O(N²) 방지).
+export async function waitForNdjsonLines<T = Record<string, unknown>>(
+  path: string,
+  minLines: number,
+  tail: NdjsonTail<T>,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<T[]> {
+  const timeoutMs = opts.timeoutMs ?? 10000;
+  const pollMs = opts.pollMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const buf = readFileSync(path, "utf8");
+      if (buf.length > tail.offset) {
+        // \n 기준 라인 분리. 부분 라인은 다음 폴링에서 처리.
+        const newContent = buf.slice(tail.offset);
+        const lastNl = newContent.lastIndexOf("\n");
+        if (lastNl >= 0) {
+          const complete = newContent.slice(0, lastNl);
+          tail.offset += lastNl + 1;
+          for (const line of complete.split("\n")) {
+            if (!line) continue;
+            try {
+              tail.parsed.push(JSON.parse(line) as T);
+            } catch {
+              // 부분 라인이나 쓰기 중간 상태 — 스킵 (offset은 이미 이동)
+            }
+          }
+        }
+      }
+      if (tail.parsed.length >= minLines) return tail.parsed;
+    } catch {
+      /* 파일 아직 없음 */
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  throw new Error(
+    `timeout waiting for ${minLines} ndjson lines in ${path} (got ${tail.parsed.length})`,
+  );
+}
+
 export async function runZtsInDir(
   dir: string,
   args: string[],
