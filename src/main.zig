@@ -11,8 +11,6 @@ const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
 const emitter = lib.bundler.emitter;
-const plugin_mod = lib.bundler.plugin;
-
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
 /// root 선언이라야 컴파일러가 safety panic을 여기로 보낸다.
 pub const panic = lib.crash_handler.panic;
@@ -1177,7 +1175,6 @@ pub fn main() !void {
             .host = opts.serve_host,
             .open = opts.serve_open,
             .entry_point = entry,
-            .plugins = &[_]plugin_mod.Plugin{},
             .proxy = opts.proxy_list.items,
         }) catch |err| {
             try stderr.print("zts: failed to start dev server: {}\n", .{err});
@@ -1281,10 +1278,6 @@ pub fn main() !void {
             };
             opts.preserve_modules_root = resolved_pm_root;
         }
-
-        // JS 플러그인은 @zts/core NAPI 경로(packages/core/bin/zts.mjs)에서만 지원.
-        // Zig 독립 바이너리는 builtin 플러그인(worklet 등)만 사용.
-        const plugin_list_items = &[_]plugin_mod.Plugin{};
 
         // --rn-platform은 --platform=react-native와 함께 사용해야 한다
         if (opts.rn_platform != .none and opts.platform != .react_native) {
@@ -1441,7 +1434,6 @@ pub fn main() !void {
             .global_identifiers = opts.global_identifier_list.items,
             .keep_names = opts.keep_names,
             .shim_missing_exports = opts.shim_missing_exports,
-            .plugins = plugin_list_items,
             .max_threads = opts.max_threads,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
