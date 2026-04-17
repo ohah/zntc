@@ -4,6 +4,7 @@
 //!   - /s (dotAll, ES2018): `.` → `[\s\S]` 치환 + flag strip (완전 구현)
 //!   - (?<name>...) (named capture, ES2018): `(?<name>` → `(`으로 strip
 //!     → positional group으로만 보존. `match.groups` 객체는 포기.
+//!     `\k<name>` named backreference 도 함께 `\N` (positional)으로 변환.
 //!   - /y (sticky, ES2015): 미지원 타겟에서 flag strip (런타임 동작 변경 있음 — 경고)
 //!
 //! - `u` flag + `\u{...}` brace (ES2015): `\u{X}` → surrogate pair / BMP escape + `u` flag strip (#1388)
@@ -79,12 +80,23 @@ const PatternOpts = struct {
 };
 
 /// pattern 내부를 character class / escape 를 고려하며 순회하여 변환.
+///
+/// strip_named 활성 시 named group 위치를 capture group 인덱스로 추적해
+/// `\k<name>` named backreference 를 `\N` (positional)으로 함께 변환한다.
 fn rewritePattern(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
     pattern: []const u8,
     opts: PatternOpts,
 ) !void {
+    // 일반 패턴에서 named group은 1-3개 수준. 32 한도를 초과하면 backref 변환이
+    // 누락되어 정합성이 깨지므로 silent skip 대신 assert 로 즉시 fail.
+    const max_named_groups = 32;
+    const NamedEntry = struct { name: []const u8, idx: u32 };
+    var named: [max_named_groups]NamedEntry = undefined;
+    var named_count: usize = 0;
+    var group_idx: u32 = 0;
+
     var i: usize = 0;
     var in_class: bool = false;
     while (i < pattern.len) {
@@ -98,6 +110,30 @@ fn rewritePattern(
                     try unicode_escape_lower.appendCodepoint(out, allocator, r.cp);
                     i = r.end;
                     continue;
+                }
+            }
+            // `\k<name>` named backreference (character class 밖에서만 의미 있음).
+            // strip_named 일 때 동일 이름의 capture group 인덱스를 찾아 `\N` 으로 치환.
+            // 이름을 못 찾으면 (해당 named group이 아직 안 나옴) 원본을 보존하지만,
+            // ECMAScript spec상 정상 패턴이라면 named group이 항상 먼저 정의되어 있다.
+            if (!in_class and opts.strip_named and i + 2 < pattern.len and pattern[i + 1] == 'k' and pattern[i + 2] == '<') {
+                if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
+                    const name = pattern[i + 3 .. gt];
+                    var found_idx: ?u32 = null;
+                    for (named[0..named_count]) |e| {
+                        if (std.mem.eql(u8, e.name, name)) {
+                            found_idx = e.idx;
+                            break;
+                        }
+                    }
+                    if (found_idx) |idx| {
+                        var buf: [16]u8 = undefined;
+                        // u32 최대값 출력해도 11자 + '\\' = 12자 → 16바이트 버퍼로 충분.
+                        const s = std.fmt.bufPrint(&buf, "\\{d}", .{idx}) catch unreachable;
+                        try out.appendSlice(allocator, s);
+                        i = gt + 1;
+                        continue;
+                    }
                 }
             }
             try out.append(allocator, c);
@@ -132,23 +168,41 @@ fn rewritePattern(
                 i += 1;
             },
             '(' => {
-                // named capture: `(?<name>...)` → `(...)`
-                // non-capturing: `(?:...)` — 보존
-                // lookahead/lookbehind 등도 보존.
-                if (opts.strip_named and i + 2 < pattern.len and pattern[i + 1] == '?' and pattern[i + 2] == '<') {
-                    // 주의: `(?<=...)` lookbehind, `(?<!...)` negative lookbehind 은 유지.
-                    if (i + 3 < pattern.len and (pattern[i + 3] == '=' or pattern[i + 3] == '!')) {
+                // `(?` 로 시작하는 그룹 분류:
+                //   `(?:...)` non-capturing → capture index 카운트 X
+                //   `(?=...)`, `(?!...)` lookahead → capture index 카운트 X
+                //   `(?<=...)`, `(?<!...)` lookbehind → capture index 카운트 X
+                //   `(?<name>...)` named capture → capture index 카운트 O, strip_named 시 strip
+                if (i + 2 < pattern.len and pattern[i + 1] == '?') {
+                    const tag = pattern[i + 2];
+                    if (tag == ':' or tag == '=' or tag == '!') {
                         try out.append(allocator, c);
                         i += 1;
                         continue;
                     }
-                    // `>`까지 skip.
-                    if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
-                        try out.append(allocator, '(');
-                        i = gt + 1;
+                    if (tag == '<') {
+                        if (i + 3 < pattern.len and (pattern[i + 3] == '=' or pattern[i + 3] == '!')) {
+                            try out.append(allocator, c);
+                            i += 1;
+                            continue;
+                        }
+                        group_idx += 1;
+                        if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
+                            std.debug.assert(named_count < max_named_groups);
+                            named[named_count] = .{ .name = pattern[i + 3 .. gt], .idx = group_idx };
+                            named_count += 1;
+                            if (opts.strip_named) {
+                                try out.append(allocator, '(');
+                                i = gt + 1;
+                                continue;
+                            }
+                        }
+                        try out.append(allocator, c);
+                        i += 1;
                         continue;
                     }
                 }
+                group_idx += 1;
                 try out.append(allocator, c);
                 i += 1;
             },
@@ -273,4 +327,34 @@ test "regex: u + character class" {
 test "regex: esnext (미지원 없음) no-op" {
     const out = try runLower("/(?<year>\\d{4})/", .{});
     try testing.expect(out == null);
+}
+
+test "regex: named backreference \\k<name> → \\N" {
+    const out = (try runLower("/(?<dup>a+)b\\k<dup>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(a+)b\\1/", out);
+}
+
+test "regex: named backref + 앞쪽 일반 group이 인덱스 차지" {
+    const out = (try runLower("/(\\d+)-(?<word>[a-z]+)-\\k<word>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(\\d+)-([a-z]+)-\\2/", out);
+}
+
+test "regex: named backref + non-capturing group은 카운트 X" {
+    const out = (try runLower("/(?:foo)(?<n>\\d+)\\k<n>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?:foo)(\\d+)\\1/", out);
+}
+
+test "regex: named backref + lookbehind은 카운트 X" {
+    const out = (try runLower("/(?<=\\$)(?<n>\\d+)\\k<n>/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(?<=\\$)(\\d+)\\1/", out);
+}
+
+test "regex: named backref — character class 안의 \\k는 그대로" {
+    const out = (try runLower("/(?<n>a)[\\k<n>]/", .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("/(a)[\\k<n>]/", out);
 }
