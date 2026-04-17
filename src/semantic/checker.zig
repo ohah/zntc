@@ -20,7 +20,8 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 
-const Diagnostic = @import("../diagnostic.zig").Diagnostic;
+const diagnostic = @import("../diagnostic.zig");
+const Diagnostic = diagnostic.Diagnostic;
 const ErrorCode = @import("../error_codes.zig").Code;
 
 const AllocError = std.mem.Allocator.Error;
@@ -90,9 +91,10 @@ pub fn checkDuplicateConstructors(
         const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + 2]);
         if (body_idx.isNone()) continue;
 
-        if (first_constructor_span) |_| {
+        if (first_constructor_span) |first| {
             // body가 있는 constructor가 2개 이상 → 에러
-            try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}), .duplicate_constructor);
+            const msg = try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{});
+            try addErrorCodeWithPrevious(errors, allocator, node.span, msg, .duplicate_constructor, first);
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -127,6 +129,13 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 /// 에러를 errors 목록에 추가한다.
 fn addErrorCode(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8, code: ErrorCode) AllocError!void {
     try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic, .code = code });
+}
+
+/// 재선언 계열 에러 + "previously declared here" secondary label.
+fn addErrorCodeWithPrevious(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8, code: ErrorCode, previous_span: Span) AllocError!void {
+    const buf = try allocator.alloc(diagnostic.Label, 1);
+    buf[0] = .{ .span = previous_span, .message = diagnostic.PREVIOUSLY_DECLARED_HERE };
+    try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic, .code = code, .labels = buf });
 }
 
 // ====================================================================
@@ -209,11 +218,8 @@ fn checkPrivateKeyStaticConflict(
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
         if (existing.is_static != is_static) {
-            try addErrorCode(errors, allocator, key_node.span, try std.fmt.allocPrint(
-                allocator,
-                "Private field '{s}' has already been declared",
-                .{name},
-            ), .private_redeclared);
+            const msg = try std.fmt.allocPrint(allocator, "Private field '{s}' has already been declared", .{name});
+            try addErrorCodeWithPrevious(errors, allocator, key_node.span, msg, .private_redeclared, existing.span);
         }
     } else {
         try declared.put(name, .{ .is_static = is_static, .span = key_node.span });
@@ -350,12 +356,9 @@ fn recordSeenName(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (seen.get(name)) |_| {
-        try addErrorCode(errors, allocator, span, try std.fmt.allocPrint(
-            allocator,
-            "Duplicate parameter name '{s}'",
-            .{name},
-        ), .duplicate_parameter);
+    if (seen.get(name)) |previous_span| {
+        const msg = try std.fmt.allocPrint(allocator, "Duplicate parameter name '{s}'", .{name});
+        try addErrorCodeWithPrevious(errors, allocator, span, msg, .duplicate_parameter, previous_span);
     } else {
         try seen.put(name, span);
     }

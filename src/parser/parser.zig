@@ -526,6 +526,18 @@ pub const Parser = struct {
         });
     }
 
+    /// 재선언 계열 에러 + "previously declared here" secondary label.
+    pub fn addErrorCodeWithPrevious(self: *Parser, span: Span, message: []const u8, code: ErrorCode, previous_span: Span) !void {
+        const buf = try self.allocator.alloc(diagnostic.Label, 1);
+        buf[0] = .{ .span = previous_span, .message = diagnostic.PREVIOUSLY_DECLARED_HERE };
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = message,
+            .code = code,
+            .labels = buf,
+        });
+    }
+
     /// Unambiguous 모드에서 모듈 전용 에러를 지연 수집한다.
     /// module에서만 에러인 항목 (top-level return, await in module 등)에 사용.
     /// 파싱 후 resolveModuleKind()에서 모듈 확정 시 병합, 스크립트 확정 시 폐기.
@@ -970,7 +982,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        try self.addErrorCode(node.span, "Duplicate parameter name", .duplicate_parameter);
+                        try self.addErrorCodeWithPrevious(node.span, "Duplicate parameter name", .duplicate_parameter, prev_span);
                         return;
                     }
                 }
@@ -1518,7 +1530,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items[0..j]) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        try self.addErrorCode(name_span, "Duplicate parameter name", .duplicate_parameter);
+                        try self.addErrorCodeWithPrevious(name_span, "Duplicate parameter name", .duplicate_parameter, prev_span);
                         break;
                     }
                 }

@@ -932,7 +932,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     self.ctx.is_top_level = false;
 
     const scratch_top = self.saveScratch();
-    var has_default = false;
+    var first_default_span: ?Span = null;
     while (self.current() != .r_curly and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
 
@@ -941,10 +941,11 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
         const default_span = self.currentSpan();
         const case_node = try parseSwitchCase(self);
         if (is_default) {
-            if (has_default) {
-                try self.addErrorCode(default_span, "Only one default clause is allowed in a switch statement", .switch_duplicate_default);
+            if (first_default_span) |first| {
+                try self.addErrorCodeWithPrevious(default_span, "Only one default clause is allowed in a switch statement", .switch_duplicate_default, first);
+            } else {
+                first_default_span = default_span;
             }
-            has_default = true;
         }
         try self.scratch.append(self.allocator, case_node);
 

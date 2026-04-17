@@ -13,6 +13,10 @@ const std = @import("std");
 const Span = @import("lexer/token.zig").Span;
 const ErrorCode = @import("error_codes.zig").Code;
 
+/// 재선언 계열 에러의 secondary label 문구.
+/// ZTS1000/1100/1200/1202/1300/515/703 등에서 원본 선언 위치를 가리킬 때 재사용.
+pub const PREVIOUSLY_DECLARED_HERE = "previously declared here";
+
 /// 진단 라벨 — 에러의 primary span(`Diagnostic.span`) 외 관련 위치를 가리킨다.
 /// 재선언 에러의 "previously declared here", 브래킷 매칭 에러의 "opening '{' is here" 등.
 pub const Label = struct {

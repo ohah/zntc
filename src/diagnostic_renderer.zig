@@ -98,10 +98,18 @@ pub fn render(
     // ── 5. 밑줄 + 라벨 ──
     try renderUnderline(writer, source_info, diag, err_line, err_col, gutter_width, color, options.unicode);
 
+    // ── 5.25. primary와 같은 줄에 걸린 label 출력 (primary 밑줄 바로 아래) ──
+    for (diag.labels) |label| {
+        const l_lc = source_info.getLineColumn(label.span.start);
+        if (l_lc.line == err_line) {
+            try renderLabelUnderline(writer, source_info, label, l_lc.line, l_lc.column, gutter_width, color, options.unicode);
+        }
+    }
+
     // ── 5.5. primary 아래쪽 label 출력 (err_line보다 뒤) ──
     for (diag.labels) |label| {
         const l_lc = source_info.getLineColumn(label.span.start);
-        if (l_lc.line <= err_line) continue; // 위쪽/같은 줄은 위에서 처리 또는 생략
+        if (l_lc.line <= err_line) continue;
         try renderSourceLine(writer, source_info, l_lc.line, gutter_width, color, options.unicode);
         try renderLabelUnderline(writer, source_info, label, l_lc.line, l_lc.column, gutter_width, color, options.unicode);
     }

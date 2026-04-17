@@ -8,6 +8,15 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
 
+/// 체커가 채운 에러의 allocator-owned 리소스(message/labels)를 free.
+fn deinitErrors(errs: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator) void {
+    for (errs.items) |e| {
+        allocator.free(e.message);
+        if (e.labels.len > 0) allocator.free(e.labels);
+    }
+    errs.deinit(allocator);
+}
+
 test "checker: duplicate constructor is error" {
     var scanner = try Scanner.init(std.testing.allocator, "class C { constructor() {} constructor() {} }");
     defer scanner.deinit();
@@ -16,10 +25,7 @@ test "checker: duplicate constructor is error" {
     _ = try parser.parse();
 
     var errs: std.ArrayList(Diagnostic) = .empty;
-    defer {
-        for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit(std.testing.allocator);
-    }
+    defer deinitErrors(&errs, std.testing.allocator);
 
     // class body를 찾아서 검사
     // AST 마지막 노드는 program, 그 안에 class_declaration이 있음
@@ -63,10 +69,7 @@ test "checker: static/instance private name conflict is error" {
     _ = try parser.parse();
 
     var errs: std.ArrayList(Diagnostic) = .empty;
-    defer {
-        for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit(std.testing.allocator);
-    }
+    defer deinitErrors(&errs, std.testing.allocator);
 
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
@@ -108,10 +111,7 @@ test "checker: duplicate __proto__ is error" {
     _ = try parser.parse();
 
     var errs: std.ArrayList(Diagnostic) = .empty;
-    defer {
-        for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit(std.testing.allocator);
-    }
+    defer deinitErrors(&errs, std.testing.allocator);
 
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
