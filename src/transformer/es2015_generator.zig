@@ -345,31 +345,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                 },
                 .break_statement, .continue_statement => {
-                    const label_idx = stmt.data.unary.operand;
-                    if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
-                        const label_node = self.ast.getNode(label_idx);
-                        const label_text = self.ast.getText(label_node.span);
-                        const stack = self.generator_label_stack.items;
-                        var found = false;
-                        var i = stack.len;
-                        while (i > 0) {
-                            i -= 1;
-                            if (std.mem.eql(u8, stack[i].name, label_text)) {
-                                const target = if (stmt.tag == .continue_statement)
-                                    stack[i].continue_label orelse stack[i].break_label
-                                else
-                                    stack[i].break_label;
-                                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = target } });
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            const new_stmt = try self.visitNode(stmt_idx);
-                            if (!new_stmt.isNone()) {
-                                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                            }
-                        }
+                    const target = resolveBreakContinueTarget(self, stmt);
+                    if (target) |t| {
+                        try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = t } });
                     } else {
                         const new_stmt = try self.visitNode(stmt_idx);
                         if (!new_stmt.isNone()) {
@@ -482,9 +460,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
-            // test (end_label은 sentinel — body 처리 후 fixup)
-            const for_end_sent = LABEL_SENTINEL_BASE; // for loop 전용 sentinel
+            // 중첩 루프에서 충돌 방지를 위해 label_stack 깊이 기반 sentinel 사용.
+            const depth = self.generator_label_stack.items.len;
+            const for_break_sent = breakSentinel(depth);
+            const for_continue_sent = continueSentinel(depth);
             const for_ops_start = ops.items.len;
+
+            // test (for_break_sent는 body 처리 후 fixup)
             if (!test_idx.isNone()) {
                 const new_test = if (containsYield(self, test_idx))
                     try visitExprWithYieldExtraction(self, test_idx, ops, next_label)
@@ -492,14 +474,22 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.visitNode(test_idx);
                 try ops.append(self.allocator, .{
                     .code = .break_when_false,
-                    .arg = .{ .label_and_node = .{ .label = for_end_sent, .node = new_test } },
+                    .arg = .{ .label_and_node = .{ .label = for_break_sent, .node = new_test } },
                 });
             }
+
+            // unlabeled break/continue를 이 루프로 라우팅. 중첩 루프는 스택으로 분리.
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = "",
+                .break_label = for_break_sent,
+                .continue_label = for_continue_sent,
+            });
+            defer _ = self.generator_label_stack.pop();
 
             // body
             try collectBodyOperations(self, body_idx, ops, next_label);
 
-            // update (별도 label — labeled continue의 대상)
+            // update (별도 label — continue의 대상)
             const update_label = next_label.*;
             next_label.* += 1;
             self.generator_for_update_label = update_label;
@@ -519,8 +509,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const end_label = next_label.*;
             next_label.* += 1;
 
-            // fixup: for_end_sent → end_label
-            fixupSentinel(ops.items[for_ops_start..], for_end_sent, end_label);
+            // fixup: break/continue sentinel → 실제 label
+            fixupSentinel(ops.items[for_ops_start..], for_break_sent, end_label);
+            fixupSentinel(ops.items[for_ops_start..], for_continue_sent, update_label);
 
             // mark end_label
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -584,7 +575,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
             // test: _i < _arr.length
-            const for_end_sent = LABEL_SENTINEL_BASE;
+            const depth = self.generator_label_stack.items.len;
+            const for_break_sent = breakSentinel(depth);
+            const for_continue_sent = continueSentinel(depth);
             const for_ops_start = ops.items.len;
             const idx_ref_test = try es_helpers.makeTempVarRef(self, idx_span, idx_span);
             const arr_ref_test = try es_helpers.makeTempVarRef(self, arr_span, arr_span);
@@ -601,7 +594,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
-                .arg = .{ .label_and_node = .{ .label = for_end_sent, .node = test_expr } },
+                .arg = .{ .label_and_node = .{ .label = for_break_sent, .node = test_expr } },
             });
 
             // body 앞에 var x = _arr[_i] 삽입
@@ -649,8 +642,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
             }
 
-            // body 수집 (yield 추출)
-            try collectBodyOperations(self, body_idx, ops, next_label);
+            // unlabeled break/continue를 이 for-of로 라우팅.
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = "",
+                .break_label = for_break_sent,
+                .continue_label = for_continue_sent,
+            });
+            {
+                defer _ = self.generator_label_stack.pop();
+                // body 수집 (yield 추출)
+                try collectBodyOperations(self, body_idx, ops, next_label);
+            }
 
             // update: _i++
             const update_label = next_label.*;
@@ -676,7 +678,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // end_label
             const end_label = next_label.*;
             next_label.* += 1;
-            fixupSentinel(ops.items[for_ops_start..], for_end_sent, end_label);
+            fixupSentinel(ops.items[for_ops_start..], for_break_sent, end_label);
+            fixupSentinel(ops.items[for_ops_start..], for_continue_sent, update_label);
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
         }
 
@@ -698,15 +701,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
-            const cond_false_idx = ops.items.len;
+            const depth = self.generator_label_stack.items.len;
+            const while_break_sent = breakSentinel(depth);
+            const ops_start = ops.items.len;
+
             const new_cond = if (containsYield(self, condition))
                 try visitExprWithYieldExtraction(self, condition, ops, next_label)
             else
                 try self.visitNode(condition);
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
-                .arg = .{ .label_and_node = .{ .label = 0, .node = new_cond } }, // placeholder
+                .arg = .{ .label_and_node = .{ .label = while_break_sent, .node = new_cond } },
             });
+
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = "",
+                .break_label = while_break_sent,
+                .continue_label = cond_label,
+            });
+            defer _ = self.generator_label_stack.pop();
 
             // body (yield가 nop를 생성하여 next_label이 증가할 수 있음)
             try collectBodyOperations(self, body_idx, ops, next_label);
@@ -719,8 +732,43 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             next_label.* += 1;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark end_label
 
-            // break_when_false의 label을 실제 end_label로 fixup
-            ops.items[cond_false_idx].arg = .{ .label_and_node = .{ .label = end_label, .node = new_cond } };
+            fixupSentinel(ops.items[ops_start..], while_break_sent, end_label);
+        }
+
+        /// break/continue 문의 대상 sentinel을 결정.
+        /// labeled → generator_label_stack에서 name 매칭 (없으면 null).
+        /// unlabeled → 스택 top에서 가장 가까운 적절한 entry 선택
+        ///   · break: 가장 안쪽 루프 또는 switch 진입 시 push된 entry
+        ///   · continue: continue_label이 있는 가장 안쪽 loop entry (switch 스킵)
+        fn resolveBreakContinueTarget(self: *Transformer, stmt: Node) ?u32 {
+            const label_idx = stmt.data.unary.operand;
+            const stack = self.generator_label_stack.items;
+            if (stack.len == 0) return null;
+
+            if (!label_idx.isNone()) {
+                const label_text = self.ast.getText(self.ast.getNode(label_idx).span);
+                var i = stack.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (std.mem.eql(u8, stack[i].name, label_text)) {
+                        if (stmt.tag == .continue_statement)
+                            return stack[i].continue_label orelse stack[i].break_label;
+                        return stack[i].break_label;
+                    }
+                }
+                return null;
+            }
+
+            // unlabeled
+            if (stmt.tag == .continue_statement) {
+                var i = stack.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (stack[i].continue_label) |c| return c;
+                }
+                return null;
+            }
+            return stack[stack.len - 1].break_label;
         }
 
         const LABEL_SENTINEL_BASE = std.math.maxInt(u32);
@@ -951,8 +999,27 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark body_label
 
-            // body
-            try collectBodyOperations(self, body_idx, ops, next_label);
+            const depth = self.generator_label_stack.items.len;
+            const dw_break_sent = breakSentinel(depth);
+            const dw_continue_sent = continueSentinel(depth);
+            const ops_start = ops.items.len;
+
+            // unlabeled break/continue를 이 do-while로 라우팅.
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = "",
+                .break_label = dw_break_sent,
+                .continue_label = dw_continue_sent,
+            });
+            {
+                defer _ = self.generator_label_stack.pop();
+                // body
+                try collectBodyOperations(self, body_idx, ops, next_label);
+            }
+
+            // continue는 condition 평가 지점으로 점프
+            const cond_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
             // condition → if true, goto body_label
             const new_cond = if (containsYield(self, condition))
@@ -963,6 +1030,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .code = .break_when_true,
                 .arg = .{ .label_and_node = .{ .label = body_label, .node = new_cond } },
             });
+
+            // end label (break 대상)
+            const end_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            fixupSentinel(ops.items[ops_start..], dw_break_sent, end_label);
+            fixupSentinel(ops.items[ops_start..], dw_continue_sent, cond_label);
         }
 
         /// try/catch/finally 안의 yield를 상태 머신으로 변환.
@@ -1147,6 +1222,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try collectHoistedVarFromNode(self, catch_node.data.binary.right, hoisted);
                     }
                     try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+                } else if (node.tag == .labeled_statement) {
+                    try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
                 }
             }
         }
@@ -1173,6 +1250,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try collectBindingIdentifiers(self, binding, hoisted);
                     }
                 }
+            } else if (node.tag == .labeled_statement) {
+                try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+            } else if (node.tag == .for_statement) {
+                const e = node.data.extra;
+                try collectHoistedVarFromNode(self, self.readNodeIdx(e, 0), hoisted);
+                try collectHoistedVarFromNode(self, self.readNodeIdx(e, 3), hoisted);
+            } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
+                try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+            } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
+                try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
+                try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+            } else if (node.tag == .if_statement) {
+                try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
+                try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             }
         }
 
@@ -1307,14 +1398,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (idx.isNone()) return false;
             const node = self.ast.getNode(idx);
             if (node.tag == .yield_expression or node.tag == .await_expression) return true;
-            // labeled break/continue: generator label stack에 등록된 label 참조 시 처리 필요
-            if ((node.tag == .break_statement or node.tag == .continue_statement) and
-                !node.data.unary.operand.isNone() and self.generator_label_stack.items.len > 0)
-            {
-                const label_node = self.ast.getNode(node.data.unary.operand);
-                const label_text = self.ast.getText(label_node.span);
-                for (self.generator_label_stack.items) |entry| {
-                    if (std.mem.eql(u8, entry.name, label_text)) return true;
+            // break/continue: state machine의 label jump로 변환해야 하는 경우 true 반환.
+            // 이때 감싼 if/block 등이 statement로 통째로 묻히지 않도록 해야 한다.
+            if (node.tag == .break_statement or node.tag == .continue_statement) {
+                if (node.data.unary.operand.isNone()) {
+                    // unlabeled: 감싼 loop/switch가 state machine 안에 있으면 변환 필요.
+                    if (self.generator_label_stack.items.len > 0) return true;
+                } else if (self.generator_label_stack.items.len > 0) {
+                    // labeled: 스택에 등록된 label 참조 시만 변환.
+                    const label_node = self.ast.getNode(node.data.unary.operand);
+                    const label_text = self.ast.getText(label_node.span);
+                    for (self.generator_label_stack.items) |entry| {
+                        if (std.mem.eql(u8, entry.name, label_text)) return true;
+                    }
                 }
             }
             // function/arrow 경계에서는 중단 (nested generator/arrow의 yield는 다른 스코프)
