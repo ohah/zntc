@@ -2877,6 +2877,54 @@ pub const Transformer = struct {
     }
 
     /// block_statement / program / function_body 앞에 문들을 삽입한다.
+    /// body의 첫 super() 호출 이후 위치에 stmts 삽입 — derived class constructor 전용 (#1495).
+    /// super_call이 없으면 body 앞에 prepend (fallback). body가 block이 아니면 block으로 감싼 뒤 처리.
+    pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+        const body = self.ast.getNode(body_idx);
+        if (body.tag != .block_statement and body.tag != .function_body) {
+            return self.prependStatementsToBody(body_idx, stmts);
+        }
+        const old_list = body.data.list;
+        const old_stmts_start = old_list.start;
+        const old_stmts_len = old_list.len;
+        const old_stmts = self.ast.extra_data.items[old_stmts_start .. old_stmts_start + old_stmts_len];
+
+        // super() 호출이 들어있는 expression_statement 찾기.
+        var super_idx: ?u32 = null;
+        for (old_stmts, 0..) |raw_idx, i| {
+            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+            if (stmt.tag != .expression_statement) continue;
+            const operand = stmt.data.unary.operand;
+            if (operand.isNone()) continue;
+            const call = self.ast.getNode(operand);
+            if (call.tag != .call_expression) continue;
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[call.data.extra]);
+            const callee = self.ast.getNode(callee_idx);
+            if (callee.tag == .super_expression) {
+                super_idx = @intCast(i);
+                break;
+            }
+        }
+
+        if (super_idx == null) return self.prependStatementsToBody(body_idx, stmts);
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // [0..super_idx] + super() + stmts + [super_idx+1..]
+        const cut: u32 = super_idx.? + 1;
+        for (old_stmts[0..cut]) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        for (stmts) |stmt| try self.scratch.append(self.allocator, stmt);
+        for (old_stmts[cut..]) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+
+        const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.ast.addNode(.{
+            .tag = body.tag,
+            .span = body.span,
+            .data = .{ .list = new_list },
+        });
+    }
+
     pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
         const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) {
