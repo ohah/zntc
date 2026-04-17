@@ -1413,7 +1413,7 @@ pub const Transformer = struct {
         {
             const operand = self.ast.getNode(operand_idx);
             if (es2020.ES2020(Transformer).findOptionalChainBase(self, operand)) |base_idx| {
-                return es2020.ES2020(Transformer).lowerOptionalChainCtx(self, operand, base_idx, .@"delete");
+                return es2020.ES2020(Transformer).lowerOptionalChainCtx(self, operand, base_idx, .delete);
             }
         }
 

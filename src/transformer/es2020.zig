@@ -113,7 +113,7 @@ pub fn ES2020(comptime Transformer: type) type {
         /// `.delete`: short-circuit 시 `true` 반환, 본 체인 마지막 access는 `delete` 로 감쌈.
         ///   `delete a?.b` 가 `delete (cond ? void 0 : a.b)` 로 변환되면 ConditionalExpression
         ///   결과에 delete 가 적용되어 Reference 가 아니므로 실제 삭제가 일어나지 않는 spec 함정 회피.
-        pub const LowerCtx = enum { normal, @"delete" };
+        pub const LowerCtx = enum { normal, delete };
 
         pub fn lowerOptionalChain(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
             return lowerOptionalChainCtx(self, node, base_idx, .normal);
@@ -157,7 +157,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             const b_branch: NodeIndex, const c_branch: NodeIndex = switch (ctx) {
                 .normal => .{ try helpers.makeVoidZero(self, node.span), rebuilt_chain },
-                .@"delete" => .{ try makeTrueLiteral(self, node.span), try makeDeleteOf(self, rebuilt_chain, node.span) },
+                .delete => .{ try makeTrueLiteral(self, node.span), try makeDeleteOf(self, rebuilt_chain, node.span) },
             };
 
             const cond = try self.ast.addNode(.{
