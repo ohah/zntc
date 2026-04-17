@@ -828,11 +828,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
                 const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, node.span);
                 const new_rhs = try self.visitNode(node.data.binary.right);
-                const computed = try self.ast.addNode(.{
-                    .tag = .binary_expression,
-                    .span = node.span,
-                    .data = .{ .binary = .{ .left = get_call, .right = new_rhs, .flags = bin_op } },
-                });
+                // `**=` + target<es2016: 내부 `**` 도 Math.pow로 lowering해야 함. 일반 binary
+                // 경로를 거치지 않고 여기서 직접 생성 — 그렇지 않으면 `**` 가 그대로 남아
+                // es2015 타겟에서 syntax error (#1486).
+                const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+                    try es_helpers.makeMathPowCall(self, get_call, new_rhs, node.span)
+                else
+                    try self.ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = node.span,
+                        .data = .{ .binary = .{ .left = get_call, .right = new_rhs, .flags = bin_op } },
+                    });
                 return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, node.span);
             }
 

@@ -309,6 +309,102 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("42");
     });
 
+    test("private field **= Math.pow 경유 (target=es2015)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #n = 2;
+              static #s = 3;
+              pow(e: number) { this.#n **= e; }
+              static spow(e: number) { C.#s **= e; }
+              get v() { return this.#n; }
+              static get sv() { return C.#s; }
+            }
+            const c = new C(); c.pow(5); C.spow(4);
+            console.log(c.v + "," + C.sv);
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("32,81");
+    });
+
+    test("private field **=  target=es2016(supported) `**` 유지", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #n = 2;
+              pow(e: number) { this.#n **= e; }
+              get v() { return this.#n; }
+            }
+            const c = new C(); c.pow(8);
+            console.log(c.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2016"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("256");
+    });
+
+    // TODO: private field compound/update가 expression 자리에서 반환하는 값이
+    // spec(`this.#n++` → 이전 값)과 불일치 — `_n.set(this, ...)` 이 WeakMap을 반환해 섞여 나옴.
+    // 별도 이슈 필요 (set 반환값을 _classPrivateFieldSet 헬퍼로 래핑).
+    test.todo("private field ++ 연쇄 expression 사용 시 반환값 정확성");
+
+    test("private field compound + deep template literal 보간", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Tag {
+              #label = "";
+              push(s: string) { this.#label += \`[\${s.toUpperCase()}]\`; }
+              get v() { return this.#label; }
+            }
+            const t = new Tag();
+            t.push("a"); t.push("b"); t.push("c");
+            console.log(t.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[A][B][C]");
+    });
+
+    test("private field ||=/??= 연쇄 nested class 인스턴스 간 격리", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Row {
+              #label: string | null = null;
+              setFirst(s: string) { this.#label ??= s; }
+              setIfTruthy(s: string) { this.#label ||= s; }
+              get v() { return this.#label; }
+            }
+            const r1 = new Row(); const r2 = new Row();
+            r1.setFirst("a"); r1.setFirst("b"); r1.setIfTruthy("c"); // r1=a
+            r2.setIfTruthy("x"); r2.setFirst("y"); r2.setFirst("z"); // r2=x
+            console.log(r1.v + "," + r2.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a,x");
+    });
+
     test("private method + private field 상호 호출", async () => {
       const result = await bundleAndRun(
         {
