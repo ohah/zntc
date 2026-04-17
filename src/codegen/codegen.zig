@@ -1983,6 +1983,23 @@ pub const Codegen = struct {
         return false;
     }
 
+    /// `new MemberExpression Arguments` 문법상 callee 는 MemberExpression 이어야 함.
+    /// callee 의 member chain 안에 call_expression 이 있으면 `new A(x)` 가 `new (A)(x)` 로
+    /// 잘못 파싱되어 뒤따르는 `()` 가 외부 call 로 붙음 (#1507). 감싸서 Primary 로 승격.
+    fn newCalleeNeedsParens(self: *Codegen, idx: NodeIndex) bool {
+        var cur = idx;
+        while (true) {
+            const n = self.ast.getNode(cur);
+            switch (n.tag) {
+                .call_expression => return true,
+                .static_member_expression, .computed_member_expression, .private_field_expression => {
+                    cur = self.ast.readExtraNode(n.data.extra, 0);
+                },
+                else => return false,
+            }
+        }
+    }
+
     fn emitNew(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         if (!self.ast.hasExtra(e, 3)) return;
@@ -1996,7 +2013,10 @@ pub const Codegen = struct {
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
 
         try self.write("new ");
+        const needs_parens = self.newCalleeNeedsParens(callee);
+        if (needs_parens) try self.writeByte('(');
         try self.emitNode(callee);
+        if (needs_parens) try self.writeByte(')');
         try self.writeByte('(');
         try self.emitNodeList(args_start, args_len, self.listSep());
         try self.writeByte(')');

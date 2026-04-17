@@ -1931,6 +1931,88 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("D");
     });
+
+    // #1507: `new this.#priv...()` 에서 parseNewCallee 가 private identifier prop 에
+    // `static_member_expression` 태그를 잘못 붙여 private field lowering 이 미스됨.
+    // parser 수정 — private_identifier 면 `private_field_expression` 으로 분기.
+    test("new this.#priv() 직접 호출 (#1507 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              #Ctor: any = class B { v = 5; };
+              make() { return new this.#Ctor(); }
+            }
+            console.log(new X().make().v);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("new this.#priv.method() dot 체인 (#1507 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              #foo: any = { bar: class B { v = 42; } };
+              make() { return new this.#foo.bar(); }
+            }
+            console.log(new X().make().v);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("new this.#priv[key].Ctor() bracket 체인 (#1507 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              #doc: any = { win: { Thing: class T { tag = "ok"; } } };
+              make() { return new this.#doc["win"].Thing(); }
+            }
+            console.log(new X().make().tag);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ok");
+    });
+
+    test("happy-dom style `throw new this.#ownerDocument[key].TypeError(...)` (#1507 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Dom {
+              #ownerDocument: any = { main: { TypeError: class E { msg: string; constructor(m: string) { this.msg = m; } } } };
+              fail() {
+                try { throw new this.#ownerDocument["main"].TypeError("boom"); }
+                catch (e: any) { return e.msg; }
+              }
+            }
+            console.log(new Dom().fail());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("boom");
+    });
   });
 
   describe("TS-specific", () => {

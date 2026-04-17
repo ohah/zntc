@@ -1161,8 +1161,13 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
                 {
                     const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    // `new obj.#priv()` — prop 이 private_identifier 면 private_field_expression 태그를
+                    // 써야 transformer 가 `_priv.get(obj)` 로 lowering 함. 일반 `.dot` 경로와 동기화 (#1507).
                     expr = try self.ast.addNode(.{
-                        .tag = .static_member_expression,
+                        .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
+                            .private_field_expression
+                        else
+                            .static_member_expression,
                         .span = .{ .start = expr_start, .end = prop_end },
                         .data = .{ .extra = me },
                     });

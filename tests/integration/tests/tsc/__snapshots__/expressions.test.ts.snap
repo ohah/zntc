@@ -192,7 +192,7 @@ exports[`TSC: expressions asOpEmitParens 1`] = `
 // Should still emit as x.y
 x.y;
 // Emit as new (x())
-new x()();
+new (x())();
 "
 `;
 
