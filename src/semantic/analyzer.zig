@@ -448,11 +448,8 @@ pub const SemanticAnalyzer = struct {
             const is_accessor_pair = (existing.kind == .getter and kind == .setter) or
                 (existing.kind == .setter and kind == .getter);
             if (!is_accessor_pair) {
-                try self.addErrorMsgCode(span, try std.fmt.allocPrint(
-                    self.allocator,
-                    "Private field '{s}' has already been declared",
-                    .{name},
-                ), .private_redeclared);
+                const msg = try std.fmt.allocPrint(self.allocator, "Private field '{s}' has already been declared", .{name});
+                try self.addErrorMsgCodeWithPrevious(span, msg, .private_redeclared, existing.span);
                 return;
             }
             // getter+setter 쌍 확인됨 → accessor_pair로 업데이트
@@ -997,21 +994,26 @@ pub const SemanticAnalyzer = struct {
         try self.addRedeclarationError(span, name, null);
     }
 
-    /// 재선언 에러 + "previously declared here" secondary label.
-    /// existing_span이 null이면 label 없이 기본 에러.
-    fn addRedeclarationError(self: *SemanticAnalyzer, span: Span, name: []const u8, existing_span: ?Span) AllocError!void {
+    /// ZTS1000 identifier_redeclared — "Identifier '{name}' has already been declared" 메시지.
+    fn addRedeclarationError(self: *SemanticAnalyzer, span: Span, name: []const u8, previous_span: ?Span) AllocError!void {
         const msg = try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name});
-        errdefer self.allocator.free(msg);
-        const labels: []const diagnostic.Label = if (existing_span) |ex| blk: {
+        try self.addErrorMsgCodeWithPrevious(span, msg, .identifier_redeclared, previous_span);
+    }
+
+    /// 재선언 계열 에러 + "previously declared here" secondary label.
+    /// previous_span이 null이면 label 없이 기본 에러.
+    /// msg는 allocator 소유가 인계된다 (deinit에서 free).
+    fn addErrorMsgCodeWithPrevious(self: *SemanticAnalyzer, span: Span, msg: []const u8, code: ErrorCode, previous_span: ?Span) AllocError!void {
+        const labels: []const diagnostic.Label = if (previous_span) |ex| blk: {
             const buf = try self.allocator.alloc(diagnostic.Label, 1);
-            buf[0] = .{ .span = ex, .message = "previously declared here" };
+            buf[0] = .{ .span = ex, .message = diagnostic.PREVIOUSLY_DECLARED_HERE };
             break :blk buf;
         } else &.{};
         try self.errors.append(self.allocator, .{
             .span = span,
             .message = msg,
             .kind = .semantic,
-            .code = .identifier_redeclared,
+            .code = code,
             .labels = labels,
         });
     }
@@ -2133,8 +2135,9 @@ pub const SemanticAnalyzer = struct {
             const name = self.ast.getText(label_node.span);
 
             // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
-            if (self.findLabel(name) != null) {
-                try self.addErrorMsgCode(label_node.span, try std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}), .label_redeclared);
+            if (self.findLabel(name)) |existing| {
+                const msg = try std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name});
+                try self.addErrorMsgCodeWithPrevious(label_node.span, msg, .label_redeclared, existing.span);
             }
 
             // body가 loop인지 판별 (continue label에 필요)
@@ -2668,15 +2671,12 @@ pub const SemanticAnalyzer = struct {
     /// TS에서는 function overload, namespace merge 등으로 같은 이름의 export가 합법.
     fn registerExportedName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         if (!self.is_module) return;
-        if (self.exported_names.get(name)) |_| {
+        if (self.exported_names.get(name)) |previous_span| {
             // TS 모드: duplicate export 체크 스킵 (oxc: !is_typescript() 조건)
             // JS 모드에서만 에러
             if (!self.is_ts) {
-                try self.addErrorMsgCode(span, try std.fmt.allocPrint(
-                    self.allocator,
-                    "Duplicate export name '{s}'",
-                    .{name},
-                ), .duplicate_export);
+                const msg = try std.fmt.allocPrint(self.allocator, "Duplicate export name '{s}'", .{name});
+                try self.addErrorMsgCodeWithPrevious(span, msg, .duplicate_export, previous_span);
             }
         } else {
             try self.exported_names.put(name, span);
