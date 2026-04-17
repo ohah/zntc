@@ -810,6 +810,21 @@ pub const Transformer = struct {
                 return self.visitBinaryNode(node);
             },
             .assignment_expression => {
+                // Private field 좌변은 모든 assignment 연산자(=, +=, ??=, ||=, &&= ...)를
+                // lowerPrivateFieldSet 단일 경로에서 처리 — es2021/es2016 등은 좌변에
+                // `(a = b)` 패턴을 만들어 get()/helper call에 대입하게 되므로 먼저 가로챈다.
+                // (esbuild의 lowerAssign이나 SWC/Babel plugin 순서와 동일한 선점 패턴.)
+                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
+                    const left_idx = node.data.binary.left;
+                    if (!left_idx.isNone()) {
+                        const left_node = self.ast.getNode(left_idx);
+                        if (left_node.tag == .private_field_expression) {
+                            if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldSet(self, node)) |result| {
+                                return result;
+                            }
+                        }
+                    }
+                }
                 // ES 다운레벨링: **= → a = Math.pow(a, b) (es2016)
                 if (self.options.unsupported.exponentiation) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
@@ -826,18 +841,6 @@ pub const Transformer = struct {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .pipe2);
                     } else if (op == .amp2_eq) {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
-                    }
-                }
-                // ES2015/ES2022: this.#x = v → _x.set(this, v)
-                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
-                    const left_idx = node.data.binary.left;
-                    if (!left_idx.isNone()) {
-                        const left_node = self.ast.getNode(left_idx);
-                        if (left_node.tag == .private_field_expression) {
-                            if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldSet(self, node)) |result| {
-                                return result;
-                            }
-                        }
                     }
                 }
                 // ES2015: assignment destructuring → sequence expression

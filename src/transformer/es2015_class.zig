@@ -766,8 +766,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// compound assignment(+=, -=, *=, ... >>>=)을 base binary op으로 매핑.
-        /// 순수 대입(=) / 논리 대입(??=, ||=, &&=)은 null.
-        /// 논리 대입은 es2021 lowering에서 먼저 처리되거나 별도 이슈로 남김.
+        /// 순수 대입(=) / 논리 대입(??=, ||=, &&=)은 null — 논리 대입은 별도 경로에서 처리.
         fn compoundAssignBaseOp(op_flags: u16) ?u16 {
             const op: token_mod.Kind = @enumFromInt(op_flags);
             return switch (op) {
@@ -813,12 +812,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// this.#x = v → instance: _x.set(this, v), static: __classStaticPrivateFieldSpecSet(receiver, ClassName, _x, v)
         /// this.#x += v (및 다른 compound) → set(receiver, get(receiver) <op> v)
+        /// this.#x ??= v / ||= / &&= → get() <op> set(v) (Babel 스타일, short-circuit)
         pub fn lowerPrivateFieldSet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const left_node = self.ast.getNode(node.data.binary.left);
             const le = left_node.data.extra;
             if (le >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
             const mapping = findPrivateFieldMapping(self, self.readNodeIdx(le, 1)) orelse return null;
+
+            const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            if (op_kind == .question2_eq or op_kind == .pipe2_eq or op_kind == .amp2_eq) {
+                return lowerPrivateFieldLogicalAssign(self, mapping, obj_idx, op_kind, node.data.binary.right, node.span);
+            }
 
             if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
                 const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, node.span);
@@ -835,6 +840,47 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 return buildStaticPrivateFieldSet(self, mapping, obj_idx, node.data.binary.right, node.span);
             }
             return buildWeakMapCall(self, mapping.var_name, "set", obj_idx, &.{node.data.binary.right}, node.span);
+        }
+
+        /// `this.#x ??=/||=/&&= v` lowering.
+        /// private field get은 부작용 없으므로 ??= ternary 분기에서 get을 두 번 호출해도 안전.
+        /// set helper 반환값이 spec상 expression 값과 다를 수 있으나, statement context에선 무관.
+        fn lowerPrivateFieldLogicalAssign(
+            self: *Transformer,
+            mapping: Transformer.PrivateFieldMapping,
+            obj_idx: NodeIndex,
+            op_kind: token_mod.Kind,
+            rhs_old: NodeIndex,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const get_read = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
+            const new_rhs = try self.visitNode(rhs_old);
+            const set_call = try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, new_rhs, span);
+
+            if (op_kind == .pipe2_eq or op_kind == .amp2_eq) {
+                const logical_op: token_mod.Kind = if (op_kind == .pipe2_eq) .pipe2 else .amp2;
+                return self.ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(logical_op) } },
+                });
+            }
+
+            // ??= : nullish_coalescing 미지원 target이면 ternary, 아니면 `get ?? set`.
+            if (self.options.unsupported.nullish_coalescing) {
+                const neq_null = try es_helpers.makeNeqNull(self, get_read, span);
+                const get_read2 = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
+                return self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = span,
+                    .data = .{ .ternary = .{ .a = neq_null, .b = get_read2, .c = set_call } },
+                });
+            }
+            return self.ast.addNode(.{
+                .tag = .logical_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(token_mod.Kind.question2) } },
+            });
         }
 
         /// this.#x++ / --  →  _x.set(this, _x.get(this) + 1)  / - 1

@@ -25,6 +25,8 @@ pub fn ES2021(comptime Transformer: type) type {
     return struct {
         /// `a ??= b` → `a ?? (a = b)` (es2021→es2020)
         /// `a ??= b` → `a != null ? a : (a = b)` (→es2019)
+        /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨 —
+        /// private get/set이 함수 호출이라 여기서 만드는 `(a = b)` 패턴의 assignment target이 될 수 없음.
         pub fn lowerNullishAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
@@ -45,21 +47,7 @@ pub fn ES2021(comptime Transformer: type) type {
             if (self.options.unsupported.nullish_coalescing) {
                 const left_copy2 = try self.ast.addNode(self.ast.getNode(new_left));
                 self.copySymbolId(new_left, left_copy2);
-                const null_span = try self.ast.addString("null");
-                const null_node = try self.ast.addNode(.{
-                    .tag = .null_literal,
-                    .span = null_span,
-                    .data = .{ .none = 0 },
-                });
-                const neq_null = try self.ast.addNode(.{
-                    .tag = .binary_expression,
-                    .span = node.span,
-                    .data = .{ .binary = .{
-                        .left = new_left,
-                        .right = null_node,
-                        .flags = @intFromEnum(token_mod.Kind.neq),
-                    } },
-                });
+                const neq_null = try es_helpers.makeNeqNull(self, new_left, node.span);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
@@ -79,6 +67,7 @@ pub fn ES2021(comptime Transformer: type) type {
         }
 
         /// `a ||= b` → `a || (a = b)`, `a &&= b` → `a && (a = b)`
+        /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨.
         pub fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Transformer.Error!NodeIndex {
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
