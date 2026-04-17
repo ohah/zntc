@@ -90,9 +90,7 @@ const decodeFlags = transpile_mod.decodeFlags;
 
 /// 소스 코드를 트랜스파일한다.
 ///
-/// flags: 비트마스크 옵션 (decodeFlags 참고)
-/// unsupported: UnsupportedFeatures packed u32 (ES 다운레벨링 타겟)
-/// 문자열 옵션: jsx_factory, jsx_fragment, jsx_import_source, source_root (ptr+len 쌍)
+/// opts_json: TranspileOptionsDto JSON payload (ptr+len). camelCase 키. 빈 문자열이면 기본값.
 ///
 /// 반환값: packed u64 (상위 32비트: 포인터, 하위 32비트: 길이, 0=에러)
 export fn transpile(
@@ -100,16 +98,8 @@ export fn transpile(
     src_len: u32,
     file_ptr: u32,
     file_len: u32,
-    flags: u32,
-    unsupported: u32,
-    jsx_factory_ptr: u32,
-    jsx_factory_len: u32,
-    jsx_fragment_ptr: u32,
-    jsx_fragment_len: u32,
-    jsx_import_source_ptr: u32,
-    jsx_import_source_len: u32,
-    source_root_ptr: u32,
-    source_root_len: u32,
+    opts_json_ptr: u32,
+    opts_json_len: u32,
 ) u64 {
     clearError();
 
@@ -124,20 +114,20 @@ export fn transpile(
     else
         "input.ts";
 
-    var options = decodeFlags(flags);
+    // JSON 옵션 파싱은 arena에 위임 — 파싱 결과의 문자열 수명을 트랜스파일 끝까지 유지.
+    var opts_arena = std.heap.ArenaAllocator.init(wasm_alloc);
+    defer opts_arena.deinit();
+    const opts_alloc = opts_arena.allocator();
 
-    // UnsupportedFeatures는 packed struct(u32) — 직접 bitcast
-    options.unsupported = @bitCast(unsupported);
+    const opts_json: []const u8 = if (opts_json_ptr != 0 and opts_json_len > 0)
+        @as([*]const u8, @ptrFromInt(opts_json_ptr))[0..opts_json_len]
+    else
+        "{}";
 
-    // 문자열 옵션 (빈 문자열이면 기본값 유지)
-    const factory = readStr(jsx_factory_ptr, jsx_factory_len);
-    if (factory.len > 0) options.jsx_factory = factory;
-    const fragment = readStr(jsx_fragment_ptr, jsx_fragment_len);
-    if (fragment.len > 0) options.jsx_fragment = fragment;
-    const import_source = readStr(jsx_import_source_ptr, jsx_import_source_len);
-    if (import_source.len > 0) options.jsx_import_source = import_source;
-    const source_root = readStr(source_root_ptr, source_root_len);
-    if (source_root.len > 0) options.source_root = source_root;
+    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json) catch {
+        setError("invalid options JSON");
+        return 0;
+    };
 
     var result = transpile_mod.transpileWithCallback(wasm_alloc, source, file_path, options, &formatErrors) catch |err| {
         // formatErrors 콜백이 이미 상세 메시지를 last_error_buf에 저장했을 수 있음.

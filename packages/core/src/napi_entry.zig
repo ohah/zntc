@@ -81,24 +81,19 @@ fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) 
     return buf[0..actual];
 }
 
-fn getUint32Arg(env: c.napi_env, value: c.napi_value) u32 {
-    var val: u32 = 0;
-    _ = c.napi_get_value_uint32(env, value, &val);
-    return val;
-}
-
 // ─── transpile 함수 ───
 
-/// transpile(source, filename, flags, unsupported, jsxFactory, jsxFragment, jsxImportSource, sourceRoot)
+/// transpile(source, filename, optionsJson)
+/// optionsJson: TranspileOptionsDto JSON payload (camelCase 키)
 /// → { code: string, map?: string, errors?: string }
 fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
-    var argc: usize = 8;
-    var argv: [8]c.napi_value = undefined;
+    var argc: usize = 3;
+    var argv: [3]c.napi_value = undefined;
     if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
         return throwError(env, "failed to get arguments");
     }
-    if (argc < 4) {
-        return throwError(env, "transpile requires at least 4 arguments");
+    if (argc < 2) {
+        return throwError(env, "transpile requires at least 2 arguments (source, filename)");
     }
 
     // source (필수)
@@ -114,34 +109,15 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     };
     defer native_alloc.free(filename);
 
-    // flags, unsupported
-    const flags = getUint32Arg(env, argv[2]);
-    const unsupported = getUint32Arg(env, argv[3]);
+    // optionsJson (선택) + 파싱된 문자열의 수명을 위한 arena
+    var opts_arena = std.heap.ArenaAllocator.init(native_alloc);
+    defer opts_arena.deinit();
+    const opts_alloc = opts_arena.allocator();
 
-    // 선택적 문자열 옵션
-    const jsx_factory = if (argc > 4) getStringArg(env, argv[4], native_alloc) else null;
-    defer if (jsx_factory) |f| native_alloc.free(f);
-    const jsx_fragment = if (argc > 5) getStringArg(env, argv[5], native_alloc) else null;
-    defer if (jsx_fragment) |f| native_alloc.free(f);
-    const jsx_import_source = if (argc > 6) getStringArg(env, argv[6], native_alloc) else null;
-    defer if (jsx_import_source) |f| native_alloc.free(f);
-    const source_root = if (argc > 7) getStringArg(env, argv[7], native_alloc) else null;
-    defer if (source_root) |f| native_alloc.free(f);
+    const opts_json: []const u8 = if (argc > 2) (getStringArg(env, argv[2], opts_alloc) orelse "{}") else "{}";
 
-    // 옵션 구성
-    var options = transpile_mod.decodeFlags(flags);
-    options.unsupported = @bitCast(unsupported);
-    if (jsx_factory) |f| if (f.len > 0) {
-        options.jsx_factory = f;
-    };
-    if (jsx_fragment) |f| if (f.len > 0) {
-        options.jsx_fragment = f;
-    };
-    if (jsx_import_source) |f| if (f.len > 0) {
-        options.jsx_import_source = f;
-    };
-    if (source_root) |f| if (f.len > 0) {
-        options.source_root = f;
+    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json) catch {
+        return throwError(env, "invalid options JSON");
     };
 
     // 트랜스파일 실행
