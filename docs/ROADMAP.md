@@ -334,8 +334,8 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | **통합 테스트 확대** | L | 143 패키지 스모크만 | 실제 프로젝트(Next.js, Remix, Vite 앱)로 E2E 번들링 검증 |
 | **watch/serve 장시간 안정성** | M | 기본 동작 | 8시간+ watch 시 메모리 릭, 파일 잠금, OS 이벤트 누락 검증 |
 | ~~**에러 메시지 품질**~~ | ✅ | 완료 | ANSI 컬러 출력 + Levenshtein "did you mean?" 제안 (ansi.zig, levenshtein.zig) |
-| **source map 품질 검증** | S | V3 생성됨 | Chrome DevTools에서 원본 소스 정확 매핑 실제 검증 |
-| **Node.js 호환성 edge case** | M | 대부분 동작 | `__dirname`/`__filename` CJS 폴백, `import.meta.url` 정확성 |
+| ~~**source map 품질 검증**~~ | ✅ | 완료 | Playwright + CDP로 Chromium이 `sourceMappingURL`을 파싱하고 TS 파일명 breakpoint가 해석되는 E2E (`tests/e2e/tests/sourcemap-e2e.test.ts`) |
+| ~~**Node.js 호환성 edge case**~~ | ✅ | 완료 | `import.meta.{url,dirname,filename}` CJS/ESM 실행 검증, 심볼릭링크·상대경로 entry 번들 통합 테스트 (`tests/integration/tests/node-compat.test.ts`) |
 
 ### 2단계: CSS + 배포
 
