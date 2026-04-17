@@ -895,8 +895,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("6");
     });
 
-    // skip: ES5 generator 의 `yield*` delegate op 미구현 (일반 yield 로 변환됨) — #1470
-    test.skip("yield* delegate + return value", async () => {
+    test("yield* delegate + return value", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `

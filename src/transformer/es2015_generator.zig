@@ -67,6 +67,14 @@ const Operation = struct {
     arg: OpArg,
 };
 
+/// yield_expression / await_expression 노드를 대응되는 OpCode로 변환.
+/// yield* delegate는 `unary.flags & 1`로 식별된다 (parser에서 설정).
+/// await_expression은 always yield_op (delegate 의미 없음).
+fn yieldOpCodeFor(node: Node) OpCode {
+    if (node.tag == .yield_expression and (node.data.unary.flags & 1) != 0) return .yield_star;
+    return .yield_op;
+}
+
 pub fn ES2015Generator(comptime Transformer: type) type {
     return struct {
         /// generator function을 상태 머신으로 변환.
@@ -223,11 +231,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                     if (expr.tag == .yield_expression or expr.tag == .await_expression) {
                         const value_idx = expr.data.unary.operand;
-                        const is_delegate = if (expr.tag == .yield_expression) (expr.data.unary.flags & 1) != 0 else false;
                         const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
-                        // yield* → [5, iter], yield/await → [4, value]
-                        const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
-                        try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
+                        try ops.append(self.allocator, .{ .code = yieldOpCodeFor(expr), .arg = .{ .node = new_value } });
                         next_label.* += 1;
                         try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                         // _state.sent() — resume 시 throw된 에러를 발생시키기 위해 필수
@@ -276,9 +281,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             // return yield/await x → yield x + return _state.sent()
                             const inner_value = value_node.data.unary.operand;
                             const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
-                            const is_delegate = if (value_node.tag == .yield_expression) (value_node.data.unary.flags & 1) != 0 else false;
-                            const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
-                            try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_inner } });
+                            try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
                             next_label.* += 1;
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                             const sent = try buildSentCall(self, stmt.span);
@@ -1274,7 +1277,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // var x = yield/await value → yield value + x = _state.sent()
                     const yield_val = init_node.data.unary.operand;
                     const new_val = try visitExprWithYieldExtraction(self, yield_val, ops, next_label);
-                    try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_val } });
+                    try ops.append(self.allocator, .{ .code = yieldOpCodeFor(init_node), .arg = .{ .node = new_val } });
                     next_label.* += 1;
                     try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
@@ -1523,9 +1526,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try visitExprWithYieldExtraction(self, value_idx, ops, next_label)
                 else
                     NodeIndex.none;
-                const is_delegate = if (node.tag == .yield_expression) (node.data.unary.flags & 1) != 0 else false;
-                const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
-                try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(node), .arg = .{ .node = new_value } });
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 // temp 변수에 _state.sent() 결과 저장
@@ -1723,9 +1724,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // return await/yield x → yield x + return _state.sent()
                 const inner_value = body.data.unary.operand;
                 const new_inner = if (!inner_value.isNone()) try self.visitNode(inner_value) else NodeIndex.none;
-                const is_delegate = if (body.tag == .yield_expression) (body.data.unary.flags & 1) != 0 else false;
-                const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
-                ops_buf[0] = .{ .code = opcode, .arg = .{ .node = new_inner } };
+                ops_buf[0] = .{ .code = yieldOpCodeFor(body), .arg = .{ .node = new_inner } };
                 ops_buf[1] = .{ .code = .nop, .arg = .{ .none = {} } };
                 const sent = try buildSentCall(self, span);
                 ops_buf[2] = .{ .code = .return_op, .arg = .{ .node = sent } };
