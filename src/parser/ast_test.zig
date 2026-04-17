@@ -49,6 +49,60 @@ test "Ast node list" {
     try std.testing.expectEqual(@as(u32, 2), list.len);
 }
 
+test "containerSplitRest" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    const a = try ast.addNode(.{ .tag = .binding_identifier, .span = Span.EMPTY, .data = .{ .none = 0 } });
+    const b = try ast.addNode(.{ .tag = .binding_identifier, .span = Span.EMPTY, .data = .{ .none = 0 } });
+    const c = try ast.addNode(.{ .tag = .binding_identifier, .span = Span.EMPTY, .data = .{ .none = 0 } });
+    const rest = try ast.addNode(.{
+        .tag = .rest_element,
+        .span = Span.EMPTY,
+        .data = .{ .unary = .{ .operand = c, .flags = 0 } },
+    });
+
+    // case: [a, b, ...c] — rest가 마지막
+    const with_rest = try ast.addNodeList(&.{ a, b, rest });
+    const ap_with = try ast.addNode(.{ .tag = .array_pattern, .span = Span.EMPTY, .data = .{ .list = with_rest } });
+    const split_with = ast.containerSplitRest(ast.getNode(ap_with));
+    try std.testing.expect(split_with.rest_operand != null);
+    try std.testing.expectEqual(@intFromEnum(c), @intFromEnum(split_with.rest_operand.?));
+    try std.testing.expectEqual(@as(usize, 2), split_with.elements.len);
+
+    // case: [a, b] — rest 없음
+    const no_rest = try ast.addNodeList(&.{ a, b });
+    const ap_no = try ast.addNode(.{ .tag = .array_pattern, .span = Span.EMPTY, .data = .{ .list = no_rest } });
+    const split_no = ast.containerSplitRest(ast.getNode(ap_no));
+    try std.testing.expect(split_no.rest_operand == null);
+    try std.testing.expectEqual(@as(usize, 2), split_no.elements.len);
+
+    // case: 빈 패턴
+    const empty_list = try ast.addNodeList(&.{});
+    const ap_empty = try ast.addNode(.{ .tag = .array_pattern, .span = Span.EMPTY, .data = .{ .list = empty_list } });
+    const split_empty = ast.containerSplitRest(ast.getNode(ap_empty));
+    try std.testing.expect(split_empty.rest_operand == null);
+    try std.testing.expectEqual(@as(usize, 0), split_empty.elements.len);
+
+    // case: 컨테이너가 아닌 노드
+    const split_other = ast.containerSplitRest(ast.getNode(a));
+    try std.testing.expect(split_other.rest_operand == null);
+    try std.testing.expectEqual(@as(usize, 0), split_other.elements.len);
+
+    // case: assignment_target_rest (assignment context)
+    const at_rest = try ast.addNode(.{
+        .tag = .assignment_target_rest,
+        .span = Span.EMPTY,
+        .data = .{ .unary = .{ .operand = c, .flags = 0 } },
+    });
+    const at_list = try ast.addNodeList(&.{ a, at_rest });
+    const aat = try ast.addNode(.{ .tag = .array_assignment_target, .span = Span.EMPTY, .data = .{ .list = at_list } });
+    const split_aat = ast.containerSplitRest(ast.getNode(aat));
+    try std.testing.expect(split_aat.rest_operand != null);
+    try std.testing.expectEqual(@intFromEnum(c), @intFromEnum(split_aat.rest_operand.?));
+    try std.testing.expectEqual(@as(usize, 1), split_aat.elements.len);
+}
+
 test "Ast string_table: addString + getText" {
     var ast = Ast.init(std.testing.allocator, "hello world");
     defer ast.deinit();
