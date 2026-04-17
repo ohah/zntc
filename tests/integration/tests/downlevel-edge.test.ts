@@ -1845,6 +1845,92 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("10");
     });
+
+    // #1516: accessor(getter/setter) 와 private method 에도 유사 패턴 —
+    // 주석이 `function()` 뒤 / 파라미터 안 / 함수 body 앞 등 내부에 끼는 cosmetic 이슈.
+    // AccessorInfo.member_span / PrivateMethodMapping.member_span 전파로 올바른 위치 flush.
+    test("getter/setter 앞 주석 (#1516 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class A {
+              _v = 0;
+              // getter 앞 주석
+              get v() { return this._v; }
+              // setter 앞 주석
+              set v(x: number) { this._v = x * 2; }
+            }
+            const a = new A(); a.v = 5;
+            console.log(a.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("getter only + JSDoc 주석 (#1516 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              /**
+               * JSDoc for getter
+               */
+              get value() { return 42; }
+            }
+            console.log(new B().value);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("private method 앞 주석 (#1516 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              // private method 주석
+              #bar() { return 7; }
+              call() { return this.#bar(); }
+            }
+            console.log(new C().call());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("static getter + 주석 (#1516 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class D {
+              // static getter 주석
+              static get tag() { return "D"; }
+            }
+            console.log(D.tag);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("D");
+    });
   });
 
   describe("TS-specific", () => {

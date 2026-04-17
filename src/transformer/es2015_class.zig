@@ -136,7 +136,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             for (cm.private_methods.items) |pm| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
             }
 
             try appendPrivateFieldInits(self, &cm, span);
@@ -426,7 +426,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             for (cm.private_methods.items) |pm| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
             }
 
             try self.scratch.append(self.allocator, func_node);
@@ -1192,6 +1192,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             member_idx: NodeIndex,
             is_static: bool,
             is_getter: bool,
+            // `Object.defineProperty(...)` statement 및 get/set prop 의 span 으로 사용 —
+            // leading comment 가 `function()` 뒤나 파라미터 안이 아니라 accessor 앞에서 flush 되도록 (#1516).
+            member_span: Span,
         };
 
         const PrivateFieldInfo = struct {
@@ -1336,6 +1339,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                                 .original_name = orig_name,
                                 .weakset_name = names.ws_name,
                                 .func_name = names.fn_name,
+                                .member_span = member.span,
                             });
                             continue;
                         }
@@ -1346,6 +1350,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             .member_idx = @enumFromInt(raw_idx),
                             .is_static = is_static,
                             .is_getter = kind == 1,
+                            .member_span = member.span,
                         });
                     } else {
                         try cm.methods.append(self.allocator, .{
@@ -1479,6 +1484,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .member_idx = getter_idx,
                 .is_static = is_static,
                 .is_getter = true,
+                // 동일 accessor_property 에서 파생된 getter/setter 는 같은 원본 span 공유 —
+                // 둘이 paired 로 emit 되어 첫 번째(getter) 의 member_span 에서 한 번만 comment flush.
+                .member_span = member.span,
             });
 
             const setter_idx = try buildAccessorSetter(self, key_node.span, storage_span, is_static, span);
@@ -1486,6 +1494,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .member_idx = setter_idx,
                 .is_static = is_static,
                 .is_getter = false,
+                .member_span = member.span,
             });
         }
 
@@ -2246,7 +2255,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
-                    .span = span,
+                    .span = info.member_span,
                     .data = .{ .binary = .{ .left = accessor_key, .right = func_expr, .flags = 0 } },
                 });
 
@@ -2266,7 +2275,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         const pair_key = try es_helpers.makeIdentifierRef(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,
-                            .span = span,
+                            .span = next.member_span,
                             .data = .{ .binary = .{ .left = pair_key, .right = pair_func, .flags = 0 } },
                         });
                         break;
@@ -2328,7 +2337,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const call = try es_helpers.makeCallExpr(self, dp_callee, &.{ target, key_str, desc_obj }, span);
                 const stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
-                    .span = span,
+                    .span = info.member_span,
                     .data = .{ .unary = .{ .operand = call, .flags = 0 } },
                 });
                 try self.pending_nodes.append(self.allocator, stmt);

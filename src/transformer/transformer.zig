@@ -394,6 +394,9 @@ pub const Transformer = struct {
         weakset_name: []const u8, // "_method" (WeakSet 변수명)
         func_name: []const u8, // "_method_fn" (추출 함수명)
         member_idx: NodeIndex = NodeIndex.none, // method_definition 노드 (ES2015 경로에서 사용)
+        // standalone function_declaration 의 span 으로 사용 — leading comment 가
+        // `function _fn()` 뒤가 아니라 함수 앞에서 flush 되도록 (#1516).
+        member_span: Span = .{ .start = 0, .end = 0 },
     };
 
     // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.
