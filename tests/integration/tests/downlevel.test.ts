@@ -1646,17 +1646,20 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     // --- SWC 대비 추가 테스트: Computed Properties ---
 
     test("computed property with getter and setter", async () => {
+      // 회귀 가드(#1397): getter/setter가 drop되지 않고 실제 accessor로 호출되는지 검증.
+      // 이전엔 get/set이 Phase 2에서 skip돼 obj.val=42가 data property로 새로 생성되어 통과했음.
       const result = await bundleAndRun(
         {
           "index.ts": `
             const k = 'val';
+            let hits = 0;
             const obj: any = {
               _v: 0,
-              get [k]() { return this._v; },
-              set [k](v: number) { this._v = v; }
+              get [k]() { hits++; return this._v; },
+              set [k](v: number) { hits++; this._v = v; }
             };
             obj.val = 42;
-            console.log(obj.val);
+            console.log(obj.val, hits);
           `,
         },
         "index.ts",
@@ -1664,7 +1667,68 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe("42");
+      expect(result.runOutput).toBe("42 2");
+    });
+
+    test("#1397: data-computed key + getter/setter after — accessors preserved", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = 'y';
+            let hits = 0;
+            const obj: any = { _v: 0, [k]: 1, get x() { hits++; return this._v; }, set x(v: number) { hits++; this._v = v; } };
+            obj.x = 42;
+            console.log(obj.x, hits, obj.y);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42 2 1");
+    });
+
+    test("#1397: computed-getter-only triggers lowering", async () => {
+      // getter/setter만 있고 일반 method/data-computed가 없을 때도 computed accessor key 때문에 lowering 필요.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = 'y';
+            let hits = 0;
+            const obj: any = { _v: 5, get [k]() { hits++; return this._v; } };
+            console.log(obj.y, hits);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5 1");
+    });
+
+    test("#1397: computed-method + non-computed getter (mixed)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = 'compMethod';
+            let callOrder: string[] = [];
+            const obj: any = {
+              [k]() { callOrder.push('m'); return 10; },
+              get p() { callOrder.push('g'); return 20; },
+            };
+            const a = obj.compMethod();
+            const b = obj.p;
+            console.log(a, b, callOrder.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10 20 m,g");
     });
 
     test("multiple computed properties in one object", async () => {
