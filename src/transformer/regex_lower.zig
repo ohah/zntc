@@ -214,6 +214,111 @@ fn rewritePattern(
     }
 }
 
+/// `String.prototype.replace` replacement string 의 `$<name>` 변환을 위한 매핑 항목.
+/// 같은 walk 로 named group 인덱스를 추적해 외부에 노출한다.
+pub const NamedGroupMapping = struct {
+    name: []const u8, // pattern 내부 원본 슬라이스 (수명: pattern 원본)
+    index: u32, // 1-based capture group 인덱스
+};
+
+/// pattern 을 한 번 순회하며 named group 의 (name, capture index) 매핑을 추출.
+/// 비-capture / lookahead / lookbehind 는 capture index 를 차지하지 않는다.
+/// 호출자는 반환 슬라이스를 free 해야 한다.
+pub fn extractNamedGroupMap(allocator: std.mem.Allocator, pattern: []const u8) ![]const NamedGroupMapping {
+    var out: std.ArrayList(NamedGroupMapping) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    var in_class: bool = false;
+    var group_idx: u32 = 0;
+    while (i < pattern.len) {
+        const c = pattern[i];
+        if (c == '\\') {
+            i += if (i + 1 < pattern.len) 2 else 1;
+            continue;
+        }
+        if (in_class) {
+            if (c == ']') in_class = false;
+            i += 1;
+            continue;
+        }
+        if (c == '[') {
+            in_class = true;
+            i += 1;
+            continue;
+        }
+        if (c != '(') {
+            i += 1;
+            continue;
+        }
+        if (i + 2 < pattern.len and pattern[i + 1] == '?') {
+            const tag = pattern[i + 2];
+            if (tag == ':' or tag == '=' or tag == '!') {
+                i += 1;
+                continue;
+            }
+            if (tag == '<') {
+                if (i + 3 < pattern.len and (pattern[i + 3] == '=' or pattern[i + 3] == '!')) {
+                    i += 1;
+                    continue;
+                }
+                group_idx += 1;
+                if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
+                    try out.append(allocator, .{ .name = pattern[i + 3 .. gt], .index = group_idx });
+                    i = gt + 1;
+                    continue;
+                }
+            }
+        }
+        group_idx += 1;
+        i += 1;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// `String.prototype.replace` replacement 의 `$<name>` 을 `$N` (positional)으로 치환.
+/// 변환된 부분이 하나도 없으면 null (호출자는 원본 그대로 사용).
+/// `$$`, `$&`, `$\``, `$'`, `$N` 은 그대로 보존.
+pub fn rewriteReplacementNamedRefs(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    mapping: []const NamedGroupMapping,
+) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var changed = false;
+    var i: usize = 0;
+    while (i < content.len) {
+        if (content[i] == '$' and i + 2 < content.len and content[i + 1] == '<') {
+            if (std.mem.indexOfScalarPos(u8, content, i + 2, '>')) |gt| {
+                const name = content[i + 2 .. gt];
+                var found_idx: ?u32 = null;
+                for (mapping) |m| {
+                    if (std.mem.eql(u8, m.name, name)) {
+                        found_idx = m.index;
+                        break;
+                    }
+                }
+                if (found_idx) |idx| {
+                    var buf: [16]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "${d}", .{idx}) catch unreachable;
+                    try out.appendSlice(allocator, s);
+                    i = gt + 1;
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        try out.append(allocator, content[i]);
+        i += 1;
+    }
+    if (!changed) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 /// pattern에 `(?<name>...)` (lookbehind 제외) 가 있는지 스캔.
 fn hasNamedGroup(pattern: []const u8) bool {
     var i: usize = 0;

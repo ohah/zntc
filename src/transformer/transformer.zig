@@ -3446,6 +3446,24 @@ pub const Transformer = struct {
         const args_start = self.readU32(e, 1);
         const args_len = self.readU32(e, 2);
         const flags = self.readU32(e, 3);
+
+        // String.{replace,replaceAll} 의 replacement string 안 `$<name>` → `$N` 변환.
+        // regex_lower 가 named group 을 strip하면 인덱스 매핑이 깨져 replacement 가 매칭 실패하므로,
+        // literal regex + literal string 조합에 한해 replacement 도 함께 변환한다.
+        if (self.options.unsupported.regex_named_groups and args_len == 2) {
+            if (try self.tryRewriteReplaceNamedRefs(callee_idx, args_start)) |rewritten_args| {
+                const new_callee = try self.visitNode(callee_idx);
+                const new_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(new_callee), rewritten_args.start, rewritten_args.len, flags,
+                });
+                return self.ast.addNode(.{
+                    .tag = .call_expression,
+                    .span = node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            }
+        }
+
         const new_callee = try self.visitNode(callee_idx);
 
         // Auto-workletization: callee 이름이 플러그인 목록에 매칭되면
@@ -3464,6 +3482,56 @@ pub const Transformer = struct {
             .span = node.span,
             .data = .{ .extra = new_extra },
         });
+    }
+
+    /// `x.replace(/.../u, "...$<n>...")` 패턴 매칭 + replacement string 변환.
+    /// 매칭 실패 (callee 형태 다름, regex가 dynamic, replacement가 literal 아님 등) 시 null.
+    fn tryRewriteReplaceNamedRefs(self: *Transformer, callee_idx: NodeIndex, args_start: u32) Error!?ast_mod.NodeList {
+        const callee = self.ast.getNode(callee_idx);
+        if (callee.tag != .static_member_expression) return null;
+        const ce = callee.data.extra;
+        if (ce + 1 >= self.ast.extra_data.items.len) return null;
+        const prop_idx = self.readNodeIdx(ce, 1);
+        const prop = self.ast.getNode(prop_idx);
+        if (prop.tag != .identifier_reference) return null;
+        const prop_name = self.ast.getText(prop.span);
+        if (!std.mem.eql(u8, prop_name, "replace") and !std.mem.eql(u8, prop_name, "replaceAll")) return null;
+
+        const arg0_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+        const arg1_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start + 1]);
+        const arg0 = self.ast.getNode(arg0_idx);
+        const arg1 = self.ast.getNode(arg1_idx);
+        if (arg0.tag != .regexp_literal or arg1.tag != .string_literal) return null;
+
+        const raw = self.ast.getText(arg0.span);
+        if (raw.len < 3 or raw[0] != '/') return null;
+        const last_slash = std.mem.lastIndexOfScalar(u8, raw, '/') orelse return null;
+        if (last_slash == 0) return null;
+        const pattern = raw[1..last_slash];
+
+        const mapping = try regex_lower.extractNamedGroupMap(self.allocator, pattern);
+        defer self.allocator.free(mapping);
+        if (mapping.len == 0) return null;
+
+        const replace_raw = self.ast.getText(arg1.data.string_ref);
+        if (replace_raw.len < 2) return null;
+        const quote = replace_raw[0];
+        if (quote != '"' and quote != '\'') return null;
+        const content = replace_raw[1 .. replace_raw.len - 1];
+
+        const new_content = (try regex_lower.rewriteReplacementNamedRefs(self.allocator, content, mapping)) orelse return null;
+        defer self.allocator.free(new_content);
+
+        const new_raw = try std.fmt.allocPrint(self.allocator, "{c}{s}{c}", .{ quote, new_content, quote });
+        defer self.allocator.free(new_raw);
+        const new_span = try self.ast.addString(new_raw);
+        const new_str_node = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = new_span,
+            .data = .{ .string_ref = new_span },
+        });
+        const new_arg0 = try self.visitNode(arg0_idx);
+        return self.ast.addNodeList(&[_]NodeIndex{ new_arg0, new_str_node }) catch return Error.OutOfMemory;
     }
 
     /// new_expression: extra = [callee, args_start, args_len, flags]
