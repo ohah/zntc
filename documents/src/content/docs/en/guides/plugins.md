@@ -5,7 +5,7 @@ description: Learn how to use the ZTS plugin system.
 
 ## Overview
 
-ZTS provides a Rollup/Vite-compatible plugin interface. Plugins are written in JS/TS and communicate via subprocess JSON IPC.
+ZTS provides a Rollup/Vite-compatible plugin interface. Plugins are written in JS/TS and run in-process via C NAPI (via `@zts/core`).
 
 ## Config File
 
@@ -13,7 +13,7 @@ Create a `zts.config.ts` (or `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`) at the proje
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 
 export default defineConfig({
   plugins: [
@@ -110,7 +110,7 @@ Called after bundle generation is complete.
 ## Build API
 
 ```typescript
-import { build } from "@zts/plugin";
+import { build } from "@zts/core";
 
 const result = await build({
   entryPoints: ["src/index.ts"],

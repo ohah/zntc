@@ -49,7 +49,7 @@ await esbuild.build({
 });
 
 // ZTS — almost identical
-import { build } from '@zts/plugin';
+import { build } from '@zts/core';
 await build({
   entryPoints: ['src/index.ts'],
   bundle: true,
@@ -144,7 +144,7 @@ Vite/Rollup plugin hooks (`resolveId`, `load`, `transform`) work identically in 
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from '@zts/plugin';
+import { defineConfig } from '@zts/core';
 
 export default defineConfig({
   plugins: [

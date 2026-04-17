@@ -15,7 +15,7 @@ npm install lightningcss
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { transform, bundleAsync } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -58,7 +58,7 @@ Process CSS Modules with Lightning CSS to hash class names.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { transformStyleAttribute, transform } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -112,7 +112,7 @@ npm install postcss tailwindcss @tailwindcss/postcss
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { readFileSync } from "fs";
@@ -147,7 +147,7 @@ Convert SVG files to React components.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -195,7 +195,7 @@ npm install yaml
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { parse } from "yaml";
 import { readFileSync } from "fs";
 
@@ -222,7 +222,7 @@ Import `.graphql` / `.gql` files as strings.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -247,7 +247,7 @@ Inject `.env` values at build time.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 import { readFileSync, existsSync } from "fs";
 
 function loadEnv(path = ".env"): Record<string, string> {
@@ -291,7 +291,7 @@ Inject runtime info as a virtual module.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 
 export default defineConfig({
   plugins: [

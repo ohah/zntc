@@ -92,18 +92,18 @@ const result3 = await build({
 });
 ```
 
-## JS Plugin API (subprocess 방식)
+## JS Build API (NAPI, in-process)
 
-```bash
-bun add @zts/plugin
-```
+`@zts/core`의 `build()` / `buildSync()` / `watch()` 를 사용해 Node.js/Bun 안에서 직접 번들링:
 
 ```typescript
-import { build } from "@zts/plugin";
+import { init, build } from "@zts/core";
+init();
 
 const result = await build({
   entryPoints: ["src/index.ts"],
   outdir: "dist",
   bundle: true,
+  plugins: [/* Vite/Rollup 스타일 훅 */],
 });
 ```

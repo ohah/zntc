@@ -34,7 +34,6 @@ pub const bundler_core = @import("bundler.zig");
 pub const mpsc_channel = @import("mpsc_channel.zig");
 pub const json_to_esm = @import("json_to_esm.zig");
 pub const plugin = @import("plugin.zig");
-pub const subprocess_plugin = @import("subprocess_plugin.zig");
 pub const module_store = @import("module_store.zig");
 pub const css_scanner = @import("css_scanner.zig");
 pub const css_emitter = @import("css_emitter.zig");
@@ -71,7 +70,6 @@ pub const RN_DEFAULT_ASSET_REGISTRY = bundler_core.RN_DEFAULT_ASSET_REGISTRY;
 pub const RN_DEFAULT_BLOCK_LIST = bundler_core.RN_DEFAULT_BLOCK_LIST;
 pub const Plugin = plugin.Plugin;
 pub const PluginRunner = plugin.PluginRunner;
-pub const SubprocessPlugin = subprocess_plugin.SubprocessPlugin;
 pub const PersistentModuleStore = module_store.PersistentModuleStore;
 pub const SymbolId = symbol.SymbolId;
 pub const SymbolRef = symbol.SymbolRef;
@@ -98,7 +96,6 @@ test {
     _ = runtime_helpers;
     _ = bundler_core;
     _ = plugin;
-    _ = subprocess_plugin;
     _ = module_store;
     _ = symbol;
 

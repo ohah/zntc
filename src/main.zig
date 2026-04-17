@@ -11,7 +11,6 @@ const runner = lib.test262.runner;
 const Bundler = lib.bundler.Bundler;
 const BundleOptions = lib.bundler.BundleOptions;
 const emitter = lib.bundler.emitter;
-const SubprocessPlugin = lib.bundler.SubprocessPlugin;
 const plugin_mod = lib.bundler.plugin;
 
 /// Bun 스타일 crash report: panic 발생 시 배너 + 이슈 URL 출력 후 기본 경로로 abort.
@@ -110,7 +109,6 @@ const CliOptions = struct {
     global_identifier_list: std.ArrayList([]const u8) = .empty,
     keep_names: bool = false,
     shim_missing_exports: bool = false,
-    plugin_paths: std.ArrayList([]const u8) = .empty,
     proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
     /// Flow 모드 강제 활성화. @flow pragma 없이도 .js/.jsx를 Flow로 파싱한다.
     flow: bool = false,
@@ -217,7 +215,6 @@ const CliOptions = struct {
         for (self.polyfill_list.items) |p| alloc.free(p);
         self.polyfill_list.deinit(alloc);
         self.global_identifier_list.deinit(alloc);
-        self.plugin_paths.deinit(alloc);
         self.proxy_list.deinit(alloc);
         self.resolve_extensions_list.deinit(alloc);
         self.main_fields_list.deinit(alloc);
@@ -710,14 +707,6 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: --jobs requires a number: {s}\n", .{val});
                 std.process.exit(1);
             };
-        } else if (std.mem.eql(u8, arg, "--plugin")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                try opts.plugin_paths.append(allocator, args[i]);
-            } else {
-                try stderr.print("zts: --plugin requires a file path\n", .{});
-                std.process.exit(1);
-            }
         } else if (std.mem.startsWith(u8, arg, "--inject:") or
             std.mem.startsWith(u8, arg, "--run-before-main=") or
             std.mem.startsWith(u8, arg, "--polyfill="))
@@ -1128,21 +1117,6 @@ pub fn main() !void {
         .target = if (opts.es_target) |t| @tagName(t) else null,
     });
 
-    // zts.config.{js,ts,mjs,mts,cjs,cts} 자동 탐색 (--plugin 미지정 시)
-    if (opts.plugin_paths.items.len == 0 and (opts.is_bundle or opts.is_serve)) {
-        const config_names = [_][]const u8{
-            "zts.config.ts",  "zts.config.js",  "zts.config.mts",
-            "zts.config.mjs", "zts.config.cts", "zts.config.cjs",
-        };
-        for (&config_names) |name| {
-            if (std.fs.cwd().statFile(name)) |_| {
-                try opts.plugin_paths.append(allocator, name);
-                try stderr.print("[zts] Using config: {s}\n", .{name});
-                break;
-            } else |_| {}
-        }
-    }
-
     // --test262
     if (opts.is_test262) {
         const dir_path = opts.test262_dir orelse {
@@ -1197,47 +1171,13 @@ pub fn main() !void {
             };
         } else null;
 
-        // Subprocess 플러그인 spawn (--serve + --plugin)
-        var serve_subprocess_list: std.ArrayList(*SubprocessPlugin) = .empty;
-        defer {
-            for (serve_subprocess_list.items) |sp| sp.shutdown();
-            serve_subprocess_list.deinit(allocator);
-        }
-        var serve_plugin_list: std.ArrayList(plugin_mod.Plugin) = .empty;
-        defer serve_plugin_list.deinit(allocator);
-
-        for (opts.plugin_paths.items) |config_path| {
-            const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
-                try stderr.print("zts: plugin '{s}' spawn failed: {}\n", .{ config_path, err });
-                std.process.exit(1);
-            };
-            try serve_subprocess_list.append(allocator, sp);
-            try serve_plugin_list.append(allocator, sp.toPlugin());
-        }
-
-        // config 파일의 server 옵션 적용 (CLI가 우선)
-        if (serve_subprocess_list.items.len > 0) {
-            const sp = serve_subprocess_list.items[0];
-            if (sp.config.server) |srv| {
-                if (opts.serve_port == 12300) { // CLI 기본값이면 config 사용
-                    if (srv.port) |p| opts.serve_port = p;
-                }
-                if (std.mem.eql(u8, opts.serve_host, "localhost")) {
-                    if (srv.host) |h| opts.serve_host = h;
-                }
-                if (!opts.serve_open) {
-                    if (srv.open) |o| opts.serve_open = o;
-                }
-            }
-        }
-
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
             .port = opts.serve_port,
             .host = opts.serve_host,
             .open = opts.serve_open,
             .entry_point = entry,
-            .plugins = serve_plugin_list.items,
+            .plugins = &[_]plugin_mod.Plugin{},
             .proxy = opts.proxy_list.items,
         }) catch |err| {
             try stderr.print("zts: failed to start dev server: {}\n", .{err});
@@ -1342,23 +1282,9 @@ pub fn main() !void {
             opts.preserve_modules_root = resolved_pm_root;
         }
 
-        // Subprocess 플러그인 spawn (--plugin 옵션이 있을 때)
-        var subprocess_list: std.ArrayList(*SubprocessPlugin) = .empty;
-        defer {
-            for (subprocess_list.items) |sp| sp.shutdown();
-            subprocess_list.deinit(allocator);
-        }
-        var plugin_list: std.ArrayList(plugin_mod.Plugin) = .empty;
-        defer plugin_list.deinit(allocator);
-
-        for (opts.plugin_paths.items) |config_path| {
-            const sp = SubprocessPlugin.spawn(allocator, config_path) catch {
-                try stderr.print("zts: failed to load plugin '{s}'\n", .{config_path});
-                std.process.exit(1);
-            };
-            try subprocess_list.append(allocator, sp);
-            try plugin_list.append(allocator, sp.toPlugin());
-        }
+        // JS 플러그인은 @zts/core NAPI 경로(packages/core/bin/zts.mjs)에서만 지원.
+        // Zig 독립 바이너리는 builtin 플러그인(worklet 등)만 사용.
+        const plugin_list_items = &[_]plugin_mod.Plugin{};
 
         // --rn-platform은 --platform=react-native와 함께 사용해야 한다
         if (opts.rn_platform != .none and opts.platform != .react_native) {
@@ -1473,7 +1399,7 @@ pub fn main() !void {
         try entries_list.appendSlice(allocator, entries_extras.items);
 
         // BundleOptions를 변수로 추출 — 초기 번들과 watch 재번들에서 재사용
-        var bundle_opts: BundleOptions = .{
+        const bundle_opts: BundleOptions = .{
             .entry_points = entries_list.items,
             .format = opts.bundle_format,
             .platform = opts.platform,
@@ -1515,7 +1441,7 @@ pub fn main() !void {
             .global_identifiers = opts.global_identifier_list.items,
             .keep_names = opts.keep_names,
             .shim_missing_exports = opts.shim_missing_exports,
-            .plugins = plugin_list.items,
+            .plugins = plugin_list_items,
             .max_threads = opts.max_threads,
             .flow = opts.flow,
             .jsx_in_js = opts.jsx_in_js,
@@ -1548,138 +1474,6 @@ pub fn main() !void {
             .root_dir = if (opts.dev or opts.sourcemap) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
         };
         defer if (bundle_opts.root_dir) |rd| allocator.free(rd);
-
-        // config 파일 옵션 적용 — 첫 번째 플러그인의 config만 사용 (CLI가 우선)
-        if (subprocess_list.items.len > 0) {
-            const sp = subprocess_list.items[0];
-            // loader
-            if (opts.loader_list.items.len == 0) {
-                const config_loaders = sp.getLoaderOverrides(allocator) catch &.{};
-                if (config_loaders.len > 0) bundle_opts.loader_overrides = config_loaders;
-            }
-            // external
-            if (opts.external_list.items.len == 0) {
-                const config_ext = sp.getExternals();
-                if (config_ext.len > 0) bundle_opts.external = config_ext;
-            }
-            // define: config의 define을 CLI/자동 define에 병합 (중복 키는 CLI 우선)
-            {
-                const config_defines = sp.getDefines(allocator) catch &.{};
-                for (config_defines) |cd| {
-                    var exists = false;
-                    for (opts.define_list.items) |d| {
-                        if (std.mem.eql(u8, d.key, cd.key)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) try opts.define_list.append(allocator, cd);
-                }
-                bundle_opts.define = opts.define_list.items;
-            }
-            // alias (기존 미적용 → 수정)
-            if (opts.alias_list.items.len == 0) {
-                const config_aliases = sp.getAliases(allocator) catch &.{};
-                if (config_aliases.len > 0) bundle_opts.alias = config_aliases;
-            }
-            // sourcemap
-            if (!opts.sourcemap) {
-                if (sp.config.sourcemap) |sm| if (sm) {
-                    opts.sourcemap = true;
-                };
-            }
-            // minify
-            if (!opts.minify_whitespace and !opts.minify_syntax) {
-                if (sp.config.minify) |m| if (m) {
-                    bundle_opts.minify_whitespace = true;
-                    bundle_opts.minify_syntax = true;
-                };
-            }
-            // format
-            if (!opts.bundle_format_explicit) {
-                if (sp.config.format) |fmt| {
-                    if (std.meta.stringToEnum(emitter.EmitOptions.Format, fmt)) |f| {
-                        bundle_opts.format = f;
-                    }
-                }
-            }
-            // platform
-            if (sp.config.platform) |plat| {
-                if (opts.platform == .browser) { // CLI 기본값이면 config 적용
-                    if (std.mem.eql(u8, plat, "node")) {
-                        bundle_opts.platform = .node;
-                    } else if (std.mem.eql(u8, plat, "neutral")) {
-                        bundle_opts.platform = .neutral;
-                    }
-                }
-            }
-            // splitting
-            if (!opts.splitting) {
-                if (sp.config.splitting) |s| if (s) {
-                    bundle_opts.code_splitting = true;
-                };
-            }
-            // preserveModules
-            if (!opts.preserve_modules) {
-                if (sp.config.preserveModules) |pm| if (pm) {
-                    bundle_opts.preserve_modules = true;
-                };
-                if (sp.config.preserveModulesRoot) |pmr| {
-                    bundle_opts.preserve_modules_root = pmr;
-                }
-            }
-            // jsx
-            if (opts.jsx_runtime == null) {
-                if (sp.config.jsx) |jsx_mode| {
-                    if (std.mem.eql(u8, jsx_mode, "automatic")) {
-                        bundle_opts.jsx_runtime = .automatic;
-                    } else if (std.mem.eql(u8, jsx_mode, "automatic-dev")) {
-                        bundle_opts.jsx_runtime = .automatic_dev;
-                    } else if (std.mem.eql(u8, jsx_mode, "classic")) {
-                        bundle_opts.jsx_runtime = .classic;
-                    }
-                }
-            }
-            if (sp.config.jsxFactory) |f| bundle_opts.jsx_factory = f;
-            if (sp.config.jsxFragment) |f| bundle_opts.jsx_fragment = f;
-            if (sp.config.jsxImportSource) |s| bundle_opts.jsx_import_source = s;
-            // banner/footer
-            if (opts.banner_js == null) {
-                if (sp.getBannerJs()) |b| bundle_opts.banner_js = b;
-            }
-            if (opts.footer_js == null) {
-                if (sp.getFooterJs()) |f| bundle_opts.footer_js = f;
-            }
-            // publicPath
-            if (opts.public_path == null) {
-                if (sp.config.publicPath) |pp| bundle_opts.public_path = pp;
-            }
-            // inject
-            if (opts.inject_list.items.len == 0) {
-                const config_inject = sp.getInject();
-                if (config_inject.len > 0) bundle_opts.inject = config_inject;
-            }
-            // globalName
-            if (opts.global_name == null) {
-                if (sp.config.globalName) |gn| bundle_opts.global_name = gn;
-            }
-            // keepNames
-            if (!opts.keep_names) {
-                if (sp.config.keepNames) |kn| if (kn) {
-                    bundle_opts.keep_names = true;
-                };
-            }
-            // legalComments
-            if (sp.config.legalComments) |lc| {
-                if (std.mem.eql(u8, lc, "none")) {
-                    bundle_opts.legal_comments = .none;
-                } else if (std.mem.eql(u8, lc, "inline")) {
-                    bundle_opts.legal_comments = .@"inline";
-                } else if (std.mem.eql(u8, lc, "eof")) {
-                    bundle_opts.legal_comments = .eof;
-                }
-            }
-        }
 
         // watch + dev: 초기 빌드에서도 module_codes 수집 (HMR 캐시 초기화용)
         var initial_opts = bundle_opts;
@@ -1897,15 +1691,6 @@ pub fn main() !void {
                 };
             }
 
-            // config 파일도 감시 대상에 추가
-            for (opts.plugin_paths.items) |config_path| {
-                const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
-                const config_mt = getFileMtime(abs_config) catch 0;
-                mtime_map.put(abs_config, config_mt) catch {
-                    allocator.free(abs_config);
-                };
-            }
-
             if (opts.watch_json) {
                 try stdout.print("{{\"type\":\"ready\",\"files\":{d},\"bytes\":{d}}}\n", .{ mtime_map.count(), initial_bytes });
             } else {
@@ -1917,7 +1702,6 @@ pub fn main() !void {
 
                 // mtime 변경 확인 + 변경 파일 수집
                 var changed = false;
-                var config_changed = false;
                 var changed_files: std.ArrayList([]const u8) = .empty;
                 defer changed_files.deinit(allocator);
 
@@ -1931,38 +1715,10 @@ pub fn main() !void {
                         entry.value_ptr.* = current_mtime;
                         changed = true;
                         changed_files.append(allocator, entry.key_ptr.*) catch {};
-                        // config 파일이 변경되었는지 확인
-                        for (opts.plugin_paths.items) |config_path| {
-                            const abs_config = std.fs.cwd().realpathAlloc(allocator, config_path) catch continue;
-                            defer allocator.free(abs_config);
-                            if (std.mem.eql(u8, entry.key_ptr.*, abs_config)) {
-                                config_changed = true;
-                                break;
-                            }
-                        }
                     }
                 }
 
                 if (!changed) continue;
-
-                // config 변경 시 플러그인 프로세스 재시작
-                if (config_changed) {
-                    try stderr.print("[watch] Config changed, restarting plugins...\n", .{});
-                    for (subprocess_list.items) |sp| sp.shutdown();
-                    subprocess_list.clearRetainingCapacity();
-                    plugin_list.clearRetainingCapacity();
-
-                    for (opts.plugin_paths.items) |config_path| {
-                        const sp = SubprocessPlugin.spawn(allocator, config_path) catch |err| {
-                            try stderr.print("[watch] Plugin restart failed: {}\n", .{err});
-                            continue;
-                        };
-                        try subprocess_list.append(allocator, sp);
-                        try plugin_list.append(allocator, sp.toPlugin());
-                    }
-                    // bundle_opts의 plugins를 갱신
-                    bundle_opts.plugins = plugin_list.items;
-                }
 
                 // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
                 // dev mode rebuild에서만 module_codes 수집 (HMR용). 초기 빌드는 false (메모리 절감).

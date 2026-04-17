@@ -84,25 +84,16 @@ CJS 래핑 등
 ### 1단계: Zig Builtin 플러그인 ✅ 완료 (PR #521)
 - Plugin struct (context + 5개 훅 함수 포인터) + PluginRunner
 - 파이프라인 5곳에 훅 삽입 (resolver → graph → emitter → bundler)
-- context: ?*anyopaque로 subprocess 플러그인 상태 전달 지원 (PR #522)
+- 내부 플러그인 전용 (worklet, refresh 등)
 
-### 2단계: JS 플러그인 — subprocess 방식 ✅ 완료 (PR #523, #524, #525)
-- SubprocessPlugin: Node.js child process spawn + stdin/stdout JSON IPC
-- @zts/plugin npm 패키지: definePlugin(), build.onResolve/onLoad/onTransform
-- CLI: `--plugin <path>` 옵션으로 JS 플러그인 파일 지정
-- suffix 기반 필터 매칭 (.css, .svg 등)으로 IPC 호출 최소화
-- **제한사항**: 현재 load 훅은 JS 모듈 파싱 경로에서만 동작. 비-JS 확장자(.css 등)를 JS로 변환하려면 graph.zig의 module_type 결정 로직 확장 필요.
+### 2단계: ~~JS 플러그인 — subprocess 방식~~ ❌ 제거 (D101)
+> 2단계는 Node.js 자식 프로세스 + stdin/stdout JSON IPC로 구현됐으나, 3단계 NAPI가
+> 완성된 이후 **중복 경로가 되어 제거**. 자세한 배경은 [DECISIONS.md](./DECISIONS.md) D101 참조.
+>
+> JS 플러그인은 이제 **3단계(NAPI) 경로로만** 지원. CLI 사용자는 npm 배포된
+> `zts` 명령(내부적으로 `@zts/core` NAPI 호출)을 사용하면 동일한 기능 + 더 빠른 속도.
 
-```
-ZTS (Zig 바이너리)
-  ↕ stdin/stdout JSON
-Node.js (JS 플러그인 호스트)
-  ├─ 사용자 플러그인 코드
-  ├─ PostCSS / Lightning CSS / Babel 등
-  └─ @zts/plugin npm 패키지 (JSON 프로토콜 래퍼)
-```
-
-### 3단계: C NAPI 바인딩 ✅ 완료 (#975, #978, #979, #980)
+### 3단계: C NAPI 바인딩 ✅ 완료 (기본 경로, #975, #978, #979, #980)
 - `zig build napi` → `.node` 공유 라이브러리 빌드
 - `@zts/core` npm 패키지: `transpile()`, `buildSync()`, `build()` API
 - esbuild 스타일 JS 플러그인: `onResolve`, `onLoad`, `onTransform`
@@ -232,13 +223,11 @@ pub const Plugin = struct {
 1. ✅ 플러그인 인터페이스 정의 (Zig struct) — 1단계
 2. ✅ 파이프라인에 훅 호출 삽입 (resolver, graph, emitter) — 1단계
 3. ✅ Builtin 플러그인 (json, text, asset) — 1단계
-4. ✅ subprocess JSON 프로토콜 (JS 플러그인 호스트) — 2단계
-5. ✅ @zts/plugin npm 패키지 (JS API 래퍼) — 2단계
-6. ✅ C NAPI .node addon + esbuild 스타일 JS 플러그인 — 3단계
-7. ✅ Vite/Rollup 플러그인 어댑터 (`vitePlugin()`) — 4단계
-8. Tapable 하이브리드: Zig 훅 포인트 + NAPI 노출 — 5단계
-9. webpack Compiler/Compilation 호환 — 5단계
-10. Loader 시스템 (module.rules) — 5단계
+4. ✅ C NAPI .node addon + esbuild 스타일 JS 플러그인 — 3단계
+5. ✅ Vite/Rollup 플러그인 어댑터 (`vitePlugin()`) — 4단계
+6. Tapable 하이브리드: Zig 훅 포인트 + NAPI 노출 — 5단계
+7. webpack Compiler/Compilation 호환 — 5단계
+8. Loader 시스템 (module.rules) — 5단계
 
 ## 참고
 - Rollup/Rolldown: `references/rolldown/packages/rolldown/src/plugin/index.ts`

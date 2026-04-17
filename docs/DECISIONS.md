@@ -817,5 +817,17 @@
 - **이유**: 참조 관계가 있는 에러(재선언, undefined reference)는 single-span으로 "어디서 문제가 시작됐는지"를 보여줄 수 없음. rust/rolldown/Bun 모두 multi-span으로 전환. docs URL은 Starlight 사이트와 연결하여 CLI → 웹 연속성 확보.
 - **관련 커밋**: 9dfea7dd, 9d9b3ab5, 75626350, 853ad5c2, fa257fed, 2698079e, abd1d11b(crash report)
 
+### D101: `@zts/plugin` subprocess 경로 제거 — NAPI 단일화 (2026-04-17)
+- **결정**: JS 플러그인 실행 경로를 **NAPI (`@zts/core`) 단일화**. 기존 subprocess IPC 기반 `@zts/plugin` 패키지와 `src/bundler/subprocess_plugin.zig`, Zig CLI의 `--plugin` / `zts.config.{ts,js}` 자동 로드 전부 제거.
+- **이유**:
+  1. `@zts/core` NAPI(D의 3단계) 완성 이후 subprocess 경로는 **중복**. npm CLI(`packages/core/bin/zts.mjs`)가 사실상 모든 사용자 진입점인데 내부적으로 이미 NAPI 호출.
+  2. 매 모듈마다 JSON 왕복 IPC는 NAPI TSFN 대비 느림 + 디버깅 어려움.
+  3. 유지보수 부담: 2곳(subprocess/NAPI)에 플러그인 호출 로직을 이중 관리.
+- **업계 기준**: Rolldown/Rspack 모두 NAPI 단일화. esbuild만 subprocess인데, 이는 Go가 NAPI 생태계가 약해서 취한 선택. Zig는 NAPI 네이티브 지원(`vendor/node-api-headers/`) 있어 esbuild 제약 없음.
+- **영향**:
+  - Zig 독립 바이너리(`zig-out/bin/zts`)는 JS 플러그인 미지원 (builtin만). 실사용자는 npm CLI를 쓰므로 영향 미미.
+  - `packages/plugin/` (886줄), `src/bundler/subprocess_plugin.zig` (790줄), 통합 테스트 `plugin.test.ts`(700줄) + `config-options.test.ts`(246줄) 제거 — 총 ~2600줄 감소.
+  - `zts.config.json` (JSON-only) 자동 로드는 유지 (D099).
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)

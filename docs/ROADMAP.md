@@ -82,9 +82,7 @@
 - ✅ `--minify` 시 Lightning CSS로 CSS minify (optionalDependency)
 - 후순위: CSS Modules (`.module.css`), 코드 스플리팅 시 청크별 CSS 분리
 
-**플러그인 3단계 (N-API)** — XL (2~3주)
-- 현재 subprocess IPC만 (매 모듈마다 JSON 왕복 — 느림)
-- N-API .node addon으로 in-process 플러그인 실행
+~~**플러그인 3단계 (N-API)**~~ — ✅ 완료. 이후 subprocess 경로(2단계)는 중복되어 D101로 제거.
 
 ~~**HMR 고도화**~~ — ✅ 완료
 - `import.meta.hot.accept()` / `dispose()` / `decline()` 구현
@@ -159,10 +157,10 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
   `--asset-names`, `--public-path` 지원.
 
-- ~~**플러그인 API**~~ — ✅ 1-4단계 완료 ([PLUGINS.md](./PLUGINS.md) 참조)
-  - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅
-  - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/plugin, CLI --plugin
-  - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지
+- ~~**플러그인 API**~~ — ✅ 완료 ([PLUGINS.md](./PLUGINS.md) 참조)
+  - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅 (worklet/refresh 등 내부 전용)
+  - ~~2단계: JS 플러그인 subprocess~~ — ❌ D101로 제거. NAPI(3단계)가 기본 경로
+  - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지 (기본 JS 플러그인 경로)
   - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
@@ -190,7 +188,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - ~~**preserveModules**~~ — ✅ 완료. `--preserve-modules` + `--preserve-modules-root` (Rollup/Rolldown 호환)
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
 - ~~**설정 파일 (zts.config.js)**~~ — ✅ 완료. `packages/core`에서 `defineConfig()` 내보냄.
-- ~~**JS Build API**~~ — ✅ 완료. `packages/core`에서 `build()` 함수 내보냄 (subprocess 기반).
+- ~~**JS Build API**~~ — ✅ 완료. `packages/core`에서 `build()` 함수 내보냄 (NAPI 기반, in-process).
 - ~~**HTTPS dev server**~~ — ✅ 완료. `--certfile`/`--keyfile` TLS 지원 (Node.js/Bun CLI)
 
 ### Nice to Have

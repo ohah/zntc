@@ -113,8 +113,7 @@ src/
     resolve_cache.zig       #   해석 결과 캐싱 (import kind별)
     import_scanner.zig      #   import/export 문 추출
     binding_scanner.zig     #   심볼 바인딩 추적
-    plugin.zig              #   Zig builtin 플러그인 (함수 포인터 기반)
-    subprocess_plugin.zig   #   JS subprocess 플러그인 (stdin/stdout JSON IPC)
+    plugin.zig              #   Zig builtin 플러그인 (함수 포인터 기반, 내부 전용)
     json_to_esm.zig         #   JSON → ESM AST 변환 (export default <value>)
     mpsc_channel.zig        #   MPSC 채널 (Producer-Consumer 파이프라인)
     module_store.zig        #   PersistentModuleStore (증분 빌드 파싱 캐시)
@@ -152,11 +151,9 @@ src/
     mod.zig                 #   Test262 엔트리
     runner.zig              #   메타데이터 파서 + 테스트 실행기
 packages/
-  core/                     # @zts/core — C NAPI .node addon (in-process, Node/Bun 내부 호출)
+  core/                     # @zts/core — C NAPI .node addon + Node CLI (기본 경로)
   wasm/                     # @zts/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
   shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat engines)
-  plugin/                   # @zts/plugin — CLI가 spawn하는 zts.config.{ts,js} 용 JSON IPC 호스트
-                            #   (CLI가 자식 프로세스로 실행 → stdin/stdout JSON per line)
   vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체, @zts/core 기반)
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈)
