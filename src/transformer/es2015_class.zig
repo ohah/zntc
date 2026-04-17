@@ -40,6 +40,11 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 
+/// method_definition의 extra[3] flags — parser/class.zig와 동일.
+/// 다른 파일(es2015_computed, checker 등)에 같은 정의가 산재함 — #1398 cleanup 대상.
+const METHOD_FLAG_STATIC: u32 = 0x01;
+const METHOD_FLAG_SETTER: u32 = 0x04;
+
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
         /// class_declaration을 function + prototype assignment로 변환.
@@ -1207,6 +1212,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             static_private_fields: std.ArrayList(PrivateFieldInfo),
             private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
             static_block_stmts: std.ArrayList(NodeIndex),
+            /// accessor_property 합성으로 만드는 `#_<name>_acc` 원본 이름.
+            /// `PrivateFieldInfo.original_name`은 `findPrivateFieldMapping`의 `std.mem.eql` 키라 안정적 slice가 필요.
+            /// string_table slice는 후속 `addString` 호출의 realloc으로 dangling이 되므로 heap-owned 복사본을 유지한다.
+            synthesized_private_names: std.ArrayList([]u8) = .empty,
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
             /// super class 없는 class에서 var _this = this; 삽입에 사용.
             fields_need_this_alias: bool = false,
@@ -1222,6 +1231,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     allocator.free(pm.weakset_name);
                     allocator.free(pm.func_name);
                 }
+                for (cm.synthesized_private_names.items) |s| allocator.free(s);
                 cm.methods.deinit(allocator);
                 cm.instance_fields.deinit(allocator);
                 cm.static_fields.deinit(allocator);
@@ -1230,6 +1240,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.static_private_fields.deinit(allocator);
                 cm.private_methods.deinit(allocator);
                 cm.static_block_stmts.deinit(allocator);
+                cm.synthesized_private_names.deinit(allocator);
             }
         };
 
@@ -1409,10 +1420,168 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             }
                         }
                     }
+                } else if (member.tag == .accessor_property) {
+                    try classifyAccessorProperty(self, &cm, member, span);
+                } else {
+                    std.debug.panic("classifyMembers: unexpected member tag {s}", .{@tagName(member.tag)});
                 }
             }
 
             return cm;
+        }
+
+        /// `accessor x = init;` → private backing + getter/setter. Stage 3 decorator 경로는 class_decorator.zig가 처리하므로
+        /// 여기선 computed/private key는 panic (decorator 없는 ES5 직접 경로에서만 호출됨).
+        fn classifyAccessorProperty(
+            self: *Transformer,
+            cm: *ClassifiedMembers,
+            member: Node,
+            span: Span,
+        ) Transformer.Error!void {
+            const pe = member.data.extra;
+            const key_idx = self.readNodeIdx(pe, 0);
+            const init_idx = self.readNodeIdx(pe, 1);
+            const flags = self.readU32(pe, 2);
+            const is_static = (flags & METHOD_FLAG_STATIC) != 0;
+
+            const key_node = self.ast.getNode(key_idx);
+            if (key_node.tag == .private_identifier or key_node.tag == .computed_property_key) {
+                std.debug.panic(
+                    "classifyMembers: accessor_property with {s} key: unsupported in ES5 lowering; requires decorator path",
+                    .{@tagName(key_node.tag)},
+                );
+            }
+
+            const raw_key = self.ast.getText(key_node.span);
+            const bare_name = stripQuotes(raw_key);
+
+            const storage_name_owned = try std.fmt.allocPrint(self.allocator, "#_{s}_acc", .{bare_name});
+            try cm.synthesized_private_names.append(self.allocator, storage_name_owned);
+            const storage_span = try self.ast.addString(storage_name_owned);
+
+            const pfi = PrivateFieldInfo{
+                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .original_name = storage_name_owned,
+                .init = init_idx,
+            };
+            if (is_static) {
+                try cm.static_private_fields.append(self.allocator, pfi);
+            } else {
+                try cm.private_fields.append(self.allocator, pfi);
+            }
+
+            const getter_idx = try buildAccessorGetter(self, key_node.span, storage_span, is_static, span);
+            try cm.accessors.append(self.allocator, .{
+                .member_idx = getter_idx,
+                .is_static = is_static,
+                .is_getter = true,
+            });
+
+            const setter_idx = try buildAccessorSetter(self, key_node.span, storage_span, is_static, span);
+            try cm.accessors.append(self.allocator, .{
+                .member_idx = setter_idx,
+                .is_static = is_static,
+                .is_getter = false,
+            });
+        }
+
+        /// `"foo"` / `'foo'` → `foo` (따옴표 제거). 따옴표 없으면 원본 반환.
+        fn stripQuotes(s: []const u8) []const u8 {
+            if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) {
+                return s[1 .. s.len - 1];
+            }
+            return s;
+        }
+
+        /// `this.#storage` — private_field_expression 태그 필수 (static_member_expression으로 만들면
+        /// transformer.zig:899의 private field WeakMap 변환 dispatch를 못 탄다 — silent drop).
+        fn makePrivateFieldAccess(self: *Transformer, storage_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const this_node = try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+            const storage_ref = try self.ast.addNode(.{
+                .tag = .private_identifier,
+                .span = storage_span,
+                .data = .{ .string_ref = storage_span },
+            });
+            const extra = try self.ast.addExtras(&.{
+                @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+            });
+            return self.ast.addNode(.{
+                .tag = .private_field_expression,
+                .span = span,
+                .data = .{ .extra = extra },
+            });
+        }
+
+        fn buildAccessorGetter(
+            self: *Transformer,
+            key_span: Span,
+            storage_span: Span,
+            is_static: bool,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const return_expr = try makePrivateFieldAccess(self, storage_span, span);
+            const getter_key = try es_helpers.makeIdentifierRefFromSpan(self, key_span);
+            return self.buildGetterMethod(getter_key, return_expr, is_static, span);
+        }
+
+        fn buildAccessorSetter(
+            self: *Transformer,
+            key_span: Span,
+            storage_span: Span,
+            is_static: bool,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const val_span = try self.ast.addString("v");
+            const val_param = try self.ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = val_span,
+                .data = .{ .string_ref = val_span },
+            });
+            const params_list = try self.ast.addNodeList(&.{val_param});
+            const params_node = try self.ast.addFormalParameters(params_list, span);
+
+            const this_storage = try makePrivateFieldAccess(self, storage_span, span);
+            const v_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = val_span,
+                .data = .{ .string_ref = val_span },
+            });
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = this_storage, .right = v_ref, .flags = 0 } },
+            });
+            const assign_stmt = try self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+            const body_list = try self.ast.addNodeList(&.{assign_stmt});
+            const body = try self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = body_list },
+            });
+            const setter_key = try es_helpers.makeIdentifierRefFromSpan(self, key_span);
+            const empty_decos = try self.ast.addNodeList(&.{});
+            const setter_flags: u32 = METHOD_FLAG_SETTER | (if (is_static) METHOD_FLAG_STATIC else 0);
+            const extra = try self.ast.addExtras(&.{
+                @intFromEnum(setter_key),
+                @intFromEnum(params_node),
+                @intFromEnum(body),
+                setter_flags,
+                empty_decos.start,
+                empty_decos.len,
+            });
+            return self.ast.addNode(.{
+                .tag = .method_definition,
+                .span = span,
+                .data = .{ .extra = extra },
+            });
         }
 
         /// _x.set(this, init) expression_statement 생성.

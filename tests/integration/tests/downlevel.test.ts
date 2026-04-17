@@ -502,6 +502,67 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("1 2");
     });
 
+    test("#1398: accessor field → private backing + getter/setter (single)", async () => {
+      // TC39 Stage 3 auto-accessor. 이전엔 classifyMembers가 accessor_property를
+      // silent drop → c.counter/inc() 전부 undefined. 이제 #_counter_acc 로 확장.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              accessor counter = 10;
+              inc() { this.counter += 1; return this.counter; }
+            }
+            const c = new C();
+            console.log(c.counter, c.inc(), (c.counter = 99, c.counter));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10 11 99");
+    });
+
+    test("#1398: accessor field — multiple + mixed with regular field", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class D {
+              count = 0;
+              accessor a = 1;
+              accessor b = 2;
+              mutate() { this.count++; this.a = 10; return [this.count, this.a, this.b]; }
+            }
+            console.log(JSON.stringify(new D().mutate()));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[1,10,2]");
+    });
+
+    test("#1398: static accessor field", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class S { static accessor shared = 100; }
+            const before = S.shared;
+            S.shared = 200;
+            console.log(before, S.shared);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("100 200");
+    });
+
     test("nested arrow this capture", async () => {
       const result = await bundleAndRun(
         {
