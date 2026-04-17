@@ -11,7 +11,8 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 파이프라인 아키텍처
 - [docs/ROADMAP.md](./docs/ROADMAP.md) — Phase 현황, 성능, 미지원, 기술부채
 - [docs/TESTING.md](./docs/TESTING.md) — Test262, 유닛/통합/스모크 테스트
-- [BUNDLER.md](./BUNDLER.md), [PLUGINS.md](./PLUGINS.md), [HMR.md](./HMR.md), [DECISIONS.md](./DECISIONS.md), [FLOW.md](./FLOW.md)
+- [docs/BUNDLER.md](./docs/BUNDLER.md), [docs/PLUGINS.md](./docs/PLUGINS.md), [docs/HMR.md](./docs/HMR.md), [docs/DECISIONS.md](./docs/DECISIONS.md), [docs/FLOW.md](./docs/FLOW.md)
+- [docs/BACKLOG.md](./docs/BACKLOG.md), [docs/ISSUES.md](./docs/ISSUES.md), [docs/AST_PLUGINS.md](./docs/AST_PLUGINS.md)
 - CLI 옵션 전체: `zts --help` / JS API: `packages/core/index.ts` / README
 
 ## Commands

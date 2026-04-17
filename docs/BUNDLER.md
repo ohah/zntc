@@ -1,6 +1,6 @@
 # ZTS Bundler Design
 
-> 번들러 상세 설계 문서. 핵심 정보는 [CLAUDE.md](./CLAUDE.md) 참조.
+> 번들러 상세 설계 문서. 핵심 정보는 [CLAUDE.md](../CLAUDE.md) 참조.
 
 ## 경쟁 환경
 - **Rolldown** (Rust, oxc 기반): Vite 생태계 백업, Rollup+esbuild 대체 목표. Rollup 플러그인 호환

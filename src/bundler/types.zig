@@ -258,7 +258,7 @@ pub const Format = enum {
 /// 모듈의 로딩 방식. ModuleType(파일의 본질)과 별개로,
 /// 번들러가 파일을 어떻게 처리할지 결정한다.
 /// --loader:.png=file 같은 CLI 옵션으로 확장자별 오버라이드 가능.
-/// 플러그인 API의 load 훅과 1:1 대응 (PLUGINS.md 참고).
+/// 플러그인 API의 load 훅과 1:1 대응 (docs/PLUGINS.md 참고).
 pub const Loader = enum {
     /// 기본값 — JS/TS 파싱 파이프라인
     javascript,

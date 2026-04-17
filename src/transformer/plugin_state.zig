@@ -3,7 +3,7 @@
 //! Transformer core에 산재하던 plugin-specific 필드를 이곳으로 이사하여,
 //! core는 ES spec 변환에, plugin은 자기 state에 집중할 수 있게 한다.
 //!
-//! ## 접근 규칙 (DECISIONS.md)
+//! ## 접근 규칙 (docs/DECISIONS.md)
 //! 1. 각 plugin은 **자기 sub-struct만** 접근. cross-plugin 접근 금지.
 //!    예: refresh plugin이 `plugins.worklet.*`를 읽으면 안 됨.
 //! 2. Core는 명명된 hook point 함수(예: `visitBodyWorkletAware`, `dispatchFunctionPlugins`)

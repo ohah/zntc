@@ -1,6 +1,6 @@
 # ZTS Dev Server & HMR Design
 
-> Dev 서버 + Hot Module Replacement 상세 설계. 핵심 정보는 [CLAUDE.md](./CLAUDE.md) 참조.
+> Dev 서버 + Hot Module Replacement 상세 설계. 핵심 정보는 [CLAUDE.md](../CLAUDE.md) 참조.
 
 ## 의사결정
 
