@@ -1296,11 +1296,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.super_call_this_alias = false;
             defer self.super_call_this_alias = saved_super_alias;
 
-            // ES2015 params lowering은 Pass 2에서 일괄 처리.
-            // TS parameter property(`constructor(public x)`)는 modifier 만 strip되어 일반 형태로 visit되지만,
+            // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
             const pp = try self.visitParamsCollectProperties(params_list_old);
-            const new_params = pp.new_params;
 
             // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
             const saved_new_target_ctx = self.new_target_ctx;
@@ -1324,7 +1322,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addFormalParameters(new_params, span);
+            const new_params_node = try self.ast.addFormalParameters(pp.new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
                 @intFromEnum(new_params_node),
