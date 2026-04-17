@@ -120,11 +120,13 @@ export async function runZts(
   return runCmd([ZTS_BIN, ...args]);
 }
 
-/// Node로 JS 파일을 실행. exit != 0 시 stderr를 포함한 에러 throw (디버깅 편의).
+/// Node로 JS 파일을 실행. exit != 0 시 stdout/stderr를 포함한 에러 throw (디버깅 편의).
 export async function runNode(file: string): Promise<{ stdout: string; stderr: string }> {
   const { stdout, stderr, exitCode } = await runCmd(["node", file]);
   if (exitCode !== 0) {
-    throw new Error(`node '${file}' exited ${exitCode}\n--- stderr ---\n${stderr}`);
+    throw new Error(
+      `node '${file}' exited ${exitCode}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
+    );
   }
   return { stdout: stdout.trim(), stderr };
 }

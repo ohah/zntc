@@ -1291,6 +1291,11 @@ fn emitBundleRuntimeHelpers(
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+        // Node ESM 출력에 CJS wrapper가 섞이면 wrapper 내부 `require()`가 런타임에 미정의.
+        // createRequire shim은 runtime helper 정의보다 먼저 와야 `__commonJS` 래퍼가 참조 가능 (#1456).
+        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
+            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
+        }
         // __toESM, __copyProps, __defProp은 CJS/ESM 양쪽에서 공유
         try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
@@ -1334,6 +1339,10 @@ pub fn emitChunkRuntimeHelpers(
         }
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
+        // 단일 번들 경로와 동일: Node ESM + CJS wrap이면 createRequire shim 필요 (#1456)
+        if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
+            try rt.appendRequireShim(output, allocator, options.minify_whitespace);
+        }
         try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
     }
     if (needs_esm_wrap_runtime) {

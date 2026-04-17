@@ -12,6 +12,17 @@ const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 // CJS Interop
 // ============================================================
 
+/// Node ESM 환경에서 전역 `require` 부재 문제를 `createRequire(import.meta.url)`로 해결하는 shim.
+/// 참고: esbuild `internal/linker/linker.go`의 `needsCreateRequireShim`.
+pub const REQUIRE_SHIM = "import { createRequire } from \"node:module\";\nconst require = createRequire(import.meta.url);\n";
+pub const REQUIRE_SHIM_MIN = "import{createRequire}from\"node:module\";const require=createRequire(import.meta.url);";
+
+/// ESM 번들에 CJS wrapper가 섞일 때 preamble에 require shim을 주입.
+/// 호출부에서 `platform=node + format=esm + CJS wrap 존재` 조건을 판정하고 호출한다.
+pub fn appendRequireShim(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool) !void {
+    try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
+}
+
 /// __commonJS 팩토리 함수 (esbuild 호환)
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
 pub const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
