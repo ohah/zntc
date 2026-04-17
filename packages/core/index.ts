@@ -87,9 +87,7 @@ function findAddon(): string {
 // ─── Public API ───
 
 /**
- * 설정 객체 identity 헬퍼. `zts.config.{ts,js}`에서 TS 타입 체크/자동완성을 얻기 위해 사용.
- * Node CLI(`packages/core/bin/zts.mjs`)가 이 config의 `plugins`를 읽어 in-process NAPI로
- * 전달한다. 값은 그대로 반환하며 런타임 동작은 없다.
+ * `zts.config.{ts,js}` 타입 체크/자동완성용 identity 헬퍼.
  */
 export function defineConfig<T extends Partial<BuildOptions>>(config: T): T {
   return config;
