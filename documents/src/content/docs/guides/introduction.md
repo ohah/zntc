@@ -12,7 +12,7 @@ ZTS는 **Zig로 작성한 TypeScript/JavaScript 트랜스파일러 & 번들러**
 - **TypeScript/JSX 트랜스파일**: 타입 스트리핑, enum 변환, decorator, JSX (classic/automatic)
 - **번들링**: Tree-shaking, 코드 스플리팅, preserve-modules
 - **React Native**: Metro 호환 번들링, Flow 스트리핑, Hermes 바이트코드 호환
-- **플러그인**: Rollup/Vite 호환 플러그인 시스템 (JS/TS subprocess)
+- **플러그인**: Rollup/Vite 호환 플러그인 시스템 (C NAPI, in-process)
 - **Dev Server**: HMR, 프록시, 정적 파일 서빙
 - **WASM**: 브라우저에서 직접 트랜스파일 가능
 

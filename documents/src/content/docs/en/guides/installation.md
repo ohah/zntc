@@ -74,18 +74,18 @@ const result2 = await build({
 });
 ```
 
-## JS Plugin API (subprocess)
+## JS Build API (NAPI, in-process)
 
-```bash
-bun add @zts/plugin
-```
+Use `@zts/core`'s `build()` / `buildSync()` / `watch()` to bundle directly inside Node.js/Bun:
 
 ```typescript
-import { build } from "@zts/plugin";
+import { init, build } from "@zts/core";
+init();
 
 const result = await build({
   entryPoints: ["src/index.ts"],
   outdir: "dist",
   bundle: true,
+  plugins: [/* Vite/Rollup-style hooks */],
 });
 ```

@@ -27,11 +27,12 @@ pub const PluginError = error{
 
 /// Rollup 호환 플러그인 인터페이스.
 /// 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
-/// context 필드로 플러그인 상태를 전달 (builtin은 null, subprocess는 child process handle).
+/// context 필드로 플러그인 상태를 전달 (builtin 플러그인 전용).
 pub const Plugin = struct {
     name: []const u8,
     /// 플러그인 상태를 전달하는 opaque 포인터.
-    /// builtin 플러그인은 null, subprocess 플러그인은 SubprocessPlugin 포인터.
+    /// 현재는 builtin 플러그인(worklet 등)만 사용하며 대부분 null.
+    /// JS 플러그인은 @zts/core NAPI 경로에서 처리되어 이곳을 거치지 않는다.
     context: ?*anyopaque = null,
 
     /// 모듈 경로 해석 커스텀 (alias, virtual module).

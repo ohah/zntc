@@ -5,12 +5,9 @@ description: ZTS 플러그인 시스템 사용법을 알아봅니다.
 
 ## 개요
 
-ZTS는 두 가지 플러그인 실행 방식을 제공합니다:
+ZTS 플러그인은 Rollup/Vite 호환 인터페이스로, `@zts/core`의 NAPI를 통해 in-process로 실행됩니다.
 
-1. **NAPI (권장)**: `@zts/core`의 `build()` API로 in-process 실행. 최고 성능.
-2. **Subprocess**: CLI `--plugin` 옵션으로 JSON IPC 통신. Node.js 없이도 동작.
-
-## NAPI 플러그인 (권장)
+## NAPI 플러그인
 
 ```typescript
 import { init, build, vitePlugin } from "@zts/core";
@@ -47,15 +44,14 @@ const result2 = await build({
 
 > **참고**: `buildSync()`에서는 JS 플러그인을 사용할 수 없습니다 (메인 스레드 데드락). `build()` (async)에서만 지원됩니다.
 
-## Subprocess 플러그인 (CLI)
-
 ## 설정 파일
 
 프로젝트 루트에 `zts.config.ts` (또는 `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`)를 생성합니다.
+npm 배포 CLI(`zts` 명령)가 자동으로 감지해 `@zts/core`로 in-process 실행합니다.
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from "@zts/plugin";
+import { defineConfig } from "@zts/core";
 
 export default defineConfig({
   plugins: [
@@ -152,7 +148,7 @@ export default defineConfig({
 ## Build API
 
 ```typescript
-import { build } from "@zts/plugin";
+import { build } from "@zts/core";
 
 const result = await build({
   entryPoints: ["src/index.ts"],

@@ -12,7 +12,7 @@ ZTS is a **TypeScript/JavaScript transpiler and bundler written in Zig**. It aim
 - **TypeScript/JSX Transpile**: Type stripping, enum conversion, decorators, JSX (classic/automatic)
 - **Bundling**: Tree-shaking, code splitting, preserve-modules
 - **React Native**: Metro-compatible bundling, Flow stripping, Hermes bytecode compatibility
-- **Plugins**: Rollup/Vite-compatible plugin system (JS/TS subprocess)
+- **Plugins**: Rollup/Vite-compatible plugin system (C NAPI, in-process)
 - **Dev Server**: HMR, proxy, static file serving
 - **WASM**: Transpile directly in the browser
 
