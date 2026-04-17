@@ -74,6 +74,7 @@ export default defineConfig({
           translations: { en: "Guides" },
           items: [
             { label: "트랜스파일", slug: "guides/transpile", translations: { en: "Transpile" } },
+            { label: "설정 파일", slug: "guides/config-file", translations: { en: "Config File" } },
             { label: "번들링", slug: "guides/bundling", translations: { en: "Bundling" } },
             { label: "플러그인", slug: "guides/plugins", translations: { en: "Plugins" } },
             { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },

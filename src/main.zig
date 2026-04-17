@@ -248,6 +248,64 @@ fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.
     return compat.unsupportedFeatures(targets[0..count]);
 }
 
+/// `zts.config.json`이 cwd에 있으면 파싱해 opts의 defaults를 세팅한다.
+/// CLI 인자가 뒤에서 이 값을 덮어쓴다 → "CLI > config.json".
+/// transpile.zig의 `optionsFromJson`을 재사용하여 schema 일치를 보장.
+///
+/// 현재 매핑되는 필드: target/sourcemap/minify/jsx/platform/format/quotes/drop/flow
+/// 등 TranspileOptions에 대응하는 것들. bundler-only 필드(external, alias 등)는
+/// 여기서 처리하지 않는다.
+fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
+    const f = try std.fs.cwd().openFile("zts.config.json", .{});
+    defer f.close();
+    const content = try f.readToEndAlloc(allocator, 1 * 1024 * 1024);
+    defer allocator.free(content);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const parsed = lib.transpile.optionsFromJson(arena_alloc, content) catch return error.InvalidConfig;
+
+    if (parsed.es_target) |t| {
+        opts.es_target = t;
+        opts.unsupported = lib.transformer.TransformOptions.compat.fromESTarget(t);
+    }
+    opts.unsupported = @bitCast(@as(u32, @bitCast(parsed.unsupported)) | @as(u32, @bitCast(opts.unsupported)));
+    if (parsed.flow) opts.flow = true;
+    if (parsed.jsx_in_js) opts.jsx_in_js = true;
+    opts.jsx_runtime = parsed.jsx_runtime;
+    // 문자열 필드는 config 수명이 함수 종료 후 해제됨 → dupe 필수.
+    if (parsed.jsx_factory.len > 0 and !std.mem.eql(u8, parsed.jsx_factory, "React.createElement")) {
+        opts.jsx_factory = try allocator.dupe(u8, parsed.jsx_factory);
+    }
+    if (parsed.jsx_fragment.len > 0 and !std.mem.eql(u8, parsed.jsx_fragment, "React.Fragment")) {
+        opts.jsx_fragment = try allocator.dupe(u8, parsed.jsx_fragment);
+    }
+    if (parsed.jsx_import_source.len > 0 and !std.mem.eql(u8, parsed.jsx_import_source, "react")) {
+        opts.jsx_import_source = try allocator.dupe(u8, parsed.jsx_import_source);
+    }
+    if (parsed.drop_console) opts.drop_console = true;
+    if (parsed.drop_debugger) opts.drop_debugger = true;
+    if (parsed.ascii_only) opts.ascii_only = true;
+    if (parsed.charset_utf8) opts.charset_utf8 = true;
+    if (parsed.experimental_decorators) opts.experimental_decorators = true;
+    if (parsed.emit_decorator_metadata) opts.emit_decorator_metadata = true;
+    if (parsed.use_define_for_class_fields == false) opts.use_define_for_class_fields = false;
+    opts.module_format = parsed.module_format;
+    opts.quote_style = parsed.quote_style;
+    opts.platform = parsed.platform;
+    if (parsed.minify_whitespace) opts.minify_whitespace = true;
+    if (parsed.minify_identifiers) opts.minify_identifiers = true;
+    if (parsed.minify_syntax) opts.minify_syntax = true;
+    if (parsed.sourcemap) opts.sourcemap = true;
+    if (parsed.sourcemap_debug_ids) opts.sourcemap_debug_ids = true;
+    if (!parsed.sources_content) opts.sources_content = false;
+    if (parsed.source_root.len > 0) {
+        opts.source_root = try allocator.dupe(u8, parsed.source_root);
+    }
+}
+
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
 /// --help 출력이나 파싱 에러로 프로그램을 종료해야 하면 null을 반환한다.
 fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?CliOptions {
@@ -260,6 +318,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     }
 
     var opts = CliOptions{};
+    // zts.config.json이 있으면 defaults를 그쪽으로 초기화. CLI 인자는 뒤에서
+    // 파싱되며 이 값을 덮어쓴다 ("CLI > config" 우선순위).
+    applyZtsConfigJson(&opts, allocator) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => {
+            try stderr.print("[zts] zts.config.json load failed: {}\n", .{err});
+        },
+    };
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
