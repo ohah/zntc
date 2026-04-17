@@ -990,6 +990,26 @@ pub fn insertFieldAssignmentsIntoConstructor(
     });
 }
 
+/// `this.#storage_name` private field access 노드 생성. private_field_expression 태그 사용.
+/// 일반 static_member_expression + private_identifier child 조합은 transformer 의 private field
+/// WeakMap dispatch 를 못 타므로 이 helper 로 통일.
+fn makeThisPrivateField(self: *Transformer, storage_span: Span) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const this_node = try self.ast.addNode(.{
+        .tag = .this_expression,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+    });
+    const storage_ref = try self.ast.addNode(.{
+        .tag = .private_identifier,
+        .span = storage_span,
+        .data = .{ .string_ref = storage_span },
+    });
+    return self.addExtraNode(.private_field_expression, zero_span, &.{
+        @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+    });
+}
+
 /// block_statement body에서 첫 super() 호출 뒤에 stmt를 삽입한 새 block_statement 반환.
 /// super() 없으면 body 시작에 prepend.
 fn insertAfterSuperCall(self: *Transformer, body_idx: NodeIndex, stmt: NodeIndex) Error!NodeIndex {
@@ -2154,18 +2174,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     try new_members.append(self.allocator, backing_field);
 
                     // get x() { return this.#_x_accessor_storage; }
+                    // .private_field_expression 태그 필수 — .static_member_expression 으로 만들면
+                    // transformer.zig:899 private field WeakMap dispatch 를 못 탐 (Stage 3 출력 재방문 경로에서만
+                    // 우연히 동작하던 것을 안정화).
                     {
-                        const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = zero_span,
-                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
-                        });
-                        const storage_ref = try self.ast.addNode(.{
-                            .tag = .private_identifier,
-                            .span = storage_span,
-                            .data = .{ .string_ref = storage_span },
-                        });
-                        const return_expr = try es_helpers.makeStaticMember(self, this_node, storage_ref, zero_span);
+                        const return_expr = try makeThisPrivateField(self, storage_span);
                         const getter_key = try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = self.ast.getNode(new_key).data.string_ref,
@@ -2189,19 +2202,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             .data = .{ .string_ref = val_param_span },
                         });
                         const setter_params = try self.ast.addNodeList(&.{val_param});
-                        const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = zero_span,
-                            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
-                        });
-                        const storage_ref = try self.ast.addNode(.{
-                            .tag = .private_identifier,
-                            .span = storage_span,
-                            .data = .{ .string_ref = storage_span },
-                        });
-                        const this_storage = try self.addExtraNode(.static_member_expression, zero_span, &.{
-                            @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
-                        });
+                        const this_storage = try makeThisPrivateField(self, storage_span);
                         const val_ref = try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = val_param_span,
