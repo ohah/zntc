@@ -257,6 +257,23 @@ fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kin
     });
 }
 
+/// `Math.pow(left, right)` 호출 노드 생성 — left/right는 이미 visit된(new-AST) 노드.
+/// `**` lowering(es2016) 및 `**=` private field compound 경로에서 공용.
+pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: Span) !NodeIndex {
+    const math_ref = try makeIdentifierRef(self, "Math");
+    const pow_ref = try makeIdentifierRef(self, "pow");
+    const callee = try makeStaticMember(self, math_ref, pow_ref, span);
+    const args = try self.ast.addNodeList(&.{ left, right });
+    const call_extra = try self.ast.addExtras(&.{
+        @intFromEnum(callee), args.start, args.len, 0,
+    });
+    return self.ast.addNode(.{
+        .tag = .call_expression,
+        .span = span,
+        .data = .{ .extra = call_extra },
+    });
+}
+
 /// binding_identifier 노드 생성 (변수 바인딩용).
 /// span은 이미 addString된 이름 span.
 pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
