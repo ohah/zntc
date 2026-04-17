@@ -451,7 +451,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 if (elem.tag == .elision) continue; // 빈 슬롯 스킵
 
-                if (elem.tag == .rest_element or elem.tag == .spread_element or elem.tag == .binding_rest_element) {
+                if (elem.tag == .rest_element or elem.tag == .binding_rest_element) {
                     // ...rest → var rest = _ref.slice(N)
                     const rest_binding = try self.visitNode(elem.data.unary.operand);
                     const rest_init = try buildArraySlice(self, ref_span, idx, span);
