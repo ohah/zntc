@@ -3535,6 +3535,7 @@ pub const Transformer = struct {
     pub const buildFieldInitNames = class_deco.buildFieldInitNames;
     pub const buildMetadataDefineProperty = class_deco.buildMetadataDefineProperty;
     pub const buildGetterMethod = class_deco.buildGetterMethod;
+    pub const buildSetterMethod = class_deco.buildSetterMethod;
     pub const extractCleanVarName = class_deco.extractCleanVarName;
     pub const appendEsDecorateStmt = class_deco.appendEsDecorateStmt;
     pub const wrapInStringLiteral = class_deco.wrapInStringLiteral;

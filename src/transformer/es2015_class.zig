@@ -1548,53 +1548,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             is_static: bool,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const val_span = try self.ast.addString("v");
-            const val_param = try self.ast.addNode(.{
-                .tag = .binding_identifier,
-                .span = val_span,
-                .data = .{ .string_ref = val_span },
-            });
-            const params_list = try self.ast.addNodeList(&.{val_param});
-            const params_node = try self.ast.addFormalParameters(params_list, span);
-
-            const this_storage = try makePrivateFieldAccess(self, storage_span, span);
-            const v_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = val_span,
-                .data = .{ .string_ref = val_span },
-            });
-            const assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = this_storage, .right = v_ref, .flags = 0 } },
-            });
-            const assign_stmt = try self.ast.addNode(.{
-                .tag = .expression_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-            });
-            const body_list = try self.ast.addNodeList(&.{assign_stmt});
-            const body = try self.ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
             const setter_key = try es_helpers.makeIdentifierRefFromSpan(self, key_span);
-            const empty_decos = try self.ast.addNodeList(&.{});
-            const setter_flags: u32 = METHOD_FLAG_SETTER | (if (is_static) METHOD_FLAG_STATIC else 0);
-            const extra = try self.ast.addExtras(&.{
-                @intFromEnum(setter_key),
-                @intFromEnum(params_node),
-                @intFromEnum(body),
-                setter_flags,
-                empty_decos.start,
-                empty_decos.len,
-            });
-            return self.ast.addNode(.{
-                .tag = .method_definition,
-                .span = span,
-                .data = .{ .extra = extra },
-            });
+            const assign_target = try makePrivateFieldAccess(self, storage_span, span);
+            return self.buildSetterMethod(setter_key, assign_target, is_static, span);
         }
 
         /// _x.set(this, init) expression_statement 생성.
