@@ -1032,7 +1032,13 @@ pub const Transformer = struct {
             .class_declaration => {
                 const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
                 const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
-                // 관심사 분리: plugin은 worklet 변환만, transformer는 ES downlevel 일관 처리.
+                // Stage 3 decorator는 unsupported.class 분기보다 먼저 돌려야 한다 — 반대면 decorator가 silent drop.
+                // Stage 3 출력은 IIFE로 감싼 class_expression을 포함하므로, ES5 target일 땐 재방문해서
+                // 내부 class_expression을 lowerClassExpression로 추가 다운레벨링한다.
+                if (try self.tryTransformStage3(target_node)) |stage3_result| {
+                    if (self.options.unsupported.class) return self.visitNode(stage3_result);
+                    return stage3_result;
+                }
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, target_node);
                 }
@@ -1042,6 +1048,10 @@ pub const Transformer = struct {
             .class_expression => {
                 const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
                 const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
+                if (try self.tryTransformStage3(target_node)) |stage3_result| {
+                    if (self.options.unsupported.class) return self.visitNode(stage3_result);
+                    return stage3_result;
+                }
                 if (self.options.unsupported.class) {
                     return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, target_node);
                 }
@@ -3464,6 +3474,18 @@ pub const Transformer = struct {
     // Class + Decorator — transformer/class_decorator.zig로 위임
     // ================================================================
     const class_deco = @import("transformer/class_decorator.zig");
+
+    /// Stage 3 decorator lowering이 필요한 class면 실행해 결과 NodeIndex 반환, 아니면 null.
+    /// `unsupported.class` 분기보다 먼저 호출해 ES5 target에서 decorator silent drop을 방지한다.
+    fn tryTransformStage3(self: *Transformer, node: Node) Error!?NodeIndex {
+        if (self.options.experimental_decorators) return null;
+        const e = node.data.extra;
+        const class_deco_len = self.readU32(e, 7);
+        const has_member_decos = self.hasAnyMemberDecorators(e);
+        if (class_deco_len == 0 and !has_member_decos) return null;
+        return try self.transformStage3Decorators(node);
+    }
+
     pub const visitClass = class_deco.visitClass;
     pub const visitClassWithAssignSemantics = class_deco.visitClassWithAssignSemantics;
     pub const buildStaticFieldAssignment = class_deco.buildStaticFieldAssignment;

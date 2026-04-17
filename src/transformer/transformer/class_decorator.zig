@@ -21,17 +21,9 @@ const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
 
 pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
+    // Stage 3 decorator dispatch는 transformer.zig `.class_declaration`/`.class_expression`의
+    // `tryTransformStage3`가 선처리. 여기 들어온 시점엔 Stage 3 대상이 아니라고 가정.
     const e = node.data.extra;
-
-    // Stage 3 decorator: experimental_decorators=false이고 decorator가 있으면 TC39 변환.
-    // class/member decorator 존재 여부를 먼저 확인한다.
-    if (!self.options.experimental_decorators) {
-        const class_deco_len = self.readU32(e, 7);
-        const has_member_decos = self.hasAnyMemberDecorators(e);
-        if (class_deco_len > 0 or has_member_decos) {
-            return self.transformStage3Decorators(node);
-        }
-    }
 
     // Fast path: useDefineForClassFields=true AND !experimentalDecorators → 기존 동작
     // 멤버별 분류가 불필요하므로 body를 통째로 방문한다.
