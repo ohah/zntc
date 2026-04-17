@@ -2988,7 +2988,7 @@ pub const Transformer = struct {
                     .span = span,
                     .data = .{ .none = 0 },
                 });
-                const fn_ref = try es_helpers.makeIdentifierRef(self, self.ast.getText(fn_span));
+                const fn_ref = try es_helpers.makeIdentifierRefFromSpan(self, fn_span);
                 const instanceof = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = span,

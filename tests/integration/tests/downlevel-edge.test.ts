@@ -2250,8 +2250,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("0  false D");
     });
 
-    // skip: ES5 class expression(mixin) lowering이 corrupted name 출력 — #1481
-    test.skip("class extends 표현식 (computed class)", async () => {
+    test("class extends 표현식 (computed class)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `

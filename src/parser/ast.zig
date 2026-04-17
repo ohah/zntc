@@ -1021,7 +1021,31 @@ pub const Ast = struct {
         // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
         std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
         const start: u32 = @intCast(self.string_table.items.len);
-        try self.string_table.appendSlice(self.allocator, text);
+
+        // text가 string_table 자기 자신의 슬라이스일 수 있다.
+        // appendSlice는 ensureUnusedCapacity에서 realloc을 일으키면서
+        // 원본 버퍼를 freed로 만들고 text.ptr을 dangling으로 만든다.
+        // 또한 같은 allocation 내의 memcpy는 debug 모드에서 alias panic을 낸다.
+        // offset을 먼저 저장한 뒤 realloc을 유도하고, 새 버퍼의 동일 offset에서
+        // 바이트 단위로 복사하면 두 문제 모두 안전하게 처리된다.
+        const table_base = self.string_table.items.ptr;
+        const base_addr = @intFromPtr(table_base);
+        const items_end = base_addr + self.string_table.items.len;
+        const tp = @intFromPtr(text.ptr);
+        const text_in_table = tp >= base_addr and tp + text.len <= items_end;
+
+        if (text_in_table) {
+            const offset: usize = tp - base_addr;
+            try self.string_table.ensureUnusedCapacity(self.allocator, text.len);
+            const dest_start = self.string_table.items.len;
+            self.string_table.items.len = dest_start + text.len;
+            var i: usize = 0;
+            while (i < text.len) : (i += 1) {
+                self.string_table.items[dest_start + i] = self.string_table.items[offset + i];
+            }
+        } else {
+            try self.string_table.appendSlice(self.allocator, text);
+        }
         const end: u32 = @intCast(self.string_table.items.len);
         return .{
             .start = start | STRING_TABLE_BIT,
