@@ -2271,26 +2271,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 else
                     try buildFreshPrototypeRef(self, class_name_span, span);
 
-                // key string literal — heap-alloc으로 긴 키 이름 truncation 회피.
-                const old_key_node = self.ast.getNode(key_idx);
-                const key_text = self.ast.getText(old_key_node.span);
-                const quoted = try self.allocator.alloc(u8, key_text.len + 2);
-                defer self.allocator.free(quoted);
-                quoted[0] = '"';
-                @memcpy(quoted[1 .. 1 + key_text.len], key_text);
-                quoted[1 + key_text.len] = '"';
-                const key_str_span = try self.ast.addString(quoted);
-                const key_str = try self.ast.addNode(.{
-                    .tag = .string_literal,
-                    .span = key_str_span,
-                    .data = .{ .string_ref = key_str_span },
-                });
-
-                // Object.defineProperty(target, "key", descriptor)
-                const obj_ref = try es_helpers.makeIdentifierRefFromSpan(self, obj_str_span);
-                const dp_prop = try es_helpers.makeIdentifierRefFromSpan(self, dp_str_span);
-                const dp_callee = try es_helpers.makeStaticMember(self, obj_ref, dp_prop, span);
-                const call = try es_helpers.makeCallExpr(self, dp_callee, &.{ target, key_str, desc_obj }, span);
+                const key_str = try es_helpers.buildQuotedKeyLiteral(self, self.ast.getNode(key_idx).span);
+                const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_str, desc_obj, span);
                 const stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
                     .span = info.member_span,
