@@ -420,18 +420,12 @@ pub const SemanticAnalyzer = struct {
                     ), .private_method_assign);
                 },
                 .getter => if (ref.usage == .write) {
-                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
-                        self.allocator,
-                        "Cannot set private member '{s}'. It only has a getter.",
-                        .{ref.name},
-                    ), .private_getter_only);
+                    const msg = try std.fmt.allocPrint(self.allocator, "Cannot set private member '{s}'. It only has a getter.", .{ref.name});
+                    try self.addErrorMsgCodeWithLabel(ref.span, msg, .private_getter_only, info.?.span, "getter declared here");
                 },
                 .setter => if (ref.usage == .read) {
-                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
-                        self.allocator,
-                        "Cannot read private member '{s}'. It only has a setter.",
-                        .{ref.name},
-                    ), .private_setter_only);
+                    const msg = try std.fmt.allocPrint(self.allocator, "Cannot read private member '{s}'. It only has a setter.", .{ref.name});
+                    try self.addErrorMsgCodeWithLabel(ref.span, msg, .private_setter_only, info.?.span, "setter declared here");
                 },
                 .field, .accessor_pair => {},
             }
@@ -1004,17 +998,28 @@ pub const SemanticAnalyzer = struct {
     /// previous_span이 null이면 label 없이 기본 에러.
     /// msg는 allocator 소유가 인계된다 (deinit에서 free).
     fn addErrorMsgCodeWithPrevious(self: *SemanticAnalyzer, span: Span, msg: []const u8, code: ErrorCode, previous_span: ?Span) AllocError!void {
-        const labels: []const diagnostic.Label = if (previous_span) |ex| blk: {
-            const buf = try self.allocator.alloc(diagnostic.Label, 1);
-            buf[0] = .{ .span = ex, .message = diagnostic.PREVIOUSLY_DECLARED_HERE };
-            break :blk buf;
-        } else &.{};
+        if (previous_span) |ex| {
+            return self.addErrorMsgCodeWithLabel(span, msg, code, ex, diagnostic.PREVIOUSLY_DECLARED_HERE);
+        }
         try self.errors.append(self.allocator, .{
             .span = span,
             .message = msg,
             .kind = .semantic,
             .code = code,
-            .labels = labels,
+        });
+    }
+
+    /// 참조-정의 연결 에러에서 정의 위치에 임의 label 메시지를 단다.
+    /// msg/label_msg는 호출자 책임 — label_msg는 정적 문자열 권장 (free하지 않음).
+    fn addErrorMsgCodeWithLabel(self: *SemanticAnalyzer, span: Span, msg: []const u8, code: ErrorCode, label_span: Span, label_msg: []const u8) AllocError!void {
+        const buf = try self.allocator.alloc(diagnostic.Label, 1);
+        buf[0] = .{ .span = label_span, .message = label_msg };
+        try self.errors.append(self.allocator, .{
+            .span = span,
+            .message = msg,
+            .kind = .semantic,
+            .code = code,
+            .labels = buf,
         });
     }
 
@@ -2168,7 +2173,8 @@ pub const SemanticAnalyzer = struct {
         if (self.findLabel(name)) |entry| {
             // continue는 loop label만 가능
             if (node.tag == .continue_statement and !entry.is_loop) {
-                try self.addErrorMsgCode(label_node.span, try std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}), .continue_non_loop_label);
+                const msg = try std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name});
+                try self.addErrorMsgCodeWithLabel(label_node.span, msg, .continue_non_loop_label, entry.span, "label declared here (not a loop)");
             }
         } else {
             // label이 존재하지 않음
