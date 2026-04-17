@@ -3546,31 +3546,28 @@ pub const Codegen = struct {
                 try self.writeByte(';');
             },
             .array_pattern => {
-                // list의 각 요소를 재귀 처리
-                const elements = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (elements) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     try self.emitNamespaceBindingExport(ns_name, @enumFromInt(raw_idx));
+                }
+                if (split.rest_operand) |op| {
+                    try self.emitNamespaceBindingExport(ns_name, op);
                 }
             },
             .object_pattern => {
-                const props = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (props) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     const prop = self.ast.getNode(@enumFromInt(raw_idx));
                     // property_property: binary.right = value (binding pattern)
-                    // rest_element: unary.operand
-                    if (prop.tag == .rest_element or prop.tag == .assignment_target_rest) {
-                        try self.emitNamespaceBindingExport(ns_name, prop.data.unary.operand);
-                    } else {
-                        try self.emitNamespaceBindingExport(ns_name, prop.data.binary.right);
-                    }
+                    try self.emitNamespaceBindingExport(ns_name, prop.data.binary.right);
+                }
+                if (split.rest_operand) |op| {
+                    try self.emitNamespaceBindingExport(ns_name, op);
                 }
             },
             .assignment_target_with_default => {
                 // { x = defaultVal } → x
                 try self.emitNamespaceBindingExport(ns_name, node.data.binary.left);
-            },
-            .rest_element, .assignment_target_rest => {
-                try self.emitNamespaceBindingExport(ns_name, node.data.unary.operand);
             },
             else => {},
         }
