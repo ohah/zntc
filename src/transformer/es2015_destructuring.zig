@@ -71,17 +71,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         fn objectPatternHasRest(self: *const Transformer, pattern: Node) bool {
-            const list = pattern.data.list;
-            if (list.len == 0) return false;
-            if (list.start + list.len > self.ast.extra_data.items.len) return false;
-            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-            for (indices) |raw_idx| {
-                const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-                if (prop_idx.isNone()) continue;
-                const prop = self.ast.getNode(prop_idx);
-                if (prop.tag == .rest_element) return true;
-            }
-            return false;
+            return self.ast.nodeListSplitRest(pattern.data.list).rest_operand != null;
         }
 
         /// destructuring이 있는 variable_declaration을 분해한다.
@@ -188,14 +178,15 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// object_assignment_target의 각 property를 assignment로 변환.
         fn emitObjectAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const oa_start = target.data.list.start;
-            const oa_len = target.data.list.len;
+            // assignment 컨텍스트의 rest는 declaration 컨텍스트의 __rest 같은 런타임 헬퍼가
+            // 없어 현재 미지원 — split으로 elements만 처리하고 rest는 무시.
+            const split = self.ast.nodeListSplitRest(target.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
             // visitNode가 AST를 변형하므로 인덱스 루프 사용
             var i_loop: u32 = 0;
-            while (i_loop < oa_len) : (i_loop += 1) {
+            while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[oa_start + i_loop];
                 const prop = self.ast.getNode(@enumFromInt(raw_idx));
-
-                if (prop.tag == .assignment_target_rest) continue; // rest 미지원
 
                 const key_idx = prop.data.binary.left;
                 if (key_idx.isNone()) continue;
@@ -258,14 +249,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// array_assignment_target의 각 element를 assignment로 변환.
         fn emitArrayAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const aa_start = target.data.list.start;
-            const aa_len = target.data.list.len;
+            // assignment 컨텍스트의 rest는 declaration 컨텍스트의 __rest 같은 런타임 헬퍼가
+            // 없어 현재 미지원 — split으로 elements만 처리하고 rest는 무시.
+            const split = self.ast.nodeListSplitRest(target.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
             // visitNode가 AST를 변형하므로 인덱스 루프 사용
             var idx: u32 = 0;
-            while (idx < aa_len) : (idx += 1) {
+            while (idx < non_rest_len) : (idx += 1) {
                 const raw_idx = self.ast.extra_data.items[aa_start + idx];
                 const elem = self.ast.getNode(@enumFromInt(raw_idx));
                 if (elem.tag == .elision) continue;
-                if (elem.tag == .assignment_target_rest) continue;
 
                 // _ref[idx]
                 const access = try makeArrayAccess(self, ref_span, idx, span);
@@ -321,23 +314,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// { a, ...rest } → var a = _ref.a, rest = __rest(_ref, ["a"])
         fn emitObjectPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const opd_start = pattern.data.list.start;
-            const opd_len = pattern.data.list.len;
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
 
             // 1단계: rest가 아닌 property key 이름을 수집 (__rest의 exclude 배열용)
-            // 이 루프는 읽기만 하므로 슬라이스 안전
+            // 이 루프는 visitNode를 호출하지 않으므로 슬라이스 안전
             var exclude_keys: [64][]const u8 = undefined;
             var exclude_count: usize = 0;
-            var rest_binding_idx: ?NodeIndex = null;
 
             {
-                const members = self.ast.extra_data.items[opd_start .. opd_start + opd_len];
-                for (members) |raw_idx| {
+                for (split.elements) |raw_idx| {
                     const prop = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
-                        // rest element의 operand가 바인딩 이름
-                        rest_binding_idx = prop.data.unary.operand;
-                        continue;
-                    }
                     if (prop.tag != .binding_property) continue;
                     // key 이름 수집
                     const key_idx_inner = prop.data.binary.left;
@@ -363,21 +349,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             // 2단계: 각 property를 declarator로 변환
-            // visitNode가 AST를 변형하므로 인덱스 루프 사용
+            // visitNode가 AST를 변형하므로 인덱스 루프 사용 (split.elements 슬라이스는 stale 가능)
+            const non_rest_len: u32 = @intCast(split.elements.len);
             var i_loop: u32 = 0;
-            while (i_loop < opd_len) : (i_loop += 1) {
+            while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
                 const prop = self.ast.getNode(@enumFromInt(raw_idx));
-
-                if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
-                    // rest: var rest = __rest(_ref, ["a", "b"])
-                    if (rest_binding_idx) |rest_idx| {
-                        const rest_decl = try buildRestDeclarator(self, rest_idx, ref_span, exclude_keys[0..exclude_count], span);
-                        try self.scratch.append(self.allocator, rest_decl);
-                        self.runtime_helpers.rest = true;
-                    }
-                    continue;
-                }
 
                 if (prop.tag != .binding_property) continue;
 
@@ -435,30 +412,29 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }
                 }
             }
+
+            // rest: var rest = __rest(_ref, ["a", "b"])
+            if (split.rest_operand) |rest_inner| {
+                const rest_decl = try buildRestDeclarator(self, rest_inner, ref_span, exclude_keys[0..exclude_count], span);
+                try self.scratch.append(self.allocator, rest_decl);
+                self.runtime_helpers.rest = true;
+            }
         }
 
         /// array_pattern의 각 요소를 declarator로 변환.
         /// [x, y] → var x = _ref[0], y = _ref[1]
         fn emitArrayPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const apd_start = pattern.data.list.start;
-            const apd_len = pattern.data.list.len;
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
 
             // visitNode가 AST를 변형하므로 인덱스 루프 사용
             var idx: u32 = 0;
-            while (idx < apd_len) : (idx += 1) {
+            while (idx < non_rest_len) : (idx += 1) {
                 const raw_idx = self.ast.extra_data.items[apd_start + idx];
                 const elem = self.ast.getNode(@enumFromInt(raw_idx));
 
                 if (elem.tag == .elision) continue; // 빈 슬롯 스킵
-
-                if (elem.tag == .rest_element or elem.tag == .binding_rest_element) {
-                    // ...rest → var rest = _ref.slice(N)
-                    const rest_binding = try self.visitNode(elem.data.unary.operand);
-                    const rest_init = try buildArraySlice(self, ref_span, idx, span);
-                    const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, rest_init, span);
-                    try self.scratch.append(self.allocator, rest_decl);
-                    continue;
-                }
 
                 // _ref[idx]
                 const elem_access = try makeArrayAccess(self, ref_span, idx, span);
@@ -494,6 +470,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const decl = try es_helpers.makeDeclarator(self, binding, elem_access, span);
                     try self.scratch.append(self.allocator, decl);
                 }
+            }
+
+            // ...rest → var rest = _ref.slice(N)
+            if (split.rest_operand) |rest_inner| {
+                const rest_binding = try self.visitNode(rest_inner);
+                const rest_init = try buildArraySlice(self, ref_span, non_rest_len, span);
+                const rest_decl = try es_helpers.makeDeclarator(self, rest_binding, rest_init, span);
+                try self.scratch.append(self.allocator, rest_decl);
             }
         }
 
