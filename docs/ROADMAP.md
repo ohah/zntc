@@ -108,6 +108,27 @@
 - **Control API** (`/reset-cache`) — 외부에서 캐시 무효화 트리거
 - **MCP 서버** (`/mcp`) — JSON-RPC 2.0, `initialize`/`tools/list`/`tools/call`. 도구: `reset_cache`, `get_build_events`. Claude Code 등 LLM 에이전트가 `.mcp.json`으로 직접 연결 가능
 
+## ✅ 최근 추가 (CLI / Config / Diagnostics / RN)
+
+- **`zts.config.json` 자동 로드** — cwd에 있으면 CLI 기본값으로 적용. `"$schema"` 선언으로 VSCode autocomplete (e8b8e9cf)
+- **TranspileOptions JSON schema 자동 생성** — `zig build schema` → `transpile-options.schema.json` (comptime reflection, 단일 소스 진실) (e9272ac1)
+- **TranspileOptions 단일 JSON payload** — CLI/NAPI/WASM 간 옵션 전달을 필드별 인자 → JSON 페이로드로 통일 (8047603a)
+- **Rich diagnostic 오버홀**
+  - `TranspileResult.errors`에 시맨틱 에러를 렌더된 문자열로 노출 (9dfea7dd)
+  - Multi-span label + redeclaration previously-here hint (9d9b3ab5)
+  - Previously-declared-here labels — 6개 재선언 에러 (75626350)
+  - Reference-to-definition label — 3개 에러 (853ad5c2)
+  - Help hint + 에러별 `ZTSxxxx` docs URL (fa257fed, 2698079e)
+  - 에러 발생 시 CLI exit 1 (05e12e5a)
+- **Bun 스타일 crash report** — panic handler + GitHub 신고 안내 (abd1d11b)
+- **React Native 통합 강화**
+  - Asset `@2x` / `@3x` scale variant 자동 감지 + emit (25114fd8)
+  - Metro AssetRegistry 호환 출력 (68d3418b)
+  - `asset_registry` 모듈 `require → require_xxx` 변환 (89a57756)
+  - `resolver.blockList` (7918387a), `resolve.fallback` (e6559104), `watchFolders` (b104b828)
+- **Plugin API 확장** — `onResolve` 훅이 `{ disabled: true }` 반환 허용 (49955634)
+- **BuildOptions 보완** — `strictExecutionOrder`, `scopeHoist`, `workletTransform` 추가 (eb909fcc)
+
 ## 의존성 관계
 ```
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
@@ -215,7 +236,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 배치 D ✅ 완료 ──────────────────────────────────────────────────
   metafile + analyze + inject + legal comments + keepNames
 
-배치 E (S급 일괄) ──────────────────────────────────────────────
+배치 E ✅ 완료 ──────────────────────────────────────────────────
   --outbase, --packages=external, --drop-labels, --pure:fn,
   --line-limit, --allow-overwrite, --log-limit, --tsconfig-raw,
   --node-paths, output.intro/outro, output.globals,

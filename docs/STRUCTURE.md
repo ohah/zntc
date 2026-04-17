@@ -2,11 +2,20 @@
 
 ```
 src/
-  main.zig                  # CLI 엔트리포인트 (zts 커맨드)
+  main.zig                  # CLI 엔트리포인트 (zts 커맨드, zts.config.json 자동 로드)
   root.zig                  # 라이브러리 엔트리포인트 (모든 모듈 re-export)
   transpile.zig             # 트랜스파일 파이프라인 통합 (파일/stdin → JS 출력)
-  diagnostic.zig            # 진단 시스템 (ParseError, SemanticError 통합)
+  transpile_options_dto_test.zig  # Zig DTO ↔ TS TranspileOptions 필드 sync 검증
+  diagnostic.zig            # 진단 (ParseError, SemanticError 통합, multi-span label)
+  diagnostic_renderer.zig   # rich diagnostic 렌더러 (코드 프레임, ANSI, multi-span)
+  rich_diagnostic.zig       # 렌더링 기반 구조 (SourceInfo, RenderOptions)
+  error_codes.zig           # ZTSxxxx 에러 코드 + docs URL 매핑
+  ansi.zig                  # ANSI 컬러 유틸
+  levenshtein.zig           # "did you mean?" 제안
+  string_escape.zig         # 공용 문자열 escape 유틸
+  crash_handler.zig         # panic handler (Bun 스타일 crash report)
   config.zig                # 설정 구조 (CompilerOptions, ResolverOptions, BundlerOptions)
+  config_test.zig           # 설정 로딩 테스트
   mimalloc.zig              # mimalloc 바인딩 (릴리즈 빌드 backing allocator)
   lexer/                    # Phase 1: 렉서 ✅
     mod.zig                 #   렉서 엔트리 + re-export
@@ -127,8 +136,10 @@ src/
       plugin_misc.zig       #     plugin, worker, JSX auto, RN
   server/                   # Phase 6b: 개발 서버 + HMR ✅
     mod.zig                 #   서버 엔트리 + re-export
-    dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh)
-    file_watcher.zig        #   파일 변경 감지 (watch/serve)
+    dev_server.zig          #   HTTP + WebSocket 서버 (HMR, Fast Refresh, SSE, MCP, Control API)
+    file_watcher.zig        #   파일 변경 감지 (watch/serve, watchFolders 지원)
+    watch_scan.zig          #   공통 디렉토리 walker (TOCTOU-free, glob filter)
+    tracked_file_set.zig    #   감시 대상 파일 추적
     mime.zig                #   MIME 타입 매핑
   regexp/                   # RegExp 검증 ✅
     mod.zig                 #   RegExp 엔트리 + re-export
@@ -141,8 +152,12 @@ src/
     mod.zig                 #   Test262 엔트리
     runner.zig              #   메타데이터 파서 + 테스트 실행기
 packages/
-  core/                     # N-API 바인딩 (npm 패키지)
-  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체)
+  core/                     # @zts/core — C NAPI .node addon (in-process, Node/Bun 내부 호출)
+  wasm/                     # @zts/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
+  shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat engines)
+  plugin/                   # @zts/plugin — CLI가 spawn하는 zts.config.{ts,js} 용 JSON IPC 호스트
+                            #   (CLI가 자식 프로세스로 실행 → stdin/stdout JSON per line)
+  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체, @zts/core 기반)
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈)
   integration/              # Bun 기반 CLI 통합 테스트

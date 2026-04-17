@@ -789,5 +789,33 @@
 - **관련**: #1195, PR #1196 (Phase 1a — worklet 이사), PR #1197 (Phase 1b — refresh 이사)
 - **알려진 cross-plugin 위반**: `worklet_plugin.zig`가 `plugins.refresh.suppress_registration`을 직접 세팅. 후속 과제로 core에 중립 API(`t.suppressRefreshInScope(...)` 등) 도입하여 해소 예정.
 
+### D098: TranspileOptions 전달을 단일 JSON payload로 통일 (2026-04-14)
+- **결정**: CLI/NAPI/WASM 공용 경계에서 옵션을 필드별 인자 → 단일 JSON 페이로드로 전환. `transpile.zig`의 `optionsFromJson()`이 유일한 파서.
+- **이유**: 필드별 인자는 타겟(CLI/NAPI/WASM)마다 파싱/검증을 중복 구현 → 필드 추가 시 3곳에 흩어진 변경. 실제로 `TranspileResult`의 `es_target` / `source_root` 같은 신규 필드가 일부 타겟에만 연결되어 있던 버그(2c63d360 수정) 발생.
+- **효과**: `zts.config.json` 자동 로드(D099)도 동일 파서 재사용 → 옵션이 한 곳에 정의되면 모든 경로로 자동 전파. DTO ↔ TS `TranspileOptions` 필드 sync는 `src/transpile_options_dto_test.zig`로 자동 검증.
+- **관련 커밋**: 8047603a(migrate), 0d1efd43(DTO sync test)
+
+### D099: `zts.config.json` 자동 로드 + JSON Schema 자동 생성 (2026-04-14)
+- **결정**:
+  1. CLI가 cwd에서 `zts.config.json`을 찾으면 자동 로드하여 기본값으로 적용. CLI 인자가 이 값을 덮어쓴다 — **우선순위: CLI > config.json**.
+  2. `zig build schema` → `transpile-options.schema.json`을 comptime reflection으로 생성 (biome 방식).
+  3. config 파일에 `"$schema": "./transpile-options.schema.json"` 선언으로 VSCode/IntelliJ autocomplete.
+- **이유**: 옵션 정의를 Zig 코드(`TranspileOptions`) **한 곳**에만 두고 JSON schema / TS 타입 / CLI flag / config 로더가 모두 이를 따르도록 단일 소스 진실(single source of truth) 확립. 수동 schema 유지 부담 제거.
+- **제약**: 번들러 전용 필드(`external`, `alias`, `entryPoints` 등)는 자동 로드 대상이 아님. `zts.config.{ts,js,...}` 또는 CLI/JS API로 지정.
+- **관련 커밋**: e9272ac1(schema gen), e8b8e9cf(config auto-load)
+
+### D100: Rich Diagnostic 시스템 확장 (2026-04-14)
+- **결정**: 단일 message + span 구조를 multi-span label + help hint + docs URL 구조로 확장.
+- **구성**:
+  - Primary span + 보조 `labels[]`: "previously declared here" (6개 재선언 에러), "referenced from" (3개 참조→정의 에러)
+  - `help`: 수정 방향 hint
+  - `docs_url`: `ZTSxxxx` 에러 코드별 Starlight 문서 URL (`documents/` 사이트, 소문자 `zts` 세그먼트 사용)
+- **노출 경로**:
+  - CLI: ANSI 컬러 코드 프레임 + exit 1
+  - `@zts/core` `transpile()`: `TranspileResult.errors`에 렌더된 문자열 (tsc 호환 — 에러 있어도 `code` 반환)
+  - `@zts/core` `build()`: `{ errors, warnings }` 구조화 배열 (`{ text, location }`)
+- **이유**: 참조 관계가 있는 에러(재선언, undefined reference)는 single-span으로 "어디서 문제가 시작됐는지"를 보여줄 수 없음. rust/rolldown/Bun 모두 multi-span으로 전환. docs URL은 Starlight 사이트와 연결하여 CLI → 웹 연속성 확보.
+- **관련 커밋**: 9dfea7dd, 9d9b3ab5, 75626350, 853ad5c2, fa257fed, 2698079e, abd1d11b(crash report)
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
