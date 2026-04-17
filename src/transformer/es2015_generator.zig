@@ -1186,39 +1186,46 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 },
                 .object_pattern => {
                     const props_start = node.data.list.start;
-                    const props_len = node.data.list.len;
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    const non_rest_len: u32 = @intCast(split.elements.len);
                     // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                     var p_loop: u32 = 0;
-                    while (p_loop < props_len) : (p_loop += 1) {
+                    while (p_loop < non_rest_len) : (p_loop += 1) {
                         const raw_idx = self.ast.extra_data.items[props_start + p_loop];
                         const prop = self.ast.getNode(@enumFromInt(raw_idx));
                         if (prop.tag == .binding_property) {
                             // {key: value} → value 쪽에서 identifier 추출
                             try collectBindingIdentifiers(self, prop.data.binary.right, hoisted);
-                        } else if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
-                            try collectBindingIdentifiers(self, prop.data.unary.operand, hoisted);
                         } else if (prop.tag == .assignment_pattern) {
                             // {x = default} → x
                             try collectBindingIdentifiers(self, prop.data.binary.left, hoisted);
                         }
                     }
+                    if (split.rest_operand) |op| {
+                        try collectBindingIdentifiers(self, op, hoisted);
+                    }
                 },
                 .array_pattern => {
                     const elems_start = node.data.list.start;
-                    const elems_len = node.data.list.len;
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    const non_rest_len: u32 = @intCast(split.elements.len);
                     // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
                     var e_loop: u32 = 0;
-                    while (e_loop < elems_len) : (e_loop += 1) {
+                    while (e_loop < non_rest_len) : (e_loop += 1) {
                         const raw_idx = self.ast.extra_data.items[elems_start + e_loop];
                         const elem_idx: NodeIndex = @enumFromInt(raw_idx);
                         if (elem_idx.isNone()) continue; // array hole
                         try collectBindingIdentifiers(self, elem_idx, hoisted);
+                    }
+                    if (split.rest_operand) |op| {
+                        try collectBindingIdentifiers(self, op, hoisted);
                     }
                 },
                 .assignment_pattern => {
                     // [x = default] → x
                     try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
                 },
+                // 외부 첫 호출이 직접 rest 노드일 수 있는 경로 안전망 (함수 파라미터 등).
                 .rest_element, .binding_rest_element => {
                     try collectBindingIdentifiers(self, node.data.unary.operand, hoisted);
                 },

@@ -89,28 +89,26 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     try names.append(self.allocator, text);
                 },
                 .array_pattern => {
-                    const list = node.data.list;
-                    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
-                    for (stmts) |raw| {
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    for (split.elements) |raw| {
                         try collectBindingNames(self, @enumFromInt(raw), names);
+                    }
+                    if (split.rest_operand) |op| {
+                        try collectBindingNames(self, op, names);
                     }
                 },
                 .object_pattern => {
-                    const list = node.data.list;
-                    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
-                    for (stmts) |raw| {
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    for (split.elements) |raw| {
                         const prop = self.ast.getNode(@enumFromInt(raw));
                         // binding_property: binary = { left: key, right: value, flags }
-                        // rest_element: unary = { operand, flags }
                         if (prop.tag == .binding_property) {
                             try collectBindingNames(self, prop.data.binary.right, names);
-                        } else if (prop.tag == .rest_element) {
-                            try collectBindingNames(self, prop.data.unary.operand, names);
                         }
                     }
-                },
-                .rest_element => {
-                    try collectBindingNames(self, node.data.unary.operand, names);
+                    if (split.rest_operand) |op| {
+                        try collectBindingNames(self, op, names);
+                    }
                 },
                 .assignment_pattern => {
                     // assignment_pattern은 binary: left = binding, right = default value
