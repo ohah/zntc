@@ -1069,6 +1069,7 @@ fn analyzeModuleWithTarget(source: []const u8, target: @import("../transformer/c
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     ana.is_module = true;
     ana.es_target = target;
+    ana.unsupported = @import("../transformer/compat.zig").fromESTarget(target);
     errdefer ana.deinit();
     try ana.analyze();
     return .{ .scanner = scanner, .parser = parser, .analyzer = ana };
@@ -1085,7 +1086,8 @@ test "TLA: await at top-level emits error when target < es2022" {
     const err = r.analyzer.errors.items[0];
     try std.testing.expect(std.mem.indexOf(u8, err.message, "Top-level await") != null);
     try std.testing.expectEqual(Diagnostic.Kind.semantic, err.kind);
-    try std.testing.expect(err.hint != null);
+    // hint는 PR #1441부터 Code.help()가 담당 (진단엔 미포함, 렌더러가 주입)
+    try std.testing.expectEqual(@import("../error_codes.zig").Code.top_level_await_target, err.code.?);
 }
 
 test "TLA: await at top-level no error when target >= es2022" {

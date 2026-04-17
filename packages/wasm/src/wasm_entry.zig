@@ -92,7 +92,7 @@ const decodeFlags = transpile_mod.decodeFlags;
 ///
 /// flags: 비트마스크 옵션 (decodeFlags 참고)
 /// unsupported: UnsupportedFeatures packed u32 (ES 다운레벨링 타겟)
-/// 문자열 옵션: jsx_factory, jsx_fragment, jsx_import_source (ptr+len 쌍)
+/// 문자열 옵션: jsx_factory, jsx_fragment, jsx_import_source, source_root (ptr+len 쌍)
 ///
 /// 반환값: packed u64 (상위 32비트: 포인터, 하위 32비트: 길이, 0=에러)
 export fn transpile(
@@ -108,6 +108,8 @@ export fn transpile(
     jsx_fragment_len: u32,
     jsx_import_source_ptr: u32,
     jsx_import_source_len: u32,
+    source_root_ptr: u32,
+    source_root_len: u32,
 ) u64 {
     clearError();
 
@@ -134,6 +136,8 @@ export fn transpile(
     if (fragment.len > 0) options.jsx_fragment = fragment;
     const import_source = readStr(jsx_import_source_ptr, jsx_import_source_len);
     if (import_source.len > 0) options.jsx_import_source = import_source;
+    const source_root = readStr(source_root_ptr, source_root_len);
+    if (source_root.len > 0) options.source_root = source_root;
 
     var result = transpile_mod.transpileWithCallback(wasm_alloc, source, file_path, options, &formatErrors) catch |err| {
         // formatErrors 콜백이 이미 상세 메시지를 last_error_buf에 저장했을 수 있음.

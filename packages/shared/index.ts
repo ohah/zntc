@@ -77,6 +77,8 @@ export interface TranspileOptions {
    * 지정 시 target보다 우선. core 패키지에서만 해석됨 (browserslist 의존).
    */
   browserslist?: string | string[];
+  /** 소스맵의 sourceRoot 필드 (기본: 빈 문자열) */
+  sourceRoot?: string;
 }
 
 export interface TranspileResult {

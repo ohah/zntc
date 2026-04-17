@@ -164,6 +164,7 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     options.jsxFactory ?? "",
     options.jsxFragment ?? "",
     options.jsxImportSource ?? "",
+    options.sourceRoot ?? "",
   );
 }
 

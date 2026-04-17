@@ -33,6 +33,8 @@ interface WasmExports {
     jsxFragmentLen: number,
     jsxImportSourcePtr: number,
     jsxImportSourceLen: number,
+    sourceRootPtr: number,
+    sourceRootLen: number,
   ): bigint;
   get_error_ptr(): number;
   get_error_len(): number;
@@ -176,6 +178,7 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   const [factoryPtr, factoryLen] = writeOptionalString(options.jsxFactory);
   const [fragmentPtr, fragmentLen] = writeOptionalString(options.jsxFragment);
   const [importSourcePtr, importSourceLen] = writeOptionalString(options.jsxImportSource);
+  const [sourceRootPtr, sourceRootLen] = writeOptionalString(options.sourceRoot);
 
   const flags = encodeFlags(options);
   const unsupported = targetToUnsupported(options.target);
@@ -194,6 +197,8 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
       fragmentLen,
       importSourcePtr,
       importSourceLen,
+      sourceRootPtr,
+      sourceRootLen,
     );
 
     const outPtr = Number(packed >> 32n);
@@ -223,5 +228,6 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     if (factoryPtr) wasm.dealloc(factoryPtr, factoryLen);
     if (fragmentPtr) wasm.dealloc(fragmentPtr, fragmentLen);
     if (importSourcePtr) wasm.dealloc(importSourcePtr, importSourceLen);
+    if (sourceRootPtr) wasm.dealloc(sourceRootPtr, sourceRootLen);
   }
 }
