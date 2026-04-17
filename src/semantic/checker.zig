@@ -380,12 +380,12 @@ fn collectBindingNames(
             try recordSeenName(ast.getText(node.span), node.span, seen, errors, allocator);
         },
         .array_pattern, .object_pattern => {
-            // list of elements/properties
-            if (node.data.list.len == 0) return;
-            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
-            const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-            for (indices) |raw_idx| {
+            const split = ast.nodeListSplitRest(node.data.list);
+            for (split.elements) |raw_idx| {
                 try collectBindingNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+            }
+            if (split.rest_operand) |op| {
+                try collectBindingNames(ast, op, seen, errors, allocator);
             }
         },
         .binding_property => {
@@ -395,10 +395,6 @@ fn collectBindingNames(
         .assignment_pattern => {
             // binary: { left = binding, right = default_value }
             try collectBindingNames(ast, node.data.binary.left, seen, errors, allocator);
-        },
-        .binding_rest_element, .rest_element => {
-            // unary: { operand = binding }
-            try collectBindingNames(ast, node.data.unary.operand, seen, errors, allocator);
         },
         else => {},
     }
