@@ -1289,8 +1289,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const me = ctor.data.extra;
 
             const params_list_old = self.ast.functionParamsList(ctor);
-            const params_start = params_list_old.start;
-            const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(me, 2);
 
             // super_call_this_alias save/restore (lowerSuperCall이 설정)
@@ -1298,8 +1296,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.super_call_this_alias = false;
             defer self.super_call_this_alias = saved_super_alias;
 
-            // ES2015 params lowering은 Pass 2에서 일괄 처리
-            const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
+            // ES2015 params lowering은 Pass 2에서 일괄 처리.
+            // TS parameter property(`constructor(public x)`)는 modifier 만 strip되어 일반 형태로 visit되지만,
+            // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
+            const pp = try self.visitParamsCollectProperties(params_list_old);
+            const new_params = pp.new_params;
 
             // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
             const saved_new_target_ctx = self.new_target_ctx;
@@ -1309,6 +1310,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.new_target_ctx = saved_new_target_ctx;
 
             var new_body = try visitMethodBody(self, body_idx, span);
+
+            // parameter property 가 있으면 visit된 body 앞에 `this.x = x` 삽입
+            if (pp.prop_count > 0 and !new_body.isNone()) {
+                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+            }
 
             // super() 호출이 있었으면 body 후처리:
             // 1. super() expression_statement → var _this = __callSuper(...)

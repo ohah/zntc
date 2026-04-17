@@ -2669,7 +2669,7 @@ pub const Transformer = struct {
         prop_count: usize,
     };
 
-    fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!ParamPropertyResult {
+    pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!ParamPropertyResult {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -2708,7 +2708,7 @@ pub const Transformer = struct {
     }
 
     /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다.
-    fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
+    pub fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
         const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement) return body_idx;
 
