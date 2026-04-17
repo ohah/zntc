@@ -115,8 +115,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
   });
 
   describe("class private + static + decorator 조합", () => {
-    // skip: private static field compound assignment(`#x++`) helper 호출 누락 — #1468
-    test.skip("private field + static + getter", async () => {
+    test("private field + static + getter", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -135,6 +134,127 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("3");
+    });
+
+    test("private static field 전 compound 연산자 혼합", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              static #n = 10;
+              static run() {
+                C.#n++;          // 11
+                ++C.#n;           // 12
+                C.#n--;           // 11
+                --C.#n;           // 10
+                C.#n += 5;        // 15
+                C.#n -= 3;        // 12
+                C.#n *= 2;        // 24
+                C.#n /= 4;        // 6
+                C.#n %= 4;        // 2
+                C.#n **= 3;       // 8
+                C.#n |= 1;        // 9
+                C.#n &= 12;       // 8
+                C.#n ^= 5;        // 13
+                C.#n <<= 1;       // 26
+                C.#n >>= 2;       // 6
+                C.#n >>>= 1;      // 3
+              }
+              static get v() { return C.#n; }
+            }
+            C.run();
+            console.log(C.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("private instance field compound 연산자 혼합", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Box {
+              #n = 4;
+              run() {
+                this.#n++;        // 5
+                this.#n += 3;     // 8
+                this.#n *= 2;     // 16
+                this.#n -= 1;     // 15
+                this.#n /= 5;     // 3
+              }
+              get v() { return this.#n; }
+            }
+            const b = new Box();
+            b.run();
+            console.log(b.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("static + instance private field 동일 클래스 혼합", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class M {
+              static #total = 0;
+              #local = 0;
+              add(n: number) {
+                this.#local += n;
+                M.#total += n;
+              }
+              get local() { return this.#local; }
+              static get total() { return M.#total; }
+            }
+            const a = new M(); const b = new M();
+            a.add(2); a.add(3); b.add(5);
+            console.log(a.local + "," + b.local + "," + M.total);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5,5,10");
+    });
+
+    test("private static field compound in static block / nested scope", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class S {
+              static #n = 1;
+              static {
+                S.#n += 10;       // 11
+                for (let i = 0; i < 3; i++) S.#n++;   // 14
+              }
+              static bump() {
+                const f = () => { S.#n *= 2; };
+                f();
+              }
+              static get v() { return S.#n; }
+            }
+            S.bump();             // 28
+            console.log(S.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("28");
     });
 
     test("private method + private field 상호 호출", async () => {

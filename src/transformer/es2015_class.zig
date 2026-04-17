@@ -765,49 +765,100 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, node.span);
         }
 
+        /// compound assignment(+=, -=, *=, ... >>>=)을 base binary op으로 매핑.
+        /// 순수 대입(=) / 논리 대입(??=, ||=, &&=)은 null.
+        /// 논리 대입은 es2021 lowering에서 먼저 처리되거나 별도 이슈로 남김.
+        fn compoundAssignBaseOp(op_flags: u16) ?u16 {
+            const op: token_mod.Kind = @enumFromInt(op_flags);
+            return switch (op) {
+                .plus_eq => @intFromEnum(token_mod.Kind.plus),
+                .minus_eq => @intFromEnum(token_mod.Kind.minus),
+                .star_eq => @intFromEnum(token_mod.Kind.star),
+                .slash_eq => @intFromEnum(token_mod.Kind.slash),
+                .percent_eq => @intFromEnum(token_mod.Kind.percent),
+                .star2_eq => @intFromEnum(token_mod.Kind.star2),
+                .amp_eq => @intFromEnum(token_mod.Kind.amp),
+                .pipe_eq => @intFromEnum(token_mod.Kind.pipe),
+                .caret_eq => @intFromEnum(token_mod.Kind.caret),
+                .shift_left_eq => @intFromEnum(token_mod.Kind.shift_left),
+                .shift_right_eq => @intFromEnum(token_mod.Kind.shift_right),
+                .shift_right3_eq => @intFromEnum(token_mod.Kind.shift_right3),
+                else => null,
+            };
+        }
+
+        /// instance/static 분기해서 private field get 호출을 구성.
+        fn buildPrivateFieldGetCall(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (mapping.is_static) return buildStaticPrivateFieldGet(self, mapping, obj_idx, span);
+            return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, span);
+        }
+
+        /// private field용 set 호출 생성 — new_value는 이미 완성된(new-AST) 노드여야 함.
+        /// obj_idx는 old AST 노드로, 내부에서 visit 수행.
+        fn buildPrivateFieldSetWithComputedValue(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, new_value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (mapping.is_static) {
+                const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");
+                const new_obj = try self.visitNode(obj_idx);
+                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+                self.runtime_helpers.class_static_private_field = true;
+                return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
+            }
+            const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
+            const new_obj = try self.visitNode(obj_idx);
+            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_value }, span);
+        }
+
         /// this.#x = v → instance: _x.set(this, v), static: __classStaticPrivateFieldSpecSet(receiver, ClassName, _x, v)
+        /// this.#x += v (및 다른 compound) → set(receiver, get(receiver) <op> v)
         pub fn lowerPrivateFieldSet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const left_node = self.ast.getNode(node.data.binary.left);
             const le = left_node.data.extra;
             if (le >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
             const mapping = findPrivateFieldMapping(self, self.readNodeIdx(le, 1)) orelse return null;
+
+            if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
+                const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, node.span);
+                const new_rhs = try self.visitNode(node.data.binary.right);
+                const computed = try self.ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{ .left = get_call, .right = new_rhs, .flags = bin_op } },
+                });
+                return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, node.span);
+            }
+
             if (mapping.is_static) {
                 return buildStaticPrivateFieldSet(self, mapping, obj_idx, node.data.binary.right, node.span);
             }
             return buildWeakMapCall(self, mapping.var_name, "set", obj_idx, &.{node.data.binary.right}, node.span);
         }
 
-        /// this.#x++ → _x.set(this, _x.get(this) + 1)
-        /// this.#x-- → _x.set(this, _x.get(this) - 1)
+        /// this.#x++ / --  →  _x.set(this, _x.get(this) + 1)  / - 1
+        /// static: ClassName.#x++ → __classStaticPrivateFieldSpecSet(ClassName, ClassName, _x, get(...) + 1)
+        /// postfix/prefix 동일한 결과(새 값)로 lowering — expression 사용 시 postfix 원래 값 반환 못함.
+        /// 현재 instance 경로도 같은 한계이며 #1468 범위 밖이라 동일하게 둠.
         pub fn lowerPrivateFieldUpdate(self: *Transformer, operand: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
             const oe = operand.data.extra;
             if (oe + 1 >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(oe, 0);
-            const var_name = findPrivateFieldVarName(self, self.readNodeIdx(oe, 1)) orelse return null;
-
-            // _x.get(this)
-            const get_call = try buildWeakMapCall(self, var_name, "get", obj_idx, &.{}, span);
+            const mapping = findPrivateFieldMapping(self, self.readNodeIdx(oe, 1)) orelse return null;
 
             const op_kind = op_flags & 0xFF;
             const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
             const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
 
-            // _x.get(this) + 1 or - 1
+            const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
             const one = try es_helpers.makeNumericLiteral(self, 1);
-            const add_node = try self.ast.addNode(.{
+            const computed = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = get_call, .right = one, .flags = bin_op } },
             });
-
-            // _x.set(this, add_node) — buildWeakMapCall 미사용: add_node가 이미 ast 노드라
-            // visitNode를 거치면 안 됨. obj_idx는 this이므로 이중 visit 안전.
-            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
-            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
-            const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
-            const new_obj = try self.visitNode(obj_idx);
-            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, add_node }, span);
+            return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, span);
         }
 
         /// _name.method(obj, extra_args...) 호출 생성.
@@ -838,12 +889,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (std.mem.eql(u8, pf.original_name, orig)) return pf;
             }
             return null;
-        }
-
-        /// private field property에서 매핑된 변수 이름만 찾음 (기존 코드 호환).
-        fn findPrivateFieldVarName(self: *const Transformer, prop_idx: NodeIndex) ?[]const u8 {
-            const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
-            return mapping.var_name;
         }
 
         /// static private field get: __classStaticPrivateFieldSpecGet(receiver, ClassName, _descriptor)
