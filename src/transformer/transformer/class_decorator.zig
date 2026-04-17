@@ -1009,6 +1009,58 @@ fn findSuperCallInsertPos(self: *const Transformer, body_idx: NodeIndex) ?u32 {
     return null;
 }
 
+/// derived class 합성 constructor 의 기본 shell `(...args)` 과 `super(...args);` 를 생성.
+/// has_super=true 경로에서만 호출. 두 노드는 독립 반환 — caller 가 scratch/body 조립에 배치.
+fn buildSuperSpreadArgsShell(self: *Transformer) Error!struct {
+    params_node: NodeIndex,
+    super_stmt: NodeIndex,
+} {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const args_span = try self.ast.addString("args");
+
+    // ...args formal parameter
+    const args_id = try self.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = args_span,
+        .data = .{ .string_ref = args_span },
+    });
+    const rest = try self.ast.addNode(.{
+        .tag = .rest_element,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
+    });
+    const params_list = try self.ast.addNodeList(&.{rest});
+    const params_node = try self.ast.addFormalParameters(params_list, zero_span);
+
+    // super(...args) expression_statement
+    const super_expr = try self.ast.addNode(.{
+        .tag = .super_expression,
+        .span = zero_span,
+        .data = .{ .none = 0 },
+    });
+    const args_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = args_span,
+        .data = .{ .string_ref = args_span },
+    });
+    const spread_args = try self.ast.addNode(.{
+        .tag = .spread_element,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
+    });
+    const call_args = try self.ast.addNodeList(&.{spread_args});
+    const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
+        @intFromEnum(super_expr), call_args.start, call_args.len, 0,
+    });
+    const super_stmt = try self.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
+    });
+
+    return .{ .params_node = params_node, .super_stmt = super_stmt };
+}
+
 /// block_statement body 에 new_stmts 를 insert_pos 위치에 splice 한 새 block_statement 반환.
 /// body 가 block_statement 가 아니면 body_idx 그대로 반환 (caller 가 fallback 처리).
 /// 선행 조건: new_stmts 생성 시 발생하는 AST 변형은 이 함수 호출 전에 완료되어야 함 —
@@ -1063,51 +1115,15 @@ pub fn buildConstructorWithFieldAssignments(
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-    var params_list = NodeList{ .start = 0, .len = 0 };
-
     // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
-    if (has_super) {
-        // ...args 파라미터
-        const args_span = try self.ast.addString("args");
-        const args_id = try self.ast.addNode(.{
-            .tag = .binding_identifier,
-            .span = args_span,
-            .data = .{ .string_ref = args_span },
-        });
-        const rest = try self.ast.addNode(.{
-            .tag = .rest_element,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
-        });
-        params_list = try self.ast.addNodeList(&.{rest});
-
-        // super(...args) 호출
-        const super_expr = try self.ast.addNode(.{
-            .tag = .super_expression,
-            .span = zero_span,
-            .data = .{ .none = 0 },
-        });
-        const args_ref = try self.ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = args_span,
-            .data = .{ .string_ref = args_span },
-        });
-        const spread_args = try self.ast.addNode(.{
-            .tag = .spread_element,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
-        });
-        const call_args = try self.ast.addNodeList(&.{spread_args});
-        const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
-            @intFromEnum(super_expr), call_args.start, call_args.len, 0,
-        });
-        const super_stmt = try self.ast.addNode(.{
-            .tag = .expression_statement,
-            .span = zero_span,
-            .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
-        });
-        try self.scratch.append(self.allocator, super_stmt);
-    }
+    const params_node: NodeIndex = if (has_super) blk: {
+        const shell = try buildSuperSpreadArgsShell(self);
+        try self.scratch.append(self.allocator, shell.super_stmt);
+        break :blk shell.params_node;
+    } else blk: {
+        const empty_params = try self.ast.addNodeList(&.{});
+        break :blk try self.ast.addFormalParameters(empty_params, zero_span);
+    };
 
     // this.x = value 할당들
     for (fields) |field| {
@@ -1131,7 +1147,6 @@ pub fn buildConstructorWithFieldAssignments(
     });
 
     const empty_decos = try self.ast.addNodeList(&.{});
-    const params_node = try self.ast.addFormalParameters(params_list, zero_span);
     return self.addExtraNode(.method_definition, zero_span, &.{
         @intFromEnum(ctor_key), @intFromEnum(params_node),
         @intFromEnum(body), 0, // flags=0 (non-static, normal method)
@@ -2449,46 +2464,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             defer self.scratch.shrinkRetainingCapacity(stmts_scratch_top);
 
             const ctor_params_node: NodeIndex = if (has_super) blk: {
-                const args_span = try self.ast.addString("args");
-                const args_id = try self.ast.addNode(.{
-                    .tag = .binding_identifier,
-                    .span = args_span,
-                    .data = .{ .string_ref = args_span },
-                });
-                const rest = try self.ast.addNode(.{
-                    .tag = .rest_element,
-                    .span = zero_span,
-                    .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
-                });
-                const params_list = try self.ast.addNodeList(&.{rest});
-                const params_node = try self.ast.addFormalParameters(params_list, zero_span);
-
-                const super_expr = try self.ast.addNode(.{
-                    .tag = .super_expression,
-                    .span = zero_span,
-                    .data = .{ .none = 0 },
-                });
-                const args_ref = try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = args_span,
-                    .data = .{ .string_ref = args_span },
-                });
-                const spread_args = try self.ast.addNode(.{
-                    .tag = .spread_element,
-                    .span = zero_span,
-                    .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
-                });
-                const call_args = try self.ast.addNodeList(&.{spread_args});
-                const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
-                    @intFromEnum(super_expr), call_args.start, call_args.len, 0,
-                });
-                const super_stmt = try self.ast.addNode(.{
-                    .tag = .expression_statement,
-                    .span = zero_span,
-                    .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
-                });
-                try self.scratch.append(self.allocator, super_stmt);
-                break :blk params_node;
+                const shell = try buildSuperSpreadArgsShell(self);
+                try self.scratch.append(self.allocator, shell.super_stmt);
+                break :blk shell.params_node;
             } else blk: {
                 const empty_params = try self.ast.addNodeList(&.{});
                 break :blk try self.ast.addFormalParameters(empty_params, zero_span);
