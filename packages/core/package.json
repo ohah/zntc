@@ -28,6 +28,9 @@
     "postinstall": "[ -f ../../zig-out/lib/zts.node ] && cp ../../zig-out/lib/zts.node . || true",
     "test": "bun test"
   },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
+  },
   "optionalDependencies": {
     "browserslist": "^4.24.0",
     "lightningcss": "^1.28.0"
