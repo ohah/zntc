@@ -331,11 +331,34 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 | 항목 | 난이도 | 현재 상태 | 설명 |
 |------|--------|----------|------|
-| **통합 테스트 확대** | L | 부분 완료 | ✅ Vite: multi-module TS/TSX 앱을 `vite-plugin-zts`로 프로덕션 번들 → Playwright 브라우저 실행 E2E (`tests/e2e/tests/vite-app-e2e.test.ts`). Remix/Next.js는 자체 빌드 시스템 의존이라 프레임워크 어댑터 레이어가 선행되어야 함 — 별도 로드맵(생태계 3단계)으로 이동 |
+| **통합 테스트 확대** | L | 부분 완료 | ✅ Vite: multi-module TS/TSX 앱을 `vite-plugin-zts`로 프로덕션 번들 → Playwright 브라우저 실행 E2E (`tests/e2e/tests/vite-app-e2e.test.ts`). **Remix/Next.js는 3단계(프레임워크 통합)로 이동** — 아래 "1단계 범위 결정" 참조 |
 | **watch/serve 장시간 안정성** | M | 부분 완료 | 150회 연속 rebuild 시뮬레이션 스트레스 테스트(`tests/integration/tests/watch-stress.test.ts`)로 RSS 기울기 <20KB/rebuild 검증 (실측 0.05). 실시간 8시간+ 실측은 수동 릴리즈 전 검증으로 유지 |
 | ~~**에러 메시지 품질**~~ | ✅ | 완료 | ANSI 컬러 출력 + Levenshtein "did you mean?" 제안 (ansi.zig, levenshtein.zig) |
 | ~~**source map 품질 검증**~~ | ✅ | 완료 | Playwright + CDP로 Chromium이 `sourceMappingURL`을 파싱하고 TS 파일명 breakpoint가 해석되는 E2E (`tests/e2e/tests/sourcemap-e2e.test.ts`) |
 | ~~**Node.js 호환성 edge case**~~ | ✅ | 완료 | `import.meta.{url,dirname,filename}` CJS/ESM 실행 검증, 심볼릭링크·상대경로 entry 번들 통합 테스트 (`tests/integration/tests/node-compat.test.ts`) |
+
+#### 1단계 범위 결정: Vite만 포함, Remix/Next.js는 3단계
+
+ROADMAP 원문은 "Next.js, Remix, Vite 앱 E2E 번들링 검증"을 묶었으나, 세 프레임워크의 ZTS 삽입 난이도가 질적으로 다르다. 1단계는 Vite만 수용.
+
+**Vite** — 번들러 교체 가능 구조. Vite 코어가 dev server / HMR / plugin API를 제공하고 TS/JSX 변환은 esbuild에 위임. `vite-plugin-zts`가 esbuild 자리에 들어감. 플러그인 하나로 통합.
+
+**Next.js** — 번들러(webpack / Turbopack)가 프레임워크 일부로 고정. ZTS 삽입 시 다음을 **전부** 다시 구현해야 함:
+- React Server Components (RSC payload 직렬화, 서버/클라이언트 경계 자동 분리)
+- `app/` / `pages/` 파일시스템 routing → manifest 생성
+- `next/image`, `next/link` 전용 transform + 런타임
+- SSR streaming, edge runtime, middleware, API routes 서버 전용 분리
+
+사실상 Turbopack 클론 작업. Vercel이 Rust로 2년+ 투입 중.
+
+**Remix (React Router v7)** — `@remix-run/dev` compiler가 핵심:
+- 파일시스템 routing → route manifest 변환
+- loader/action AST 분석 기반 **서버-클라이언트 이중 빌드** (loader 코드를 클라이언트 번들에서 자동 제거)
+- hydration 규약, Remix 런타임과의 manifest 계약
+
+ZTS의 일반 번들러로 이 경계 분리 불가. Remix compiler 클론 필요.
+
+**결론**: Next.js / Remix 지원은 "별도 어댑터 레이어"가 곧 "프레임워크 클론"을 의미하므로 **3단계(생태계)의 프레임워크 통합**에 귀속. 1단계 안정성 범위 밖. 얕은 검증("Remix 스타일 routes.tsx를 ZTS 일반 번들로 빌드만 성공")은 가치 대비 비용이 낮아 수요 발생 시 재검토.
 
 ### 2단계: CSS + 배포
 
@@ -354,7 +377,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 | ~~**import.meta.glob**~~ | ✅ | 완료 | Vite 호환 glob import (eager/import 옵션) |
 | **마이그레이션 가이드** | S | 없음 | esbuild → ZTS, Vite → ZTS 설정 대응표 |
 | ~~**vite-plugin-zts**~~ | ✅ | 완료 | Vite의 esbuild transform을 ZTS로 교체하는 플러그인 |
-| **프레임워크 통합** | XL | 없음 | Next.js/Remix/SvelteKit 플러그인 또는 어댑터 |
+| **프레임워크 통합** | XL | 없음 | Next.js/Remix/SvelteKit 어댑터. 각 프레임워크가 번들러를 내장하고 있어 사실상 어댑터 = compiler 클론 (Next는 RSC/라우터/transform, Remix는 loader 경계 분리). 1단계 통합 테스트에서 분리된 배경은 위 "1단계 범위 결정" 참조 |
 | **Vite 호환 모드** | XL | 없음 | `vite.config.js` 읽어서 마이그레이션 비용 제로 (장기 목표) |
 
 ### 우선순위 흐름
