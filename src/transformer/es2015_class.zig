@@ -794,6 +794,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// private field용 set 호출 생성 — new_value는 이미 완성된(new-AST) 노드여야 함.
         /// obj_idx는 old AST 노드로, 내부에서 visit 수행.
+        /// instance는 `__classPrivateFieldSet` helper, static은 수정된 spec helper 모두 value를 반환 (#1488).
         fn buildPrivateFieldSetWithComputedValue(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, new_value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (mapping.is_static) {
                 const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");
@@ -803,11 +804,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
             }
+            const helper = try es_helpers.makeIdentifierRef(self, "__classPrivateFieldSet");
             const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
-            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
-            const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const new_obj = try self.visitNode(obj_idx);
-            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_value }, span);
+            self.runtime_helpers.class_private_field_set = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, new_obj, new_value }, span);
         }
 
         /// this.#x = v → instance: _x.set(this, v), static: __classStaticPrivateFieldSpecSet(receiver, ClassName, _x, v)
@@ -842,10 +843,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, node.span);
             }
 
-            if (mapping.is_static) {
-                return buildStaticPrivateFieldSet(self, mapping, obj_idx, node.data.binary.right, node.span);
-            }
-            return buildWeakMapCall(self, mapping.var_name, "set", obj_idx, &.{node.data.binary.right}, node.span);
+            // plain `=` : right를 visit한 뒤 buildPrivateFieldSetWithComputedValue 경유 —
+            // instance(__classPrivateFieldSet) / static(__classStaticPrivateFieldSpecSet)
+            // 모두 value를 반환해 expression semantic 일치 (#1488).
+            const new_rhs = try self.visitNode(node.data.binary.right);
+            return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, new_rhs, node.span);
         }
 
         /// `this.#x ??=/||=/&&= v` lowering.
@@ -889,10 +891,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// this.#x++ / --  →  _x.set(this, _x.get(this) + 1)  / - 1
-        /// static: ClassName.#x++ → __classStaticPrivateFieldSpecSet(ClassName, ClassName, _x, get(...) + 1)
-        /// postfix/prefix 동일한 결과(새 값)로 lowering — expression 사용 시 postfix 원래 값 반환 못함.
-        /// 현재 instance 경로도 같은 한계이며 #1468 범위 밖이라 동일하게 둠.
+        /// prefix  ++this.#x → set(get() + 1)   (expression 값 = 새 값)
+        /// postfix this.#x++  → (_t = get(), set(_t + 1), _t)   (expression 값 = 이전 값)
+        /// op_flags 의 0x100 비트가 postfix 표시 (parser/expression.zig 참고).
         pub fn lowerPrivateFieldUpdate(self: *Transformer, operand: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
             const oe = operand.data.extra;
             if (oe + 1 >= self.ast.extra_data.items.len) return null;
@@ -901,8 +902,46 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const op_kind = op_flags & 0xFF;
             const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
+            const is_postfix = (op_flags & 0x100) != 0;
             const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
 
+            if (is_postfix) {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+                const temp_span = try es_helpers.makeTempVarSpan(self);
+                // _t = get()
+                const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
+                const tmp_ref_lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const init_assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = tmp_ref_lhs, .right = get_call, .flags = @intFromEnum(token_mod.Kind.eq) } },
+                });
+                try self.scratch.append(self.allocator, init_assign);
+                // set(_t + 1)
+                const tmp_ref_read = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const one = try es_helpers.makeNumericLiteral(self, 1);
+                const computed = try self.ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = tmp_ref_read, .right = one, .flags = bin_op } },
+                });
+                const set_call = try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, span);
+                try self.scratch.append(self.allocator, set_call);
+                // _t (최종 expression 값)
+                try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+
+                const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                const seq = try self.ast.addNode(.{
+                    .tag = .sequence_expression,
+                    .span = span,
+                    .data = .{ .list = seq_list },
+                });
+                return es_helpers.makeParenExpr(self, seq, span);
+            }
+
+            // prefix: set(get() + 1) — expression 값이 새 값이라 세팅 결과 그대로 사용
             const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
             const one = try es_helpers.makeNumericLiteral(self, 1);
             const computed = try self.ast.addNode(.{
