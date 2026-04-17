@@ -934,20 +934,13 @@ pub const Ast = struct {
         elements: []const u32,
     };
 
-    /// 지원 컨테이너: array_pattern / object_pattern / formal_parameters /
-    /// array_assignment_target / object_assignment_target.
-    /// rest 태그: rest_element / binding_rest_element / assignment_target_rest.
-    pub inline fn containerSplitRest(self: *const Ast, node: Node) ContainerRestSplit {
+    /// binding-pattern 컨테이너(array_pattern / object_pattern / formal_parameters /
+    /// array_assignment_target / object_assignment_target)의 NodeList에서
+    /// 마지막 element가 rest 노드(rest_element / binding_rest_element /
+    /// assignment_target_rest)인지 검사하고 분리해 반환한다.
+    /// 호출자는 보통 switch arm 안에서 컨테이너 태그를 이미 확인했으므로 NodeList만 넘긴다.
+    pub inline fn nodeListSplitRest(self: *const Ast, list: NodeList) ContainerRestSplit {
         const empty: ContainerRestSplit = .{ .rest_operand = null, .elements = &[_]u32{} };
-        const list = switch (node.tag) {
-            .array_pattern,
-            .object_pattern,
-            .formal_parameters,
-            .array_assignment_target,
-            .object_assignment_target,
-            => node.data.list,
-            else => return empty,
-        };
         if (list.len == 0) return empty;
         if (list.start + list.len > self.extra_data.items.len) return empty;
         const all = self.extra_data.items[list.start .. list.start + list.len];

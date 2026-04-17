@@ -905,12 +905,12 @@ pub const SemanticAnalyzer = struct {
                 self.setSymbolIdForPredeclared(node.span, ni);
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
-                const list = node.data.list;
-                if (list.len == 0) return;
-                if (list.start + list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-                for (indices) |raw| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| {
                     self.setSymbolIdForPredeclaredBinding(@enumFromInt(raw));
+                }
+                if (split.rest_operand) |op| {
+                    self.setSymbolIdForPredeclaredBinding(op);
                 }
             },
             .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
@@ -918,9 +918,6 @@ pub const SemanticAnalyzer = struct {
             },
             .assignment_pattern, .assignment_target_with_default => {
                 self.setSymbolIdForPredeclaredBinding(node.data.binary.left);
-            },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
-                self.setSymbolIdForPredeclaredBinding(node.data.unary.operand);
             },
             else => {},
         }
@@ -1590,12 +1587,12 @@ pub const SemanticAnalyzer = struct {
                 try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
-                const list = node.data.list;
-                if (list.len == 0) return;
-                if (list.start + list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-                for (indices) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     try self.predeclareBindingNames(@enumFromInt(raw_idx), kind);
+                }
+                if (split.rest_operand) |op| {
+                    try self.predeclareBindingNames(op, kind);
                 }
             },
             .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
@@ -1604,9 +1601,6 @@ pub const SemanticAnalyzer = struct {
             .assignment_pattern, .assignment_target_with_default => {
                 // default value(right)는 순회하지 않고, 바인딩 이름(left)만 추출
                 try self.predeclareBindingNames(node.data.binary.left, kind);
-            },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
-                try self.predeclareBindingNames(node.data.unary.operand, kind);
             },
             else => {},
         }
@@ -1623,12 +1617,12 @@ pub const SemanticAnalyzer = struct {
                 // 단순 식별자 — 표현식 없음
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
-                const list = node.data.list;
-                if (list.len == 0) return;
-                if (list.start + list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-                for (indices) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     try self.visitBindingPatternExpressions(@enumFromInt(raw_idx));
+                }
+                if (split.rest_operand) |op| {
+                    try self.visitBindingPatternExpressions(op);
                 }
             },
             .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
@@ -1638,9 +1632,6 @@ pub const SemanticAnalyzer = struct {
                 // default value(right)를 순회
                 try self.visitBindingPatternExpressions(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
-            },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
-                try self.visitBindingPatternExpressions(node.data.unary.operand);
             },
             else => {},
         }
@@ -1935,22 +1926,13 @@ pub const SemanticAnalyzer = struct {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
                 try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
             },
-            .object_pattern, .object_assignment_target => {
-                const list = node.data.list;
-                if (list.len == 0) return;
-                if (list.start + list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-                for (indices) |raw_idx| {
+            .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     try self.declareBindingPattern(@enumFromInt(raw_idx));
                 }
-            },
-            .array_pattern, .array_assignment_target => {
-                const list = node.data.list;
-                if (list.len == 0) return;
-                if (list.start + list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-                for (indices) |raw_idx| {
-                    try self.declareBindingPattern(@enumFromInt(raw_idx));
+                if (split.rest_operand) |op| {
+                    try self.declareBindingPattern(op);
                 }
             },
             .binding_property => {
@@ -2257,19 +2239,17 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .array_pattern => {
-                // list: binding elements
-                if (node.data.list.len == 0) return;
-                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (indices) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
+                }
+                if (split.rest_operand) |op| {
+                    try self.collectAndCheckCatchBindings(op, names, count);
                 }
             },
             .object_pattern => {
-                if (node.data.list.len == 0) return;
-                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
-                const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                for (indices) |raw_idx| {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
                     const prop_idx: NodeIndex = @enumFromInt(raw_idx);
                     if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) continue;
                     const prop = self.ast.getNode(prop_idx);
@@ -2281,13 +2261,13 @@ pub const SemanticAnalyzer = struct {
                         try self.collectAndCheckCatchBindings(prop_idx, names, count);
                     }
                 }
+                if (split.rest_operand) |op| {
+                    try self.collectAndCheckCatchBindings(op, names, count);
+                }
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = pattern, right = default }
                 try self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
-            },
-            .rest_element => {
-                try self.collectAndCheckCatchBindings(node.data.unary.operand, names, count);
             },
             else => {},
         }
@@ -2713,13 +2693,14 @@ pub const SemanticAnalyzer = struct {
             .binding_identifier, .assignment_target_identifier => {
                 try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
             },
-            .array_pattern, .array_assignment_target => {
-                // list of elements
-                try self.registerBindingList(node.data.list, kind);
-            },
-            .object_pattern, .object_assignment_target => {
-                // list of binding_property
-                try self.registerBindingList(node.data.list, kind);
+            .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
+                    try self.registerBinding(@enumFromInt(raw_idx), kind);
+                }
+                if (split.rest_operand) |op| {
+                    try self.registerBinding(op, kind);
+                }
             },
             .binding_property,
             .assignment_target_property_identifier,
@@ -2734,30 +2715,18 @@ pub const SemanticAnalyzer = struct {
                 // 기본값 순회 — 식별자 참조를 포함할 수 있음 (e.g. function f(a = imported))
                 try self.visitNode(node.data.binary.right);
             },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
-                // unary: { operand = binding }
-                try self.registerBinding(node.data.unary.operand, kind);
-            },
             else => {},
-        }
-    }
-
-    fn registerBindingList(self: *SemanticAnalyzer, list: NodeList, kind: SymbolKind) AllocError!void {
-        if (list.len == 0) return;
-        if (list.start + list.len > self.ast.extra_data.items.len) return;
-        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
-            try self.registerBinding(@enumFromInt(raw_idx), kind);
         }
     }
 
     /// 함수 파라미터를 현재 스코프에 등록한다.
     fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
-        if (params.len == 0) return;
-        if (params.start + params.len > self.ast.extra_data.items.len) return;
-        const param_indices = self.ast.extra_data.items[params.start .. params.start + params.len];
-        for (param_indices) |raw_idx| {
+        const split = self.ast.nodeListSplitRest(params);
+        for (split.elements) |raw_idx| {
             try self.registerBinding(@enumFromInt(raw_idx), .parameter);
+        }
+        if (split.rest_operand) |op| {
+            try self.registerBinding(op, .parameter);
         }
     }
 
