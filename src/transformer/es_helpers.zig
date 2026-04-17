@@ -231,6 +231,15 @@ pub fn buildStringNode(self: anytype, text: []const u8, _: Span) !NodeIndex {
 
 /// `base == null` 노드를 새 AST에 생성.
 pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
+    return makeNullCompare(self, base, span, .eq2);
+}
+
+/// `base != null` 노드를 새 AST에 생성.
+pub fn makeNeqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
+    return makeNullCompare(self, base, span, .neq);
+}
+
+fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kind) !NodeIndex {
     const null_span = try self.ast.addString("null");
     const null_node = try self.ast.addNode(.{
         .tag = .null_literal,
@@ -243,7 +252,7 @@ pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
         .data = .{ .binary = .{
             .left = base,
             .right = null_node,
-            .flags = @intFromEnum(token_mod.Kind.eq2),
+            .flags = @intFromEnum(op),
         } },
     });
 }

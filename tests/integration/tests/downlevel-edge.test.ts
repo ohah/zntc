@@ -257,6 +257,58 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("28");
     });
 
+    test("private field logical assign (??= ||= &&=) instance/static", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #v: number | null = null;
+              static #s: number | null = null;
+              initV(n: number) { this.#v ??= n; }
+              orV(n: number) { this.#v ||= n; }
+              andV(n: number) { this.#v &&= (this.#v as number) * n; }
+              static initS(n: number) { C.#s ??= n; }
+              static orS(n: number) { C.#s ||= n; }
+              static andS(n: number) { C.#s &&= (C.#s as number) * n; }
+              get v() { return this.#v; }
+              static get s() { return C.#s; }
+            }
+            const c = new C();
+            c.initV(10); c.initV(999); c.orV(7); c.andV(3);
+            C.initS(5); C.initS(999); C.orS(8); C.andS(4);
+            console.log(c.v + "," + C.s);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("30,20");
+    });
+
+    test("private field ??= 다운레벨 ternary (target=es2019)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #v: number | null = null;
+              init(n: number) { this.#v ??= n; }
+              get v() { return this.#v; }
+            }
+            const c = new C();
+            c.init(42); c.init(0);
+            console.log(c.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
     test("private method + private field 상호 호출", async () => {
       const result = await bundleAndRun(
         {
