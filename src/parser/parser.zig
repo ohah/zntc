@@ -632,14 +632,12 @@ pub const Parser = struct {
         self.scratch.shrinkRetainingCapacity(top);
     }
 
-    /// rest parameter가 마지막이 아니면 에러.
-    /// rest 노드(rest_element는 binding 컨텍스트, spread_element는 cover grammar
-    /// reinterpret 경로) 뒤에 comma가 오면 rest가 마지막이 아닌 것.
+    /// rest parameter가 마지막이 아니면 에러. binding.zig 파싱 경로에서 호출되며
+    /// 항상 rest_element 태그를 본다 (cover grammar 경로는 정규화 후 별도 검증).
     /// 단, ambient context (declare)에서 trailing comma (,...) → ) 는 허용.
     pub fn checkRestParameterLast(self: *Parser, param: NodeIndex) ParseError2!void {
         if (param.isNone() or self.current() != .comma) return;
-        const tag = self.ast.getNode(param).tag;
-        if (tag != .rest_element and tag != .spread_element) return;
+        if (self.ast.getNode(param).tag != .rest_element) return;
         // ambient context에서 trailing comma (rest 뒤 comma + r_paren)는 허용
         if (self.ctx.in_ambient) {
             const next = try self.peekNextKind();
@@ -1234,6 +1232,8 @@ pub const Parser = struct {
                     }
                     try self.checkBindingRestInit(elem.data.unary.operand);
                     _ = try self.coverExpressionToAssignmentTarget(elem.data.unary.operand, false);
+                    // binding 컨텍스트로 reinterpret했으므로 태그도 rest_element로 정규화
+                    self.ast.setTag(elem_idx, .rest_element);
                 } else {
                     _ = try self.coverExpressionToAssignmentTarget(elem_idx, false);
                 }
@@ -1245,6 +1245,7 @@ pub const Parser = struct {
             }
             try self.checkBindingRestInit(node.data.unary.operand);
             _ = try self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
+            self.ast.setTag(idx, .rest_element);
             try self.scratch.append(self.allocator, idx);
         } else {
             _ = try self.coverExpressionToAssignmentTarget(idx, false);
