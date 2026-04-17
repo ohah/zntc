@@ -789,12 +789,10 @@ const projects: ProjectConfig[] = [
     pkg: "ts-results-es",
     entry: `import { Ok } from 'ts-results-es';\nconst r = new Ok(42).map(n => n + 1);\nconsole.log(r.isOk(), r.value);`,
   },
-  // remeda: purry 함수 오버로딩 패턴이 번들러 scope hoisting과 충돌
-  // → 단순 import만 테스트
   {
     name: "remeda",
     pkg: "remeda",
-    entry: `import { unique } from 'remeda';\nconsole.log(typeof unique);`,
+    entry: `import { pipe, map, filter } from 'remeda';\nconst r = pipe([1,2,3,4,5], filter((x: number) => x > 1), map((x: number) => x * 2));\nconsole.log(JSON.stringify(r));`,
   },
   {
     name: "nanostores",

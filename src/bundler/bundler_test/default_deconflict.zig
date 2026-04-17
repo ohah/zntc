@@ -786,3 +786,45 @@ test "Default: regular export default identifier still self-ref (no regression)"
     // regular default는 _ns suffix 없어야 — self-ref 최적화 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value_ns") == null);
 }
+
+test "Deconflict: rest parameter shadows renamed function (#1457)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { t as ignore } from "./shadow.js";
+        \\import { t as fn } from "./pipe.js";
+        \\globalThis.__out = [ignore, fn(99, 10, 20, 30)];
+    );
+    try writeFile(tmp.dir, "shadow.js", "export const t = \"x\";");
+    try writeFile(tmp.dir, "pipe.js",
+        \\export function t(e, ...t) {
+        \\  return [e, t.length, t.map((x) => x * 2)];
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    const fn_marker = "function ";
+    const fn_start = std.mem.indexOf(u8, result.output, fn_marker) orelse return error.TestUnexpectedResult;
+    const name_start = fn_start + fn_marker.len;
+    const paren = std.mem.indexOfScalarPos(u8, result.output, name_start, '(') orelse return error.TestUnexpectedResult;
+    const fn_name = result.output[name_start..paren];
+    // pipe.js의 함수 t는 shadow.js의 t와 충돌해 rename된다.
+    try std.testing.expect(!std.mem.eql(u8, fn_name, "t"));
+
+    const length_ref = try std.fmt.allocPrint(std.testing.allocator, "{s}.length", .{fn_name});
+    defer std.testing.allocator.free(length_ref);
+    const map_ref = try std.fmt.allocPrint(std.testing.allocator, "{s}.map", .{fn_name});
+    defer std.testing.allocator.free(map_ref);
+    // 함수 내부의 rest 파라미터 `t`가 renamed 함수명으로 잘못 rewrite되면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, length_ref) == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, map_ref) == null);
+}

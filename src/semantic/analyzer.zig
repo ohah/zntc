@@ -919,7 +919,7 @@ pub const SemanticAnalyzer = struct {
             .assignment_pattern, .assignment_target_with_default => {
                 self.setSymbolIdForPredeclaredBinding(node.data.binary.left);
             },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
+            .binding_rest_element, .rest_element, .assignment_target_rest, .spread_element => {
                 self.setSymbolIdForPredeclaredBinding(node.data.unary.operand);
             },
             else => {},
@@ -1605,7 +1605,7 @@ pub const SemanticAnalyzer = struct {
                 // default value(right)는 순회하지 않고, 바인딩 이름(left)만 추출
                 try self.predeclareBindingNames(node.data.binary.left, kind);
             },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
+            .binding_rest_element, .rest_element, .assignment_target_rest, .spread_element => {
                 try self.predeclareBindingNames(node.data.unary.operand, kind);
             },
             else => {},
@@ -1639,7 +1639,7 @@ pub const SemanticAnalyzer = struct {
                 try self.visitBindingPatternExpressions(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
             },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
+            .binding_rest_element, .rest_element, .assignment_target_rest, .spread_element => {
                 try self.visitBindingPatternExpressions(node.data.unary.operand);
             },
             else => {},
@@ -2286,7 +2286,7 @@ pub const SemanticAnalyzer = struct {
                 // binary: { left = pattern, right = default }
                 try self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
             },
-            .rest_element => {
+            .rest_element, .spread_element => {
                 try self.collectAndCheckCatchBindings(node.data.unary.operand, names, count);
             },
             else => {},
@@ -2734,7 +2734,10 @@ pub const SemanticAnalyzer = struct {
                 // 기본값 순회 — 식별자 참조를 포함할 수 있음 (e.g. function f(a = imported))
                 try self.visitNode(node.data.binary.right);
             },
-            .binding_rest_element, .rest_element, .assignment_target_rest => {
+            // parser/binding.zig는 파라미터 위치의 `...x`를 spread_element로 만든다 — binding
+            // 컨텍스트의 rest로 함께 처리하지 않으면 rest 파라미터가 함수 스코프에 등록되지 않아
+            // 함수 내부에서 outer 동명 심볼로 잘못 resolve된다.
+            .binding_rest_element, .rest_element, .assignment_target_rest, .spread_element => {
                 // unary: { operand = binding }
                 try self.registerBinding(node.data.unary.operand, kind);
             },
