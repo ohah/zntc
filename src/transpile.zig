@@ -212,6 +212,7 @@ pub fn transpileWithCallback(
     analyzer.is_ts = parser.is_ts;
     analyzer.is_flow = parser.is_flow;
     analyzer.es_target = options.es_target;
+    analyzer.unsupported = options.unsupported;
     analyzer.analyze() catch return error.SemanticError;
     if (analyzer.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);

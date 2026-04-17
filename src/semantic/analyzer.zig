@@ -75,9 +75,14 @@ pub const SemanticAnalyzer = struct {
     /// 함수/arrow 내부의 await는 포함하지 않음.
     has_top_level_await: bool = false,
 
-    /// ES 타겟 (--target 옵션). null이면 타겟 검증을 스킵한다.
-    /// es2022 미만에서 top-level await를 사용하면 진단을 발생시킨다.
+    /// ES 타겟 (--target 옵션). null이면 에러 메시지에서 타겟 이름 생략.
+    /// 진단 트리거 자체는 `unsupported` 비트로 판단 — WASM/NAPI 경로에도 적용된다.
     es_target: ?@import("../transformer/compat.zig").ESTarget = null,
+
+    /// 타겟에서 미지원 feature 비트. `top_level_await` 비트가 set이면 ZTS0001 발생.
+    /// CLI/WASM/NAPI 모두 동일한 비트마스크로 타겟 정보를 전달하므로,
+    /// 이 필드를 기준으로 진단하면 모든 진입점에서 일관된 동작 보장.
+    unsupported: @import("../transformer/compat.zig").UnsupportedFeatures = .{},
 
     /// 메모리 할당자
     allocator: std.mem.Allocator,
@@ -320,32 +325,22 @@ pub const SemanticAnalyzer = struct {
         return null;
     }
 
-    /// 현재 스코프 체인에 function 스코프가 있는지 확인한다.
-    /// TLA 감지에 사용: function 안이면 await는 TLA가 아님.
-    /// es_target < es2022일 때 top-level await 진단을 발생시킨다.
-    /// es_target이 null이면 (타겟 미지정) 진단을 생략한다.
+    /// top-level await가 타겟에서 미지원일 때 진단을 발생시킨다.
+    /// `unsupported.top_level_await` 비트 기반 — CLI/WASM/NAPI 모두 동일 경로로 트리거.
+    /// es_target이 명시됐으면 메시지에 이름 포함, 없으면 일반 문구.
     fn emitTopLevelAwaitDiag(self: *SemanticAnalyzer, span: Span) !void {
-        const compat = @import("../transformer/compat.zig");
-        const target = self.es_target orelse return; // 타겟 미지정이면 스킵
-        if (@intFromEnum(target) >= @intFromEnum(compat.ESTarget.es2022)) return; // es2022 이상이면 OK
+        if (!self.unsupported.top_level_await) return;
 
-        // deinit에서 message/hint를 free하므로 allocPrint로 할당
-        const msg = try std.fmt.allocPrint(
-            self.allocator,
-            "Top-level await is not available in the configured target environment ({s})",
-            .{@tagName(target)},
-        );
-        const hint = try self.allocator.dupe(
-            u8,
-            "Set target to 'es2022' or higher to use top-level await",
-        );
+        const msg = if (self.es_target) |t|
+            try std.fmt.allocPrint(self.allocator, "Top-level await is not available in the configured target environment ({s})", .{@tagName(t)})
+        else
+            try self.allocator.dupe(u8, "Top-level await is not available in the configured target environment");
 
         try self.errors.append(self.allocator, .{
             .span = span,
             .message = msg,
             .kind = .semantic,
             .code = .top_level_await_target,
-            .hint = hint,
         });
     }
 

@@ -89,11 +89,11 @@ fn getUint32Arg(env: c.napi_env, value: c.napi_value) u32 {
 
 // ─── transpile 함수 ───
 
-/// transpile(source, filename, flags, unsupported, jsxFactory, jsxFragment, jsxImportSource)
-/// → { code: string, map?: string }
+/// transpile(source, filename, flags, unsupported, jsxFactory, jsxFragment, jsxImportSource, sourceRoot)
+/// → { code: string, map?: string, errors?: string }
 fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
-    var argc: usize = 7;
-    var argv: [7]c.napi_value = undefined;
+    var argc: usize = 8;
+    var argv: [8]c.napi_value = undefined;
     if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
         return throwError(env, "failed to get arguments");
     }
@@ -125,6 +125,8 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     defer if (jsx_fragment) |f| native_alloc.free(f);
     const jsx_import_source = if (argc > 6) getStringArg(env, argv[6], native_alloc) else null;
     defer if (jsx_import_source) |f| native_alloc.free(f);
+    const source_root = if (argc > 7) getStringArg(env, argv[7], native_alloc) else null;
+    defer if (source_root) |f| native_alloc.free(f);
 
     // 옵션 구성
     var options = transpile_mod.decodeFlags(flags);
@@ -137,6 +139,9 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     };
     if (jsx_import_source) |f| if (f.len > 0) {
         options.jsx_import_source = f;
+    };
+    if (source_root) |f| if (f.len > 0) {
+        options.source_root = f;
     };
 
     // 트랜스파일 실행
