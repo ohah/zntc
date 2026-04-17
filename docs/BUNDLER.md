@@ -227,8 +227,8 @@ const Module = struct {
   - io_uring (Linux): inotify보다 시스템콜 오버헤드 적은 비동기 I/O (성능 최적화 시점)
 - **증분 재빌드**: 파일 변경 → 모듈 그래프에서 영향받는 모듈만 재빌드 → HMR 전송
 
-## React Native 지원 (Rollipop/bungae 방식 — Metro 레거시 불필요)
-- **참고**: Rollipop (bungae/reference/rollipop), bungae/oxc-bundler — Rolldown 위에서 Metro를 대체
+## React Native 지원 (Rolldown 방식 — Metro 레거시 불필요)
+- **방향**: 표준 ESM 번들러(Rolldown 계열) 위에 RN 특화 기능을 플러그인/코어 옵션으로 얹는 접근. Metro의 런타임 규약을 그대로 들고 가지 않음.
 - **불필요한 Metro 레거시** (구현하지 않음):
   - `__d` 래핑 — 표준 스코프 호이스팅으로 대체
   - Haste 모듈 시스템 — Node.js 표준 해석으로 대체
@@ -237,8 +237,8 @@ const Module = struct {
 - **필요한 RN 특화 기능**:
   - ~~`platformResolverPlugin`~~ — ✅ 코어 옵션으로 구현 (`--resolve-extensions`, `--main-fields`)
   - ~~`flowStripPlugin`~~ — ✅ ZTS 코어에서 직접 구현 (`--flow`, flow.zig)
-  - `preludePlugin` — polyfill/InitializeCore 주입 (Bungae에서 플러그인으로)
-  - `assetPlugin` — 이미지 등 에셋 처리 (Bungae에서 플러그인으로)
+  - `preludePlugin` — polyfill/InitializeCore 주입 (플러그인으로)
+  - `assetPlugin` — 이미지 등 에셋 처리 (플러그인으로)
   - ~~`hermesCompatPlugin`~~ — ✅ `--target=es5`로 대응
   - ~~`react-refresh`~~ — ✅ ZTS dev server에 내장
   - ~~글로벌 주입~~ — ✅ `--define:__DEV__=true` 등

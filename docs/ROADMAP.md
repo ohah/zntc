@@ -102,7 +102,7 @@
 
 ## ✅ 최근 추가 (Dev Server 확장)
 
-- **SSE 이벤트 스트림** (`/sse/events`) — `server_ready`, `watch_change`, `bundle_build_*`, `cache_reset` 실시간 브로드캐스트 (rollipop 호환)
+- **SSE 이벤트 스트림** (`/sse/events`) — `server_ready`, `watch_change`, `bundle_build_*`, `cache_reset` 실시간 브로드캐스트 (Rolldown DevEngine 호환)
 - **Control API** (`/reset-cache`) — 외부에서 캐시 무효화 트리거
 - **MCP 서버** (`/mcp`) — JSON-RPC 2.0, `initialize`/`tools/list`/`tools/call`. 도구: `reset_cache`, `get_build_events`. Claude Code 등 LLM 에이전트가 `.mcp.json`으로 직접 연결 가능
 

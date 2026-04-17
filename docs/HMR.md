@@ -14,12 +14,12 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 - 웹 타겟: `import.meta.hot` (Vite 호환, ESM 네이티브)
 - RN 타겟: `module.hot` (Metro 호환, RN 내장 HMRClient 재사용)
 - 내부 HMR 엔진은 하나, API 표면만 다름
-- 번개(bungae) oxc-bundler가 동일 방식: `import.meta.hot` 기본 + metro-runtime HMRClient 교체 플러그인
+- Rolldown 계열도 동일 방식: `import.meta.hot` 기본 + metro-runtime HMRClient 교체 플러그인
 
 ### D058. HMR 프로토콜: Vite 호환 + Metro 어댑터
 - 웹: Vite HMR 프로토콜 (WebSocket JSON 메시지)
 - RN: Metro HMR 프로토콜 (`update-start` → `update` → `update-done`)
-- 롤리팝(rollipop)은 자체 프로토콜이지만 RN 업데이트마다 호환성 검증 필요 → Metro 호환이 유지보수 비용 낮음
+- 자체 프로토콜 방식은 RN 업데이트마다 호환성 검증 필요 → Metro 호환이 유지보수 비용 낮음
 
 ### D059. 동시성: `std.Thread.spawn` per-connection
 - esbuild goroutine과 유사
@@ -44,7 +44,6 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 │ Vite        │ import.meta.hot     │ ESM 네이티브                 │
 │ Rolldown    │ import.meta.hot     │ Vite 호환                    │
 │ Metro       │ module.hot (커스텀)  │ CJS + RN 내장 HMRClient     │
-│ 번개(oxc)   │ import.meta.hot     │ Rolldown DevEngine + 어댑터  │
 │ ZTS (결정)  │ import.meta.hot 기본 │ Vite 호환 + RN module.hot   │
 └─────────────┴─────────────────────┴─────────────────────────────┘
 ```
@@ -85,8 +84,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 ```
 
 ## 참고 프로젝트
-- **번개(bungae)**: `../bungae/` — oxc-bundler HMR (Rolldown DevEngine, `import.meta.hot`)
-- **롤리팝(rollipop)**: `../bungae/reference/rollipop/` — 자체 HMR 프로토콜
+- **Rolldown**: `references/rolldown/` — Rolldown DevEngine, `import.meta.hot`
 - **Metro**: `references/metro/packages/metro-runtime/` — `module.hot`, Metro HMR 프로토콜
 - **Vite**: `references/vite/packages/vite/src/client/` — `import.meta.hot`, Vite HMR 프로토콜
 - **esbuild**: `--serve` 모드 — 최소 구현 참고
