@@ -2074,8 +2074,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("finally-wins");
     });
 
-    // skip: ES5 generator state machine의 for loop + break op 시퀀스 빌드 오류 — #1480
-    test.skip("generator + yield in for loop with break", async () => {
+    test("generator + yield in for loop with break", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -2096,6 +2095,127 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("0,1,2,3,4");
+    });
+
+    test("generator + for loop continue skips odd", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              for (let i = 0; i < 6; i++) {
+                if (i % 2 === 1) continue;
+                yield i;
+              }
+            }
+            const arr: any[] = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,2,4");
+    });
+
+    test("generator + while loop with break", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              let i = 0;
+              while (i < 10) {
+                if (i === 3) break;
+                yield i;
+                i++;
+              }
+            }
+            const arr: any[] = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,2");
+    });
+
+    test("generator + 중첩 for loop, inner break만", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 10; j++) {
+                  if (j === 2) break;
+                  yield i * 10 + j;
+                }
+              }
+            }
+            const arr: any[] = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,10,11,20,21");
+    });
+
+    test("generator + labeled outer break", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              outer: for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 10; j++) {
+                  if (i === 1 && j === 1) break outer;
+                  yield i * 10 + j;
+                }
+              }
+            }
+            const arr: any[] = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,1,2,3,4,5,6,7,8,9,10");
+    });
+
+    test("generator + for-of with break", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function* g() {
+              for (const n of [1, 2, 3, 4, 5]) {
+                if (n === 4) break;
+                yield n * 10;
+              }
+            }
+            const arr: any[] = [];
+            for (const v of g()) arr.push(v);
+            console.log(arr.join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10,20,30");
     });
 
     test("tagged template + 다중 expression", async () => {

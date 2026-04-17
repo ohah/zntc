@@ -1888,8 +1888,8 @@ test "ES2018: for-await-of with break — lowered (#1381)" {
     var r = try e2eTarget(std.testing.allocator, "async function f(iter){for await(const v of iter){if(v)break;g(v);}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "for await") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "break") != null);
-    // iterator.return 호출 (finally 안).
+    // #1480 이후 break는 __generator state machine의 label jump(return [3, N])로 변환됨.
+    // iterator.return 호출 (finally 안)로 cleanup 보장.
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".return") != null);
 }
 
