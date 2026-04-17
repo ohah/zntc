@@ -108,7 +108,23 @@ pub fn ES2020(comptime Transformer: type) type {
             }
         }
 
+        /// optional chain lowering 컨텍스트.
+        /// `.normal`: short-circuit 시 `void 0` 반환.
+        /// `.delete`: short-circuit 시 `true` 반환, 본 체인 마지막 access는 `delete` 로 감쌈.
+        ///   `delete a?.b` 가 `delete (cond ? void 0 : a.b)` 로 변환되면 ConditionalExpression
+        ///   결과에 delete 가 적용되어 Reference 가 아니므로 실제 삭제가 일어나지 않는 spec 함정 회피.
+        pub const LowerCtx = enum { normal, @"delete" };
+
         pub fn lowerOptionalChain(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
+            return lowerOptionalChainCtx(self, node, base_idx, .normal);
+        }
+
+        pub fn lowerOptionalChainCtx(
+            self: *Transformer,
+            node: Node,
+            base_idx: NodeIndex,
+            ctx: LowerCtx,
+        ) Transformer.Error!NodeIndex {
             const simple = helpers.isSimpleIdentifier(self, base_idx);
             const visited_base = try self.visitNode(base_idx);
 
@@ -138,15 +154,39 @@ pub fn ES2020(comptime Transformer: type) type {
 
             const rebuilt_chain = try rebuildChainNode(self, node, chain_base);
             const eq_null = try helpers.makeEqNull(self, null_check_base, node.span);
-            const void_zero = try helpers.makeVoidZero(self, node.span);
+
+            const b_branch: NodeIndex, const c_branch: NodeIndex = switch (ctx) {
+                .normal => .{ try helpers.makeVoidZero(self, node.span), rebuilt_chain },
+                .@"delete" => .{ try makeTrueLiteral(self, node.span), try makeDeleteOf(self, rebuilt_chain, node.span) },
+            };
+
             const cond = try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = node.span,
-                .data = .{ .ternary = .{ .a = eq_null, .b = void_zero, .c = rebuilt_chain } },
+                .data = .{ .ternary = .{ .a = eq_null, .b = b_branch, .c = c_branch } },
             });
             // 괄호로 감싸서 binary expression 안에서 우선순위 보장
             // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)
             return helpers.makeParenExpr(self, cond, node.span);
+        }
+
+        fn makeTrueLiteral(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
+            const true_span = try self.ast.addString("true");
+            return self.ast.addNode(.{
+                .tag = .boolean_literal,
+                .span = true_span,
+                .data = .{ .none = 1 },
+            });
+        }
+
+        fn makeDeleteOf(self: *Transformer, operand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const op_flags: u32 = @intFromEnum(token_mod.Kind.kw_delete);
+            const new_extra = try self.ast.addExtras(&.{ @intFromEnum(operand), op_flags });
+            return self.ast.addNode(.{
+                .tag = .unary_expression,
+                .span = span,
+                .data = .{ .extra = new_extra },
+            });
         }
 
         fn hasOptionalFlag(self: *const Transformer, node: Node) bool {

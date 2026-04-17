@@ -1405,6 +1405,18 @@ pub const Transformer = struct {
             }
         }
 
+        // `delete obj?.a?.b` lowering: 일반 optional chain lowering 결과인
+        // `delete (cond ? void 0 : _a.b)` 는 ConditionalExpression이라 Reference가 아니어서 실제 삭제 안 됨.
+        // → `cond ? true : delete _a.b` 형태로 별도 lowering.
+        if (node.tag == .unary_expression and self.options.unsupported.optional_chaining and
+            (op_flags & 0xff) == @intFromEnum(token_mod.Kind.kw_delete))
+        {
+            const operand = self.ast.getNode(operand_idx);
+            if (es2020.ES2020(Transformer).findOptionalChainBase(self, operand)) |base_idx| {
+                return es2020.ES2020(Transformer).lowerOptionalChainCtx(self, operand, base_idx, .@"delete");
+            }
+        }
+
         const new_operand = try self.visitNode(operand_idx);
         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_operand), op_flags });
         return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
