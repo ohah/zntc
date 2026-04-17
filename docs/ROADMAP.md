@@ -331,7 +331,7 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 | 항목 | 난이도 | 현재 상태 | 설명 |
 |------|--------|----------|------|
-| **통합 테스트 확대** | L | 143 패키지 스모크만 | 실제 프로젝트(Next.js, Remix, Vite 앱)로 E2E 번들링 검증 |
+| **통합 테스트 확대** | L | 부분 완료 | ✅ Vite: multi-module TS/TSX 앱을 `vite-plugin-zts`로 프로덕션 번들 → Playwright 브라우저 실행 E2E (`tests/e2e/tests/vite-app-e2e.test.ts`). Remix/Next.js는 자체 빌드 시스템 의존이라 프레임워크 어댑터 레이어가 선행되어야 함 — 별도 로드맵(생태계 3단계)으로 이동 |
 | **watch/serve 장시간 안정성** | M | 부분 완료 | 150회 연속 rebuild 시뮬레이션 스트레스 테스트(`tests/integration/tests/watch-stress.test.ts`)로 RSS 기울기 <20KB/rebuild 검증 (실측 0.05). 실시간 8시간+ 실측은 수동 릴리즈 전 검증으로 유지 |
 | ~~**에러 메시지 품질**~~ | ✅ | 완료 | ANSI 컬러 출력 + Levenshtein "did you mean?" 제안 (ansi.zig, levenshtein.zig) |
 | ~~**source map 품질 검증**~~ | ✅ | 완료 | Playwright + CDP로 Chromium이 `sourceMappingURL`을 파싱하고 TS 파일명 breakpoint가 해석되는 E2E (`tests/e2e/tests/sourcemap-e2e.test.ts`) |
