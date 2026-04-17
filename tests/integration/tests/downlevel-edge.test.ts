@@ -586,6 +586,58 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("9");
     });
 
+    test("derived class constructor — private field init이 super() 이후 (#1495)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              baseVal: number;
+              constructor(v: number) { this.baseVal = v; }
+            }
+            class Derived extends Base {
+              #priv = 100;
+              #priv2 = 200;
+              constructor() {
+                super(10);
+                this.logInit();
+              }
+              logInit() { console.log(this.baseVal + "+" + this.#priv + "+" + this.#priv2); }
+            }
+            new Derived();
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10+100+200");
+    });
+
+    test("derived class — constructor body 앞에 사용자 statement + super() (#1495)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class P { constructor(public x: number) {} }
+            class D extends P {
+              #y = 42;
+              constructor() {
+                const a = 5;
+                super(a);
+                console.log(this.x, this.#y);
+              }
+            }
+            new D();
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5 42");
+    });
+
     test("private method + private field 상호 호출", async () => {
       const result = await bundleAndRun(
         {

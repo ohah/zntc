@@ -132,7 +132,7 @@ pub fn ES2022(comptime Transformer: type) type {
         // ================================================================
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
-        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
+        fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool) Transformer.Error!NodeIndex {
             const node = self.ast.getNode(method_node_idx);
             const extras = self.ast.extra_data.items;
             const me = node.data.extra;
@@ -145,7 +145,12 @@ pub fn ES2022(comptime Transformer: type) type {
             const saved_deco_len = extras[me + 5];
             const body_idx: NodeIndex = @enumFromInt(extras[me + 2]);
 
-            const new_body = try self.prependStatementsToBody(body_idx, stmts);
+            // derived class면 private field/method init 이 반드시 super() 뒤에 와야 함 (#1495).
+            // this 참조(WeakMap.set 의 첫 인자) 가 super() 호출 전에는 ReferenceError.
+            const new_body = if (has_super)
+                try self.insertStatementsAfterSuper(body_idx, stmts)
+            else
+                try self.prependStatementsToBody(body_idx, stmts);
 
             const new_me = try self.ast.addExtras(&.{
                 saved_key,              saved_params,
@@ -333,7 +338,7 @@ pub fn ES2022(comptime Transformer: type) type {
             // ctor 주입: 기존 constructor에 prepend, 없으면 새로 생성.
             if (ctor_init_stmts.items.len > 0) {
                 if (ctor_pos) |pos| {
-                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items);
+                    body_nodes.items[pos] = try injectIntoMethod(self, body_nodes.items[pos], ctor_init_stmts.items, has_super);
                 } else {
                     const ctor = try buildNewConstructor(self, ctor_init_stmts.items, has_super, span);
                     try body_nodes.insert(self.allocator, 0, ctor);
