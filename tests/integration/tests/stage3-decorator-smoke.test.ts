@@ -20,7 +20,7 @@ const hasMobx = await (async () => {
   }
 })();
 
-async function mobxSmoke(code: string) {
+async function mobxSmoke(code: string, extraArgs: string[] = []) {
   const { dir, cleanup } = await createFixture({ "index.ts": code });
 
   await mkdir(join(dir, "node_modules"), { recursive: true });
@@ -29,7 +29,7 @@ async function mobxSmoke(code: string) {
   } catch {}
 
   const outFile = join(dir, "out.js");
-  const bundle = await runZts(["--bundle", join(dir, "index.ts"), "-o", outFile]);
+  const bundle = await runZts(["--bundle", join(dir, "index.ts"), "-o", outFile, ...extraArgs]);
   if (bundle.exitCode !== 0) {
     await cleanup();
     throw new Error("bundle failed: " + bundle.stderr);
@@ -112,5 +112,55 @@ describe.skipIf(!hasMobx)("Stage 3 Decorator Smoke — MobX 6", () => {
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain("pending,done,pending");
+  });
+
+  // --- #1389 회귀 가드: --target=es5 에서도 MobX 6 decorator + accessor 동작 ---
+
+  it("#1389: @observable accessor + @action — --target=es5", async () => {
+    const r = await mobxSmoke(
+      `
+      import { makeObservable, observable, action, autorun } from "mobx";
+      class Counter {
+        @observable accessor count = 0;
+        @action increment() { this.count++; }
+        constructor() { makeObservable(this); }
+      }
+      const c = new Counter();
+      const log: number[] = [];
+      autorun(() => { log.push(c.count); });
+      c.increment();
+      c.increment();
+      c.increment();
+      console.log(log.join(","));
+    `,
+      ["--target=es5"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("0,1,2,3");
+  });
+
+  it("#1389: @computed getter chain — --target=es5", async () => {
+    const r = await mobxSmoke(
+      `
+      import { makeObservable, observable, computed, action } from "mobx";
+      class Store {
+        @observable accessor firstName = "John";
+        @observable accessor lastName = "Doe";
+        @computed get fullName() { return this.firstName + " " + this.lastName; }
+        @action setName(f: string, l: string) { this.firstName = f; this.lastName = l; }
+        constructor() { makeObservable(this); }
+      }
+      const s = new Store();
+      console.log(s.fullName);
+      s.setName("Jane", "Smith");
+      console.log(s.fullName);
+    `,
+      ["--target=es5"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("John Doe");
+    expect(r.output).toContain("Jane Smith");
   });
 });
