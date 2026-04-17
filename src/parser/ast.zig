@@ -924,6 +924,47 @@ pub const Ast = struct {
         return self.extra_data.items[list.start .. list.start + list.len];
     }
 
+    /// binding-pattern 컨테이너의 elements와 rest를 분리해 반환한다.
+    /// 모든 walker가 이 helper 한 곳을 거치면 rest 태그 case set이 캡슐화되어
+    /// 새 walker 추가 시 누락 위험이 사라진다.
+    pub const ContainerRestSplit = struct {
+        /// rest의 inner binding. rest가 없거나 컨테이너 노드가 아니면 null.
+        rest_operand: ?NodeIndex,
+        /// rest를 제외한 일반 element들의 raw 인덱스 슬라이스.
+        elements: []const u32,
+    };
+
+    /// 지원 컨테이너: array_pattern / object_pattern / formal_parameters /
+    /// array_assignment_target / object_assignment_target.
+    /// rest 태그: rest_element / binding_rest_element / assignment_target_rest.
+    pub inline fn containerSplitRest(self: *const Ast, node: Node) ContainerRestSplit {
+        const empty: ContainerRestSplit = .{ .rest_operand = null, .elements = &[_]u32{} };
+        const list = switch (node.tag) {
+            .array_pattern,
+            .object_pattern,
+            .formal_parameters,
+            .array_assignment_target,
+            .object_assignment_target,
+            => node.data.list,
+            else => return empty,
+        };
+        if (list.len == 0) return empty;
+        if (list.start + list.len > self.extra_data.items.len) return empty;
+        const all = self.extra_data.items[list.start .. list.start + list.len];
+        const last_idx: NodeIndex = @enumFromInt(all[all.len - 1]);
+        if (last_idx.isNone() or @intFromEnum(last_idx) >= self.nodes.items.len) {
+            return .{ .rest_operand = null, .elements = all };
+        }
+        const last_node = self.getNode(last_idx);
+        return switch (last_node.tag) {
+            .rest_element, .binding_rest_element, .assignment_target_rest => .{
+                .rest_operand = last_node.data.unary.operand,
+                .elements = all[0 .. all.len - 1],
+            },
+            else => .{ .rest_operand = null, .elements = all },
+        };
+    }
+
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
     pub fn addExtra(self: *Ast, value: u32) !u32 {
         const index: u32 = @intCast(self.extra_data.items.len);
