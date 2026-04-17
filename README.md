@@ -68,7 +68,7 @@ Vite 어댑터: `vite-plugin-zts` — Vite의 esbuild transform을 ZTS로 교체
 - [docs/HMR.md](./docs/HMR.md) — Dev 서버 + HMR
 - [docs/FLOW.md](./docs/FLOW.md) — Flow 지원 전략
 - [docs/DECISIONS.md](./docs/DECISIONS.md) — 설계 결정 로그
-- [docs/BACKLOG.md](./docs/BACKLOG.md), [docs/ISSUES.md](./docs/ISSUES.md) — 백로그 / 미해결 이슈
+- [docs/BACKLOG.md](./docs/BACKLOG.md) — 백로그 (미해결 버그는 [GitHub Issues](https://github.com/ohah/zts/issues))
 
 ## References
 
