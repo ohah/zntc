@@ -112,14 +112,16 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
 /// decorator/modifier 처리 후의 순수 바인딩 패턴 파싱.
 /// parseBindingPattern에서 decorator가 있을 때 내부 패턴을 파싱하기 위해 분리.
 fn parseBindingPatternInner(self: *Parser) ParseError2!NodeIndex {
-    // rest parameter: ...pattern
+    // 함수 파라미터의 rest binding: ...pattern.
+    // ESTree와 동일하게 binding 컨텍스트는 RestElement(=rest_element)로 emit한다 —
+    // SpreadElement는 표현식 컨텍스트(call args, array/object spread) 전용.
     if (self.current() == .dot3) {
         const rest_start = self.currentSpan().start;
         try self.advance(); // skip '...'
         const pattern = try parseBindingPattern(self);
         try self.checkBindingRestInit(pattern);
         return try self.ast.addNode(.{
-            .tag = .spread_element,
+            .tag = .rest_element,
             .span = .{ .start = rest_start, .end = self.currentSpan().start },
             .data = .{ .unary = .{ .operand = pattern, .flags = 0 } },
         });
