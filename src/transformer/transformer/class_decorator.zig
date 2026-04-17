@@ -2187,45 +2187,8 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             .span = self.ast.getNode(new_key).data.string_ref,
                             .data = .{ .string_ref = self.ast.getNode(new_key).data.string_ref },
                         });
-                        const val_param_span = try self.ast.addString("value");
-                        const val_param = try self.ast.addNode(.{
-                            .tag = .binding_identifier,
-                            .span = val_param_span,
-                            .data = .{ .string_ref = val_param_span },
-                        });
-                        const setter_params = try self.ast.addNodeList(&.{val_param});
-                        const this_storage = try makeThisPrivateField(self, storage_span);
-                        const val_ref = try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = val_param_span,
-                            .data = .{ .string_ref = val_param_span },
-                        });
-                        const assign = try self.ast.addNode(.{
-                            .tag = .assignment_expression,
-                            .span = zero_span,
-                            .data = .{ .binary = .{ .left = this_storage, .right = val_ref, .flags = 0 } },
-                        });
-                        const assign_stmt = try self.ast.addNode(.{
-                            .tag = .expression_statement,
-                            .span = zero_span,
-                            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                        });
-                        const body_list = try self.ast.addNodeList(&.{assign_stmt});
-                        const body = try self.ast.addNode(.{
-                            .tag = .block_statement,
-                            .span = zero_span,
-                            .data = .{ .list = body_list },
-                        });
-                        const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0); // setter + static
-                        const setter_params_node = try self.ast.addFormalParameters(setter_params, zero_span);
-                        const setter = try self.addExtraNode(.method_definition, zero_span, &.{
-                            @intFromEnum(setter_key),
-                            @intFromEnum(setter_params_node),
-                            @intFromEnum(body),
-                            setter_flags,
-                            empty_decos.start,
-                            empty_decos.len,
-                        });
+                        const assign_target = try makeThisPrivateField(self, storage_span);
+                        const setter = try self.buildSetterMethod(setter_key, assign_target, is_static, zero_span);
                         try new_members.append(self.allocator, setter);
                     }
                 } else {
@@ -3456,6 +3419,52 @@ pub fn buildGetterMethod(self: *Transformer, key: NodeIndex, return_expr: NodeIn
         @intFromEnum(empty_params_node),
         @intFromEnum(getter_body),
         getter_flags,
+        empty_decos.start,
+        empty_decos.len,
+    });
+}
+
+/// setter method_definition 생성 헬퍼: set key(value) { assign_target = value; }
+/// param name 은 Babel/SWC 관례대로 "value" 고정. assign_target 은 caller 가 pre-build
+/// (예: this.#storage 노드). buildGetterMethod 와 대칭.
+pub fn buildSetterMethod(self: *Transformer, key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Error!NodeIndex {
+    const val_span = try self.ast.addString("value");
+    const val_param = try self.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = val_span,
+        .data = .{ .string_ref = val_span },
+    });
+    const params_list = try self.ast.addNodeList(&.{val_param});
+    const params_node = try self.ast.addFormalParameters(params_list, span);
+
+    const val_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = val_span,
+        .data = .{ .string_ref = val_span },
+    });
+    const assign = try self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = span,
+        .data = .{ .binary = .{ .left = assign_target, .right = val_ref, .flags = 0 } },
+    });
+    const assign_stmt = try self.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+    });
+    const body_list = try self.ast.addNodeList(&.{assign_stmt});
+    const body = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = body_list },
+    });
+    const empty_decos = try self.ast.addNodeList(&.{});
+    const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0);
+    return self.addExtraNode(.method_definition, span, &.{
+        @intFromEnum(key),
+        @intFromEnum(params_node),
+        @intFromEnum(body),
+        setter_flags,
         empty_decos.start,
         empty_decos.len,
     });
