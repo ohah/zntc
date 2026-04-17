@@ -309,8 +309,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe('{"a":5,"b":"x!","c":"def"}');
     });
 
-    // skip: `delete obj?.a?.b` 가 ConditionalExpression delete 로 변환되어 실제 삭제 안 됨 — #1469
-    test.skip("optional chaining 위 delete (ES2020 spec)", async () => {
+    test("optional chaining 위 delete (ES2020 spec)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
