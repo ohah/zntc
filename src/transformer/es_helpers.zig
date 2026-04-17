@@ -71,12 +71,28 @@ pub fn tempVarName(idx: u32, buf: *[16]u8) []const u8 {
 }
 
 /// 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
+/// private field var 이름(`#name` → `_name`)과 충돌하면 다음 이름으로 건너뜀.
+/// 같은 letter 끝자는 해시 충돌 가능하므로 #1485 수정의 일환으로 회피 로직 추가.
 pub fn makeTempVarSpan(self: anytype) !Span {
-    const idx = self.temp_var_counter;
-    self.temp_var_counter += 1;
     var buf: [16]u8 = undefined;
-    const name = tempVarName(idx, &buf);
-    return self.ast.addString(name);
+    while (true) {
+        const idx = self.temp_var_counter;
+        self.temp_var_counter += 1;
+        const name = tempVarName(idx, &buf);
+        if (collidesWithPrivateField(self, name)) continue;
+        return self.ast.addString(name);
+    }
+}
+
+fn collidesWithPrivateField(self: anytype, name: []const u8) bool {
+    for (self.current_private_fields) |pf| {
+        if (std.mem.eql(u8, pf.var_name, name)) return true;
+    }
+    for (self.current_private_methods) |pm| {
+        if (std.mem.eql(u8, pm.weakset_name, name)) return true;
+        if (std.mem.eql(u8, pm.func_name, name)) return true;
+    }
+    return false;
 }
 
 /// 임시 변수 identifier_reference 노드 생성.

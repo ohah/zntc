@@ -845,13 +845,19 @@ pub const Transformer = struct {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
                     }
                 }
-                // ES2015: assignment destructuring → sequence expression
-                if (self.options.unsupported.destructuring) {
+                // ES2015: assignment destructuring → sequence expression.
+                // destructuring 자체가 지원되더라도 target에 private field가 있으면 강제 lowering —
+                // 일반 visit 경로가 `this.#x` 를 `_x.get(this)` 로 만들어 invalid assignment target이 됨 (#1485).
+                {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
                         const left_node = self.ast.getNode(left_idx);
                         if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
-                            return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
+                            const has_private = self.current_private_fields.len > 0 and
+                                es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
+                            if (self.options.unsupported.destructuring or has_private) {
+                                return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
+                            }
                         }
                     }
                 }
