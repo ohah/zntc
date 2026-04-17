@@ -826,9 +826,11 @@ test "#1275: private method + field 혼합 (RN PerformanceObserver 케이스)" {
     // private method도 변환됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _createObserver=new WeakSet") != null);
     // ctor 안에 field init + method init + 원본 body가 모두 포함
+    // field init은 expression_statement 형태라 내부 값 반환 불필요 → _x.set 그대로 유지.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_nativeHandle.set(this,null)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_createObserver)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_callback.set(this,callback)") != null);
+    // this.#callback = callback 은 assignment_expression → expression value 반환 helper 경유 (#1488).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateFieldSet(_callback,this,callback)") != null);
 }
 
 test "#1275: private method만 있고 원본 constructor 없을 때 새 constructor 1개 생성" {

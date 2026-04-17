@@ -173,7 +173,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     es_decorator: bool = false,
     /// __asyncValues: for-await-of → while 루프 변환 (ES2018)
     async_values: bool = false,
-    _padding: u15 = 0,
+    /// __classPrivateFieldSet: instance private field set with return value (#1488).
+    class_private_field_set: bool = false,
+    _padding: u14 = 0,
 };
 
 /// 단일 AST append-only 변환기.

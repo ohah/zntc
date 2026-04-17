@@ -491,10 +491,23 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME =
     \\  __classCheckPrivateStaticFieldDescriptor(descriptor, "set");
     \\  if (descriptor.set) descriptor.set.call(receiver, value);
     \\  else descriptor.value = value;
+    \\  return value;
     \\};
     \\
 ;
-pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAccess=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};var __classCheckPrivateStaticFieldDescriptor=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};var __classStaticPrivateFieldSpecGet=function(receiver,classConstructor,descriptor){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"get\");return descriptor.get?descriptor.get.call(receiver):descriptor.value};var __classStaticPrivateFieldSpecSet=function(receiver,classConstructor,descriptor,value){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"set\");if(descriptor.set)descriptor.set.call(receiver,value);else descriptor.value=value};";
+pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAccess=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};var __classCheckPrivateStaticFieldDescriptor=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};var __classStaticPrivateFieldSpecGet=function(receiver,classConstructor,descriptor){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"get\");return descriptor.get?descriptor.get.call(receiver):descriptor.value};var __classStaticPrivateFieldSpecSet=function(receiver,classConstructor,descriptor,value){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"set\");if(descriptor.set)descriptor.set.call(receiver,value);else descriptor.value=value;return value};";
+
+/// __classPrivateFieldSet: instance private field 쓰기 + 값 반환.
+/// `wm.set(obj, value)` 는 WeakMap을 반환하므로 expression 값이 값 자체가 되도록 helper 사용.
+/// 통합 spec: `this.#x = v` expression value === v, `this.#x += 5` === new value.
+pub const PRIVATE_FIELD_SET_RUNTIME =
+    \\var __classPrivateFieldSet = function(wm, obj, value) {
+    \\  wm.set(obj, value);
+    \\  return value;
+    \\};
+    \\
+;
+pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var __classPrivateFieldSet=function(wm,obj,value){wm.set(obj,value);return value};";
 
 // ============================================================
 // HMR (Dev Server)
@@ -815,6 +828,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.class_static_private_field) {
         try buf.appendSlice(allocator, if (minify) STATIC_PRIVATE_FIELD_RUNTIME_MIN else STATIC_PRIVATE_FIELD_RUNTIME);
+    }
+    if (helpers.class_private_field_set) {
+        try buf.appendSlice(allocator, if (minify) PRIVATE_FIELD_SET_RUNTIME_MIN else PRIVATE_FIELD_SET_RUNTIME);
     }
     if (helpers.call_super) {
         try buf.appendSlice(allocator, if (minify) CALL_SUPER_RUNTIME_MIN else CALL_SUPER_RUNTIME);

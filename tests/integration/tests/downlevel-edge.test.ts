@@ -354,10 +354,80 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("256");
     });
 
-    // TODO: private field compound/update가 expression 자리에서 반환하는 값이
-    // spec(`this.#n++` → 이전 값)과 불일치 — `_n.set(this, ...)` 이 WeakMap을 반환해 섞여 나옴.
-    // 별도 이슈 필요 (set 반환값을 _classPrivateFieldSet 헬퍼로 래핑).
-    test.todo("private field ++ 연쇄 expression 사용 시 반환값 정확성");
+    test("private field assignment expression 반환값 spec 일치 (#1488)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #n = 0;
+              static #s = 0;
+              inc() { return this.#n++; }              // spec: 0 (이전 값)
+              pre() { return ++this.#n; }               // spec: 2
+              compound() { return (this.#n += 5); }     // spec: 7
+              plain() { return (this.#n = 100); }       // spec: 100
+              static sinc() { return C.#s++; }          // static postfix
+              static spre() { return ++C.#s; }
+            }
+            const c = new C();
+            const r = [c.inc(), c.pre(), c.compound(), c.plain(), C.sinc(), C.spre()];
+            console.log(r.join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0,2,7,100,0,2");
+    });
+
+    test("private field logical assign 반환값 (Babel 호환, #1488)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #v: number | null = null;
+              init(n: number) { const r = (this.#v ??= n); return r; }
+              orSet(n: number) { return (this.#v ||= n); }
+              andMul(n: number) { return (this.#v &&= (this.#v as number) * n); }
+            }
+            const c = new C();
+            const a = c.init(10);   // null → 10, return 10
+            const b = c.init(99);    // 10 유지, return 10
+            const d = c.orSet(7);    // truthy 유지, return 10
+            const e = c.andMul(3);   // 10 * 3 = 30, return 30
+            console.log(a + "," + b + "," + d + "," + e);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10,10,10,30");
+    });
+
+    test("private field postfix++ sequence 안에서 연쇄 사용", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #n = 0;
+              step() { return this.#n++ + this.#n++ + this.#n; }
+              get v() { return this.#n; }
+            }
+            const c = new C();
+            const s = c.step();       // 0 + 1 + 2 = 3, final v = 2
+            console.log(s + "," + c.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3,2");
+    });
 
     test("private field compound + deep template literal 보간", async () => {
       const result = await bundleAndRun(

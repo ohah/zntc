@@ -1542,9 +1542,10 @@ test "ES2015: class private field WeakMap" {
 }
 
 test "ES2015: class private field set" {
+    // #1488: wm.set 은 WeakMap을 반환하므로 expression 값이 value가 되도록 helper 경유.
     var r = try e2eTarget(std.testing.allocator, "class F{#x=0;s(v){this.#x=v;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.set(this,v)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateFieldSet(_x,this,v)") != null);
 }
 
 // --- class static private field ---
