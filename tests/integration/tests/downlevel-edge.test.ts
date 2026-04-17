@@ -1395,8 +1395,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("1,2");
     });
 
-    // skip: regex named group strip 시 `String.replace` replacement 의 `$<name>` 미변환 — #1473
-    test.skip("multiple named groups + replace string $<name>", async () => {
+    test("multiple named groups + replace string $<name>", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
