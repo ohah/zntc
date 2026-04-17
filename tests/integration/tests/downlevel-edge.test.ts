@@ -475,6 +475,96 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("a,x");
     });
 
+    test("destructuring assignment target이 private field (#1485)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class M {
+              #a = 0; #b = 0;
+              static #s = 0;
+              setMulti(obj: any) { ({a: this.#a, b: this.#b} = obj); }
+              setWithDefault(obj: any) { ({a: this.#a = 100} = obj); }
+              setArr(arr: any) { [this.#a, this.#b] = arr; }
+              setArrDefault(arr: any) { [this.#a = 1, this.#b = 2] = arr; }
+              setNested(obj: any) { ({x: {y: this.#a}} = obj); }
+              static setStatic(v: any) { ({s: M.#s} = v); }
+              get va() { return this.#a; }
+              get vb() { return this.#b; }
+              static get vs() { return M.#s; }
+            }
+            const m = new M();
+            m.setMulti({a: 1, b: 2});
+            const r1 = [m.va, m.vb];
+            m.setWithDefault({});
+            const r2 = m.va;
+            m.setWithDefault({a: 5});
+            const r3 = m.va;
+            m.setArr([7, 8]);
+            const r4 = [m.va, m.vb];
+            m.setArrDefault([undefined, undefined]);
+            const r5 = [m.va, m.vb];
+            m.setNested({x: {y: 42}});
+            const r6 = m.va;
+            M.setStatic({s: 99});
+            const r7 = M.vs;
+            console.log([...r1, r2, r3, ...r4, ...r5, r6, r7].join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,100,5,7,8,1,2,42,99");
+    });
+
+    test("destructuring target private field target=es5 (destructuring lowered) (#1485)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #x = 0;
+              set(v: number) { ({x: this.#x} = {x: v}); }
+              get v() { return this.#x; }
+            }
+            const c = new C();
+            c.set(42);
+            console.log(c.v);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("temp var가 private field 이름과 충돌하지 않음 (#1485)", async () => {
+      // 기존 `_a` temp 이름 vs `#a` → `_a` private var 충돌 회귀.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              #a = 0; #b = 0; #c = 0; #d = 0;
+              swap(obj: {a: number; b: number; c: number; d: number}) {
+                ({a: this.#a, b: this.#b, c: this.#c, d: this.#d} = obj);
+              }
+              sum() { return this.#a + this.#b + this.#c + this.#d; }
+            }
+            const c = new C();
+            c.swap({a: 1, b: 2, c: 3, d: 4});
+            console.log(c.sum());
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
     test("private method + private field 상호 호출", async () => {
       const result = await bundleAndRun(
         {

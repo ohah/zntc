@@ -26,6 +26,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_class = @import("es2015_class.zig");
 
 pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
@@ -224,23 +225,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const right_node = self.ast.getNode(right_idx);
 
                     if (right_node.tag == .assignment_target_with_default) {
-                        const target_node = try self.visitNode(right_node.data.binary.left);
                         const default_val = try self.visitNode(right_node.data.binary.right);
                         const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
-                        const assign = try self.ast.addNode(.{
-                            .tag = .assignment_expression,
-                            .span = span,
-                            .data = .{ .binary = .{ .left = target_node, .right = rhs, .flags = 0 } },
-                        });
-                        try self.scratch.append(self.allocator, assign);
+                        try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span);
                     } else {
-                        const target_node = try self.visitNode(right_idx);
-                        const assign = try self.ast.addNode(.{
-                            .tag = .assignment_expression,
-                            .span = span,
-                            .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
-                        });
-                        try self.scratch.append(self.allocator, assign);
+                        try emitTargetAssignOrRecurse(self, right_idx, access, span);
                     }
                 }
             }
@@ -265,7 +254,6 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 if (elem.tag == .assignment_target_with_default) {
                     // [x = 1] → x = _ref[0] === void 0 ? 1 : _ref[0]
-                    const target_node = try self.visitNode(elem.data.binary.left);
                     const default_val = try self.visitNode(elem.data.binary.right);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
                     const eq_check = try self.ast.addNode(.{
@@ -280,23 +268,49 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
                     });
-                    const assign = try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = span,
-                        .data = .{ .binary = .{ .left = target_node, .right = conditional, .flags = 0 } },
-                    });
-                    try self.scratch.append(self.allocator, assign);
+                    try emitTargetAssignOrRecurse(self, elem.data.binary.left, conditional, span);
                 } else {
-                    // target = _ref[idx]
-                    const target_node = try self.visitNode(@enumFromInt(raw_idx));
-                    const assign = try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = span,
-                        .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
-                    });
-                    try self.scratch.append(self.allocator, assign);
+                    // target = _ref[idx]. nested destructuring, private field, 일반 assignment 분기.
+                    try emitTargetAssignOrRecurse(self, @enumFromInt(raw_idx), access, span);
                 }
             }
+        }
+
+        /// target(old AST)에 value(new AST)를 배정. target 종류에 따라 분기:
+        ///   - private_field_expression → `__classPrivateFieldSet(...)` (#1485).
+        ///   - object/array_assignment_target → 임시 변수 + 재귀 emit (nested destructuring).
+        ///   - 나머지 (identifier, member expr 등) → 일반 `target = value` assignment.
+        /// 생성된 표현식은 self.scratch 에 push된다 (lowerDestructuringAssignment 패턴 유지).
+        fn emitTargetAssignOrRecurse(self: *Transformer, target_old_idx: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!void {
+            if (try es2015_class.ES2015Class(Transformer).tryLowerPrivateFieldAssign(self, target_old_idx, value, span)) |call| {
+                try self.scratch.append(self.allocator, call);
+                return;
+            }
+            const target_node = self.ast.getNode(target_old_idx);
+            if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target) {
+                // nested: _inner = value; 각 element 재귀 emit.
+                const inner_span = try es_helpers.makeTempVarSpan(self);
+                const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+                const init = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = inner_lhs, .right = value, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, init);
+                if (target_node.tag == .object_assignment_target) {
+                    try emitObjectAssignments(self, target_node, inner_span, span);
+                } else {
+                    try emitArrayAssignments(self, target_node, inner_span, span);
+                }
+                return;
+            }
+            const visited_target = try self.visitNode(target_old_idx);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = visited_target, .right = value, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, assign);
         }
 
         /// object_pattern 또는 array_pattern을 개별 declarator로 분해.

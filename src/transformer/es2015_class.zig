@@ -792,6 +792,46 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, span);
         }
 
+        /// target이 private_field_expression이면 set 호출 생성(instance/static 자동 분기). 해당 없으면 null.
+        /// destructuring assignment에서 `this.#x` 가 target일 때 `_x.get(this) = v` 같은 잘못된 target을
+        /// 만들지 않도록 set 호출로 직접 변환 (#1485). value는 이미 변환된(new-AST) 노드여야 함.
+        pub fn tryLowerPrivateFieldAssign(self: *Transformer, target_old_idx: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!?NodeIndex {
+            if (target_old_idx.isNone()) return null;
+            const target_node = self.ast.getNode(target_old_idx);
+            if (target_node.tag != .private_field_expression) return null;
+            const te = target_node.data.extra;
+            if (te >= self.ast.extra_data.items.len) return null;
+            const obj_idx = self.readNodeIdx(te, 0);
+            const mapping = findPrivateFieldMapping(self, self.readNodeIdx(te, 1)) orelse return null;
+            return try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, value, span);
+        }
+
+        /// destructuring assignment target 트리 안에 private_field_expression이 포함됐는지 검사.
+        /// transformer 디스패처가 강제 destructuring lowering 여부 판정할 때 사용 (#1485).
+        pub fn destructuringTargetHasPrivateField(self: *const Transformer, node_idx: NodeIndex) bool {
+            if (node_idx.isNone()) return false;
+            const node = self.ast.getNode(node_idx);
+            return switch (node.tag) {
+                .private_field_expression => true,
+                .object_assignment_target, .array_assignment_target => blk: {
+                    const start = node.data.list.start;
+                    const len = node.data.list.len;
+                    var i: u32 = 0;
+                    while (i < len) : (i += 1) {
+                        const child_raw = self.ast.extra_data.items[start + i];
+                        const child_idx: NodeIndex = @enumFromInt(child_raw);
+                        if (destructuringTargetHasPrivateField(self, child_idx)) break :blk true;
+                    }
+                    break :blk false;
+                },
+                // assignment_target_property_property: binary {left=key, right=target} — target에만 있음.
+                // assignment_target_with_default: binary {left=target, right=default} — target에만 있음.
+                .assignment_target_property_property => destructuringTargetHasPrivateField(self, node.data.binary.right),
+                .assignment_target_with_default => destructuringTargetHasPrivateField(self, node.data.binary.left),
+                else => false,
+            };
+        }
+
         /// private field용 set 호출 생성 — new_value는 이미 완성된(new-AST) 노드여야 함.
         /// obj_idx는 old AST 노드로, 내부에서 visit 수행.
         /// instance는 `__classPrivateFieldSet` helper, static은 수정된 spec helper 모두 value를 반환 (#1488).
