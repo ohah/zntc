@@ -983,13 +983,19 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         .data = .{ .extra = oc_extra },
                     });
                 } else {
-                    // a?.b
+                    // a?.b (또는 a?.#x)
                     const prop = try parseIdentifierName(self);
                     {
                         const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                         const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                        // 비-optional `.` 경로와 동일하게 prop이 private_identifier이면 private_field_expression.
+                        // 이 분기 누락 시 `a?.#x` 가 static_member_expression 으로 잘못 태깅되어
+                        // private field lowering이 안 돌고 codegen 그대로 `o.#x` 출력 → 런타임 에러 (#1492).
                         expr = try self.ast.addNode(.{
-                            .tag = .static_member_expression,
+                            .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
+                                .private_field_expression
+                            else
+                                .static_member_expression,
                             .span = .{ .start = expr_start, .end = prop_end },
                             .data = .{ .extra = me },
                         });

@@ -754,9 +754,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// this.#x → instance: _x.get(this), static: __classStaticPrivateFieldSpecGet(receiver, ClassName, _x)
+        /// optional flag가 설정된 노드는 null 반환 — optional chain lowering이 short-circuit과
+        /// 함께 처리해야 함 (es2020.lowerOptionalChain 내부 rebuildChainNode에서 get 변환).
         pub fn lowerPrivateFieldGet(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
             const e = node.data.extra;
             if (e >= self.ast.extra_data.items.len) return null;
+            const flags = self.readU32(e, 2);
+            if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(e, 0);
             const mapping = findPrivateFieldMapping(self, self.readNodeIdx(e, 1)) orelse return null;
             if (mapping.is_static) {
@@ -849,6 +853,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const new_obj = try self.visitNode(obj_idx);
             self.runtime_helpers.class_private_field_set = true;
             return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, new_obj, new_value }, span);
+        }
+
+        /// private field get 호출을 생성 — obj_new는 이미 new-AST 노드(double-visit 방지).
+        /// optional chain lowering 등 재구성된 private_field_expression 교체용 (#1492).
+        pub fn emitPrivateFieldGetWithNewObj(self: *Transformer, prop_old_idx: NodeIndex, obj_new: NodeIndex, span: Span) Transformer.Error!?NodeIndex {
+            const mapping = findPrivateFieldMapping(self, prop_old_idx) orelse return null;
+            if (mapping.is_static) {
+                const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecGet");
+                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+                self.runtime_helpers.class_static_private_field = true;
+                const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
+                return call;
+            }
+            const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
+            const get_prop = try es_helpers.makeIdentifierRef(self, "get");
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, get_prop, span);
+            const call = try es_helpers.makeCallExpr(self, callee, &.{obj_new}, span);
+            return call;
         }
 
         /// this.#x = v → instance: _x.set(this, v), static: __classStaticPrivateFieldSpecSet(receiver, ClassName, _x, v)

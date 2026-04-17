@@ -22,6 +22,7 @@ const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const helpers = @import("es_helpers.zig");
+const es2015_class = @import("es2015_class.zig");
 
 /// Transformer 타입 (순환 import 방지를 위해 generic)
 pub fn ES2020(comptime Transformer: type) type {
@@ -221,6 +222,17 @@ pub fn ES2020(comptime Transformer: type) type {
                     const flags = self.readU32(e, 2);
                     const is_optional = (flags & ast_mod.MemberFlags.optional_chain) != 0;
                     const new_obj = if (is_optional) chain_base else try rebuildChainNode(self, self.ast.getNode(old_obj), chain_base);
+                    // private_field_expression: class body가 lowering 대상이면 여기서 get 호출로
+                    // 직접 변환 — 재구성된 private_field_expression이 transformer visit을 거치지 않고
+                    // 그대로 codegen되면 `o.#x` 가 class body 밖으로 새어나가 런타임 에러 (#1492).
+                    if (old_node.tag == .private_field_expression and
+                        (self.options.unsupported.class or self.options.unsupported.class_private_field) and
+                        self.current_private_fields.len > 0)
+                    {
+                        if (try es2015_class.ES2015Class(Transformer).emitPrivateFieldGetWithNewObj(self, old_prop, new_obj, old_node.span)) |call| {
+                            return call;
+                        }
+                    }
                     const new_prop = try self.visitNode(old_prop);
                     const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
                     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags });
