@@ -235,6 +235,40 @@ pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
     });
 }
 
+/// 식별자/numeric/string literal key node 의 span 을 `"name"` 형태 string_literal 로 감쌈.
+/// heap alloc 경유로 긴 key name truncation 회피. (#1510 item4)
+pub fn buildQuotedKeyLiteral(self: anytype, key_span: Span) !NodeIndex {
+    const key_text = self.ast.getText(key_span);
+    const quoted = try self.allocator.alloc(u8, key_text.len + 2);
+    defer self.allocator.free(quoted);
+    quoted[0] = '"';
+    @memcpy(quoted[1 .. 1 + key_text.len], key_text);
+    quoted[1 + key_text.len] = '"';
+    const quoted_span = try self.ast.addString(quoted);
+    return self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = quoted_span,
+        .data = .{ .string_ref = quoted_span },
+    });
+}
+
+/// `Object.defineProperty(target, key_arg, descriptor)` call_expression 생성.
+/// obj_span / dp_span 은 caller 가 pre-cache — hot loop 에서 addString 반복 방지.
+pub fn buildObjectDefinePropertyCall(
+    self: anytype,
+    obj_span: Span,
+    dp_span: Span,
+    target: NodeIndex,
+    key_arg: NodeIndex,
+    descriptor: NodeIndex,
+    span: Span,
+) !NodeIndex {
+    const obj_ref = try makeIdentifierRefFromSpan(self, obj_span);
+    const dp_prop = try makeIdentifierRefFromSpan(self, dp_span);
+    const callee = try makeStaticMember(self, obj_ref, dp_prop, span);
+    return makeCallExpr(self, callee, &.{ target, key_arg, descriptor }, span);
+}
+
 /// 문자열 리터럴 노드를 새 AST에 생성. text는 따옴표 포함 (예: "\"hello\"").
 pub fn buildStringNode(self: anytype, text: []const u8, _: Span) !NodeIndex {
     const str_span = try self.ast.addString(text);

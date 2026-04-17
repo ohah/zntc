@@ -273,10 +273,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const key_arg = try buildAccessorKeyArg(self, key_idx);
 
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-            const obj_ref = try es_helpers.makeIdentifierRefFromSpan(self, ctx.object);
-            const dp_prop = try es_helpers.makeIdentifierRefFromSpan(self, ctx.define_property);
-            const callee = try es_helpers.makeStaticMember(self, obj_ref, dp_prop, span);
-            return es_helpers.makeCallExpr(self, callee, &.{ temp_ref, key_arg, desc_obj }, span);
+            return es_helpers.buildObjectDefinePropertyCall(self, ctx.object, ctx.define_property, temp_ref, key_arg, desc_obj, span);
         }
 
         /// method_definition의 params/body를 방문해 function_expression을 만든다.
@@ -309,19 +306,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             if (key_node.tag == .computed_property_key) {
                 return self.visitNode(key_node.data.unary.operand);
             }
-            // identifier/numeric/string literal → "name" 으로 감싸 string_literal emit
-            const key_text = self.ast.getText(key_node.span);
-            const quoted = try self.allocator.alloc(u8, key_text.len + 2);
-            defer self.allocator.free(quoted);
-            quoted[0] = '"';
-            @memcpy(quoted[1 .. 1 + key_text.len], key_text);
-            quoted[1 + key_text.len] = '"';
-            const quoted_span = try self.ast.addString(quoted);
-            return self.ast.addNode(.{
-                .tag = .string_literal,
-                .span = quoted_span,
-                .data = .{ .string_ref = quoted_span },
-            });
+            return es_helpers.buildQuotedKeyLiteral(self, key_node.span);
         }
 
         /// `{ name: true }` object_property 생성 — span은 모두 pre-cached.
