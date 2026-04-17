@@ -54,7 +54,9 @@ describe("@zts/core NAPI (Node.js)", () => {
   });
 
   it("CJS 포맷", () => {
-    const result = call('export const x = 1; export default "hello";', "input.ts", { format: "cjs" });
+    const result = call('export const x = 1; export default "hello";', "input.ts", {
+      format: "cjs",
+    });
     assert.ok(result.code.includes("exports"));
   });
 

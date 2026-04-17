@@ -146,10 +146,14 @@ export function targetToUnsupported(target?: Target): number {
  *   지정 시 Zig에서 `target` 기반 fallback보다 우선.
  * - `define`은 `[{ key, value }]` 배열로 직렬화 (Zig DefineEntry와 호환).
  */
-export function buildOptionsJson(opts: TranspileOptions = {}, unsupportedOverride?: number): string {
+export function buildOptionsJson(
+  opts: TranspileOptions = {},
+  unsupportedOverride?: number,
+): string {
   const payload: Record<string, unknown> = {};
   if (opts.target) payload.target = opts.target;
-  if (unsupportedOverride !== undefined && unsupportedOverride !== 0) payload.unsupported = unsupportedOverride;
+  if (unsupportedOverride !== undefined && unsupportedOverride !== 0)
+    payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;
   if (opts.jsxInJs) payload.jsxInJs = true;
   if (opts.jsx === "automatic") payload.jsx = "automatic";
