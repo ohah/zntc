@@ -198,5 +198,4 @@ describe("Dev Server", () => {
 
     expect(receivedAuth).toBe("Bearer token123");
   });
-
 });
