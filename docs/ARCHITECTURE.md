@@ -34,7 +34,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
   └─ Codegen: code string, sourcemap
 ```
 
-## Architecture Decisions (요약, 전체는 [DECISIONS.md](../DECISIONS.md) 참조)
+## Architecture Decisions (요약, 전체는 [DECISIONS.md](./DECISIONS.md) 참조)
 
 ### Lexer Design (D015, D019, D025, D026, D034-D036)
 - **토큰 enum**: oxc 방식 — ~208개 u8 플랫 enum. TS 키워드 개별 토큰, 숫자 11가지 세분화
@@ -68,7 +68,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 ### TypeScript/Flow Handling (D002, D005, D024)
 - 타입 체크 안 함 (스트리핑만)
 - TS 5.8까지 전체 지원
-- ✅ Flow: TIER 1+2+3 타입 스트리핑 완료 (flow.zig 독립 구현, Metro 410/410 통과. 상세: [FLOW.md](../FLOW.md))
+- ✅ Flow: TIER 1+2+3 타입 스트리핑 완료 (flow.zig 독립 구현, Metro 410/410 통과. 상세: [FLOW.md](./FLOW.md))
 - ✅ Legacy decorator 구현 완료 (experimentalDecorators)
 - Stage 3 decorator: 후순위 (스펙 안정화 후)
 

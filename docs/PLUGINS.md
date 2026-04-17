@@ -1,6 +1,6 @@
 # ZTS Plugin System Design
 
-> 플러그인 시스템 + 로더 + 특수 기능 상세 설계. 핵심 정보는 [CLAUDE.md](./CLAUDE.md) 참조.
+> 플러그인 시스템 + 로더 + 특수 기능 상세 설계. 핵심 정보는 [CLAUDE.md](../CLAUDE.md) 참조.
 
 ## 설계 원칙
 - Rollup 플러그인 API 호환 (resolveId, load, transform, renderChunk, generateBundle)

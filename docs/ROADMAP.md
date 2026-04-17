@@ -138,7 +138,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   file/copy 로더는 content hash 파일명으로 출력 디렉토리에 복사 + URL 문자열 export.
   `--asset-names`, `--public-path` 지원.
 
-- ~~**플러그인 API**~~ — ✅ 1-4단계 완료 ([PLUGINS.md](../PLUGINS.md) 참조)
+- ~~**플러그인 API**~~ — ✅ 1-4단계 완료 ([PLUGINS.md](./PLUGINS.md) 참조)
   - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅
   - 2단계: ✅ JS 플러그인 subprocess — stdin/stdout JSON IPC, @zts/plugin, CLI --plugin
   - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지

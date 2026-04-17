@@ -598,7 +598,7 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { Pipe } from 'hotscript';\nconsole.log(typeof Pipe);`,
     expected: "undefined",
   },
-  // remeda: pipe 함수 인자 수 검증 에러 — ZTS tree-shaking/scope hoisting 버그 (ISSUES.md)
+  // remeda: pipe 함수 인자 수 검증 에러 — ZTS tree-shaking/scope hoisting 버그 (docs/ISSUES.md)
   // --- Node 전용 패키지 (브라우저 스킵) ---
   // express, commander, dotenv, jsonwebtoken, yargs, supports-color,
   // cross-spawn, signal-exit, which, on-finished, fast-glob, zx
