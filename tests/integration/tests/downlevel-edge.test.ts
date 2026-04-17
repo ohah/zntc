@@ -443,8 +443,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
   });
 
   describe("spread / rest 경계", () => {
-    // skip: TS parameter property(`constructor(public x)`) 가 ES5 class lowering 시 `this.x = x` 누락 — #1471
-    test.skip("spread를 new 표현식 인자로", async () => {
+    test("spread를 new 표현식 인자로", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -1305,8 +1304,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("3");
     });
 
-    // skip: 위 #1471 과 동일 원인 — parameter property 가 ES5 lowering 시 `this.x = x` 누락
-    test.skip("parameter property + readonly + 추가 본문", async () => {
+    test("parameter property + readonly + 추가 본문", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
