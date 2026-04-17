@@ -1033,4 +1033,106 @@ describe("Stage 3 Decorators", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toContain("42");
   });
+
+  // --- Cross-module decorator imports (tree-shaking 회귀) ---
+  // 이전: analyzer가 method/property/class의 decorator extras + `.decorator` 노드 inner expression을
+  // 순회 안 해서 import된 decorator identifier가 symbol resolve 안 됨 → linker가 해당 모듈 dead 판정
+  // → bundle에서 drop → 런타임에 "not defined". Lit/Babel ecosystem 공통 재현.
+
+  it("cross-module: class decorator imported from another file", async () => {
+    const result = await bundleAndRun({
+      "deco.ts": `
+        export function tag(ctor: any, ctx: any) {
+          console.log('tag:' + ctx.name);
+          return ctor;
+        }
+      `,
+      "index.ts": `
+        import { tag } from "./deco";
+        @tag
+        class C { x = 1; }
+        console.log('x:', new C().x);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("tag:C");
+    expect(result.runOutput).toContain("x: 1");
+  });
+
+  it("cross-module: method decorator imported from another file", async () => {
+    const result = await bundleAndRun({
+      "deco.ts": `
+        export function log(arg: string): any {
+          return function(target: any, ctx: any) {
+            console.log('wrap:' + arg);
+            return function(this: any, ...args: any[]) { return target.apply(this, args); };
+          };
+        }
+      `,
+      "index.ts": `
+        import { log } from "./deco";
+        class C {
+          @log("m") tick() { return 42; }
+        }
+        console.log('result:' + new C().tick());
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("wrap:m");
+    expect(result.runOutput).toContain("result:42");
+  });
+
+  it("cross-module: accessor decorator imported from another file", async () => {
+    const result = await bundleAndRun({
+      "deco.ts": `
+        export function trace(arg: string): any {
+          return function(target: any, ctx: any) {
+            console.log('traced:' + arg);
+          };
+        }
+      `,
+      "index.ts": `
+        import { trace } from "./deco";
+        class C {
+          @trace("a") accessor value = 10;
+        }
+        console.log('v:' + new C().value);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("traced:a");
+    expect(result.runOutput).toContain("v:10");
+  });
+
+  it("cross-module: decorator through barrel re-export (export * chain)", async () => {
+    // Lit / @lit-labs 스타일: `export * from "@lit/reactive-element/..."`
+    const result = await bundleAndRun({
+      "deco.ts": `
+        export function stamp(arg: string): any {
+          return function(target: any, ctx: any) {
+            console.log('stamp:' + arg);
+            return target;
+          };
+        }
+      `,
+      "barrel.ts": `export * from "./deco";`,
+      "index.ts": `
+        import { stamp } from "./barrel";
+        class C {
+          @stamp("field") x = 1;
+          @stamp("method") foo() { return 2; }
+        }
+        const c = new C();
+        console.log(c.x, c.foo());
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toContain("stamp:field");
+    expect(result.runOutput).toContain("stamp:method");
+    expect(result.runOutput).toContain("1 2");
+  });
 });

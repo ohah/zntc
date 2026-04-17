@@ -1103,6 +1103,10 @@ pub const SemanticAnalyzer = struct {
             // 직접 호출할 수 없으므로, body만 함수 스코프로 방문한다.
             .flow_component_wrapper => try self.visitFlowComponentWrapper(node),
 
+            // `@expr` — decorator의 expression을 방문해 identifier_reference resolve.
+            // 누락 시 import binding이 resolve 안 돼 tree-shake에서 drop됨.
+            .decorator => try self.visitNode(node.data.unary.operand),
+
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
                 try self.visitPrivateFieldExpr(node.data.extra, .read);
@@ -1116,7 +1120,7 @@ pub const SemanticAnalyzer = struct {
 
             // ---- method_definition/property_definition 내부 순회 ----
             .method_definition => {
-                // extra: [key, params, body, flags]
+                // extra: [key, params, body, flags, deco_start, deco_len]
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 2 < extras.len) {
@@ -1131,6 +1135,11 @@ pub const SemanticAnalyzer = struct {
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
+                    }
+
+                    // 멤버 decorator 순회 — 누락 시 import binding이 resolve 안 돼 tree-shake로 drop (#1504 follow-up).
+                    if (extra_start + 5 < extras.len) {
+                        try self.visitNodeList(.{ .start = extras[extra_start + 4], .len = extras[extra_start + 5] });
                     }
 
                     // getter/setter 파라미터 개수 검증
@@ -1155,13 +1164,18 @@ pub const SemanticAnalyzer = struct {
                 // non-computed key는 단순 이름이므로 순회하면 namespace import가
                 // 잘못 resolve되는 버그가 발생한다.
                 const e = node.data.extra;
-                if (e + 1 < self.ast.extra_data.items.len) {
-                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const extras_p = self.ast.extra_data.items;
+                if (e + 1 < extras_p.len) {
+                    const key_idx: NodeIndex = @enumFromInt(extras_p[e]);
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
                     }
-                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
+                    try self.visitNode(@enumFromInt(extras_p[e + 1]));
+                }
+                // 필드/accessor decorator 순회 — 누락 시 import binding tree-shake로 drop.
+                if (e + 4 < extras_p.len) {
+                    try self.visitNodeList(.{ .start = extras_p[e + 3], .len = extras_p[e + 4] });
                 }
             },
             .static_block => {
@@ -1962,11 +1976,17 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitClassDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // extra: [name, super_class, body, ...]
+        // extra: [name, super_class, body, type_params, impl_start, impl_len, deco_start, deco_len]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+
+        // 클래스 decorator 순회 — outer scope에서 평가되므로 class scope push 전에.
+        // 누락 시 import binding이 resolve 안 돼 tree-shake로 drop.
+        if (extra_start + 7 < extras.len) {
+            try self.visitNodeList(.{ .start = extras[extra_start + 6], .len = extras[extra_start + 7] });
+        }
 
         // 클래스 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
@@ -1988,6 +2008,10 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
+
+        if (extra_start + 7 < extras.len) {
+            try self.visitNodeList(.{ .start = extras[extra_start + 6], .len = extras[extra_start + 7] });
+        }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
         try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
