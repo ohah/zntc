@@ -40,10 +40,8 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 
-/// method_definition의 extra[3] flags — parser/class.zig와 동일.
-/// 다른 파일(es2015_computed, checker 등)에 같은 정의가 산재함 — #1398 cleanup 대상.
-const METHOD_FLAG_STATIC: u32 = 0x01;
-const METHOD_FLAG_SETTER: u32 = 0x04;
+const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
+const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
@@ -2304,14 +2302,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 else
                     try buildFreshPrototypeRef(self, class_name_span, span);
 
-                // key string literal
+                // key string literal — heap-alloc으로 긴 키 이름 truncation 회피.
                 const old_key_node = self.ast.getNode(key_idx);
                 const key_text = self.ast.getText(old_key_node.span);
-                var quoted_buf: [256]u8 = undefined;
-                quoted_buf[0] = '"';
-                @memcpy(quoted_buf[1 .. 1 + key_text.len], key_text);
-                quoted_buf[1 + key_text.len] = '"';
-                const key_str_span = try self.ast.addString(quoted_buf[0 .. key_text.len + 2]);
+                const quoted = try self.allocator.alloc(u8, key_text.len + 2);
+                defer self.allocator.free(quoted);
+                quoted[0] = '"';
+                @memcpy(quoted[1 .. 1 + key_text.len], key_text);
+                quoted[1 + key_text.len] = '"';
+                const key_str_span = try self.ast.addString(quoted);
                 const key_str = try self.ast.addNode(.{
                     .tag = .string_literal,
                     .span = key_str_span,

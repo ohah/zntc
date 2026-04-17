@@ -28,9 +28,8 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 
-/// method_definition의 extra[3] flags — parser/object.zig + parser/class.zig와 동일.
-const METHOD_FLAG_GETTER: u32 = 0x02;
-const METHOD_FLAG_SETTER: u32 = 0x04;
+const METHOD_FLAG_GETTER = ast_mod.MethodFlags.is_getter;
+const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
 
 pub fn ES2015Computed(comptime Transformer: type) type {
     return struct {

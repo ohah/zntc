@@ -1088,6 +1088,18 @@ pub const FunctionFlags = struct {
     pub const no_side_effects: u32 = 0x04; // @__NO_SIDE_EFFECTS__
 };
 
+/// method_definition의 flags 비트 (extra[3] u16).
+/// parser/object.zig + parser/class.zig에서 동일하게 기록하고 semantic/transformer가 읽음.
+pub const MethodFlags = struct {
+    pub const is_static: u32 = 0x01;
+    pub const is_getter: u32 = 0x02;
+    pub const is_setter: u32 = 0x04;
+    pub const is_async: u32 = 0x08;
+    pub const is_generator: u32 = 0x10;
+    pub const is_abstract: u32 = 0x20;
+    pub const is_declare: u32 = 0x40;
+};
+
 /// call_expression / new_expression의 flags 비트 (D082).
 /// extra: [callee, args_start, args_len, flags]
 pub const CallFlags = struct {
