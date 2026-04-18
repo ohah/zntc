@@ -576,12 +576,23 @@ pub fn makePrivateVarName(allocator: std.mem.Allocator, orig_name: []const u8) !
 
 /// "#bar" → { ws_name="_bar", fn_name="_bar_fn" }
 pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u8) !PrivateMethodNames {
+    return makePrivateMethodNamesWithKind(allocator, orig_name, 0);
+}
+
+/// kind 별 suffix: 0=method → "_fn", 1=getter → "_get", 2=setter → "_set" (#1523).
+/// "#x" + kind=1 → { ws_name="_x", fn_name="_x_get" }
+pub fn makePrivateMethodNamesWithKind(allocator: std.mem.Allocator, orig_name: []const u8, kind: u8) !PrivateMethodNames {
     const ws_name = try makePrivateVarName(allocator, orig_name);
     const bare = orig_name[1..];
-    const fn_name = try allocator.alloc(u8, 1 + bare.len + 3);
+    const suffix: []const u8 = switch (kind) {
+        1 => "_get",
+        2 => "_set",
+        else => "_fn",
+    };
+    const fn_name = try allocator.alloc(u8, 1 + bare.len + suffix.len);
     fn_name[0] = '_';
     @memcpy(fn_name[1 .. 1 + bare.len], bare);
-    @memcpy(fn_name[1 + bare.len ..], "_fn");
+    @memcpy(fn_name[1 + bare.len ..], suffix);
     return .{ .ws_name = ws_name, .fn_name = fn_name };
 }
 

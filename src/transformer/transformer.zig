@@ -391,12 +391,14 @@ pub const Transformer = struct {
 
     pub const PrivateMethodMapping = struct {
         original_name: []const u8, // "#method" (원본 소스 텍스트)
-        weakset_name: []const u8, // "_method" (WeakSet 변수명)
-        func_name: []const u8, // "_method_fn" (추출 함수명)
+        weakset_name: []const u8, // "_method" (WeakSet 변수명 — 같은 name 의 getter/setter 공유)
+        func_name: []const u8, // kind 에 따라 "_method_fn" / "_method_get" / "_method_set"
         member_idx: NodeIndex = NodeIndex.none, // method_definition 노드 (ES2015 경로에서 사용)
         // standalone function_declaration 의 span 으로 사용 — leading comment 가
         // `function _fn()` 뒤가 아니라 함수 앞에서 flush 되도록 (#1516).
         member_span: Span = .{ .start = 0, .end = 0 },
+        /// 0 = method, 1 = getter, 2 = setter (#1523).
+        kind: u8 = 0,
     };
 
     // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.
