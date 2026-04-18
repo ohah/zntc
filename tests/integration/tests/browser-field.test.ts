@@ -107,6 +107,88 @@ describe("package.json browser 필드", () => {
     }
   });
 
+  // Bare module 키 (spec 2단계 — #1530).
+  // rspack fixture `replacing-module1`: "wrong-module": "new-module" — 소비 시 new-module 로 remap.
+  test("bare module remap — `wrong-module`: `new-module` (rspack parity)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import v from "consumer"; console.log(v);`,
+        "node_modules/consumer/package.json": JSON.stringify({
+          name: "consumer",
+          main: "index.js",
+          browser: { "wrong-module": "new-module" },
+        }),
+        "node_modules/consumer/index.js": `export { default } from "wrong-module";`,
+        "node_modules/new-module/package.json": JSON.stringify({
+          name: "new-module",
+          main: "index.js",
+        }),
+        "node_modules/new-module/index.js": `export default "new-module";`,
+      },
+      "index.ts",
+    );
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("new-module");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  // rspack fixture `ignoring-module`: bare key `"wrong-module": false`.
+  test("bare module disable — `wrong-module`: false 는 빈 모듈", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import * as m from "consumer"; console.log(JSON.stringify(m.mod));`,
+        "node_modules/consumer/package.json": JSON.stringify({
+          name: "consumer",
+          main: "index.js",
+          browser: { "wrong-module": false },
+        }),
+        "node_modules/consumer/index.js": `export * as mod from "wrong-module";`,
+        "node_modules/wrong-module/package.json": JSON.stringify({
+          name: "wrong-module",
+          main: "index.js",
+        }),
+        "node_modules/wrong-module/index.js": `export const x = 99;`,
+      },
+      "index.ts",
+    );
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toMatch(/\{\}|undefined/);
+    } finally {
+      await result.cleanup();
+    }
+  });
+
+  // rspack fixture `recursive-module`: "new-module": "new-module" 자기 참조 — 한 번의 replace 로 종료.
+  test("bare module self-remap cycle — 동일 specifier 매핑은 원본 resolve (rspack parity)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `import v from "consumer"; console.log(v);`,
+        "node_modules/consumer/package.json": JSON.stringify({
+          name: "consumer",
+          main: "index.js",
+          browser: { "new-module": "new-module" },
+        }),
+        "node_modules/consumer/index.js": `export { default } from "new-module";`,
+        "node_modules/new-module/package.json": JSON.stringify({
+          name: "new-module",
+          main: "index.js",
+        }),
+        "node_modules/new-module/index.js": `export default "resolved-to-self";`,
+      },
+      "index.ts",
+    );
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("resolved-to-self");
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   test("remap 미적용 시 원본 파일 (platform=node 또는 browser 필드 없는 키)", async () => {
     const result = await bundleAndRun(
       {

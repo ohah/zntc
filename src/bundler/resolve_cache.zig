@@ -61,25 +61,35 @@ pub const ResolveCache = struct {
     conditions_require: []const []const u8 = &.{},
     conditions_allocated: bool = false,
 
-    /// browser 필드 override — key 는 package-root-relative 경로 (확장자 포함 원형 + 확장자 제거형 둘 다 조회).
-    /// disabled: `"key": false` → 빈 스텁으로 대체.
-    /// remap:    `"key": "./alt"` → 대체 경로로 resolve.
+    /// browser 필드 override — 4 축 분리 (path-key / module-key) × (disabled / remap).
+    /// path_* : 키가 "./..." 로 시작 — 패키지 루트 상대 경로 매칭.
+    /// module_*: 키가 bare name ("fs", "module-a") — specifier 직접 매칭, resolve 전.
+    /// [spec: package-browser-field-spec] (#1530).
     const BrowserOverrides = struct {
-        /// key 만 owned (value 없음). disabled 집합.
-        disabled: std.StringHashMap(void),
-        /// key + value 모두 allocator-owned. key = package-relative (확장자 원형), value = package-root 상대 대체 경로.
-        remap: std.StringHashMap([]const u8),
+        path_disabled: std.StringHashMap(void),
+        path_remap: std.StringHashMap([]const u8),
+        module_disabled: std.StringHashMap(void),
+        module_remap: std.StringHashMap([]const u8),
 
         fn deinit(self: *BrowserOverrides, allocator: std.mem.Allocator) void {
-            var dk = self.disabled.keyIterator();
-            while (dk.next()) |k| allocator.free(k.*);
-            self.disabled.deinit();
-            var rit = self.remap.iterator();
-            while (rit.next()) |e| {
-                allocator.free(e.key_ptr.*);
-                allocator.free(e.value_ptr.*);
+            inline for (&[_]*std.StringHashMap(void){ &self.path_disabled, &self.module_disabled }) |s| {
+                var ki = s.keyIterator();
+                while (ki.next()) |k| allocator.free(k.*);
+                s.deinit();
             }
-            self.remap.deinit();
+            inline for (&[_]*std.StringHashMap([]const u8){ &self.path_remap, &self.module_remap }) |r| {
+                var it = r.iterator();
+                while (it.next()) |e| {
+                    allocator.free(e.key_ptr.*);
+                    allocator.free(e.value_ptr.*);
+                }
+                r.deinit();
+            }
+        }
+
+        fn isEmpty(self: *const BrowserOverrides) bool {
+            return self.path_disabled.count() == 0 and self.path_remap.count() == 0 and
+                self.module_disabled.count() == 0 and self.module_remap.count() == 0;
         }
     };
 
@@ -89,6 +99,16 @@ pub const ResolveCache = struct {
         /// package-root 상대 대체 경로 (caller 가 pkg_dir 과 조합하여 재-resolve).
         remap: []const u8,
     };
+
+    const BareOverrideKind = union(enum) {
+        none,
+        disabled,
+        /// replacement specifier — caller 가 동일 source_dir 에서 재-resolve.
+        remap: []const u8,
+    };
+
+    /// Remap chain cycle 방어 — depth 3 이상이면 원본 경로로 fallback (#1530).
+    const MAX_REMAP_DEPTH: u8 = 3;
 
     const CachedResult = union(enum) {
         resolved: ResolveResult,
@@ -312,6 +332,41 @@ pub const ResolveCache = struct {
             }
         }
 
+        // browser 필드 bare module intercept — resolve 전 specifier 자체를 치환 / disable (#1530).
+        // source_dir 이 node_modules/<pkg> 내부일 때만 적용 (pkg 의 browser 필드가 pkg 내부 import 에 적용).
+        // cycle 방어: remap chain 은 최대 MAX_REMAP_DEPTH 회까지만 반복.
+        var effective_spec = specifier;
+        var remap_buf: [MAX_REMAP_DEPTH][]const u8 = undefined;
+        var remap_depth: u8 = 0;
+        if (self.platform.isBrowserLike()) {
+            while (remap_depth < MAX_REMAP_DEPTH) : (remap_depth += 1) {
+                // 동일 specifier 로 self-remap 이면 즉시 종료 (recursive-module fixture).
+                if (remap_depth > 0 and std.mem.eql(u8, effective_spec, remap_buf[remap_depth - 1])) break;
+                switch (self.getBareModuleOverride(source_dir, effective_spec)) {
+                    .disabled => {
+                        const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
+                        if (thread_safe) self.cache_mutex.lock();
+                        defer if (thread_safe) self.cache_mutex.unlock();
+                        self.putCache(cache_key, .{ .disabled = .{
+                            .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
+                            .module_type = .javascript,
+                        } }) catch {};
+                        return ResolveResult{
+                            .path = disabled_path,
+                            .module_type = .javascript,
+                            .disabled = true,
+                        };
+                    },
+                    .remap => |rep| {
+                        remap_buf[remap_depth] = effective_spec;
+                        effective_spec = rep;
+                        continue;
+                    },
+                    .none => break,
+                }
+            }
+        }
+
         // 실제 resolve — thread_safe 모드에서는 resolver를 스택 복사하여 conditions 수정 방지
         var local_resolver = self.resolver;
         local_resolver.conditions = self.conditionsFor(kind);
@@ -322,7 +377,7 @@ pub const ResolveCache = struct {
         }
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
-        const result = resolve_ptr.resolve(source_dir, specifier) catch |err| switch (err) {
+        const result = resolve_ptr.resolve(source_dir, effective_spec) catch |err| switch (err) {
             error.ModuleNotFound => {
                 if (thread_safe) self.cache_mutex.lock();
                 defer if (thread_safe) self.cache_mutex.unlock();
@@ -396,6 +451,7 @@ pub const ResolveCache = struct {
     }
 
     /// resolved_path 에서 `.../node_modules/<pkg>` 패키지 루트 slice 를 반환 (소유권 없음, resolved_path 의 prefix).
+    /// 파일 경로 / 패키지 루트 dir / trailing slash 포함 dir 세 경우 모두 매칭.
     fn findPackageRoot(resolved_path: []const u8) ?[]const u8 {
         const nm = "node_modules" ++ std.fs.path.sep_str;
         const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return null;
@@ -404,11 +460,15 @@ pub const ResolveCache = struct {
         var pkg_end: usize = 0;
         if (after_nm.len > 0 and after_nm[0] == '@') {
             const first_slash = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
-            pkg_end = std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str) orelse return null;
+            // scoped pkg: `node_modules/@scope/pkg` 로 끝나는 디렉토리 자체 — 두 번째 slash 가 없으면 end 를 문자열 끝으로.
+            pkg_end = std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str) orelse after_nm.len;
         } else {
-            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
+            // unscoped: 첫 slash 없으면 after_nm 전체가 pkg name (dir 자체).
+            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse after_nm.len;
         }
 
+        // trailing slash 를 포함해서 저장된 경로는 after_nm 에 slash 가 있지만 pkg_end 가 0 이 되는 케이스 방어.
+        if (pkg_end == 0) return null;
         return resolved_path[0 .. nm_pos + nm.len + pkg_end];
     }
 
@@ -475,21 +535,44 @@ pub const ResolveCache = struct {
         else
             relative_in_pkg;
 
-        // 정확한 매칭 (확장자 원형) + 확장자 제거형 둘 다 조회.
-        if (overrides.disabled.contains(dot_relative)) return .disabled;
-        if (overrides.remap.get(dot_relative)) |rep| return .{ .remap = rep };
+        // 정확한 매칭 (확장자 원형) + 확장자 제거형 둘 다 조회 (path-key 만).
+        if (overrides.path_disabled.contains(dot_relative)) return .disabled;
+        if (overrides.path_remap.get(dot_relative)) |rep| return .{ .remap = rep };
         const ext = std.fs.path.extension(dot_relative);
         if (ext.len > 0) {
             const without_ext = dot_relative[0 .. dot_relative.len - ext.len];
-            if (overrides.disabled.contains(without_ext)) return .disabled;
-            if (overrides.remap.get(without_ext)) |rep| return .{ .remap = rep };
+            if (overrides.path_disabled.contains(without_ext)) return .disabled;
+            if (overrides.path_remap.get(without_ext)) |rep| return .{ .remap = rep };
         }
 
         return .none;
     }
 
-    /// package.json 의 browser 필드에서 relative-path 키의 override (false=disabled, string=remap) 를 수집.
-    /// 하나도 없으면 null. bare-module 키는 현재 미지원 (follow-up).
+    /// source_dir 의 패키지 browser 필드에서 specifier (bare module name) 매칭 조회.
+    /// `import "fs"` / `import "module-a"` 형태를 resolve 전에 intercept 하기 위한 진입점 (#1530).
+    /// browser 필드 remap value 는 BrowserOverrides 소유 — caller 외부 저장 금지.
+    fn getBareModuleOverride(self: *ResolveCache, source_dir: []const u8, specifier: []const u8) BareOverrideKind {
+        // source_dir 이 node_modules/<pkg> 내부이면 해당 pkg 의 browser 필드 조회.
+        const pkg_dir_path = findPackageRoot(source_dir) orelse return .none;
+
+        const overrides_opt = self.browser_overrides_cache.get(pkg_dir_path) orelse blk: {
+            const built = self.buildBrowserOverrides(pkg_dir_path);
+            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return .none;
+            self.browser_overrides_cache.put(key_owned, built) catch {
+                self.allocator.free(key_owned);
+                return .none;
+            };
+            break :blk built;
+        };
+        const overrides = overrides_opt orelse return .none;
+
+        if (overrides.module_disabled.contains(specifier)) return .disabled;
+        if (overrides.module_remap.get(specifier)) |rep| return .{ .remap = rep };
+        return .none;
+    }
+
+    /// package.json 의 browser 필드를 4 축 (path/module × disabled/remap) 으로 수집.
+    /// 키 prefix 로 분류: "./foo" → path-key, 나머지는 bare module key (#1530).
     fn buildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
         var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return null;
         defer pkg_dir.close();
@@ -501,8 +584,10 @@ pub const ResolveCache = struct {
         const browser_obj = browser_map.object;
 
         var overrides = BrowserOverrides{
-            .disabled = std.StringHashMap(void).init(self.allocator),
-            .remap = std.StringHashMap([]const u8).init(self.allocator),
+            .path_disabled = std.StringHashMap(void).init(self.allocator),
+            .path_remap = std.StringHashMap([]const u8).init(self.allocator),
+            .module_disabled = std.StringHashMap(void).init(self.allocator),
+            .module_remap = std.StringHashMap([]const u8).init(self.allocator),
         };
 
         var kit = browser_obj.iterator();
@@ -510,28 +595,30 @@ pub const ResolveCache = struct {
             const key = entry.key_ptr.*;
             const val = entry.value_ptr.*;
 
-            // relative-path key 만 처리 (bare module 키는 follow-up).
-            if (!std.mem.startsWith(u8, key, "./")) continue;
-            const key_relative = key[2..];
+            const is_relative_path = std.mem.startsWith(u8, key, "./");
+            const normalized_key = if (is_relative_path) key[2..] else key;
 
             switch (val) {
                 .bool => |b| {
                     if (!b) {
-                        const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
-                        overrides.disabled.put(owned_key, {}) catch {
-                            self.allocator.free(owned_key);
-                        };
+                        const owned_key = self.allocator.dupe(u8, normalized_key) catch continue;
+                        const target = if (is_relative_path) &overrides.path_disabled else &overrides.module_disabled;
+                        target.put(owned_key, {}) catch self.allocator.free(owned_key);
                     }
                 },
                 .string => |s| {
-                    // value 도 "./" prefix 관례이지만 pkg 루트 상대로 저장 (caller 에서 join).
-                    const val_relative = if (std.mem.startsWith(u8, s, "./")) s[2..] else s;
-                    const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
-                    const owned_val = self.allocator.dupe(u8, val_relative) catch {
+                    // path-key 값은 "./" prefix 제거 후 저장. module-key 값은 원형 유지 (specifier).
+                    const val_normalized = if (is_relative_path and std.mem.startsWith(u8, s, "./"))
+                        s[2..]
+                    else
+                        s;
+                    const owned_key = self.allocator.dupe(u8, normalized_key) catch continue;
+                    const owned_val = self.allocator.dupe(u8, val_normalized) catch {
                         self.allocator.free(owned_key);
                         continue;
                     };
-                    overrides.remap.put(owned_key, owned_val) catch {
+                    const target = if (is_relative_path) &overrides.path_remap else &overrides.module_remap;
+                    target.put(owned_key, owned_val) catch {
                         self.allocator.free(owned_key);
                         self.allocator.free(owned_val);
                     };
@@ -540,7 +627,7 @@ pub const ResolveCache = struct {
             }
         }
 
-        if (overrides.disabled.count() == 0 and overrides.remap.count() == 0) {
+        if (overrides.isEmpty()) {
             overrides.deinit(self.allocator);
             return null;
         }
