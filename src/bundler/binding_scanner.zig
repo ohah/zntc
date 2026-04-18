@@ -666,6 +666,22 @@ pub fn populateSyntheticSymbols(
             std.mem.eql(u8, eb.exported_name, "default") and
             (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
         {
+            // #1598: semantic analyzer의 visitExportDefaultDeclaration이 `_default` facade
+            // 심볼을 이미 scope_maps[0]에 등록했다면 그걸 재사용 — extend하면 동일 이름이
+            // 중복 등록되어 collectModuleNames가 `_default$1` 충돌 회피 이름을 생성한다.
+            if (module_scope) |scope| {
+                if (scope.get("_default")) |existing_idx| {
+                    if (existing_idx < sem_symbols.items.len) {
+                        // 기존 심볼에 default_export synthetic_kind 마킹.
+                        // synthetic_name은 mangler(#1585) lookup key로 쓰이므로 함께 설정.
+                        sem_symbols.items[existing_idx].synthetic_kind = .default_export;
+                        sem_symbols.items[existing_idx].synthetic_name = "_default";
+                        const sym_id: semantic_symbol.SymbolId = @enumFromInt(@as(u32, @intCast(existing_idx)));
+                        eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sym_id } };
+                        continue;
+                    }
+                }
+            }
             const sem_id = try semantic_symbol.extendSymbol(
                 arena,
                 sem_symbols,

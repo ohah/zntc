@@ -351,6 +351,16 @@ pub const Linker = struct {
             const sym_name = scope_entry.key_ptr.*;
             if (std.mem.eql(u8, sym_name, "default")) continue;
 
+            // `_default` 합성 심볼은 scope_maps에도 등록되지만 owner 등록은 export_bindings
+            // 경로(line 394-)에서 전담한다. 여기서도 등록하면 같은 모듈의 같은 이름이
+            // 이중 owner가 되어 collectModuleNames 충돌 처리가 `_default$1` 접미사를
+            // 생성한다 (#1598).
+            const sym_idx_for_kind = scope_entry.value_ptr.*;
+            if (sym_idx_for_kind < sem.symbols.items.len) {
+                const sk = sem.symbols.items[sym_idx_for_kind].synthetic_kind;
+                if (sk == .default_export) continue;
+            }
+
             // import binding은 일반적으로 인라인되어 변수가 생성되지 않으므로 충돌 대상 아님.
             // 단, CJS 모듈을 import하면 preamble에서 `var X = require_xxx().X`로 변수가 생성되므로
             // 충돌 대상에 포함해야 한다.
