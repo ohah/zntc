@@ -850,10 +850,12 @@ pub fn emitModule(
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
 
-    // AST 미니파이어: --minify 시 constant folding 등 AST 레벨 최적화
-    if (options.minify_syntax) {
-        @import("../transformer/minify.zig").minify(&transformer.ast);
-    }
+    // AST constant folding + dead branch DCE — --minify 여부와 무관하게 항상 실행(#1552).
+    // minify.zig는 실제로는 const fold / if DCE / logical short-circuit 전용 — 식별자
+    // mangling/주석 제거 같은 compression 은 없다. `--define`으로 치환된 상수 비교
+    // (`"production" === "production"`)나 `if (false)` dead branch를 bundle 기본 모드에서도
+    // 접어야 rolldown/esbuild와 동등한 DCE 효과를 낸다.
+    @import("../transformer/minify.zig").minify(&transformer.ast);
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
     // packed struct(u32)이므로 bitwise OR로 한번에 합친다

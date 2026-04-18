@@ -7,7 +7,7 @@ Input (.ts/.tsx/.js/.jsx)
   → Parser (AST, 24B 고정 노드, 인덱스 기반)
   → Semantic Analyzer (스코프 + 심볼 + 검증)
   → Transformer (TS 스트리핑, ES 다운레벨링, JSX, decorator)
-  → Minifier (--minify 시: constant folding, DCE, boolean simplification)
+  → AST Folder (상시: constant folding, dead branch DCE; --minify 시 boolean peephole)
   → Codegen (JavaScript + SourceMap V3)
   → Output (.js + .js.map)
 ```
