@@ -1122,3 +1122,91 @@ test "TLA: ES5 downlevel produces __async + __generator wrap, no bare yield" {
     // bare yield 는 없어야 함.
     try std.testing.expect(std.mem.indexOf(u8, code, "yield ") == null);
 }
+
+// ============================================================
+// verbatimModuleSyntax 테스트 (TS 5.0+)
+// ============================================================
+//
+// 주의: elision 은 semantic analyzer 가 populated symbols 를 만든 뒤에만 발동한다.
+// 단위 헬퍼(parseAsModuleAndTransform)는 semantic 을 건너뛰므로 여기서는 transpile 모듈을
+// 경유해 end-to-end 로 검증한다.
+
+const transpile_mod = @import("../transpile.zig");
+
+test "verbatimModuleSyntax=false (default): unused value import is elided" {
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import { foo } from "./bar";
+    ,
+        "input.ts",
+        .{},
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "import") == null);
+}
+
+test "verbatimModuleSyntax=true: unused value import is preserved" {
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import { foo } from "./bar";
+    ,
+        "input.ts",
+        .{ .verbatim_module_syntax = true },
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "import") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "\"./bar\"") != null);
+}
+
+test "verbatimModuleSyntax=true: type-only named specifier 는 여전히 제거" {
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import { type T, foo } from "./bar";
+        \\const x = foo;
+    ,
+        "input.ts",
+        .{ .verbatim_module_syntax = true },
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "type T") == null);
+}
+
+test "verbatimModuleSyntax=true: `import type` 전체 선언은 여전히 drop" {
+    // `import type` 은 parse 단계에서 NodeIndex.none 으로 elide 되므로 flag 와 무관.
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import type { T } from "./bar";
+    ,
+        "input.ts",
+        .{ .verbatim_module_syntax = true },
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "import") == null);
+}
+
+test "side-effect import 는 verbatim 과 무관하게 항상 보존" {
+    // `import "./bar"` 은 binding 이 없어 elision 대상이 아님.
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import "./bar";
+    ,
+        "input.ts",
+        .{},
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "\"./bar\"") != null);
+}
+
+test "verbatimModuleSyntax=true: 미사용 default import 보존" {
+    var result = try transpile_mod.transpile(
+        std.testing.allocator,
+        \\import foo from "./bar";
+    ,
+        "input.ts",
+        .{ .verbatim_module_syntax = true },
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "import") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "foo") != null);
+}

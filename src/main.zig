@@ -60,6 +60,8 @@ const CliOptions = struct {
     use_define_for_class_fields: ?bool = null,
     experimental_decorators: ?bool = null,
     emit_decorator_metadata: bool = false,
+    /// --verbatim-module-syntax: null이면 tsconfig 값 사용, 명시적으로 설정되면 override.
+    verbatim_module_syntax: ?bool = null,
     unsupported: lib.transformer.TransformOptions.compat.UnsupportedFeatures = .{},
     /// --target에서 파싱한 ES 타겟. top-level await 등 타겟 제한 검증에 사용.
     es_target: ?lib.transformer.TransformOptions.compat.ESTarget = null,
@@ -287,6 +289,7 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     if (parsed.experimental_decorators) opts.experimental_decorators = true;
     if (parsed.emit_decorator_metadata) opts.emit_decorator_metadata = true;
     if (parsed.use_define_for_class_fields == false) opts.use_define_for_class_fields = false;
+    if (parsed.verbatim_module_syntax) opts.verbatim_module_syntax = true;
     opts.module_format = parsed.module_format;
     opts.quote_style = parsed.quote_style;
     opts.platform = parsed.platform;
@@ -549,6 +552,10 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.use_define_for_class_fields = false;
         } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=true")) {
             opts.use_define_for_class_fields = true;
+        } else if (std.mem.eql(u8, arg, "--verbatim-module-syntax")) {
+            opts.verbatim_module_syntax = true;
+        } else if (std.mem.eql(u8, arg, "--verbatim-module-syntax=false")) {
+            opts.verbatim_module_syntax = false;
         } else if (std.mem.startsWith(u8, arg, "--target=")) {
             const val = arg["--target=".len..];
             const compat = lib.transformer.TransformOptions.compat;
@@ -1222,6 +1229,10 @@ pub fn main() !void {
     if (tsconfig.emit_decorator_metadata and (opts.experimental_decorators orelse false)) {
         opts.emit_decorator_metadata = true;
     }
+    // verbatimModuleSyntax: CLI가 명시적 override하지 않았으면 tsconfig 값 사용.
+    if (opts.verbatim_module_syntax == null and tsconfig.verbatim_module_syntax) {
+        opts.verbatim_module_syntax = true;
+    }
     // JSX: CLI/플랫폼 프리셋이 미지정이면 tsconfig에서 가져옴
     if (opts.jsx_runtime == null) {
         if (tsconfig.jsx) |jsx_mode| {
@@ -1405,6 +1416,7 @@ pub fn main() !void {
             .experimental_decorators = opts.experimental_decorators orelse false,
             .emit_decorator_metadata = opts.emit_decorator_metadata,
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
+            .verbatim_module_syntax = opts.verbatim_module_syntax orelse false,
             .unsupported = opts.unsupported,
             .conditions = opts.conditions_list.items,
             .timing = opts.timing,
@@ -1913,6 +1925,7 @@ pub fn main() !void {
             .use_define_for_class_fields = opts.use_define_for_class_fields orelse true,
             .experimental_decorators = opts.experimental_decorators orelse false,
             .emit_decorator_metadata = opts.emit_decorator_metadata,
+            .verbatim_module_syntax = opts.verbatim_module_syntax orelse false,
             .unsupported = opts.unsupported,
             .es_target = opts.es_target,
             .source_root = opts.source_root orelse "",
@@ -2256,6 +2269,7 @@ fn printUsage(writer: anytype) !void {
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)
         \\  --use-define-for-class-fields=false  Move fields to constructor (assign semantics)
+        \\  --verbatim-module-syntax          Preserve unused value imports (TS 5.0+)
         \\
         \\Flow options:
         \\  --flow                            Enable Flow type stripping (auto-detected via @flow pragma)

@@ -64,6 +64,8 @@ export interface TranspileOptions {
   emitDecoratorMetadata?: boolean;
   /** class field → constructor this.x = v 변환 (기본: true) */
   useDefineForClassFields?: boolean;
+  /** verbatimModuleSyntax (TS 5.0+): true면 미사용 값 import를 elide하지 않음 */
+  verbatimModuleSyntax?: boolean;
   /** 모듈 포맷 */
   format?: "esm" | "cjs";
   /** 문자열 따옴표 스타일 */
@@ -174,6 +176,7 @@ export function buildOptionsJson(
   if (opts.experimentalDecorators) payload.experimentalDecorators = true;
   if (opts.emitDecoratorMetadata) payload.emitDecoratorMetadata = true;
   if (opts.useDefineForClassFields === false) payload.useDefineForClassFields = false;
+  if (opts.verbatimModuleSyntax) payload.verbatimModuleSyntax = true;
   if (opts.format) payload.format = opts.format;
   if (opts.quotes) payload.quotes = opts.quotes;
   if (opts.platform === "react-native") payload.platform = "react_native";
