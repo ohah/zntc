@@ -978,6 +978,30 @@ describe("CLI: tsconfig", () => {
     rmSync(configDir, { recursive: true, force: true });
   });
 
+  test("--tsconfig-path 는 -p 의 alias (NAPI `tsconfigPath` 와 통일된 이름)", () => {
+    // 공백/=형 모두, 디렉토리/파일 경로 모두 지원.
+    const configDir = mkdtempSync(join(tmpdir(), "zts-cli-tsc-alias-"));
+    writeFileSync(
+      join(configDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
+    );
+    const inputPath = join(configDir, "input.ts");
+    writeFileSync(inputPath, 'import { foo } from "./bar";');
+
+    for (const args of [
+      ["--tsconfig-path", configDir],
+      [`--tsconfig-path=${configDir}`],
+      ["--tsconfig-path", join(configDir, "tsconfig.json")],
+      ["-p", join(configDir, "tsconfig.json")], // -p 도 파일 경로 지원 (loadFromPath 전환)
+    ]) {
+      const { stdout, exitCode } = runCli([inputPath, ...args]);
+      expect(exitCode).toBe(0);
+      // verbatimModuleSyntax 가 적용되면 미사용 import 도 보존
+      expect(stdout).toContain("./bar");
+    }
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
   test("CLI 옵션이 tsconfig보다 우선", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-cli-override-"));
     writeFileSync(

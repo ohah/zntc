@@ -352,8 +352,13 @@ function parseArgs(argv) {
       opts.keyfile = args[++i];
       continue;
     }
-    if (arg === "-p" || arg === "--project") {
+    if (arg === "-p" || arg === "--project" || arg === "--tsconfig-path") {
+      // `-p`, `--project` (tsc 전통), `--tsconfig-path` (NAPI `tsconfigPath` 와 이름 통일)
       opts.project = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--tsconfig-path=")) {
+      opts.project = arg.slice("--tsconfig-path=".length);
       continue;
     }
     if (arg === "--plugin") {
@@ -431,8 +436,17 @@ function parseArgs(argv) {
 // ─── tsconfig.json 로드 ───
 
 function loadTsConfig(opts) {
-  // --project로 지정하거나 자동 탐색
+  // --project/--tsconfig-path 로 지정하거나 자동 탐색
   let tsconfigPath = opts.project;
+  // 경로가 디렉토리면 내부의 tsconfig.json 을 대상 파일로 보정 (NAPI `loadFromPath` 와 동일 규칙).
+  if (tsconfigPath && existsSync(tsconfigPath)) {
+    try {
+      const { statSync } = require("node:fs");
+      if (statSync(tsconfigPath).isDirectory()) {
+        tsconfigPath = join(tsconfigPath, "tsconfig.json");
+      }
+    } catch {}
+  }
   if (!tsconfigPath) {
     // 엔트리 파일 기준으로 상위 디렉토리 탐색
     const startDir =
@@ -471,6 +485,10 @@ function loadTsConfig(opts) {
     }
     if (co.useDefineForClassFields === false) {
       opts.useDefineForClassFields = false;
+    }
+    // verbatimModuleSyntax (TS 5.0+): 미사용 값 import 보존. CLI 이 설정 안 했으면 tsconfig 반영.
+    if (co.verbatimModuleSyntax === true && opts.verbatimModuleSyntax === undefined) {
+      opts.verbatimModuleSyntax = true;
     }
 
     // jsx: "react" → classic, "react-jsx" → automatic, "react-jsxdev" → automatic-dev
@@ -562,6 +580,7 @@ async function runTranspile(opts) {
     flow: opts.flow,
     experimentalDecorators: opts.experimentalDecorators,
     useDefineForClassFields: opts.useDefineForClassFields,
+    verbatimModuleSyntax: opts.verbatimModuleSyntax,
     asciiOnly: opts.asciiOnly,
     charsetUtf8: opts.charsetUtf8,
     quotes: opts.quotes,
@@ -625,6 +644,7 @@ async function runBundle(opts) {
     charsetUtf8: opts.charsetUtf8,
     useDefineForClassFields: opts.useDefineForClassFields,
     experimentalDecorators: opts.experimentalDecorators,
+    verbatimModuleSyntax: opts.verbatimModuleSyntax,
     banner: opts.banner,
     footer: opts.footer,
     globalName: opts.globalName,
