@@ -43,6 +43,8 @@ const es2022 = @import("es2022.zig");
 
 const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
 const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
+const MethodExtra = ast_mod.MethodExtra;
+const PropertyExtra = ast_mod.PropertyExtra;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
@@ -1225,7 +1227,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const params_list_old = self.ast.functionParamsList(member);
             const params_start = params_list_old.start;
             const params_len = params_list_old.len;
-            const body_idx: NodeIndex = self.readNodeIdx(me, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(me, MethodExtra.body);
 
             const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
@@ -1410,15 +1412,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
-                    const key: NodeIndex = self.readNodeIdx(me, 0);
-                    const flags = self.readU32(me, 3);
+                    const key: NodeIndex = self.readNodeIdx(me, MethodExtra.key);
+                    const flags = self.readU32(me, MethodExtra.flags);
                     const is_static = (flags & 0x01) != 0;
                     const is_abstract = (flags & 0x20) != 0;
                     const is_declare = (flags & 0x40) != 0;
                     const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
 
                     // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
-                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, 2));
+                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, MethodExtra.body));
                     if (is_abstract or is_declare or method_body.isNone()) continue;
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
@@ -1465,9 +1467,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                 } else if (member.tag == .property_definition) {
                     const pe = member.data.extra;
-                    const key: NodeIndex = self.readNodeIdx(pe, 0);
-                    const init_val: NodeIndex = self.readNodeIdx(pe, 1);
-                    const flags = self.readU32(pe, 2);
+                    const key: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
+                    const init_val: NodeIndex = self.readNodeIdx(pe, PropertyExtra.init);
+                    const flags = self.readU32(pe, PropertyExtra.flags);
                     const is_static = (flags & 0x01) != 0;
 
                     // private field (#x) → instance: WeakMap, static: descriptor 객체
@@ -1550,9 +1552,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!void {
             const pe = member.data.extra;
-            const key_idx = self.readNodeIdx(pe, 0);
-            const init_idx = self.readNodeIdx(pe, 1);
-            const flags = self.readU32(pe, 2);
+            const key_idx = self.readNodeIdx(pe, PropertyExtra.key);
+            const init_idx = self.readNodeIdx(pe, PropertyExtra.init);
+            const flags = self.readU32(pe, PropertyExtra.flags);
             const is_static = (flags & METHOD_FLAG_STATIC) != 0;
 
             const key_node = self.ast.getNode(key_idx);
@@ -1885,13 +1887,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// constructor인지 확인 (key가 "constructor" identifier)
         /// constructor method_definition에서 function_declaration 생성.
-        /// method_definition: extra = [key, params_start, params_len, body, flags, ...]
         fn buildFunctionFromConstructor(self: *Transformer, ctor_idx: NodeIndex, name: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const ctor = self.ast.getNode(ctor_idx);
             const me = ctor.data.extra;
 
             const params_list_old = self.ast.functionParamsList(ctor);
-            const body_idx: NodeIndex = self.readNodeIdx(me, 2);
+            const body_idx: NodeIndex = self.readNodeIdx(me, MethodExtra.body);
 
             // super_call_this_alias save/restore (lowerSuperCall이 설정)
             const saved_super_alias = self.super_call_this_alias;
@@ -2469,7 +2470,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const member = self.ast.getNode(info.member_idx);
                 const me = member.data.extra;
                 // mutation 이전 읽기 — 캐시 불필요, readNodeIdx 사용.
-                const key_idx = self.readNodeIdx(me, 0);
+                const key_idx = self.readNodeIdx(me, MethodExtra.key);
 
                 const func_expr = try buildAccessorFunc(self, info.member_idx, span);
                 const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
@@ -2581,9 +2582,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
-                    const flags = self.readU32(me, 3);
+                    const flags = self.readU32(me, MethodExtra.flags);
                     const is_static = (flags & 0x01) != 0;
-                    const key: NodeIndex = self.readNodeIdx(me, 0);
+                    const key: NodeIndex = self.readNodeIdx(me, MethodExtra.key);
                     const params_list_m = self.ast.functionParamsList(member);
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
@@ -2593,8 +2594,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
 
                     // method decorator + param decorator
-                    const deco_start = self.readU32(me, 4);
-                    const deco_len = self.readU32(me, 5);
+                    const deco_start = self.readU32(me, MethodExtra.deco_start);
+                    const deco_len = self.readU32(me, MethodExtra.deco_len);
                     if (deco_len > 0 or params_list_m.len > 0) {
                         const new_key = try self.visitNode(key);
                         const empty: NodeList = .{ .start = 0, .len = 0 };
@@ -2611,13 +2612,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                 } else if (member.tag == .property_definition) {
                     // property decorator
-                    const me = member.data.extra;
-                    const flags = self.readU32(me, 2);
+                    const pe = member.data.extra;
+                    const flags = self.readU32(pe, PropertyExtra.flags);
                     const is_static = (flags & 0x01) != 0;
-                    const deco_start = self.readU32(me, 3);
-                    const deco_len = self.readU32(me, 4);
+                    const deco_start = self.readU32(pe, PropertyExtra.deco_start);
+                    const deco_len = self.readU32(pe, PropertyExtra.deco_len);
                     if (deco_len > 0) {
-                        const key_idx: NodeIndex = self.readNodeIdx(me, 0);
+                        const key_idx: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
                         const new_key = try self.visitNode(key_idx);
                         const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(

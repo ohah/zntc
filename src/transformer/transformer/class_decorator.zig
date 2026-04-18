@@ -587,7 +587,7 @@ pub fn classifyPropertyDefinition(
     const field_assignments = ctx.field_assignments;
     const member_decorators = ctx.member_decorators;
     const me = member.data.extra;
-    const flags = self.readU32(me, 2);
+    const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
     const is_static = (flags & 0x01) != 0;
     const is_abstract = (flags & 0x20) != 0;
     const is_declare = (flags & 0x40) != 0;
@@ -599,10 +599,10 @@ pub fn classifyPropertyDefinition(
 
     // decorator 수집 (experimental decorators — 경로와 무관하게 한 번만)
     if (self.options.experimental_decorators) {
-        const deco_start = self.readU32(me, 3);
-        const deco_len = self.readU32(me, 4);
+        const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
+        const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
         if (deco_len > 0) {
-            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+            const new_key = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.key));
             const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
             try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty);
         }
@@ -610,8 +610,8 @@ pub fn classifyPropertyDefinition(
 
     // useDefineForClassFields=false: non-static instance field를 constructor로 이동
     if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
-        const key_idx = self.readNodeIdx(me, 0);
-        const init_idx = self.readNodeIdx(me, 1);
+        const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
+        const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         if (!init_idx.isNone()) {
             const new_key = try self.visitNode(key_idx);
             // super class가 있으면 field value의 this → _this 치환
@@ -633,8 +633,8 @@ pub fn classifyPropertyDefinition(
 
     // useDefineForClassFields=false + static field
     if (!self.options.use_define_for_class_fields and is_static) {
-        const key_idx = self.readNodeIdx(me, 0);
-        const init_idx = self.readNodeIdx(me, 1);
+        const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
+        const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거
         // 초기값 있음 → class 밖 할당문으로 이동 (Foo.z = 2)
         if (ctx.static_field_assignments) |sfa| {
@@ -671,13 +671,13 @@ pub fn classifyMethodDefinition(
     const class_members = ctx.class_members;
     const member_decorators = ctx.member_decorators;
     const me = member.data.extra;
-    const flags = self.readU32(me, 3);
+    const flags = self.readU32(me, ast_mod.MethodExtra.flags);
     const is_static = (flags & 0x01) != 0;
     const params_list_m = self.ast.functionParamsList(member);
 
     // constructor 감지
     const is_ctor = if (!is_static) blk: {
-        const key_idx = self.readNodeIdx(me, 0);
+        const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .identifier_reference) {
             const name = self.ast.getText(key_node.span);
@@ -705,10 +705,10 @@ pub fn classifyMethodDefinition(
 
     // 일반 메서드: member decorator + parameter decorator 수집 (single-pass)
     if (self.options.experimental_decorators) {
-        const deco_start = self.readU32(me, 4);
-        const deco_len = self.readU32(me, 5);
+        const deco_start = self.readU32(me, ast_mod.MethodExtra.deco_start);
+        const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
         if (deco_len > 0 or params_list_m.len > 0) {
-            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+            const new_key = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.key));
             try self.collectMemberDecorators(
                 member_decorators,
                 deco_start,
@@ -1765,12 +1765,10 @@ pub fn hasAnyMemberDecorators(self: *Transformer, class_extra: u32) bool {
         const me = member.data.extra;
 
         if (member.tag == .property_definition or member.tag == .accessor_property) {
-            // extra = [key, init_val, flags, deco_start, deco_len]
-            const deco_len = self.readU32(me, 4);
+            const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
             if (deco_len > 0) return true;
         } else if (member.tag == .method_definition) {
-            // extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
-            const deco_len = self.readU32(me, 5);
+            const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
             if (deco_len > 0) return true;
         }
     }
@@ -1913,17 +1911,16 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             const me = member.data.extra;
 
             if (member.tag == .method_definition) {
-                // extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
-                const flags = self.readU32(me, 3);
-                const deco_start = self.readU32(me, 4);
-                const deco_len = self.readU32(me, 5);
+                const flags = self.readU32(me, ast_mod.MethodExtra.flags);
+                const deco_start = self.readU32(me, ast_mod.MethodExtra.deco_start);
+                const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
                 const is_static = (flags & 0x01) != 0;
                 const is_getter = (flags & 0x02) != 0;
                 const is_setter = (flags & 0x04) != 0;
 
                 // constructor 감지
                 if (!is_getter and !is_setter and !is_static) {
-                    const key_idx = self.readNodeIdx(me, 0);
+                    const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
                     if (!key_idx.isNone()) {
                         const key_node = self.ast.getNode(key_idx);
                         if (key_node.tag == .identifier_reference or key_node.tag == .binding_identifier) {
@@ -1936,7 +1933,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 }
 
                 // key를 한 번만 방문 (decorator info + stripped method 공용)
-                const key_idx = self.readNodeIdx(me, 0);
+                const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
                 const new_key = try self.visitNode(key_idx);
                 // private identifier 감지
                 const is_private = blk: {
@@ -1963,7 +1960,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     var m_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
                     if (is_private_method) {
                         desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
-                        m_body = try self.visitNode(self.readNodeIdx(me, 2));
+                        m_body = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.body));
                         m_params = self.ast.functionParamsList(member);
                     }
 
@@ -1990,11 +1987,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     try new_members.append(self.allocator, getter);
                 } else {
                     // public method 또는 non-decorated → 그대로 추가
-                    const new_body = try self.visitNode(self.readNodeIdx(me, 2));
+                    const new_body = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.body));
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_method = try self.addExtraNode(.method_definition, member.span, &.{
                         @intFromEnum(new_key),
-                        self.readU32(me, 1),
+                        self.readU32(me, ast_mod.MethodExtra.params),
                         @intFromEnum(new_body),
                         flags,
                         empty_list.start,
@@ -2003,14 +2000,13 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     try new_members.append(self.allocator, new_method);
                 }
             } else if (member.tag == .property_definition) {
-                // extra = [key, init_val, flags, deco_start, deco_len]
-                const flags = self.readU32(me, 2);
-                const deco_start = self.readU32(me, 3);
-                const deco_len = self.readU32(me, 4);
+                const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
+                const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
+                const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
                 const is_static = (flags & 0x01) != 0;
 
                 // key를 한 번만 방문
-                const key_idx_prop = self.readNodeIdx(me, 0);
+                const key_idx_prop = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
                 const new_key = try self.visitNode(key_idx_prop);
                 const is_private_field = self.ast.getNode(key_idx_prop).tag == .private_identifier;
 
@@ -2039,7 +2035,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 }
 
                 // property를 decorator 없이 추가 (decorated면 초기값을 __runInitializers로 래핑)
-                const raw_init = try self.visitNode(self.readNodeIdx(me, 1));
+                const raw_init = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.init));
                 const new_init = if (field_init_name) |init_name| blk: {
                     // TypeScript 패턴: (runInit(this, _prevExtra), runInit(this, _x_initializers, val))
                     // 첫 field: _prevExtra = _instanceExtraInitializers
@@ -2088,15 +2084,14 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 });
                 try new_members.append(self.allocator, new_prop);
             } else if (member.tag == .accessor_property) {
-                // extra = [key, init_val, flags, deco_start, deco_len]
-                const flags = self.readU32(me, 2);
-                const deco_start = self.readU32(me, 3);
-                const deco_len = self.readU32(me, 4);
+                const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
+                const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
+                const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
                 const is_static = (flags & 0x01) != 0;
 
-                const key_idx = self.readNodeIdx(me, 0);
+                const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
                 const new_key = try self.visitNode(key_idx);
-                const new_init = try self.visitNode(self.readNodeIdx(me, 1));
+                const new_init = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.init));
 
                 if (deco_len > 0) {
                     const name_node_idx = try self.memberKeyToStringLiteral(new_key);

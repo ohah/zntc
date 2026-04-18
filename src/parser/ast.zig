@@ -1100,6 +1100,39 @@ pub const MethodFlags = struct {
     pub const is_declare: u32 = 0x40;
 };
 
+/// method_definition extras 레이아웃: [key, params, body, flags, deco_start, deco_len] (#1513).
+/// 매직 offset 숫자 (`readU32(e, 3)`) 대신 `MethodExtra.flags` 사용.
+pub const MethodExtra = struct {
+    pub const key: u32 = 0;
+    pub const params: u32 = 1;
+    pub const body: u32 = 2;
+    pub const flags: u32 = 3;
+    pub const deco_start: u32 = 4;
+    pub const deco_len: u32 = 5;
+};
+
+/// property_definition / accessor_property extras 레이아웃: [key, init, flags, deco_start, deco_len] (#1513).
+pub const PropertyExtra = struct {
+    pub const key: u32 = 0;
+    pub const init: u32 = 1;
+    pub const flags: u32 = 2;
+    pub const deco_start: u32 = 3;
+    pub const deco_len: u32 = 4;
+};
+
+/// class_declaration / class_expression extras 레이아웃:
+/// [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len] (#1513).
+pub const ClassExtra = struct {
+    pub const name: u32 = 0;
+    pub const super: u32 = 1;
+    pub const body: u32 = 2;
+    pub const type_params: u32 = 3;
+    pub const impl_start: u32 = 4;
+    pub const impl_len: u32 = 5;
+    pub const deco_start: u32 = 6;
+    pub const deco_len: u32 = 7;
+};
+
 /// call_expression / new_expression의 flags 비트 (D082).
 /// extra: [callee, args_start, args_len, flags]
 pub const CallFlags = struct {
