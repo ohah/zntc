@@ -2332,15 +2332,14 @@ pub const Codegen = struct {
 
         try self.emitMemberDecorators(deco_start, deco_len);
 
-        // flags: bit0=static, bit1=getter, bit2=setter, bit3=async, bit4=generator(*)
-        if (flags & 0x01 != 0) try self.write("static ");
-        if (flags & 0x08 != 0) try self.write("async ");
-        if (flags & 0x02 != 0) {
+        if (flags & ast_mod.MethodFlags.is_static != 0) try self.write("static ");
+        if (flags & ast_mod.MethodFlags.is_async != 0) try self.write("async ");
+        if (flags & ast_mod.MethodFlags.is_getter != 0) {
             try self.write("get ");
-        } else if (flags & 0x04 != 0) {
+        } else if (flags & ast_mod.MethodFlags.is_setter != 0) {
             try self.write("set ");
         }
-        if (flags & 0x10 != 0) try self.writeByte('*');
+        if (flags & ast_mod.MethodFlags.is_generator != 0) try self.writeByte('*');
 
         try self.emitNode(key);
         try self.writeByte('(');
