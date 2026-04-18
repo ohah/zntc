@@ -138,6 +138,29 @@ console.log(new P().p(), new Q().q());
     expect(runInNode(out)).toBe("1 2");
   });
 
+  // #1537 — Stage 3가 accessor에 붙인 `#_{name}_accessor_storage` private backing이
+  // ES5 lowering에서 WeakMap으로 풀리는지. 핵심 회귀 가드.
+  test("accessor + decorator의 private backing → WeakMap lowering (#1537)", async () => {
+    const out = await transpileES5(`
+function defaultTo(def: any) {
+  return function (_: any, _ctx: any) {
+    return { init(v: any) { return v == null ? def : v; } };
+  };
+}
+class AccDec { @defaultTo(99) accessor x: any = undefined; }
+const ad = new AccDec();
+console.log(ad.x);
+ad.x = 5;
+console.log(ad.x);
+`);
+    expectNoEs6Syntax(out);
+    // private field syntax(#name)가 출력에 남지 않아야 한다 — ES5 parser 실패 방지.
+    expect(out).not.toMatch(/#[A-Za-z_]/);
+    // accessor backing은 WeakMap으로 변환되어야 한다.
+    expect(out).toMatch(/new WeakMap\(\)/);
+    expect(runInNode(out)).toBe("99\n5");
+  });
+
   // static block 내 this → class name 치환 (Stage 3 decorator와 독립된 일반 버그 수정)
   test("일반 static block: this → class name 치환", async () => {
     const out = await transpileES5(`
