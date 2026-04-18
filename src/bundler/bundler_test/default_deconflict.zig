@@ -828,3 +828,112 @@ test "Deconflict: rest parameter shadows renamed function (#1457)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, length_ref) == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, map_ref) == null);
 }
+
+// ============================================================
+// `_default` 중복 심볼 방지 (#1598)
+// ============================================================
+// semantic analyzer의 visitExportDefaultDeclaration이 `_default` facade 심볼을
+// scope_maps[0]에 등록함. 그 뒤 populateSyntheticSymbols가 별도로 extend하면
+// 동일 이름이 중복 등록되어 collectModuleNames 충돌 처리가 `_default$1` 접미사를
+// 붙인다. populateSyntheticSymbols는 기존 심볼을 재사용해야 한다.
+
+test "Default: single inline default export has no `_default$N` suffix (#1598)" {
+    // minify_identifiers 없이 번들하면 canonical_name이 `_default`가 되어야 하며
+    // `_default$1` 같은 충돌 회피 이름이 생기면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import helper from './helper';
+        \\console.log(helper.x);
+    );
+    try writeFile(tmp.dir, "helper.ts",
+        \\export default { x: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // `_default$` 접미사가 있으면 중복 등록 버그 재발
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default$") == null);
+    // `_default` 이름 자체는 존재해야 함 (정의 + 참조)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") != null);
+    // 값 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Default: multiple module inline default exports collide cleanly (#1598)" {
+    // 두 모듈 각자 `export default` — $1, $2 정상 접미사. 이전엔 단일 모듈에도
+    // $1이 붙는 버그가 있었지만, 이 테스트는 "정상 충돌 경로"가 여전히 동작함을 가드.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import a from './a';
+        \\import b from './b';
+        \\console.log(a.x + b.y);
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\export default { x: 10 };
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\export default { y: 20 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bun = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer bun.deinit();
+    const result = try bun.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 실행 결과 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "20") != null);
+}
+
+test "Default: named `export default function` has no `_default` (#1598)" {
+    // inner가 named function — `_default` facade는 생성되지 않아야 한다
+    // (binding_scanner의 hasSyntheticDefault 조건에 해당 안 됨).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import greet from './lib';
+        \\console.log(greet('world'));
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export default function hello(name) { return 'Hello ' + name; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // named function의 default export는 `_default`라는 이름을 만들지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") == null);
+    // 실행 결과 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Hello") != null);
+}
