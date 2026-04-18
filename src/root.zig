@@ -16,6 +16,7 @@ pub const semantic = @import("semantic/mod.zig");
 pub const transformer = @import("transformer/mod.zig");
 pub const codegen = @import("codegen/mod.zig");
 pub const config = @import("config.zig");
+pub const tsconfig_merge = @import("tsconfig_merge.zig");
 pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
@@ -46,6 +47,8 @@ test {
     _ = error_codes;
 
     _ = crash_handler;
+
+    _ = tsconfig_merge;
 
     // test files
     _ = @import("config_test.zig");

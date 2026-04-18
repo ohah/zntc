@@ -168,33 +168,26 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     const can_load_tsconfig = @import("builtin").os.tag != .wasi and @import("builtin").os.tag != .freestanding;
     if (can_load_tsconfig) if (opts.tsconfig_path) |path| {
         const TsConfig = @import("config.zig").TsConfig;
+        const tsconfig_merge = @import("tsconfig_merge.zig");
         var ts = TsConfig.loadFromPath(allocator, path) catch return opts; // tsconfig 읽기 실패는 조용히 무시 (CLI와 동일)
         defer ts.deinit();
 
-        if (parsed.experimentalDecorators == null and ts.experimental_decorators) {
-            opts.experimental_decorators = true;
-        }
-        if (parsed.emitDecoratorMetadata == null and ts.emit_decorator_metadata and opts.experimental_decorators) {
-            opts.emit_decorator_metadata = true;
-        }
-        if (parsed.useDefineForClassFields == null) {
-            if (ts.use_define_for_class_fields) |v| opts.use_define_for_class_fields = v;
-        }
-        if (parsed.verbatimModuleSyntax == null and ts.verbatim_module_syntax) {
-            opts.verbatim_module_syntax = true;
-        }
-        if (parsed.sourcemap == null and ts.source_map) {
-            opts.sourcemap = true;
-        }
-        // target: "es2020" 문자열 → ESTarget enum 변환 후 옵션 미지정이면 적용
-        if (parsed.target == null and opts.es_target == null) {
-            if (ts.target) |t_str| {
-                if (std.meta.stringToEnum(compat.ESTarget, t_str)) |t| {
-                    opts.es_target = t;
-                    if (parsed.unsupported == null) opts.unsupported = compat.fromESTarget(t);
-                }
-            }
-        }
+        const merged = tsconfig_merge.merge(&ts, .{
+            .experimental_decorators = parsed.experimentalDecorators,
+            .emit_decorator_metadata = parsed.emitDecoratorMetadata,
+            .use_define_for_class_fields = parsed.useDefineForClassFields,
+            .verbatim_module_syntax = parsed.verbatimModuleSyntax,
+            .sourcemap = parsed.sourcemap,
+            .es_target = parsed.target,
+            .unsupported = if (parsed.unsupported) |u| @bitCast(u) else null,
+        });
+        opts.experimental_decorators = merged.experimental_decorators;
+        opts.emit_decorator_metadata = merged.emit_decorator_metadata;
+        opts.use_define_for_class_fields = merged.use_define_for_class_fields;
+        opts.verbatim_module_syntax = merged.verbatim_module_syntax;
+        opts.sourcemap = merged.sourcemap;
+        opts.es_target = merged.es_target;
+        opts.unsupported = merged.unsupported;
     };
 
     return opts;
