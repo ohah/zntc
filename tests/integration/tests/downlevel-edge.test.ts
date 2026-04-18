@@ -1997,6 +1997,240 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("Y-tag");
     });
 
+    // Babel parity: 2023-11-accessors--to-es2015/undecorated-private
+    test("accessor #priv - no init + init 혼합 (Babel parity)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              accessor #a;
+              accessor #b = 123;
+              getA() { return this.#a; }
+              setA(v: any) { this.#a = v; }
+              getB() { return this.#b; }
+              setB(v: any) { this.#b = v; }
+            }
+            const foo = new Foo();
+            let out = [String(foo.getA())];
+            foo.setA(123);
+            out.push(String(foo.getA()));
+            out.push(String(foo.getB()));
+            foo.setB(456);
+            out.push(String(foo.getB()));
+            console.log(out.join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined,123,123,456");
+    });
+
+    // Babel parity: 2023-11-accessors--to-es2015/undecorated-public — spec 상 prototype 에
+    // getter/setter 가 설치되어야 하고 instance 는 own property 를 갖지 않아야 함.
+    test("accessor public - hasOwnProperty 검증 (Babel parity)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              accessor a;
+              accessor b = 123;
+              accessor ['c'] = 456;
+            }
+            const foo = new Foo() as any;
+            const out: string[] = [];
+            out.push("a_inst=" + foo.hasOwnProperty('a'));
+            out.push("a_proto=" + Foo.prototype.hasOwnProperty('a'));
+            foo.a = 99;
+            out.push("a_after_set_inst=" + foo.hasOwnProperty('a'));
+            out.push("a_val=" + foo.a);
+            out.push("c_inst=" + foo.hasOwnProperty('c'));
+            out.push("c_proto=" + Foo.prototype.hasOwnProperty('c'));
+            console.log(out.join("|"));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe(
+        "a_inst=false|a_proto=true|a_after_set_inst=false|a_val=99|c_inst=false|c_proto=true",
+      );
+    });
+
+    // Babel parity: 2023-11-accessors--to-es2015/undecorated-static-private
+    test("static accessor #priv - no init + init (Babel parity)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              static accessor #a;
+              static accessor #b = 123;
+              static getA() { return this.#a; }
+              static setA(v: any) { this.#a = v; }
+              static getB() { return this.#b; }
+              static setB(v: any) { this.#b = v; }
+            }
+            const out = [String(Foo.getA())];
+            Foo.setA(123);
+            out.push(String(Foo.getA()));
+            out.push(String(Foo.getB()));
+            Foo.setB(456);
+            out.push(String(Foo.getB()));
+            console.log(out.join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined,123,123,456");
+    });
+
+    // Babel parity: 2023-11-accessors--to-es2015/undecorated-static-public — static 은
+    // 클래스 본체에 own property 로 설치됨 (instance 의 prototype 패턴과 다름).
+    test("static accessor public - hasOwnProperty on class (Babel parity)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo {
+              static accessor a;
+              static accessor b = 123;
+              static accessor ['c'] = 456;
+            }
+            const F = Foo as any;
+            const out: string[] = [];
+            out.push("a=" + F.a);
+            F.a = 111;
+            out.push("a2=" + F.a);
+            out.push("a_own=" + F.hasOwnProperty('a'));
+            out.push("b=" + F.b);
+            out.push("c=" + F.c);
+            out.push("c_own=" + F.hasOwnProperty('c'));
+            console.log(out.join("|"));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a=undefined|a2=111|a_own=true|b=123|c=456|c_own=true");
+    });
+
+    // 여러 private accessor 가 같은 클래스에 있을 때 WeakSet/WeakMap 이 각각 분리되어
+    // 서로 간섭 없음을 확인.
+    test("여러 private accessor 분리 (#1511 edge)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              accessor #a = 1;
+              accessor #b = 10;
+              sum() { return this.#a + this.#b; }
+              bump() { this.#a += 5; this.#b += 50; return this.sum(); }
+            }
+            const x = new X();
+            console.log(x.bump());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("66");
+    });
+
+    // extends + accessor: 자식 클래스 private accessor 는 부모와 독립 스코프
+    test("extends + private accessor 독립 (#1511 edge)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base { accessor #k = "base"; getBase() { return this.#k; } }
+            class Child extends Base { accessor #k = "child"; getChild() { return this.#k; } }
+            const c = new Child();
+            console.log(c.getBase() + "|" + c.getChild());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("base|child");
+    });
+
+    // arrow 초기화 안의 this - accessor 의 init 이 생성자에서 평가될 때 this 가
+    // instance 에 올바르게 바인딩되어야 함.
+    test("accessor init 에 arrow this 캡처 (#1511 edge)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              base = 10;
+              accessor #fn: any = () => this.base * 2;
+              call() { return this.#fn(); }
+            }
+            console.log(new X().call());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("20");
+    });
+
+    // computed key 가 Symbol — runtime primitive 로 결과가 동일한지.
+    test("accessor [Symbol.iterator] — Symbol computed key (#1511 edge)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              accessor [Symbol.iterator]: any = function* (this: any) { yield 1; yield 2; };
+            }
+            const x = new X() as any;
+            const arr = [...x];
+            console.log(arr.join(","));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2");
+    });
+
+    // mixed — 같은 class 에 public, private, computed accessor + 일반 method 공존.
+    test("mixed accessor kinds in one class (#1511 edge)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = "dyn";
+            class X {
+              accessor pub = 1;
+              accessor #priv = 2;
+              accessor [k] = 3;
+              m() { this.pub = 10; this.#priv = 20; (this as any)[k] = 30; return this.pub + this.#priv + (this as any)[k]; }
+            }
+            console.log(new X().m());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("60");
+    });
+
     // #1523: ES5 target 에서 get #x() / set #x(v) (private getter/setter) 가 private method 경로로
     // 라우팅되어 중복 WeakSet + `.bind(this) = v` invalid JS 생성. PrivateMethodMapping.kind 추가로
     // get/set 구분 + WeakSet dedupe + call/bind 분기.

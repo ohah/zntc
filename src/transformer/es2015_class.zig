@@ -814,6 +814,45 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_rhs }, span);
         }
 
+        /// this.#x op= v → set(obj, get(obj) op v). obj 는 3회 visit — this/identifier 는 안전, 복잡 obj 는 정의역 밖 (#1511).
+        fn lowerPrivateAccessorCompoundAssign(
+            self: *Transformer,
+            getter_mapping: Transformer.PrivateMethodMapping,
+            setter_mapping: Transformer.PrivateMethodMapping,
+            obj_idx: NodeIndex,
+            bin_op: u16,
+            rhs_old: NodeIndex,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            self.runtime_helpers.class_private_method_get = true;
+
+            // getter side: __classPrivateMethodGet(obj, _x, _x_get).call(obj)
+            const get_helper = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const get_ws = try es_helpers.makeIdentifierRef(self, getter_mapping.weakset_name);
+            const get_fn = try es_helpers.makeIdentifierRef(self, getter_mapping.func_name);
+            const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
+            const get_call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const get_callee = try es_helpers.makeStaticMember(self, get_outer, get_call_prop, span);
+            const get_expr = try es_helpers.makeCallExpr(self, get_callee, &.{try self.visitNode(obj_idx)}, span);
+
+            // 연산: get_expr op rhs
+            const new_rhs = try self.visitNode(rhs_old);
+            const computed = try self.ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = get_expr, .right = new_rhs, .flags = bin_op } },
+            });
+
+            // setter side: __classPrivateMethodGet(obj, _x, _x_set).call(obj, computed)
+            const set_helper = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const set_ws = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
+            const set_fn = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
+            const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
+            const set_call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const set_callee = try es_helpers.makeStaticMember(self, set_outer, set_call_prop, span);
+            return es_helpers.makeCallExpr(self, set_callee, &.{ try self.visitNode(obj_idx), computed }, span);
+        }
+
         /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
         /// 같은 name 의 getter/setter 는 WeakSet 을 공유하므로 weakset_name 기준 첫 등장에만 선언.
         /// private_field_init 도 동일한 dedup 으로 instance_fields 에 append (#1523).
@@ -923,15 +962,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
             const prop_idx = self.readNodeIdx(le, 1);
 
-            // private setter 인터셉트 — simple `=` 만 처리 (compound 는 getter+setter 합성 필요, 미지원).
-            // this.#x = v → __classPrivateMethodGet(this, _x, _x_set).call(this, v) (#1523).
+            // private accessor 인터셉트 — simple `=` 는 setter 호출, compound (+=, -=, ...) 는 set(obj, get(obj) op rhs) 합성.
+            // obj 는 2회 visit 되므로 side-effect 있는 복잡 obj 는 정의역 밖 (this / simple ident 는 안전).
+            // Logical assignment (??=/||=/&&=) 는 현재 미지원 — getter 결과의 short-circuit 별도 복잡도.
             const op_kind_pre: token_mod.Kind = @enumFromInt(node.data.binary.flags);
-            if (op_kind_pre == .eq and !prop_idx.isNone()) {
+            if (!prop_idx.isNone()) {
                 const prop_node_pre = self.ast.getNode(prop_idx);
                 if (prop_node_pre.tag == .private_identifier) {
                     const orig_name = self.ast.getText(prop_node_pre.span);
                     if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, 2)) |setter_mapping| {
-                        return lowerPrivateSetterCall(self, setter_mapping, obj_idx, node.data.binary.right, node.span);
+                        if (op_kind_pre == .eq) {
+                            return lowerPrivateSetterCall(self, setter_mapping, obj_idx, node.data.binary.right, node.span);
+                        }
+                        if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
+                            if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, 1)) |getter_mapping| {
+                                return lowerPrivateAccessorCompoundAssign(self, getter_mapping, setter_mapping, obj_idx, bin_op, node.data.binary.right, node.span);
+                            }
+                        }
                     }
                 }
             }
@@ -1553,8 +1600,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// `accessor #x = init;` — private backing `#_x_acc` + private get/set.
-        /// #1523 에서 지원하는 kind=1/2 private_methods 경로를 타도록 synthetic method_definition 을 등록.
+        /// `accessor #x = init;` — decorator 없는 private accessor 는 plain private field 와 관찰 동치.
+        /// 디코레이터 미지원 경로이므로 instance: 기존 WeakSet 기반 getter/setter 합성, static: 간단히
+        /// static_private_field 로 등록 (spec-helper 가 이미 Foo-branded read/write 수행) (#1511).
         fn classifyPrivateAccessorProperty(
             self: *Transformer,
             cm: *ClassifiedMembers,
@@ -1565,8 +1613,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!void {
             const orig_name = self.ast.getText(key_node.span); // "#x"
-            const bare_private = orig_name[1..]; // "x" (# 제거)
 
+            if (is_static) {
+                // static private accessor 는 class-singleton — 별도 backing / synthesis 없이 그대로
+                // static private field 로 등록하면 `this.#x` / `this.#x = v` 가 __classStaticPrivateFieldSpec(Get|Set) 로 lowering.
+                const pfi = PrivateFieldInfo{
+                    .name = try es_helpers.makePrivateVarName(self.allocator, orig_name),
+                    .original_name = orig_name,
+                    .init = init_idx,
+                };
+                try cm.static_private_fields.append(self.allocator, pfi);
+                return;
+            }
+
+            const bare_private = orig_name[1..]; // "x" (# 제거)
             const storage_name_owned = try std.fmt.allocPrint(self.allocator, "#_{s}_acc", .{bare_private});
             try cm.synthesized_private_names.append(self.allocator, storage_name_owned);
             const storage_span = try self.ast.addString(storage_name_owned);
@@ -1576,11 +1636,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .original_name = storage_name_owned,
                 .init = init_idx,
             };
-            if (is_static) {
-                try cm.static_private_fields.append(self.allocator, pfi);
-            } else {
-                try cm.private_fields.append(self.allocator, pfi);
-            }
+            try cm.private_fields.append(self.allocator, pfi);
 
             // getter/setter 의 key 는 동일 private_identifier "#x" 를 각각 새 노드로 생성 (AST 노드 공유 금지).
             const priv_key_get = try self.ast.addNode(.{
@@ -1589,7 +1645,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .string_ref = key_node.span },
             });
             const getter_return = try makePrivateFieldAccess(self, storage_span, span);
-            const getter_idx = try self.buildGetterMethod(priv_key_get, getter_return, is_static, span);
+            const getter_idx = try self.buildGetterMethod(priv_key_get, getter_return, false, span);
 
             const priv_key_set = try self.ast.addNode(.{
                 .tag = .private_identifier,
@@ -1597,7 +1653,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .data = .{ .string_ref = key_node.span },
             });
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
-            const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, is_static, span);
+            const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, false, span);
 
             const get_names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, 1);
             try cm.private_methods.append(self.allocator, .{
