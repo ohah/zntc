@@ -613,7 +613,7 @@ pub fn buildMetadataForAst(
 /// CJS 래핑 모듈과 scope hoisted ESM+CJS 혼합 모듈 모두에서 사용.
 pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHashMapUnmanaged([]const u8) {
     var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
-    const self_idx = @intFromEnum(m.index);
+    const self_idx = m.index.toU32();
     for (m.import_records) |rec| {
         if (rec.resolved.isNone()) {
             // UMD/AMD: external require → factory 매개변수 참조.
@@ -729,7 +729,7 @@ pub fn buildCrossModuleConstValues(
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) continue;
         const canon = self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
-        const canon_mod_idx = @intFromEnum(canon.module_index);
+        const canon_mod_idx = canon.module_index.toU32();
         if (canon_mod_idx >= self.modules.len) continue;
         const target_module = self.modules[canon_mod_idx];
         const target_sem = target_module.semantic orelse continue;

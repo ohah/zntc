@@ -39,6 +39,18 @@ pub const ModuleIndex = enum(u32) {
     pub fn isNone(self: ModuleIndex) bool {
         return self == .none;
     }
+
+    /// `modules[m.index.toU32()]` 형태의 인덱스 접근용.
+    /// `@intFromEnum(m.index)`를 호출부마다 반복하지 않도록 한다 (#1553 항목 2).
+    /// `none`에는 호출하지 말 것 — u32::MAX가 반환됨.
+    pub inline fn toU32(self: ModuleIndex) u32 {
+        return @intFromEnum(self);
+    }
+
+    /// usize 인덱서(ArrayList 등)용 편의.
+    pub inline fn toUsize(self: ModuleIndex) usize {
+        return @intCast(@intFromEnum(self));
+    }
 };
 
 // ============================================================

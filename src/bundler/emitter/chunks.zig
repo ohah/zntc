@@ -893,7 +893,7 @@ pub fn computeAllUsedNames(
 
     // 모든 모듈의 import_bindings + export_bindings(re-export)를 순회하여 역방향 맵 구축
     for (graph.modules.items) |*importer| {
-        const imp_i: u32 = @intFromEnum(importer.index);
+        const imp_i: u32 = importer.index.toU32();
 
         // export_bindings 중 re_export / re_export_all → 타겟 모듈로 역매핑
         for (importer.export_bindings) |ieb| {
@@ -938,7 +938,7 @@ pub fn computeAllUsedNames(
     }
 
     for (sorted, 0..) |m, idx| {
-        const mod_idx: u32 = @intFromEnum(m.index);
+        const mod_idx: u32 = m.index.toU32();
         // ALL_EXPORTS_SENTINEL 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
         if (s.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL) and s.getModuleStmtInfos(mod_idx) == null) {
             list[idx] = .{ .names = &.{}, .all_used = true };
