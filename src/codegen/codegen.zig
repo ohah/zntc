@@ -2042,7 +2042,7 @@ pub const Codegen = struct {
     fn emitNew(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         if (!self.ast.hasExtra(e, 3)) return;
-        const callee = self.ast.readExtraNode(e, 0);
+        var callee = self.ast.readExtraNode(e, 0);
         const args_start = self.ast.readExtra(e, 1);
         const args_len = self.ast.readExtra(e, 2);
         const flags = self.ast.readExtra(e, 3);
@@ -2052,6 +2052,18 @@ pub const Codegen = struct {
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
 
         try self.write("new ");
+        // 원본의 잉여 parens 제거 (#1586): callee가 `(inner)` 형태이고 inner를
+        // 직접 새 callee로 써도 `new MemberExpression` 문법이 깨지지 않으면 벗긴다.
+        // newCalleeNeedsParens가 이미 call-chain 안전성을 판정하므로 재사용.
+        if (self.options.minify_syntax) {
+            while (true) {
+                const cn = self.ast.getNode(callee);
+                if (cn.tag != .parenthesized_expression) break;
+                const inner = cn.data.unary.operand;
+                if (self.newCalleeNeedsParens(inner)) break;
+                callee = inner;
+            }
+        }
         const needs_parens = self.newCalleeNeedsParens(callee);
         if (needs_parens) try self.writeByte('(');
         try self.emitNode(callee);

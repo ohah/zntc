@@ -1408,6 +1408,150 @@ test "Minify: entry `export default` preserves external `default` keyword (#1585
     try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
 }
 
+// ============================================================
+// Minify syntax: redundant parens around `new` callee (#1586)
+// ============================================================
+// `new (expr)()`에서 expr이 MemberExpression 자리에 적합하면 parens 불필요.
+// ClassExpression, Identifier, MemberExpression 모두 parens 없이 사용 가능.
+// 단 callee에 CallExpression이 섞여 있으면 기존 newCalleeNeedsParens 로직이
+// 여전히 parens를 유지함.
+
+test "Minify: new (ClassExpression)() drops redundant parens (#1586)" {
+    // svelte-style `new (class X extends Error {...})()` 패턴.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const x = new (class Foo extends Error {
+        \\  name = "Foo";
+        \\})();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // parens 제거 후: `new class Foo extends Error{...}()`
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (class") == null);
+}
+
+test "Minify: new (Identifier)() drops redundant parens (#1586)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Box {}
+        \\const x = new (Box)();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (") == null);
+}
+
+test "Minify: new (MemberExpression)() drops redundant parens (#1586)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ns = { Box: class { x = 1; } };
+        \\const x = new (ns.Box)();
+        \\console.log(x.x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // MemberExpression callee에서 parens 완전 제거 — 출력에 `new (` 미존재로 검증
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (") == null);
+    // MemberExpression 구조는 보존 (`.Box` 접근이 남아있어야 함)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".Box") != null);
+}
+
+test "Minify: new (CallExpression)() keeps parens — safety (#1586)" {
+    // `new (factory())()` 형태는 factory의 반환값을 constructor로 호출.
+    // parens를 벗기면 `new factory()()`로 오파싱되어 의미가 변경됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function factory() { return class { x = 1; }; }
+        \\const x = new (factory())();
+        \\console.log(x.x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CallExpression callee는 parens 유지 (newCalleeNeedsParens true)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (") != null);
+}
+
+test "Minify: redundant parens removal preserved without minify_syntax (#1586)" {
+    // minify_syntax 비활성화 시 원본 parens 유지 (관찰 불변성).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const x = new (class Foo extends Error {})();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // parens 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new (class") != null);
+}
+
 test "Minify: default export has no synthetic variable — no regression (#1585)" {
     // default export가 없는 번들은 `_default` 심볼을 만들지 않으므로
     // 본 PR 변경으로 부작용 없이 그대로 통과해야 한다.
