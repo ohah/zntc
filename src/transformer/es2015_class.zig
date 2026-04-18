@@ -126,6 +126,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            // computed accessor key memoization — var _acc_key_N = <expr>; 를 먼저 emit 해야 WeakMap/WeakSet
+            // 선언 및 후속 Object.defineProperty 호출 시 참조 가능 (#1511).
+            for (cm.accessor_key_memos.items) |memo| {
+                try self.scratch.append(self.allocator, memo);
+            }
             // instance private field → WeakMap 선언
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
@@ -411,6 +416,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            for (cm.accessor_key_memos.items) |memo| {
+                try self.scratch.append(self.allocator, memo);
+            }
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
             }
@@ -1262,6 +1270,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             /// `PrivateFieldInfo.original_name`은 `findPrivateFieldMapping`의 `std.mem.eql` 키라 안정적 slice가 필요.
             /// string_table slice는 후속 `addString` 호출의 realloc으로 dangling이 되므로 heap-owned 복사본을 유지한다.
             synthesized_private_names: std.ArrayList([]u8) = .empty,
+            /// computed accessor key memoization 을 위한 `var _acc_key_N = <expr>;` statement 들.
+            /// IIFE body 앞부분 (WeakSet 선언 직전) 에 배치되어 key 식이 한 번만 평가됨 (#1511).
+            accessor_key_memos: std.ArrayList(NodeIndex) = .empty,
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
             /// super class 없는 class에서 var _this = this; 삽입에 사용.
             fields_need_this_alias: bool = false,
@@ -1483,8 +1494,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return cm;
         }
 
-        /// `accessor x = init;` → private backing + getter/setter. Stage 3 decorator 경로는 class_decorator.zig가 처리하므로
-        /// 여기선 computed/private key는 panic (decorator 없는 ES5 직접 경로에서만 호출됨).
+        /// `accessor x = init;` → private backing + getter/setter. public / private / computed 키 모두 처리 (#1511).
+        /// Stage 3 decorator 경로는 class_decorator.zig 가 처리하므로 여기선 decorator 없는 ES5 직접 경로만.
         fn classifyAccessorProperty(
             self: *Transformer,
             cm: *ClassifiedMembers,
@@ -1498,13 +1509,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const is_static = (flags & METHOD_FLAG_STATIC) != 0;
 
             const key_node = self.ast.getNode(key_idx);
-            if (key_node.tag == .private_identifier or key_node.tag == .computed_property_key) {
-                // private/computed accessor는 ES5 direct path 미구현 — drop + warn (별도 이슈).
-                std.log.warn(
-                    "ES5 target: accessor_property with {s} key is not yet lowered — member dropped",
-                    .{@tagName(key_node.tag)},
-                );
-                return;
+            if (key_node.tag == .private_identifier) {
+                return classifyPrivateAccessorProperty(self, cm, key_node, init_idx, is_static, member.span, span);
+            }
+            if (key_node.tag == .computed_property_key) {
+                return classifyComputedAccessorProperty(self, cm, key_idx, init_idx, is_static, member.span, span);
             }
 
             const raw_key = self.ast.getText(key_node.span);
@@ -1542,6 +1551,159 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .is_getter = false,
                 .member_span = member.span,
             });
+        }
+
+        /// `accessor #x = init;` — private backing `#_x_acc` + private get/set.
+        /// #1523 에서 지원하는 kind=1/2 private_methods 경로를 타도록 synthetic method_definition 을 등록.
+        fn classifyPrivateAccessorProperty(
+            self: *Transformer,
+            cm: *ClassifiedMembers,
+            key_node: Node,
+            init_idx: NodeIndex,
+            is_static: bool,
+            member_span: Span,
+            span: Span,
+        ) Transformer.Error!void {
+            const orig_name = self.ast.getText(key_node.span); // "#x"
+            const bare_private = orig_name[1..]; // "x" (# 제거)
+
+            const storage_name_owned = try std.fmt.allocPrint(self.allocator, "#_{s}_acc", .{bare_private});
+            try cm.synthesized_private_names.append(self.allocator, storage_name_owned);
+            const storage_span = try self.ast.addString(storage_name_owned);
+
+            const pfi = PrivateFieldInfo{
+                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .original_name = storage_name_owned,
+                .init = init_idx,
+            };
+            if (is_static) {
+                try cm.static_private_fields.append(self.allocator, pfi);
+            } else {
+                try cm.private_fields.append(self.allocator, pfi);
+            }
+
+            // getter/setter 의 key 는 동일 private_identifier "#x" 를 각각 새 노드로 생성 (AST 노드 공유 금지).
+            const priv_key_get = try self.ast.addNode(.{
+                .tag = .private_identifier,
+                .span = key_node.span,
+                .data = .{ .string_ref = key_node.span },
+            });
+            const getter_return = try makePrivateFieldAccess(self, storage_span, span);
+            const getter_idx = try self.buildGetterMethod(priv_key_get, getter_return, is_static, span);
+
+            const priv_key_set = try self.ast.addNode(.{
+                .tag = .private_identifier,
+                .span = key_node.span,
+                .data = .{ .string_ref = key_node.span },
+            });
+            const setter_target = try makePrivateFieldAccess(self, storage_span, span);
+            const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, is_static, span);
+
+            const get_names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, 1);
+            try cm.private_methods.append(self.allocator, .{
+                .member_idx = getter_idx,
+                .original_name = orig_name,
+                .weakset_name = get_names.ws_name,
+                .func_name = get_names.fn_name,
+                .member_span = member_span,
+                .kind = 1,
+            });
+
+            const set_names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, 2);
+            try cm.private_methods.append(self.allocator, .{
+                .member_idx = setter_idx,
+                .original_name = orig_name,
+                .weakset_name = set_names.ws_name,
+                .func_name = set_names.fn_name,
+                .member_span = member_span,
+                .kind = 2,
+            });
+        }
+
+        /// `accessor [k] = init;` — 사이드이펙트 없는 key memoization 을 IIFE 범위에 var 선언으로 캐시,
+        /// private backing `#_comp_N_acc` + computed get/set 를 accessors 에 등록 — emitAccessors 가 computed
+        /// 분기로 Object.defineProperty(proto, _k, { get, set }) 를 emit (#1524 공용 경로 재사용).
+        fn classifyComputedAccessorProperty(
+            self: *Transformer,
+            cm: *ClassifiedMembers,
+            key_idx: NodeIndex,
+            init_idx: NodeIndex,
+            is_static: bool,
+            member_span: Span,
+            span: Span,
+        ) Transformer.Error!void {
+            // 고유 backing 이름 — computed 는 바깥 관찰 가능 이름이 없으니 counter 로 unique.
+            const seq = cm.synthesized_private_names.items.len;
+            const storage_name_owned = try std.fmt.allocPrint(self.allocator, "#_comp_{d}_acc", .{seq});
+            try cm.synthesized_private_names.append(self.allocator, storage_name_owned);
+            const storage_span = try self.ast.addString(storage_name_owned);
+
+            const pfi = PrivateFieldInfo{
+                .name = try es_helpers.makePrivateVarName(self.allocator, storage_name_owned),
+                .original_name = storage_name_owned,
+                .init = init_idx,
+            };
+            if (is_static) {
+                try cm.static_private_fields.append(self.allocator, pfi);
+            } else {
+                try cm.private_fields.append(self.allocator, pfi);
+            }
+
+            // key memoization — IIFE body 앞에 `var _acc_key_N = <key_expr>;` 선언 추가, 이후 get/set 은
+            // 이 변수를 computed_property_key 로 참조. emitAccessors 는 computed 분기로 Object.defineProperty(proto, _acc_key_N, ...).
+            const key_node = self.ast.getNode(key_idx);
+            const inner_expr = key_node.data.unary.operand;
+            const mem_var_name = try std.fmt.allocPrint(self.allocator, "_acc_key_{d}", .{seq});
+            try cm.synthesized_private_names.append(self.allocator, mem_var_name); // allocator 소유 보관용 재사용
+            const mem_var_span = try self.ast.addString(mem_var_name);
+            const visited_inner = try self.visitNode(inner_expr);
+            const var_decl = try self.buildVarDecl(mem_var_name, visited_inner, span);
+            try cm.accessor_key_memos.append(self.allocator, var_decl);
+
+            // computed key 노드: computed_property_key(identifier_reference("_acc_key_N")) — getter/setter 각 1개씩.
+            const getter_key = try makeComputedKeyRef(self, mem_var_span, span);
+            const getter_return = try makePrivateFieldAccess(self, storage_span, span);
+            const getter_idx = try buildComputedAccessorGetter(self, getter_key, getter_return, is_static, span);
+            try cm.accessors.append(self.allocator, .{
+                .member_idx = getter_idx,
+                .is_static = is_static,
+                .is_getter = true,
+                .member_span = member_span,
+            });
+
+            const setter_key = try makeComputedKeyRef(self, mem_var_span, span);
+            const setter_target = try makePrivateFieldAccess(self, storage_span, span);
+            const setter_idx = try buildComputedAccessorSetter(self, setter_key, setter_target, is_static, span);
+            try cm.accessors.append(self.allocator, .{
+                .member_idx = setter_idx,
+                .is_static = is_static,
+                .is_getter = false,
+                .member_span = member_span,
+            });
+        }
+
+        /// computed_property_key(identifier_reference(name)) 노드 생성 — accessor method key 로 사용.
+        fn makeComputedKeyRef(self: *Transformer, var_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const id_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = var_span,
+                .data = .{ .string_ref = var_span },
+            });
+            return self.ast.addNode(.{
+                .tag = .computed_property_key,
+                .span = span,
+                .data = .{ .unary = .{ .operand = id_ref, .flags = 0 } },
+            });
+        }
+
+        /// computed accessor getter method_definition 생성. `get [_acc_key_N]() { return return_expr; }`.
+        fn buildComputedAccessorGetter(self: *Transformer, computed_key: NodeIndex, return_expr: NodeIndex, is_static: bool, span: Span) Transformer.Error!NodeIndex {
+            return self.buildGetterMethod(computed_key, return_expr, is_static, span);
+        }
+
+        /// computed accessor setter method_definition 생성. `set [_acc_key_N](value) { assign_target = value; }`.
+        fn buildComputedAccessorSetter(self: *Transformer, computed_key: NodeIndex, assign_target: NodeIndex, is_static: bool, span: Span) Transformer.Error!NodeIndex {
+            return self.buildSetterMethod(computed_key, assign_target, is_static, span);
         }
 
         /// `"foo"` / `'foo'` → `foo` (따옴표 제거). 따옴표 없으면 원본 반환.
