@@ -1100,6 +1100,17 @@ pub const MethodFlags = struct {
     pub const is_declare: u32 = 0x40;
 };
 
+/// method_definition → function_declaration/expression으로 추출할 때
+/// async/generator 비트를 FunctionFlags 위치로 옮긴다.
+/// 두 공간의 비트 위치가 달라 복사할 때마다 같은 매핑이 반복되던 것을 한 곳에 모았다.
+/// (method의 static/getter/setter 비트는 function에 해당 개념 없음 — 폐기)
+pub fn methodFlagsToFunctionFlags(method_flags: u32) u32 {
+    var fn_flags: u32 = 0;
+    if ((method_flags & MethodFlags.is_async) != 0) fn_flags |= FunctionFlags.is_async;
+    if ((method_flags & MethodFlags.is_generator) != 0) fn_flags |= FunctionFlags.is_generator;
+    return fn_flags;
+}
+
 /// method_definition extras 레이아웃: [key, params, body, flags, deco_start, deco_len] (#1513).
 /// 매직 offset 숫자 (`readU32(e, 3)`) 대신 `MethodExtra.flags` 사용.
 pub const MethodExtra = struct {

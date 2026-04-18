@@ -81,12 +81,8 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                     continue;
                 }
 
-                // function_expression 플래그 재매핑
-                // method flags: bit3=async(0x08), bit4=generator(0x10)
-                // function flags: bit0=async(0x01), bit1=generator(0x02)
-                var fn_flags: u32 = 0;
-                if ((flags & 0x08) != 0) fn_flags |= ast_mod.FunctionFlags.is_async;
-                if ((flags & 0x10) != 0) fn_flags |= ast_mod.FunctionFlags.is_generator;
+                // method → function 플래그 재매핑 (비트 위치가 다름).
+                const fn_flags = ast_mod.methodFlagsToFunctionFlags(flags);
 
                 const none = @intFromEnum(NodeIndex.none);
 
