@@ -1885,6 +1885,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     var has_instance_decorators = false;
     var has_static_decorators = false;
 
+    // accessor + decorator의 private backing은 아직 ES5 WeakMap으로 풀리지 않는다 (#1537).
+    // true면 ES5 재방문을 skip해 modern-runtime-only 기존 동작을 유지한다.
+    var has_private_accessor_backing = false;
+
     const body_node = self.ast.getNode(body_idx);
     const body_start = body_node.data.list.start;
     const body_len = body_node.data.list.len;
@@ -2114,6 +2118,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                         .extra_initializers_name = names.extra_name,
                         .deco_var_name = deco_vname,
                     });
+
+                    // private backing field를 생성하므로, ES5 재방문 경로를 건너뛰도록 표시.
+                    has_private_accessor_backing = true;
 
                     // accessor → private backing field + getter + setter
                     const storage_name = try std.fmt.allocPrint(self.allocator, "#_{s}_accessor_storage", .{clean_name});
@@ -2589,6 +2596,12 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     const outer_var_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
         1, outer_decl_list.start, outer_decl_list.len, // 1 = let
     });
+
+    // ES5 target: outer_var_decl을 반환해 호출자(transformer.zig:1044)가 visitNode로 재방문,
+    // arrow/let/class/static block을 추가 다운레벨링하게 한다. pending_nodes로 넘기면
+    // class_declaration 위치에 .none이 박혀 재방문이 일어나지 않는다.
+    // private accessor backing(#1537)은 재방문 시 깨지므로 기존 pending_nodes 경로로 fallthrough.
+    if (self.options.unsupported.class and !has_private_accessor_backing) return outer_var_decl;
 
     try self.pending_nodes.append(self.allocator, outer_var_decl);
     return .none;
