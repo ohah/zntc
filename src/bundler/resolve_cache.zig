@@ -53,16 +53,42 @@ pub const ResolveCache = struct {
     /// 디렉토리 엔트리 캐시 — readdir() 결과를 메모리에 보관하여 stat() syscall 대폭 감소.
     dir_cache: resolver_mod.DirEntryCache,
 
-    /// 패키지 디렉토리별 browser 필드 disabled 파일 캐시.
-    /// pkg_dir_path → disabled 상대 경로 집합 (null이면 browser 필드 없음).
-    browser_disabled_cache: std.StringHashMap(?BrowserDisabledSet),
+    /// 패키지 디렉토리별 browser 필드 override 캐시 (disabled + string remap).
+    /// pkg_dir_path → BrowserOverrides (null 이면 browser 필드 없음).
+    browser_overrides_cache: std.StringHashMap(?BrowserOverrides),
     /// 커스텀 조건이 병합된 조건 배열 (import용, require용).
     conditions_import: []const []const u8 = &.{},
     conditions_require: []const []const u8 = &.{},
     conditions_allocated: bool = false,
 
-    /// browser 필드에서 false로 매핑된 상대 경로 집합.
-    const BrowserDisabledSet = std.StringHashMap(void);
+    /// browser 필드 override — key 는 package-root-relative 경로 (확장자 포함 원형 + 확장자 제거형 둘 다 조회).
+    /// disabled: `"key": false` → 빈 스텁으로 대체.
+    /// remap:    `"key": "./alt"` → 대체 경로로 resolve.
+    const BrowserOverrides = struct {
+        /// key 만 owned (value 없음). disabled 집합.
+        disabled: std.StringHashMap(void),
+        /// key + value 모두 allocator-owned. key = package-relative (확장자 원형), value = package-root 상대 대체 경로.
+        remap: std.StringHashMap([]const u8),
+
+        fn deinit(self: *BrowserOverrides, allocator: std.mem.Allocator) void {
+            var dk = self.disabled.keyIterator();
+            while (dk.next()) |k| allocator.free(k.*);
+            self.disabled.deinit();
+            var rit = self.remap.iterator();
+            while (rit.next()) |e| {
+                allocator.free(e.key_ptr.*);
+                allocator.free(e.value_ptr.*);
+            }
+            self.remap.deinit();
+        }
+    };
+
+    const BrowserOverrideKind = union(enum) {
+        none,
+        disabled,
+        /// package-root 상대 대체 경로 (caller 가 pkg_dir 과 조합하여 재-resolve).
+        remap: []const u8,
+    };
 
     const CachedResult = union(enum) {
         resolved: ResolveResult,
@@ -178,7 +204,7 @@ pub const ResolveCache = struct {
             .platform = platform,
             .packages_external = options.packages_external,
             .dir_cache = resolver_mod.DirEntryCache.init(allocator),
-            .browser_disabled_cache = std.StringHashMap(?BrowserDisabledSet).init(allocator),
+            .browser_overrides_cache = std.StringHashMap(?BrowserOverrides).init(allocator),
             .conditions_import = cond_import,
             .conditions_require = cond_require,
             .conditions_allocated = has_custom,
@@ -201,17 +227,13 @@ pub const ResolveCache = struct {
         }
         self.cache.deinit();
 
-        // browser disabled 캐시 해제
-        var bd_it = self.browser_disabled_cache.iterator();
+        // browser overrides 캐시 해제
+        var bd_it = self.browser_overrides_cache.iterator();
         while (bd_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            if (entry.value_ptr.*) |*set| {
-                var key_it = set.keyIterator();
-                while (key_it.next()) |key| self.allocator.free(key.*);
-                set.deinit();
-            }
+            if (entry.value_ptr.*) |*overrides| overrides.deinit(self.allocator);
         }
-        self.browser_disabled_cache.deinit();
+        self.browser_overrides_cache.deinit();
         if (self.conditions_allocated) {
             self.allocator.free(self.conditions_import);
             self.allocator.free(self.conditions_require);
@@ -310,22 +332,57 @@ pub const ResolveCache = struct {
             else => return err,
         };
 
-        // browser disabled 체크 + 캐시 저장
+        // browser override 체크 + 캐시 저장 (disabled / remap / normal).
         {
             if (thread_safe) self.cache_mutex.lock();
             defer if (thread_safe) self.cache_mutex.unlock();
 
-            if (self.platform.isBrowserLike() and self.isBrowserDisabled(result.path)) {
-                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                self.putCache(cache_key, .{ .disabled = .{
-                    .path = cache_path,
-                    .module_type = result.module_type,
-                } }) catch {};
-                return ResolveResult{
-                    .path = result.path,
-                    .module_type = result.module_type,
-                    .disabled = true,
-                };
+            if (self.platform.isBrowserLike()) {
+                const override = self.getBrowserOverride(result.path);
+                switch (override) {
+                    .disabled => {
+                        const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                        self.putCache(cache_key, .{ .disabled = .{
+                            .path = cache_path,
+                            .module_type = result.module_type,
+                        } }) catch {};
+                        return ResolveResult{
+                            .path = result.path,
+                            .module_type = result.module_type,
+                            .disabled = true,
+                        };
+                    },
+                    .remap => |rep| {
+                        // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
+                        // 확장자 / directory index 등 정상 resolve path 재사용. 성공 시 대체 결과 반환.
+                        if (findPackageRoot(result.path)) |pkg_root| {
+                            const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
+                                // fallthrough
+                                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                                self.putCache(cache_key, .{ .resolved = .{
+                                    .path = cache_path,
+                                    .module_type = result.module_type,
+                                } }) catch {};
+                                return result;
+                            };
+                            defer self.allocator.free(spec_buf);
+                            if (thread_safe) self.cache_mutex.unlock();
+                            const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
+                            if (thread_safe) self.cache_mutex.lock();
+                            if (maybe_replaced) |replaced| {
+                                const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
+                                self.putCache(cache_key, .{ .resolved = .{
+                                    .path = cache_path,
+                                    .module_type = replaced.module_type,
+                                } }) catch {};
+                                return replaced;
+                            } else |_| {
+                                // fallthrough — replacement 해결 실패 시 원본 사용.
+                            }
+                        }
+                    },
+                    .none => {},
+                }
             }
 
             const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
@@ -336,6 +393,23 @@ pub const ResolveCache = struct {
         }
 
         return result;
+    }
+
+    /// resolved_path 에서 `.../node_modules/<pkg>` 패키지 루트 slice 를 반환 (소유권 없음, resolved_path 의 prefix).
+    fn findPackageRoot(resolved_path: []const u8) ?[]const u8 {
+        const nm = "node_modules" ++ std.fs.path.sep_str;
+        const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return null;
+        const after_nm = resolved_path[nm_pos + nm.len ..];
+
+        var pkg_end: usize = 0;
+        if (after_nm.len > 0 and after_nm[0] == '@') {
+            const first_slash = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
+            pkg_end = std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str) orelse return null;
+        } else {
+            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
+        }
+
+        return resolved_path[0 .. nm_pos + nm.len + pkg_end];
     }
 
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
@@ -353,13 +427,13 @@ pub const ResolveCache = struct {
         self.cache.put(key_owned, value) catch return error.OutOfMemory;
     }
 
-    /// 해석된 절대 경로가 package.json "browser" 필드에서 false로 매핑되었는지 판별.
-    /// node_modules 내 파일만 대상. 패키지 루트의 package.json을 찾아 browser 필드 확인.
-    /// 결과는 패키지 디렉토리별로 캐싱하여 동일 패키지의 반복 파싱을 방지.
-    fn isBrowserDisabled(self: *ResolveCache, resolved_path: []const u8) bool {
+    /// 해석된 절대 경로가 package.json "browser" 필드에서 override (disabled / remap) 되었는지 판별.
+    /// node_modules 내 파일만 대상. 결과는 패키지 디렉토리별로 캐싱 (반복 파싱 방지).
+    /// remap 의 value 는 BrowserOverrides 가 소유 — caller 는 외부 저장 금지.
+    fn getBrowserOverride(self: *ResolveCache, resolved_path: []const u8) BrowserOverrideKind {
         // node_modules 내 파일만 대상
         const nm = "node_modules" ++ std.fs.path.sep_str;
-        const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return false;
+        const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return .none;
         const after_nm = resolved_path[nm_pos + nm.len ..];
 
         // 패키지 디렉토리 찾기: @scope/pkg 또는 pkg
@@ -370,57 +444,53 @@ pub const ResolveCache = struct {
                 if (std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str)) |second_slash| {
                     pkg_end = second_slash;
                 } else {
-                    return false;
+                    return .none;
                 }
             } else {
-                return false;
+                return .none;
             }
         } else {
             // unscoped: pkg
-            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return false;
+            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return .none;
         }
 
         const pkg_dir_path = resolved_path[0 .. nm_pos + nm.len + pkg_end];
 
         // 캐시 조회: 이미 이 패키지의 browser 필드를 파싱한 적이 있으면 재사용
-        const disabled_set = self.browser_disabled_cache.get(pkg_dir_path) orelse blk: {
-            // 캐시 미스: package.json 파싱하여 disabled 집합 구축
-            const set = self.buildBrowserDisabledSet(pkg_dir_path);
-            // 캐시에 저장 (키는 소유 복사본)
-            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return false;
-            self.browser_disabled_cache.put(key_owned, set) catch {
+        const overrides_opt = self.browser_overrides_cache.get(pkg_dir_path) orelse blk: {
+            const built = self.buildBrowserOverrides(pkg_dir_path);
+            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return .none;
+            self.browser_overrides_cache.put(key_owned, built) catch {
                 self.allocator.free(key_owned);
-                return false;
+                return .none;
             };
-            break :blk set;
+            break :blk built;
         };
+        const overrides = overrides_opt orelse return .none;
 
-        // browser 필드가 없거나 disabled 항목이 없으면 false
-        const set = disabled_set orelse return false;
-
-        // resolved_path에서 패키지 루트 이후의 상대 경로 추출
+        // resolved_path 에서 패키지 루트 이후의 상대 경로 추출
         const relative_in_pkg = resolved_path[nm_pos + nm.len + pkg_end ..];
         const dot_relative = if (relative_in_pkg.len > 0 and relative_in_pkg[0] == std.fs.path.sep)
-            relative_in_pkg[1..] // "/util.inspect.js" → "util.inspect.js"
+            relative_in_pkg[1..]
         else
             relative_in_pkg;
 
-        // 정확한 매칭 (확장자 있는 형태)
-        if (set.contains(dot_relative)) return true;
-
-        // 확장자 제거 후 매칭 ("util.inspect.js" → "util.inspect")
+        // 정확한 매칭 (확장자 원형) + 확장자 제거형 둘 다 조회.
+        if (overrides.disabled.contains(dot_relative)) return .disabled;
+        if (overrides.remap.get(dot_relative)) |rep| return .{ .remap = rep };
         const ext = std.fs.path.extension(dot_relative);
         if (ext.len > 0) {
             const without_ext = dot_relative[0 .. dot_relative.len - ext.len];
-            if (set.contains(without_ext)) return true;
+            if (overrides.disabled.contains(without_ext)) return .disabled;
+            if (overrides.remap.get(without_ext)) |rep| return .{ .remap = rep };
         }
 
-        return false;
+        return .none;
     }
 
-    /// package.json의 browser 필드에서 false로 매핑된 상대 경로 집합을 구축.
-    /// browser 필드가 없으면 null 반환.
-    fn buildBrowserDisabledSet(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserDisabledSet {
+    /// package.json 의 browser 필드에서 relative-path 키의 override (false=disabled, string=remap) 를 수집.
+    /// 하나도 없으면 null. bare-module 키는 현재 미지원 (follow-up).
+    fn buildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
         var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return null;
         defer pkg_dir.close();
 
@@ -430,36 +500,52 @@ pub const ResolveCache = struct {
         const browser_map = parsed.pkg.browser_map orelse return null;
         const browser_obj = browser_map.object;
 
-        var set = BrowserDisabledSet.init(self.allocator);
+        var overrides = BrowserOverrides{
+            .disabled = std.StringHashMap(void).init(self.allocator),
+            .remap = std.StringHashMap([]const u8).init(self.allocator),
+        };
 
         var kit = browser_obj.iterator();
         while (kit.next()) |entry| {
             const key = entry.key_ptr.*;
             const val = entry.value_ptr.*;
 
-            // false 값만 처리 (대체 경로는 현재 미지원)
-            if (val != .bool or val.bool != false) continue;
+            // relative-path key 만 처리 (bare module 키는 follow-up).
+            if (!std.mem.startsWith(u8, key, "./")) continue;
+            const key_relative = key[2..];
 
-            // 키에서 "./" 프리픽스 제거하여 저장
-            const key_relative = if (std.mem.startsWith(u8, key, "./"))
-                key[2..]
-            else
-                key;
-
-            const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
-            set.put(owned_key, {}) catch {
-                self.allocator.free(owned_key);
-                continue;
-            };
+            switch (val) {
+                .bool => |b| {
+                    if (!b) {
+                        const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
+                        overrides.disabled.put(owned_key, {}) catch {
+                            self.allocator.free(owned_key);
+                        };
+                    }
+                },
+                .string => |s| {
+                    // value 도 "./" prefix 관례이지만 pkg 루트 상대로 저장 (caller 에서 join).
+                    const val_relative = if (std.mem.startsWith(u8, s, "./")) s[2..] else s;
+                    const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
+                    const owned_val = self.allocator.dupe(u8, val_relative) catch {
+                        self.allocator.free(owned_key);
+                        continue;
+                    };
+                    overrides.remap.put(owned_key, owned_val) catch {
+                        self.allocator.free(owned_key);
+                        self.allocator.free(owned_val);
+                    };
+                },
+                else => continue,
+            }
         }
 
-        // disabled 항목이 하나도 없으면 빈 set 대신 null 반환
-        if (set.count() == 0) {
-            set.deinit();
+        if (overrides.disabled.count() == 0 and overrides.remap.count() == 0) {
+            overrides.deinit(self.allocator);
             return null;
         }
 
-        return set;
+        return overrides;
     }
 
     /// specifier가 external인지 판별.
