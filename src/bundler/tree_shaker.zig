@@ -875,6 +875,18 @@ pub const TreeShaker = struct {
                     }
                 }
             } else if (ib.kind == .namespace) {
+                // namespace import(`import * as x`)는 모든 member가 동적으로 접근 가능.
+                // 정적 분석으로 수집한 namespace_used_properties가 dead statement의
+                // 참조를 포함/누락하는 보수성 문제가 있어 "*" sentinel을 항상 마킹한다(#1558).
+                // "*"는 crossModuleBFS seed 조건(is_bfs_seed)을 충족시켜 target 모듈의
+                // 전체 statement가 reachable이 된다. esbuild/rolldown도 동일 의미론.
+                try self.markAllExportsUsed(@intCast(target_mod));
+                if (!self.included.isSet(target_mod)) {
+                    self.included.set(target_mod);
+                    newly_included = true;
+                }
+                // namespace_used_properties가 있으면 canonical 체인 전파도 유지.
+                // resolveExportChain이 중간 모듈(barrel)을 canonical까지 연결.
                 if (ib.namespace_used_properties) |props| {
                     for (props) |prop_name| {
                         if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
@@ -887,14 +899,7 @@ pub const TreeShaker = struct {
                                 }
                             }
                         }
-                        try self.markExportUsed(@intCast(target_mod), prop_name);
                     }
-                } else {
-                    try self.markAllExportsUsed(@intCast(target_mod));
-                }
-                if (!self.included.isSet(target_mod)) {
-                    self.included.set(target_mod);
-                    newly_included = true;
                 }
             }
         }
@@ -985,6 +990,12 @@ pub const TreeShaker = struct {
                 const rec = m.import_records[ib.import_record_index];
                 if (rec.resolved.isNone()) continue;
 
+                const target_mod = @intFromEnum(rec.resolved);
+                if (target_mod >= self.modules.len) continue;
+
+                // namespace import의 target은 processModuleImportsInner에서 "*"로 마킹되어
+                // 아래 Step 2의 `isExportUsed(i, "*")` 가드로 자동 스킵 — 별도 보호 불필요.
+
                 // reachable_stmts 없는 모듈(entry/opaque)은 보수적으로 live 취급.
                 const is_live = if (mi < self.reachable_stmts.len and self.reachable_stmts[mi] != null)
                     self.isImportLiveInModule(@intCast(mi), ib.local_name)
@@ -992,13 +1003,10 @@ pub const TreeShaker = struct {
                     true;
                 if (!is_live) continue;
 
-                const target_mod = @intFromEnum(rec.resolved);
-                if (target_mod < self.modules.len) {
-                    protected_modules.set(target_mod);
-                    if (self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0)) |c| {
-                        const canon_mod = @intFromEnum(c.module_index);
-                        if (canon_mod < self.modules.len) protected_modules.set(canon_mod);
-                    }
+                protected_modules.set(target_mod);
+                if (self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0)) |c| {
+                    const canon_mod = @intFromEnum(c.module_index);
+                    if (canon_mod < self.modules.len) protected_modules.set(canon_mod);
                 }
             }
         }
