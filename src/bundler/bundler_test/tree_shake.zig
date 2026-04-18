@@ -1512,7 +1512,8 @@ test "TreeShaking: dead statement references don't keep upstream module (#1551)"
     //   entry → barrel의 readable만 사용. barrel 내 unused_fn이 runtime를 참조.
     //   unused_fn은 statement-level DCE로 제거되지만 AST에 참조가 남아
     //   processModuleImports의 reference_count > 0 판정에 의해 runtime이
-    //   가짜 used로 마킹되는 문제(#1551). pruneUnreachableExports가 정정.
+    //   가짜 used로 마킹되는 문제(#1551). #1558 Step 3+4에서 BFS fixpoint 통합 +
+    //   live_mod_idx로 정정 (reachable statement 안의 import만 used로 마킹).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "runtime.ts",

@@ -40,7 +40,8 @@ pub const TreeShaker = struct {
     re_export_sets: []?std.StringHashMap(void) = &.{},
     /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze() 내 fixpoint 루프 전에 구축.
     module_stmt_infos: []?StmtInfos = &.{},
-    /// 모듈별 도달성 bitset 캐시. crossModuleBFS가 BFS 중 set, 이후 소비자(emitter 등)가 조회.
+    /// 모듈별 도달성 bitset 캐시. analyze()의 fixpoint 루프에서 crossModuleBFS가 반복 set,
+    /// 수렴 후 소비자(processModuleImportsInner, emitter, statement_shaker)가 조회.
     reachable_stmts: []?std.DynamicBitSet = &.{},
     /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
     sym_to_ib: []?[]?u32 = &.{},
@@ -232,17 +233,29 @@ pub const TreeShaker = struct {
             ) catch null;
         }
 
-        // --- 1차 fixpoint (reference_count 기반 used 마킹) ---
-        // Step 2 범위: StmtInfo 구축만 fixpoint 전으로 이동. BFS는 fixpoint 수렴 후 한 번 호출
-        // (기존 행동 보존). Step 3에서 BFS를 fixpoint 내부로 이동하면서 live_mod_idx 전환,
-        // Step 4에서 pruneUnreachableExports 삭제.
+        // --- Unified fixpoint (#1558 Step 3+4) ---
+        // 매 iteration:
+        //   (a) BFS: entry/"*" seed에서 statement reachability 전파, used_exports 마킹
+        //       enqueue에서 sym_to_ib lazy 구축 → 동일 iter 내 followImport 정상 동작
+        //   (b) processModuleImports(live_mod_idx): BFS-reachable statement 안 import만 마킹
+        //   (c) re-export source include / side-effect 전파
+        // used_exports 또는 included 변화 없으면 수렴. BFS만이 used_exports 진리 소스.
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
             var changed = false;
+            const used_count_before = self.used_exports.count();
+            const included_count_before = self.included.count();
+
+            try self.buildSymToIbMaps();
+            try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
 
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
-                if (try self.processModuleImports(m)) changed = true;
+                const live_idx: ?u32 = if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())
+                    null
+                else
+                    @intCast(i);
+                if (try self.processModuleImportsInner(m, live_idx)) changed = true;
             }
 
             if (try self.includeReExportSources(true)) changed = true;
@@ -263,27 +276,12 @@ pub const TreeShaker = struct {
                 }
             }
 
+            if (self.used_exports.count() != used_count_before) changed = true;
+            if (self.included.count() != included_count_before) changed = true;
             if (!changed) break;
         }
 
-        // 1차 fixpoint 후 intermediate prune (oscillation 방지).
-        for (self.modules, 0..) |m, i| {
-            if (!self.included.isSet(i)) continue;
-            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
-            if (dyn_import_targets.isSet(i)) continue;
-            if (!self.hasAnyUsedExport(@intCast(i))) {
-                self.included.unset(i);
-            }
-        }
-
-        // 크로스-모듈 BFS: statement-level reachability + used_exports 정정.
-        try self.buildSymToIbMaps();
-        try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
-
-        // BFS 결과 기반 used_exports 정정(#1551, Step 4에서 삭제 예정).
-        try self.pruneUnreachableExports();
-
-        // 미사용 sideEffects=false 모듈 제거
+        // 미사용 sideEffects=false 모듈 제거.
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
@@ -411,26 +409,33 @@ pub const TreeShaker = struct {
     // Internal
     // ============================================================
 
-    /// sym_idx → import_binding_index 맵 구축/확장 (크로스-모듈 BFS용).
-    /// 이미 구축된 모듈은 skip — fixpoint 루프에서 반복 호출 가능하도록 idempotent.
-    fn buildSymToIbMaps(self: *TreeShaker) !void {
+    /// 한 모듈의 sym_to_ib 맵을 lazy 구축 (BFS가 included 확장 시 즉시 호출 가능).
+    /// self.sym_to_ib 배열 자체는 첫 호출에서 할당.
+    fn ensureSymToIbForModule(self: *TreeShaker, mod_idx: u32) !void {
         if (self.sym_to_ib.len == 0) {
             const maps = try self.allocator.alloc(?[]?u32, self.modules.len);
             for (maps) |*m| m.* = null;
             self.sym_to_ib = maps;
         }
-        for (self.modules, 0..) |mod, i| {
+        if (mod_idx >= self.sym_to_ib.len) return;
+        if (self.sym_to_ib[mod_idx] != null) return;
+        const mod = self.modules[mod_idx];
+        const sem = mod.semantic orelse return;
+        if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) return;
+        const arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
+        for (arr) |*a| a.* = null;
+        for (mod.import_bindings, 0..) |ib, ib_idx| {
+            const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
+            if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
+        }
+        self.sym_to_ib[mod_idx] = arr;
+    }
+
+    /// 모든 included 모듈의 sym_to_ib 맵 구축/확장.
+    fn buildSymToIbMaps(self: *TreeShaker) !void {
+        for (self.modules, 0..) |_, i| {
             if (!self.included.isSet(i)) continue;
-            if (self.sym_to_ib[i] != null) continue;
-            const sem = mod.semantic orelse continue;
-            if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) continue;
-            var arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
-            for (arr) |*a| a.* = null;
-            for (mod.import_bindings, 0..) |ib, ib_idx| {
-                const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
-                if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
-            }
-            self.sym_to_ib[i] = arr;
+            try self.ensureSymToIbForModule(@intCast(i));
         }
     }
 
@@ -475,17 +480,10 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // used export 선언 statement 시드(#1551).
-            // 시드 대상:
+            // used export 선언 statement 시드. 시드 대상:
             //   (1) entry: 번들 외부 사용자가 접근 가능 — 모든 export live.
-            //   (2) "*" sentinel이 마킹된 모듈: markAllExportsUsed 호출 대상
-            //       = dynamic import target(#1260), namespace import, export * 전파.
-            //       모듈 전체가 live여야 하므로 모든 export 선언을 시드.
-            // non-entry·'*' 없음: followImport만으로 도달 — 이전 fixpoint의
-            //   processModuleImports(null)가 AST 전체 reference_count로 마킹한
-            //   "가짜 used"로 시드하면, dead statement의 참조가 BFS로 확산되어
-            //   pruneUnreachableExports가 제거하지 못한다(tree-shake 누수).
-            // side_effects=true non-entry는 위쪽 side-effect statement 시드로 커버.
+            //   (2) "*" sentinel 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
+            // non-entry·'*' 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
             const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), "*");
             if (is_bfs_seed) {
                 const sem = m.semantic orelse continue;
@@ -553,6 +551,12 @@ pub const TreeShaker = struct {
         if (reachable[mod].?.isSet(stmt)) return;
         reachable[mod].?.set(stmt);
         try queue.append(self.allocator, .{ .mod = mod, .stmt = stmt });
+
+        // BFS가 새로 방문하는 모듈의 sym_to_ib 맵 lazy 구축(#1558).
+        // 기존엔 fixpoint 수렴 후 buildSymToIbMaps가 일괄 구축했지만, fixpoint 내부에서
+        // BFS가 seedExport로 새 모듈을 include 시킬 때 해당 모듈의 sym_to_ib가 없으면
+        // dequeue 시 followImport 불가 → 모듈-내 참조가 reachable 되지 않는 회귀 발생.
+        try self.ensureSymToIbForModule(mod);
 
         // 새 심볼이 reachable이 되면, 같은 모듈의 side-effect statement 중
         // 해당 심볼을 참조하는 것을 lazy 시드.
@@ -863,18 +867,10 @@ pub const TreeShaker = struct {
                     }
                 }
             } else if (ib.kind == .namespace) {
-                // namespace import(`import * as x`)는 모든 member가 동적으로 접근 가능.
-                // 정적 분석으로 수집한 namespace_used_properties가 dead statement의
-                // 참조를 포함/누락하는 보수성 문제가 있어 "*" sentinel을 항상 마킹한다(#1558).
-                // "*"는 crossModuleBFS seed 조건(is_bfs_seed)을 충족시켜 target 모듈의
-                // 전체 statement가 reachable이 된다. esbuild/rolldown도 동일 의미론.
-                try self.markAllExportsUsed(@intCast(target_mod));
-                if (!self.included.isSet(target_mod)) {
-                    self.included.set(target_mod);
-                    newly_included = true;
-                }
-                // namespace_used_properties가 있으면 canonical 체인 전파도 유지.
-                // resolveExportChain이 중간 모듈(barrel)을 canonical까지 연결.
+                // namespace import: namespace_used_properties가 있으면 해당 prop만, 없으면
+                // 전체 모듈을 "*" sentinel로 표시(BFS가 seedAllStmts로 전체 시드).
+                // #1559에서 무조건 markAllExportsUsed했던 것을 #1558 Step 4에서 되돌려
+                // 정밀도 복원 — BFS가 live statement 내의 namespace access만 따라간다.
                 if (ib.namespace_used_properties) |props| {
                     for (props) |prop_name| {
                         if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
@@ -894,10 +890,13 @@ pub const TreeShaker = struct {
         return newly_included;
     }
 
-    fn processModuleImports(self: *TreeShaker, m: Module) !bool {
-        return self.processModuleImportsInner(m, null);
-    }
-
+    /// import binding이 모듈 내에서 "존재하는 참조"인지 판정(AST 전체 기준).
+    ///
+    /// reference_count 기반 신호는 dead statement의 참조까지 포함해 가짜 used를 만들 수 있다.
+    /// `processModuleImportsInner(live_mod_idx)`에서 이후 `isImportLiveInModule`이 BFS reachability로
+    /// 필터링하므로 실질 정확도는 BFS가 보장. 단 entry/wrapped(`live_mod_idx=null`)은
+    /// StmtInfo가 없어 BFS 필터가 불가능하므로 이 reference_count 체크를 유일 가드로 유지한다.
+    /// #1558 Phase 5: entry/wrapped 경로를 별도 seed 전략으로 대체해 이 함수를 제거할 수 있음.
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
             if (ib.local_symbol.semanticIndex()) |sym_idx| {
@@ -925,109 +924,6 @@ pub const TreeShaker = struct {
         // O(1) per-module used export 플래그 갱신
         if (module_index < self.has_direct_used_export.len) {
             self.has_direct_used_export[module_index] = true;
-        }
-    }
-
-    /// used_exports에서 (module, export) 항목을 제거한다.
-    /// 가짜 used 정정(#1551)에서 사용.
-    fn unmarkExportUsed(self: *TreeShaker, module_index: u32, export_name: []const u8) void {
-        var key_buf: [4096]u8 = undefined;
-        const lookup_key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
-        if (self.used_exports.fetchRemove(lookup_key)) |kv| {
-            self.allocator.free(kv.key);
-        }
-    }
-
-    /// crossModuleBFS 결과 기반으로 **모듈 전체**가 unreachable한 경우만 제거한다(#1551).
-    ///
-    /// **배경**: analyze() 첫 패스의 fixpoint에서 processModuleImports는
-    /// `isImportBindingUsed`의 AST 전체 reference_count > 0 신호에 의존해
-    /// used_exports를 채운다. 그러나 참조가 "이 모듈에서 이후 dead로 판정되는
-    /// statement" 안에 있어도 카운트 > 0이므로 가짜 used가 마킹된다. 결과적으로
-    /// 상류(upstream) 모듈 전체가 included로 유지되어 tree-shake 누수 발생.
-    ///
-    /// 본 함수는 BFS로 결정된 statement-level reachability를 권위 있는 source로
-    /// 삼아, **모듈의 모든 export 선언이 unreachable**인 경우에만 해당 모듈의
-    /// used_exports를 전부 제거한다. 이후 analyze() 말미의 included prune 루프가
-    /// 해당 상류 모듈을 included에서 정상 배제한다.
-    ///
-    /// **부분 export 제거는 수행하지 않음**. linker가 canonical symbol을 참조하는
-    /// alias 선언(`const Local$N = Canonical$M;`)을 emit할 수 있는데, 개별 export만
-    /// 제거하면 canonical이 사라져 dangling reference(ReferenceError)가 된다.
-    /// 모듈 통째 제거는 해당 모듈의 모든 선언과 alias를 함께 드롭하므로 안전하다.
-    ///
-    /// 보호 규칙:
-    ///   - 진입점(entry_set): 외부 사용자 접근 가능 — 제거 금지.
-    ///   - side_effects=true: import 자체가 사이드이펙트 — 원본 유지.
-    ///   - wrapped(CJS/ESM wrap): statement 경계 부재 — prune 불가.
-    ///   - "*" sentinel: dynamic import / namespace import / export * 대상.
-    ///   - **alias 타겟 보호**: 다른 included 모듈의 live import_binding이 이 모듈의
-    ///     export를 참조 중인 경우 해당 모듈 전체 보존.
-    fn pruneUnreachableExports(self: *TreeShaker) !void {
-        if (self.module_stmt_infos.len == 0 or self.reachable_stmts.len == 0) return;
-
-        // Step 1: alias 타겟 보호 모듈 수집.
-        var protected_modules = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
-        defer protected_modules.deinit();
-
-        for (self.modules, 0..) |m, mi| {
-            if (!self.included.isSet(mi)) continue;
-
-            for (m.import_bindings) |ib| {
-                if (ib.import_record_index >= m.import_records.len) continue;
-                const rec = m.import_records[ib.import_record_index];
-                if (rec.resolved.isNone()) continue;
-
-                const target_mod = @intFromEnum(rec.resolved);
-                if (target_mod >= self.modules.len) continue;
-
-                // namespace import의 target은 processModuleImportsInner에서 "*"로 마킹되어
-                // 아래 Step 2의 `isExportUsed(i, "*")` 가드로 자동 스킵 — 별도 보호 불필요.
-
-                // reachable_stmts 없는 모듈(entry/opaque)은 보수적으로 live 취급.
-                const is_live = if (mi < self.reachable_stmts.len and self.reachable_stmts[mi] != null)
-                    self.isImportLiveInModule(@intCast(mi), ib.local_name)
-                else
-                    true;
-                if (!is_live) continue;
-
-                protected_modules.set(target_mod);
-                if (self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0)) |c| {
-                    const canon_mod = @intFromEnum(c.module_index);
-                    if (canon_mod < self.modules.len) protected_modules.set(canon_mod);
-                }
-            }
-        }
-
-        // Step 2: 모듈 단위 dead 판정 + 제거.
-        for (self.modules, 0..) |m, i| {
-            if (self.entry_set.isSet(i)) continue;
-            if (m.side_effects) continue;
-            if (m.wrap_kind.isWrapped()) continue;
-            if (self.isExportUsed(@intCast(i), "*")) continue;
-            if (protected_modules.isSet(i)) continue;
-
-            const infos = self.module_stmt_infos[i] orelse continue;
-            const reachable = self.reachable_stmts[i] orelse continue;
-
-            // 모든 export 선언 statement가 unreachable인가?
-            // re-export-all 또는 symbol 해석 실패 1건이라도 있으면 보수적으로 유지.
-            const all_dead = blk: for (m.export_bindings) |eb| {
-                if (eb.kind.isReExportAll()) break :blk false;
-                const sym_idx = eb.symbol.semanticIndex() orelse break :blk false;
-                const stmt_idx = infos.declaredStmtBySymbol(@intCast(sym_idx)) orelse break :blk false;
-                if (reachable.isSet(stmt_idx)) break :blk false;
-            } else true;
-            if (!all_dead) continue;
-
-            for (m.export_bindings) |eb| {
-                self.unmarkExportUsed(@intCast(i), eb.exported_name);
-            }
-            self.unmarkExportUsed(@intCast(i), "*");
-            // 전부 unmark 되었으므로 has_direct_used_export는 자명히 false.
-            if (i < self.has_direct_used_export.len) {
-                self.has_direct_used_export[i] = false;
-            }
         }
     }
 
