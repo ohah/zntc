@@ -1162,4 +1162,113 @@ describe("CLI: tsconfig", () => {
 
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("tsconfig paths: 깊은 서브경로 prefix 매칭 (@/a/b/c)", () => {
+    // "@/*" alias 가 중첩 디렉토리까지 정상 전파되는지 — applyAlias 의 prefix 로직 검증.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-deep-"));
+    mkdirSync(join(dir, "src", "a", "b"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }),
+    );
+    writeFileSync(join(dir, "src", "a", "b", "c.ts"), "export const V = 'DEEP_OK';");
+    writeFileSync(join(dir, "entry.ts"), 'import { V } from "@/a/b/c";\nconsole.log(V);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("DEEP_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: baseUrl 없으면 tsconfig 디렉토리가 기본 base", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-nobase-"));
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "#lib": ["./lib/index.ts"] } } }),
+    );
+    writeFileSync(join(dir, "lib", "index.ts"), "export const L = 'NOBASE_OK';");
+    writeFileSync(join(dir, "entry.ts"), 'import { L } from "#lib";\nconsole.log(L);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("NOBASE_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: 배열 여러 후보 중 첫 번째만 사용 (v1 제약)", () => {
+    // TS 공식은 순차 시도이나 ZTS v1 은 단일 — 첫 번째가 없어도 fallback 안 함을 문서화.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-multi-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@m": ["./src/a.ts", "./src/b.ts"] } },
+      }),
+    );
+    writeFileSync(join(dir, "src", "a.ts"), "export const M = 'FIRST';");
+    writeFileSync(join(dir, "src", "b.ts"), "export const M = 'SECOND';");
+    writeFileSync(join(dir, "entry.ts"), 'import { M } from "@m";\nconsole.log(M);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("FIRST");
+    expect(stdout).not.toContain("SECOND");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: 빈 paths 객체는 무시 (no crash)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-empty-"));
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { paths: {} } }));
+    writeFileSync(join(dir, "entry.ts"), "console.log('OK');");
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: extends 체인에서 paths 상속", () => {
+    // base tsconfig 의 paths 를 child 가 상속받는지 — mergeFrom 경로 검증.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-extends-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.base.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@base": ["./src/base.ts"] } } }),
+    );
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: "./tsconfig.base.json" }));
+    writeFileSync(join(dir, "src", "base.ts"), "export const B = 'EXTENDED';");
+    writeFileSync(join(dir, "entry.ts"), 'import { B } from "@base";\nconsole.log(B);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("EXTENDED");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: 존재하지 않는 tsconfig 경로 → silent fallback (no crash)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-missing-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('OK');");
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      "-p",
+      "/nonexistent/path/tsconfig.json",
+      join(dir, "entry.ts"),
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: .js extension 매핑 — '@util' → './src/util.ts'", () => {
+    // tsconfig 값이 ./src/util.ts 인데 source 가 ./src/util.js 로 import 해도
+    // resolver 의 TS extension mapping 이 동작해야 함 (pre-existing 기능, 회귀 방지).
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-ext-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@util": ["./src/util"] } } }),
+    );
+    writeFileSync(join(dir, "src", "util.ts"), "export const U = 'EXT_OK';");
+    writeFileSync(join(dir, "entry.ts"), 'import { U } from "@util";\nconsole.log(U);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("EXT_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
