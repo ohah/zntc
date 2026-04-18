@@ -1913,6 +1913,72 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("7");
     });
 
+    // #1523: ES5 target 에서 get #x() / set #x(v) (private getter/setter) 가 private method 경로로
+    // 라우팅되어 중복 WeakSet + `.bind(this) = v` invalid JS 생성. PrivateMethodMapping.kind 추가로
+    // get/set 구분 + WeakSet dedupe + call/bind 분기.
+    test("private getter + setter 쌍 runtime (#1523 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              #store = 10;
+              get #x() { return this.#store; }
+              set #x(v: number) { this.#store = v * 2; }
+              run() { this.#x = 5; return this.#x; }
+            }
+            console.log(new X().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("private getter only (#1523 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Y {
+              #v = 42;
+              get #only() { return this.#v; }
+              read() { return this.#only; }
+            }
+            console.log(new Y().read());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("private method + private get/set 공존 (#1523 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Z {
+              #state = 1;
+              get #x() { return this.#state; }
+              set #x(v: number) { this.#state = v; }
+              #bump() { this.#x = this.#x + 10; }
+              run() { this.#bump(); this.#bump(); return this.#x; }
+            }
+            console.log(new Z().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("21");
+    });
+
     // #1524: class computed getter/setter 의 key expression 이 평가되지 않고 `"[k]"` 리터럴로 emit
     // 되던 버그. emitAccessors 가 computed_property_key 감지 후 inner 를 visit 하도록 수정.
     test("computed getter/setter key expression 평가 (#1524 회귀)", async () => {

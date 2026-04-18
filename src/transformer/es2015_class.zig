@@ -39,6 +39,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2022 = @import("es2022.zig");
 
 const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
 const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
@@ -134,15 +135,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
                 self.runtime_helpers.class_static_private_field = true;
             }
-            for (cm.private_methods.items) |pm| {
-                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
-            }
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span);
 
             try appendPrivateFieldInits(self, &cm, span);
-            for (cm.private_methods.items) |pm| {
-                try cm.instance_fields.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
-            }
 
             // IIFE 내부 function (fresh identifier — linker 무관)
             var func_node = if (cm.constructor_idx) |ctor_idx|
@@ -424,10 +419,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
                 self.runtime_helpers.class_static_private_field = true;
             }
-            for (cm.private_methods.items) |pm| {
-                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
-            }
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span);
 
             try self.scratch.append(self.allocator, func_node);
 
@@ -800,6 +792,41 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, span);
         }
 
+        /// this.#x = rhs (setter) → __classPrivateMethodGet(obj, _x, _x_set).call(obj, rhs) (#1523).
+        fn lowerPrivateSetterCall(self: *Transformer, setter_mapping: Transformer.PrivateMethodMapping, obj_idx: NodeIndex, rhs_old: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            self.runtime_helpers.class_private_method_get = true;
+            const new_obj = try self.visitNode(obj_idx);
+            const new_rhs = try self.visitNode(rhs_old);
+            const helper_ref = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const ws_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
+            const fn_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
+            const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const callee = try es_helpers.makeStaticMember(self, get_call, call_prop, span);
+            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_rhs }, span);
+        }
+
+        /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
+        /// 같은 name 의 getter/setter 는 WeakSet 을 공유하므로 weakset_name 기준 첫 등장에만 선언.
+        /// private_field_init 도 동일한 dedup 으로 instance_fields 에 append (#1523).
+        fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), span: Span) Transformer.Error!void {
+            for (pms, 0..) |pm, i| {
+                const first_occurrence = blk: {
+                    for (pms[0..i]) |prev| {
+                        if (std.mem.eql(u8, prev.weakset_name, pm.weakset_name)) break :blk false;
+                    }
+                    break :blk true;
+                };
+                if (first_occurrence) {
+                    try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
+                    if (fields_out) |fo| {
+                        try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
+                    }
+                }
+                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.member_span));
+            }
+        }
+
         /// target이 private_field_expression이면 set 호출 생성(instance/static 자동 분기). 해당 없으면 null.
         /// destructuring assignment에서 `this.#x` 가 target일 때 `_x.get(this) = v` 같은 잘못된 target을
         /// 만들지 않도록 set 호출로 직접 변환 (#1485). value는 이미 변환된(new-AST) 노드여야 함.
@@ -886,7 +913,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const le = left_node.data.extra;
             if (le >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
-            const mapping = findPrivateFieldMapping(self, self.readNodeIdx(le, 1)) orelse return null;
+            const prop_idx = self.readNodeIdx(le, 1);
+
+            // private setter 인터셉트 — simple `=` 만 처리 (compound 는 getter+setter 합성 필요, 미지원).
+            // this.#x = v → __classPrivateMethodGet(this, _x, _x_set).call(this, v) (#1523).
+            const op_kind_pre: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            if (op_kind_pre == .eq and !prop_idx.isNone()) {
+                const prop_node_pre = self.ast.getNode(prop_idx);
+                if (prop_node_pre.tag == .private_identifier) {
+                    const orig_name = self.ast.getText(prop_node_pre.span);
+                    if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, 2)) |setter_mapping| {
+                        return lowerPrivateSetterCall(self, setter_mapping, obj_idx, node.data.binary.right, node.span);
+                    }
+                }
+            }
+
+            const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
 
             const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
             if (op_kind == .question2_eq or op_kind == .pipe2_eq or op_kind == .amp2_eq) {
@@ -1326,13 +1368,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         continue;
                     }
 
-                    // private method (#method) → WeakSet + standalone function 분류
+                    // private method (#method) / private getter/setter → WeakSet + standalone function 분류.
+                    // getter/setter 의 경우 kind 로 func_name suffix 구분 (_get / _set), WeakSet 은
+                    // emit 시 name 기준 dedupe 되므로 같은 name 의 get/set 쌍이 하나의 WeakSet 공유 (#1523).
                     if (!key.isNone()) {
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag == .private_identifier) {
                             const orig_name = self.ast.getText(key_node.span); // "#bar"
 
-                            const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
+                            const pm_kind: u8 = if (kind == 1) 1 else if (kind == 2) 2 else 0;
+                            const names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, pm_kind);
 
                             try cm.private_methods.append(self.allocator, .{
                                 .member_idx = @enumFromInt(raw_idx),
@@ -1340,6 +1385,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                                 .weakset_name = names.ws_name,
                                 .func_name = names.fn_name,
                                 .member_span = member.span,
+                                .kind = pm_kind,
                             });
                             continue;
                         }
