@@ -2002,7 +2002,9 @@ pub const SemanticAnalyzer = struct {
         }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
+        // ClassDeclaration의 name은 이미 outer scope에 등록됐으므로 body scope에 별도 등록 불필요.
+        // body 내부 self-reference는 scope chain을 타고 outer scope의 심볼로 해소된다.
+        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]), NodeIndex.none);
     }
 
     fn visitClassExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
@@ -2014,8 +2016,9 @@ pub const SemanticAnalyzer = struct {
             try self.visitNodeList(.{ .start = extras[extra_start + 6], .len = extras[extra_start + 7] });
         }
 
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
+        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]), name_idx);
     }
 
     /// class를 순회한다. heritage expression과 body를 올바른 private name 환경에서 처리.
@@ -2027,7 +2030,14 @@ pub const SemanticAnalyzer = struct {
     ///
     /// 즉, heritage expression에서는 이 클래스의 private name에 접근할 수 없고,
     /// 오직 외부(부모) 클래스의 private name만 보인다.
-    fn visitClassWithHeritage(self: *SemanticAnalyzer, heritage_idx: NodeIndex, body_idx: NodeIndex) AllocError!void {
+    fn visitClassWithHeritage(
+        self: *SemanticAnalyzer,
+        heritage_idx: NodeIndex,
+        body_idx: NodeIndex,
+        /// ClassExpression name의 node index. ClassDeclaration 또는 익명 expression은 `.none`.
+        /// body scope 진입 후 등록되어 body 내부 self-reference로만 보인다 (#1592, ES 15.7.14).
+        class_expr_name_idx: NodeIndex,
+    ) AllocError!void {
         // Step 1: heritage expression 순회 — 이 클래스의 class scope PUSH 전에!
         // heritage는 outerPrivateEnvironment에서 평가되므로 이 클래스의 #name에 접근 불가.
         // class scope를 push하기 전에 heritage를 순회하면, heritage에서의 #name 참조가
@@ -2040,6 +2050,14 @@ pub const SemanticAnalyzer = struct {
         // class body는 항상 strict mode (ECMAScript 10.2.1)
         const saved = try self.enterScope(.class_body, true);
         try self.pushClassScope();
+
+        // ClassExpression name을 class body scope에 lexical binding으로 등록 (#1592).
+        // heritage 평가 이후, body 순회 이전에 등록되어 body 내부 self-reference는
+        // 이 심볼로 resolve되고, body scope 종료 후 외부 참조는 다른 심볼(또는 unresolved).
+        if (!class_expr_name_idx.isNone()) {
+            const name_node = self.ast.getNode(class_expr_name_idx);
+            try self.declareSymbolWithNode(name_node.span, .class_decl, name_node.span, @intFromEnum(class_expr_name_idx));
+        }
 
         if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
