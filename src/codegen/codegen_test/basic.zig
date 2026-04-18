@@ -187,6 +187,34 @@ test "Codegen #1564: nested classic-for inside outer for-init preserves in_for_i
     try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
 }
 
+test "Codegen #1564: triple-nested for-in inside IIFE in outer for-init" {
+    // 3중 중첩: outer for init → IIFE body → 인접한 두 for-in
+    // 내부 for-in이 각각 종료할 때마다 in_for_init을 덮어쓰지 않아야 한다.
+    var r = try e2e(std.testing.allocator,
+        \\for (var r, e = (function(n) { var a = []; for (var x in n) for (var y in n[x]) a.push(x+y); return a; })({p:{q:1}}), u = 0; u < e.length; u++) { }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
+test "Codegen #1564: for-of inside outer for-init preserves in_for_init" {
+    // for-in뿐 아니라 for-of도 같은 플래그를 사용하므로 동일 경로 회귀 확인.
+    var r = try e2e(std.testing.allocator,
+        \\for (var r = 0, arr = (function() { var out = []; for (var v of [1,2,3]) out.push(v); return out; })(), n = arr.length; r < n; r++) { }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
+test "Codegen #1564: let/const mixed with nested for-in" {
+    // `let`, `const` kind도 VariableDeclaration emit 경로를 공유하므로 동일 가드.
+    var r = try e2e(std.testing.allocator,
+        \\for (let r = 0, e = (function(n) { const m = {}; for (const k in n) m[k] = n[k]; return m; })({a:1}), keys = Object.keys(e); r < keys.length; r++) { }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
 // ============================================================
 // Peephole (#1552 P3): minify_syntax — boolean 축약
 // ============================================================
