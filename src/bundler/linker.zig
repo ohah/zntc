@@ -1183,7 +1183,7 @@ pub const Linker = struct {
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
-        const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
+        const cmod = ref.module_index.toU32();
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
         const canonical = self.getCanonicalName(cmod, local) orelse local;
         return self.safeIdentifierName(canonical, cmod);
@@ -1532,7 +1532,7 @@ pub const Linker = struct {
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
                     // canonical이 export * as ns 패턴인지 확인
-                    const cmod_i = @intFromEnum(canonical.module_index);
+                    const cmod_i = canonical.module_index.toU32();
                     if (cmod_i < self.modules.len) {
                         for (self.modules[cmod_i].export_bindings) |ceb| {
                             if (ceb.kind.isReExportAll() and

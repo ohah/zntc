@@ -336,7 +336,7 @@ pub fn emitWithTreeShaking(
     // Module.is_entry_point 플래그로 정확히 식별 — 정렬 순서나 exec_index와 무관.
     const entry_idx: ?u32 = blk: {
         for (sorted.items) |m| {
-            if (m.is_entry_point) break :blk @intFromEnum(m.index);
+            if (m.is_entry_point) break :blk m.index.toU32();
         }
         break :blk null;
     };
@@ -372,14 +372,14 @@ pub fn emitWithTreeShaking(
     if (use_pool) {
         var wg: std.Thread.WaitGroup = .{};
         for (sorted.items, 0..) |m, i| {
-            const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+            const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
         }
         pool.waitAndWork(&wg);
     } else {
         for (sorted.items, 0..) |m, i| {
-            const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+            const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json) catch null;
         }
@@ -434,7 +434,7 @@ pub fn emitWithTreeShaking(
 
         // --run-before-main: 엔트리 모듈 직전에 해당 모듈의 require/init 호출 삽입.
         // __esm 래핑된 엔트리(RN)는 emitEsmWrappedModule에서 body 안에 삽입.
-        const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+        const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
             const before_len = module_output.items.len;
             try appendRunBeforeMainCalls(&module_output, allocator, graph.modules.items, options.run_before_main);
@@ -564,7 +564,7 @@ pub fn emitWithTreeShaking(
     // RN 플랫폼에서는 엔트리도 __esm 래핑되므로 init_xxx() 호출이 필요.
     if (entry_idx) |ei| {
         for (sorted.items) |em| {
-            if (@intFromEnum(em.index) == ei and em.wrap_kind.isWrapped()) {
+            if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
                 try appendModuleCall(&output, allocator, em);
                 break;
             }
@@ -876,7 +876,7 @@ pub fn emitModule(
         // ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 ast와 일치)
         var md = try l.buildMetadataForAst(
             &transformer.ast,
-            @intFromEnum(module.index),
+            module.index.toU32(),
             is_entry,
             override_syms,
         );
@@ -905,7 +905,7 @@ pub fn emitModule(
                         sem.symbol_ids;
 
                     // 크로스-모듈 BFS 결과: tree-shaker의 reachable_stmts로 skip_nodes 설정
-                    const mod_idx: u32 = @intFromEnum(module.index);
+                    const mod_idx: u32 = module.index.toU32();
                     if (shaker) |s| {
                         if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
                             // 변환 후 AST의 program statement list에서 span 매칭
@@ -1209,7 +1209,7 @@ fn propagateCrossModulePurity(
     if (sem.scope_maps.len == 0) return;
     if (module.import_bindings.len == 0) return;
     const module_scope = sem.scope_maps[0];
-    const module_index: u32 = @intFromEnum(module.index);
+    const module_index: u32 = module.index.toU32();
 
     // 1단계: no_side_effects인 import binding의 local symbol_id를 수집한다.
     // 비트셋 대신 bool 배열 사용 — 스택 256개, 초과 시 arena fallback.

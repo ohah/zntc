@@ -608,10 +608,10 @@ pub const TreeShaker = struct {
             if (target_mod < self.modules.len) self.included.set(target_mod);
             return;
         };
-        const canon_mod = @intFromEnum(canonical.module_index);
+        const canon_mod = canonical.module_index.toU32();
         if (canon_mod >= self.modules.len) return;
 
-        try self.markExportUsed(@intCast(canon_mod), canonical.export_name);
+        try self.markExportUsed(canon_mod, canonical.export_name);
         self.included.set(canon_mod);
 
         // namespace barrel re-export: canonical이 namespace import를 가리키면
@@ -834,9 +834,9 @@ pub const TreeShaker = struct {
 
             const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
             if (canonical) |c| {
-                const canon_idx = @intFromEnum(c.module_index);
+                const canon_idx = c.module_index.toU32();
                 if (canon_idx < self.modules.len) {
-                    try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                    try self.markExportUsed(canon_idx, c.export_name);
                     if (!self.included.isSet(canon_idx)) {
                         self.included.set(canon_idx);
                         newly_included = true;
@@ -857,9 +857,9 @@ pub const TreeShaker = struct {
                 if (ib.namespace_used_properties) |props| {
                     for (props) |prop_name| {
                         if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
-                            const canon_idx = @intFromEnum(c.module_index);
+                            const canon_idx = c.module_index.toU32();
                             if (canon_idx < self.modules.len) {
-                                try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                                try self.markExportUsed(canon_idx, c.export_name);
                                 if (!self.included.isSet(canon_idx)) {
                                     self.included.set(canon_idx);
                                     newly_included = true;
@@ -910,10 +910,10 @@ pub const TreeShaker = struct {
                                     m.exportBindingLocalName(eb),
                                     0,
                                 )) |canonical| {
-                                    const canon_idx = @intFromEnum(canonical.module_index);
+                                    const canon_idx = canonical.module_index.toU32();
                                     if (canon_idx < self.modules.len) {
                                         if (!self.included.isSet(canon_idx)) self.included.set(canon_idx);
-                                        try self.markExportUsed(@intCast(canon_idx), canonical.export_name);
+                                        try self.markExportUsed(canon_idx, canonical.export_name);
                                     }
                                 }
                             }

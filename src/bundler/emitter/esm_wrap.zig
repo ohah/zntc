@@ -491,7 +491,7 @@ pub fn emitEsmWrappedModule(
                                 break :blk override;
                         }
                         if (linker) |l| {
-                            const mi: u32 = @intFromEnum(module.index);
+                            const mi: u32 = module.index.toU32();
                             if (l.getCanonicalName(mi, local_name)) |renamed|
                                 break :blk renamed;
                         }
@@ -1014,7 +1014,7 @@ fn makeStarGetterValue(
             // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
             // resolveExportChain으로 canonical 이름을 찾는다.
             if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
-                const canonical_mod_i = @intFromEnum(resolved.module_index);
+                const canonical_mod_i = resolved.module_index.toU32();
                 const canonical_mod = &l.modules[canonical_mod_i];
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
