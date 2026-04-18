@@ -267,6 +267,12 @@ interface BuildOptionsCommon {
   pure?: string[];
   /** tsconfig.json 인라인 JSON 오버라이드 */
   tsconfigRaw?: string;
+  /**
+   * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions 를 자동 로드해서 머지한다.
+   * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.
+   * 예) "./tsconfig.json" 또는 "./project-dir"
+   */
+  tsconfigPath?: string;
   /** NODE_PATH 추가 탐색 경로 */
   nodePaths?: string[];
   /** 줄 길이 제한 (0=무제한) */

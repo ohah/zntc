@@ -85,6 +85,18 @@ pub const TsConfig = struct {
         return loadFile(allocator, dir_path, "tsconfig.json", 0);
     }
 
+    /// 파일 경로 또는 디렉토리 경로에서 tsconfig를 로드한다.
+    /// 경로 끝이 `.json`이면 파일로 취급, 아니면 디렉토리로 취급해 그 안의 `tsconfig.json`을 읽는다.
+    /// NAPI/빌드 API 에서 사용자가 "./tsconfig.json" 또는 "./project-dir" 어느 쪽을 줘도 동작.
+    pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !TsConfig {
+        if (std.mem.endsWith(u8, path, ".json")) {
+            const dir = std.fs.path.dirname(path) orelse ".";
+            const file = std.fs.path.basename(path);
+            return loadFile(allocator, dir, file, 0);
+        }
+        return loadFile(allocator, path, "tsconfig.json", 0);
+    }
+
     /// 특정 파일명으로 tsconfig를 로드한다 (extends 체인에서 사용).
     /// depth: extends 재귀 깊이 (무한 루프 방지, 최대 10단계)
     fn loadFile(

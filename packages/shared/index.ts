@@ -66,6 +66,12 @@ export interface TranspileOptions {
   useDefineForClassFields?: boolean;
   /** verbatimModuleSyntax (TS 5.0+): true면 미사용 값 import를 elide하지 않음 */
   verbatimModuleSyntax?: boolean;
+  /**
+   * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions를 자동 로드해서 머지한다.
+   * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.
+   * 예) "./tsconfig.json" 또는 "./project-dir"
+   */
+  tsconfigPath?: string;
   /** 모듈 포맷 */
   format?: "esm" | "cjs";
   /** 문자열 따옴표 스타일 */
@@ -176,7 +182,10 @@ export function buildOptionsJson(
   if (opts.experimentalDecorators) payload.experimentalDecorators = true;
   if (opts.emitDecoratorMetadata) payload.emitDecoratorMetadata = true;
   if (opts.useDefineForClassFields === false) payload.useDefineForClassFields = false;
-  if (opts.verbatimModuleSyntax) payload.verbatimModuleSyntax = true;
+  // tsconfig 머지가 있는 필드들은 "JS 가 명시적으로 false" 와 "JS 미설정" 을 구분해야
+  // JS > tsconfig 우선순위가 정확히 적용된다. `!== undefined` 체크로 양쪽 값을 모두 전달.
+  if (opts.verbatimModuleSyntax !== undefined) payload.verbatimModuleSyntax = opts.verbatimModuleSyntax;
+  if (opts.tsconfigPath) payload.tsconfigPath = opts.tsconfigPath;
   if (opts.format) payload.format = opts.format;
   if (opts.quotes) payload.quotes = opts.quotes;
   if (opts.platform === "react-native") payload.platform = "react_native";
