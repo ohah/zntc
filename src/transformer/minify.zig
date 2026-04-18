@@ -178,16 +178,23 @@ fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node) void {
     const left_text = ast.getText(left.span);
     const right_text = ast.getText(right.span);
 
-    const a = stripQuotes(left_text);
-    const b = stripQuotes(right_text);
+    // escape 규칙이 동일한 경우만 concat — 양쪽 모두 같은 quote char(`"` / `'` / backtick)여야.
+    // 다른 quote를 합치면 내부 escape 변환 필요(예: `'..."x"...'`를 double quote로 재포장하면
+    // `"`를 `\"`로 바꿔야 hermesc 같은 엄격 파서 통과). 재escape 비용 대신 fold 포기가 안전.
+    // 같은 quote끼리는 내부 텍스트가 이미 해당 quote에 대해 escape 되어 있어 그대로 합쳐도 OK.
+    const lq = detectQuote(left_text) orelse return;
+    const rq = detectQuote(right_text) orelse return;
+    if (lq != rq) return;
 
-    // "concat_result" 형태로 string_table에 추가 (따옴표 포함)
+    const a = left_text[1 .. left_text.len - 1];
+    const b = right_text[1 .. right_text.len - 1];
+
     var buf: [4096]u8 = undefined;
     if (a.len + b.len + 2 > buf.len) return;
-    buf[0] = '"';
+    buf[0] = lq;
     @memcpy(buf[1 .. 1 + a.len], a);
     @memcpy(buf[1 + a.len .. 1 + a.len + b.len], b);
-    buf[1 + a.len + b.len] = '"';
+    buf[1 + a.len + b.len] = lq;
     const total = 2 + a.len + b.len;
 
     const span = ast.addString(buf[0..total]) catch return;
@@ -196,6 +203,15 @@ fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node) void {
         .span = span,
         .data = .{ .none = 0 },
     };
+}
+
+/// 문자열 리터럴의 quote char — `"` / `'` / backtick. 리터럴 형식이 아니면 null.
+fn detectQuote(text: []const u8) ?u8 {
+    if (text.len < 2) return null;
+    const q = text[0];
+    if (q != '"' and q != '\'' and q != '`') return null;
+    if (text[text.len - 1] != q) return null;
+    return q;
 }
 
 fn stripQuotes(text: []const u8) []const u8 {
