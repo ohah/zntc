@@ -1481,7 +1481,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const key: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
                     const init_val: NodeIndex = self.readNodeIdx(pe, PropertyExtra.init);
                     const flags = self.readU32(pe, PropertyExtra.flags);
-                    const is_static = (flags & 0x01) != 0;
+                    const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
 
                     // private field (#x) → instance: WeakMap, static: descriptor 객체
                     const key_node = self.ast.getNode(key);
@@ -2640,7 +2640,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // property decorator
                     const pe = member.data.extra;
                     const flags = self.readU32(pe, PropertyExtra.flags);
-                    const is_static = (flags & 0x01) != 0;
+                    const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
                     const deco_start = self.readU32(pe, PropertyExtra.deco_start);
                     const deco_len = self.readU32(pe, PropertyExtra.deco_len);
                     if (deco_len > 0) {

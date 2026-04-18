@@ -1131,6 +1131,17 @@ pub const PropertyExtra = struct {
     pub const deco_len: u32 = 4;
 };
 
+/// property_definition / accessor_property의 flags 비트 (PropertyExtra.flags).
+/// class member parser가 method/property를 같은 함수에서 파싱하므로
+/// `MethodFlags`와 비트 위치를 공유한다. property에서 의미있는 비트만 expose.
+/// (getter/setter/async/generator는 method 전용 — property에선 parser가 기록하지 않음)
+pub const PropertyFlags = struct {
+    pub const is_static: u32 = 0x01;
+    pub const is_abstract: u32 = 0x20;
+    pub const is_declare: u32 = 0x40;
+    pub const flow_variance: u32 = 0x80; // Flow covariant(+)/contravariant(-) — type-only property
+};
+
 /// class_declaration / class_expression extras 레이아웃:
 /// [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len] (#1513).
 pub const ClassExtra = struct {
