@@ -1913,6 +1913,90 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("7");
     });
 
+    // #1511: `accessor` 키워드 필드 ES5 lowering — public / private / computed 키 세 경로 완성.
+    // public 은 이전부터 지원, private / computed 는 이 PR 에서 드디어 desugar.
+    test("accessor #priv 필드 runtime (#1511 private accessor)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class X {
+              accessor #count = 10;
+              bump(n: number) { this.#count = this.#count + n; return this.#count; }
+            }
+            const x = new X();
+            x.bump(5);
+            console.log(x.bump(3));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("18");
+    });
+
+    test("accessor [computed] 필드 runtime (#1511 computed accessor)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = "dyn";
+            class X {
+              accessor [k] = 5;
+              use(val: number) { (this as any)[k] = val * 2; return (this as any)[k]; }
+            }
+            console.log(new X().use(10));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("20");
+    });
+
+    test("accessor [computed] 키는 한 번만 평가 (#1511 memoization)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let calls = 0;
+            function getKey() { calls++; return "prop"; }
+            class X {
+              accessor [getKey()] = 1;
+            }
+            new X();
+            new X();
+            console.log(calls);  // class 선언 시 한 번만 평가되어야 함
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("static accessor [computed] (#1511)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const key = "tag";
+            class Y {
+              static accessor [key] = "Y-tag";
+            }
+            console.log((Y as any)[key]);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Y-tag");
+    });
+
     // #1523: ES5 target 에서 get #x() / set #x(v) (private getter/setter) 가 private method 경로로
     // 라우팅되어 중복 WeakSet + `.bind(this) = v` invalid JS 생성. PrivateMethodMapping.kind 추가로
     // get/set 구분 + WeakSet dedupe + call/bind 분기.
