@@ -451,7 +451,7 @@ test "Format: IIFE with multiple modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
     try std.testing.expect(std.mem.endsWith(u8, result.output, "})();\n"));
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function greet") != null);
 }
@@ -477,7 +477,7 @@ test "Format: minified IIFE" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
     // 모듈 경계 주석 없음
     try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
 }

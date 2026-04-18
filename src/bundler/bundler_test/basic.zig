@@ -162,7 +162,7 @@ test "Bundler: IIFE format" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
     try std.testing.expect(std.mem.endsWith(u8, result.output, "})();\n"));
 }
 

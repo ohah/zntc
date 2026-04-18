@@ -329,7 +329,7 @@ test "Format: IIFE scope_hoist entry exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value * 2") != null);
 }
 
@@ -597,8 +597,8 @@ test "IIFE globalName: export → return 변환 (linker integration)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // IIFE prologue: var MyLib = (function() {
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var MyLib = (function()") != null);
+    // IIFE prologue: var MyLib = (() => {
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var MyLib = (() =>") != null);
     // 엔트리 export가 return으로 변환됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "return {") != null);
     // export 키워드가 남아있으면 안 됨

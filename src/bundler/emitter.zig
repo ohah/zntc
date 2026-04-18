@@ -232,7 +232,14 @@ pub fn emitWithTreeShaking(
         }
         break :blk false;
     };
-    const factory_fn = if (has_tla) "(async function() {\n" else "(function() {\n";
+    // IIFE 래퍼는 내부에 `this`/`arguments`/`new.target`을 노출하지 않으므로
+    // arrow 전환이 시맨틱을 바꾸지 않는다. ES5 타겟처럼 arrow 미지원 환경에서만
+    // 기존 `function` 형태를 유지 (#1580, esbuild 관행과 동일).
+    const use_arrow = !options.unsupported.arrow;
+    const factory_fn = if (has_tla)
+        (if (use_arrow) "(async () => {\n" else "(async function() {\n")
+    else
+        (if (use_arrow) "(() => {\n" else "(function() {\n");
 
     // UMD/AMD: external specifier 수집 (dependency array + factory params 생성용)
     var ext_specifiers: std.ArrayList([]const u8) = .empty;
