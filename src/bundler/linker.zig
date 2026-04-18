@@ -593,15 +593,23 @@ pub const Linker = struct {
         var name_refs = std.StringHashMap(u32).init(self.allocator);
         defer name_refs.deinit();
 
-        // export/import binding 이름 수집 (mangling 제외 대상)
+        // mangling 제외 대상 수집 (public API 경계) — #1581:
+        //   - entry 모듈의 export: 번들 외부 소비자에게 노출되는 public API
+        //   - external import의 local binding: 번들 밖에서 해소되므로 원본 이름이 정답
+        // 중간 모듈의 export 이름은 scope hoisting 후 bundle 내부에서만 소비되므로
+        // 자유롭게 축약 가능. esbuild/rolldown도 동일한 boundary로 동작.
         var exported = std.StringHashMap(void).init(self.allocator);
         errdefer exported.deinit();
         for (self.modules) |m| {
-            for (m.export_bindings) |eb| {
-                try exported.put(eb.exported_name, {});
-                try exported.put(m.exportBindingLocalName(eb), {});
+            if (m.is_entry_point) {
+                for (m.export_bindings) |eb| {
+                    try exported.put(eb.exported_name, {});
+                    try exported.put(m.exportBindingLocalName(eb), {});
+                }
             }
             for (m.import_bindings) |ib| {
+                if (ib.import_record_index >= m.import_records.len) continue;
+                if (!m.import_records[ib.import_record_index].is_external) continue;
                 try exported.put(m.importBindingLocalName(ib), {});
             }
         }

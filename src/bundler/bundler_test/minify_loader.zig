@@ -869,8 +869,9 @@ test "Minify: CJS import binding preamble uses mangled name" {
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
-test "Minify: ESM import binding not mangled" {
-    // ESM export 함수의 import binding은 mangler가 덮어쓰면 안 된다.
+test "Minify: ESM import binding resolves correctly after mangling (#1581)" {
+    // 중간 모듈의 export는 mangled되지만 import binding이 올바른 mangled 이름으로
+    // 치환되어 호출이 정상 해소되어야 한다 (scope hoisting 후 같은 심볼 1개).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { greet } from './lib';\nconsole.log(greet('world'));");
@@ -891,8 +892,11 @@ test "Minify: ESM import binding not mangled" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    try std.testing.expect(std.mem.indexOf(u8, output, "greet") != null);
+    // 실행 결과에 영향을 주는 문자열은 보존
     try std.testing.expect(std.mem.indexOf(u8, output, "Hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "world") != null);
+    // 원본 이름은 축약됨 (중간 모듈 export는 public API 아님)
+    try std.testing.expect(std.mem.indexOf(u8, output, "greet") == null);
 }
 
 test "Minify: for-loop body var declaration has semicolon" {
@@ -921,11 +925,11 @@ test "Minify: for-loop body var declaration has semicolon" {
 }
 
 test "Minify: template literal expression identifiers renamed (#493)" {
-    // template literal 내 ${identifier} 참조가 mangled name으로 치환되어야 한다.
+    // template literal 내 ${identifier} 참조가 mangled name으로 일관되게 치환되어야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import { prefix } from './lib';\nconsole.log(`val=${prefix}!`);");
-    try writeFile(tmp.dir, "lib.ts", "export const prefix = 'hello';");
+    try writeFile(tmp.dir, "entry.ts", "import { long_prefix_name } from './lib';\nconsole.log(`val=${long_prefix_name}!`);");
+    try writeFile(tmp.dir, "lib.ts", "export const long_prefix_name = 'hello';");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -942,8 +946,10 @@ test "Minify: template literal expression identifiers renamed (#493)" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // export이므로 prefix 이름 보존, template literal에 올바르게 참조됨
-    try std.testing.expect(std.mem.indexOf(u8, output, "prefix") != null);
+    // 중간 모듈 export는 mangled됨 (#1581)
+    try std.testing.expect(std.mem.indexOf(u8, output, "long_prefix_name") == null);
+    // template literal 구조와 실행 결과 문자열은 보존
+    try std.testing.expect(std.mem.indexOf(u8, output, "val=") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "hello") != null);
 }
 
@@ -1201,6 +1207,103 @@ test "Minify: with statement preserves bindings in enclosing scope (#1258)" {
     const has_decl = std.mem.indexOf(u8, result.output, "greetingOuter=") != null or
         std.mem.indexOf(u8, result.output, "greetingOuter =") != null;
     try std.testing.expect(has_decl);
+}
+
+// ============================================================
+// Mangler: public-API boundary (#1581)
+// ============================================================
+// mangling 보존 대상은 entry 모듈의 export와 external import local binding만이다.
+// 중간 모듈에서 export된 이름도 bundle 내부에서만 소비되므로 자유롭게 축약 가능.
+// esbuild/rolldown 관행과 동일.
+
+test "Minify: non-entry export name is mangled (#1581)" {
+    // 중간 모듈의 긴 export 이름은 bundle 외부로 노출되지 않으므로 축약되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { VERY_LONG_INTERNAL_CONSTANT_NAME } from './constants';
+        \\console.log(VERY_LONG_INTERNAL_CONSTANT_NAME);
+    );
+    try writeFile(tmp.dir, "constants.ts",
+        \\export const VERY_LONG_INTERNAL_CONSTANT_NAME = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 긴 이름이 축약되어 출력에 남지 않는다
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "VERY_LONG_INTERNAL_CONSTANT_NAME") == null);
+    // 값 42는 그대로 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Minify: entry export name preserved (#1581)" {
+    // entry 모듈의 export는 public API이므로 보존되어야 한다 (ESM 포맷).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const helper = 42;
+        \\export const PUBLIC_API = helper * 2;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // entry의 public API 이름은 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PUBLIC_API") != null);
+    // 내부 helper 이름은 축약
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "helper") == null);
+}
+
+test "Minify: external import local binding preserved (#1581)" {
+    // external로 남는 import는 bundle 밖에서 해소되므로 local 이름을 보존해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { readFileSync } from 'node:fs';
+        \\console.log(readFileSync('/tmp/x'));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // external import → local 이름 보존 (외부에서 정의된 이름)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "readFileSync") != null);
 }
 
 // ============================================================
