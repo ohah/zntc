@@ -35,9 +35,9 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             for (members) |raw_idx| {
                 const m = self.ast.getNode(@enumFromInt(raw_idx));
                 if (m.tag != .method_definition) continue;
-                const flags = self.ast.extra_data.items[m.data.extra + 3];
-                // getter(0x02) / setter(0x04) 는 ES5 지원 → 변환 제외
-                if ((flags & 0x02) != 0 or (flags & 0x04) != 0) continue;
+                const flags = self.ast.extra_data.items[m.data.extra + ast_mod.MethodExtra.flags];
+                // getter / setter 는 ES5 지원 → 변환 제외
+                if ((flags & ast_mod.MethodFlags.is_getter) != 0 or (flags & ast_mod.MethodFlags.is_setter) != 0) continue;
                 return true;
             }
             return false;
@@ -69,13 +69,13 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
                 }
 
                 const me = m.data.extra;
-                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
-                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 2]);
-                const flags: u32 = self.ast.extra_data.items[me + 3];
+                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
+                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.params]);
+                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]);
+                const flags: u32 = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
 
                 // getter/setter는 원본 그대로 방문 (ES5 지원)
-                if ((flags & 0x02) != 0 or (flags & 0x04) != 0) {
+                if ((flags & ast_mod.MethodFlags.is_getter) != 0 or (flags & ast_mod.MethodFlags.is_setter) != 0) {
                     const new_m = try self.visitNode(m_idx);
                     if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
                     continue;

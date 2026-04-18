@@ -521,9 +521,9 @@ pub const Codegen = struct {
     /// getter → "get__name", setter → "set__name", constructor → class 이름.
     /// 부모 class 이름이 있으면 "ClassName#method" / "ClassName.method" 형태.
     fn resolveMethodName(self: *Codegen, key: NodeIndex, flags: u32) ![]const u8 {
-        const is_getter = flags & 0x02 != 0;
-        const is_setter = flags & 0x04 != 0;
-        const is_static = flags & 0x01 != 0;
+        const is_getter = flags & ast_mod.MethodFlags.is_getter != 0;
+        const is_setter = flags & ast_mod.MethodFlags.is_setter != 0;
+        const is_static = flags & ast_mod.MethodFlags.is_static != 0;
         const sep: []const u8 = if (is_static) "." else "#";
 
         const raw = self.resolveKeyName(key) orelse "<anonymous>";

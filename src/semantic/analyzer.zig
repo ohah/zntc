@@ -2075,8 +2075,8 @@ pub const SemanticAnalyzer = struct {
                     const kind: PrivateNameKind = blk: {
                         if (extra_start + 3 < self.ast.extra_data.items.len) {
                             const flags = self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.flags];
-                            if (flags & 0x02 != 0) break :blk .getter;
-                            if (flags & 0x04 != 0) break :blk .setter;
+                            if (flags & ast_mod.MethodFlags.is_getter != 0) break :blk .getter;
+                            if (flags & ast_mod.MethodFlags.is_setter != 0) break :blk .setter;
                         }
                         break :blk .method;
                     };
