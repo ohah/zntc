@@ -2263,25 +2263,25 @@ fn parseBuildOptions(
     const tsconfig_path_opt = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
 
     // tsconfig.json 로드 + 머지 — JS 옵션이 명시적으로 설정된 필드가 있으면 그게 우선.
-    // 미지정 필드만 tsconfig 값으로 채움 (CLI 와 동일 규칙: JS > tsconfig > default).
+    // 머지 규칙은 `src/tsconfig_merge.zig` 의 공용 helper 에 위임 — transpile.zig / main.zig 와 일관.
     const TsConfig = @import("zts_lib").config.TsConfig;
+    const tsconfig_merge = @import("zts_lib").tsconfig_merge;
     var tsconfig_holder: TsConfig = .{};
     if (tsconfig_path_opt) |p| {
         tsconfig_holder = TsConfig.loadFromPath(native_alloc, p) catch TsConfig{};
     }
     defer tsconfig_holder.deinit();
 
-    const exp_dec_js = getObjectBoolOptional(env, opts_obj, "experimentalDecorators");
-    const emit_meta_js = getObjectBoolOptional(env, opts_obj, "emitDecoratorMetadata");
-    const udff_js = getObjectBoolOptional(env, opts_obj, "useDefineForClassFields");
-    const verbatim_js = getObjectBoolOptional(env, opts_obj, "verbatimModuleSyntax");
-
-    const experimental_decorators_eff = exp_dec_js orelse tsconfig_holder.experimental_decorators;
-    // emitDecoratorMetadata 는 experimentalDecorators 가 켜진 경우에만 유효 (tsc 규칙).
-    const emit_decorator_metadata_eff = emit_meta_js orelse
-        (tsconfig_holder.emit_decorator_metadata and experimental_decorators_eff);
-    const use_define_for_class_fields_eff = udff_js orelse (tsconfig_holder.use_define_for_class_fields orelse true);
-    const verbatim_module_syntax_eff = verbatim_js orelse tsconfig_holder.verbatim_module_syntax;
+    const merged_tsconfig = tsconfig_merge.merge(&tsconfig_holder, .{
+        .experimental_decorators = getObjectBoolOptional(env, opts_obj, "experimentalDecorators"),
+        .emit_decorator_metadata = getObjectBoolOptional(env, opts_obj, "emitDecoratorMetadata"),
+        .use_define_for_class_fields = getObjectBoolOptional(env, opts_obj, "useDefineForClassFields"),
+        .verbatim_module_syntax = getObjectBoolOptional(env, opts_obj, "verbatimModuleSyntax"),
+    });
+    const experimental_decorators_eff = merged_tsconfig.experimental_decorators;
+    const emit_decorator_metadata_eff = merged_tsconfig.emit_decorator_metadata;
+    const use_define_for_class_fields_eff = merged_tsconfig.use_define_for_class_fields;
+    const verbatim_module_syntax_eff = merged_tsconfig.verbatim_module_syntax;
     const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
     const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
     const root_dir = ownStr(env, opts_obj, "rootDir", owned_strings);
