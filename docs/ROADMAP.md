@@ -287,6 +287,20 @@ Asset 모듈은 `exports_kind = .commonjs`, `wrap_kind = .cjs`로 처리됨.
 esbuild는 `NoSideEffects_PureData` 마킹으로 이를 해결하지만, ZTS의 tree-shaker는 CJS wrap에 대해 아직 이 최적화를 수행하지 않음.
 (JSON 모듈은 ESM AST 변환으로 tree-shaking 가능 — PR #589)
 
+**tsconfig `paths` resolver 선형 스캔 (측정 후 현재 방치)**
+`applyTsPaths`가 `ts_paths` 배열을 import 당 O(N) 선형으로 훑는다. 2026-04-18 측정:
+
+| N (paths) | graph scan 오버헤드 | Import 당 비용 |
+|-----------|---------------------|----------------|
+| 100 (대형 프로젝트) | ~1.4ms | ~7µs |
+| 200 | ~5ms | ~10µs |
+| 500 (극단) | ~19ms | ~19µs |
+
+HashMap 은 exact-match 항목만 최적화 가능 (wildcard `@foo/*` 는 prefix/suffix 매칭이라
+hash 불가). 실제 tsconfig paths 는 대부분 wildcard 이므로 절감 효과 ~50% 로 제한됨. 대형 프로젝트
+(N=100) 에서도 1ms 이하 절감으로 예상되어 현재는 복잡도 대비 이득 부족 판단. 실사용에서
+bottleneck 제보 있을 때 재검토.
+
 ## ES 다운레벨링 커버리지 (kangax/compat-table)
 
 `bun run test:compat`으로 실행. CI에서 자동 검증.
