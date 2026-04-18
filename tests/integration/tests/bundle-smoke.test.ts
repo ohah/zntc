@@ -1973,7 +1973,10 @@ describe("JSX classic 모드 번들러 rename", () => {
     expect(code).toContain('async "esm.js"()');
   });
 
-  test("TLA: scope-hoisted IIFE에서 async function으로 감싼다 (#779)", async () => {
+  test("TLA: scope-hoisted IIFE에서 async 래퍼로 감싼다 (#779)", async () => {
+    // #1580 이후 기본 IIFE는 arrow 형태: `(async () => {...})()`.
+    // ES5 타겟에서는 `(async function() {...})()` 유지. 공통 불변식은
+    // "async 키워드"가 래퍼 앞에 있고 sync IIFE가 아니라는 것.
     const { dir, cleanup: cl } = await createFixture({
       "dep.ts": "export const val = await Promise.resolve(42);",
       "index.ts": 'import { val } from "./dep.ts"; console.log(val);',
@@ -1982,8 +1985,9 @@ describe("JSX classic 모드 번들러 rename", () => {
     const outFile = join(dir, "out.js");
     await runZts(["--bundle", join(dir, "index.ts"), "-o", outFile, "--platform=browser"]);
     const code = readFileSync(outFile, "utf-8");
-    expect(code).toContain("(async function()");
+    expect(code).toContain("(async ");
     expect(code).not.toContain("(function()");
+    expect(code).not.toContain("(() =>");
   });
 
   test("TLA: __esm 전이 전파 — import하는 모듈도 async 래핑 (#779)", async () => {
