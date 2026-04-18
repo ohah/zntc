@@ -277,6 +277,52 @@ test "private async method: es2021 → async function preserves async (#1564)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "async function _fetch_fn()") != null);
 }
 
+test "private async generator method: async *#name → async function* (#1564)" {
+    // async + generator 플래그가 동시에 전이되어야 한다.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  async *#walk() { yield 1; yield await Promise.resolve(2); }
+        \\  run() { return this.#walk(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function* _walk_fn()") != null);
+}
+
+test "private generator method: yield* delegation preserved (#1564)" {
+    // generator 내부에서 다른 private generator를 yield*로 위임하는 경우.
+    // 두 standalone function 모두 `function*` kind로 생성되어야 yield*가 유효.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Box {
+        \\  *#inner() { yield 1; }
+        \\  *#outer() { yield* this.#inner(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function* _inner_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function* _outer_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield*") != null);
+}
+
+test "private methods mixed kinds: generator + async + plain (#1564)" {
+    // 한 클래스에 kind가 다른 private 메서드가 섞여 있어도 각각 올바른 kind로 hoist.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Registry {
+        \\  *#ids() { yield "a"; }
+        \\  async #name(id: string) { return "n-" + id; }
+        \\  #plain() { return 42; }
+        \\  run() { return [this.#ids(), this.#name("x"), this.#plain()]; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function* _ids_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function _name_fn(") != null);
+    // plain은 async/generator 키워드가 붙지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _plain_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function _plain_fn") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function* _plain_fn") == null);
+}
+
 // ============================================================
 // JSX text normalization
 // ============================================================
