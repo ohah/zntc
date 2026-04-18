@@ -184,7 +184,8 @@ export function buildOptionsJson(
   if (opts.useDefineForClassFields === false) payload.useDefineForClassFields = false;
   // tsconfig 머지가 있는 필드들은 "JS 가 명시적으로 false" 와 "JS 미설정" 을 구분해야
   // JS > tsconfig 우선순위가 정확히 적용된다. `!== undefined` 체크로 양쪽 값을 모두 전달.
-  if (opts.verbatimModuleSyntax !== undefined) payload.verbatimModuleSyntax = opts.verbatimModuleSyntax;
+  if (opts.verbatimModuleSyntax !== undefined)
+    payload.verbatimModuleSyntax = opts.verbatimModuleSyntax;
   if (opts.tsconfigPath) payload.tsconfigPath = opts.tsconfigPath;
   if (opts.format) payload.format = opts.format;
   if (opts.quotes) payload.quotes = opts.quotes;
