@@ -2271,7 +2271,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 else
                     try buildFreshPrototypeRef(self, class_name_span, span);
 
-                const key_str = try es_helpers.buildQuotedKeyLiteral(self, self.ast.getNode(key_idx).span);
+                const key_str = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
                 const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_str, desc_obj, span);
                 const stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,

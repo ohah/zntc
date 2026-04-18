@@ -1913,6 +1913,50 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("7");
     });
 
+    // #1524: class computed getter/setter 의 key expression 이 평가되지 않고 `"[k]"` 리터럴로 emit
+    // 되던 버그. emitAccessors 가 computed_property_key 감지 후 inner 를 visit 하도록 수정.
+    test("computed getter/setter key expression 평가 (#1524 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const k = "dyn";
+            class X {
+              _v = 0;
+              get [k]() { return this._v; }
+              set [k](val: number) { this._v = val + 100; }
+            }
+            const x = new X() as any;
+            x[k] = 5;
+            console.log(x[k]);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("105");
+    });
+
+    test("computed getter only — static (#1524 회귀)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const key = "tag";
+            class Y {
+              static get [key]() { return "Y-tag"; }
+            }
+            console.log((Y as any)[key]);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Y-tag");
+    });
+
     test("static getter + 주석 (#1516 회귀)", async () => {
       const result = await bundleAndRun(
         {
