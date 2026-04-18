@@ -165,20 +165,9 @@ pub fn emitEsmWrappedModule(
                     // body_func_stmts: factory body 최상단에 배치 → forward reference 보존
                     try body_func_stmts.append(allocator, raw_idx);
                 } else {
-                    // strictExecutionOrder=false: function을 __esm factory 밖으로 호이스팅.
-                    // 함수명을 hoisted_var_names에 추가하여 var 선언 생성 (export getter 접근용).
-                    const func_node = if (export_inner) |idx|
-                        esm_ast.nodes.items[@intFromEnum(idx)]
-                    else
-                        stmt_node;
-                    const fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[func_node.data.extra]);
-                    if (!fn_name_idx.isNone()) {
-                        const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
-                        if (fn_name_node.tag == .binding_identifier) {
-                            const raw_name = esm_ast.getText(fn_name_node.data.string_ref);
-                            try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
-                        }
-                    }
+                    // strictExecutionOrder=false: function 을 __esm factory 밖으로 호이스팅 — `function foo(){}`
+                    // 선언 자체가 모듈 top-level binding 을 생성하므로 별도 `var foo` 를 추가하면 ESM 모드에서
+                    // 중복 선언 에러 (bun / strict 환경). export getter 는 함수명을 직접 참조 가능.
                     try hoisted_stmts.append(allocator, raw_idx);
                 }
             },
