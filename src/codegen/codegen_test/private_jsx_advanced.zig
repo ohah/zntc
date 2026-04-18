@@ -248,6 +248,35 @@ test "private method: es2022 target preserves original" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "WeakSet") == null);
 }
 
+// #1564 Case 2 회귀 가드: generator private method (`*#name`) 를 다운레벨링할 때,
+// method_definition의 is_generator flag를 function_declaration으로 복사해야 한다.
+// 과거 `buildStandaloneFunc`가 flags=0으로 하드코딩해서 `function* _fn` 대신
+// 일반 `function _fn`이 생성 → `yield`가 일반 함수에 노출되어 SyntaxError 발생.
+test "private generator method: es2021 → function* _name_fn preserves generator (#1564)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  *#walk() { yield 1; yield 2; }
+        \\  run() { return this.#walk(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // standalone function이 generator(`function*`) kind로 생성되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function* _walk_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") != null);
+}
+
+test "private async method: es2021 → async function preserves async (#1564)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  async #fetch() { return 1; }
+        \\  run() { return this.#fetch(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // async 플래그도 standalone function으로 전이되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "async function _fetch_fn()") != null);
+}
+
 // ============================================================
 // JSX text normalization
 // ============================================================

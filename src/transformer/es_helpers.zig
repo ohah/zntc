@@ -612,12 +612,16 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 }
 
 /// method_definition → standalone function declaration으로 추출.
+/// private generator method (`*#name`) / async method 를 `_name_fn` 으로 꺼낼 때
+/// method flags(is_async, is_generator)를 function flags로 옮겨 호이스팅한다.
+/// 이 매핑이 없으면 `function* _fn` 을 잃어 `yield` 가 일반 함수에 노출돼 SyntaxError (#1564).
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
     const params_list_old = self.ast.functionParamsList(method_node);
     const params_start = params_list_old.start;
     const params_len = params_list_old.len;
-    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[method_node.data.extra + ast_mod.MethodExtra.body]);
+    const body_idx: NodeIndex = @enumFromInt(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body));
+    const method_flags = self.readU32(method_node.data.extra, ast_mod.MethodExtra.flags);
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
@@ -626,13 +630,17 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const name_span = try self.ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
 
+    var fn_flags: u32 = 0;
+    if ((method_flags & ast_mod.MethodFlags.is_async) != 0) fn_flags |= ast_mod.FunctionFlags.is_async;
+    if ((method_flags & ast_mod.MethodFlags.is_generator) != 0) fn_flags |= ast_mod.FunctionFlags.is_generator;
+
     const none = @intFromEnum(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(new_params, span);
     const func_extra = try self.ast.addExtras(&.{
         @intFromEnum(name_node),
         @intFromEnum(new_params_node),
         @intFromEnum(new_body),
-        0,
+        fn_flags,
         none,
     });
     return self.ast.addNode(.{
