@@ -1486,10 +1486,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // private field (#x) → instance: WeakMap, static: descriptor 객체
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
-                        const orig_name = self.ast.getText(key_node.span); // "#x"
+                        // getText는 source_text 또는 string_table(Stage 3 생성 span)을 가리키는데,
+                        // 후자는 후속 addString realloc으로 dangling된다 (#1481 · findPrivateFieldMapping 키).
+                        const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
+                        try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
                         const field_info = PrivateFieldInfo{
-                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name),
-                            .original_name = orig_name,
+                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
+                            .original_name = orig_name_owned,
                             .init = init_val,
                         };
                         if (is_static) {
