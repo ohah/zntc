@@ -1939,5 +1939,202 @@ test "fixpoint: sideEffects=false barrel re-export — transitive deps included"
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("unused.ts").?));
 }
 
+// ============================================================
+// #1558 Phase 5 불변식 회귀 가드
+// ============================================================
+//
+// reference_count 기반 필터가 제거된 후 tree_shaker가 지켜야 하는 동작들:
+//   1. entry의 미사용 import는 lib을 include시키지 않는다(lib sideEffects=false).
+//   2. entry의 모든 top-level statement는 live — 순수 const 선언도 보존.
+//   3. `import * as X; X.a()`는 X.a만 seed, 나머지 export는 dead로 판정.
+//   4. entry의 dead 분기(dead function/block) 안의 import는 상위로 전파되지 않는다.
+//   5. live branch에서 참조되는 모듈-내 private helper는 dead 오판되지 않는다.
+//
+// 과거 Phase 5 시도에서 seedOpaqueModule의 isImportBindingUsed 필터 삭제로
+// entry의 모든 import가 무조건 seed되던 회귀가 있었음(#1562).
+
+test "#1558 Phase 5: entry의 미사용 import는 sideEffects=false 모듈을 포함시키지 않는다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { foo } from './lib'; console.log('no foo use');");
+    try writeFile(tmp.dir, "lib.ts", "export const foo = 42; export const bar = 99;");
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"lib.ts"});
+    defer r.deinit();
+
+    const lib = r.findModule("lib.ts").?;
+    // seedOpaqueModule이 live 필터 없이 동작하면 이 assertion이 깨진다.
+    try std.testing.expect(!r.shaker.isIncluded(lib));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "foo"));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "bar"));
+}
+
+test "#1558 Phase 5: entry의 순수 top-level const는 reachable — DCE 제거 금지" {
+    // entry는 번들 진입점 — tree-shake 대상이 아니므로 모든 top-level stmt가 live.
+    // crossModuleBFS의 entry seed 블록이 export만 seed하면 순수 선언이 사라짐(#1562 회귀).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const a = 1; const b = 2; console.log(a, b);");
+
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    defer r.deinit();
+
+    const entry = r.findModule("entry.ts").?;
+    const infos = r.shaker.getModuleStmtInfos(entry) orelse return error.NoStmtInfo;
+    // entry의 모든 stmt가 reachable이어야 — 최소 3개(const a, const b, console.log)
+    try std.testing.expect(infos.stmts.len >= 3);
+    for (0..infos.stmts.len) |si| {
+        try std.testing.expect(r.shaker.isStmtReachable(entry, @intCast(si)));
+    }
+}
+
+test "#1558 Phase 5: namespace import — 사용된 prop만 seed, 나머지 dead" {
+    // #1559 되돌림 이후 동작: `import * as X; X.a()`는 X.a만 used,
+    // X.b, X.c는 dead(sideEffects=false 일 때).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as X from './mod';
+        \\console.log(X.a(1));
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\export function a(n) { return n + 1; }
+        \\export function b(n) { return n + 2; }
+        \\export function c(n) { return n + 3; }
+    );
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"mod.ts"});
+    defer r.deinit();
+
+    const mod = r.findModule("mod.ts").?;
+    // 모듈은 포함되지만 used 집합은 "a"만 (+ "*"는 마킹 안됨)
+    try std.testing.expect(r.shaker.isIncluded(mod));
+    try std.testing.expect(r.shaker.isExportUsed(mod, "a"));
+    try std.testing.expect(!r.shaker.isExportUsed(mod, "b"));
+    try std.testing.expect(!r.shaker.isExportUsed(mod, "c"));
+    // #1559 시절엔 "*" sentinel을 무조건 마킹했지만 Phase 4에서 되돌림.
+    try std.testing.expect(!r.shaker.isExportUsed(mod, "*"));
+}
+
+test "#1558 Phase 5: namespace entry — 특정 prop만 쓰면 나머지 전체 dead (valibot 축소)" {
+    // valibot 시나리오 축소: entry가 `import * as v from 'lib'; v.a(...)`만.
+    // Phase 4/5 이전엔 'lib' 전체가 live로 오판되어 142KB 누수 — Phase 5로 정밀 판정.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as v from './lib';
+        \\const r = v.object({ x: 1 });
+        \\console.log(r);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export function object(o) { return o; }
+        \\export function string() { return 'string'; }
+        \\export function number() { return 'number'; }
+        \\export function array() { return 'array'; }
+    );
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"lib.ts"});
+    defer r.deinit();
+
+    const lib = r.findModule("lib.ts").?;
+    try std.testing.expect(r.shaker.isExportUsed(lib, "object"));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "string"));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "number"));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "array"));
+}
+
+test "#1558 Phase 5: non-entry 모듈의 dead export 안 import는 상위 전파하지 않는다" {
+    // barrel의 `unused_export`는 entry에서 사용 안 됨 — 그 안 runtime 참조도
+    // live로 마킹되면 runtime 모듈이 따라오는 누수 발생(#1551 svelte 시나리오).
+    // Phase 3+4 live_mod_idx 경로가 barrel의 dead stmt 안 import를 배제.
+    //
+    // (entry 모듈 내 dead function body의 import 전파 차단은 function-level DCE
+    //  영역 — Phase 5 범위가 아니며 entry는 tree-shake 대상이 아니므로 보수적으로
+    //  모든 top-level stmt가 live 유지.)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { used } from './barrel'; console.log(used());");
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import { marker } from './runtime';
+        \\export function used() { return 'ok'; }
+        \\export function unused_export() { return marker; }
+    );
+    try writeFile(tmp.dir, "runtime.ts", "export const marker = 'RUNTIME';");
+
+    var r = try buildAndShakeWithOpts(
+        std.testing.allocator,
+        &tmp,
+        "entry.ts",
+        &.{ "barrel.ts", "runtime.ts" },
+    );
+    defer r.deinit();
+
+    const runtime = r.findModule("runtime.ts").?;
+    try std.testing.expect(!r.shaker.isIncluded(runtime));
+    try std.testing.expect(!r.shaker.isExportUsed(runtime, "marker"));
+}
+
+test "#1558 Phase 5: live export가 내부 private helper를 참조하면 dead 오판 없음 (hashFragment)" {
+    // effect 라이브러리의 hashFragment 회귀 시나리오 축소: used export가
+    // 모듈-내 private helper를 호출하면 helper도 live로 유지되어야.
+    // enqueue의 ensureSymToIbForModule + 재귀 BFS의 symbol 추적이 보장.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { publicApi } from './lib'; console.log(publicApi());");
+    try writeFile(tmp.dir, "lib.ts",
+        \\function privateHelper() { return 42; }
+        \\export function publicApi() { return privateHelper(); }
+        \\export function unusedApi() { return 'other'; }
+    );
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"lib.ts"});
+    defer r.deinit();
+
+    const lib = r.findModule("lib.ts").?;
+    try std.testing.expect(r.shaker.isIncluded(lib));
+    try std.testing.expect(r.shaker.isExportUsed(lib, "publicApi"));
+    try std.testing.expect(!r.shaker.isExportUsed(lib, "unusedApi"));
+
+    // privateHelper는 export는 아니지만 lib 모듈 내 선언이 reachable이어야
+    // linker가 dangling reference 없이 번들 가능.
+    const lib_mod = r.graph.modules.items[lib];
+    const infos = r.shaker.getModuleStmtInfos(lib) orelse return error.NoStmtInfo;
+    const sem = lib_mod.semantic orelse return error.NoSemantic;
+    const helper_sym = sem.scope_maps[0].get("privateHelper") orelse return error.NoSym;
+    const helper_stmt = infos.declaredStmtBySymbol(@intCast(helper_sym)) orelse return error.NoDeclStmt;
+    try std.testing.expect(r.shaker.isStmtReachable(lib, helper_stmt));
+}
+
+test "#1558 Phase 5: partial used + live export — 사용 import 경로만 전파" {
+    // barrel.live는 lib_A 사용, barrel.dead는 lib_B 사용. entry가 barrel.live만 호출.
+    // → lib_A included + A_used마킹, lib_B excluded.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { live } from './barrel'; console.log(live());");
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import { a } from './lib_a';
+        \\import { b } from './lib_b';
+        \\export function live() { return a(); }
+        \\export function dead() { return b(); }
+    );
+    try writeFile(tmp.dir, "lib_a.ts", "export function a() { return 'A'; }");
+    try writeFile(tmp.dir, "lib_b.ts", "export function b() { return 'B'; }");
+
+    var r = try buildAndShakeWithOpts(
+        std.testing.allocator,
+        &tmp,
+        "entry.ts",
+        &.{ "barrel.ts", "lib_a.ts", "lib_b.ts" },
+    );
+    defer r.deinit();
+
+    const lib_a = r.findModule("lib_a.ts").?;
+    const lib_b = r.findModule("lib_b.ts").?;
+    try std.testing.expect(r.shaker.isIncluded(lib_a));
+    try std.testing.expect(r.shaker.isExportUsed(lib_a, "a"));
+    try std.testing.expect(!r.shaker.isIncluded(lib_b));
+    try std.testing.expect(!r.shaker.isExportUsed(lib_b, "b"));
+}
+
 // TODO: 자동 순수 판별 테스트는 기능 활성화 시 아래 주석 해제
 // isModulePure 활성화 PR에서 이 테스트들을 복원하고 기존 테스트도 업데이트 필요
