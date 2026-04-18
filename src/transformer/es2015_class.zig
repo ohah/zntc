@@ -2372,8 +2372,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const params_list_unwrap = self.ast.functionParamsList(member);
             const new_params = try self.visitExtraList(params_list_unwrap);
 
-            const is_async = flags & 0x08 != 0;
-            const is_generator = flags & 0x10 != 0;
+            const is_async = flags & ast_mod.MethodFlags.is_async != 0;
+            const is_generator = flags & ast_mod.MethodFlags.is_generator != 0;
 
             // async method + generator 다운레벨링: class lowering이 먼저 실행되어
             // method_definition → function_expression으로 변환되므로,

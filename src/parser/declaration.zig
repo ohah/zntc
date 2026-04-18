@@ -688,8 +688,8 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.in_class_field = false;
         // 메서드의 파라미터에서 async/generator 컨텍스트 설정
         // 非async/非generator 메서드에서는 await/yield를 식별자로 사용 가능
-        self.ctx.in_async = (flags & 0x08) != 0;
-        self.ctx.in_generator = (flags & 0x10) != 0;
+        self.ctx.in_async = (flags & ast_mod.MethodFlags.is_async) != 0;
+        self.ctx.in_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
         // class 메서드의 파라미터에서 super.prop 허용 (ECMAScript 15.7.5)
         self.allow_super_property = true;
         try self.expect(.l_paren);
@@ -744,12 +744,15 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         // 메서드도 함수이므로 컨텍스트 설정
         var body = NodeIndex.none;
         if (self.current() == .l_curly) {
-            // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
-            const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+            // MethodFlags와 FunctionFlags는 비트 위치가 다르다 (MethodFlags는 static/getter/setter 비트가 선점).
+            const saved_ctx = self.enterFunctionContext(
+                (flags & ast_mod.MethodFlags.is_async) != 0,
+                (flags & ast_mod.MethodFlags.is_generator) != 0,
+            );
             // class 메서드는 super.prop 허용 (ECMAScript 12.3.7)
             self.allow_super_property = true;
             // constructor에서는 super() 호출도 허용
-            if (!key.isNone() and (flags & 0x01) == 0) { // non-static
+            if (!key.isNone() and (flags & ast_mod.MethodFlags.is_static) == 0) {
                 const mk = self.ast.getNode(key);
                 const kt = if (mk.tag == .identifier_reference)
                     self.ast.source[mk.span.start..mk.span.end]

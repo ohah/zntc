@@ -161,11 +161,12 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
-/// flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
 pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u16) ParseError2!NodeIndex {
     // 메서드 컨텍스트 진입 — 파라미터/본문 모두 이 컨텍스트에서 파싱
-    // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
-    const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+    const saved_ctx = self.enterFunctionContext(
+        (flags & ast_mod.MethodFlags.is_async) != 0,
+        (flags & ast_mod.MethodFlags.is_generator) != 0,
+    );
     // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
     self.allow_super_property = true;
 
