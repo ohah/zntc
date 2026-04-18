@@ -863,6 +863,25 @@ pub const Codegen = struct {
             .binding_identifier,
             .assignment_target_identifier,
             => {
+                // Peephole: global `undefined` → `(void 0)` (minify_syntax 활성화 시).
+                // 9 bytes → 8 bytes, 1 byte 절감. parens는 member/call/new 등 모든 parent
+                // context에서 안전하게 해석되도록 유지 — `undefined.x`/`undefined()` 같은
+                // 경로를 간단한 치환으로 깨지 않기 위함 (`void 0.x`는 `void (0.x)`로 오파싱).
+                // global binding일 때만 치환 (shadow rebind 드물지만 보호).
+                if (self.options.minify_syntax and node.tag == .identifier_reference) {
+                    const text = self.ast.getText(node.span);
+                    if (std.mem.eql(u8, text, "undefined")) {
+                        const is_global = if (self.options.linking_metadata) |meta|
+                            self.resolveSymbolId(idx, meta) == null
+                        else
+                            true;
+                        if (is_global) {
+                            try self.write("(void 0)");
+                            return;
+                        }
+                    }
+                }
+
                 if (self.options.linking_metadata) |meta| {
                     const sym_id = self.resolveSymbolId(idx, meta);
                     if (sym_id) |sid| {

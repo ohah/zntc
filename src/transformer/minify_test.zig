@@ -6,6 +6,19 @@ const Codegen = @import("../codegen/codegen.zig").Codegen;
 const minify_mod = @import("minify.zig");
 
 fn expectMinify(input: []const u8, expected: []const u8) !void {
+    return expectMinifyOpts(input, expected, .{});
+}
+
+/// `--minify` 플래그 시 codegen peephole(`true`→`!0`, `undefined`→`(void 0)`)까지 적용된 결과 비교.
+fn expectMinifySyntax(input: []const u8, expected: []const u8) !void {
+    return expectMinifyOpts(input, expected, .{ .minify_syntax = true });
+}
+
+fn expectMinifyOpts(
+    input: []const u8,
+    expected: []const u8,
+    codegen_opts: @import("../codegen/codegen.zig").CodegenOptions,
+) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -20,7 +33,7 @@ fn expectMinify(input: []const u8, expected: []const u8) !void {
 
     minify_mod.minify(&transformer.ast);
 
-    var cg = Codegen.init(a, &transformer.ast);
+    var cg = Codegen.initWithOptions(a, &transformer.ast, codegen_opts);
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
@@ -307,4 +320,40 @@ test "minify: comma operator with 3+ literal items simplified" {
 
 test "minify: comma operator mixed keeps non-literal" {
     try expectMinify("const x = (0, a(), foo);", "const x = (a(),foo);");
+}
+
+// ================================================================
+// Peephole: undefined → (void 0) (minify_syntax only, #1552)
+// ================================================================
+
+test "minify_syntax: undefined → (void 0)" {
+    try expectMinifySyntax("const x = undefined;", "const x = (void 0);");
+}
+
+test "minify_syntax: undefined 비교" {
+    try expectMinifySyntax(
+        "const x = a === undefined;",
+        "const x = a === (void 0);",
+    );
+}
+
+test "minify_syntax: undefined.x 치환 시 parens로 안전 유지" {
+    // `undefined.x`를 bare `void 0.x`로 바꾸면 `void (0.x)`로 오파싱.
+    // `(void 0)` 형태 유지로 member access가 정확히 `(void 0).x`가 된다.
+    try expectMinifySyntax(
+        "const x = undefined.foo;",
+        "const x = (void 0).foo;",
+    );
+}
+
+test "minify_syntax: undefined() call" {
+    try expectMinifySyntax(
+        "try { undefined(); } catch(e) {}",
+        "try {\n\t(void 0)();\n} catch (e) {\n}",
+    );
+}
+
+test "minify_syntax 없음: undefined 보존" {
+    // minify_syntax 꺼져 있으면 바꾸지 않음 — 디버깅 가독성 유지.
+    try expectMinify("const x = undefined;", "const x = undefined;");
 }
