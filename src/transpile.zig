@@ -369,6 +369,7 @@ pub fn transpileWithCallback(
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
+        .minify_syntax = options.minify_syntax,
         .sourcemap = options.sourcemap,
         .ascii_only = if (options.charset_utf8) false else options.ascii_only,
         .quote_style = options.quote_style,

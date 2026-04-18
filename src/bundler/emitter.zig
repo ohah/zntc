@@ -1004,6 +1004,8 @@ pub fn emitModule(
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
+        // Peephole boolean 축약 등 codegen-레벨 출력 최적화(#1552).
+        .minify_syntax = options.minify_syntax,
         // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
         // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
         // 래핑 모듈(CJS/ESM)은 CJS codegen: import→require 변환

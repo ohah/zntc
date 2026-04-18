@@ -319,6 +319,7 @@ pub fn emitEsmWrappedModule(
     if (hoisted_stmts.items.len > 0) {
         var hoist_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
             .minify_whitespace = options.minify_whitespace,
+            .minify_syntax = options.minify_syntax,
             .module_format = .cjs,
             .skip_cjs_exports = true,
             .use_var_for_imports = true,
@@ -512,6 +513,7 @@ pub fn emitEsmWrappedModule(
     var func_preamble_lines: u32 = 0;
     var body_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
         .minify_whitespace = options.minify_whitespace,
+        .minify_syntax = options.minify_syntax,
         .module_format = .cjs,
         .skip_cjs_exports = true,
         .use_var_for_imports = true,
@@ -534,6 +536,7 @@ pub fn emitEsmWrappedModule(
     if (body_func_stmts.items.len > 0) {
         var func_cg = Codegen.initWithOptions(arena_alloc, esm_ast, .{
             .minify_whitespace = options.minify_whitespace,
+            .minify_syntax = options.minify_syntax,
             .module_format = .cjs,
             .skip_cjs_exports = true,
             .use_var_for_imports = true,

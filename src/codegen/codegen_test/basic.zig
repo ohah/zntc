@@ -166,3 +166,45 @@ test "Codegen: string enum re-export" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"DELETE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "export") != null);
 }
+
+// ============================================================
+// Peephole (#1552 P3): minify_syntax — boolean 축약
+// ============================================================
+
+test "Codegen minify_syntax: true → !0, false → !1" {
+    var r = try e2eWithOptions(
+        std.testing.allocator,
+        "const a = true; const b = false; if (a) console.log(b);",
+        .{ .minify_syntax = true },
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!1") != null);
+    // 식별자 true/false 자체가 출력에 없어야
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "= true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "= false") == null);
+}
+
+test "Codegen minify_syntax off: boolean 리터럴 유지 (anti-regression)" {
+    var r = try e2eWithOptions(
+        std.testing.allocator,
+        "const a = true;",
+        .{},
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!0") == null);
+}
+
+test "Codegen: 원본 소스의 !0/!1은 minify_syntax와 무관하게 유지" {
+    // 안티 회귀: 소스가 이미 `!0`(unary_expression)이면 boolean_literal 분기를
+    // 타지 않으므로 변형이 없어야 한다.
+    var r = try e2eWithOptions(
+        std.testing.allocator,
+        "const x = !0; const y = !1;",
+        .{ .minify_syntax = true },
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!1") != null);
+}
