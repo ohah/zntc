@@ -67,6 +67,33 @@ pub const DefineEntry = struct {
     value: []const u8,
 };
 
+/// 정규화 버퍼 크기. `process.env.NODE_ENV`류 식별자 체인은 훨씬 짧지만 여유.
+/// 초과 시 normalizeOptionalChain은 null을 반환해 치환을 스킵한다.
+const DEFINE_KEY_NORM_BUF: usize = 256;
+
+/// 번들 맥락에서 의미 없는 global root 접두어.
+/// `globalThis.X`, `window.X`, `self.X` → X로 간주해 define 키와 매칭.
+const GLOBAL_ROOT_PREFIXES = [_][]const u8{ "globalThis.", "window.", "self." };
+
+/// optional chaining 토큰 `?.`를 `.`로 치환한 정규화 문자열을 buf에 쓴다.
+/// 정규화된 길이가 buf 용량을 초과하면 null (극히 드문 경로 — 치환 포기).
+fn normalizeOptionalChain(text: []const u8, buf: []u8) ?[]const u8 {
+    const needed = std.mem.replacementSize(u8, text, "?.", ".");
+    if (needed > buf.len) return null;
+    _ = std.mem.replace(u8, text, "?.", ".", buf);
+    return buf[0..needed];
+}
+
+/// define 키 매칭 — 엄격 일치 또는 GLOBAL_ROOT_PREFIXES 제거 후 일치.
+/// 예: `globalThis.process.env.NODE_ENV`를 키 `process.env.NODE_ENV`로 매치.
+fn matchDefineKey(text: []const u8, key: []const u8) bool {
+    if (std.mem.eql(u8, text, key)) return true;
+    for (GLOBAL_ROOT_PREFIXES) |pfx| {
+        if (std.mem.startsWith(u8, text, pfx) and std.mem.eql(u8, text[pfx.len..], key)) return true;
+    }
+    return false;
+}
+
 /// Transformer 설정.
 pub const TransformOptions = struct {
     /// TS 타입 스트리핑 활성화 (기본: true)
@@ -2039,32 +2066,46 @@ pub const Transformer = struct {
     }
 
     /// 노드가 define 치환 대상이면 새 string_literal 노드를 반환.
-    /// 대상: identifier_reference 또는 static_member_expression 체인.
+    /// 대상: identifier_reference / static_member_expression / chain_expression.
+    ///
+    /// 매칭 규칙(#1552):
+    ///   - optional chaining(`?.`)이 포함된 식은 `.`로 정규화 후 매칭.
+    ///     방어적 접근 패턴(`globalThis.process?.env?.NODE_ENV`)까지 커버.
+    ///   - `globalThis.` / `window.` / `self.` 접두어는 번들 맥락에서 의미 없는
+    ///     global root이므로 벗기고 define key와 비교.
     fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
-        // 노드의 소스 텍스트를 define key와 비교
-        const text = self.getNodeText(node) orelse return null;
+        const raw_text = self.getNodeText(node) orelse return null;
+
+        // parser는 `a?.b`를 chain_expression 없이 static_member_expression + optional
+        // flag로 표현하므로, `?` 존재 여부로만 정규화 필요를 판별.
+        var norm_buf: [DEFINE_KEY_NORM_BUF]u8 = undefined;
+        const text = if (std.mem.indexOfScalar(u8, raw_text, '?') != null)
+            normalizeOptionalChain(raw_text, &norm_buf) orelse return null
+        else
+            raw_text;
 
         for (self.options.define, 0..) |entry, i| {
-            if (std.mem.eql(u8, text, entry.key)) {
-                const value_span = self.define_spans[i];
-                // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
-                // "production" → string_literal, false/true/숫자 → identifier_reference.
-                const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
-                return self.ast.addNode(.{
-                    .tag = if (is_string) .string_literal else .identifier_reference,
-                    .span = value_span,
-                    .data = .{ .string_ref = value_span },
-                });
-            }
+            if (!matchDefineKey(text, entry.key)) continue;
+            const value_span = self.define_spans[i];
+            // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
+            // "production" → string_literal, false/true/숫자 → identifier_reference.
+            const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
+            return self.ast.addNode(.{
+                .tag = if (is_string) .string_literal else .identifier_reference,
+                .span = value_span,
+                .data = .{ .string_ref = value_span },
+            });
         }
         return null;
     }
 
-    /// 노드의 소스 텍스트를 반환. identifier_reference와 static_member_expression만 지원.
+    /// 노드의 소스 텍스트를 반환. define 치환 대상 노드만 지원.
     fn getNodeText(self: *const Transformer, node: Node) ?[]const u8 {
         return switch (node.tag) {
-            .identifier_reference => self.ast.getText(node.span),
-            .static_member_expression => self.ast.getText(node.span),
+            .identifier_reference,
+            .static_member_expression,
+            .chain_expression,
+            => self.ast.getText(node.span),
             else => null,
         };
     }

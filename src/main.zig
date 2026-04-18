@@ -793,10 +793,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         opts.bundle_format = .iife;
     }
 
-    // --bundle + --platform=browser/react-native이면 자동 define (esbuild 호환).
-    // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
-    // 사용자가 이미 동일 키를 --define: 로 지정한 경우 덮어쓰지 않음.
-    if (opts.is_bundle and opts.platform.isBrowserLike()) {
+    // 자동 define:
+    //   - `--bundle` + browser/react-native: esbuild 호환 — DOM/Metro 환경은 build-time 결정.
+    //   - `--bundle` + `--minify-syntax`: Vite 호환 — 프로덕션 배포 의도 신호로 간주(#1552).
+    // 트랜스파일 모드에서는 적용하지 않음. 사용자가 --define: 으로 명시 지정한 키는 덮어쓰지 않음.
+    // Node 서버 번들에서 runtime NODE_ENV를 원하면 `--minify-syntax` 없이 `--bundle`만 쓰거나
+    // `--define:process.env.NODE_ENV=process.env.NODE_ENV`로 identity 지정.
+    if (opts.is_bundle and (opts.platform.isBrowserLike() or opts.minify_syntax)) {
         var has_node_env = false;
         var has_dev = false;
         for (opts.define_list.items) |d| {
