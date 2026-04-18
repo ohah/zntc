@@ -352,7 +352,7 @@ test "Format: all three formats produce valid output for same input" {
     const r3 = try b3.bundle();
     defer r3.deinit(std.testing.allocator);
     try std.testing.expect(!r3.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, r3.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, r3.output, "(() => {\n"));
     try std.testing.expect(std.mem.indexOf(u8, r3.output, "n * n") != null);
 }
 

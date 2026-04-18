@@ -256,7 +256,7 @@ test "esbuild: ESM to IIFE with scope hoisting" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
     try std.testing.expect(std.mem.endsWith(u8, result.output, "})();\n"));
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function add") != null);
     // import 문 제거됨

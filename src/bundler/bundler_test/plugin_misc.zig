@@ -490,7 +490,7 @@ test "Worker: new Worker(new URL) produces separate IIFE bundle" {
         if (std.mem.startsWith(u8, a.path, "worker-")) {
             found_worker = true;
             try std.testing.expect(std.mem.indexOf(u8, a.contents, "self.onmessage") != null);
-            try std.testing.expect(std.mem.startsWith(u8, a.contents, "(function() {"));
+            try std.testing.expect(std.mem.startsWith(u8, a.contents, "(() => {"));
         }
     }
     try std.testing.expect(found_worker);

@@ -89,6 +89,28 @@ test "emitter: IIFE format" {
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
+    try std.testing.expect(std.mem.startsWith(u8, output, "(() => {\n"));
+    try std.testing.expect(std.mem.endsWith(u8, output, "})();\n"));
+}
+
+test "emitter: IIFE format — ES5 target uses `function` wrapper" {
+    // arrow 미지원 타겟(ES5)에서는 기존 `(function() { ... })()` 형태를 유지해야 한다.
+    const compat = @import("../transformer/compat.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "var x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .unsupported = compat.fromESTarget(.es5),
+    }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
     try std.testing.expect(std.mem.startsWith(u8, output, "(function() {\n"));
     try std.testing.expect(std.mem.endsWith(u8, output, "})();\n"));
 }
@@ -885,7 +907,7 @@ test "banner/footer — IIFE format" {
     const output = emit_result.output;
 
     // banner → IIFE prologue → code → IIFE epilogue → footer
-    try std.testing.expect(std.mem.startsWith(u8, output, "// license header\n(function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, output, "// license header\n(() => {\n"));
     try std.testing.expect(std.mem.endsWith(u8, output, "})();\n// end\n"));
 }
 
@@ -929,8 +951,8 @@ test "globalName — IIFE wrapping" {
     defer emit_result.deinit(std.testing.allocator);
     const output = emit_result.output;
 
-    // prologue: "var MyLib = (function() {\n"
-    try std.testing.expect(std.mem.startsWith(u8, output, "var MyLib = (function() {\n"));
+    // prologue: "var MyLib = (() => {\n"
+    try std.testing.expect(std.mem.startsWith(u8, output, "var MyLib = (() => {\n"));
     // epilogue: "})();\n"
     try std.testing.expect(std.mem.endsWith(u8, output, "})();\n"));
 }
@@ -954,7 +976,7 @@ test "globalName — dotted name warning" {
     // 경고 주석이 포함되어야 함
     try std.testing.expect(std.mem.indexOf(u8, output, "[ZTS WARNING] Dotted globalName") != null);
     // dotted name이면 일반 IIFE로 폴백
-    try std.testing.expect(std.mem.indexOf(u8, output, "(function() {\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(() => {\n") != null);
 }
 
 test "globalName — ignored for non-IIFE" {
@@ -996,7 +1018,7 @@ test "globalName — with banner/footer" {
     const output = emit_result.output;
 
     // banner → globalName prologue → code → epilogue → footer
-    try std.testing.expect(std.mem.startsWith(u8, output, "/* license */\nvar MyLib = (function() {\n"));
+    try std.testing.expect(std.mem.startsWith(u8, output, "/* license */\nvar MyLib = (() => {\n"));
     try std.testing.expect(std.mem.endsWith(u8, output, "})();\n/* end */\n"));
 }
 
