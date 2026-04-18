@@ -400,11 +400,16 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.sourcemap_debug_ids = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap-function-map")) {
             opts.sourcemap_function_map = true;
-        } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
+        } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p") or
+            std.mem.eql(u8, arg, "--tsconfig-path"))
+        {
+            // `-p`, `--project` (tsc 전통), `--tsconfig-path` (NAPI 의 `tsconfigPath` 와 통일) 모두 지원.
             if (i + 1 < args.len) {
                 i += 1;
                 opts.project_path = args[i];
             }
+        } else if (std.mem.startsWith(u8, arg, "--tsconfig-path=")) {
+            opts.project_path = arg["--tsconfig-path=".len..];
         } else if (std.mem.eql(u8, arg, "--watch-json")) {
             opts.watch = true;
             opts.watch_json = true;
@@ -1196,14 +1201,15 @@ pub fn main() !void {
     }
 
     // tsconfig.json 로드 — 번들/트랜스파일 양쪽에서 사용.
-    // 우선순위: --project 경로 > 입력 파일의 부모 디렉토리 > CWD
+    // 우선순위: --project/--tsconfig-path 경로 > 입력 파일의 부모 디렉토리 > CWD
+    // loadFromPath 는 파일/디렉토리 둘 다 받으므로 `-p ./tsconfig.json` 도 동작.
     const tsconfig_dir_early: []const u8 = if (opts.project_path) |pp|
         pp
     else if (opts.input_file) |inp|
         if (!std.mem.eql(u8, inp, "-")) (std.fs.path.dirname(inp) orelse ".") else "."
     else
         ".";
-    var tsconfig = TsConfig.load(allocator, tsconfig_dir_early) catch TsConfig{};
+    var tsconfig = TsConfig.loadFromPath(allocator, tsconfig_dir_early) catch TsConfig{};
     defer tsconfig.deinit();
 
     // tsconfig 값 적용 — CLI 옵션이 우선, 미지정 옵션만 tsconfig에서 가져옴
@@ -2246,7 +2252,8 @@ fn printUsage(writer: anytype) !void {
         \\  --ascii-only                     Escape non-ASCII to \uXXXX
         \\  --quotes=<style>                 String quote style (double|single|preserve)
         \\  -w, --watch                      Watch for file changes
-        \\  -p, --project <path>             Path to tsconfig.json directory
+        \\  -p, --project <path>             Path to tsconfig.json file or directory
+        \\  --tsconfig-path <path>           Alias of -p/--project (matches NAPI `tsconfigPath`)
         \\  --tokenize                       Print tokens instead of transpiling
         \\  --test262 <dir>                  Run Test262 tests
         \\  -h, --help                       Show this help
