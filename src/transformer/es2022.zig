@@ -224,18 +224,18 @@ pub fn ES2022(comptime Transformer: type) type {
                         });
                     } else if (lower_fields and member.tag == .property_definition) {
                         const pe = member.data.extra;
-                        const key: NodeIndex = self.readNodeIdx(pe, 0);
+                        const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
                         if (key.isNone()) continue;
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) continue;
 
-                        const flags = self.readU32(pe, 2);
+                        const flags = self.readU32(pe, ast_mod.PropertyExtra.flags);
                         const is_static = (flags & 0x01) != 0;
                         // static private field는 class 이름 기반 brand check 헬퍼를 사용하므로
                         // 익명 class에서는 다운레벨할 수 없다 (클래스 자체 참조가 없음).
                         if (is_static and class_name_text == null) continue;
 
-                        const init_val: NodeIndex = self.readNodeIdx(pe, 1);
+                        const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
                         const orig_name = self.ast.getText(key_node.span);
                         const var_name = try es_helpers.makePrivateVarName(self.allocator, orig_name);
 
