@@ -93,17 +93,11 @@ pub const ResolveCache = struct {
         }
     };
 
-    const BrowserOverrideKind = union(enum) {
+    /// browser override 결과 — path-key 와 bare-module-key 양쪽에서 공용.
+    /// remap 의 의미는 caller 문맥 결정: path-key 조회면 pkg-root 상대 경로, bare-module 조회면 replacement specifier.
+    const OverrideKind = union(enum) {
         none,
         disabled,
-        /// package-root 상대 대체 경로 (caller 가 pkg_dir 과 조합하여 재-resolve).
-        remap: []const u8,
-    };
-
-    const BareOverrideKind = union(enum) {
-        none,
-        disabled,
-        /// replacement specifier — caller 가 동일 source_dir 에서 재-resolve.
         remap: []const u8,
     };
 
@@ -410,7 +404,7 @@ pub const ResolveCache = struct {
                     .remap => |rep| {
                         // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
                         // 확장자 / directory index 등 정상 resolve path 재사용. 성공 시 대체 결과 반환.
-                        if (findPackageRoot(result.path)) |pkg_root| {
+                        if (findPackageDirPath(result.path)) |pkg_root| {
                             const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
                                 // fallthrough
                                 const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
@@ -450,28 +444,6 @@ pub const ResolveCache = struct {
         return result;
     }
 
-    /// resolved_path 에서 `.../node_modules/<pkg>` 패키지 루트 slice 를 반환 (소유권 없음, resolved_path 의 prefix).
-    /// 파일 경로 / 패키지 루트 dir / trailing slash 포함 dir 세 경우 모두 매칭.
-    fn findPackageRoot(resolved_path: []const u8) ?[]const u8 {
-        const nm = "node_modules" ++ std.fs.path.sep_str;
-        const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return null;
-        const after_nm = resolved_path[nm_pos + nm.len ..];
-
-        var pkg_end: usize = 0;
-        if (after_nm.len > 0 and after_nm[0] == '@') {
-            const first_slash = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
-            // scoped pkg: `node_modules/@scope/pkg` 로 끝나는 디렉토리 자체 — 두 번째 slash 가 없으면 end 를 문자열 끝으로.
-            pkg_end = std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str) orelse after_nm.len;
-        } else {
-            // unscoped: 첫 slash 없으면 after_nm 전체가 pkg name (dir 자체).
-            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse after_nm.len;
-        }
-
-        // trailing slash 를 포함해서 저장된 경로는 after_nm 에 slash 가 있지만 pkg_end 가 0 이 되는 케이스 방어.
-        if (pkg_end == 0) return null;
-        return resolved_path[0 .. nm_pos + nm.len + pkg_end];
-    }
-
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
     fn putCache(self: *ResolveCache, cache_key: []const u8, value: CachedResult) !void {
         // 기존 엔트리가 있으면 해제
@@ -490,7 +462,7 @@ pub const ResolveCache = struct {
     /// 해석된 절대 경로가 package.json "browser" 필드에서 override (disabled / remap) 되었는지 판별.
     /// node_modules 내 파일만 대상. 결과는 패키지 디렉토리별로 캐싱 (반복 파싱 방지).
     /// remap 의 value 는 BrowserOverrides 가 소유 — caller 는 외부 저장 금지.
-    fn getBrowserOverride(self: *ResolveCache, resolved_path: []const u8) BrowserOverrideKind {
+    fn getBrowserOverride(self: *ResolveCache, resolved_path: []const u8) OverrideKind {
         // node_modules 내 파일만 대상
         const nm = "node_modules" ++ std.fs.path.sep_str;
         const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return .none;
@@ -551,9 +523,9 @@ pub const ResolveCache = struct {
     /// source_dir 의 패키지 browser 필드에서 specifier (bare module name) 매칭 조회.
     /// `import "fs"` / `import "module-a"` 형태를 resolve 전에 intercept 하기 위한 진입점 (#1530).
     /// browser 필드 remap value 는 BrowserOverrides 소유 — caller 외부 저장 금지.
-    fn getBareModuleOverride(self: *ResolveCache, source_dir: []const u8, specifier: []const u8) BareOverrideKind {
+    fn getBareModuleOverride(self: *ResolveCache, source_dir: []const u8, specifier: []const u8) OverrideKind {
         // source_dir 이 node_modules/<pkg> 내부이면 해당 pkg 의 browser 필드 조회.
-        const pkg_dir_path = findPackageRoot(source_dir) orelse return .none;
+        const pkg_dir_path = findPackageDirPath(source_dir) orelse return .none;
 
         const overrides_opt = self.browser_overrides_cache.get(pkg_dir_path) orelse blk: {
             const built = self.buildBrowserOverrides(pkg_dir_path);
@@ -661,6 +633,25 @@ pub const ResolveCache = struct {
         return std.mem.concat(self.allocator, u8, &.{ source_dir, "\x00", specifier, "\x00", kind_str });
     }
 };
+
+/// 경로에서 `.../node_modules/<pkg>` 또는 `.../node_modules/@scope/<pkg>` 패키지 루트 slice 반환.
+/// 파일 경로 / 패키지 루트 dir / trailing slash 포함 dir 모두 매칭. graph.zig 및 resolve_cache 내에서 공용.
+pub fn findPackageDirPath(path: []const u8) ?[]const u8 {
+    const nm = "node_modules" ++ std.fs.path.sep_str;
+    const nm_pos = std.mem.lastIndexOf(u8, path, nm) orelse return null;
+    const after_nm = path[nm_pos + nm.len ..];
+
+    var pkg_end: usize = 0;
+    if (after_nm.len > 0 and after_nm[0] == '@') {
+        const first_slash = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return null;
+        pkg_end = std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str) orelse after_nm.len;
+    } else {
+        pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse after_nm.len;
+    }
+
+    if (pkg_end == 0) return null;
+    return path[0 .. nm_pos + nm.len + pkg_end];
+}
 
 /// specifier가 Node.js 빌트인 모듈인지 판별.
 /// "util", "fs", "node:fs", "util/types" 등을 인식.

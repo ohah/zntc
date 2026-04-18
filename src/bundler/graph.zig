@@ -1153,22 +1153,7 @@ pub const ModuleGraph = struct {
         module.state = .parsed;
     }
 
-    /// 모듈 경로에서 node_modules/패키지/ 디렉토리 경로를 추출.
-    /// 스코프 패키지 (@scope/name) 지원.
-    fn findPackageDirPath(module_path: []const u8) ?[]const u8 {
-        const nm = "node_modules" ++ std.fs.path.sep_str;
-        const nm_pos = std.mem.lastIndexOf(u8, module_path, nm) orelse return null;
-        const pkg_start = nm_pos + nm.len;
-        var pkg_end = pkg_start;
-        if (pkg_end < module_path.len and module_path[pkg_end] == '@') {
-            if (std.mem.indexOfPos(u8, module_path, pkg_end, std.fs.path.sep_str)) |sep1| {
-                pkg_end = std.mem.indexOfPos(u8, module_path, sep1 + 1, std.fs.path.sep_str) orelse module_path.len;
-            } else pkg_end = module_path.len;
-        } else {
-            pkg_end = std.mem.indexOfPos(u8, module_path, pkg_start, std.fs.path.sep_str) orelse module_path.len;
-        }
-        return module_path[0..pkg_end];
-    }
+    const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
 
     /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
     fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {

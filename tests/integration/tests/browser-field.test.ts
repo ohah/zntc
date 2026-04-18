@@ -72,7 +72,7 @@ describe("package.json browser 필드", () => {
     try {
       expect(result.exitCode).toBe(0);
       // false → 빈 모듈 — namespace import 는 빈 object (혹은 undefined-like).
-      expect(result.runOutput).toMatch(/\{\}|undefined/);
+      expect(result.runOutput).toBe("{}");
     } finally {
       await result.cleanup();
     }
@@ -156,7 +156,7 @@ describe("package.json browser 필드", () => {
     );
     try {
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toMatch(/\{\}|undefined/);
+      expect(result.runOutput).toBe("{}");
     } finally {
       await result.cleanup();
     }
