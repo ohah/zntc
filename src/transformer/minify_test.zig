@@ -74,6 +74,38 @@ test "minify: string concatenation" {
     );
 }
 
+test "minify: string concat with single quotes preserves inner double quote (#1565 회귀)" {
+    // 내부에 `"`를 가진 single-quote 쌍끼리 concat 시 foldStringConcat이 raw 바이트를
+    // double quote로 재포장하면 escape 누락으로 hermesc가 구문 오류를 뱉던 회귀 사례.
+    // 양쪽 quote 일치 조건으로 single quote 쌍끼리 안전히 접은 뒤, codegen 정규화가
+    // double quote로 바꾸면서 내부 `"`를 정상 escape 처리한다.
+    try expectMinify(
+        \\const x = 'a "native" ' + 'b';
+    ,
+        \\const x = "a \"native\" b";
+    );
+}
+
+test "minify: string concat with different quotes aborts fold (#1565)" {
+    // single + double 혼합은 escape 변환이 필요하므로 fold 포기 — 이항식이 유지된다.
+    // codegen은 각 리터럴을 double quote로 정규화하지만 `+` 연산은 그대로.
+    try expectMinify(
+        \\const x = 'a "x" ' + "b";
+    ,
+        \\const x = "a \"x\" " + "b";
+    );
+}
+
+test "minify: string concat with single quotes + escaped single quote (#1565)" {
+    // 내부에 `\'`가 있는 single-quote 쌍을 fold한 뒤 codegen이 double quote로 정규화하면
+    // `\'`가 불필요해져 평범한 `'`로 돌아간다. 결과는 여전히 유효한 JS.
+    try expectMinify(
+        \\const x = 'a\'b' + 'c';
+    ,
+        \\const x = "a'bc";
+    );
+}
+
 test "minify: unary not true" {
     try expectMinify("const x = !true;", "const x = false;");
 }
