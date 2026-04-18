@@ -1210,3 +1210,67 @@ test "verbatimModuleSyntax=true: 미사용 default import 보존" {
     try std.testing.expect(std.mem.indexOf(u8, result.code, "import") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "foo") != null);
 }
+
+// ============================================================
+// --define 치환 (#1552)
+// ============================================================
+
+test "define: optional chaining + global root prefix 매칭" {
+    const Case = struct {
+        name: []const u8,
+        src: []const u8,
+        must_contain: []const []const u8,
+        must_not_contain: []const []const u8,
+    };
+    const defines = [_]transformer_mod.DefineEntry{
+        .{ .key = "process.env.NODE_ENV", .value = "\"production\"" },
+    };
+    const cases = [_]Case{
+        .{
+            .name = "simple chain",
+            .src = "const x = process.env.NODE_ENV;",
+            .must_contain = &.{"\"production\""},
+            .must_not_contain = &.{"process.env"},
+        },
+        .{
+            .name = "optional chaining (?.)",
+            .src = "const x = process?.env?.NODE_ENV;",
+            .must_contain = &.{"\"production\""},
+            .must_not_contain = &.{"?."},
+        },
+        .{
+            .name = "globalThis + optional chaining",
+            .src = "const x = globalThis.process?.env?.NODE_ENV;",
+            .must_contain = &.{"\"production\""},
+            .must_not_contain = &.{"globalThis"},
+        },
+        .{
+            // anti-regression: 이름이 비슷하지만 다른 식은 치환하지 않아야.
+            .name = "unrelated identifiers preserved",
+            .src = "const a = process.env.PORT; const b = other.env.NODE_ENV;",
+            .must_contain = &.{ "process.env.PORT", "other.env.NODE_ENV" },
+            .must_not_contain = &.{"\"production\""},
+        },
+    };
+    for (cases) |c| {
+        var result = try transpile_mod.transpile(
+            std.testing.allocator,
+            c.src,
+            "input.ts",
+            .{ .define = &defines },
+        );
+        defer result.deinit(std.testing.allocator);
+        for (c.must_contain) |needle| {
+            std.testing.expect(std.mem.indexOf(u8, result.code, needle) != null) catch |e| {
+                std.debug.print("case '{s}': expected substring '{s}' in {s}\n", .{ c.name, needle, result.code });
+                return e;
+            };
+        }
+        for (c.must_not_contain) |forbidden| {
+            std.testing.expect(std.mem.indexOf(u8, result.code, forbidden) == null) catch |e| {
+                std.debug.print("case '{s}': forbidden substring '{s}' found in {s}\n", .{ c.name, forbidden, result.code });
+                return e;
+            };
+        }
+    }
+}
