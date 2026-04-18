@@ -79,6 +79,9 @@ pub const CodegenOptions = struct {
     newline: []const u8 = "\n",
     /// 공백/줄바꿈/들여쓰기 최소화
     minify_whitespace: bool = false,
+    /// Peephole 출력 최적화 — boolean literal을 `!0`/`!1`로 축약(#1552).
+    /// `minify_whitespace`와 독립적으로 켤 수 있음(transformer의 AST fold와 별개).
+    minify_syntax: bool = false,
     /// 소스맵 생성 활성화
     sourcemap: bool = false,
     /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
@@ -835,7 +838,17 @@ pub const Codegen = struct {
             },
 
             // Literals
-            .boolean_literal,
+            .boolean_literal => {
+                // Peephole: true → !0, false → !1 (minify_syntax 활성화 시).
+                // #1552: 각 리터럴당 2-3 byte 절감. 출현 빈도 높아 총 크기 영향 있음.
+                // span의 첫 byte는 `t` 또는 `f`로 고정(렉서 불변식) — 한 byte 검사로 판별.
+                if (self.options.minify_syntax) {
+                    const text = self.ast.getText(node.span);
+                    try self.write(if (text.len > 0 and text[0] == 't') "!0" else "!1");
+                } else {
+                    try self.writeNodeSpan(node);
+                }
+            },
             .null_literal,
             .numeric_literal,
             .bigint_literal,
