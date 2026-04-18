@@ -847,11 +847,15 @@ pub fn emitModule(
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = module.path,
         .worklet_plugin_version = options.worklet_plugin_version,
+        .minify_syntax = options.minify_syntax,
+        .keep_names = options.keep_names,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
-    // transformer가 ast 기준으로 재매핑
+    // transformer가 ast 기준으로 재매핑. symbols slice도 함께 전달하여
+    // reference_count 기반 optimization(#1587 등)이 번들 경로에서도 동작하도록 함.
     if (module.semantic) |sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
+        transformer.symbols = sem.symbols.items;
     }
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;

@@ -1584,6 +1584,155 @@ test "Minify: default export has no synthetic variable — no regression (#1585)
 }
 
 // ============================================================
+// Minify syntax: anonymize class expression name (#1587)
+// ============================================================
+// ClassExpression의 name이 body 내부에서 참조되지 않으면 익명 class로 축약.
+// #1592로 semantic이 class body scope에 name을 등록하므로 reference_count
+// 기반 판단이 정확. ClassDeclaration은 외부 scope 심볼이라 영향 없음.
+
+test "Minify: unreferenced class expression name is anonymized (#1587)" {
+    // svelte-style `class StaleReactionError extends Error` 패턴.
+    // body 내부에 StaleReactionError 참조가 없으므로 익명화 가능.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const e = new (class StaleReactionError extends Error {
+        \\  name = "StaleReactionError";
+        \\})();
+        \\console.log(e);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // class 키워드 뒤에 식별자 StaleReactionError가 남으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class StaleReactionError") == null);
+    // 단 "name = \"StaleReactionError\"" property string literal은 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"StaleReactionError\"") != null);
+}
+
+test "Minify: class expression with self-reference keeps its name (#1587)" {
+    // body 내부에서 self-reference가 있으면 이름 제거 금지 (self-ref 깨짐).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = class SelfRef {
+        \\  static make() { return new SelfRef(); }
+        \\};
+        \\console.log(c.make());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // self-ref 있으므로 SelfRef 이름은 유지되어야 함 — 식별자 보존 검증
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SelfRef") != null);
+}
+
+test "Minify: class declaration name never anonymized (#1587)" {
+    // ClassDeclaration은 외부 scope 심볼이므로 anonymize 대상 아님.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Box {}
+        \\const x = new Box();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ClassDeclaration은 외부 scope에 이름이 있어야 `new X()` 호출 성립.
+    // mangled로 이름이 바뀌더라도 `class` 뒤 공백+식별자+body 구조는 유지되어야 하고,
+    // 완전 익명(`class {` / `class{`)이 되어서는 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class{") == null);
+}
+
+test "Minify: anonymization disabled without minify_syntax (#1587)" {
+    // minify_syntax 비활성 시 원본 이름 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = class UnusedName extends Error {};
+        \\console.log(c);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 원본 이름 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UnusedName") != null);
+}
+
+test "Minify: keep_names disables anonymization (#1587)" {
+    // keep_names=true일 때는 이름 유지 (debug용 이름 보존 옵션).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const c = class KeepMe extends Error {};
+        \\console.log(c);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // keep_names → 이름 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "KeepMe") != null);
+}
+
+// ============================================================
 // Asset Loader Tests
 // ============================================================
 
