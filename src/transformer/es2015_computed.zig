@@ -270,7 +270,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .data = .{ .list = desc_list },
             });
 
-            const key_arg = try buildAccessorKeyArg(self, key_idx);
+            const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
 
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
             return es_helpers.buildObjectDefinePropertyCall(self, ctx.object, ctx.define_property, temp_ref, key_arg, desc_obj, span);
@@ -297,16 +297,6 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = func_extra },
             });
-        }
-
-        /// Object.defineProperty의 두번째 인자: computed key면 내부 expression,
-        /// non-computed면 "name" string literal.
-        fn buildAccessorKeyArg(self: *Transformer, key_idx: NodeIndex) Transformer.Error!NodeIndex {
-            const key_node = self.ast.getNode(key_idx);
-            if (key_node.tag == .computed_property_key) {
-                return self.visitNode(key_node.data.unary.operand);
-            }
-            return es_helpers.buildQuotedKeyLiteral(self, key_node.span);
         }
 
         /// `{ name: true }` object_property 생성 — span은 모두 pre-cached.

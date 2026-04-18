@@ -235,6 +235,17 @@ pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
     });
 }
 
+/// Object.defineProperty 두번째 인자 (key) 생성: computed_property_key 면 inner 를 visit,
+/// 아니면 식별자/literal span 을 `"name"` 으로 감싼 string_literal. class accessor + object
+/// literal computed accessor 양쪽에서 공용 (#1524).
+pub fn buildDefinePropertyKeyArg(self: anytype, key_idx: NodeIndex) !NodeIndex {
+    const key_node = self.ast.getNode(key_idx);
+    if (key_node.tag == .computed_property_key) {
+        return self.visitNode(key_node.data.unary.operand);
+    }
+    return buildQuotedKeyLiteral(self, key_node.span);
+}
+
 /// 식별자/numeric/string literal key node 의 span 을 `"name"` 형태 string_literal 로 감쌈.
 /// heap alloc 경유로 긴 key name truncation 회피. (#1510 item4)
 pub fn buildQuotedKeyLiteral(self: anytype, key_span: Span) !NodeIndex {
