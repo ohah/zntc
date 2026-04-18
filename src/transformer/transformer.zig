@@ -3485,7 +3485,7 @@ pub const Transformer = struct {
     fn tryTransformStage3(self: *Transformer, node: Node) Error!?NodeIndex {
         if (self.options.experimental_decorators) return null;
         const e = node.data.extra;
-        const class_deco_len = self.readU32(e, 7);
+        const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
         const has_member_decos = self.hasAnyMemberDecorators(e);
         if (class_deco_len == 0 and !has_member_decos) return null;
         return try self.transformStage3Decorators(node);

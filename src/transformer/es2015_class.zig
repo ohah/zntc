@@ -56,9 +56,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const super_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const name_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.name);
+            const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
+            const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
             // 클래스 이름 추출
             const new_name = try self.visitNode(name_idx);
@@ -276,9 +276,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
-            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const super_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const name_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.name);
+            const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
+            const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
             // 클래스 이름
             const new_name = try self.visitNode(name_idx);
@@ -2558,8 +2558,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
 
             // class decorator: extra offset 6, 7
-            const old_deco_start = self.readU32(e, 6);
-            const old_deco_len = self.readU32(e, 7);
+            const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
+            const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
             // body 멤버를 순회하여 member decorator + constructor param decorator 수집
             const body_node = self.ast.getNode(body_idx);

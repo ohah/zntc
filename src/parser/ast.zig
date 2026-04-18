@@ -1133,6 +1133,16 @@ pub const ClassExtra = struct {
     pub const deco_len: u32 = 7;
 };
 
+/// formal_parameter extras 레이아웃: [pattern, type_ann, default, flags, deco_start, deco_len] (#1513).
+pub const FormalParameterExtra = struct {
+    pub const pattern: u32 = 0;
+    pub const type_ann: u32 = 1;
+    pub const default: u32 = 2;
+    pub const flags: u32 = 3;
+    pub const deco_start: u32 = 4;
+    pub const deco_len: u32 = 5;
+};
+
 /// call_expression / new_expression의 flags 비트 (D082).
 /// extra: [callee, args_start, args_len, flags]
 pub const CallFlags = struct {
