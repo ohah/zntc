@@ -35,13 +35,11 @@ pub const TreeShaker = struct {
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
     entry_set: std.DynamicBitSet,
-    /// 모듈별 local re-export name set. isImportBindingUsed의 O(E) 스캔을 O(1)로 최적화.
-    /// analyze()에서 사전 구축, null이면 해당 모듈에 local re-export 없음.
-    re_export_sets: []?std.StringHashMap(void) = &.{},
     /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze() 내 fixpoint 루프 전에 구축.
     module_stmt_infos: []?StmtInfos = &.{},
-    /// 모듈별 도달성 bitset 캐시. analyze()의 fixpoint 루프에서 crossModuleBFS가 반복 set,
-    /// 수렴 후 소비자(processModuleImportsInner, emitter, statement_shaker)가 조회.
+    /// 모듈별 도달성 bitset 캐시. crossModuleBFS가 채우고 같은 fixpoint 안에서
+    /// seedOpaqueModule/processModuleImportsInner가 live 필터로 읽고,
+    /// 수렴 후 emitter/statement_shaker가 소비한다.
     reachable_stmts: []?std.DynamicBitSet = &.{},
     /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
     sym_to_ib: []?[]?u32 = &.{},
@@ -163,34 +161,6 @@ pub const TreeShaker = struct {
             }
         }
 
-        // 모듈별 re-export local name set 사전 구축 (isImportBindingUsed 최적화)
-        var re_export_sets = try self.allocator.alloc(?std.StringHashMap(void), self.modules.len);
-        defer {
-            for (re_export_sets) |*s| {
-                if (s.*) |*set| set.deinit();
-            }
-            self.allocator.free(re_export_sets);
-        }
-        for (self.modules, 0..) |m, i| {
-            var has_local_reexport = false;
-            for (m.export_bindings) |eb| {
-                if (eb.kind == .local) {
-                    has_local_reexport = true;
-                    break;
-                }
-            }
-            if (has_local_reexport) {
-                var set = std.StringHashMap(void).init(self.allocator);
-                for (m.export_bindings) |eb| {
-                    if (eb.kind == .local) try set.put(m.exportBindingLocalName(eb), {});
-                }
-                re_export_sets[i] = set;
-            } else {
-                re_export_sets[i] = null;
-            }
-        }
-        self.re_export_sets = re_export_sets;
-
         // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
         const has_due = try self.allocator.alloc(bool, self.modules.len);
         @memset(has_due, false);
@@ -215,7 +185,9 @@ pub const TreeShaker = struct {
         var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
         self.prebuilt_mask = prebuilt_mask;
         for (self.modules, 0..) |m, i| {
-            if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped()) continue;
+            // wrapped(CJS/ESM wrap)는 body 전체가 한 function으로 래핑되어 statement 경계가
+            // 무의미 — 모듈 단위 포함/제외만. entry 포함 non-wrapped 모두 stmt-level 도달성 분석.
+            if (m.wrap_kind.isWrapped()) continue;
 
             if (m.prebuilt_stmt_info) |prebuilt| {
                 module_stmt_infos[i] = prebuilt;
@@ -251,10 +223,8 @@ pub const TreeShaker = struct {
 
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
-                const live_idx: ?u32 = if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())
-                    null
-                else
-                    @intCast(i);
+                // wrapped만 StmtInfo 없음 → live 필터 불가. 나머지(entry 포함)는 live_mod_idx 경로.
+                const live_idx: ?u32 = if (m.wrap_kind.isWrapped()) null else @intCast(i);
                 if (try self.processModuleImportsInner(m, live_idx)) changed = true;
             }
 
@@ -470,9 +440,14 @@ pub const TreeShaker = struct {
                 reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
 
-            // side_effects=true 모듈: side-effect statement 즉시 시드 (fixpoint에서 포함됨)
-            // side_effects=false 모듈: enqueue의 lazy 시드로 처리 (모듈 사용 시에만)
-            if (m.side_effects) {
+            // entry는 번들 진입점 — 모든 top-level statement가 실행되어야 하므로 전체 시드.
+            // side_effects=true 모듈은 side-effect stmt만 시드.
+            // side_effects=false 모듈은 enqueue의 lazy 시드로 처리 (사용 시에만).
+            if (self.entry_set.isSet(i)) {
+                for (infos.stmts, 0..) |_, si| {
+                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                }
+            } else if (m.side_effects) {
                 for (infos.stmts, 0..) |stmt, si| {
                     if (stmt.has_side_effects) {
                         try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
@@ -712,7 +687,11 @@ pub const TreeShaker = struct {
 
         const m = self.modules[mod_idx];
         for (m.import_bindings) |ib| {
-            if (!self.isImportBindingUsed(m, ib)) continue;
+            // StmtInfo/reachability가 있으면 dead statement의 import는 배제.
+            // 없으면(wrapped 등) 보수적으로 모두 시드 — 모듈 전체 포함되는 경로.
+            if (mod_idx < self.reachable_stmts.len and self.reachable_stmts[mod_idx] != null) {
+                if (!self.isImportLiveInModule(mod_idx, ib.local_name)) continue;
+            }
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
@@ -844,7 +823,6 @@ pub const TreeShaker = struct {
             const target_mod = @intFromEnum(rec.resolved);
             if (target_mod >= self.modules.len) continue;
 
-            if (!self.isImportBindingUsed(m, ib)) continue;
             if (live_mod_idx) |idx| {
                 if (!self.isImportLiveInModule(idx, ib.local_name)) continue;
             }
@@ -888,29 +866,6 @@ pub const TreeShaker = struct {
             }
         }
         return newly_included;
-    }
-
-    /// import binding이 모듈 내에서 "존재하는 참조"인지 판정(AST 전체 기준).
-    ///
-    /// reference_count 기반 신호는 dead statement의 참조까지 포함해 가짜 used를 만들 수 있다.
-    /// `processModuleImportsInner(live_mod_idx)`에서 이후 `isImportLiveInModule`이 BFS reachability로
-    /// 필터링하므로 실질 정확도는 BFS가 보장. 단 entry/wrapped(`live_mod_idx=null`)은
-    /// StmtInfo가 없어 BFS 필터가 불가능하므로 이 reference_count 체크를 유일 가드로 유지한다.
-    /// #1558 Phase 5: entry/wrapped 경로를 별도 seed 전략으로 대체해 이 함수를 제거할 수 있음.
-    fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
-        if (m.semantic) |sem| {
-            if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                if (sym_idx < sem.symbols.items.len and sem.symbols.items[sym_idx].reference_count > 0) return true;
-            }
-        } else return true;
-
-        const mod_idx = @intFromEnum(m.index);
-        if (mod_idx < self.re_export_sets.len) {
-            if (self.re_export_sets[mod_idx]) |set| {
-                return set.contains(ib.local_name);
-            }
-        }
-        return false;
     }
 
     fn markExportUsed(self: *TreeShaker, module_index: u32, export_name: []const u8) !void {
