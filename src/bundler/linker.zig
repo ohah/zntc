@@ -580,10 +580,14 @@ pub const Linker = struct {
         exported: std.StringHashMap(void),
         /// 빈도순 정렬된 mangling 후보 목록
         entries: std.ArrayListUnmanaged(NameEntry),
+        /// scope_maps에 없는 합성 default export 심볼들. dirty list에도 없으므로
+        /// rename 단계에서 별도로 assignSymbolCanonical이 필요하다 (#1585).
+        synthetic_defaults: std.ArrayListUnmanaged(*semantic_symbol.Symbol),
 
         fn deinit(mc: *ManglingCandidates, allocator: std.mem.Allocator) void {
             mc.exported.deinit();
             mc.entries.deinit(allocator);
+            mc.synthetic_defaults.deinit(allocator);
         }
     };
 
@@ -592,6 +596,9 @@ pub const Linker = struct {
     fn collectManglingCandidates(self: *const Linker) !ManglingCandidates {
         var name_refs = std.StringHashMap(u32).init(self.allocator);
         defer name_refs.deinit();
+
+        var synthetic_defaults: std.ArrayListUnmanaged(*semantic_symbol.Symbol) = .empty;
+        errdefer synthetic_defaults.deinit(self.allocator);
 
         // mangling 제외 대상 수집 (public API 경계) — #1581:
         //   - entry 모듈의 export: 번들 외부 소비자에게 노출되는 public API
@@ -632,9 +639,31 @@ pub const Linker = struct {
                 if (std.mem.eql(u8, sym_name, "default")) continue;
                 if (std.mem.eql(u8, sym_name, "arguments")) continue;
 
-                const ref_count: u32 = if (sym_idx < sem.symbols.items.len) sem.symbols.items[sym_idx].reference_count else 0;
-                const prev = name_refs.get(sym_name) orelse 0;
-                try name_refs.put(sym_name, prev + ref_count);
+                if (sym_idx >= sem.symbols.items.len) continue;
+                const sym = &sem.symbols.items[sym_idx];
+                // canonical_name이 이미 할당된 상태(충돌 해결 후 `_default$1` 등)라면
+                // dirty list 치환이 그 canonical_name으로 lookup하므로 name_refs도
+                // 그 키로 맞춰야 rename이 연결된다 (#1585).
+                const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
+                if (key.len <= 1) continue;
+                if (exported.contains(key)) continue;
+                const prev = name_refs.get(key) orelse 0;
+                try name_refs.put(key, prev + sym.reference_count);
+            }
+
+            // 합성 default export 심볼(`_default`)도 후보에 포함 (#1585).
+            // scope_maps에 등록되지 않은 합성 심볼은 위 순회에서 누락된다.
+            // populateSyntheticSymbols(#1338)가 semantic 공간에 extend한 심볼만 대상.
+            // 수집한 포인터는 synthetic_defaults로 보관하여 3-b rename 단계에서 재사용.
+            for (sem.symbols.items) |*sym| {
+                const sk = sym.synthetic_kind orelse continue;
+                if (sk != .default_export) continue;
+                const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+                if (key.len <= 1) continue;
+                if (exported.contains(key)) continue;
+                try synthetic_defaults.append(self.allocator, sym);
+                const prev = name_refs.get(key) orelse 0;
+                try name_refs.put(key, prev + sym.reference_count);
             }
         }
 
@@ -657,7 +686,7 @@ pub const Linker = struct {
             }
         }.cmp);
 
-        return .{ .exported = exported, .entries = entries };
+        return .{ .exported = exported, .entries = entries, .synthetic_defaults = synthetic_defaults };
     }
 
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
@@ -728,6 +757,20 @@ pub const Linker = struct {
         while (di < dirty_count) : (di += 1) {
             const sym = self.canonical_symbols.items[di];
             if (name_map.get(sym.canonical_name)) |mangled| {
+                const dup = try self.allocator.dupe(u8, mangled);
+                try self.assignSymbolCanonical(sym, dup);
+            }
+        }
+
+        // 3-b. 합성 default export 심볼 rename (#1585).
+        //    `_default`는 scope_maps에도 canonical_symbols dirty list에도 없으므로
+        //    위 단계에서 커버되지 않는다. collectManglingCandidates가 수집한
+        //    synthetic_defaults 리스트를 재사용하여 name_map lookup + assign.
+        //    name_map은 이미 exported/길이 필터를 통과한 후보로만 구성되므로
+        //    여기서 중복 가드는 불필요.
+        for (candidates.synthetic_defaults.items) |sym| {
+            const lookup_name = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+            if (name_map.get(lookup_name)) |mangled| {
                 const dup = try self.allocator.dupe(u8, mangled);
                 try self.assignSymbolCanonical(sym, dup);
             }
