@@ -1,5 +1,7 @@
 const std = @import("std");
-const TreeShaker = @import("tree_shaker.zig").TreeShaker;
+const tree_shaker_mod = @import("tree_shaker.zig");
+const TreeShaker = tree_shaker_mod.TreeShaker;
+const ALL_EXPORTS_SENTINEL = tree_shaker_mod.ALL_EXPORTS_SENTINEL;
 const Linker = @import("linker.zig").Linker;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const resolve_cache_mod = @import("resolve_cache.zig");
@@ -2007,13 +2009,13 @@ test "#1558 Phase 5: namespace import — 사용된 prop만 seed, 나머지 dead
     defer r.deinit();
 
     const mod = r.findModule("mod.ts").?;
-    // 모듈은 포함되지만 used 집합은 "a"만 (+ "*"는 마킹 안됨)
+    // 모듈은 포함되지만 used 집합은 "a"만 (ALL_EXPORTS_SENTINEL은 마킹 안됨)
     try std.testing.expect(r.shaker.isIncluded(mod));
     try std.testing.expect(r.shaker.isExportUsed(mod, "a"));
     try std.testing.expect(!r.shaker.isExportUsed(mod, "b"));
     try std.testing.expect(!r.shaker.isExportUsed(mod, "c"));
-    // #1559 시절엔 "*" sentinel을 무조건 마킹했지만 Phase 4에서 되돌림.
-    try std.testing.expect(!r.shaker.isExportUsed(mod, "*"));
+    // #1559 시절엔 sentinel을 무조건 마킹했지만 Phase 4에서 되돌림.
+    try std.testing.expect(!r.shaker.isExportUsed(mod, ALL_EXPORTS_SENTINEL));
 }
 
 test "#1558 Phase 5: namespace entry — 특정 prop만 쓰면 나머지 전체 dead (valibot 축소)" {

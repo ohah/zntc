@@ -22,7 +22,9 @@ const CodegenOptions = @import("../../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../../codegen/sourcemap.zig");
 const Linker = @import("../linker.zig").Linker;
 const LinkingMetadata = @import("../linker.zig").LinkingMetadata;
-const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
+const tree_shaker_mod = @import("../tree_shaker.zig");
+const TreeShaker = tree_shaker_mod.TreeShaker;
+const ALL_EXPORTS_SENTINEL = tree_shaker_mod.ALL_EXPORTS_SENTINEL;
 const statement_shaker = @import("../statement_shaker.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const parent = @import("../emitter.zig");
@@ -937,8 +939,8 @@ pub fn computeAllUsedNames(
 
     for (sorted, 0..) |m, idx| {
         const mod_idx: u32 = @intFromEnum(m.index);
-        // "*" 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
-        if (s.isExportUsed(mod_idx, "*") and s.getModuleStmtInfos(mod_idx) == null) {
+        // ALL_EXPORTS_SENTINEL 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
+        if (s.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL) and s.getModuleStmtInfos(mod_idx) == null) {
             list[idx] = .{ .names = &.{}, .all_used = true };
             continue;
         }
