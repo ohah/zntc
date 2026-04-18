@@ -50,11 +50,26 @@ pub const TsConfig = struct {
     /// esbuild/vite/swc(isolatedModules) 의 표준 동작과 동일.
     verbatim_module_syntax: bool = false,
 
+    /// "baseUrl": paths 해석의 기준 경로 (tsconfig.json 위치 기준 상대).
+    /// null 이면 tsconfig 디렉토리 자체가 기본.
+    base_url: ?[]const u8 = null,
+
+    /// "paths": `{ "@/*": ["./src/*"], "@utils": ["./utils/index.ts"] }` 형태의 매핑.
+    /// 값 배열의 첫 항목만 사용 (TS 공식: 여러 후보는 순차 시도. ZTS 는 v1 에서 단일).
+    /// wildcard `*` 는 prefix 매칭으로 변환되어 resolver 에 전달됨.
+    paths: []const PathEntry = &.{},
+
     /// allocator로 할당된 문자열들을 해제하기 위한 참조.
     /// load()에서 내부적으로 사용하며, deinit() 시 해제된다.
     _allocator: ?std.mem.Allocator = null,
     /// 할당된 문자열 목록. deinit() 시 모두 free된다.
     _allocated_strings: ?std.ArrayList([]const u8) = null,
+
+    /// "paths" 1 개 항목: key → 후보 경로 (첫 번째만 사용).
+    pub const PathEntry = struct {
+        from: []const u8,
+        to: []const u8,
+    };
 
     /// TsConfig가 소유한 동적 메모리를 해제한다.
     /// load()로 생성한 TsConfig는 반드시 deinit()을 호출해야 한다.
@@ -66,7 +81,11 @@ pub const TsConfig = struct {
                 }
                 list.deinit(allocator);
             }
+            // paths 슬라이스 자체는 allocator.alloc 으로 잡은 별도 메모리 (내부 문자열은
+            // _allocated_strings 가 소유).
+            if (self.paths.len > 0) allocator.free(self.paths);
         }
+        self.paths = &.{};
         self._allocated_strings = null;
         self._allocator = null;
     }
@@ -194,6 +213,15 @@ pub const TsConfig = struct {
                 if (try dupeJsonString(co, "jsxImportSource", allocator, &config._allocated_strings.?)) |v| config.jsx_import_source = v;
                 if (try dupeJsonString(co, "outDir", allocator, &config._allocated_strings.?)) |v| config.out_dir = v;
                 if (try dupeJsonString(co, "rootDir", allocator, &config._allocated_strings.?)) |v| config.root_dir = v;
+                if (try dupeJsonString(co, "baseUrl", allocator, &config._allocated_strings.?)) |v| config.base_url = v;
+
+                // paths: {"@/*": ["./src/*"], ...} → []PathEntry
+                if (co.get("paths")) |v| {
+                    if (v == .object) {
+                        const entries = try parsePathsObject(v.object, allocator, &config._allocated_strings.?);
+                        config.paths = entries;
+                    }
+                }
 
                 // bool 옵션 추출
                 if (co.get("sourceMap")) |v| {
@@ -274,8 +302,126 @@ pub const TsConfig = struct {
         if (target.use_define_for_class_fields == null) {
             target.use_define_for_class_fields = base.use_define_for_class_fields;
         }
+
+        // baseUrl / paths: target 에 없을 때만 base 값 승계. 동시 설정 시 target 전체가 이김.
+        if (target.base_url == null) {
+            target.base_url = try mergeOptionalString(null, base.base_url, allocator, &target._allocated_strings.?);
+        }
+        if (target.paths.len == 0 and base.paths.len > 0) {
+            const duped = try allocator.alloc(TsConfig.PathEntry, base.paths.len);
+            for (base.paths, 0..) |e, i| {
+                const from_d = try allocator.dupe(u8, e.from);
+                try target._allocated_strings.?.append(allocator, from_d);
+                const to_d = try allocator.dupe(u8, e.to);
+                try target._allocated_strings.?.append(allocator, to_d);
+                duped[i] = .{ .from = from_d, .to = to_d };
+            }
+            target.paths = duped;
+        }
     }
 };
+
+/// tsconfig `paths` 항목의 wildcard 를 prefix alias 로 정규화한다.
+/// - `"@/*": "./src/*"` → `{from="@", to="./src"}` (prefix 매칭)
+/// - `"@utils": "./utils"` → `{from="@utils", to="./utils"}` (정확 매칭)
+/// - 한쪽만 wildcard 이거나 중간 wildcard 는 v1 에서 skip.
+///
+/// baseUrl 이 주어지면 상대경로 value 를 `<baseUrl>/<value>` 로 join 한다.
+/// 반환된 슬라이스는 `allocator` 에 새로 할당됨 — caller 가 해제.
+pub const NormalizedPaths = struct {
+    entries: []const TsConfig.PathEntry,
+    owned_strings: [][]const u8,
+
+    pub fn deinit(self: *NormalizedPaths, allocator: std.mem.Allocator) void {
+        for (self.owned_strings) |s| allocator.free(s);
+        allocator.free(self.owned_strings);
+        allocator.free(self.entries);
+    }
+};
+
+pub fn normalizePathsToAliases(
+    allocator: std.mem.Allocator,
+    tsconfig_dir: []const u8,
+    raw_paths: []const TsConfig.PathEntry,
+    base_url: ?[]const u8,
+) error{OutOfMemory}!NormalizedPaths {
+    var out: std.ArrayList(TsConfig.PathEntry) = .empty;
+    errdefer out.deinit(allocator);
+    var owned: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
+    }
+
+    for (raw_paths) |p| {
+        var from_src = p.from;
+        var to_src = p.to;
+        const from_wild = std.mem.endsWith(u8, from_src, "/*");
+        const to_wild = std.mem.endsWith(u8, to_src, "/*");
+        if (from_wild != to_wild) continue; // 불일치 wildcard 는 스킵
+        if (from_wild) {
+            from_src = from_src[0 .. from_src.len - 2];
+            to_src = to_src[0 .. to_src.len - 2];
+        }
+
+        // from 문자열은 원본 TsConfig 의 subspan 이라 TsConfig 가 먼저 deinit 되면 dangle 된다.
+        // owned_strings 로 복사해 alias 수명을 독립시킴.
+        const from_owned = try allocator.dupe(u8, from_src);
+        try owned.append(allocator, from_owned);
+
+        // baseUrl 적용: to 가 상대경로면 <tsconfig_dir>/<baseUrl>/<to>.
+        const resolved_to: []const u8 = if (std.fs.path.isAbsolute(to_src)) blk_abs: {
+            // 절대 경로도 TsConfig subspan 이므로 복사.
+            const abs_owned = try allocator.dupe(u8, to_src);
+            try owned.append(allocator, abs_owned);
+            break :blk_abs abs_owned;
+        } else blk: {
+            const base_dir = if (base_url) |b|
+                try std.fs.path.join(allocator, &.{ tsconfig_dir, b })
+            else
+                try allocator.dupe(u8, tsconfig_dir);
+            defer allocator.free(base_dir);
+            const joined = try std.fs.path.join(allocator, &.{ base_dir, to_src });
+            try owned.append(allocator, joined);
+            break :blk joined;
+        };
+
+        try out.append(allocator, .{ .from = from_owned, .to = resolved_to });
+    }
+
+    return .{
+        .entries = try out.toOwnedSlice(allocator),
+        .owned_strings = try owned.toOwnedSlice(allocator),
+    };
+}
+
+/// `compilerOptions.paths` JSON 객체 → `[]TsConfig.PathEntry`.
+/// 값 배열의 첫 항목만 사용한다 (TS 공식은 여러 후보 순차 시도이나 ZTS v1 은 단일).
+fn parsePathsObject(
+    obj: std.json.ObjectMap,
+    allocator: std.mem.Allocator,
+    allocated_strings: *std.ArrayList([]const u8),
+) ![]const TsConfig.PathEntry {
+    var list: std.ArrayList(TsConfig.PathEntry) = .empty;
+    errdefer list.deinit(allocator);
+
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr.*;
+        if (val != .array or val.array.items.len == 0) continue;
+        const first = val.array.items[0];
+        if (first != .string) continue;
+
+        const key_d = try allocator.dupe(u8, key);
+        try allocated_strings.append(allocator, key_d);
+        const val_d = try allocator.dupe(u8, first.string);
+        try allocated_strings.append(allocator, val_d);
+        try list.append(allocator, .{ .from = key_d, .to = val_d });
+    }
+
+    return list.toOwnedSlice(allocator);
+}
 
 /// JSON 객체에서 문자열 값을 복사(dupe)하여 반환한다.
 /// 키가 없거나 값이 문자열이 아니면 null을 반환한다.

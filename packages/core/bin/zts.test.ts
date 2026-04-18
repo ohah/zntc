@@ -1090,4 +1090,76 @@ describe("CLI: tsconfig", () => {
     expect(stdout).toContain("__decorate");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("tsconfig paths: wildcard + exact alias 가 bundler 에서 해석됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-tsc-paths-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@/*": ["./src/*"],
+            "@utils": ["./src/utils.ts"],
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      join(dir, "src", "utils.ts"),
+      "export function hello(name: string): string { return `Hello, ${name}!`; }",
+    );
+    writeFileSync(join(dir, "src", "greet.ts"), "export function greet(): string { return 'hi'; }");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      'import { hello } from "@utils";\nimport { greet } from "@/greet";\nconsole.log(hello("world"), greet());',
+    );
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    // 두 파일이 모두 번들에 들어와야 함 (paths 가 해석되지 않으면 resolve 실패로 번들 실패).
+    expect(stdout).toContain("Hello, ${name}!");
+    expect(stdout).toContain(`return "hi"`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("--alias 가 tsconfig paths 를 덮어씀", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-alias-priority-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    mkdirSync(join(dir, "alt"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@utils": ["./src/utils.ts"] } },
+      }),
+    );
+    writeFileSync(
+      join(dir, "src", "utils.ts"),
+      "export function hello(): string { return 'FROM_TSCONFIG'; }",
+    );
+    writeFileSync(
+      join(dir, "alt", "utils.ts"),
+      "export function hello(): string { return 'FROM_ALIAS_CLI'; }",
+    );
+    writeFileSync(join(dir, "entry.ts"), 'import { hello } from "@utils";\nconsole.log(hello());');
+
+    // --alias 없으면 tsconfig 값 적용
+    const withoutAlias = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(withoutAlias.exitCode).toBe(0);
+    expect(withoutAlias.stdout).toContain("FROM_TSCONFIG");
+
+    // --alias 가 붙으면 그 값이 tsconfig 를 덮어씀 (CLI > tsconfig)
+    const withAlias = runCli([
+      "--bundle",
+      "-p",
+      dir,
+      `--alias:@utils=${join(dir, "alt", "utils.ts")}`,
+      join(dir, "entry.ts"),
+    ]);
+    expect(withAlias.exitCode).toBe(0);
+    expect(withAlias.stdout).toContain("FROM_ALIAS_CLI");
+    expect(withAlias.stdout).not.toContain("FROM_TSCONFIG");
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

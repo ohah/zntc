@@ -581,6 +581,7 @@ async function runTranspile(opts) {
     experimentalDecorators: opts.experimentalDecorators,
     useDefineForClassFields: opts.useDefineForClassFields,
     verbatimModuleSyntax: opts.verbatimModuleSyntax,
+    tsconfigPath: opts.project,
     asciiOnly: opts.asciiOnly,
     charsetUtf8: opts.charsetUtf8,
     quotes: opts.quotes,
@@ -627,6 +628,8 @@ async function runBundle(opts) {
     format: opts.format,
     platform: opts.platform,
     external: opts.external,
+    // `--alias:K=V` 플래그 (webpack/rollup 스타일) — JS 옵션이 tsconfig paths 보다 우선 적용됨.
+    alias: Object.keys(opts.alias).length > 0 ? opts.alias : undefined,
     minify: opts.minify,
     minifyWhitespace: opts.minifyWhitespace,
     minifyIdentifiers: opts.minifyIdentifiers,
@@ -645,6 +648,8 @@ async function runBundle(opts) {
     useDefineForClassFields: opts.useDefineForClassFields,
     experimentalDecorators: opts.experimentalDecorators,
     verbatimModuleSyntax: opts.verbatimModuleSyntax,
+    // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.
+    tsconfigPath: opts.project,
     banner: opts.banner,
     footer: opts.footer,
     globalName: opts.globalName,

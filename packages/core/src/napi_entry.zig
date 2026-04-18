@@ -2180,18 +2180,16 @@ fn parseBuildOptions(
         define_entries = defs;
     }
 
-    // alias: { "from": "to" } → []AliasEntry
+    // alias: { "from": "to" } → []AliasEntry (tsconfig paths 는 tsconfig 로드 후 아래에서 append).
     const alias_pairs = getObjectKeyValuePairs(env, opts_obj, "alias", native_alloc);
-    var alias_entries: []const bundler_mod.types.AliasEntry = &.{};
+    var alias_list: std.ArrayList(bundler_mod.types.AliasEntry) = .empty;
     if (alias_pairs) |pairs| {
-        const als = native_alloc.alloc(bundler_mod.types.AliasEntry, pairs.len) catch return null;
-        for (pairs, 0..) |pair, idx| {
+        defer native_alloc.free(pairs);
+        for (pairs) |pair| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
-            als[idx] = .{ .from = pair[0], .to = pair[1] };
+            alias_list.append(native_alloc, .{ .from = pair[0], .to = pair[1] }) catch return null;
         }
-        native_alloc.free(pairs);
-        alias_entries = als;
     }
 
     // fallback: { "crypto": "crypto-browserify", "fs": false } → []FallbackEntry
@@ -2282,6 +2280,29 @@ fn parseBuildOptions(
     const emit_decorator_metadata_eff = merged_tsconfig.emit_decorator_metadata;
     const use_define_for_class_fields_eff = merged_tsconfig.use_define_for_class_fields;
     const verbatim_module_syntax_eff = merged_tsconfig.verbatim_module_syntax;
+
+    // tsconfig paths → alias_list 뒤에 append (JS --alias 가 이미 들어있어서 그게 우선).
+    if (tsconfig_path_opt != null and tsconfig_holder.paths.len > 0) {
+        const tsconfig_file = tsconfig_path_opt.?;
+        const dir_for_join: []const u8 = if (std.mem.endsWith(u8, tsconfig_file, ".json"))
+            std.fs.path.dirname(tsconfig_file) orelse "."
+        else
+            tsconfig_file;
+        if (@import("zts_lib").config.normalizePathsToAliases(native_alloc, dir_for_join, tsconfig_holder.paths, tsconfig_holder.base_url)) |norm| {
+            // owned_strings (절대경로 조인 결과) 는 alias 가 shallow-copy 되는 동안 살아있어야 함 →
+            // opts 전체 수명을 따라가도록 tracker 에 등록.
+            if (norm.owned_strings.len > 0) {
+                for (norm.owned_strings) |s| if (!trackStr(owned_strings, s)) return null;
+                if (!trackArr(owned_string_arrays, norm.owned_strings)) return null;
+            }
+            for (norm.entries) |e| {
+                alias_list.append(native_alloc, .{ .from = e.from, .to = e.to }) catch return null;
+            }
+            native_alloc.free(norm.entries); // PathEntry 슬라이스 자체만 해제 (문자열은 이전됨).
+        } else |_| {}
+    }
+    const alias_entries: []const bundler_mod.types.AliasEntry = alias_list.toOwnedSlice(native_alloc) catch return null;
+
     const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
     const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
     const root_dir = ownStr(env, opts_obj, "rootDir", owned_strings);
