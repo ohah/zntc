@@ -38,9 +38,9 @@ pub const TreeShaker = struct {
     /// 모듈별 local re-export name set. isImportBindingUsed의 O(E) 스캔을 O(1)로 최적화.
     /// analyze()에서 사전 구축, null이면 해당 모듈에 local re-export 없음.
     re_export_sets: []?std.StringHashMap(void) = &.{},
-    /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze()에서 구축.
+    /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze() 내 fixpoint 루프 전에 구축.
     module_stmt_infos: []?StmtInfos = &.{},
-    /// 모듈별 도달성 bitset 캐시. fixpoint 수렴 후 계산.
+    /// 모듈별 도달성 bitset 캐시. crossModuleBFS가 BFS 중 set, 이후 소비자(emitter 등)가 조회.
     reachable_stmts: []?std.DynamicBitSet = &.{},
     /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
     sym_to_ib: []?[]?u32 = &.{},
@@ -195,30 +195,58 @@ pub const TreeShaker = struct {
         @memset(has_due, false);
         self.has_direct_used_export = has_due;
 
-        // --- Incremental fixpoint ---
-        // used_exports는 단조 증가 (한번 marked → 유지). clearUsedExports 불필요.
-        // included_snapshot: 직전 상태. 새로 included된 모듈만 추적.
-
-        // 1단계: entry 모듈의 모든 export를 사용으로 마킹
+        // entry 모듈의 모든 export를 사용으로 마킹
         for (self.modules, 0..) |_, i| {
             if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
         }
 
-        // 2단계: included 변화가 없을 때까지 반복
+        // StmtInfo 구축을 fixpoint 루프 전에 수행(#1558).
+        // fixpoint 중에 BFS가 statement-level reachability를 사용하려면 미리 필요.
+        // 모든 non-entry non-wrapped 모듈에 대해 구축 — included 여부는 이후 fixpoint에서 확장.
+        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, self.modules.len);
+        for (module_stmt_infos) |*si| si.* = null;
+        self.module_stmt_infos = module_stmt_infos;
+
+        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
+        for (reachable_stmts) |*rs| rs.* = null;
+        self.reachable_stmts = reachable_stmts;
+
+        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        self.prebuilt_mask = prebuilt_mask;
+        for (self.modules, 0..) |m, i| {
+            if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped()) continue;
+
+            if (m.prebuilt_stmt_info) |prebuilt| {
+                module_stmt_infos[i] = prebuilt;
+                prebuilt_mask.set(i);
+                continue;
+            }
+
+            const sem = m.semantic orelse continue;
+            const ast = &(m.ast orelse continue);
+            module_stmt_infos[i] = stmt_info_mod.build(
+                self.allocator,
+                ast,
+                sem.symbols.items,
+                sem.symbol_ids,
+            ) catch null;
+        }
+
+        // --- 1차 fixpoint (reference_count 기반 used 마킹) ---
+        // Step 2 범위: StmtInfo 구축만 fixpoint 전으로 이동. BFS는 fixpoint 수렴 후 한 번 호출
+        // (기존 행동 보존). Step 3에서 BFS를 fixpoint 내부로 이동하면서 live_mod_idx 전환,
+        // Step 4에서 pruneUnreachableExports 삭제.
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
             var changed = false;
 
-            // (a) 포함된 모듈의 import → export 마킹 + canonical 모듈 포함
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 if (try self.processModuleImports(m)) changed = true;
             }
 
-            // (b) re-export 소스 포함
             if (try self.includeReExportSources(true)) changed = true;
 
-            // (c) 포함된 모듈이 import하는 side_effects/require/wrapped 모듈 전파
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 for (m.import_records) |rec| {
@@ -238,60 +266,21 @@ pub const TreeShaker = struct {
             if (!changed) break;
         }
 
-        // fixpoint 후 미사용 sideEffects=false 모듈 제거 (1회만 수행, oscillation 방지)
+        // 1차 fixpoint 후 intermediate prune (oscillation 방지).
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
-            if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
+            if (dyn_import_targets.isSet(i)) continue;
             if (!self.hasAnyUsedExport(@intCast(i))) {
                 self.included.unset(i);
             }
         }
 
-        // 2차: 심볼 기반 도달성 분석 (rolldown 방식)
-        // StmtInfo 구축 → reachable_stmts 계산 → used_exports 재계산을 수렴할 때까지 반복.
-        // 순환 의존에서 dead import가 순환 경로로 used로 마킹되는 문제를 해결.
-        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, self.modules.len);
-        for (module_stmt_infos) |*si| si.* = null;
-        self.module_stmt_infos = module_stmt_infos;
-
-        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
-        for (reachable_stmts) |*rs| rs.* = null;
-        self.reachable_stmts = reachable_stmts;
-
-        // StmtInfo 구축 (entry, CJS 제외)
-        // semantic analyzer에서 사전 구축한 prebuilt가 있으면 AST 재순회 없이 사용.
-        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
-        self.prebuilt_mask = prebuilt_mask;
-        for (self.modules, 0..) |m, i| {
-            if (!self.included.isSet(i)) continue;
-            if (self.entry_set.isSet(i) or m.wrap_kind.isWrapped()) continue;
-
-            // prebuilt StmtInfo 사용 (semantic analyzer에서 구축, parse_arena 소유)
-            if (m.prebuilt_stmt_info) |prebuilt| {
-                module_stmt_infos[i] = prebuilt;
-                prebuilt_mask.set(i);
-                continue;
-            }
-
-            // fallback: AST 순회로 구축 (prebuilt가 없는 모듈 — JSON 등)
-            const sem = m.semantic orelse continue;
-            const ast = &(m.ast orelse continue);
-            module_stmt_infos[i] = stmt_info_mod.build(
-                self.allocator,
-                ast,
-                sem.symbols.items,
-                sem.symbol_ids,
-            ) catch null;
-        }
-
-        // 크로스-모듈 BFS: rolldown 방식 — import binding을 따라 모듈 횡단
+        // 크로스-모듈 BFS: statement-level reachability + used_exports 정정.
         try self.buildSymToIbMaps();
         try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
 
-        // BFS 결과 기반 used_exports 정정(#1551):
-        // 첫 fixpoint가 AST 전체 reference_count 신호로 마킹한 "가짜 used"를,
-        // statement-level reachability로 제거한다. 이후 아래 included prune이 정상 동작.
+        // BFS 결과 기반 used_exports 정정(#1551, Step 4에서 삭제 예정).
         try self.pruneUnreachableExports();
 
         // 미사용 sideEffects=false 모듈 제거
@@ -422,17 +411,17 @@ pub const TreeShaker = struct {
     // Internal
     // ============================================================
 
-    /// 하나의 포함된 모듈에 대해 import binding → export 마킹 + canonical 모듈 포함.
-    /// 새 모듈이 포함되면 true를 반환하여 fixpoint 루프가 계속되도록 한다.
-    /// 포함된 모듈의 re-export 소스를 포함시키고 export를 마킹한다.
-    /// check_used=true이면 해당 export가 used인 경우만 처리 (fixpoint/수렴 루프).
-    /// check_used=false이면 모든 re-export 소스를 무조건 포함 (초기 entry 시딩).
-    /// sym_idx → import_binding_index 맵 구축 (크로스-모듈 BFS용).
+    /// sym_idx → import_binding_index 맵 구축/확장 (크로스-모듈 BFS용).
+    /// 이미 구축된 모듈은 skip — fixpoint 루프에서 반복 호출 가능하도록 idempotent.
     fn buildSymToIbMaps(self: *TreeShaker) !void {
-        var maps = try self.allocator.alloc(?[]?u32, self.modules.len);
-        for (maps) |*m| m.* = null;
+        if (self.sym_to_ib.len == 0) {
+            const maps = try self.allocator.alloc(?[]?u32, self.modules.len);
+            for (maps) |*m| m.* = null;
+            self.sym_to_ib = maps;
+        }
         for (self.modules, 0..) |mod, i| {
             if (!self.included.isSet(i)) continue;
+            if (self.sym_to_ib[i] != null) continue;
             const sem = mod.semantic orelse continue;
             if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) continue;
             var arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
@@ -441,9 +430,8 @@ pub const TreeShaker = struct {
                 const sym_idx = ib.local_symbol.semanticIndex() orelse continue;
                 if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
             }
-            maps[i] = arr;
+            self.sym_to_ib[i] = arr;
         }
-        self.sym_to_ib = maps;
     }
 
     const BfsItem = struct { mod: u32, stmt: u32 };
