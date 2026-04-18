@@ -1079,7 +1079,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const op_kind = op_flags & 0xFF;
             const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
-            const is_postfix = (op_flags & 0x100) != 0;
+            const is_postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
             const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
 
             if (is_postfix) {

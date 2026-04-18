@@ -1490,7 +1490,7 @@ pub const Codegen = struct {
         if (e + 1 >= extras.len) return;
         const operand: NodeIndex = @enumFromInt(extras[e]);
         const flags = extras[e + 1];
-        const is_postfix = (flags & 0x100) != 0;
+        const is_postfix = (flags & ast_mod.UnaryFlags.postfix) != 0;
         const op: Kind = @enumFromInt(@as(u8, @truncate(flags)));
         if (!is_postfix) try self.write(op.symbol());
         try self.emitNode(operand);
