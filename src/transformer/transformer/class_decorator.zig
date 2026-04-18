@@ -28,10 +28,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     // Fast path: useDefineForClassFields=true AND !experimentalDecorators → 기존 동작
     // 멤버별 분류가 불필요하므로 body를 통째로 방문한다.
     if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
-        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_super = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_name = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.name));
+        const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
 
-        var current_body_idx = self.readNodeIdx(e, 2);
+        var current_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
         // ES2022 다운레벨링: private method (WeakSet + standalone fn) + private field (WeakMap + ctor init).
         // 두 변환은 단일 Pass로 통합 — body 순회 1회 + ctor_init 주입 1회.
@@ -113,7 +113,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             if (had_static_blocks) {
                 current_body_idx = new_body;
 
-                const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
+                const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
                 const none = @intFromEnum(NodeIndex.none);
                 const class_result = try self.addExtraNode(node.tag, node.span, &.{
                     @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
@@ -146,7 +146,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         // private method/field 가 있고 static block은 없는 경우
         if (had_private_methods or had_private_fields) {
-            const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
+            const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
             const none = @intFromEnum(NodeIndex.none);
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
                 @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
@@ -173,7 +173,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         }
 
         const new_body = try self.visitNode(current_body_idx);
-        const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) });
+        const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
@@ -252,12 +252,12 @@ fn wrapClassExprInIIFE(
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
     // TODO(es2021): apply same IIFE wrapping for class_expression with private methods — see wrapClassExprInIIFE in fast path
     const e = node.data.extra;
-    const has_super = !self.readNodeIdx(e, 1).isNone();
-    const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-    const new_super = try self.visitNode(self.readNodeIdx(e, 1));
+    const has_super = !self.readNodeIdx(e, ast_mod.ClassExtra.super).isNone();
+    const new_name = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.name));
+    const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
 
     // 원본 class_body를 직접 순회
-    const body_idx = self.readNodeIdx(e, 2);
+    const body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
     const body_node = self.ast.getNode(body_idx);
     const body_members_start = body_node.data.list.start;
     const body_members_len = body_node.data.list.len;
@@ -416,8 +416,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
 
     // experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
     if (self.options.experimental_decorators) {
-        const old_deco_start = self.readU32(e, 6);
-        const old_deco_len = self.readU32(e, 7);
+        const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
+        const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
         if (old_deco_len > 0 or member_decorators.items.len > 0 or ctor_param_decos.items.len > 0) {
             return try self.transformExperimentalDecorators(
@@ -439,7 +439,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
 
     // decorator 리스트 복사 (experimental이 아닌 경우)
     const new_decos = if (!self.options.experimental_decorators)
-        try self.visitExtraList(.{ .start = self.readU32(e, 6), .len = self.readU32(e, 7) })
+        try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) })
     else
         NodeList{ .start = 0, .len = 0 };
 
@@ -1846,11 +1846,11 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
     self.runtime_helpers.es_decorator = true;
 
     // 클래스 이름, super, body, decorator 추출
-    const name_idx = self.readNodeIdx(e, 0);
-    const super_idx = self.readNodeIdx(e, 1);
-    const body_idx = self.readNodeIdx(e, 2);
-    const class_deco_start = self.readU32(e, 6);
-    const class_deco_len = self.readU32(e, 7);
+    const name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
+    const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
+    const body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+    const class_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
+    const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
     // 클래스 이름 텍스트 (Foo). 익명/default class는 "_Class"를 사용.
     // "default"는 JS 예약어이므로 변수명으로 사용 불가.

@@ -112,10 +112,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 }
 
                 if (param.tag == .formal_parameter) {
-                    // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const pe = param.data.extra;
-                    const pattern_idx: NodeIndex = self.readNodeIdx(pe, 0);
-                    const default_idx: NodeIndex = self.readNodeIdx(pe, 2);
+                    const pattern_idx: NodeIndex = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.pattern);
+                    const default_idx: NodeIndex = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.default);
 
                     if (!default_idx.isNone()) {
                         const pat_node = self.ast.getNode(pattern_idx);
