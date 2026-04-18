@@ -1120,7 +1120,6 @@ pub const SemanticAnalyzer = struct {
 
             // ---- method_definition/property_definition 내부 순회 ----
             .method_definition => {
-                // extra: [key, params, body, flags, deco_start, deco_len]
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 2 < extras.len) {
@@ -1131,7 +1130,7 @@ pub const SemanticAnalyzer = struct {
                     // `import * as fiberRefs`의 namespace 객체로 치환됨).
                     // private_identifier key는 collectPrivateNames에서 이미 선언 등록했으므로
                     // 여기서 방문하면 usePrivateName(.read)가 잘못 호출된다.
-                    const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                    const key_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.key]);
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
@@ -1139,13 +1138,16 @@ pub const SemanticAnalyzer = struct {
 
                     // 멤버 decorator 순회 — 누락 시 import binding이 resolve 안 돼 tree-shake로 drop (#1504 follow-up).
                     if (extra_start + 5 < extras.len) {
-                        try self.visitNodeList(.{ .start = extras[extra_start + 4], .len = extras[extra_start + 5] });
+                        try self.visitNodeList(.{
+                            .start = extras[extra_start + ast_mod.MethodExtra.deco_start],
+                            .len = extras[extra_start + ast_mod.MethodExtra.deco_len],
+                        });
                     }
 
                     // getter/setter 파라미터 개수 검증
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
-                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.body]);
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = try self.enterScope(.function, self.is_strict_mode);
                     const params_list = self.ast.functionParamsList(node);
@@ -1157,7 +1159,6 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .property_definition, .accessor_property => {
-                // extra: [key, init_val, flags, deco_start, deco_len]
                 // key는 computed property([expr])일 때만 순회.
                 // private_identifier key는 collectPrivateNames에서 이미 선언 등록했으므로
                 // 여기서 방문하면 usePrivateName(.read)가 잘못 호출된다.
@@ -1166,12 +1167,12 @@ pub const SemanticAnalyzer = struct {
                 const e = node.data.extra;
                 const extras_p = self.ast.extra_data.items;
                 if (e + 1 < extras_p.len) {
-                    const key_idx: NodeIndex = @enumFromInt(extras_p[e]);
+                    const key_idx: NodeIndex = @enumFromInt(extras_p[e + ast_mod.PropertyExtra.key]);
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
                     }
-                    try self.visitNode(@enumFromInt(extras_p[e + 1]));
+                    try self.visitNode(@enumFromInt(extras_p[e + ast_mod.PropertyExtra.init]));
                 }
                 // 필드/accessor decorator 순회 — 누락 시 import binding tree-shake로 drop.
                 if (e + 4 < extras_p.len) {
@@ -2068,14 +2069,12 @@ pub const SemanticAnalyzer = struct {
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .method_definition => {
-                    // extra: [key, params, body, flags]
                     const extra_start = node.data.extra;
                     if (extra_start >= self.ast.extra_data.items.len) continue;
-                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start]);
-                    // flags는 extra_start + 3: 0x02=getter, 0x04=setter
+                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.key]);
                     const kind: PrivateNameKind = blk: {
                         if (extra_start + 3 < self.ast.extra_data.items.len) {
-                            const flags = self.ast.extra_data.items[extra_start + 3];
+                            const flags = self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.flags];
                             if (flags & 0x02 != 0) break :blk .getter;
                             if (flags & 0x04 != 0) break :blk .setter;
                         }
@@ -2084,10 +2083,9 @@ pub const SemanticAnalyzer = struct {
                     try self.tryRegisterPrivateKey(key_idx, kind);
                 },
                 .property_definition, .accessor_property => {
-                    // extra: [key, init_val, flags, deco_start, deco_len]
                     const e = node.data.extra;
                     if (e < self.ast.extra_data.items.len) {
-                        try self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e]), .field);
+                        try self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key]), .field);
                     }
                 },
                 else => {},

@@ -2270,18 +2270,17 @@ pub const Codegen = struct {
         try self.emitNode(node.data.unary.operand);
     }
 
-    // method_definition: extra = [key, params, body, flags, deco_start, deco_len]
     fn emitMethodDef(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 6];
-        const key: NodeIndex = @enumFromInt(extras[0]);
+        const key: NodeIndex = @enumFromInt(extras[ast_mod.MethodExtra.key]);
         const params_list = self.ast.functionParamsList(node);
         const params_start = params_list.start;
         const params_len = params_list.len;
-        const body: NodeIndex = @enumFromInt(extras[2]);
-        const flags = extras[3];
-        const deco_start = extras[4];
-        const deco_len = extras[5];
+        const body: NodeIndex = @enumFromInt(extras[ast_mod.MethodExtra.body]);
+        const flags = extras[ast_mod.MethodExtra.flags];
+        const deco_start = extras[ast_mod.MethodExtra.deco_start];
+        const deco_len = extras[ast_mod.MethodExtra.deco_len];
 
         // function map: ClassName#method / ClassName.method / get__name / set__name
         if (self.fn_map_builder != null) {
@@ -2311,15 +2310,14 @@ pub const Codegen = struct {
         try self.emitNode(body);
     }
 
-    // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
     fn emitPropertyDef(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 5];
-        const key: NodeIndex = @enumFromInt(extras[0]);
-        const value: NodeIndex = @enumFromInt(extras[1]);
-        const flags = extras[2];
-        const deco_start = extras[3];
-        const deco_len = extras[4];
+        const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);
+        const value: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.init]);
+        const flags = extras[ast_mod.PropertyExtra.flags];
+        const deco_start = extras[ast_mod.PropertyExtra.deco_start];
+        const deco_len = extras[ast_mod.PropertyExtra.deco_len];
 
         try self.emitMemberDecorators(deco_start, deco_len);
 
@@ -2359,15 +2357,14 @@ pub const Codegen = struct {
         }
     }
 
-    // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
     fn emitAccessorProp(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 5];
-        const key: NodeIndex = @enumFromInt(extras[0]);
-        const value: NodeIndex = @enumFromInt(extras[1]);
-        const flags = extras[2];
-        const deco_start = extras[3];
-        const deco_len = extras[4];
+        const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);
+        const value: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.init]);
+        const flags = extras[ast_mod.PropertyExtra.flags];
+        const deco_start = extras[ast_mod.PropertyExtra.deco_start];
+        const deco_len = extras[ast_mod.PropertyExtra.deco_len];
 
         try self.emitMemberDecorators(deco_start, deco_len);
 

@@ -612,13 +612,12 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
 }
 
 /// method_definition → standalone function declaration으로 추출.
-/// method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
 pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, span: Span) !NodeIndex {
     const method_node = self.ast.getNode(method_idx);
     const params_list_old = self.ast.functionParamsList(method_node);
     const params_start = params_list_old.start;
     const params_len = params_list_old.len;
-    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[method_node.data.extra + 2]);
+    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[method_node.data.extra + ast_mod.MethodExtra.body]);
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
