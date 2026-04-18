@@ -793,7 +793,7 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         const kind = self.current();
         try self.advance();
         {
-            const ue = try self.ast.addExtras(&.{ @intFromEnum(expr), @as(u32, @intFromEnum(kind)) | 0x100 }); // 0x100 = postfix
+            const ue = try self.ast.addExtras(&.{ @intFromEnum(expr), @as(u32, @intFromEnum(kind)) | ast_mod.UnaryFlags.postfix });
             expr = try self.ast.addNode(.{
                 .tag = .update_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
