@@ -1212,6 +1212,10 @@ pub fn main() !void {
     var tsconfig = TsConfig.loadFromPath(allocator, tsconfig_dir_early) catch TsConfig{};
     defer tsconfig.deinit();
 
+    // tsconfig paths → alias 변환 결과. main 함수 끝까지 유지해야 alias 슬라이스가 dangle 하지 않음.
+    var normalized_paths: lib.config.NormalizedPaths = .{ .entries = &.{}, .owned_strings = &.{} };
+    defer normalized_paths.deinit(allocator);
+
     // tsconfig 값 적용 — CLI 옵션이 우선, 미지정 옵션만 tsconfig에서 가져옴
     if (opts.module_format == .esm) {
         if (tsconfig.module) |mod| {
@@ -1259,6 +1263,29 @@ pub fn main() !void {
     }
     if (std.mem.eql(u8, opts.jsx_import_source, "react")) {
         opts.jsx_import_source = tsconfig.jsx_import_source;
+    }
+
+    // tsconfig `paths` / `baseUrl` → alias_list 뒤에 append.
+    // applyAlias 는 리스트 순서대로 매칭하므로 사용자 `--alias` (앞) 가 우선.
+    // baseUrl 은 tsconfig.json 파일 위치 기준 상대 → 절대경로 조인.
+    if (tsconfig.paths.len > 0) {
+        const tsconfig_dir = tsconfig_dir_early;
+        const dir_for_join: []const u8 = if (std.mem.endsWith(u8, tsconfig_dir, ".json"))
+            std.fs.path.dirname(tsconfig_dir) orelse "."
+        else
+            tsconfig_dir;
+        normalized_paths = lib.config.normalizePathsToAliases(
+            allocator,
+            dir_for_join,
+            tsconfig.paths,
+            tsconfig.base_url,
+        ) catch |err| blk: {
+            try stderr.print("zts: warning: tsconfig paths normalization failed: {}\n", .{err});
+            break :blk lib.config.NormalizedPaths{ .entries = &.{}, .owned_strings = &.{} };
+        };
+        for (normalized_paths.entries) |e| {
+            try opts.alias_list.append(allocator, .{ .from = e.from, .to = e.to });
+        }
     }
 
     // --bundle
