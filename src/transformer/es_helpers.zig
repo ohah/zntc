@@ -630,9 +630,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const name_span = try self.ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
 
-    var fn_flags: u32 = 0;
-    if ((method_flags & ast_mod.MethodFlags.is_async) != 0) fn_flags |= ast_mod.FunctionFlags.is_async;
-    if ((method_flags & ast_mod.MethodFlags.is_generator) != 0) fn_flags |= ast_mod.FunctionFlags.is_generator;
+    const fn_flags = ast_mod.methodFlagsToFunctionFlags(method_flags);
 
     const none = @intFromEnum(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(new_params, span);
