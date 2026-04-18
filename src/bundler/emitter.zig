@@ -34,6 +34,10 @@ const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
+const error_codes = @import("../error_codes.zig");
+
+/// ZTS0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
+const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.format() ++ "] " ++ error_codes.Code.tla_requires_esm_format.message() ++ ". */\n";
 const Linker = @import("linker.zig").Linker;
 const LinkingMetadata = @import("linker.zig").LinkingMetadata;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
@@ -255,7 +259,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 포맷별 prologue
-    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, has_tla, ext_specifiers.items, ext_param_names.items);
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names.items);
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
@@ -307,13 +311,13 @@ pub fn emitWithTreeShaking(
     try emitBundleRuntimeHelpers(&output, allocator, sorted.items, options);
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
-    // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE 포맷에서는 동작하지 않는다.
+    // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE/UMD/AMD 포맷에서는 동작하지 않는다.
     // DFS로 exec_index가 부여된 모듈만 확인한다 — 동적 import로만 도달하는 모듈은
     // exec_index가 maxInt(u32)이며, 비동기 로딩이므로 경고 불필요.
     if (options.format != .esm) {
         for (sorted.items) |m| {
             if (m.uses_top_level_await and m.exec_index != std.math.maxInt(u32)) {
-                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+                try output.appendSlice(allocator, tla_warning_comment);
                 break;
             }
         }
@@ -1496,15 +1500,11 @@ fn emitFormatPrologue(
     format: types.Format,
     global_name: ?[]const u8,
     factory_fn: []const u8,
-    has_tla: bool,
     external_specifiers: []const []const u8,
     ext_param_names: []const []const u8,
 ) !void {
     switch (format) {
         .iife => {
-            if (has_tla) {
-                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
-            }
             if (global_name) |gn| {
                 if (std.mem.indexOfScalar(u8, gn, '.') != null) {
                     try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
@@ -1522,9 +1522,6 @@ fn emitFormatPrologue(
             }
         },
         .umd => {
-            if (has_tla) {
-                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
-            }
             try output.appendSlice(allocator, "(function(root, factory) {\n");
             try output.appendSlice(allocator, "  if (typeof define === \"function\" && define.amd) define([");
             try writeDepArray(output, allocator, external_specifiers);
@@ -1546,9 +1543,6 @@ fn emitFormatPrologue(
             try output.appendSlice(allocator, ") {\n");
         },
         .amd => {
-            if (has_tla) {
-                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
-            }
             try output.appendSlice(allocator, "define([");
             try writeDepArray(output, allocator, external_specifiers);
             try output.appendSlice(allocator, "], function(");

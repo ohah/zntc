@@ -1224,7 +1224,7 @@ test "TLA: not detected inside async function" {
     defer result.deinit(std.testing.allocator);
 
     // async 함수 내부 await는 TLA가 아님 → 경고 없음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002]") == null);
 }
 
 test "TLA: propagated to importer" {
@@ -1249,7 +1249,7 @@ test "TLA: propagated to importer" {
     defer result.deinit(std.testing.allocator);
 
     // TLA 전파 → CJS에서 경고 주석 포함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002]") != null);
 }
 
 test "TLA: not propagated via dynamic import" {
@@ -1273,7 +1273,7 @@ test "TLA: not propagated via dynamic import" {
     defer result.deinit(std.testing.allocator);
 
     // 동적 import는 TLA 전파 안 함 → 경고 없음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002]") == null);
 }
 
 test "TLA: warning for CJS output" {
@@ -1294,7 +1294,9 @@ test "TLA: warning for CJS output" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING] Top-level await requires ESM output format.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002] Top-level await requires ESM output format.") != null);
+    // 중복 경고 방지: 정확히 한 번만 emit되어야 함 (이전엔 iife/umd/amd prologue가 추가로 emit했음)
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "[ZTS0002]"));
 }
 
 test "TLA: no warning for ESM output" {
@@ -1316,7 +1318,7 @@ test "TLA: no warning for ESM output" {
     defer result.deinit(std.testing.allocator);
 
     // ESM → 경고 없음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002]") == null);
 }
 
 test "TLA: for-await-of detected" {
@@ -1341,7 +1343,7 @@ test "TLA: for-await-of detected" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS0002]") != null);
 }
 
 test "TLA: await inside object literal at top level" {
@@ -1363,7 +1365,7 @@ test "TLA: await inside object literal at top level" {
 
     try std.testing.expect(!result.hasErrors());
     // object literal 내부 await도 TLA로 감지 → CJS 경고
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS0002") != null);
 }
 
 test "TLA: await inside array literal at top level" {
@@ -1383,7 +1385,7 @@ test "TLA: await inside array literal at top level" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS0002") != null);
 }
 
 test "TLA: await inside ternary expression at top level" {
@@ -1403,7 +1405,7 @@ test "TLA: await inside ternary expression at top level" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS0002") != null);
 }
 
 test "TLA: for_await_of_statement detected via AST tag" {
@@ -1426,7 +1428,7 @@ test "TLA: for_await_of_statement detected via AST tag" {
 
     try std.testing.expect(!result.hasErrors());
     // for await 감지 → CJS 경고
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS0002") != null);
     // codegen이 for await of를 올바르게 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for await") != null);
 }

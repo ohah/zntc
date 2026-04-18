@@ -28,6 +28,9 @@ pub const Code = enum(u16) {
     // 0001-0099: 타겟/호환성
     // ═══════════════════════════════════════════════════════
     top_level_await_target = 1,
+    /// Top-level await는 ESM 포맷 전용 — CJS/IIFE/UMD/AMD 에서는 런타임 동작 불가.
+    /// bundler emitter 에서 non-ESM 포맷 + TLA 조합 감지 시 경고로 emit.
+    tla_requires_esm_format = 2,
 
     // ═══════════════════════════════════════════════════════
     // 0100-0199: 번들러 — import/export/resolve
@@ -243,6 +246,7 @@ pub const Code = enum(u16) {
             .switch_duplicate_default => "A 'switch' can have at most one 'default' case — remove the duplicate.",
             // 타겟
             .top_level_await_target => "Set --target=es2022 or later, or wrap the code in an 'async' function.",
+            .tla_requires_esm_format => "Use --format=esm, or wrap the top-level await in an async IIFE.",
             // 번들러
             .unresolved_import => "Check the import path spelling and confirm the file exists.",
             .missing_export => "Verify the exported name. Use 'export * from' or named re-exports if needed.",
@@ -268,6 +272,7 @@ pub const Code = enum(u16) {
         return switch (self) {
             // 타겟
             .top_level_await_target => "Top-level await is not available in the configured target environment",
+            .tla_requires_esm_format => "Top-level await requires ESM output format",
             // 번들러
             .unresolved_import => "Could not resolve import",
             .missing_export => "Export not found in module",
