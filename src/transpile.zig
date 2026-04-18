@@ -163,7 +163,10 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
 
     // tsconfig.json 로드 + merge — JSON에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
     // `parsed.<field> == null` 인 필드만 tsconfig 값으로 채움. 이로써 JSON > tsconfig > default 우선순위 유지.
-    if (opts.tsconfig_path) |path| {
+    // WASM 타겟에선 filesystem 접근(path_open 등)이 preopen 없이 불가하므로 링크 단계에서
+    // 해당 import 가 바인딩되지 못해 실패한다. 런타임에서도 호출할 수 없으므로 아예 스킵.
+    const can_load_tsconfig = @import("builtin").os.tag != .wasi and @import("builtin").os.tag != .freestanding;
+    if (can_load_tsconfig) if (opts.tsconfig_path) |path| {
         const TsConfig = @import("config.zig").TsConfig;
         var ts = TsConfig.loadFromPath(allocator, path) catch return opts; // tsconfig 읽기 실패는 조용히 무시 (CLI와 동일)
         defer ts.deinit();
@@ -192,7 +195,7 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
                 }
             }
         }
-    }
+    };
 
     return opts;
 }
