@@ -78,6 +78,37 @@ test "stmt_info: import binding tracked" {
     try std.testing.expect(r.infos.stmts[1].referenced_symbols.len >= 1);
 }
 
+test "stmt_info: import 선언 stmt 자신은 local 심볼을 referenced로 보고하지 않음 (#1558 Phase 5)" {
+    // isImportLiveInModule이 entry import 자체를 "foo 참조"로 오해하지 않아야.
+    // import stmt 자신이 foo를 참조한다고 보면 foo는 다른 곳에서 사용 안 돼도
+    // always-live로 판정 → 불필요한 모듈 포함.
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\import { foo } from './lib';
+        \\console.log('no foo usage');
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), r.infos.stmts.len);
+
+    // import stmt는 foo를 declare하고, referenced_symbols에는 포함하지 않아야.
+    const import_stmt = r.infos.stmts[0];
+    try std.testing.expect(import_stmt.declared_symbols.len >= 1);
+    const foo_sym = import_stmt.declared_symbols[0];
+
+    // import stmt의 referenced_symbols에 foo가 없어야.
+    for (import_stmt.referenced_symbols) |ref| {
+        try std.testing.expect(ref != foo_sym);
+    }
+    // sym_to_referencing_stmts[foo]에 import stmt(index 0)가 없어야.
+    if (foo_sym < r.infos.sym_to_referencing_stmts.len) {
+        for (r.infos.sym_to_referencing_stmts[foo_sym]) |si| {
+            try std.testing.expect(si != 0);
+        }
+    }
+}
+
 test "stmt_info: reachability BFS" {
     const alloc = std.testing.allocator;
     var r = try buildTestInfos(alloc,
