@@ -28,6 +28,11 @@ const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 
+/// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
+/// 일반 export 이름과 겹치지 않도록 의도적으로 JS 식별자 아닌 `"*"` 선택.
+/// (export_bindings의 `exported_name == "*"`는 wildcard re-export로 의미가 다름 — 같은 문자열, 다른 공간)
+pub const ALL_EXPORTS_SENTINEL: []const u8 = "*";
+
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
     modules: []const Module,
@@ -457,9 +462,9 @@ pub const TreeShaker = struct {
 
             // used export 선언 statement 시드. 시드 대상:
             //   (1) entry: 번들 외부 사용자가 접근 가능 — 모든 export live.
-            //   (2) "*" sentinel 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
-            // non-entry·'*' 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
-            const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), "*");
+            //   (2) ALL_EXPORTS_SENTINEL 마킹된 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
+            // non-entry·sentinel 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
+            const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
             if (is_bfs_seed) {
                 const sem = m.semantic orelse continue;
                 if (sem.scope_maps.len == 0) continue;
@@ -885,11 +890,11 @@ pub const TreeShaker = struct {
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
         if (module_index >= self.modules.len) return;
         // 순환 export * 방지: 이미 처리한 모듈은 skip
-        if (self.isExportUsed(module_index, "*")) return;
-        try self.markExportUsed(module_index, "*"); // sentinel
+        if (self.isExportUsed(module_index, ALL_EXPORTS_SENTINEL)) return;
+        try self.markExportUsed(module_index, ALL_EXPORTS_SENTINEL);
         const m = self.modules[module_index];
         for (m.export_bindings) |eb| {
-            // re-export 소스 include는 "*" skip 전에 처리
+            // re-export 소스 include는 sentinel skip 전에 처리
             if (eb.kind.isReExportAll() or eb.kind == .re_export) {
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
