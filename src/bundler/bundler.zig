@@ -98,6 +98,9 @@ pub const BundleOptions = struct {
     preserve_symlinks: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
     alias: []const types.AliasEntry = &.{},
+    /// tsconfig `paths` (절대 경로로 정규화된 형태). `*` wildcard + 다중 후보 순차 시도.
+    /// alias 보다 먼저 매칭되며, resolver 가 파일 존재 확인까지 수행.
+    ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
     /// Fallback (webpack resolve.fallback / Metro extraNodeModules). 해석 실패 시에만 적용.
     fallback: []const types.FallbackEntry = &.{},
     /// Metro resolver.blockList 호환 — 매칭되는 절대 경로는 해석 차단.
@@ -365,6 +368,7 @@ pub const Bundler = struct {
                 .custom_conditions = options.conditions,
                 .preserve_symlinks = options.preserve_symlinks,
                 .alias = options.alias,
+                .ts_paths = options.ts_paths,
                 .fallback = options.fallback,
                 .block_list = options.block_list,
                 .resolve_extensions = options.resolve_extensions,

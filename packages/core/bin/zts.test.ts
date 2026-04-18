@@ -1255,6 +1255,50 @@ describe("CLI: tsconfig", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("tsconfig paths: 중간 wildcard (@pkg/*/types)", () => {
+    // TS 공식 스펙: `*` 가 key 중간에 있으면 해당 위치의 세그먼트가 capture 되어 target 에 대입.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-mid-wild-"));
+    mkdirSync(join(dir, "packages/foo/src"), { recursive: true });
+    mkdirSync(join(dir, "packages/bar/src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@pkg/*/types": ["./packages/*/src/types.ts"] } },
+      }),
+    );
+    writeFileSync(join(dir, "packages/foo/src/types.ts"), "export const T = 'FOO_TYPES';");
+    writeFileSync(join(dir, "packages/bar/src/types.ts"), "export const T = 'BAR_TYPES';");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      'import { T as F } from "@pkg/foo/types";\nimport { T as B } from "@pkg/bar/types";\nconsole.log(F, B);',
+    );
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("FOO_TYPES");
+    expect(stdout).toContain("BAR_TYPES");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: 다중 후보 순차 fallback (첫 번째 실패 시 두 번째)", () => {
+    // TS 공식 스펙: value 배열은 순서대로 시도. 첫 후보가 파일로 존재 안 하면 다음 후보로.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-multi-cand-"));
+    mkdirSync(join(dir, "vendor"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: { "@lib": ["./does-not-exist.ts", "./vendor/lib.ts"] },
+        },
+      }),
+    );
+    writeFileSync(join(dir, "vendor/lib.ts"), "export const L = 'FALLBACK_OK';");
+    writeFileSync(join(dir, "entry.ts"), 'import { L } from "@lib";\nconsole.log(L);');
+    const { stdout, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("FALLBACK_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("tsconfig paths: .js extension 매핑 — '@util' → './src/util.ts'", () => {
     // tsconfig 값이 ./src/util.ts 인데 source 가 ./src/util.js 로 import 해도
     // resolver 의 TS extension mapping 이 동작해야 함 (pre-existing 기능, 회귀 방지).
