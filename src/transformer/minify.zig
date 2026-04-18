@@ -83,6 +83,50 @@ fn formatNumber(ast: *Ast, value: f64) ?Span {
     return ast.addString(text) catch null;
 }
 
+/// `(expr)` 래핑을 재귀적으로 벗겨 실제 노드를 반환.
+/// parenthesized_expression는 semantic상 투명이므로 타입 판별/치환 전에 unwrap.
+fn unwrapParens(ast: *const Ast, node: Node) Node {
+    var cur = node;
+    while (cur.tag == .parenthesized_expression) {
+        const inner_ni: u32 = @intFromEnum(cur.data.unary.operand);
+        if (inner_ni >= ast.nodes.items.len) break;
+        cur = ast.nodes.items[inner_ni];
+    }
+    return cur;
+}
+
+/// 노드가 boolean primitive를 반환함이 정적으로 보장되는지 판별.
+/// `!!x → x` / `x === true → x` 류 축약에서 operand 타입 가드로 사용한다.
+/// 증명 못 하면 false — 축약을 거부해 semantic 보존 (#1577).
+///
+/// 참고:
+///   - oxc: peephole/minimize_not_expression.rs — `value_type().is_boolean()`
+///   - esbuild: js_ast_helpers.go — `KnownPrimitiveType() == PrimitiveBoolean`
+///   - swc: compress/optimize/ops.rs — `get_type() == Known(Type::Bool)`
+fn isGuaranteedBoolean(ast: *const Ast, node: Node) bool {
+    const inner = unwrapParens(ast, node);
+    return switch (inner.tag) {
+        .boolean_literal => true,
+        .unary_expression => blk: {
+            const e = inner.data.extra;
+            if (e + 1 >= ast.extra_data.items.len) break :blk false;
+            const op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            break :blk switch (op) {
+                .bang, .kw_delete => true,
+                else => false,
+            };
+        },
+        .binary_expression => blk: {
+            const op: Kind = @enumFromInt(inner.data.binary.flags);
+            break :blk switch (op) {
+                .eq3, .neq2, .eq2, .neq, .l_angle, .r_angle, .lt_eq, .gt_eq, .kw_in, .kw_instanceof => true,
+                else => false,
+            };
+        },
+        else => false,
+    };
+}
+
 /// AST minify 패스를 실행한다. ast를 in-place 수정.
 pub fn minify(ast: *Ast) void {
     for (ast.nodes.items, 0..) |node, i| {
@@ -245,9 +289,14 @@ fn simplifyBooleanComparison(
 
     // 양쪽 다 리터럴이면 foldStrictEquality에서 처리 (여기서는 축약하지 않음)
     const other_ni = if (left.tag == .boolean_literal) right_ni else left_ni;
-    const other = ast.nodes.items[other_ni];
-    if (other.tag == .boolean_literal or other.tag == .numeric_literal or
-        other.tag == .string_literal or other.tag == .null_literal) return false;
+    const other_raw = ast.nodes.items[other_ni];
+    if (other_raw.tag == .boolean_literal or other_raw.tag == .numeric_literal or
+        other_raw.tag == .string_literal or other_raw.tag == .null_literal) return false;
+
+    // other가 boolean임이 보장되지 않으면 축약 거부 — `y === true` 와 `y`는 다르다
+    // (y=1일 때 y===true는 false, y는 1). `!!x`와 같은 이유로 #1577에서 가드.
+    const other = unwrapParens(ast, other_raw);
+    if (!isGuaranteedBoolean(ast, other)) return false;
 
     // x === true → x, x === false → !x
     // x !== true → !x, x !== false → x
@@ -310,7 +359,9 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
 
     switch (op) {
         .bang => {
-            // !!x → x (double negation elimination)
+            // !!x → x — inner operand가 이미 boolean일 때만 안전 (#1577).
+            // 예: !!(a === b) → a === b. 그러나 !!variable은 ToBoolean 강제변환이
+            // 사라지므로 유지해야 함 (undefined/null/0 → false 보존).
             if (operand.tag == .unary_expression) {
                 const inner_e = operand.data.extra;
                 if (inner_e + 1 < ast.extra_data.items.len) {
@@ -318,8 +369,11 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
                     if (inner_op == .bang) {
                         const inner_operand_ni = ast.extra_data.items[inner_e];
                         if (inner_operand_ni < ast.nodes.items.len) {
-                            ast.nodes.items[node_idx] = ast.nodes.items[inner_operand_ni];
-                            return;
+                            const unwrapped = unwrapParens(ast, ast.nodes.items[inner_operand_ni]);
+                            if (isGuaranteedBoolean(ast, unwrapped)) {
+                                ast.nodes.items[node_idx] = unwrapped;
+                                return;
+                            }
                         }
                     }
                 }

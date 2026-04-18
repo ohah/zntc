@@ -253,45 +253,80 @@ test "minify: if false no else becomes empty" {
 // Phase 3: Boolean Simplification
 // ================================================================
 
-test "minify: double negation elimination" {
-    try expectMinify("const x = !!y;", "const x = y;");
+// `!!x`는 `ToBoolean(x)` 강제변환이므로 operand가 이미 boolean일 때만 축약 안전.
+// 증명 불가한 경우 유지 — oxc/esbuild/swc 모두 같은 가드 (#1577).
+
+test "minify: !! preserved on identifier (non-boolean)" {
+    try expectMinify("const x = !!y;", "const x = !!y;");
 }
 
-test "minify: double negation with expression" {
-    try expectMinify("const x = !!foo();", "const x = foo();");
+test "minify: !! preserved on function call" {
+    // 반환 타입을 정적으로 알 수 없음
+    try expectMinify("const x = !!foo();", "const x = !!foo();");
 }
 
-test "minify: x === true simplifies to x" {
-    try expectMinify("const x = y === true;", "const x = y;");
+test "minify: !! eliminated on strict equality" {
+    // a === b는 항상 boolean
+    try expectMinify("const x = !!(a === b);", "const x = a === b;");
 }
 
-test "minify: x === false simplifies to !x" {
-    try expectMinify("const x = y === false;", "const x = !y;");
+test "minify: !! eliminated on relational" {
+    try expectMinify("const x = !!(a < b);", "const x = a < b;");
 }
 
-test "minify: x !== true simplifies to !x" {
-    try expectMinify("const x = y !== true;", "const x = !y;");
+test "minify: !! eliminated on instanceof" {
+    try expectMinify("const x = !!(a instanceof B);", "const x = a instanceof B;");
 }
 
-test "minify: x !== false simplifies to x" {
-    try expectMinify("const x = y !== false;", "const x = y;");
-}
-
-test "minify: true === x simplifies to x" {
-    try expectMinify("const x = true === y;", "const x = y;");
-}
-
-test "minify: false === x simplifies to !x" {
-    try expectMinify("const x = false === y;", "const x = !y;");
-}
-
-test "minify: literal === literal not simplified here" {
-    // 양쪽 모두 리터럴이면 foldStrictEquality에서 처리
-    try expectMinify("const x = true === true;", "const x = true;");
+test "minify: !! preserved on logical AND" {
+    // `a && b`는 b 값을 반환 — boolean이 아닐 수 있음
+    try expectMinify("const x = !!(a && b);", "const x = !!(a && b);");
 }
 
 test "minify: triple negation reduces to single" {
+    // !!!y → !y : outer 노드의 inner_operand는 `!y`이고 `!y`는 보장 boolean
     try expectMinify("const x = !!!y;", "const x = !y;");
+}
+
+// x === true / x === false 축약도 같은 이유로 가드 (#1577).
+// `y = 1` 일 때 `y === true`는 false, `y`는 1 — 서로 다르다.
+
+test "minify: x === true preserved on non-boolean x" {
+    try expectMinify("const x = y === true;", "const x = y === true;");
+}
+
+test "minify: x === false preserved on non-boolean x" {
+    try expectMinify("const x = y === false;", "const x = y === false;");
+}
+
+test "minify: x !== true preserved on non-boolean x" {
+    try expectMinify("const x = y !== true;", "const x = y !== true;");
+}
+
+test "minify: x !== false preserved on non-boolean x" {
+    try expectMinify("const x = y !== false;", "const x = y !== false;");
+}
+
+test "minify: true === x preserved on non-boolean x" {
+    try expectMinify("const x = true === y;", "const x = true === y;");
+}
+
+test "minify: false === x preserved on non-boolean x" {
+    try expectMinify("const x = false === y;", "const x = false === y;");
+}
+
+test "minify: (a === b) === true simplifies — boolean-typed lhs" {
+    // 좌변이 비교 연산이면 boolean 보장 → 축약 가능
+    try expectMinify("const x = (a === b) === true;", "const x = a === b;");
+}
+
+test "minify: (!y) === true simplifies to !y — unary ! is boolean-typed" {
+    try expectMinify("const x = (!y) === true;", "const x = !y;");
+}
+
+test "minify: literal === literal still folds" {
+    // 양쪽 모두 리터럴이면 foldStrictEquality에서 처리
+    try expectMinify("const x = true === true;", "const x = true;");
 }
 
 // ================================================================
