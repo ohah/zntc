@@ -161,6 +161,51 @@ console.log(ad.x);
     expect(runInNode(out)).toBe("99\n5");
   });
 
+  // #1538 — @decorator가 붙은 `export [default] class`가 parser에서 drop되던 회귀 방지.
+  test("@decorator export class: decorator 보존 + export 유지 (#1538)", async () => {
+    const out = await transpileES5(`
+function tag(target: any, ctx: any) {
+  ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
+}
+@tag
+export class Named { hello() { return "named"; } }
+`);
+    expectNoEs6Syntax(out);
+    // export 키워드가 drop되지 않아야 한다 (이전엔 decorator가 silent drop되며 export도 유지되던 것이
+    // decorator 수정 과정에서 회귀로 사라졌었음).
+    expect(out).toMatch(/export\s*\{\s*Named\s*\}/);
+    // decorator가 제대로 처리되어 __esDecorate 호출이 생성되어야 한다.
+    expect(out).toMatch(/__esDecorate/);
+  });
+
+  test("@decorator export default class (named): let + export 분리 (#1538)", async () => {
+    const out = await transpileES5(`
+function tag(target: any, ctx: any) {
+  ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
+}
+@tag
+export default class C { hello() { return "c"; } }
+`);
+    expectNoEs6Syntax(out);
+    expect(out).toMatch(/export default\s+C\s*;/);
+    expect(out).toMatch(/__esDecorate/);
+  });
+
+  test("@decorator export default class (anonymous): 빈 변수명 없이 IIFE 감싸기 (#1538)", async () => {
+    const out = await transpileES5(`
+function tag(target: any, ctx: any) {
+  ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
+}
+@tag
+export default class { hello() { return "anon"; } }
+`);
+    expectNoEs6Syntax(out);
+    // 이전 회귀: `var  = (function() {...})()` 처럼 binding 이름이 빈 상태로 생성되던 버그.
+    expect(out).not.toMatch(/var\s+=\s*/);
+    expect(out).toMatch(/export default\s*\(/);
+    expect(out).toMatch(/__esDecorate/);
+  });
+
   // static block 내 this → class name 치환 (Stage 3 decorator와 독립된 일반 버그 수정)
   test("일반 static block: this → class name 치환", async () => {
     const out = await transpileES5(`

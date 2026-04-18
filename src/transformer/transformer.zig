@@ -1038,8 +1038,10 @@ pub const Transformer = struct {
                 const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
                 const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
                 // Stage 3 decorator는 unsupported.class 분기보다 먼저 돌려야 한다 — 반대면 decorator가 silent drop.
-                // Stage 3 출력은 IIFE로 감싼 class_expression을 포함하므로, ES5 target일 땐 재방문해서
-                // 내부 class_expression을 lowerClassExpression로 추가 다운레벨링한다.
+                // 이름 있는 class_declaration은 Stage 3 내부에서 outer_var_decl을 pending_nodes로 hoist하고
+                // `.none`을 반환하므로, export_named/default declaration이 이름을 감지해 `export { X };` 또는
+                // `export default X;` 형태로 분리한다 (#1538). 익명/class_expression은 iife_call을 직접 반환해
+                // 아래 visitNode 재방문이 arrow/let/static block을 ES5로 마저 다운레벨링한다.
                 if (try self.tryTransformStage3(target_node)) |stage3_result| {
                     if (self.options.unsupported.class) return self.visitNode(stage3_result);
                     return stage3_result;
@@ -4124,6 +4126,34 @@ pub const Transformer = struct {
         // export interface/type alias 등 타입 선언만 있으면 빈 export {} 제거
         // export { type Foo } from './a' 같은 re-export는 source가 있으므로 유지
         if (new_decl.isNone() and new_specs.len == 0 and new_source.isNone()) {
+            // `@dec export class Named`: Stage 3 decorator pass가 outer_var_decl을
+            // pending_nodes로 hoist하고 `.none`을 반환한 경우 — 원본 class 이름으로
+            // `export { Named };` specifier를 합성해 export 키워드가 drop되지 않게 한다.
+            const orig_decl_idx = self.readNodeIdx(e, 0);
+            if (!orig_decl_idx.isNone()) {
+                const orig_decl = self.ast.getNode(orig_decl_idx);
+                if (orig_decl.tag == .class_declaration) {
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[orig_decl.data.extra]);
+                    if (!name_idx.isNone()) {
+                        const name_span = self.ast.getNode(name_idx).data.string_ref;
+                        const local_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+                        const exported_ref = try self.ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = name_span,
+                            .data = .{ .string_ref = name_span },
+                        });
+                        const specifier = try self.ast.addNode(.{
+                            .tag = .export_specifier,
+                            .span = node.span,
+                            .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } },
+                        });
+                        const specs = try self.ast.addNodeList(&.{specifier});
+                        return self.addExtraNode(.export_named_declaration, node.span, &.{
+                            @intFromEnum(NodeIndex.none), specs.start, specs.len, @intFromEnum(NodeIndex.none),
+                        });
+                    }
+                }
+            }
             return NodeIndex.none;
         }
         return self.addExtraNode(.export_named_declaration, node.span, &.{
