@@ -326,7 +326,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .kw_class) {
         return self.parseClassWithDecorators(.class_declaration, decorators);
     } else if (self.current() == .kw_export) {
-        return self.parseExportDeclaration();
+        return @import("module.zig").parseExportDeclarationWithDecorators(self, decorators);
     } else if (self.isContextual("abstract")) {
         return parseTsAbstractClass(self);
     } else if (self.isContextual("declare")) {

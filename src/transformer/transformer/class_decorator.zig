@@ -2590,12 +2590,17 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         1, outer_decl_list.start, outer_decl_list.len, // 1 = let
     });
 
-    // ES5 target: outer_var_decl을 반환해 호출자(transformer.zig:1044)가 visitNode로 재방문,
-    // arrow/let/class/static block을 추가 다운레벨링하게 한다. pending_nodes로 넘기면
-    // class_declaration 위치에 .none이 박혀 재방문이 일어나지 않는다.
-    if (self.options.unsupported.class) return outer_var_decl;
-
-    try self.pending_nodes.append(self.allocator, outer_var_decl);
+    // pending_nodes로 hoist한 뒤 `.none` 반환 — export 컨텍스트에서
+    // `export default Named;` / `export { Named };`로 분리되는 pattern을 유지한다.
+    // ES5 target은 outer_var_decl 내부의 arrow/let/class/static block을 추가 다운레벨링하기
+    // 위해 pending에 push하기 전에 visitNode로 재방문한다.
+    const to_hoist = if (self.options.unsupported.class)
+        try self.visitNode(outer_var_decl)
+    else
+        outer_var_decl;
+    if (!to_hoist.isNone()) {
+        try self.pending_nodes.append(self.allocator, to_hoist);
+    }
     return .none;
 }
 

@@ -476,6 +476,12 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
 }
 
 pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
+    return parseExportDeclarationWithDecorators(self, .{ .start = 0, .len = 0 });
+}
+
+/// `@dec export [default] class`: decorators를 class_declaration으로 전파한다.
+/// parseDecoratedStatement가 이 경로로 위임하며, 일반 `parseExportDeclaration`은 빈 list로 호출.
+pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.NodeList) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // @__NO_SIDE_EFFECTS__ 주석이 export 키워드 앞에 있으면 캡처.
     // export function f() {} 형태에서 주석은 export 토큰에 붙지만,
@@ -519,7 +525,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 }
                 break :blk fn_decl;
             },
-            .kw_class => try self.parseClassDeclaration(),
+            .kw_class => try self.parseClassWithDecorators(.class_declaration, decorators),
             else => blk: {
                 // export default interface Foo {} — TS 전용, 런타임에 제거
                 if (self.current() == .kw_interface) {
@@ -532,7 +538,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     const peek = try self.peekNext();
                     if (peek.kind == .kw_class and !peek.has_newline_before) {
                         try self.advance(); // skip 'abstract'
-                        break :blk try self.parseClassDeclaration();
+                        break :blk try self.parseClassWithDecorators(.class_declaration, decorators);
                     }
                     // abstract 단독 → 식별자 expression (fallthrough)
                 }
@@ -804,7 +810,11 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // export var/let/const/function/class
-    const decl = try self.parseStatement();
+    // `@dec export class Foo {}` — decorators는 parseStatement를 거치면 drop되므로 여기서 직접 전달.
+    const decl = if (decorators.len > 0 and self.current() == .kw_class)
+        try self.parseClassWithDecorators(.class_declaration, decorators)
+    else
+        try self.parseStatement();
     // type-only 선언이면 export_named_declaration을 생성하지 않음.
     // 남으면 import_scanner가 has_esm_syntax=true로 잘못 판별하여
     // CJS 모듈이 __esm으로 래핑됨.
