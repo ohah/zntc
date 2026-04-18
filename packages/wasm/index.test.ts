@@ -77,6 +77,18 @@ describe("@zts/wasm", () => {
     expect(() => transpile("")).toThrow();
   });
 
+  test("빈 출력도 정상 반환 — TS 타입 전용 파일", () => {
+    // `type Foo`/`declare`만 있으면 스트리핑 후 출력이 0바이트.
+    // Zig 빈 slice의 `.ptr`이 sentinel이라 u64 packing + BigInt sign-extension 탓에
+    // JS에서 outPtr=-1로 나타나 RangeError가 발생하던 회귀 방지.
+    expect(transpile("type Foo = string;").code).toBe("");
+    expect(transpile("declare const x: number;").code).toBe("");
+    expect(transpile('import { foo } from "./bar";', { filename: "a.ts" }).code).toBe("");
+    // whitespace/comment-only 도 내용상 코드가 없음 → 빈 출력.
+    expect(transpile("   \n\t").code).toBe("");
+    expect(transpile("/* just a block comment */").code).toContain("/* just a block comment */");
+  });
+
   test("파싱 에러", () => {
     // miette 스타일 렌더: "× <message> [ZTS코드]"
     expect(() => transpile("const = ;")).toThrow(/\[ZTS\d{4}\]/);

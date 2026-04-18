@@ -181,7 +181,12 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     const errLen = wasm.get_error_len();
     const errMsg = errLen === 0 ? "" : readString(wasm.get_error_ptr(), errLen);
 
+    // outPtr=0 은 두 가지 의미를 갖는다:
+    //   1. 빈 출력 성공 (type-only 파일, 빈 입력 등) — outLen=0, errLen=0
+    //   2. 에러 (파싱/시맨틱 실패) — errLen>0
+    // 빈 출력은 errors 없이 code=""로 반환하고, 에러 경로에서만 throw한다.
     if (outPtr === 0) {
+      if (outLen === 0 && errLen === 0) return { code: "" };
       throw new Error(`zts-wasm: ${errMsg || "unknown error"}`);
     }
 

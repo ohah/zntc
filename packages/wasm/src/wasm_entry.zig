@@ -173,7 +173,12 @@ export fn transpile(
         break :blk result.code;
     };
 
-    const ptr: u32 = @intFromPtr(output.ptr);
+    // Zig slice의 `.ptr`은 len==0일 때 undefined로 허용되며, wasm_allocator는 이 경우 sentinel
+    // 포인터(예: 0xFFFFFFFF)를 리턴한다. 그대로 packed u64에 실어 JS로 넘기면
+    // i64 ↔ BigInt sign-extension을 거쳐 outPtr=-1이 되고 `new Uint8Array(buffer, -1, 0)`가
+    // RangeError를 던진다. 빈 출력은 성공 경로에서도 합법(예: type-only 파일)이므로
+    // ptr을 0으로 표준화하여 JS가 `{code:""}`로 해석하게 한다.
+    const ptr: u32 = if (output.len == 0) 0 else @intFromPtr(output.ptr);
     const len: u32 = @intCast(output.len);
     return (@as(u64, ptr) << 32) | @as(u64, len);
 }
