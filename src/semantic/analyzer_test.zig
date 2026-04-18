@@ -1141,3 +1141,122 @@ test "TLA: for-await-of at top-level no error when target >= es2022" {
 
     try std.testing.expectEqual(@as(usize, 0), r.analyzer.errors.items.len);
 }
+
+// ============================================================
+// ClassExpression name binding (#1592)
+// ============================================================
+// ECMAScript 15.7.14: ClassExpression의 name은 class body scope에
+// lexical binding되어 body 내부에서 self-reference로 보이고,
+// 외부 scope에서는 보이지 않는다.
+
+test "ClassExpression: name registered as class_decl in class body scope (#1592)" {
+    var scanner = try Scanner.init(std.testing.allocator, "const c = class Foo {};");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+    // `c` + `Foo` = 2 심볼이 있어야 함 (Foo가 심볼로 등록됐음을 검증)
+    var found_foo = false;
+    for (ana.symbols.items) |sym| {
+        if (sym.kind == .class_decl) {
+            const name = sym.nameText(parser.ast.source);
+            if (std.mem.eql(u8, name, "Foo")) found_foo = true;
+        }
+    }
+    try std.testing.expect(found_foo);
+}
+
+test "ClassExpression: self-reference in body increments reference_count (#1592)" {
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\const c = class Foo {
+        \\  m() { return Foo; }
+        \\};
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+    var foo_ref_count: u32 = 0;
+    var foo_found = false;
+    for (ana.symbols.items) |sym| {
+        if (sym.kind == .class_decl) {
+            const name = sym.nameText(parser.ast.source);
+            if (std.mem.eql(u8, name, "Foo")) {
+                foo_found = true;
+                foo_ref_count = sym.reference_count;
+            }
+        }
+    }
+    try std.testing.expect(foo_found);
+    // body 내부 `Foo` 참조 정확히 1회 — body scope 바깥은 이 심볼에 해소되지 않아야 함
+    try std.testing.expectEqual(@as(u32, 1), foo_ref_count);
+}
+
+test "ClassExpression: name without self-reference has reference_count 0 (#1592)" {
+    var scanner = try Scanner.init(std.testing.allocator, "const c = class Foo { m() { return 1; } };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+    for (ana.symbols.items) |sym| {
+        if (sym.kind == .class_decl) {
+            const name = sym.nameText(parser.ast.source);
+            if (std.mem.eql(u8, name, "Foo")) {
+                try std.testing.expectEqual(@as(u32, 0), sym.reference_count);
+                return;
+            }
+        }
+    }
+    try std.testing.expect(false); // Foo 심볼이 있어야 함
+}
+
+test "ClassExpression: name scoped to class body — not visible outside (#1592)" {
+    // class body 바깥의 `Foo`는 ClassExpression name을 참조할 수 없다 (별개 scope).
+    // 번들 시 body scope를 벗어난 참조는 별개 심볼이거나 unresolved.
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\const c = class Foo { m() { return Foo; } };
+        \\const outer = Foo;
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    // body 내부 Foo: reference_count >= 1, body 외부 Foo: 별개 심볼(unresolved) 이거나
+    // 같은 Foo에 바인딩되지 않아야 함.
+    // 검증: class_decl Foo의 ref_count는 body 내부 참조(1회)만 반영.
+    for (ana.symbols.items) |sym| {
+        if (sym.kind == .class_decl) {
+            const name = sym.nameText(parser.ast.source);
+            if (std.mem.eql(u8, name, "Foo")) {
+                // outer Foo 참조가 이 심볼로 resolve되면 ref_count == 2가 됨.
+                // 정확한 lexical binding이면 ref_count == 1.
+                try std.testing.expectEqual(@as(u32, 1), sym.reference_count);
+                return;
+            }
+        }
+    }
+    try std.testing.expect(false);
+}
