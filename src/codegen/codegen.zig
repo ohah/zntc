@@ -1236,13 +1236,16 @@ pub const Codegen = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 4];
         if (self.options.minify_whitespace) try self.write("for(") else try self.write("for (");
+        // in_for_init을 save/restore로 관리: init 안에 중첩된 for/for-in/for-of가 있으면
+        // 내부 for가 끝날 때 plain assignment로 되돌리지 않도록 해야 한다. (#1564 Case 1)
+        const saved_for_init = self.in_for_init;
         self.in_for_init = true;
         try self.emitNode(@enumFromInt(extras[0]));
         if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
+        self.in_for_init = saved_for_init;
         try self.emitNode(@enumFromInt(extras[1]));
         if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[2]));
-        self.in_for_init = false;
         try self.writeByte(')');
         try self.emitNode(@enumFromInt(extras[3]));
     }
@@ -1257,11 +1260,13 @@ pub const Codegen = struct {
             try self.writeIndent();
         }
         if (self.options.minify_whitespace) try self.write("for await(") else try self.write("for await (");
+        const saved_for_init = self.in_for_init;
+        const saved_skip_var_init = self.skip_var_init;
         self.in_for_init = true;
         self.skip_var_init = try self.shouldSkipVarInit(t.a);
         try self.emitNode(t.a);
-        self.in_for_init = false;
-        self.skip_var_init = false;
+        self.in_for_init = saved_for_init;
+        self.skip_var_init = saved_skip_var_init;
         try self.write(" of ");
         try self.emitNode(t.b);
         try self.writeByte(')');
@@ -1281,11 +1286,13 @@ pub const Codegen = struct {
         }
 
         if (self.options.minify_whitespace) try self.write("for(") else try self.write("for (");
+        const saved_for_init = self.in_for_init;
+        const saved_skip_var_init = self.skip_var_init;
         self.in_for_init = true;
         self.skip_var_init = try self.shouldSkipVarInit(t.a);
         try self.emitNode(t.a);
-        self.in_for_init = false;
-        self.skip_var_init = false;
+        self.in_for_init = saved_for_init;
+        self.skip_var_init = saved_skip_var_init;
         try self.writeByte(' ');
         try self.write(keyword);
         try self.writeByte(' ');

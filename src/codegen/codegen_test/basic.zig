@@ -167,6 +167,26 @@ test "Codegen: string enum re-export" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "export") != null);
 }
 
+// #1564 Case 1 회귀 가드: for init 안에 중첩된 for/for-in이 끝나면서
+// in_for_init 플래그를 false로 덮어쓰면, 바깥 for의 VariableDeclaration이
+// 자체적으로 세미콜론을 찍어 `;;`이 중복 출력되는 문제. save/restore로 해결.
+test "Codegen #1564: nested for-in inside outer for-init preserves in_for_init" {
+    var r = try e2e(std.testing.allocator,
+        \\for (var r, e = (function(n) { var m = {}; for (var k in n) m[k] = n[k]; return m; })({}), u = 0; !r; ) { r = true; }
+    );
+    defer r.deinit();
+    // `;;` (for init 뒤에 세미콜론 2개) 가 절대 출력되지 않아야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
+test "Codegen #1564: nested classic-for inside outer for-init preserves in_for_init" {
+    var r = try e2e(std.testing.allocator,
+        \\for (var a = (function() { for (var i = 0; i < 1; i++) {} return 0; })(), b = 1; a < 2; ) { a++; }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";;") == null);
+}
+
 // ============================================================
 // Peephole (#1552 P3): minify_syntax — boolean 축약
 // ============================================================
