@@ -41,10 +41,10 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const es2022 = @import("es2022.zig");
 
-const METHOD_FLAG_STATIC = ast_mod.MethodFlags.is_static;
-const METHOD_FLAG_SETTER = ast_mod.MethodFlags.is_setter;
 const MethodExtra = ast_mod.MethodExtra;
+const MethodFlags = ast_mod.MethodFlags;
 const PropertyExtra = ast_mod.PropertyExtra;
+const PropertyFlags = ast_mod.PropertyFlags;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
@@ -1425,10 +1425,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const me = member.data.extra;
                     const key: NodeIndex = self.readNodeIdx(me, MethodExtra.key);
                     const flags = self.readU32(me, MethodExtra.flags);
-                    const is_static = (flags & 0x01) != 0;
-                    const is_abstract = (flags & 0x20) != 0;
-                    const is_declare = (flags & 0x40) != 0;
-                    const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
+                    const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
+                    const is_abstract = (flags & ast_mod.MethodFlags.is_abstract) != 0;
+                    const is_declare = (flags & ast_mod.MethodFlags.is_declare) != 0;
+                    const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set (MethodFlags.is_getter/is_setter를 >>1 shift해 0/1/2 값으로)
 
                     // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
                     const method_body: NodeIndex = @enumFromInt(self.readU32(me, MethodExtra.body));
@@ -1581,7 +1581,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const key_idx = self.readNodeIdx(pe, PropertyExtra.key);
             const init_idx = self.readNodeIdx(pe, PropertyExtra.init);
             const flags = self.readU32(pe, PropertyExtra.flags);
-            const is_static = (flags & METHOD_FLAG_STATIC) != 0;
+            const is_static = (flags & PropertyFlags.is_static) != 0;
 
             const key_node = self.ast.getNode(key_idx);
             if (key_node.tag == .private_identifier) {
@@ -2609,7 +2609,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
                     const flags = self.readU32(me, MethodExtra.flags);
-                    const is_static = (flags & 0x01) != 0;
+                    const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                     const key: NodeIndex = self.readNodeIdx(me, MethodExtra.key);
                     const params_list_m = self.ast.functionParamsList(member);
 

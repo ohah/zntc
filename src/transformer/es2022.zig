@@ -207,9 +207,9 @@ pub fn ES2022(comptime Transformer: type) type {
                     if (lower_methods and member.tag == .method_definition) {
                         const me = member.data.extra;
                         const extras = self.ast.extra_data.items;
-                        const key: NodeIndex = @enumFromInt(extras[me]);
-                        const flags = extras[me + 3];
-                        const is_static = (flags & 0x01) != 0;
+                        const key: NodeIndex = @enumFromInt(extras[me + ast_mod.MethodExtra.key]);
+                        const flags = extras[me + ast_mod.MethodExtra.flags];
+                        const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                         if (key.isNone() or is_static) continue;
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) continue;

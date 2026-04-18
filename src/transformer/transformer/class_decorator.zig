@@ -588,12 +588,13 @@ pub fn classifyPropertyDefinition(
     const member_decorators = ctx.member_decorators;
     const me = member.data.extra;
     const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
-    const is_static = (flags & 0x01) != 0;
-    const is_abstract = (flags & 0x20) != 0;
-    const is_declare = (flags & 0x40) != 0;
+    const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
+    const is_abstract = (flags & ast_mod.PropertyFlags.is_abstract) != 0;
+    const is_declare = (flags & ast_mod.PropertyFlags.is_declare) != 0;
 
-    // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용 → 스트리핑
-    if (self.options.strip_types and (flags & 0xE0) != 0) {
+    // abstract / declare / Flow variance는 타입 전용 → 스트리핑
+    const type_only_mask = ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare | ast_mod.PropertyFlags.flow_variance;
+    if (self.options.strip_types and (flags & type_only_mask) != 0) {
         return;
     }
 
@@ -672,7 +673,7 @@ pub fn classifyMethodDefinition(
     const member_decorators = ctx.member_decorators;
     const me = member.data.extra;
     const flags = self.readU32(me, ast_mod.MethodExtra.flags);
-    const is_static = (flags & 0x01) != 0;
+    const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
     const params_list_m = self.ast.functionParamsList(member);
 
     // constructor 감지
@@ -1914,9 +1915,9 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const flags = self.readU32(me, ast_mod.MethodExtra.flags);
                 const deco_start = self.readU32(me, ast_mod.MethodExtra.deco_start);
                 const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
-                const is_static = (flags & 0x01) != 0;
-                const is_getter = (flags & 0x02) != 0;
-                const is_setter = (flags & 0x04) != 0;
+                const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
+                const is_getter = (flags & ast_mod.MethodFlags.is_getter) != 0;
+                const is_setter = (flags & ast_mod.MethodFlags.is_setter) != 0;
 
                 // constructor 감지
                 if (!is_getter and !is_setter and !is_static) {
@@ -2389,8 +2390,10 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
             for (new_members.items, 0..) |member_node_idx, mi| {
                 const m = self.ast.getNode(member_node_idx);
                 if (m.tag != .method_definition) continue;
-                const m_flags = self.readU32(m.data.extra, 3);
-                if ((m_flags & 0x07) != 0) continue; // getter/setter/static이면 skip
+                const m_flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
+                // static/getter/setter 중 하나라도 있으면 skip (plain instance constructor 아님)
+                const non_ctor_mask = ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter;
+                if ((m_flags & non_ctor_mask) != 0) continue;
                 const m_key_idx = self.readNodeIdx(m.data.extra, 0);
                 if (m_key_idx.isNone()) continue;
                 const m_key = self.ast.getNode(m_key_idx);

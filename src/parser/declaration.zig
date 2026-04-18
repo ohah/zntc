@@ -30,8 +30,8 @@ const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "over
 fn detectAbstractDeclare(self: *Parser) u16 {
     if (self.current() != .identifier) return 0;
     const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
-    if (std.mem.eql(u8, text, "abstract")) return 0x20;
-    if (std.mem.eql(u8, text, "declare")) return 0x40;
+    if (std.mem.eql(u8, text, "abstract")) return @intCast(ast_mod.MethodFlags.is_abstract);
+    if (std.mem.eql(u8, text, "declare")) return @intCast(ast_mod.MethodFlags.is_declare);
     return 0;
 }
 
@@ -545,7 +545,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             next != .r_curly and next != .eof and
             !(try self.peekNext()).has_newline_before)
         {
-            flags |= 0x01; // static modifier
+            flags |= @intCast(ast_mod.MethodFlags.is_static);
             try self.advance();
         }
     }
@@ -555,7 +555,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // static 키워드 소비 후, 프로퍼티 키 파싱 전에 variance marker를 건너뛴다.
     if (self.is_flow and (self.current() == .plus or self.current() == .minus)) {
         try self.advance(); // skip variance marker
-        flags |= 0x80; // Flow covariant/contravariant → type-only property
+        flags |= @intCast(ast_mod.PropertyFlags.flow_variance);
     }
 
     // static 뒤의 TS modifier도 소비 (static readonly x 등)
@@ -597,9 +597,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // get/set: 다음 토큰이 줄바꿈 없이 프로퍼티 이름이면 accessor, 아니면 필드 이름
     // 예: class A { get\n*x() {} } → get은 필드 (ASI), *x는 generator
     const accessor_flag: ?u16 = if (self.current() == .kw_get)
-        0x02
+        @intCast(ast_mod.MethodFlags.is_getter)
     else if (self.current() == .kw_set)
-        0x04
+        @intCast(ast_mod.MethodFlags.is_setter)
     else
         null;
     if (accessor_flag) |flag| {
@@ -623,13 +623,13 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .kw_async and try self.peekNextKind() != .l_paren and
         !(try self.peekNext()).has_newline_before)
     {
-        flags |= 0x08; // async flag
+        flags |= @intCast(ast_mod.MethodFlags.is_async);
         try self.advance();
     }
 
     // generator (선택): *method() {}
     if (try self.eat(.star)) {
-        flags |= 0x10; // generator flag
+        flags |= @intCast(ast_mod.MethodFlags.is_generator);
     }
 
     // TS 인덱스 시그니처: [key: string]: any — class body에서만 유효, 타입 스트리핑 대상
@@ -721,13 +721,14 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
                 self.ast.source[mk.span.start + 1 .. mk.span.end - 1]
             else
                 @as([]const u8, "");
-            if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
+            if ((flags & ast_mod.MethodFlags.is_static) != 0 and std.mem.eql(u8, method_name, "prototype")) {
                 try self.addErrorCode(mk.span, "Static class method cannot be named 'prototype'", .static_method_prototype);
             }
             // constructor는 일반 method만 가능 — getter/setter/generator/async 금지
-            if ((flags & 0x01) == 0 and std.mem.eql(u8, method_name, "constructor")) {
-                // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
-                if ((flags & 0x1E) != 0) {
+            if ((flags & ast_mod.MethodFlags.is_static) == 0 and std.mem.eql(u8, method_name, "constructor")) {
+                const invalid_mask = ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter |
+                    ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator;
+                if ((flags & invalid_mask) != 0) {
                     try self.addErrorCode(mk.span, "Class constructor cannot be a getter, setter, generator, or async", .class_constructor_invalid);
                 }
             }
@@ -819,7 +820,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             if (std.mem.eql(u8, key_text, "constructor")) {
                 try self.addErrorCode(key_node.span, "Class field cannot be named 'constructor'", .class_field_constructor);
             }
-            if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
+            if ((flags & ast_mod.PropertyFlags.is_static) != 0 and std.mem.eql(u8, key_text, "prototype")) {
                 try self.addErrorCode(key_node.span, "Static class field cannot be named 'prototype'", .static_field_prototype);
             }
         }

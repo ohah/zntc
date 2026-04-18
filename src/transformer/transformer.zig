@@ -3877,12 +3877,12 @@ pub const Transformer = struct {
 
     // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     // constructor의 parameter property (public x: number) 변환도 처리.
-    // abstract 메서드 (flags bit5=0x20)는 런타임에 존재하면 안 되므로 완전히 제거.
+    // abstract 메서드는 런타임에 존재하면 안 되므로 완전히 제거.
     pub fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const flags = self.readU32(e, 3);
+        const flags = self.readU32(e, ast_mod.MethodExtra.flags);
         // abstract 메서드는 타입 전용이므로 완전히 스트리핑
-        if (self.options.strip_types and (flags & 0x20) != 0) return NodeIndex.none;
+        if (self.options.strip_types and (flags & ast_mod.MethodFlags.is_abstract) != 0) return NodeIndex.none;
         // TS method overload signature: body가 없으면 제거
         if (self.readNodeIdx(e, 2).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
@@ -3914,7 +3914,7 @@ pub const Transformer = struct {
         const saved_new_target_ctx = self.new_target_ctx;
         if (self.options.unsupported.new_target) {
             const is_ctor = blk: {
-                if ((flags & 0x01) != 0) break :blk false; // static
+                if ((flags & ast_mod.MethodFlags.is_static) != 0) break :blk false;
                 const key_idx = self.readNodeIdx(e, 0);
                 const key_node = self.ast.getNode(key_idx);
                 if (key_node.tag == .identifier_reference) {
