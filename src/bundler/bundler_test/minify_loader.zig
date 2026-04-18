@@ -1306,6 +1306,139 @@ test "Minify: external import local binding preserved (#1581)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "readFileSync") != null);
 }
 
+test "Minify: non-entry default export synthetic `_default` is mangled (#1585)" {
+    // 중간 모듈의 `export default`로 생성된 `_default` 합성 심볼도 축약 대상.
+    // scope_maps[0]에 없는 합성 심볼이 mangler 후보에 포함되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import helper from './helper';
+        \\console.log(helper.x);
+    );
+    try writeFile(tmp.dir, "helper.ts",
+        \\export default { x: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // `_default` 원본 이름이 번들에 남아 있으면 안 된다 (suffix 포함)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") == null);
+    // 값(42)은 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Minify: multiple default exports collide — each `_default$N` is mangled (#1585)" {
+    // 두 중간 모듈이 각각 `export default`를 가질 때
+    // `_default`, `_default$2` 둘 다 mangling되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import a from './a';
+        \\import b from './b';
+        \\console.log(a.x + b.y);
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\export default { x: 10 };
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\export default { y: 20 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bun = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer bun.deinit();
+    const result = try bun.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 원본 합성 이름이 남으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") == null);
+    // 두 값 모두 보존 (실행 결과 불변)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "20") != null);
+}
+
+test "Minify: entry `export default` preserves external `default` keyword (#1585)" {
+    // entry의 default export는 외부로 나가는 public API.
+    // `export default <expr>` 구문과 `default` 키워드는 ESM 포맷에서 보존되어야 하고,
+    // inline expression에서 생성되는 합성 `_default`도 public이므로 보존.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export default { x: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM `default` export 구문 보존 (`export default ...` 또는 `export{...as default}`)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "default") != null);
+    // 값(42)은 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Minify: default export has no synthetic variable — no regression (#1585)" {
+    // default export가 없는 번들은 `_default` 심볼을 만들지 않으므로
+    // 본 PR 변경으로 부작용 없이 그대로 통과해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { named } from './lib';
+        \\console.log(named);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const named = 'hello';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "hello") != null);
+}
+
 // ============================================================
 // Asset Loader Tests
 // ============================================================
