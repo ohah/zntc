@@ -1267,19 +1267,9 @@ pub fn main() !void {
 
     // tsconfig `paths` / `baseUrl` → alias_list 뒤에 append.
     // applyAlias 는 리스트 순서대로 매칭하므로 사용자 `--alias` (앞) 가 우선.
-    // baseUrl 은 tsconfig.json 파일 위치 기준 상대 → 절대경로 조인.
     if (tsconfig.paths.len > 0) {
-        const tsconfig_dir = tsconfig_dir_early;
-        const dir_for_join: []const u8 = if (std.mem.endsWith(u8, tsconfig_dir, ".json"))
-            std.fs.path.dirname(tsconfig_dir) orelse "."
-        else
-            tsconfig_dir;
-        normalized_paths = lib.config.normalizePathsToAliases(
-            allocator,
-            dir_for_join,
-            tsconfig.paths,
-            tsconfig.base_url,
-        ) catch |err| blk: {
+        const dir_for_join = lib.config.tsconfigDirFromPath(tsconfig_dir_early);
+        normalized_paths = lib.config.normalizePathsToAliases(allocator, dir_for_join, &tsconfig) catch |err| blk: {
             try stderr.print("zts: warning: tsconfig paths normalization failed: {}\n", .{err});
             break :blk lib.config.NormalizedPaths{ .entries = &.{}, .owned_strings = &.{} };
         };

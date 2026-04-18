@@ -310,10 +310,8 @@ pub const TsConfig = struct {
         if (target.paths.len == 0 and base.paths.len > 0) {
             const duped = try allocator.alloc(TsConfig.PathEntry, base.paths.len);
             for (base.paths, 0..) |e, i| {
-                const from_d = try allocator.dupe(u8, e.from);
-                try target._allocated_strings.?.append(allocator, from_d);
-                const to_d = try allocator.dupe(u8, e.to);
-                try target._allocated_strings.?.append(allocator, to_d);
+                const from_d = try dupeAndTrack(allocator, e.from, &target._allocated_strings.?);
+                const to_d = try dupeAndTrack(allocator, e.to, &target._allocated_strings.?);
                 duped[i] = .{ .from = from_d, .to = to_d };
             }
             target.paths = duped;
@@ -321,12 +319,26 @@ pub const TsConfig = struct {
     }
 };
 
+/// TS `paths` 의 wildcard 접미사. 패턴 양쪽이 이 접미사로 끝나야 prefix alias 로 변환된다.
+const PATHS_WILDCARD_SUFFIX = "/*";
+/// tsconfig 파일 경로 판별 접미사 (디렉토리 인지 파일인지 구분).
+pub const TSCONFIG_FILE_EXT = ".json";
+
+/// 경로가 `.json` 파일이면 상위 디렉토리를, 아니면 경로 자체를 반환한다.
+/// CLI/NAPI 가 `-p`/`tsconfigPath` 로 파일과 디렉토리 둘 다 받을 때 공용으로 사용.
+pub fn tsconfigDirFromPath(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, TSCONFIG_FILE_EXT))
+        return std.fs.path.dirname(path) orelse ".";
+    return path;
+}
+
 /// tsconfig `paths` 항목의 wildcard 를 prefix alias 로 정규화한다.
 /// - `"@/*": "./src/*"` → `{from="@", to="./src"}` (prefix 매칭)
 /// - `"@utils": "./utils"` → `{from="@utils", to="./utils"}` (정확 매칭)
 /// - 한쪽만 wildcard 이거나 중간 wildcard 는 v1 에서 skip.
 ///
-/// baseUrl 이 주어지면 상대경로 value 를 `<baseUrl>/<value>` 로 join 한다.
+/// baseUrl 이 주어지면 상대경로 value 를 `<baseUrl>/<value>` 로 join 하며
+/// `std.fs.path.resolve` 로 `./././` 같은 불필요 세그먼트를 정규화한다.
 /// 반환된 슬라이스는 `allocator` 에 새로 할당됨 — caller 가 해제.
 pub const NormalizedPaths = struct {
     entries: []const TsConfig.PathEntry,
@@ -342,8 +354,7 @@ pub const NormalizedPaths = struct {
 pub fn normalizePathsToAliases(
     allocator: std.mem.Allocator,
     tsconfig_dir: []const u8,
-    raw_paths: []const TsConfig.PathEntry,
-    base_url: ?[]const u8,
+    tsconfig: *const TsConfig,
 ) error{OutOfMemory}!NormalizedPaths {
     var out: std.ArrayList(TsConfig.PathEntry) = .empty;
     errdefer out.deinit(allocator);
@@ -353,15 +364,16 @@ pub fn normalizePathsToAliases(
         owned.deinit(allocator);
     }
 
-    for (raw_paths) |p| {
+    for (tsconfig.paths) |p| {
         var from_src = p.from;
         var to_src = p.to;
-        const from_wild = std.mem.endsWith(u8, from_src, "/*");
-        const to_wild = std.mem.endsWith(u8, to_src, "/*");
-        if (from_wild != to_wild) continue; // 불일치 wildcard 는 스킵
+        const from_wild = std.mem.endsWith(u8, from_src, PATHS_WILDCARD_SUFFIX);
+        const to_wild = std.mem.endsWith(u8, to_src, PATHS_WILDCARD_SUFFIX);
+        // TS 규칙: wildcard 는 key/value 양쪽에 대칭으로 있어야 함 — 한쪽만 있으면 의미 불명확해 v1 은 skip.
+        if (from_wild != to_wild) continue;
         if (from_wild) {
-            from_src = from_src[0 .. from_src.len - 2];
-            to_src = to_src[0 .. to_src.len - 2];
+            from_src = from_src[0 .. from_src.len - PATHS_WILDCARD_SUFFIX.len];
+            to_src = to_src[0 .. to_src.len - PATHS_WILDCARD_SUFFIX.len];
         }
 
         // from 문자열은 원본 TsConfig 의 subspan 이라 TsConfig 가 먼저 deinit 되면 dangle 된다.
@@ -369,24 +381,15 @@ pub fn normalizePathsToAliases(
         const from_owned = try allocator.dupe(u8, from_src);
         try owned.append(allocator, from_owned);
 
-        // baseUrl 적용: to 가 상대경로면 <tsconfig_dir>/<baseUrl>/<to>.
-        const resolved_to: []const u8 = if (std.fs.path.isAbsolute(to_src)) blk_abs: {
-            // 절대 경로도 TsConfig subspan 이므로 복사.
-            const abs_owned = try allocator.dupe(u8, to_src);
-            try owned.append(allocator, abs_owned);
-            break :blk_abs abs_owned;
-        } else blk: {
-            const base_dir = if (base_url) |b|
-                try std.fs.path.join(allocator, &.{ tsconfig_dir, b })
-            else
-                try allocator.dupe(u8, tsconfig_dir);
-            defer allocator.free(base_dir);
-            const joined = try std.fs.path.join(allocator, &.{ base_dir, to_src });
-            try owned.append(allocator, joined);
-            break :blk joined;
-        };
+        // baseUrl 적용 + 절대 경로로 normalize. `std.fs.path.resolve` 가 `./././` 같은
+        // 불필요 세그먼트를 정리하고 상대/절대 모두 일관된 절대 경로로 만든다.
+        const joined = if (tsconfig.base_url) |b|
+            try std.fs.path.resolve(allocator, &.{ tsconfig_dir, b, to_src })
+        else
+            try std.fs.path.resolve(allocator, &.{ tsconfig_dir, to_src });
+        try owned.append(allocator, joined);
 
-        try out.append(allocator, .{ .from = from_owned, .to = resolved_to });
+        try out.append(allocator, .{ .from = from_owned, .to = joined });
     }
 
     return .{
@@ -413,14 +416,23 @@ fn parsePathsObject(
         const first = val.array.items[0];
         if (first != .string) continue;
 
-        const key_d = try allocator.dupe(u8, key);
-        try allocated_strings.append(allocator, key_d);
-        const val_d = try allocator.dupe(u8, first.string);
-        try allocated_strings.append(allocator, val_d);
+        const key_d = try dupeAndTrack(allocator, key, allocated_strings);
+        const val_d = try dupeAndTrack(allocator, first.string, allocated_strings);
         try list.append(allocator, .{ .from = key_d, .to = val_d });
     }
 
     return list.toOwnedSlice(allocator);
+}
+
+/// 문자열을 dupe 하고 `allocated_strings` 에 등록해 나중에 일괄 해제되게 한다.
+fn dupeAndTrack(
+    allocator: std.mem.Allocator,
+    s: []const u8,
+    allocated_strings: *std.ArrayList([]const u8),
+) ![]const u8 {
+    const duped = try allocator.dupe(u8, s);
+    try allocated_strings.append(allocator, duped);
+    return duped;
 }
 
 /// JSON 객체에서 문자열 값을 복사(dupe)하여 반환한다.
@@ -434,9 +446,7 @@ fn dupeJsonString(
 ) !?[]const u8 {
     const v = co.get(key) orelse return null;
     if (v != .string) return null;
-    const duped = try allocator.dupe(u8, v.string);
-    try allocated_strings.append(allocator, duped);
-    return duped;
+    return try dupeAndTrack(allocator, v.string, allocated_strings);
 }
 
 /// optional 문자열 merge: target이 null이고 base에 값이 있으면 복사.

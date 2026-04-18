@@ -2283,12 +2283,9 @@ fn parseBuildOptions(
 
     // tsconfig paths → alias_list 뒤에 append (JS --alias 가 이미 들어있어서 그게 우선).
     if (tsconfig_path_opt != null and tsconfig_holder.paths.len > 0) {
-        const tsconfig_file = tsconfig_path_opt.?;
-        const dir_for_join: []const u8 = if (std.mem.endsWith(u8, tsconfig_file, ".json"))
-            std.fs.path.dirname(tsconfig_file) orelse "."
-        else
-            tsconfig_file;
-        if (@import("zts_lib").config.normalizePathsToAliases(native_alloc, dir_for_join, tsconfig_holder.paths, tsconfig_holder.base_url)) |norm| {
+        const lib_config = @import("zts_lib").config;
+        const dir_for_join = lib_config.tsconfigDirFromPath(tsconfig_path_opt.?);
+        if (lib_config.normalizePathsToAliases(native_alloc, dir_for_join, &tsconfig_holder)) |norm| {
             // owned_strings (절대경로 조인 결과) 는 alias 가 shallow-copy 되는 동안 살아있어야 함 →
             // opts 전체 수명을 따라가도록 tracker 에 등록.
             if (norm.owned_strings.len > 0) {
