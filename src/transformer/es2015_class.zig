@@ -56,6 +56,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
+            // lowerClassExpression과 동일: class body는 독립 this 스코프이므로 arrow_this_depth 리셋.
+            const saved_arrow_depth = self.arrow_this_depth;
+            self.arrow_this_depth = 0;
+            defer self.arrow_this_depth = saved_arrow_depth;
+
             const name_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.name);
             const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
             const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
@@ -97,7 +102,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 클래스 바디 멤버 분류
-            var cm = try classifyMembers(self, body_idx, span);
+            var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
             const saved_private_fields = self.current_private_fields;
@@ -276,6 +281,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             const span = node.span;
 
+            // Class body는 독립된 this 스코프. 외부 arrow의 arrow_this_depth가 leak되면
+            // field initializer의 `this`가 `_this`로 잘못 치환된다 (Stage 3 decorator 재방문 케이스).
+            const saved_arrow_depth = self.arrow_this_depth;
+            self.arrow_this_depth = 0;
+            defer self.arrow_this_depth = saved_arrow_depth;
+
             const name_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.name);
             const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
             const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
@@ -316,7 +327,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
 
             // 바디 멤버 분류
-            var cm = try classifyMembers(self, body_idx, span);
+            var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
             const saved_private_fields = self.current_private_fields;
@@ -1387,7 +1398,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return total;
         }
 
-        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
+        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span, class_name_span: Span) Transformer.Error!ClassifiedMembers {
             const body_node = self.ast.getNode(body_idx);
             const members_start = body_node.data.list.start;
             const members_len = body_node.data.list.len;
@@ -1521,6 +1532,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (!sb_body_idx.isNone()) {
                         const sb_body = self.ast.getNode(sb_body_idx);
                         if (sb_body.tag == .block_statement) {
+                            // Class IIFE body로 flatten할 때 static block의 `this`는 class 자체를
+                            // 가리키던 scope가 사라진다. transformer.zig:1135의 치환 훅을 활성화해
+                            // this → class name identifier로 바꾼다. 중첩 함수 안의 this는
+                            // this_depth > 0이므로 영향받지 않음.
+                            const saved_sb_name = self.static_block_class_name;
+                            const saved_sb_depth = self.this_depth;
+                            self.static_block_class_name = class_name_span;
+                            self.this_depth = 0;
+                            defer {
+                                self.static_block_class_name = saved_sb_name;
+                                self.this_depth = saved_sb_depth;
+                            }
                             const sb_stmts_start = sb_body.data.list.start;
                             const sb_stmts_len = sb_body.data.list.len;
                             var i_loop: u32 = 0;
