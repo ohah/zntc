@@ -90,6 +90,7 @@ test "TsConfig.load - missing file returns defaults" {
     try std.testing.expect(config.strict == false);
     try std.testing.expect(config.experimental_decorators == false);
     try std.testing.expect(config.emit_decorator_metadata == false);
+    try std.testing.expect(config.verbatim_module_syntax == false);
 }
 
 test "TsConfig.load - parse compilerOptions" {
@@ -114,7 +115,8 @@ test "TsConfig.load - parse compilerOptions" {
         \\    "declaration": true,
         \\    "strict": true,
         \\    "experimentalDecorators": true,
-        \\    "emitDecoratorMetadata": true
+        \\    "emitDecoratorMetadata": true,
+        \\    "verbatimModuleSyntax": true
         \\  }
         \\}
     ;
@@ -138,6 +140,7 @@ test "TsConfig.load - parse compilerOptions" {
     try std.testing.expect(config.strict == true);
     try std.testing.expect(config.experimental_decorators == true);
     try std.testing.expect(config.emit_decorator_metadata == true);
+    try std.testing.expect(config.verbatim_module_syntax == true);
 }
 
 test "TsConfig.load - JSONC with comments" {

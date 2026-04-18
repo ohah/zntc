@@ -86,6 +86,8 @@ pub const BundleOptions = struct {
     emit_decorator_metadata: bool = false,
     /// useDefineForClassFields=false (tsconfig)
     use_define_for_class_fields: bool = true,
+    /// verbatimModuleSyntax=true (tsconfig/CLI): unused value import를 elide하지 않음.
+    verbatim_module_syntax: bool = false,
     /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
     unsupported: compat.UnsupportedFeatures = .{},
     /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
@@ -408,6 +410,7 @@ pub const Bundler = struct {
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,
             .use_define_for_class_fields = self.options.use_define_for_class_fields,
+            .verbatim_module_syntax = self.options.verbatim_module_syntax,
             .unsupported = self.options.unsupported,
             .public_path = self.options.public_path,
             .banner_js = self.options.banner_js,
@@ -744,6 +747,8 @@ pub const Bundler = struct {
                 const result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
                     .flow = true,
                     .jsx_in_js = self.options.jsx_in_js,
+                    // 폴리필도 verbatim 규칙을 따라야 함 — 그래야 번들 본체와 동일한 import 처리 정책.
+                    .verbatim_module_syntax = self.options.verbatim_module_syntax,
                 }) catch {
                     break :blk raw; // 트랜스파일 실패 시 원본 사용
                 };

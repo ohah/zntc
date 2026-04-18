@@ -46,6 +46,9 @@ pub const TsConfig = struct {
     /// null = 설정 안 됨 (기본값은 target에 따라 결정: ES2022+ → true, 이전 → false).
     /// ZTS에서는 명시적으로 false로 설정한 경우에만 assign semantics 적용.
     use_define_for_class_fields: ?bool = null,
+    /// "verbatimModuleSyntax" (TS 5.0+): true면 값 import를 elide하지 않는다.
+    /// esbuild/vite/swc(isolatedModules) 의 표준 동작과 동일.
+    verbatim_module_syntax: bool = false,
 
     /// allocator로 할당된 문자열들을 해제하기 위한 참조.
     /// load()에서 내부적으로 사용하며, deinit() 시 해제된다.
@@ -199,6 +202,9 @@ pub const TsConfig = struct {
                 if (co.get("useDefineForClassFields")) |v| {
                     if (v == .bool) config.use_define_for_class_fields = v.bool;
                 }
+                if (co.get("verbatimModuleSyntax")) |v| {
+                    if (v == .bool) config.verbatim_module_syntax = v.bool;
+                }
             }
         }
 
@@ -251,6 +257,7 @@ pub const TsConfig = struct {
         if (base.strict) target.strict = true;
         if (base.experimental_decorators) target.experimental_decorators = true;
         if (base.emit_decorator_metadata) target.emit_decorator_metadata = true;
+        if (base.verbatim_module_syntax) target.verbatim_module_syntax = true;
         // optional bool: target이 null이면 base에서 상속
         if (target.use_define_for_class_fields == null) {
             target.use_define_for_class_fields = base.use_define_for_class_fields;

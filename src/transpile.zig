@@ -34,6 +34,7 @@ pub const TranspileOptions = struct {
     use_define_for_class_fields: bool = true,
     experimental_decorators: bool = false,
     emit_decorator_metadata: bool = false,
+    verbatim_module_syntax: bool = false,
     drop_console: bool = false,
     drop_debugger: bool = false,
 
@@ -89,6 +90,7 @@ pub const TranspileOptionsDto = struct {
     experimentalDecorators: ?bool = null,
     emitDecoratorMetadata: ?bool = null,
     useDefineForClassFields: ?bool = null,
+    verbatimModuleSyntax: ?bool = null,
     format: ?@import("codegen/codegen.zig").ModuleFormat = null,
     quotes: ?@import("codegen/codegen.zig").QuoteStyle = null,
     platform: ?@import("codegen/codegen.zig").Platform = null,
@@ -137,6 +139,7 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     if (parsed.experimentalDecorators) |v| opts.experimental_decorators = v;
     if (parsed.emitDecoratorMetadata) |v| opts.emit_decorator_metadata = v;
     if (parsed.useDefineForClassFields) |v| opts.use_define_for_class_fields = v;
+    if (parsed.verbatimModuleSyntax) |v| opts.verbatim_module_syntax = v;
     if (parsed.format) |v| opts.module_format = v;
     if (parsed.quotes) |v| opts.quote_style = v;
     if (parsed.platform) |v| opts.platform = v;
@@ -287,6 +290,7 @@ pub fn transpileWithCallback(
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
         .emit_decorator_metadata = options.emit_decorator_metadata,
+        .verbatim_module_syntax = options.verbatim_module_syntax,
         .unsupported = options.unsupported,
         // JSX lowering: JSX가 있는 모듈에서만 활성화
         .jsx_transform = parser.ast.has_jsx,

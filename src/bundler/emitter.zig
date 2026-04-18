@@ -83,6 +83,8 @@ pub const EmitOptions = struct {
     emit_decorator_metadata: bool = false,
     /// useDefineForClassFields=false
     use_define_for_class_fields: bool = true,
+    /// verbatimModuleSyntax=true: unused value import 를 elide 하지 않음.
+    verbatim_module_syntax: bool = false,
     /// Unsupported features bitmask (ES/엔진 타겟에서 변환됨)
     unsupported: @import("../transformer/transformer.zig").TransformOptions.compat.UnsupportedFeatures = .{},
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
@@ -828,6 +830,7 @@ pub fn emitModule(
         .experimental_decorators = options.experimental_decorators,
         .emit_decorator_metadata = options.emit_decorator_metadata,
         .use_define_for_class_fields = options.use_define_for_class_fields,
+        .verbatim_module_syntax = options.verbatim_module_syntax,
         .unsupported = options.unsupported,
         .drop_labels = options.drop_labels,
         .jsx_transform = jsx_active,

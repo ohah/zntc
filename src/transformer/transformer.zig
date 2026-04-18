@@ -92,6 +92,10 @@ pub const TransformOptions = struct {
     /// emitDecoratorMetadata: __metadata("design:paramtypes", [...]) 호출 주입.
     /// NestJS, Angular, TypeORM 등 reflect-metadata 기반 DI에 필요.
     emit_decorator_metadata: bool = false,
+    /// verbatimModuleSyntax (TS 5.0+): true면 값 import를 elide하지 않는다.
+    /// `import type`만 제거되고 `import { foo } from "./bar"`는 foo가 미사용이라도 보존.
+    /// esbuild/vite/swc(isolatedModules) 표준 동작. 기본 false (tsc 기본과 동일).
+    verbatim_module_syntax: bool = false,
     /// Unsupported features bitmask. feature별로 다운레벨링 여부를 결정.
     /// ESTarget(es2020) 또는 엔진 버전(chrome80,safari14)에서 변환됨.
     unsupported: compat.UnsupportedFeatures = .{},
@@ -4064,7 +4068,10 @@ pub const Transformer = struct {
 
         // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
         // side-effect import는 specifier가 없으므로 제거 불가.
-        if (self.symbols.len > 0 and self.symbol_ids.items.len > 0 and x.specs_len > 0) {
+        // verbatimModuleSyntax=true면 elision 생략 — 값 import는 그대로 보존.
+        if (!self.options.verbatim_module_syntax and
+            self.symbols.len > 0 and self.symbol_ids.items.len > 0 and x.specs_len > 0)
+        {
             if (self.areAllSpecifiersUnused(x.specs_start, x.specs_len)) return .none;
         }
 
