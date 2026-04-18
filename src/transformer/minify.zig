@@ -1,13 +1,17 @@
-//! ZTS AST Minifier — Phase 1: Constant Folding
+//! ZTS AST Constant Folding & Dead Branch Elimination
 //!
-//! transformer 완료 후 ast를 in-place 수정하여 코드 크기를 줄인다.
-//! 별도 패스로 실행 — transformer와 독립적, 끄면 기존 동작 보장.
+//! transformer 완료 후 ast를 in-place 수정. bundler/emitter가 항상 호출(#1552).
+//! `--define`으로 주입된 상수 비교/리터럴 분기 정리가 `--minify` 없이도 동작해야
+//! rolldown/esbuild와 같은 DCE 효과가 난다.
 //!
-//! Phase 1: Constant folding
-//!   - 숫자 이항연산: 1 + 2 → 3
-//!   - 문자열 연결: "a" + "b" → "ab"
-//!   - 단항 연산: !true → false, !0 → true, typeof "x" → "string"
-//!   - 비교: 1 === 1 → true, "a" === "b" → false
+//! 하는 일:
+//!   - 이항/단항 상수 폴딩: 1+2→3, "a"+"b"→"ab", !true→false, typeof "x"→"string"
+//!   - 엄격 비교: 1===1→true, "a"==="b"→false
+//!   - 논리 단락: true && x → x, false || x → x, null ?? x → x
+//!   - if / while / ?: dead branch 제거
+//!   - sequence/comma 정리
+//!
+//! 하지 않는 것: 식별자 mangling, 주석 제거 (별도 --minify / codegen peephole 영역).
 //!
 //! 참고:
 //!   - oxc peephole/fold_constants.rs
