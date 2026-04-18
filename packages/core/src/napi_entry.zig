@@ -195,6 +195,15 @@ fn getObjectBool(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, default
     return result;
 }
 
+/// bool 필드의 tri-state 조회 — 키가 없으면 null, 있으면 실제 값.
+/// tsconfig 머지 시 "JS 가 명시적으로 false" 와 "JS 가 생략" 을 구분하기 위해 사용.
+fn getObjectBoolOptional(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8) ?bool {
+    const val = getNamedProperty(env, obj, key) orelse return null;
+    var result: bool = false;
+    if (c.napi_get_value_bool(env, val, &result) != c.napi_ok) return null;
+    return result;
+}
+
 fn getObjectUint32(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, default_val: u32) u32 {
     const val = getNamedProperty(env, obj, key) orelse return default_val;
     var result: u32 = default_val;
@@ -2251,6 +2260,28 @@ fn parseBuildOptions(
     const outfile = ownStr(env, opts_obj, "outfile", owned_strings);
     const outbase = ownStr(env, opts_obj, "outbase", owned_strings);
     const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
+    const tsconfig_path_opt = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
+
+    // tsconfig.json 로드 + 머지 — JS 옵션이 명시적으로 설정된 필드가 있으면 그게 우선.
+    // 미지정 필드만 tsconfig 값으로 채움 (CLI 와 동일 규칙: JS > tsconfig > default).
+    const TsConfig = @import("zts_lib").config.TsConfig;
+    var tsconfig_holder: TsConfig = .{};
+    if (tsconfig_path_opt) |p| {
+        tsconfig_holder = TsConfig.loadFromPath(native_alloc, p) catch TsConfig{};
+    }
+    defer tsconfig_holder.deinit();
+
+    const exp_dec_js = getObjectBoolOptional(env, opts_obj, "experimentalDecorators");
+    const emit_meta_js = getObjectBoolOptional(env, opts_obj, "emitDecoratorMetadata");
+    const udff_js = getObjectBoolOptional(env, opts_obj, "useDefineForClassFields");
+    const verbatim_js = getObjectBoolOptional(env, opts_obj, "verbatimModuleSyntax");
+
+    const experimental_decorators_eff = exp_dec_js orelse tsconfig_holder.experimental_decorators;
+    // emitDecoratorMetadata 는 experimentalDecorators 가 켜진 경우에만 유효 (tsc 규칙).
+    const emit_decorator_metadata_eff = emit_meta_js orelse
+        (tsconfig_holder.emit_decorator_metadata and experimental_decorators_eff);
+    const use_define_for_class_fields_eff = udff_js orelse (tsconfig_holder.use_define_for_class_fields orelse true);
+    const verbatim_module_syntax_eff = verbatim_js orelse tsconfig_holder.verbatim_module_syntax;
     const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
     const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
     const root_dir = ownStr(env, opts_obj, "rootDir", owned_strings);
@@ -2346,9 +2377,10 @@ fn parseBuildOptions(
         .flow = getObjectBool(env, opts_obj, "flow", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.flow),
         .jsx_in_js = getObjectBool(env, opts_obj, "jsxInJs", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.jsx_in_js),
         .charset_utf8 = getObjectBool(env, opts_obj, "charsetUtf8", false),
-        .use_define_for_class_fields = getObjectBool(env, opts_obj, "useDefineForClassFields", true),
-        .experimental_decorators = getObjectBool(env, opts_obj, "experimentalDecorators", false),
-        .emit_decorator_metadata = getObjectBool(env, opts_obj, "emitDecoratorMetadata", false),
+        .use_define_for_class_fields = use_define_for_class_fields_eff,
+        .experimental_decorators = experimental_decorators_eff,
+        .emit_decorator_metadata = emit_decorator_metadata_eff,
+        .verbatim_module_syntax = verbatim_module_syntax_eff,
         .banner_js = banner_js,
         .footer_js = footer_js,
         .global_name = global_name,

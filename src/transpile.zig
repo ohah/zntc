@@ -35,6 +35,9 @@ pub const TranspileOptions = struct {
     experimental_decorators: bool = false,
     emit_decorator_metadata: bool = false,
     verbatim_module_syntax: bool = false,
+    /// tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 로드해서 compilerOptions 적용.
+    /// CLI `-p`/`--project` 의 프로그램적 등가물 — NAPI/WASM 경로에서 같은 동작을 JS 에 제공.
+    tsconfig_path: ?[]const u8 = null,
     drop_console: bool = false,
     drop_debugger: bool = false,
 
@@ -91,6 +94,7 @@ pub const TranspileOptionsDto = struct {
     emitDecoratorMetadata: ?bool = null,
     useDefineForClassFields: ?bool = null,
     verbatimModuleSyntax: ?bool = null,
+    tsconfigPath: ?[]const u8 = null,
     format: ?@import("codegen/codegen.zig").ModuleFormat = null,
     quotes: ?@import("codegen/codegen.zig").QuoteStyle = null,
     platform: ?@import("codegen/codegen.zig").Platform = null,
@@ -140,6 +144,9 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     if (parsed.emitDecoratorMetadata) |v| opts.emit_decorator_metadata = v;
     if (parsed.useDefineForClassFields) |v| opts.use_define_for_class_fields = v;
     if (parsed.verbatimModuleSyntax) |v| opts.verbatim_module_syntax = v;
+    if (parsed.tsconfigPath) |s| if (s.len > 0) {
+        opts.tsconfig_path = s;
+    };
     if (parsed.format) |v| opts.module_format = v;
     if (parsed.quotes) |v| opts.quote_style = v;
     if (parsed.platform) |v| opts.platform = v;
@@ -153,6 +160,39 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
         opts.source_root = s;
     };
     if (parsed.define) |d| opts.define = d;
+
+    // tsconfig.json 로드 + merge — JSON에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
+    // `parsed.<field> == null` 인 필드만 tsconfig 값으로 채움. 이로써 JSON > tsconfig > default 우선순위 유지.
+    if (opts.tsconfig_path) |path| {
+        const TsConfig = @import("config.zig").TsConfig;
+        var ts = TsConfig.loadFromPath(allocator, path) catch return opts; // tsconfig 읽기 실패는 조용히 무시 (CLI와 동일)
+        defer ts.deinit();
+
+        if (parsed.experimentalDecorators == null and ts.experimental_decorators) {
+            opts.experimental_decorators = true;
+        }
+        if (parsed.emitDecoratorMetadata == null and ts.emit_decorator_metadata and opts.experimental_decorators) {
+            opts.emit_decorator_metadata = true;
+        }
+        if (parsed.useDefineForClassFields == null) {
+            if (ts.use_define_for_class_fields) |v| opts.use_define_for_class_fields = v;
+        }
+        if (parsed.verbatimModuleSyntax == null and ts.verbatim_module_syntax) {
+            opts.verbatim_module_syntax = true;
+        }
+        if (parsed.sourcemap == null and ts.source_map) {
+            opts.sourcemap = true;
+        }
+        // target: "es2020" 문자열 → ESTarget enum 변환 후 옵션 미지정이면 적용
+        if (parsed.target == null and opts.es_target == null) {
+            if (ts.target) |t_str| {
+                if (std.meta.stringToEnum(compat.ESTarget, t_str)) |t| {
+                    opts.es_target = t;
+                    if (parsed.unsupported == null) opts.unsupported = compat.fromESTarget(t);
+                }
+            }
+        }
+    }
 
     return opts;
 }
