@@ -2168,9 +2168,9 @@ pub const Codegen = struct {
             try self.write(" = ");
         }
 
-        if (flags & 0x01 != 0) try self.write("async ");
+        if (flags & ast_mod.FunctionFlags.is_async != 0) try self.write("async ");
         try self.write("function");
-        if (flags & 0x02 != 0) try self.writeByte('*');
+        if (flags & ast_mod.FunctionFlags.is_generator != 0) try self.writeByte('*');
         if (!name.isNone() and !convert_fn_to_assign) {
             try self.writeByte(' ');
             try self.emitNode(name);
@@ -2187,7 +2187,6 @@ pub const Codegen = struct {
     }
 
     /// arrow_function_expression: extra = [params, body, flags]
-    /// flags: 0x01 = async
     fn emitArrow(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -2206,7 +2205,7 @@ pub const Codegen = struct {
             self.fnMapExit() catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
         };
 
-        if (flags & 0x01 != 0) try self.write("async ");
+        if (flags & ast_mod.ArrowFlags.is_async != 0) try self.write("async ");
 
         // params 출력 — #1283 이후 항상 formal_parameters 노드. 괄호는 codegen이 부착.
         if (!params.isNone()) {
