@@ -1255,6 +1255,52 @@ describe("CLI: tsconfig", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("tsconfig paths: 자동 발견 — entry 상위 디렉토리에서 tsconfig.json 탐색", () => {
+    // `-p` 없이도 entry 가 깊은 서브디렉토리에 있으면 상위로 올라가며 tsconfig.json 을 찾는다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-auto-discover-"));
+    mkdirSync(join(dir, "src", "deep"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }),
+    );
+    writeFileSync(join(dir, "src", "utils.ts"), "export function hello() { return 'AUTO_OK'; }");
+    writeFileSync(
+      join(dir, "src", "deep", "entry.ts"),
+      'import { hello } from "@/utils";\nconsole.log(hello());',
+    );
+    // `-p` 없이 실행
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "src", "deep", "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("AUTO_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tsconfig paths: 이중 '*' key 또는 비대칭 wildcard 는 경고 + skip", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-warn-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            "@bad/**/y": ["./src/x.ts"], // key 에 '*' 두 개 → ts(5073) 스킵
+            "@mix/*": ["./src/plain.ts"], // key wildcard + target 비wildcard → ts(5063) 스킵
+            "@ok/*": ["./src/*"], // 유효
+          },
+        },
+      }),
+    );
+    writeFileSync(join(dir, "src", "hello.ts"), "export const H = 'ok_valid';");
+    writeFileSync(join(dir, "entry.ts"), 'import { H } from "@ok/hello";\nconsole.log(H);');
+    const { stdout, stderr, exitCode } = runCli(["--bundle", "-p", dir, join(dir, "entry.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("ok_valid");
+    // 잘못된 entry 2 건은 경고 로그 — stderr 에 키워드 포함되는지 확인.
+    expect(stderr).toContain("5073");
+    expect(stderr).toContain("5063");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("tsconfig paths: 중간 wildcard (@pkg/*/types)", () => {
     // TS 공식 스펙: `*` 가 key 중간에 있으면 해당 위치의 세그먼트가 capture 되어 target 에 대입.
     const dir = mkdtempSync(join(tmpdir(), "zts-cli-paths-mid-wild-"));
