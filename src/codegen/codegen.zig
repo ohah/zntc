@@ -2358,7 +2358,7 @@ pub const Codegen = struct {
 
         try self.emitMemberDecorators(deco_start, deco_len);
 
-        if (flags & 0x01 != 0) try self.write("static ");
+        if (flags & ast_mod.PropertyFlags.is_static != 0) try self.write("static ");
         try self.emitNode(key);
         if (!value.isNone()) {
             try self.writeSpace();
@@ -2405,7 +2405,7 @@ pub const Codegen = struct {
 
         try self.emitMemberDecorators(deco_start, deco_len);
 
-        if (flags & 0x01 != 0) try self.write("static ");
+        if (flags & ast_mod.PropertyFlags.is_static != 0) try self.write("static ");
         try self.write("accessor ");
         try self.emitNode(key);
         if (!value.isNone()) {

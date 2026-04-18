@@ -2003,7 +2003,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
                 const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
                 const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
-                const is_static = (flags & 0x01) != 0;
+                const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
 
                 // key를 한 번만 방문
                 const key_idx_prop = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
@@ -2087,7 +2087,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                 const flags = self.readU32(me, ast_mod.PropertyExtra.flags);
                 const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
                 const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
-                const is_static = (flags & 0x01) != 0;
+                const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
 
                 const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
                 const new_key = try self.visitNode(key_idx);

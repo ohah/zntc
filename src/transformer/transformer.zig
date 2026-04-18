@@ -4043,7 +4043,7 @@ pub const Transformer = struct {
         const e = node.data.extra;
         const flags = self.readU32(e, 2);
         // declare accessor는 타입 전용이므로 완전히 스트리핑
-        if (self.options.strip_types and (flags & 0x40) != 0) return NodeIndex.none;
+        if (self.options.strip_types and (flags & ast_mod.PropertyFlags.is_declare) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
