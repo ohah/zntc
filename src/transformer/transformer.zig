@@ -163,6 +163,14 @@ pub const TransformOptions = struct {
     /// true일 때 worklet body의 `new X()` 감지 시 `X__classFactory`를 closure에 자동 주입하지 않음.
     disable_worklet_classes: bool = false,
 
+    /// `--minify-syntax` 활성화 — AST 레벨 의미 보존 축약을 허용 (#1587 등).
+    /// 예: 미참조 class expression name 익명화, 잉여 parens 제거(codegen).
+    minify_syntax: bool = false,
+
+    /// `--keep-names` 활성화 — 함수/클래스 이름을 `.name` 프로퍼티로 보존해야 하므로
+    /// minify_syntax 기반 이름 제거 최적화를 비활성화.
+    keep_names: bool = false,
+
     pub const compat = @import("compat.zig");
 };
 

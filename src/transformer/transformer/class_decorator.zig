@@ -28,7 +28,15 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     // Fast path: useDefineForClassFields=true AND !experimentalDecorators → 기존 동작
     // 멤버별 분류가 불필요하므로 body를 통째로 방문한다.
     if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
-        const new_name = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.name));
+        const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
+        // #1587: class_expression의 name이 body 내부에서 참조되지 않으면 익명화.
+        // #1592로 ClassExpression name이 body scope 심볼로 등록되어
+        // reference_count == 0이 정확한 "미참조" 시그널. ClassDeclaration은 외부
+        // scope 심볼이라 body 내부 ref만 count되지 않으므로 대상에서 제외.
+        const new_name = if (shouldDropClassExprName(self, node.tag, raw_name_idx))
+            ast_mod.NodeIndex.none
+        else
+            try self.visitNode(raw_name_idx);
         const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
 
         var current_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
@@ -251,6 +259,9 @@ fn wrapClassExprInIIFE(
 /// experimental decorator를 __decorateClass 호출로 변환한다.
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
     // TODO(es2021): apply same IIFE wrapping for class_expression with private methods — see wrapClassExprInIIFE in fast path
+    // NOTE(#1587): class expression anonymization은 fast path에서만 적용한다. 이 경로는
+    //   experimental decorator / useDefineForClassFields=false 등으로 body를 멤버 단위로
+    //   분류하므로 reference_count 기반 판단을 재평가해야 한다. 후속 작업.
     const e = node.data.extra;
     const has_super = !self.readNodeIdx(e, ast_mod.ClassExtra.super).isNone();
     const new_name = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.name));
@@ -3524,4 +3535,21 @@ fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, ini
     } else {
         return prev_call;
     }
+}
+
+/// #1587: class_expression의 name이 body 내부 self-reference 없이 선언된 경우 true.
+/// - `minify_syntax` + `!keep_names` + class_expression + name 존재 + reference_count == 0 필요.
+/// - #1592로 ClassExpression name이 class body scope 심볼로 등록되므로 body 내부 참조만
+///   reference_count에 누적됨. ClassDeclaration name은 외부 scope에 등록되어 내부 사용이
+///   여전히 count되므로 본 predicate는 항상 false를 반환.
+fn shouldDropClassExprName(self: *Transformer, tag: Tag, name_idx: NodeIndex) bool {
+    if (!self.options.minify_syntax) return false;
+    if (self.options.keep_names) return false;
+    if (tag != .class_expression) return false;
+    if (name_idx.isNone()) return false;
+    const node_i = @intFromEnum(name_idx);
+    if (node_i >= self.symbol_ids.items.len) return false;
+    const sym_id = self.symbol_ids.items[node_i] orelse return false;
+    if (sym_id >= self.symbols.len) return false;
+    return self.symbols[sym_id].reference_count == 0;
 }
