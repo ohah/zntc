@@ -128,6 +128,29 @@ pub const TsConfig = struct {
         return loadFile(allocator, path, "tsconfig.json", 0);
     }
 
+    /// `start_dir` 에서 시작해 상위 디렉토리로 올라가며 첫 `tsconfig.json` 을 찾는다.
+    /// 찾으면 해당 디렉토리를 `allocator.dupe` 로 반환 (caller 가 free). 없으면 null.
+    /// esbuild/vite 등 zero-config 번들러의 기본 탐색 동작. fs 루트(`/`) 까지 올라가고 종료.
+    pub fn findTsconfigUpward(allocator: std.mem.Allocator, start_dir: []const u8) !?[]const u8 {
+        const cwd = std.fs.cwd();
+        var current = try std.fs.path.resolve(allocator, &.{start_dir});
+        defer allocator.free(current);
+
+        while (true) {
+            const candidate = try std.fs.path.join(allocator, &.{ current, "tsconfig.json" });
+            defer allocator.free(candidate);
+            if (cwd.access(candidate, .{})) |_| {
+                return try allocator.dupe(u8, current);
+            } else |_| {}
+
+            const parent = std.fs.path.dirname(current) orelse return null;
+            if (std.mem.eql(u8, parent, current)) return null; // 루트 도달
+            const parent_owned = try allocator.dupe(u8, parent);
+            allocator.free(current);
+            current = parent_owned;
+        }
+    }
+
     /// 특정 파일명으로 tsconfig를 로드한다 (extends 체인에서 사용).
     /// depth: extends 재귀 깊이 (무한 루프 방지, 최대 10단계)
     fn loadFile(
@@ -340,6 +363,14 @@ pub const TsConfig = struct {
 /// tsconfig 파일 경로 판별 접미사 (디렉토리 인지 파일인지 구분).
 pub const TSCONFIG_FILE_EXT = ".json";
 
+/// stderr 에 경고를 직접 출력한다. `std.log.warn` 은 NAPI 라이브러리 컨텍스트에서 drop 되는
+/// 경우가 있어 (호스트가 log 콜백을 제공 안 하면 silent) 확실하게 도달하려면 fd 2 에 직접 쓴다.
+fn warnToStderr(comptime fmt: []const u8, args: anytype) void {
+    // Zig 0.15: std.fs.File.writer() 는 buffer 가 필요하므로 deprecatedWriter() 사용 —
+    // stderr 는 buffering 불필요하고 main.zig 도 동일 패턴.
+    std.fs.File.stderr().deprecatedWriter().print(fmt, args) catch {};
+}
+
 /// Resolver 에 주입할 수 있도록 target prefix 를 절대 경로로 만든 형태.
 /// `tsconfig_dir` + `base_url` + target.prefix 를 `std.fs.path.resolve` 로 조인.
 /// entry 구조는 `TsConfig.PathEntry` 와 동일 — 해석(matching) 코드는 양쪽에 재사용 가능.
@@ -438,7 +469,11 @@ fn parsePathsObject(
         const val = entry.value_ptr.*;
         if (val != .array or val.array.items.len == 0) continue;
 
-        const parsed_key = splitWildcard(key) orelse continue; // `*` 2 개 이상이면 null → skip
+        const parsed_key = splitWildcard(key) orelse {
+            // ts(5073): Pattern '...' can have at most one '*' character.
+            warnToStderr("zts: tsconfig paths key '{s}' has more than one '*' — skipped (ts 5073)\n", .{key});
+            continue;
+        };
         const key_prefix_d = try dupeAndTrack(allocator, parsed_key.prefix, allocated_strings);
         const key_suffix_d = try dupeAndTrack(allocator, parsed_key.suffix, allocated_strings);
 
@@ -446,9 +481,18 @@ fn parsePathsObject(
         errdefer targets.deinit(allocator);
         for (val.array.items) |v| {
             if (v != .string) continue;
-            const parsed_t = splitWildcard(v.string) orelse continue;
-            // key 와 wildcard 유무가 다르면 ts(5063) 에 해당 — 해당 후보만 skip.
-            if (parsed_t.has_wildcard != parsed_key.has_wildcard) continue;
+            const parsed_t = splitWildcard(v.string) orelse {
+                warnToStderr("zts: tsconfig paths target '{s}' has more than one '*' — skipped (ts 5073)\n", .{v.string});
+                continue;
+            };
+            // ts(5063): key/target 의 wildcard 유무가 대칭이어야 함. 비대칭이면 해당 후보만 skip.
+            if (parsed_t.has_wildcard != parsed_key.has_wildcard) {
+                warnToStderr(
+                    "zts: tsconfig paths '{s}' → '{s}' has mismatched '*' — target skipped (ts 5063)\n",
+                    .{ key, v.string },
+                );
+                continue;
+            }
             const tp = try dupeAndTrack(allocator, parsed_t.prefix, allocated_strings);
             const ts = try dupeAndTrack(allocator, parsed_t.suffix, allocated_strings);
             try targets.append(allocator, .{ .prefix = tp, .suffix = ts });

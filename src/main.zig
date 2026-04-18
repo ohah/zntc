@@ -1201,14 +1201,21 @@ pub fn main() !void {
     }
 
     // tsconfig.json 로드 — 번들/트랜스파일 양쪽에서 사용.
-    // 우선순위: --project/--tsconfig-path 경로 > 입력 파일의 부모 디렉토리 > CWD
+    // 우선순위: --project/--tsconfig-path 경로 > entry 디렉토리에서 상위로 자동 탐색 > CWD
     // loadFromPath 는 파일/디렉토리 둘 다 받으므로 `-p ./tsconfig.json` 도 동작.
-    const tsconfig_dir_early: []const u8 = if (opts.project_path) |pp|
-        pp
-    else if (opts.input_file) |inp|
+    const entry_dir_start: []const u8 = if (opts.input_file) |inp|
         if (!std.mem.eql(u8, inp, "-")) (std.fs.path.dirname(inp) orelse ".") else "."
     else
         ".";
+    var autodiscovered_dir: ?[]const u8 = null;
+    defer if (autodiscovered_dir) |d| allocator.free(d);
+    const tsconfig_dir_early: []const u8 = if (opts.project_path) |pp|
+        pp
+    else blk: {
+        // esbuild/vite 스타일 zero-config: entry 디렉토리에서 위로 올라가며 tsconfig.json 탐색.
+        autodiscovered_dir = TsConfig.findTsconfigUpward(allocator, entry_dir_start) catch null;
+        break :blk autodiscovered_dir orelse entry_dir_start;
+    };
     var tsconfig = TsConfig.loadFromPath(allocator, tsconfig_dir_early) catch TsConfig{};
     defer tsconfig.deinit();
 

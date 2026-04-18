@@ -2258,13 +2258,25 @@ fn parseBuildOptions(
     const outfile = ownStr(env, opts_obj, "outfile", owned_strings);
     const outbase = ownStr(env, opts_obj, "outbase", owned_strings);
     const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
-    const tsconfig_path_opt = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
+    const tsconfig_path_js = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
 
     // tsconfig.json 로드 + 머지 — JS 옵션이 명시적으로 설정된 필드가 있으면 그게 우선.
     // 머지 규칙은 `src/tsconfig_merge.zig` 의 공용 helper 에 위임 — transpile.zig / main.zig 와 일관.
+    // JS 가 tsconfigPath 를 주지 않았으면 entry 디렉토리에서 상위로 자동 탐색 (esbuild/vite 스타일).
     const TsConfig = @import("zts_lib").config.TsConfig;
     const tsconfig_merge = @import("zts_lib").tsconfig_merge;
     var tsconfig_holder: TsConfig = .{};
+    var autodiscovered_dir: ?[]const u8 = null;
+    defer if (autodiscovered_dir) |d| native_alloc.free(d);
+    const tsconfig_path_opt: ?[]const u8 = tsconfig_path_js orelse blk: {
+        // entry 가 하나라도 있으면 그 디렉토리 기준, 없으면 CWD 기준으로 탐색.
+        const start_dir: []const u8 = if (entries.len > 0)
+            std.fs.path.dirname(entries[0]) orelse "."
+        else
+            ".";
+        autodiscovered_dir = TsConfig.findTsconfigUpward(native_alloc, start_dir) catch null;
+        break :blk autodiscovered_dir;
+    };
     if (tsconfig_path_opt) |p| {
         tsconfig_holder = TsConfig.loadFromPath(native_alloc, p) catch TsConfig{};
     }
