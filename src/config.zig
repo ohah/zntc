@@ -54,9 +54,11 @@ pub const TsConfig = struct {
     /// null 이면 tsconfig 디렉토리 자체가 기본.
     base_url: ?[]const u8 = null,
 
-    /// "paths": `{ "@/*": ["./src/*"], "@utils": ["./utils/index.ts"] }` 형태의 매핑.
-    /// 값 배열의 첫 항목만 사용 (TS 공식: 여러 후보는 순차 시도. ZTS 는 v1 에서 단일).
-    /// wildcard `*` 는 prefix 매칭으로 변환되어 resolver 에 전달됨.
+    /// "paths": `{ "@/*": ["./src/*", "./vendor/*"], "@utils": ["./utils/index.ts"] }` 매핑.
+    /// TS 공식 스펙:
+    /// - key 는 한 개의 `*` 를 위치 자유롭게 가질 수 있다 (prefix/middle/suffix 모두).
+    /// - value 배열의 각 후보는 key 와 동일한 `*` 유무를 가져야 함 (비대칭은 ts(5063) 에러).
+    /// - 다중 후보는 선언 순서대로 시도하여 첫 resolvable 파일을 사용.
     paths: []const PathEntry = &.{},
 
     /// allocator로 할당된 문자열들을 해제하기 위한 참조.
@@ -65,10 +67,19 @@ pub const TsConfig = struct {
     /// 할당된 문자열 목록. deinit() 시 모두 free된다.
     _allocated_strings: ?std.ArrayList([]const u8) = null,
 
-    /// "paths" 1 개 항목: key → 후보 경로 (첫 번째만 사용).
+    /// `paths` 1 항목. key 는 `*` 기준으로 prefix/suffix 로 분리, targets 는 후보 목록.
+    /// `has_wildcard = false` 이면 exact-match (key_prefix = 전체 key, key_suffix 빈 문자열).
     pub const PathEntry = struct {
-        from: []const u8,
-        to: []const u8,
+        key_prefix: []const u8,
+        key_suffix: []const u8,
+        has_wildcard: bool,
+        targets: []const Target,
+
+        /// value 배열의 한 항목. key 가 wildcard 면 target 도 대응하는 `*` 에서 분리됨.
+        pub const Target = struct {
+            prefix: []const u8,
+            suffix: []const u8,
+        };
     };
 
     /// TsConfig가 소유한 동적 메모리를 해제한다.
@@ -81,8 +92,9 @@ pub const TsConfig = struct {
                 }
                 list.deinit(allocator);
             }
-            // paths 슬라이스 자체는 allocator.alloc 으로 잡은 별도 메모리 (내부 문자열은
-            // _allocated_strings 가 소유).
+            // paths 슬라이스 + 각 entry.targets 슬라이스는 allocator 에 별도 할당. 내부 문자열은
+            // _allocated_strings 가 소유하므로 여기서는 컨테이너만 해제.
+            for (self.paths) |p| if (p.targets.len > 0) allocator.free(p.targets);
             if (self.paths.len > 0) allocator.free(self.paths);
         }
         self.paths = &.{};
@@ -310,19 +322,94 @@ pub const TsConfig = struct {
         if (target.paths.len == 0 and base.paths.len > 0) {
             const duped = try allocator.alloc(TsConfig.PathEntry, base.paths.len);
             for (base.paths, 0..) |e, i| {
-                const from_d = try dupeAndTrack(allocator, e.from, &target._allocated_strings.?);
-                const to_d = try dupeAndTrack(allocator, e.to, &target._allocated_strings.?);
-                duped[i] = .{ .from = from_d, .to = to_d };
+                const kp = try dupeAndTrack(allocator, e.key_prefix, &target._allocated_strings.?);
+                const ks = try dupeAndTrack(allocator, e.key_suffix, &target._allocated_strings.?);
+                const targets = try allocator.alloc(TsConfig.PathEntry.Target, e.targets.len);
+                for (e.targets, 0..) |t, j| {
+                    const tp = try dupeAndTrack(allocator, t.prefix, &target._allocated_strings.?);
+                    const ts = try dupeAndTrack(allocator, t.suffix, &target._allocated_strings.?);
+                    targets[j] = .{ .prefix = tp, .suffix = ts };
+                }
+                duped[i] = .{ .key_prefix = kp, .key_suffix = ks, .has_wildcard = e.has_wildcard, .targets = targets };
             }
             target.paths = duped;
         }
     }
 };
 
-/// TS `paths` 의 wildcard 접미사. 패턴 양쪽이 이 접미사로 끝나야 prefix alias 로 변환된다.
-const PATHS_WILDCARD_SUFFIX = "/*";
 /// tsconfig 파일 경로 판별 접미사 (디렉토리 인지 파일인지 구분).
 pub const TSCONFIG_FILE_EXT = ".json";
+
+/// Resolver 에 주입할 수 있도록 target prefix 를 절대 경로로 만든 형태.
+/// `tsconfig_dir` + `base_url` + target.prefix 를 `std.fs.path.resolve` 로 조인.
+/// entry 구조는 `TsConfig.PathEntry` 와 동일 — 해석(matching) 코드는 양쪽에 재사용 가능.
+pub const ResolvedPaths = struct {
+    entries: []const TsConfig.PathEntry,
+    owned_strings: [][]const u8,
+
+    pub fn deinit(self: *ResolvedPaths, allocator: std.mem.Allocator) void {
+        for (self.entries) |e| if (e.targets.len > 0) allocator.free(e.targets);
+        allocator.free(self.entries);
+        for (self.owned_strings) |s| allocator.free(s);
+        allocator.free(self.owned_strings);
+    }
+};
+
+/// tsconfig 의 paths 를 resolver 용 절대 경로 형태로 정규화한다.
+/// - target.prefix 는 `<tsconfig_dir>/<baseUrl>/<prefix>` 를 `std.fs.path.resolve` 로 정리
+/// - target.suffix 는 suffix 그대로 유지 (wildcard capture 뒤에 concat 되므로 절대화하지 않음)
+/// - entry 의 key_prefix/suffix/has_wildcard 는 그대로 복사
+pub fn resolveTsPaths(
+    allocator: std.mem.Allocator,
+    tsconfig_dir: []const u8,
+    tsconfig: *const TsConfig,
+) error{OutOfMemory}!ResolvedPaths {
+    var out_entries: std.ArrayList(TsConfig.PathEntry) = .empty;
+    errdefer out_entries.deinit(allocator);
+    var owned: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
+    }
+
+    for (tsconfig.paths) |p| {
+        var targets: std.ArrayList(TsConfig.PathEntry.Target) = .empty;
+        errdefer targets.deinit(allocator);
+
+        for (p.targets) |t| {
+            // `path.resolve` 를 여기서 쓰면 target.prefix 끝의 `/` 가 날아가 capture 와
+            // 붙을 때 경로 세그먼트 경계가 사라진다 (`"/foo/src/" + "greet"` → `"/foo/srcgreet"`).
+            // → `path.join` 으로 절대화만 하고, 최종 candidate 는 resolver 가 합치며 normalize.
+            const abs_prefix = if (tsconfig.base_url) |b|
+                try std.fs.path.join(allocator, &.{ tsconfig_dir, b, t.prefix })
+            else
+                try std.fs.path.join(allocator, &.{ tsconfig_dir, t.prefix });
+            try owned.append(allocator, abs_prefix);
+            // t.suffix 도 dupe — TsConfig 원본 subspan 을 참조하면 TsConfig.deinit 후 dangle.
+            const suffix_owned = try allocator.dupe(u8, t.suffix);
+            try owned.append(allocator, suffix_owned);
+            try targets.append(allocator, .{ .prefix = abs_prefix, .suffix = suffix_owned });
+        }
+
+        // key_prefix/suffix 도 TsConfig 의 문자열이므로 독립 수명으로 dupe.
+        const kp_owned = try allocator.dupe(u8, p.key_prefix);
+        try owned.append(allocator, kp_owned);
+        const ks_owned = try allocator.dupe(u8, p.key_suffix);
+        try owned.append(allocator, ks_owned);
+
+        try out_entries.append(allocator, .{
+            .key_prefix = kp_owned,
+            .key_suffix = ks_owned,
+            .has_wildcard = p.has_wildcard,
+            .targets = try targets.toOwnedSlice(allocator),
+        });
+    }
+
+    return .{
+        .entries = try out_entries.toOwnedSlice(allocator),
+        .owned_strings = try owned.toOwnedSlice(allocator),
+    };
+}
 
 /// 경로가 `.json` 파일이면 상위 디렉토리를, 아니면 경로 자체를 반환한다.
 /// CLI/NAPI 가 `-p`/`tsconfigPath` 로 파일과 디렉토리 둘 다 받을 때 공용으로 사용.
@@ -332,74 +419,11 @@ pub fn tsconfigDirFromPath(path: []const u8) []const u8 {
     return path;
 }
 
-/// tsconfig `paths` 항목의 wildcard 를 prefix alias 로 정규화한다.
-/// - `"@/*": "./src/*"` → `{from="@", to="./src"}` (prefix 매칭)
-/// - `"@utils": "./utils"` → `{from="@utils", to="./utils"}` (정확 매칭)
-/// - 한쪽만 wildcard 이거나 중간 wildcard 는 v1 에서 skip.
-///
-/// baseUrl 이 주어지면 상대경로 value 를 `<baseUrl>/<value>` 로 join 하며
-/// `std.fs.path.resolve` 로 `./././` 같은 불필요 세그먼트를 정규화한다.
-/// 반환된 슬라이스는 `allocator` 에 새로 할당됨 — caller 가 해제.
-pub const NormalizedPaths = struct {
-    entries: []const TsConfig.PathEntry,
-    owned_strings: [][]const u8,
-
-    pub fn deinit(self: *NormalizedPaths, allocator: std.mem.Allocator) void {
-        for (self.owned_strings) |s| allocator.free(s);
-        allocator.free(self.owned_strings);
-        allocator.free(self.entries);
-    }
-};
-
-pub fn normalizePathsToAliases(
-    allocator: std.mem.Allocator,
-    tsconfig_dir: []const u8,
-    tsconfig: *const TsConfig,
-) error{OutOfMemory}!NormalizedPaths {
-    var out: std.ArrayList(TsConfig.PathEntry) = .empty;
-    errdefer out.deinit(allocator);
-    var owned: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (owned.items) |s| allocator.free(s);
-        owned.deinit(allocator);
-    }
-
-    for (tsconfig.paths) |p| {
-        var from_src = p.from;
-        var to_src = p.to;
-        const from_wild = std.mem.endsWith(u8, from_src, PATHS_WILDCARD_SUFFIX);
-        const to_wild = std.mem.endsWith(u8, to_src, PATHS_WILDCARD_SUFFIX);
-        // TS 규칙: wildcard 는 key/value 양쪽에 대칭으로 있어야 함 — 한쪽만 있으면 의미 불명확해 v1 은 skip.
-        if (from_wild != to_wild) continue;
-        if (from_wild) {
-            from_src = from_src[0 .. from_src.len - PATHS_WILDCARD_SUFFIX.len];
-            to_src = to_src[0 .. to_src.len - PATHS_WILDCARD_SUFFIX.len];
-        }
-
-        // from 문자열은 원본 TsConfig 의 subspan 이라 TsConfig 가 먼저 deinit 되면 dangle 된다.
-        // owned_strings 로 복사해 alias 수명을 독립시킴.
-        const from_owned = try allocator.dupe(u8, from_src);
-        try owned.append(allocator, from_owned);
-
-        // baseUrl 적용 + 절대 경로로 normalize. `std.fs.path.resolve` 가 `./././` 같은
-        // 불필요 세그먼트를 정리하고 상대/절대 모두 일관된 절대 경로로 만든다.
-        const joined = if (tsconfig.base_url) |b|
-            try std.fs.path.resolve(allocator, &.{ tsconfig_dir, b, to_src })
-        else
-            try std.fs.path.resolve(allocator, &.{ tsconfig_dir, to_src });
-        try owned.append(allocator, joined);
-
-        try out.append(allocator, .{ .from = from_owned, .to = joined });
-    }
-
-    return .{
-        .entries = try out.toOwnedSlice(allocator),
-        .owned_strings = try owned.toOwnedSlice(allocator),
-    };
-}
-
 /// `compilerOptions.paths` JSON 객체 → `[]TsConfig.PathEntry`.
-/// 값 배열의 첫 항목만 사용한다 (TS 공식은 여러 후보 순차 시도이나 ZTS v1 은 단일).
+/// TS 스펙:
+/// - key 는 `*` 한 개를 아무 위치에나 가질 수 있다. 둘 이상의 `*` 는 skip (ts(5073)).
+/// - value 는 배열. 각 후보는 key 와 동일한 wildcard 유무를 가져야 함. 비대칭 후보는 skip.
+/// - 후보 배열의 선언 순서가 resolver 의 시도 순서.
 fn parsePathsObject(
     obj: std.json.ObjectMap,
     allocator: std.mem.Allocator,
@@ -413,15 +437,53 @@ fn parsePathsObject(
         const key = entry.key_ptr.*;
         const val = entry.value_ptr.*;
         if (val != .array or val.array.items.len == 0) continue;
-        const first = val.array.items[0];
-        if (first != .string) continue;
 
-        const key_d = try dupeAndTrack(allocator, key, allocated_strings);
-        const val_d = try dupeAndTrack(allocator, first.string, allocated_strings);
-        try list.append(allocator, .{ .from = key_d, .to = val_d });
+        const parsed_key = splitWildcard(key) orelse continue; // `*` 2 개 이상이면 null → skip
+        const key_prefix_d = try dupeAndTrack(allocator, parsed_key.prefix, allocated_strings);
+        const key_suffix_d = try dupeAndTrack(allocator, parsed_key.suffix, allocated_strings);
+
+        var targets: std.ArrayList(TsConfig.PathEntry.Target) = .empty;
+        errdefer targets.deinit(allocator);
+        for (val.array.items) |v| {
+            if (v != .string) continue;
+            const parsed_t = splitWildcard(v.string) orelse continue;
+            // key 와 wildcard 유무가 다르면 ts(5063) 에 해당 — 해당 후보만 skip.
+            if (parsed_t.has_wildcard != parsed_key.has_wildcard) continue;
+            const tp = try dupeAndTrack(allocator, parsed_t.prefix, allocated_strings);
+            const ts = try dupeAndTrack(allocator, parsed_t.suffix, allocated_strings);
+            try targets.append(allocator, .{ .prefix = tp, .suffix = ts });
+        }
+        if (targets.items.len == 0) {
+            targets.deinit(allocator);
+            continue;
+        }
+
+        try list.append(allocator, .{
+            .key_prefix = key_prefix_d,
+            .key_suffix = key_suffix_d,
+            .has_wildcard = parsed_key.has_wildcard,
+            .targets = try targets.toOwnedSlice(allocator),
+        });
     }
 
     return list.toOwnedSlice(allocator);
+}
+
+/// 패턴을 첫 `*` 기준으로 prefix/suffix 로 나눈다. `*` 이 없으면 prefix = 전체, suffix = "".
+/// `*` 이 둘 이상이면 null (ts(5073): "Pattern '...' can have at most one '*' character.").
+fn splitWildcard(pattern: []const u8) ?struct {
+    prefix: []const u8,
+    suffix: []const u8,
+    has_wildcard: bool,
+} {
+    const first_star = std.mem.indexOfScalar(u8, pattern, '*') orelse
+        return .{ .prefix = pattern, .suffix = "", .has_wildcard = false };
+    if (std.mem.indexOfScalarPos(u8, pattern, first_star + 1, '*') != null) return null;
+    return .{
+        .prefix = pattern[0..first_star],
+        .suffix = pattern[first_star + 1 ..],
+        .has_wildcard = true,
+    };
 }
 
 /// 문자열을 dupe 하고 `allocated_strings` 에 등록해 나중에 일괄 해제되게 한다.

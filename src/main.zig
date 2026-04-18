@@ -1212,9 +1212,10 @@ pub fn main() !void {
     var tsconfig = TsConfig.loadFromPath(allocator, tsconfig_dir_early) catch TsConfig{};
     defer tsconfig.deinit();
 
-    // tsconfig paths → alias 변환 결과. main 함수 끝까지 유지해야 alias 슬라이스가 dangle 하지 않음.
-    var normalized_paths: lib.config.NormalizedPaths = .{ .entries = &.{}, .owned_strings = &.{} };
-    defer normalized_paths.deinit(allocator);
+    // tsconfig `paths` 를 resolver 용 절대 경로 형태로 정규화. main 함수 끝까지 유지해야
+    // bundler 가 shallow-copy 한 슬라이스가 dangle 하지 않는다.
+    var resolved_paths: lib.config.ResolvedPaths = .{ .entries = &.{}, .owned_strings = &.{} };
+    defer resolved_paths.deinit(allocator);
 
     // tsconfig 값 적용 — CLI 옵션이 우선, 미지정 옵션만 tsconfig에서 가져옴
     if (opts.module_format == .esm) {
@@ -1265,17 +1266,15 @@ pub fn main() !void {
         opts.jsx_import_source = tsconfig.jsx_import_source;
     }
 
-    // tsconfig `paths` / `baseUrl` → alias_list 뒤에 append.
-    // applyAlias 는 리스트 순서대로 매칭하므로 사용자 `--alias` (앞) 가 우선.
+    // tsconfig `paths` / `baseUrl` → resolver 의 `ts_paths` 로 전달.
+    // TS 스펙: 다중 candidate + wildcard anywhere + 후보 순차 시도를 resolver 가 수행한다.
+    // 사용자 `--alias` 는 alias 경로로 계속 처리 — 둘은 독립이며 paths 가 먼저 매칭된다.
     if (tsconfig.paths.len > 0) {
         const dir_for_join = lib.config.tsconfigDirFromPath(tsconfig_dir_early);
-        normalized_paths = lib.config.normalizePathsToAliases(allocator, dir_for_join, &tsconfig) catch |err| blk: {
-            try stderr.print("zts: warning: tsconfig paths normalization failed: {}\n", .{err});
-            break :blk lib.config.NormalizedPaths{ .entries = &.{}, .owned_strings = &.{} };
+        resolved_paths = lib.config.resolveTsPaths(allocator, dir_for_join, &tsconfig) catch |err| blk: {
+            try stderr.print("zts: warning: tsconfig paths resolution failed: {}\n", .{err});
+            break :blk lib.config.ResolvedPaths{ .entries = &.{}, .owned_strings = &.{} };
         };
-        for (normalized_paths.entries) |e| {
-            try opts.alias_list.append(allocator, .{ .from = e.from, .to = e.to });
-        }
     }
 
     // --bundle
@@ -1445,6 +1444,7 @@ pub fn main() !void {
             .timing = opts.timing,
             .preserve_symlinks = opts.preserve_symlinks,
             .alias = opts.alias_list.items,
+            .ts_paths = resolved_paths.entries,
             .fallback = opts.fallback_list.items,
             .block_list = opts.block_list.items,
             .public_path = opts.public_path orelse "",

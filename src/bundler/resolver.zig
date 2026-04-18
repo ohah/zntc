@@ -61,6 +61,20 @@ const index_files: []const []const u8 = &.{ "index.ts", "index.tsx", "index.js",
 pub const AliasEntry = types.AliasEntry;
 pub const FallbackEntry = types.FallbackEntry;
 
+/// tsconfig paths entry 의 key 패턴이 specifier 와 매칭되는지 검사.
+/// 매칭되면 wildcard capture (key 가 wildcard 면 `*` 위치의 중간 문자열, 아니면 빈 문자열) 반환.
+/// 매칭 안 되면 null.
+fn matchTsPathEntry(entry: @import("../config.zig").TsConfig.PathEntry, specifier: []const u8) ?[]const u8 {
+    if (!entry.has_wildcard) {
+        if (std.mem.eql(u8, specifier, entry.key_prefix)) return ""; // exact 매칭 — capture 없음
+        return null;
+    }
+    if (specifier.len < entry.key_prefix.len + entry.key_suffix.len) return null;
+    if (!std.mem.startsWith(u8, specifier, entry.key_prefix)) return null;
+    if (!std.mem.endsWith(u8, specifier, entry.key_suffix)) return null;
+    return specifier[entry.key_prefix.len .. specifier.len - entry.key_suffix.len];
+}
+
 /// 디렉토리 엔트리 캐시 (esbuild 방식).
 /// 디렉토리를 처음 접근할 때 readdir()로 파일 목록을 통째로 읽어 캐시.
 /// 이후 같은 디렉토리의 파일 존재 확인은 syscall 없이 메모리 조회.
@@ -195,6 +209,10 @@ pub const Resolver = struct {
     /// 정확 매칭: "react" → "preact/compat"
     /// 접두사 매칭: "react/hooks" → "preact/compat/hooks"
     alias: []const AliasEntry = &.{},
+    /// tsconfig `paths` — alias 와 달리 `*` wildcard 가 위치 자유, 다중 후보 순차 시도.
+    /// resolver 가 패턴 매칭 + 파일 존재 확인을 수행해 첫 resolvable 후보를 반환.
+    /// 절대 경로로 정규화된 상태를 기대 (`config.resolveTsPaths` 참고).
+    ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
     /// Fallback 엔트리 (webpack `resolve.fallback` / Metro `extraNodeModules` 호환).
     /// alias와 달리 일반 해석이 **실패했을 때만** 적용. 정확 매칭만 지원 (webpack과 동일).
     /// `to == null`이면 빈 모듈(disabled result)로 대체.
@@ -262,6 +280,38 @@ pub const Resolver = struct {
         return null;
     }
 
+    /// tsconfig `paths` 패턴 매칭 + 순차 candidate resolve.
+    /// TS 스펙에 따라:
+    /// 1. 각 paths entry 에 대해 key 패턴 매칭 (exact 또는 prefix + suffix with captured middle)
+    /// 2. 매칭된 entry 의 targets 를 순서대로 시도 — 파일 존재 확인까지 포함
+    /// 3. 첫 resolvable target 의 ResolveResult 반환
+    /// 모든 entry 매칭/resolve 실패 시 null → caller 가 일반 resolve 경로로 fall-through.
+    fn tryTsPaths(self: *Resolver, specifier: []const u8) ResolveError!?ResolveResult {
+        for (self.ts_paths) |entry| {
+            const captured = matchTsPathEntry(entry, specifier) orelse continue;
+            for (entry.targets) |t| {
+                // target.prefix 는 tsconfig_dir 기준 절대 경로로 join 만 되어 있음.
+                // capture 와 concat 후 `path.resolve` 로 한꺼번에 normalize (`./././` 등 정리).
+                const raw = try std.mem.concat(self.allocator, u8, &.{ t.prefix, captured, t.suffix });
+                defer self.allocator.free(raw);
+                const candidate = try std.fs.path.resolve(self.allocator, &.{raw});
+                defer self.allocator.free(candidate);
+                if (try self.tryResolveAbsolutePath(candidate)) |r| return r;
+            }
+        }
+        return null;
+    }
+
+    /// 절대 경로 1 개에 대해 파일 존재 → 확장자 → TS 매핑 → index 순으로 resolve 시도.
+    /// `resolveInner` 의 pass #1–#4 와 동일 로직을 독립 함수로 추출한 것.
+    fn tryResolveAbsolutePath(self: *Resolver, abs_path: []const u8) ResolveError!?ResolveResult {
+        if (self.fileExists(abs_path)) return (try self.makeResult(abs_path));
+        if (try self.tryExtensions(abs_path)) |r| return r;
+        if (try self.tryTsExtensionMapping(abs_path)) |r| return r;
+        if (try self.tryDirectoryIndex(abs_path)) |r| return r;
+        return null;
+    }
+
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         const result = try self.resolveInner(source_dir, specifier);
         if (self.block_list.len > 0 and !result.disabled) {
@@ -277,13 +327,20 @@ pub const Resolver = struct {
     }
 
     fn resolveInner(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
-        // alias 치환 (resolve 맨 처음에 적용, esbuild 동작과 동일)
+        // 사용자 `--alias` 를 먼저 적용 — CLI 옵션이 tsconfig 보다 우선이라는 원칙.
+        // alias 가 치환하면 치환된 specifier 로 계속 (tsconfig paths 는 원본 specifier 로 매칭될 수 없음).
         const effective_specifier = if (self.alias.len > 0)
             (applyAlias(self.allocator, self.alias, specifier) catch return error.OutOfMemory) orelse specifier
         else
             specifier;
         defer if (self.alias.len > 0 and effective_specifier.ptr != specifier.ptr)
             self.allocator.free(effective_specifier);
+
+        // tsconfig paths — alias 미적용 specifier 에 대해서만 의미 있음. alias 가 이미 치환했다면
+        // 일반 경로로 continue. (alias 는 보통 절대/상대 경로 리턴이라 ts_paths 와 겹치지 않음)
+        if (self.ts_paths.len > 0 and effective_specifier.ptr == specifier.ptr) {
+            if (try self.tryTsPaths(specifier)) |r| return r;
+        }
 
         // #specifier → package.json "imports" 필드 (Node.js subpath imports)
         if (effective_specifier.len > 0 and effective_specifier[0] == '#') {

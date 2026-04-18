@@ -2281,24 +2281,26 @@ fn parseBuildOptions(
     const use_define_for_class_fields_eff = merged_tsconfig.use_define_for_class_fields;
     const verbatim_module_syntax_eff = merged_tsconfig.verbatim_module_syntax;
 
-    // tsconfig paths → alias_list 뒤에 append (JS --alias 가 이미 들어있어서 그게 우선).
+    const alias_entries: []const bundler_mod.types.AliasEntry = alias_list.toOwnedSlice(native_alloc) catch return null;
+
+    // tsconfig paths → resolver 의 ts_paths 로 전달 (alias 와 독립 경로).
+    // TS 스펙대로 wildcard anywhere + 다중 후보 순차 시도를 resolver 가 담당.
+    var ts_path_entries: []const @import("zts_lib").config.TsConfig.PathEntry = &.{};
     if (tsconfig_path_opt != null and tsconfig_holder.paths.len > 0) {
         const lib_config = @import("zts_lib").config;
         const dir_for_join = lib_config.tsconfigDirFromPath(tsconfig_path_opt.?);
-        if (lib_config.normalizePathsToAliases(native_alloc, dir_for_join, &tsconfig_holder)) |norm| {
-            // owned_strings (절대경로 조인 결과) 는 alias 가 shallow-copy 되는 동안 살아있어야 함 →
-            // opts 전체 수명을 따라가도록 tracker 에 등록.
-            if (norm.owned_strings.len > 0) {
-                for (norm.owned_strings) |s| if (!trackStr(owned_strings, s)) return null;
-                if (!trackArr(owned_string_arrays, norm.owned_strings)) return null;
+        if (lib_config.resolveTsPaths(native_alloc, dir_for_join, &tsconfig_holder)) |resolved| {
+            // target.prefix 로 join 된 절대 경로들을 tracker 에 등록 — opts 수명 동안 살아있도록.
+            if (resolved.owned_strings.len > 0) {
+                for (resolved.owned_strings) |s| if (!trackStr(owned_strings, s)) return null;
+                if (!trackArr(owned_string_arrays, resolved.owned_strings)) return null;
             }
-            for (norm.entries) |e| {
-                alias_list.append(native_alloc, .{ .from = e.from, .to = e.to }) catch return null;
-            }
-            native_alloc.free(norm.entries); // PathEntry 슬라이스 자체만 해제 (문자열은 이전됨).
+            ts_path_entries = resolved.entries;
+            // entries 슬라이스와 각 entry.targets 슬라이스도 tracker 에 등록할 수 없으므로
+            // 직접 추적. (TsConfig.PathEntry slice 들은 native_alloc 소유이며 NAPI cleanup 에서 해제되지 않음)
+            // 메모리 leak 방지를 위해 process lifetime 동안 유지 — NAPI 진입점은 single-shot 이라 허용.
         } else |_| {}
     }
-    const alias_entries: []const bundler_mod.types.AliasEntry = alias_list.toOwnedSlice(native_alloc) catch return null;
 
     const out_extension_js = ownStr(env, opts_obj, "outExtension", owned_strings);
     const source_root = ownStr(env, opts_obj, "sourceRoot", owned_strings);
@@ -2370,6 +2372,7 @@ fn parseBuildOptions(
         .external = external orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
+        .ts_paths = ts_path_entries,
         .fallback = fallback_entries,
         .block_list = blk: {
             const user = block_list orelse &.{};

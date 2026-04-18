@@ -171,6 +171,8 @@ pub const ResolveCache = struct {
         custom_conditions: []const []const u8 = &.{},
         preserve_symlinks: bool = false,
         alias: []const resolver_mod.AliasEntry = &.{},
+        /// tsconfig `paths` (절대 경로로 정규화됨). alias 보다 먼저 매칭, 다중 후보 순차 시도.
+        ts_paths: []const @import("../config.zig").TsConfig.PathEntry = &.{},
         /// webpack resolve.fallback / Metro extraNodeModules 호환.
         fallback: []const resolver_mod.FallbackEntry = &.{},
         /// Metro resolver.blockList 호환 — 해석 차단 패턴.
@@ -195,6 +197,7 @@ pub const ResolveCache = struct {
         var r = Resolver.init(allocator);
         r.preserve_symlinks = preserve_symlinks;
         r.alias = alias;
+        r.ts_paths = options.ts_paths;
         r.fallback = options.fallback;
         r.block_list = options.block_list;
         r.custom_extensions = options.resolve_extensions;
