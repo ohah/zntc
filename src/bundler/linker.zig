@@ -1462,17 +1462,27 @@ pub const Linker = struct {
         }
     }
 
-    /// #1603 Phase 1b: `import { M }` 형태로 들여온 심볼이 source 모듈의
-    /// `export * as M from ...` (re_export_namespace)를 가리키는 경우, 이는 소비자 모듈
-    /// 관점에서 namespace 값이다. `binding_scanner.collectNamespaceAccesses`는 `ib.kind ==
-    /// .namespace`만 처리하므로 이 경로가 비어 있다 — 결과적으로 tree-shaker가 target 모듈의
-    /// 모든 export를 live로 마킹해 정밀도를 잃는다.
-    ///
-    /// 이 함수는 link() 이후 각 모듈 AST를 재스캔해 "virtual namespace" 바인딩의 멤버 접근
-    /// 집합을 수집하고 `ib.namespace_used_properties`에 저장한다. opaque한 사용(값 전달 등)은
-    /// null 유지로 기존 fallback과 동일 동작.
-    ///
-    /// `populateImportSymbols` 이후에 호출되어야 한다 (local_symbol 필드 활용).
+    /// `ib`가 특정 re-export의 consumer인지 판별 (#1603 공용 predicate).
+    /// tree_shaker / emitter/chunks에서 "이 re-export를 통해 import한 .named 바인딩"을
+    /// 찾는 순회에 공통 사용.
+    pub fn isReExportNsConsumer(
+        consumer: Module,
+        ib: ImportBinding,
+        reexporter_idx: u32,
+        reexport_name: []const u8,
+    ) bool {
+        if (ib.kind != .named) return false;
+        if (ib.import_record_index >= consumer.import_records.len) return false;
+        const resolved = consumer.import_records[ib.import_record_index].resolved;
+        if (resolved == .none) return false;
+        if (@intFromEnum(resolved) != reexporter_idx) return false;
+        return std.mem.eql(u8, ib.imported_name, reexport_name);
+    }
+
+    /// `import { M } from './idx'`에서 M이 `export * as M from './src'`를 겨냥하는 경우
+    /// 소비자 관점의 namespace 값. `binding_scanner.collectNamespaceAccesses`는 `.kind==.namespace`
+    /// 만 처리하므로 이 post-link 보완 pass가 필요 — AST 재스캔해 member 접근을 `namespace_used_properties`에
+    /// 저장. opaque 사용은 null 유지(fallback). `populateImportSymbols` 이후 호출.
     pub fn populateVirtualNamespaceAccesses(self: *const Linker, modules: []Module) void {
         for (modules) |*importer| {
             const sem = importer.semantic orelse continue;
