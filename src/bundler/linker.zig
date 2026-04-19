@@ -1254,8 +1254,6 @@ pub const Linker = struct {
         kind: Kind,
         /// property → 해당 `ns.prop` 접근이 발생한 top-level stmt 인덱스 목록.
         /// stmt_spans가 전달된 경우에만 채워지며, 없으면 빈 리스트.
-        /// ArrayListUnmanaged는 allocator 없이 생성되어 deinit도 해당 allocator 필요.
-        /// #1626 dead-scope gating 기반 자료.
         members: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .{},
 
         pub const Kind = enum { member_only, @"opaque" };
@@ -1537,6 +1535,13 @@ pub const Linker = struct {
 
             if (sem.scope_maps.len == 0) continue;
 
+            // 모든 namespace import에 공통으로 쓰일 stmt span 배열을 importer당 1회 구축.
+            const stmt_spans_opt: ?[]const Span = if (importer.prebuilt_stmt_info) |*infos| spans_blk: {
+                const spans_buf = arena.alloc(Span, infos.stmts.len) catch break :spans_blk null;
+                for (infos.stmts, 0..) |s, si| spans_buf[si] = s.span;
+                break :spans_blk spans_buf;
+            } else null;
+
             for (importer.import_bindings) |*ib| {
                 const is_namespace = ib.kind == .namespace;
                 const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
@@ -1563,14 +1568,6 @@ pub const Linker = struct {
 
                 // 소비자 모듈에서 local symbol id 조회. top-level import이므로 scope_maps[0].
                 const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
-
-                // prebuilt stmt_info의 stmt spans — dead-scope gating용. 없으면 null로 fallback.
-                const stmt_spans_opt: ?[]const Span = if (importer.prebuilt_stmt_info) |*infos| spans_blk: {
-                    // infos.stmts[i].span 배열을 임시 슬라이스로 만들기 위해 arena에 할당.
-                    const spans_buf = arena.alloc(Span, infos.stmts.len) catch break :spans_blk null;
-                    for (infos.stmts, 0..) |s, si| spans_buf[si] = s.span;
-                    break :spans_blk spans_buf;
-                } else null;
 
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
                 var access = analyzeNamespaceAccess(

@@ -38,8 +38,7 @@ pub const ImportBinding = struct {
     namespace_used_properties: ?[]const []const u8 = null,
     /// `namespace_used_properties[i]`가 접근된 top-level statement 인덱스 목록.
     /// `module.prebuilt_stmt_info.stmts` 인덱스 기준. 길이는 `namespace_used_properties`와 같다.
-    /// null = stmt-level 정보 없음 (fallback: 전체 seed). linker.populateNamespaceAccesses가 채움.
-    /// #1626 dead-scope gating: BFS dispatch stmt가 이 목록에 없으면 해당 property seed 생략.
+    /// null = 정보 없음 (fallback: 전체 seed). BFS가 dead-scope access를 걸러내는 근거.
     namespace_used_property_stmts: ?[]const []const u32 = null,
     /// #1328 Phase 2: source 모듈의 export 심볼 참조. invalid = 미해결.
     /// Phase 3에서 linker가 cross-module resolve로 채움. 기존 문자열 로직은
