@@ -120,6 +120,58 @@ test "virtual ns (#1603): opaque 사용 시 fallback — 전체 유지" {
     try testing.expect(std.mem.indexOf(u8, code, "const y = 20") != null);
 }
 
+// ============================================================
+// #1567 follow-up: dead-scope gating for namespace member access
+//
+// svelte 5.55 client runtime 번들에서 관찰된 패턴.
+//   errors.js       - 30+개의 `export function *_err()` (순수 함수, 선언만)
+//   index-client.js - `import * as e from './errors.js';
+//                      export function onMount() { e.lifecycle_outside_component(...); }
+//                      export function mount() { ... /* e 접근 없음 */ }`
+//   entry           - `import { mount }` (onMount은 import 안 함)
+//
+// 기대(esbuild 동작): `onMount`가 entry 체인에서 도달 불가 → dead.
+// 따라서 body 안의 `e.lifecycle_outside_component` 접근도 dead →
+// `lifecycle_outside_component` export도 제거 가능.
+//
+// 현재 ZTS 동작: namespace member access 분석이 "dead function 안의 access인지"를
+// 구분하지 않아, `lifecycle_outside_component`가 accessed로 마킹 → errors.js의
+// 해당 export 보존. svelte 번들 기준 약 16-20개 에러 함수 불필요 보존.
+// ============================================================
+
+test "virtual ns (#1626 repro): dead function body 내 namespace access는 target을 보존하면 안 됨" {
+    // 현재는 실패해서는 안 되는 regression 테스트 — 버그 동작을 기록하고,
+    // fix PR에서 expected 값을 뒤집어 올바른 동작을 문서화한다.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "errors.ts",
+        \\export function dead_err() { return "dead-err-marker"; }
+        \\export function live_err() { return "live-err-marker"; }
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\import * as e from './errors.ts';
+        \\export function unused_lifecycle() { return e.dead_err(); }
+        \\export function used_api() { return e.live_err(); }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used_api } from './lib.ts';
+        \\console.log(used_api());
+    );
+
+    var r = try bundleEntry(testing.allocator, &tmp, "entry.ts");
+    defer r.deinit();
+    const code = r.code();
+
+    // live 경로: 항상 유지되어야 함
+    try testing.expect(std.mem.indexOf(u8, code, "live-err-marker") != null);
+
+    // dead 경로: `unused_lifecycle`가 entry에서 도달 불가 → body의 `e.dead_err` 접근도 dead.
+    // TODO(#1626): 아래 두 assertion은 현재 버그 동작을 기록.
+    //   fix 후에는 `!= null` → `== null`로 뒤집어야 한다.
+    try testing.expect(std.mem.indexOf(u8, code, "unused_lifecycle") == null); // 함수 자체는 이미 제거되는 듯
+    try testing.expect(std.mem.indexOf(u8, code, "dead-err-marker") != null); // 현재: 남아있음 (버그)
+}
+
 test "virtual ns (#1603): 여러 소비자가 모두 precise하면 union만 유지" {
     // 두 entry에서 서로 다른 member 접근 — union = [a, c]만 유지, b 제거
     var tmp = testing.tmpDir(.{});
