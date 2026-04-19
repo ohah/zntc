@@ -324,14 +324,6 @@ pub fn extendSymbol(
     return @enumFromInt(id_u32);
 }
 
-/// 참조 발생 시 (심볼 인덱스, 참조 스코프) 쌍.
-/// mangler의 liveness BitSet 계산에 사용: 심볼이 어느 스코프에서 참조되는지 추적.
-/// analyzer.resolveIdentifier에서 수집, mangler.mangleLiveness에서 소비.
-pub const RefScopePair = struct {
-    symbol_idx: u32,
-    scope_id: ScopeId,
-};
-
 /// 참조 하나의 데이터.
 /// 식별자가 어떤 심볼을 참조하는지, read/write인지 기록한다.
 /// 번들러의 tree-shaking과 미니파이어의 dead store 분석에 사용.
