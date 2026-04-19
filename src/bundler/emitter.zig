@@ -1121,7 +1121,7 @@ pub fn emitModule(
         if (options.minify_whitespace) {
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
-            try wrapped.appendSlice(allocator, "=__commonJS({\"");
+            try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"");
             try wrapped.appendSlice(allocator, basename);
             try wrapped.appendSlice(allocator, "\"(exports,module){");
             if (preamble_code) |p| try wrapped.appendSlice(allocator, p);

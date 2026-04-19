@@ -23,13 +23,22 @@ pub fn appendRequireShim(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
 }
 
+// #1618: minify 모드에서 runtime helper 이름을 짧게 축약.
+// `__commonJS`는 rxjs 번들에서 224회 참조됨 — 10자→3자 축약으로 약 1.5KB 감축.
+// 이름 충돌 방지: `isReservedOrGlobal` (mangler.zig)에 동일 목록 등록 — base54가
+// 사용자 심볼에 같은 이름을 배정해 runtime helper 정의를 덮어쓰는 것을 차단.
+// dev mode는 `__zts_g.<name>` 글로벌 공유 경로라 축약 대상이 아님.
+pub const NAMES = struct {
+    pub const CJS_FACTORY_MIN = "$cj";
+};
+
 /// __commonJS 팩토리 함수 (esbuild 호환)
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
-pub const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
+pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
 
 /// __commonJS ES5 호환: arrow → function.
 pub const CJS_RUNTIME_ES5 = "var __commonJS = function(cb, mod) { return function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n}; };\n";
-pub const CJS_RUNTIME_ES5_MIN = "var __commonJS=function(cb,mod){return function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}}";
+pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}}";
 
 /// __toESM: CJS 모듈을 ESM namespace로 변환 (rolldown 호환).
 /// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.
