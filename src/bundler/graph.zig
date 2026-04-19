@@ -792,6 +792,7 @@ pub const ModuleGraph = struct {
                         analyzer.symbols.items,
                         analyzer.stmt_declared.items,
                         analyzer.stmt_referenced.items,
+                        if (module.semantic) |*s| &s.unresolved_references else null,
                     ) catch null;
                 }
             } else |_| {}
@@ -1013,6 +1014,7 @@ pub const ModuleGraph = struct {
                     analyzer.symbols.items,
                     analyzer.stmt_declared.items,
                     analyzer.stmt_referenced.items,
+                    if (module.semantic) |*s| &s.unresolved_references else null,
                 ) catch null;
             }
         }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const statement_shaker = @import("statement_shaker.zig");
+const purity = @import("purity.zig");
 const markUnusedStatements = statement_shaker.markUnusedStatements;
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
@@ -7,6 +8,10 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+
+/// 유닛 테스트는 semantic analyzer 컨텍스트 없이 shaker 동작만 검증한다.
+/// 빌트인 pure 생성자 판정은 purity_test.zig가 담당.
+const no_globals: ?*const purity.GlobalRefSet = null;
 
 fn parseAndGetRoot(allocator: std.mem.Allocator, source: []const u8) !struct {
     ast: Ast,
@@ -43,7 +48,7 @@ test "statement shaker: unused function removed" {
     defer skip_nodes.deinit();
 
     const used_names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes);
+    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes, no_globals);
 
     // "unused" 함수의 statement node가 skip_nodes에 포함되어야 함
     // "used"와 "helper"는 포함되지 않아야 함
@@ -67,7 +72,7 @@ test "statement shaker: transitive dependency preserved" {
     defer skip_nodes.deinit();
 
     const used_names: [1][]const u8 = .{"a"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes);
+    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes, no_globals);
 
     // a → b → c는 보존, d만 제거
     var skipped: u32 = 0;
@@ -89,7 +94,7 @@ test "statement shaker: side-effectful statement always included" {
     defer skip_nodes.deinit();
 
     const used_names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes);
+    try markUnusedStatements(alloc, &r.ast, r.root, &used_names, &skip_nodes, no_globals);
 
     // console.log는 side effect → 항상 포함
     // unused만 제거
@@ -109,7 +114,7 @@ test "statement shaker: empty used_exports skips nothing with side effects" {
     var skip_nodes = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip_nodes.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip_nodes);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip_nodes, no_globals);
 
     // side-effectful statement → 스킵 안 됨
     var skipped: u32 = 0;
@@ -134,7 +139,7 @@ test "statement shaker: let without initializer is side-effect-free" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // "let store"는 side-effect-free지만 "used"가 참조 → 보존
     // "unused"만 제거
@@ -158,7 +163,7 @@ test "statement shaker: const with literal initializer is side-effect-free" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // REGEX: 미참조 → 제거, unused: 미참조 → 제거
     var skipped: u32 = 0;
@@ -181,7 +186,7 @@ test "statement shaker: assignment_target_identifier tracked (++x pattern)" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"make"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // make → ++ID → ID 보존. unused만 제거.
     var skipped: u32 = 0;
@@ -203,7 +208,7 @@ test "statement shaker: export default function removed when unused" {
     defer skip.deinit();
 
     // used_exports 비어있음 → export default + unused 모두 제거
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
@@ -224,7 +229,7 @@ test "statement shaker: export default preserved when used" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"default"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // export default config → 보존, unused만 제거
     var skipped: u32 = 0;
@@ -247,7 +252,7 @@ test "statement shaker: export specifier-only is side-effect-free" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"object"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // export { ... } → side-effect-free (linker가 skip_nodes로 처리)
     // unused → 미참조 → 제거
@@ -270,7 +275,7 @@ test "statement shaker: class extends identifier is removable" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // class extends identifier → 순수 → Derived + unused 모두 제거
     var skipped: u32 = 0;
@@ -291,7 +296,7 @@ test "statement shaker: class without extends is removable" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Unused class (no extends) → 미사용 → 제거
     var skipped: u32 = 0;
@@ -312,7 +317,7 @@ test "statement shaker: var with call initializer is side-effectful" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // var x = init() → side-effectful → 보존
     // unused만 제거
@@ -335,7 +340,7 @@ test "statement shaker: export function declaration" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // export function unused → 미사용 → 제거
     var skipped: u32 = 0;
@@ -356,7 +361,7 @@ test "statement shaker: no removable statements → early return" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
@@ -376,7 +381,7 @@ test "statement shaker: identifier_reference initializer is side-effect-free" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // const x = globalVal → side-effect-free (identifier) → x 미사용 → 제거
     // unused도 미사용 → 제거
@@ -403,7 +408,7 @@ test "statement shaker: tslib pattern — export default object removes unused" 
 
     // __awaiter만 사용 → __extends, __rest, export default 제거
     const names: [1][]const u8 = .{"__awaiter"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
@@ -425,7 +430,7 @@ test "statement shaker: conditional init is side-effect-free" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // __createBinding: ternary(member, fn, fn) → side-effect-free → 미사용 → 제거
     var skipped: u32 = 0;
@@ -447,7 +452,7 @@ test "statement shaker: typeof binary is side-effect-free" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // typeof ... === "function" ? ... : ... → side-effect-free → 미사용 → 제거
     var skipped: u32 = 0;
@@ -468,7 +473,7 @@ test "statement shaker: export default class extends identifier is removable" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // export default class extends Base → 순수 식별자 → 미사용 시 제거 가능
     // 둘 다 제거
@@ -490,7 +495,7 @@ test "statement shaker: class extends call expression is side-effectful" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // extends getBase() → 불순 → X 보존, unused만 제거
     var skipped: u32 = 0;
@@ -511,7 +516,7 @@ test "statement shaker: class extends member expression is removable" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // extends ns.Base → 순수 member expression → X + unused 모두 제거
     var skipped: u32 = 0;
@@ -536,7 +541,7 @@ test "statement shaker: class inheritance chain — unused children removable" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Child"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Child → used, Base → Child의 의존. Unused, GrandChild → 미사용 → 제거
     var skipped: u32 = 0;
@@ -559,7 +564,7 @@ test "statement shaker: used class with extends preserves parent" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Used"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Parent → Used의 의존으로 보존, Used → used, Unused → 미사용 → 제거
     var skipped: u32 = 0;
@@ -582,7 +587,7 @@ test "statement shaker: side-effect on class symbol preserved" {
     defer skip.deinit();
 
     const names: [1][]const u8 = .{"Base"};
-    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
 
     // Base → used, Base.DEFAULT_UP → side-effect → 보존, Unused → 미사용 → 제거
     var skipped: u32 = 0;
@@ -602,7 +607,7 @@ test "statement shaker: class with static block is side-effectful" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // static block → side-effect → X 보존, unused만 제거
     var skipped: u32 = 0;
@@ -623,7 +628,7 @@ test "statement shaker: class with computed key call is side-effectful" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // computed key fn() → side-effect → X와 key 보존, unused만 제거
     var skipped: u32 = 0;
@@ -643,7 +648,7 @@ test "statement shaker: class with impure static field is side-effectful" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // static foo = init() → side-effect → X 보존, unused만 제거
     var skipped: u32 = 0;
@@ -663,7 +668,7 @@ test "statement shaker: class with pure static field is removable" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
 
     // static foo = 42 → 순수 리터럴 → X + unused 모두 제거
     var skipped: u32 = 0;

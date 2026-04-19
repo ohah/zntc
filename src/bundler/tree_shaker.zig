@@ -135,7 +135,8 @@ pub const TreeShaker = struct {
             if (m.side_effects_user_defined) continue;
             if (self.entry_set.isSet(i)) continue;
             if (m.ast) |ast| {
-                if (isModulePure(&ast)) {
+                const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
+                if (isModulePure(&ast, unresolved)) {
                     const mutable_modules: [*]Module = @constCast(self.modules.ptr);
                     mutable_modules[i].side_effects = false;
                 }
@@ -207,6 +208,7 @@ pub const TreeShaker = struct {
                 ast,
                 sem.symbols.items,
                 sem.symbol_ids,
+                &sem.unresolved_references,
             ) catch null;
         }
 
@@ -315,7 +317,7 @@ pub const TreeShaker = struct {
     /// 모듈의 top-level 문장이 모두 순수한지 판별.
     /// 순수: import/export 선언, 함수/클래스 선언, 변수 선언(초기값이 순수), @__PURE__ call.
     /// 불순: 일반 call expression, assignment to global, etc.
-    fn isModulePure(ast: *const Ast) bool {
+    fn isModulePure(ast: *const Ast, unresolved_globals: ?*const purity.GlobalRefSet) bool {
         if (ast.nodes.items.len == 0) return false;
         // program 노드는 파서가 마지막에 추가 — 마지막 노드
         const root = ast.nodes.items[ast.nodes.items.len - 1];
@@ -329,12 +331,12 @@ pub const TreeShaker = struct {
             const idx: NodeIndex = @enumFromInt(raw);
             if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
             const stmt = ast.nodes.items[@intFromEnum(idx)];
-            if (!isStatementPure(ast, stmt)) return false;
+            if (!isStatementPure(ast, stmt, unresolved_globals)) return false;
         }
         return true;
     }
 
-    fn isStatementPure(ast: *const Ast, stmt: Node) bool {
+    fn isStatementPure(ast: *const Ast, stmt: Node, unresolved_globals: ?*const purity.GlobalRefSet) bool {
         return switch (stmt.tag) {
             .import_declaration,
             .export_all_declaration,
@@ -346,7 +348,7 @@ pub const TreeShaker = struct {
                 if (decl_idx.isNone()) return true;
                 if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return true;
                 const decl = ast.nodes.items[@intFromEnum(decl_idx)];
-                return isStatementPure(ast, decl);
+                return isStatementPure(ast, decl, unresolved_globals);
             },
 
             .export_default_declaration => {
@@ -355,13 +357,13 @@ pub const TreeShaker = struct {
                 const inner = ast.nodes.items[@intFromEnum(inner_idx)];
                 return switch (inner.tag) {
                     .function_declaration => true,
-                    .class_declaration => !purity.classHasSideEffects(ast, inner),
-                    else => purity.isExprPure(ast, inner_idx),
+                    .class_declaration => !purity.classHasSideEffects(ast, inner, unresolved_globals),
+                    else => purity.isExprPure(ast, inner_idx, unresolved_globals),
                 };
             },
 
             .function_declaration => true,
-            .class_declaration => !purity.classHasSideEffects(ast, stmt),
+            .class_declaration => !purity.classHasSideEffects(ast, stmt, unresolved_globals),
 
             .ts_interface_declaration,
             .ts_type_alias_declaration,
@@ -371,8 +373,8 @@ pub const TreeShaker = struct {
             .ts_module_declaration,
             => false,
 
-            .variable_declaration => purity.isVarDeclPure(ast, stmt),
-            .expression_statement => purity.isExprPure(ast, stmt.data.unary.operand),
+            .variable_declaration => purity.isVarDeclPure(ast, stmt, unresolved_globals),
+            .expression_statement => purity.isExprPure(ast, stmt.data.unary.operand, unresolved_globals),
 
             .empty_statement => true,
 

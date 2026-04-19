@@ -32,6 +32,7 @@ pub fn markUnusedStatements(
     root: NodeIndex,
     used_export_names: []const []const u8,
     skip_nodes: *std.DynamicBitSet,
+    unresolved_globals: ?*const purity.GlobalRefSet,
 ) !void {
     const root_ni = @intFromEnum(root);
     if (root_ni >= ast.nodes.items.len) return;
@@ -68,7 +69,7 @@ pub fn markUnusedStatements(
 
         // 선언 이름 추출 + side effects 판정
         try extractDeclaredNames(ast, node, @intCast(i), &name_to_stmt, allocator);
-        stmts[i].has_side_effects = hasSideEffects(ast, node);
+        stmts[i].has_side_effects = hasSideEffects(ast, node, unresolved_globals);
         if (!stmts[i].has_side_effects) removable_count += 1;
     }
 
@@ -333,10 +334,10 @@ fn extractArrayPatternNames(
 
 /// statement가 side effects를 가지는지 보수적으로 판정한다.
 /// import/export 문은 linker skip_nodes와 충돌 방지를 위해 항상 side-effectful로 처리.
-fn hasSideEffects(ast: *const Ast, node: Node) bool {
+fn hasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const purity.GlobalRefSet) bool {
     // import는 linker가 skip_nodes로 관리하므로 side-effectful 유지
     if (node.tag == .import_declaration) return true;
-    return purity.stmtHasSideEffects(ast, node);
+    return purity.stmtHasSideEffects(ast, node, unresolved_globals);
 }
 
 /// 모든 AST 노드를 순회하면서 identifier_reference를 찾고,

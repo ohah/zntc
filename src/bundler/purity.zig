@@ -9,6 +9,9 @@
 //!   - 삼항/이항/논리/단항 → 재귀 검사 (delete 제외)
 //!   - 멤버 접근 → 순수 (getter side effect는 실전에서 극히 드물어 무시, esbuild 동일)
 //!   - @__PURE__ call/new → 순수
+//!   - 빌트인 pure 생성자 (Set/Map/WeakMap/WeakSet 등): callee가 unresolved
+//!     global이고 인자가 모두 pure이면 순수 (esbuild isPrimitiveConstructor,
+//!     rolldown is_primitive_constructor 동일). `unresolved_globals` 전달 시 활성화.
 //!   - 나머지 → 보수적으로 불순
 
 const std = @import("std");
@@ -21,23 +24,30 @@ const Token = @import("../lexer/token.zig");
 /// 재귀 깊이 제한. 초과 시 보수적으로 불순 처리.
 const max_depth: u32 = 128;
 
+/// 모듈별 unresolved 참조 집합 (semantic analyzer 산출).
+/// 이 집합에 속한 이름은 이 모듈 스코프에서 선언/import가 없는 전역 참조.
+/// `new Set()`의 `Set`이 이 집합에 있으면 shadowing 없이 전역 빌트인임이 확정된다.
+pub const GlobalRefSet = std.StringHashMap(void);
+
 /// NodeIndex를 받아 순수성을 판정한다.
-pub fn isExprPure(ast: *const Ast, idx: NodeIndex) bool {
-    return isExprPureDepth(ast, idx, 0);
+/// `unresolved_globals`가 주어지면 빌트인 pure 생성자(`new Set()` 등)도 순수로 인식한다.
+/// null이면 기존 보수적 동작 (`@__PURE__` 플래그가 있을 때만 call/new 순수).
+pub fn isExprPure(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet) bool {
+    return isExprPureDepth(ast, idx, unresolved_globals, 0);
 }
 
-fn isExprPureDepth(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
+fn isExprPureDepth(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     if (depth >= max_depth) return false;
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
-    return isNodePureDepth(ast, ast.nodes.items[@intFromEnum(idx)], depth);
+    return isNodePureDepth(ast, ast.nodes.items[@intFromEnum(idx)], unresolved_globals, depth);
 }
 
 /// Node를 받아 순수성을 판정한다.
-pub fn isNodePure(ast: *const Ast, node: Node) bool {
-    return isNodePureDepth(ast, node, 0);
+pub fn isNodePure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    return isNodePureDepth(ast, node, unresolved_globals, 0);
 }
 
-fn isNodePureDepth(ast: *const Ast, node: Node, depth: u32) bool {
+fn isNodePureDepth(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     if (depth >= max_depth) return false;
     const d = depth + 1;
     return switch (node.tag) {
@@ -58,26 +68,23 @@ fn isNodePureDepth(ast: *const Ast, node: Node, depth: u32) bool {
         // class expression — extends/static 초기화에 side effect 가능
         .class_expression => false,
 
-        .object_expression => isObjectPure(ast, node, d),
-        .array_expression => isArrayPure(ast, node, d),
+        .object_expression => isObjectPure(ast, node, unresolved_globals, d),
+        .array_expression => isArrayPure(ast, node, unresolved_globals, d),
 
-        .call_expression, .new_expression => {
-            if (ast.hasExtra(node.data.extra, 3)) {
-                return (ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0;
-            }
-            return false;
-        },
+        .call_expression, .new_expression => isCallOrNewPure(ast, node, unresolved_globals, d),
 
-        .parenthesized_expression => isExprPureDepth(ast, node.data.unary.operand, d),
+        .parenthesized_expression => isExprPureDepth(ast, node.data.unary.operand, unresolved_globals, d),
 
         .conditional_expression => {
             const t = node.data.ternary;
-            return isExprPureDepth(ast, t.a, d) and isExprPureDepth(ast, t.b, d) and isExprPureDepth(ast, t.c, d);
+            return isExprPureDepth(ast, t.a, unresolved_globals, d) and
+                isExprPureDepth(ast, t.b, unresolved_globals, d) and
+                isExprPureDepth(ast, t.c, unresolved_globals, d);
         },
 
         .binary_expression, .logical_expression => {
-            return isExprPureDepth(ast, node.data.binary.left, d) and
-                isExprPureDepth(ast, node.data.binary.right, d);
+            return isExprPureDepth(ast, node.data.binary.left, unresolved_globals, d) and
+                isExprPureDepth(ast, node.data.binary.right, unresolved_globals, d);
         },
 
         .unary_expression => {
@@ -85,7 +92,7 @@ fn isNodePureDepth(ast: *const Ast, node: Node, depth: u32) bool {
             if (!ast.hasExtra(e, 1)) return false;
             const op_kind: u8 = @truncate(ast.readExtra(e, 1) & 0xFF);
             if (op_kind == @intFromEnum(Token.Kind.kw_delete)) return false;
-            return isExprPureDepth(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+            return isExprPureDepth(ast, @enumFromInt(ast.readExtra(e, 0)), unresolved_globals, d);
         },
 
         // 멤버 접근 — getter side effect는 무시 (esbuild 동일)
@@ -95,7 +102,65 @@ fn isNodePureDepth(ast: *const Ast, node: Node, depth: u32) bool {
     };
 }
 
-fn isObjectPure(ast: *const Ast, node: Node, depth: u32) bool {
+/// call/new expression 순수성.
+/// 1) `@__PURE__` 플래그가 있으면 순수
+/// 2) callee가 `new Set()`/`new Map()` 등 빌트인 pure 생성자이고 인자가 모두 순수이면 순수
+fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
+    // (1) @__PURE__ 플래그
+    if (ast.hasExtra(node.data.extra, 3)) {
+        if ((ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0) return true;
+    }
+
+    // (2) 빌트인 화이트리스트. unresolved_globals 컨텍스트가 있을 때만 활성.
+    const globals = unresolved_globals orelse return false;
+    if (!ast.hasExtra(node.data.extra, 2)) return false;
+
+    const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(node.data.extra, 0));
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    if (callee.tag != .identifier_reference) return false;
+
+    const name = ast.getText(callee.span);
+    if (!isPureBuiltinConstructor(name)) return false;
+
+    // 모듈 스코프에서 선언/import가 없어야 전역 빌트인임이 확정된다.
+    // 로컬 `const Set = ...` 또는 `import { Set }`가 있으면 unresolved에 없으므로 pure 판정 안 됨.
+    if (!globals.contains(name)) return false;
+
+    // 인자 순회: 모두 순수여야 함. spread는 iterator 호출 side effect가 있으므로 제외.
+    const args_start = ast.readExtra(node.data.extra, 1);
+    const args_len = ast.readExtra(node.data.extra, 2);
+    if (args_len == 0) return true;
+    if (args_start + args_len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
+        const arg_idx: NodeIndex = @enumFromInt(raw);
+        if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) continue;
+        const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+        if (arg.tag == .spread_element) return false;
+        if (!isNodePureDepth(ast, arg, unresolved_globals, depth)) return false;
+    }
+    return true;
+}
+
+/// 빌트인 pure 생성자 이름. (esbuild `isPrimitiveConstructor`, rolldown `is_primitive_constructor`)
+///
+/// RegExp는 invalid pattern이 SyntaxError를 throw할 수 있어 제외.
+/// Boolean/Number/String/BigInt는 coercion으로 인자 평가 외 부수효과 없지만
+/// 실사용이 드물어 당장은 생략 (필요 시 추가).
+fn isPureBuiltinConstructor(name: []const u8) bool {
+    const pure_names = [_][]const u8{
+        "Set",    "Map",   "WeakMap", "WeakSet",
+        "Symbol", "Array", "Object",  "Date",
+        "Error",
+    };
+    for (pure_names) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+    return false;
+}
+
+fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     const list = node.data.list;
     if (list.len == 0) return true;
     if (list.start + list.len > ast.extra_data.items.len) return false;
@@ -109,12 +174,12 @@ fn isObjectPure(ast: *const Ast, node: Node, depth: u32) bool {
         if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
             if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
         }
-        if (!isExprPureDepth(ast, prop.data.binary.right, depth)) return false;
+        if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
     }
     return true;
 }
 
-fn isArrayPure(ast: *const Ast, node: Node, depth: u32) bool {
+fn isArrayPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     const list = node.data.list;
     if (list.len == 0) return true;
     if (list.start + list.len > ast.extra_data.items.len) return false;
@@ -124,14 +189,14 @@ fn isArrayPure(ast: *const Ast, node: Node, depth: u32) bool {
         if (elem_idx.isNone() or @intFromEnum(elem_idx) >= ast.nodes.items.len) continue;
         const elem = ast.nodes.items[@intFromEnum(elem_idx)];
         if (elem.tag == .spread_element) return false;
-        if (!isNodePureDepth(ast, elem, depth)) return false;
+        if (!isNodePureDepth(ast, elem, unresolved_globals, depth)) return false;
     }
     return true;
 }
 
 /// variable declaration의 순수성 판정.
 /// 모든 declarator의 초기값이 순수이면 순수.
-pub fn isVarDeclPure(ast: *const Ast, node: Node) bool {
+pub fn isVarDeclPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return false;
     const list_start = ast.extra_data.items[e + 1];
@@ -148,24 +213,24 @@ pub fn isVarDeclPure(ast: *const Ast, node: Node) bool {
         if (de + 2 >= ast.extra_data.items.len) return false;
         const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
         if (init_idx.isNone()) continue;
-        if (!isExprPure(ast, init_idx)) return false;
+        if (!isExprPureDepth(ast, init_idx, unresolved_globals, 0)) return false;
     }
     return true;
 }
 
 /// top-level statement가 side effects를 가지는지 판정.
 /// tree_shaker, statement_shaker, stmt_info에서 공유.
-pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
+pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
     return switch (node.tag) {
         .function_declaration => false,
-        .class_declaration => classHasSideEffects(ast, node),
-        .variable_declaration => !isVarDeclPure(ast, node),
+        .class_declaration => classHasSideEffects(ast, node, unresolved_globals),
+        .variable_declaration => !isVarDeclPure(ast, node, unresolved_globals),
         .export_named_declaration => {
             const e = node.data.extra;
             if (e + 3 < ast.extra_data.items.len) {
                 const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
                 if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
-                    return stmtHasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)]);
+                    return stmtHasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)], unresolved_globals);
                 }
                 return false;
             }
@@ -177,8 +242,8 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
             const inner = ast.nodes.items[@intFromEnum(inner_idx)];
             return switch (inner.tag) {
                 .function_declaration => false,
-                .class_declaration => classHasSideEffects(ast, inner),
-                else => !isNodePure(ast, inner),
+                .class_declaration => classHasSideEffects(ast, inner, unresolved_globals),
+                else => !isNodePureDepth(ast, inner, unresolved_globals, 0),
             };
         },
         .import_declaration, .empty_statement => false,
@@ -190,13 +255,13 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
 /// class declaration/expression의 side effect 판정.
 /// esbuild ClassCanBeRemovedIfUnused 동일: extends + body 멤버 전체 검사.
 /// 미사용 class는 순수하면 제거 가능 — 실제 사용 시 referenced_symbols로 포함됨.
-pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
+pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
     const e = node.data.extra;
     if (e + 7 >= ast.extra_data.items.len) return true;
 
     // extends 절이 불순이면 side-effect
     const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-    if (!isExprPure(ast, super_idx)) return true;
+    if (!isExprPureDepth(ast, super_idx, unresolved_globals, 0)) return true;
 
     // decorator가 있으면 side-effect
     const deco_len = ast.extra_data.items[e + 7];
@@ -223,11 +288,11 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
             .property_definition, .accessor_property => {
                 const me = member.data.extra;
                 if (me + 4 >= ast.extra_data.items.len) return true;
-                if (computedKeyHasSideEffects(ast, me)) return true;
+                if (computedKeyHasSideEffects(ast, me, unresolved_globals)) return true;
                 // static field의 불순 초기화: static flag (bit 0)
                 if ((ast.extra_data.items[me + 2] & 1) != 0) {
                     const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me + 1]);
-                    if (!isExprPure(ast, init_idx)) return true;
+                    if (!isExprPureDepth(ast, init_idx, unresolved_globals, 0)) return true;
                 }
                 if (ast.extra_data.items[me + 4] > 0) return true; // decorator
             },
@@ -235,7 +300,7 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
                 // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
                 const me = member.data.extra;
                 if (me + 5 >= ast.extra_data.items.len) return true;
-                if (computedKeyHasSideEffects(ast, me)) return true;
+                if (computedKeyHasSideEffects(ast, me, unresolved_globals)) return true;
                 if (ast.extra_data.items[me + 5] > 0) return true; // decorator
             },
             else => {},
@@ -245,13 +310,13 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
 }
 
 /// class member의 computed key가 불순인지 검사. extra_data[extra_offset]에서 key NodeIndex를 읽는다.
-fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32) bool {
+fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32, unresolved_globals: ?*const GlobalRefSet) bool {
     if (extra_offset >= ast.extra_data.items.len) return true;
     const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_offset]);
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key_node = ast.nodes.items[@intFromEnum(key_idx)];
     if (key_node.tag == .computed_property_key) {
-        return !isExprPure(ast, key_node.data.unary.operand);
+        return !isExprPureDepth(ast, key_node.data.unary.operand, unresolved_globals, 0);
     }
     return false;
 }

@@ -907,6 +907,7 @@ pub fn emitModule(
                             root,
                             names,
                             &md.skip_nodes,
+                            null,
                         ) catch {};
                         break :stmt_shake;
                     };
@@ -946,7 +947,7 @@ pub fn emitModule(
                         }
                     } else {
                         // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols.items, sym_ids)) |maybe_infos| {
+                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
                             if (maybe_infos) |infos| {
                                 var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                 defer used_sym_buf.deinit(arena_alloc);

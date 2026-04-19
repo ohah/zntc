@@ -110,6 +110,7 @@ test {
     _ = @import("resolver_test.zig");
     _ = @import("package_json_test.zig");
     _ = @import("binding_scanner_test.zig");
+    _ = @import("purity_test.zig");
     _ = @import("import_scanner_test.zig");
     _ = @import("stmt_info_test.zig");
     _ = @import("resolve_cache_test.zig");
