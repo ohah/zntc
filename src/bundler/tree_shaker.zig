@@ -861,22 +861,13 @@ pub const TreeShaker = struct {
 
         var saw_consumer = false;
 
-        // 소비자 검색: 모든 모듈의 .named import_bindings에서
-        // (target=reexport_mod, imported_name=reexport_name)를 찾음
+        // 소비자 검색: 모든 모듈의 .named import_bindings에서 이 re-export 소비자 찾기
         for (self.modules) |consumer| {
             for (consumer.import_bindings) |ib| {
-                if (ib.kind != .named) continue;
-                if (ib.import_record_index >= consumer.import_records.len) continue;
-                const resolved = consumer.import_records[ib.import_record_index].resolved;
-                if (resolved.isNone()) continue;
-                if (@intFromEnum(resolved) != reexport_mod) continue;
-                if (!std.mem.eql(u8, ib.imported_name, reexport_name)) continue;
+                if (!Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) continue;
 
                 saw_consumer = true;
-                const props = ib.namespace_used_properties orelse {
-                    // opaque — 전체 fallback 필요
-                    return false;
-                };
+                const props = ib.namespace_used_properties orelse return false; // opaque → fallback
                 for (props) |p| try union_set.put(self.allocator, p, {});
             }
         }

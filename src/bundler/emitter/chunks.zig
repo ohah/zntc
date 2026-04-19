@@ -845,10 +845,8 @@ const UsedNamesEntry = struct {
     all_used: bool, // true이면 emitModule에 null 전달 (모든 export 사용)
 };
 
-/// `export * as X from './src'` 형태 re-export의 모든 소비자가 precise member 접근인지 확인.
-/// - 소비자의 `.named` import_binding이 (reexporter_idx, reexport_name)을 겨냥
-/// - 모든 소비자가 `namespace_used_properties != null` 이면 true (subset 적용 가능)
-/// - 하나라도 null(opaque)이거나 소비자가 없으면 false (전체 fallback)
+/// `export * as X from './src'` 재export 소비자가 모두 precise(namespace_used_properties 설정)이면 true.
+/// 하나라도 null(opaque)이거나 소비자 0명이면 false — 호출자가 전체 fallback 사용.
 fn areAllReExportNsConsumersPrecise(
     modules: []const Module,
     reexporter_idx: u32,
@@ -857,12 +855,7 @@ fn areAllReExportNsConsumersPrecise(
     var saw_any = false;
     for (modules) |consumer| {
         for (consumer.import_bindings) |ib| {
-            if (ib.kind != .named) continue;
-            if (ib.import_record_index >= consumer.import_records.len) continue;
-            const resolved = consumer.import_records[ib.import_record_index].resolved;
-            if (resolved == .none) continue;
-            if (@intFromEnum(resolved) != reexporter_idx) continue;
-            if (!std.mem.eql(u8, ib.imported_name, reexport_name)) continue;
+            if (!Linker.isReExportNsConsumer(consumer, ib, reexporter_idx, reexport_name)) continue;
             saw_any = true;
             if (ib.namespace_used_properties == null) return false;
         }
