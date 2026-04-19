@@ -114,4 +114,34 @@ describe("mangler --minify 회귀", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("45"); // 1+2+...+9
   });
+
+  // #1623: import binding이 mangling candidates에 포함되면 자체 mangle name을 받고,
+  // buildMetadataForAst의 self-rename 루프가 그 이름으로 cross-module rename을 덮어써
+  // declaration과 reference가 서로 다른 이름으로 mangle돼 ReferenceError 발생.
+  test("cross-module default import의 declaration과 reference 이름이 일치한다 (#1623)", async () => {
+    const result = await bundleAndRun(
+      {
+        // 런타임 표현식이라 컴파일타임 inline이 안 돼 _default가 var로 남고
+        // use.js의 flag 참조도 var로 남는 — 양쪽 이름이 일치해야 동작.
+        "dep.js": `export default globalThis.RUNTIME_FLAG;`,
+        "use.js": `
+          import flag from './dep.js';
+          export var x = flag ? new Set() : null;
+          export function f() { return flag ? new Set() : null; }
+        `,
+        "index.js": `
+          import { x, f } from './use.js';
+          globalThis.RUNTIME_FLAG = false;
+          console.log(x, f());
+        `,
+      },
+      "index.js",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    // RUNTIME_FLAG는 dep.js 평가 시점에 undefined → falsy → 양쪽 null
+    expect(result.runOutput).toBe("null null");
+  });
 });
