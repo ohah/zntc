@@ -95,6 +95,7 @@ interface ProjectConfig {
   platform?: "node" | "browser";
   tsconfig?: Record<string, boolean>;
   target?: string; // --target=es5, --target=es2015, etc.
+  minify?: boolean; // --minify 전파 (ZTS/esbuild/rolldown/rspack 공통)
 }
 
 function testProject(p: ProjectConfig): SmokeResult {
@@ -132,6 +133,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     const ztsFormatArgs = format === "cjs" ? ["--format=cjs"] : [];
     const ztsTsconfigArgs = p.tsconfig ? ["-p", tsconfigFile] : [];
     const ztsTargetArgs = p.target ? [`--target=${p.target}`] : [];
+    const ztsMinifyArgs = p.minify ? ["--minify"] : [];
     result.zts = bundleAndRun(
       ZTS_BIN,
       [
@@ -144,6 +146,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         ...ztsFormatArgs,
         ...ztsTsconfigArgs,
         ...ztsTargetArgs,
+        ...ztsMinifyArgs,
       ],
       ztsOut,
     );
@@ -156,6 +159,7 @@ function testProject(p: ProjectConfig): SmokeResult {
       const esExternalArgs = ext.flatMap((e) => [`--external:${e}`]);
       const esFormatArgs = format === "esm" ? [`--format=esm`] : [];
       const esTargetArgs = p.target ? [`--target=${p.target}`] : [];
+      const esMinifyArgs = p.minify ? ["--minify"] : [];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
         [
@@ -167,6 +171,7 @@ function testProject(p: ProjectConfig): SmokeResult {
           ...esExternalArgs,
           ...esFormatArgs,
           ...esTargetArgs,
+          ...esMinifyArgs,
         ],
         esOut,
         __dirname,
@@ -179,9 +184,20 @@ function testProject(p: ProjectConfig): SmokeResult {
     // rolldown
     if (existsSync(ROLLDOWN_BIN)) {
       const rdExternalArgs = ext.flatMap((e) => ["--external", e]);
+      const rdMinifyArgs = p.minify ? ["--minify"] : [];
       result.rolldown = bundleAndRun(
         ROLLDOWN_BIN,
-        [entryFile, "-o", rdOut, "--format", "cjs", "--platform", platform, ...rdExternalArgs],
+        [
+          entryFile,
+          "-o",
+          rdOut,
+          "--format",
+          "cjs",
+          "--platform",
+          platform,
+          ...rdExternalArgs,
+          ...rdMinifyArgs,
+        ],
         rdOut,
         __dirname,
       );
@@ -199,7 +215,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
         target: ${JSON.stringify(platform === "node" ? "node" : "web")},
         mode: "production",
-        optimization: { minimize: false },
+        optimization: { minimize: ${p.minify ? "true" : "false"} },
         module: { rules: [{ test: /\\.ts$/, use: { loader: "builtin:swc-loader", options: { jsc: { parser: { syntax: "typescript" } } } } }] },
         ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ""}
       };`;
@@ -422,10 +438,26 @@ const projects: ProjectConfig[] = [
     entry: `import { mount, unmount, untrack, tick, flushSync } from 'svelte';\nconsole.log([mount, unmount, untrack, tick, flushSync].map(f => typeof f).join(','));`,
   },
   {
+    // minified 쌍 — tree-shaking이 아니라 minifier 품질 비교용.
+    // unminified와 달리 ZTS가 esbuild보다 커지는 갭이 이 시나리오에서 드러난다.
+    name: "svelte-mount-min",
+    pkg: "svelte",
+    platform: "browser",
+    minify: true,
+    entry: `import { mount, unmount, untrack, tick, flushSync } from 'svelte';\nconsole.log([mount, unmount, untrack, tick, flushSync].map(f => typeof f).join(','));`,
+  },
+  {
     // 광범위 surface — lifecycle + context + store까지 끌어옴.
     name: "svelte-full",
     pkg: "svelte",
     platform: "browser",
+    entry: `import { mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext } from 'svelte';\nimport { readable, writable, derived } from 'svelte/store';\nconsole.log([mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext, readable, writable, derived].map(f => typeof f).join(','));`,
+  },
+  {
+    name: "svelte-full-min",
+    pkg: "svelte",
+    platform: "browser",
+    minify: true,
     entry: `import { mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext } from 'svelte';\nimport { readable, writable, derived } from 'svelte/store';\nconsole.log([mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext, readable, writable, derived].map(f => typeof f).join(','));`,
   },
   {
