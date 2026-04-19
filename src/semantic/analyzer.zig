@@ -795,7 +795,7 @@ pub const SemanticAnalyzer = struct {
     ///
     /// Note: 번들러(Phase 6)에서는 Reference 배열도 기록하여 read/write/read_write
     /// 종류와 정확한 위치를 추적할 예정 (dead store 분석 등).
-    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32) void {
+    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32, is_write: bool) void {
         var scope_id = self.current_scope;
 
         // 스코프 체인을 따라 올라가며 심볼 검색
@@ -806,6 +806,7 @@ pub const SemanticAnalyzer = struct {
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
                 // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
+                if (is_write) self.symbols.items[sym_idx].write_count += 1;
                 // mangler용 참조 scope 기록 (liveness 계산에 사용)
                 self.ref_scope_pairs.append(self.allocator, .{
                     .symbol_idx = @intCast(sym_idx),
@@ -961,12 +962,60 @@ pub const SemanticAnalyzer = struct {
         };
     }
 
+    /// Destructuring assignment target을 순회하며 leaf 식별자를 write 참조로 해결한다.
+    /// 필요한 이유: 파서가 `{v}` 같은 shorthand를 `assignment_target_property_identifier`로만
+    /// 태그하고 내부 식별자 노드는 `identifier_reference`로 유지하기 때문. visitNode의
+    /// 일반 식별자 처리 분기에서는 이 컨텍스트를 알 수 없어 read로 취급되어 write_count가
+    /// 누락된다.
+    fn visitAsWriteTarget(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .identifier_reference, .assignment_target_identifier => {
+                const name = self.ast.getSourceText(node.span);
+                self.resolveIdentifier(name, @intFromEnum(idx), true);
+            },
+            .array_assignment_target, .object_assignment_target => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| {
+                    try self.visitAsWriteTarget(@enumFromInt(raw));
+                }
+                if (split.rest_operand) |op| {
+                    try self.visitAsWriteTarget(op);
+                }
+            },
+            .assignment_target_property_identifier => {
+                // shorthand `{x}` / `{x = default}` — left = 바인딩(타겟), right = default (값으로 visit).
+                try self.visitAsWriteTarget(node.data.binary.left);
+                if (!node.data.binary.right.isNone()) try self.visitNode(node.data.binary.right);
+            },
+            .assignment_target_property_property => {
+                // long-form `{key: target}` — right = target.
+                try self.visitAsWriteTarget(node.data.binary.right);
+            },
+            .assignment_target_with_default => {
+                // `[x = default]` / `{x = default}` — left = target, right = default (값으로 visit).
+                try self.visitAsWriteTarget(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
+            },
+            .assignment_target_rest => {
+                try self.visitAsWriteTarget(node.data.unary.operand);
+            },
+            else => {
+                // member expression (`a.b = ...`) 등 비-식별자 타겟은 일반 visit — read로 취급.
+                try self.visitNode(idx);
+            },
+        }
+    }
+
+    /// 호출자는 write 컨텍스트(assignment LHS/update operand)이므로 해결된 심볼의
+    /// `write_count`를 증가시킨다. 일반 read 참조에서는 `visitNode` 경유.
     fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex) bool {
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const name = self.ast.getSourceText(node.span);
-            self.resolveIdentifier(name, @intFromEnum(node_idx));
+            self.resolveIdentifier(name, @intFromEnum(node_idx), true);
             return true;
         }
         return false;
@@ -1189,14 +1238,17 @@ pub const SemanticAnalyzer = struct {
             // ---- 식별자 참조 추적 ----
             .identifier_reference, .assignment_target_identifier => {
                 const name = self.ast.getSourceText(node.span);
-                self.resolveIdentifier(name, @intFromEnum(idx));
+                // assignment_target_identifier는 parser가 LHS로 확정한 쓰기 위치.
+                // identifier_reference는 읽기.
+                const is_write = node.tag == .assignment_target_identifier;
+                self.resolveIdentifier(name, @intFromEnum(idx), is_write);
             },
 
             // JSX tag name이 대문자로 시작하면 컴포넌트 참조 (e.g. <Header />)
             .jsx_identifier => {
                 const name = self.ast.getSourceText(node.span);
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                    self.resolveIdentifier(name, @intFromEnum(idx));
+                    self.resolveIdentifier(name, @intFromEnum(idx), false);
                 }
             },
             // JSX member expression: <Foo.Bar> → left(Foo)를 재귀 방문하여 symbol 등록
@@ -1412,6 +1464,13 @@ pub const SemanticAnalyzer = struct {
             .flow_as_expression,
             => {
                 try self.visitNode(node.data.unary.operand);
+            },
+
+            // destructuring assignment targets — 이전에는 else 케이스로 skip되어
+            // 내부 식별자의 write 참조가 카운트되지 않는 analysis gap이 있었다 (#1608 follow-up).
+            // `visitAsWriteTarget` helper로 leaf 식별자를 write로 해결.
+            .array_assignment_target, .object_assignment_target => {
+                try self.visitAsWriteTarget(idx);
             },
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
@@ -2424,11 +2483,11 @@ pub const SemanticAnalyzer = struct {
                             self.markSymbolNoSideEffects(binding_node.span);
                         }
                     }
-                    // const 리터럴 → const_value 설정 (번들러 상수 인라인용).
-                    // `let`은 후속 재할당 가능성이 있어 초기값 인라인이 틀린 값을 출력할 수 있으므로 제외
-                    // (예: `export let counter = 42; counter++;` 후 cross-module 참조가 42로 inline되는 버그).
-                    // 재할당 분석 없이 안전하게 `const`만 대상으로 제한한다.
-                    if (sym_kind == .variable_const) {
+                    // const/let 리터럴 → const_value 설정 (번들러 상수 인라인용).
+                    // `let`은 여기서 후보로만 수집하고, 실제 인라인 시점(buildCrossModuleConstValues)
+                    // 에서 `write_count == 0` 체크로 재할당 없는 경우만 통과시킨다 (const promotion).
+                    // oxc/rolldown과 동일 접근.
+                    if (sym_kind == .variable_const or sym_kind == .variable_let) {
                         const cv = self.extractConstValue(init_node);
                         if (cv.kind != .none) {
                             if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
