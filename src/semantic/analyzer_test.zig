@@ -1260,3 +1260,124 @@ test "ClassExpression: name scoped to class body — not visible outside (#1592)
     }
     try std.testing.expect(false);
 }
+
+// ============================================================
+// per-reference 배열 (references) 테스트
+// ============================================================
+
+const RefFixture = struct {
+    scanner: Scanner,
+    parser: Parser,
+    ana: SemanticAnalyzer,
+
+    fn init(source: []const u8) !RefFixture {
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        errdefer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        errdefer parser.deinit();
+        _ = try parser.parse();
+        var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        errdefer ana.deinit();
+        try ana.analyze();
+        return .{ .scanner = scanner, .parser = parser, .ana = ana };
+    }
+
+    fn deinit(self: *RefFixture) void {
+        self.ana.deinit();
+        self.parser.deinit();
+        self.scanner.deinit();
+    }
+
+    /// 주어진 이름으로 선언된 심볼을 가리키는 references 항목만 필터.
+    fn collectRefs(self: *const RefFixture, target_name: []const u8, out: *std.ArrayList(symbol_mod.Reference)) !void {
+        for (self.ana.references.items) |r| {
+            const sym_idx = @intFromEnum(r.symbol_id);
+            if (sym_idx >= self.ana.symbols.items.len) continue;
+            const name = self.ana.symbols.items[sym_idx].nameText(self.parser.ast.source);
+            if (std.mem.eql(u8, name, target_name)) {
+                try out.append(std.testing.allocator, r);
+            }
+        }
+    }
+};
+
+test "references: read + write 각각 기록" {
+    var fx = try RefFixture.init("let x = 1; x = 2; f(x);");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    try std.testing.expectEqual(@as(usize, 2), refs.items.len);
+    var write_seen: usize = 0;
+    var read_seen: usize = 0;
+    for (refs.items) |r| switch (r.kind) {
+        .write => write_seen += 1,
+        .read => read_seen += 1,
+        .read_write => {},
+    };
+    try std.testing.expectEqual(@as(usize, 1), write_seen);
+    try std.testing.expectEqual(@as(usize, 1), read_seen);
+}
+
+test "references: node_index 로 AST 위치 역참조" {
+    var fx = try RefFixture.init("const y = 1; g(y);");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("y", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    const node = fx.parser.ast.getNode(refs.items[0].node_index);
+    const text = fx.parser.ast.source[node.span.start..node.span.end];
+    try std.testing.expectEqualStrings("y", text);
+    try std.testing.expectEqual(symbol_mod.ReferenceKind.read, refs.items[0].kind);
+}
+
+test "references: unresolved (전역) 은 기록 안 됨" {
+    var fx = try RefFixture.init("console.log(1);");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("console", &refs);
+
+    try std.testing.expectEqual(@as(usize, 0), refs.items.len);
+}
+
+test "references: reference_count 와 정합" {
+    var fx = try RefFixture.init("const x = 1; f(x); g(x); h(x);");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    try std.testing.expectEqual(@as(usize, 3), refs.items.len);
+    for (refs.items) |r| try std.testing.expectEqual(symbol_mod.ReferenceKind.read, r.kind);
+
+    for (fx.ana.symbols.items) |sym| {
+        const name = sym.nameText(fx.parser.ast.source);
+        if (std.mem.eql(u8, name, "x")) {
+            try std.testing.expectEqual(@as(u32, 3), sym.reference_count);
+        }
+    }
+}
+
+test "references: scope_id 가 참조 발생 위치" {
+    // inner block 에서 outer let 참조 — 기록된 scope_id 는 block scope여야 함.
+    var fx = try RefFixture.init("let x = 1; { f(x); }");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    // x 가 선언된 scope 는 program scope (첫 번째). 참조는 block scope 에서 발생.
+    const ref_scope = refs.items[0].scope_id;
+    const decl_scope = fx.ana.symbols.items[@intFromEnum(refs.items[0].symbol_id)].scope_id;
+    try std.testing.expect(!std.meta.eql(ref_scope, decl_scope));
+}

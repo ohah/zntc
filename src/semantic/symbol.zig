@@ -335,6 +335,9 @@ pub const RefScopePair = struct {
 /// 참조 하나의 데이터.
 /// 식별자가 어떤 심볼을 참조하는지, read/write인지 기록한다.
 /// 번들러의 tree-shaking과 미니파이어의 dead store 분석에 사용.
+///
+/// Consumer 주의: analyzer 는 OOM 시 append 를 조용히 스킵하므로 배열이 불완전할 수 있다.
+/// "이 배열에 없으면 참조 없음" 으로 판단하지 말 것 — 존재 여부 기준은 `Symbol.reference_count`.
 pub const Reference = struct {
     /// 참조하는 AST 노드의 인덱스
     node_index: NodeIndex,
@@ -351,6 +354,9 @@ pub const Reference = struct {
 /// - read:       `f(x)`, `y = x`에서의 x
 /// - write:      `x = 1`에서의 x
 /// - read_write: `x += 1`, `x++`에서의 x
+///
+/// 현재 analyzer 는 read/write 두 종만 생성 — compound assign/update 의 read_write
+/// 세분화는 미구현(`resolveIdentifier` 가 단일 `is_write: bool` 를 받음).
 pub const ReferenceKind = enum(u2) {
     read,
     write,
