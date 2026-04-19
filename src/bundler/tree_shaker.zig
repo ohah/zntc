@@ -591,6 +591,32 @@ pub const TreeShaker = struct {
             }
             return;
         }
+
+        // #1603 Phase 1b: `.named` 바인딩이 target의 `export * as X`를 겨냥하고
+        // namespace_used_properties가 populate 되어 있으면, 해당 subset을 re-export 소스 모듈에 seed.
+        // 이렇게 하지 않으면 seedExport가 idx.ts의 "M"를 resolve해도 idx.ts scope에
+        // "M" 로컬이 없어 enqueue가 실패 → source 모듈 statement 도달성 누락.
+        if (ib.kind == .named and ib.namespace_used_properties != null) {
+            const target_module = self.modules[target];
+            for (target_module.export_bindings) |eb| {
+                if (eb.kind != .re_export_namespace) continue;
+                if (!std.mem.eql(u8, eb.exported_name, ib.imported_name)) continue;
+                const rec_idx = eb.import_record_index orelse break;
+                if (rec_idx >= target_module.import_records.len) break;
+                const inner_src = @intFromEnum(target_module.import_records[rec_idx].resolved);
+                if (inner_src >= self.modules.len) break;
+
+                // inner_src를 include + 각 member를 seed
+                if (!self.included.isSet(inner_src)) self.included.set(inner_src);
+                for (ib.namespace_used_properties.?) |prop_name| {
+                    try self.seedExport(@intCast(inner_src), prop_name, queue, module_stmt_infos, reachable_stmts);
+                }
+                // target(idx.ts)의 "M" export도 마킹 — includeReExportSources에서 tryMarkReExportNsSubset이 동작하도록.
+                try self.markExportUsed(@intCast(target), ib.imported_name);
+                return;
+            }
+        }
+
         try self.seedExport(target, ib.imported_name, queue, module_stmt_infos, reachable_stmts);
     }
 
@@ -805,6 +831,10 @@ pub const TreeShaker = struct {
                                 changed = true;
                             }
                             if (eb.kind == .re_export_namespace) {
+                                // #1603 Phase 1b: 모든 소비자의 `namespace_used_properties`를
+                                // 집계해 subset이 결정 가능하면 해당 member만 used로 마킹.
+                                // 하나라도 opaque(null)이면 전체 사용 fallback.
+                                if (try self.tryMarkReExportNsSubset(@intCast(i), eb.exported_name, @intCast(src))) continue;
                                 try self.markAllExportsUsed(@intCast(src));
                             } else if (!check_used) {
                                 try self.markAllExportsUsed(@intCast(src));
@@ -815,6 +845,54 @@ pub const TreeShaker = struct {
             }
         }
         return changed;
+    }
+
+    /// #1603 Phase 1b: `export * as X from './src'` 재export에 대해 모든 소비자의 member 접근
+    /// 집합을 집계. 전체 소비자가 `namespace_used_properties`로 subset을 지정했으면 union만
+    /// `markExportUsed`하고 true 반환. 하나라도 opaque면 false 반환 (호출자가 전체 fallback).
+    fn tryMarkReExportNsSubset(
+        self: *TreeShaker,
+        reexport_mod: u32,
+        reexport_name: []const u8,
+        src_mod: u32,
+    ) !bool {
+        var union_set: std.StringHashMapUnmanaged(void) = .{};
+        defer union_set.deinit(self.allocator);
+
+        var saw_consumer = false;
+
+        // 소비자 검색: 모든 모듈의 .named import_bindings에서
+        // (target=reexport_mod, imported_name=reexport_name)를 찾음
+        for (self.modules) |consumer| {
+            for (consumer.import_bindings) |ib| {
+                if (ib.kind != .named) continue;
+                if (ib.import_record_index >= consumer.import_records.len) continue;
+                const resolved = consumer.import_records[ib.import_record_index].resolved;
+                if (resolved.isNone()) continue;
+                if (@intFromEnum(resolved) != reexport_mod) continue;
+                if (!std.mem.eql(u8, ib.imported_name, reexport_name)) continue;
+
+                saw_consumer = true;
+                const props = ib.namespace_used_properties orelse {
+                    // opaque — 전체 fallback 필요
+                    return false;
+                };
+                for (props) |p| try union_set.put(self.allocator, p, {});
+            }
+        }
+
+        if (!saw_consumer) {
+            // 소비자가 없다? entry 직접 사용일 수도 있고 tree-shaker가 이미 걸러냈을 수도.
+            // 보수적으로 false 반환 → 기존 fallback 경로.
+            return false;
+        }
+
+        // union에 포함된 member만 source 모듈에서 used로 마킹
+        var kit = union_set.keyIterator();
+        while (kit.next()) |key| {
+            try self.markExportUsed(src_mod, key.*);
+        }
+        return true;
     }
 
     /// import binding → export 마킹 + canonical 모듈 포함.

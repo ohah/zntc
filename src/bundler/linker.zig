@@ -1284,14 +1284,31 @@ pub const Linker = struct {
         var prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{};
         defer prop_by_obj.deinit(allocator);
 
+        // import/export declaration의 span 범위 — 이 안의 identifier_reference는
+        // 선언 자체이므로 "ns 사용"이 아님. `import { M }; M.foo;`처럼 같은 이름이
+        // import specifier와 member access 양쪽에 등장하는 케이스 처리.
+        const DeclRange = struct { start: u32, end: u32 };
+        var decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty;
+        defer decl_ranges.deinit(allocator);
+
         for (ast.nodes.items) |node| {
-            if (node.tag != .static_member_expression and node.tag != .private_field_expression) continue;
-            const e = node.data.extra;
-            if (!ast.hasExtra(e, 2)) continue;
-            const obj_idx = ast.readExtra(e, 0);
-            const prop_idx = ast.readExtra(e, 1);
-            if (obj_idx < node_count and prop_idx < node_count) {
-                try prop_by_obj.put(allocator, obj_idx, prop_idx);
+            switch (node.tag) {
+                .static_member_expression, .private_field_expression => {
+                    const e = node.data.extra;
+                    if (!ast.hasExtra(e, 2)) continue;
+                    const obj_idx = ast.readExtra(e, 0);
+                    const prop_idx = ast.readExtra(e, 1);
+                    if (obj_idx < node_count and prop_idx < node_count) {
+                        try prop_by_obj.put(allocator, obj_idx, prop_idx);
+                    }
+                },
+                // import declaration 내부 specifier의 identifier_reference는 참조가 아닌 선언 — skip.
+                // export declaration은 initializer에 runtime 참조를 포함할 수 있어 제외하면 안 됨
+                // (`export const f = () => NS.foo` 같은 케이스).
+                .import_declaration => {
+                    try decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
+                },
+                else => {},
             }
         }
 
@@ -1306,10 +1323,21 @@ pub const Linker = struct {
                 return access;
             }
 
-            const tag = ast.nodes.items[node_i].tag;
+            const node = ast.nodes.items[node_i];
+            const tag = node.tag;
             // 선언 위치는 참조 아님 — 건너뜀
             if (tag == .import_namespace_specifier or tag == .import_default_specifier or
                 tag == .import_specifier or tag == .binding_identifier) continue;
+
+            // import/export declaration 내부 참조(specifier의 identifier_reference 등)도 skip
+            var in_decl = false;
+            for (decl_ranges.items) |r| {
+                if (node.span.start >= r.start and node.span.end <= r.end) {
+                    in_decl = true;
+                    break;
+                }
+            }
+            if (in_decl) continue;
 
             if (prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
                 const prop_node = ast.nodes.items[prop_node_idx];
@@ -1430,6 +1458,75 @@ pub const Linker = struct {
                 if (modules[source_i].findExportBinding(ib.imported_name)) |eb| {
                     ib.symbol = eb.symbol;
                 }
+            }
+        }
+    }
+
+    /// #1603 Phase 1b: `import { M }` 형태로 들여온 심볼이 source 모듈의
+    /// `export * as M from ...` (re_export_namespace)를 가리키는 경우, 이는 소비자 모듈
+    /// 관점에서 namespace 값이다. `binding_scanner.collectNamespaceAccesses`는 `ib.kind ==
+    /// .namespace`만 처리하므로 이 경로가 비어 있다 — 결과적으로 tree-shaker가 target 모듈의
+    /// 모든 export를 live로 마킹해 정밀도를 잃는다.
+    ///
+    /// 이 함수는 link() 이후 각 모듈 AST를 재스캔해 "virtual namespace" 바인딩의 멤버 접근
+    /// 집합을 수집하고 `ib.namespace_used_properties`에 저장한다. opaque한 사용(값 전달 등)은
+    /// null 유지로 기존 fallback과 동일 동작.
+    ///
+    /// `populateImportSymbols` 이후에 호출되어야 한다 (local_symbol 필드 활용).
+    pub fn populateVirtualNamespaceAccesses(self: *const Linker, modules: []Module) void {
+        for (modules) |*importer| {
+            const sem = importer.semantic orelse continue;
+            const ast = if (importer.ast) |*a| a else continue;
+            // 결과 슬라이스는 module.parse_arena가 소유 — 모듈 수명 동안 유효하고
+            // deinit 시 자동 해제. linker.allocator를 쓰면 누수 위험.
+            const arena = if (importer.parse_arena) |*pa| pa.allocator() else continue;
+
+            for (importer.import_bindings) |*ib| {
+                if (ib.kind != .named) continue;
+                if (ib.namespace_used_properties != null) continue; // 이미 설정됨
+                if (ib.import_record_index >= importer.import_records.len) continue;
+                const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
+                if (source_mod_idx.isNone()) continue;
+                const source_i = @intFromEnum(source_mod_idx);
+                if (source_i >= modules.len) continue;
+
+                // imported_name이 source 모듈에서 re_export_namespace인지 확인
+                const source = modules[source_i];
+                var is_virtual_ns = false;
+                for (source.export_bindings) |eb| {
+                    if (eb.kind == .re_export_namespace and std.mem.eql(u8, eb.exported_name, ib.imported_name)) {
+                        is_virtual_ns = true;
+                        break;
+                    }
+                }
+                if (!is_virtual_ns) continue;
+
+                // 소비자 모듈에서 local symbol id 조회
+                if (sem.scope_maps.len == 0) continue;
+                const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
+
+                // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
+                var access = analyzeNamespaceAccess(
+                    self.allocator,
+                    ast,
+                    sem.symbol_ids,
+                    @intCast(sym_idx),
+                ) catch continue;
+                defer access.deinit(self.allocator);
+
+                if (access.kind == .@"opaque") continue; // null 유지 — fallback
+
+                // 접근된 멤버를 namespace_used_properties에 복사.
+                // 문자열은 source buffer 참조 (ast.getText 결과) — module.parse_arena 수명 동안 유효.
+                // 슬라이스 자체도 arena로 할당해 deinit 시 자동 해제.
+                const count = access.members.count();
+                const props = arena.alloc([]const u8, count) catch continue;
+                var i: usize = 0;
+                var kit = access.members.keyIterator();
+                while (kit.next()) |key| : (i += 1) {
+                    props[i] = key.*;
+                }
+                ib.namespace_used_properties = props;
             }
         }
     }
