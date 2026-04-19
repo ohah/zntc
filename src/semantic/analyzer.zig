@@ -131,9 +131,7 @@ pub const SemanticAnalyzer = struct {
     symbol_ids: std.ArrayList(?u32),
 
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
-    /// node_index가 없는 경로(predeclared 보충 등)는 건너뛴다 — 즉 `Symbol.reference_count`
-    /// 가 항상 authoritative 하고, 이 배열은 위치 기반 최적화(mangler liveness, dead store
-    /// 분석, single-use inline 등) consumer의 입력.
+    /// mangler liveness 및 위치 기반 최적화(dead store, single-use inline 등) consumer의 입력.
     references: std.ArrayList(symbol_mod.Reference),
 
     /// Annex B: if/else/labeled body에서 function declaration을 만나면
