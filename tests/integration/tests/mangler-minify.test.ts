@@ -43,4 +43,75 @@ describe("mangler --minify 회귀", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("4");
   });
+
+  // outer(module) 스코프의 1글자 const를 nested 함수가 참조하는데, base54 결과가
+  // 동일 이름을 함수 param에 할당하면 outer 참조가 shadowing되어 잘못된 값을 반환.
+  test("outer 1글자 const가 nested 함수 param에 shadowing되지 않는다 (#1609)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          const i = 100;
+          function compute(aa: number, ab: number, ac: number, ad: number, ae: number, af: number, ag: number, ah: number): number {
+            return i + aa + ab + ac + ad + ae + af + ag + ah;
+          }
+          console.log(compute(1, 2, 3, 4, 5, 6, 7, 8));
+        `,
+      },
+      "index.ts",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("136"); // 100 + (1+2+...+8)
+  });
+
+  // for-loop의 `i`/`j` counter와 sibling 파라미터가 같은 함수에 공존할 때
+  // base54가 `i`/`j`를 param에 재할당하면 loop counter 참조가 오염됨.
+  test("loop counter i/j가 sibling param과 충돌하지 않는다 (#1609)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          function sum(aa: number[], ab: number[], ac: number[], ad: number[], ae: number[], af: number[], ag: number[]): number {
+            let total = 0;
+            for (let i = 0; i < aa.length; i++) total += aa[i];
+            for (let j = 0; j < ab.length; j++) total += ab[j];
+            return total + ac.length + ad.length + ae.length + af.length + ag.length;
+          }
+          console.log(sum([1, 2], [3], [4], [], [], [], []));
+        `,
+      },
+      "index.ts",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("7"); // (1+2) + 3 + 1 (ac.length) + 0*4
+  });
+
+  // base54 앞자리 0~4가 모두 1글자 local(e,t,n,r,i)로 reserved인 극단 케이스.
+  // 카운터가 5칸 밀려도 이후 이름(c,l,u,d,f,p,m,h,g)이 정상 할당되는지 검증.
+  test("base54 앞자리 5개(e,t,n,r,i)가 전부 reserved여도 번들 성공 (#1609)", async () => {
+    const result = await bundleAndRun(
+      {
+        "index.ts": `
+          function run(aa: number, ab: number, ac: number, ad: number, ae: number, af: number, ag: number, ah: number, ai: number): number {
+            let e = aa, t = ab, n = ac, r = ad, i = ae;
+            return e + t + n + r + i + af + ag + ah + ai;
+          }
+          console.log(run(1, 2, 3, 4, 5, 6, 7, 8, 9));
+        `,
+      },
+      "index.ts",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("45"); // 1+2+...+9
+  });
 });
