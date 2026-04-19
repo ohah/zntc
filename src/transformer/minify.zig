@@ -143,6 +143,21 @@ pub fn minify(ast: *Ast) void {
     }
 }
 
+/// 인접한 같은-kind `var`/`let`/`const` 선언을 단일 선언으로 병합한다 (#1588).
+///
+/// 반드시 tree-shaking **이후**에 호출해야 한다. 번들러는 `var A=1; var B=2;`에서
+/// `B`만 tree-shake로 skip_nodes에 마킹하는데, merge가 이를 무시하면 B가 A와 합쳐져
+/// tree-shaker가 단일 statement를 제거하지 못해 미사용 declarator가 최종 출력에 남는다.
+/// `skip_nodes`가 주어지면 마킹된 statement는 merge 대상에서 제외해 tree-shaker 효과를 보존한다.
+pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
+    for (ast.nodes.items, 0..) |node, i| {
+        switch (node.tag) {
+            .program, .block_statement, .function_body => mergeAdjacentDecls(ast, @intCast(i), node, skip_nodes),
+            else => {},
+        }
+    }
+}
+
 // ================================================================
 // Constant Folding — Binary Expression
 // ================================================================
@@ -639,4 +654,125 @@ fn isSideEffectFreeLiteral(node: Node) bool {
         .numeric_literal, .string_literal, .boolean_literal, .null_literal => true,
         else => false,
     };
+}
+
+// ================================================================
+// Phase 5: Adjacent Same-Kind Declaration Merge (#1588)
+// ================================================================
+//
+// `var a=1; var b=2;` → `var a=1,b=2;` — 선언당 4-6 바이트 절감.
+// 참고: esbuild `mangleStmts`, rolldown `mergeable_declarations.rs`.
+
+// `ast.allocator`는 parse_arena라 `free`가 no-op — watch 재빌드 시 캐시된 모듈의
+// arena에 임시 할당이 누적되므로 스택 버퍼만 사용. 상한 초과 블록은 merge 스킵.
+const MAX_STMTS_PER_BLOCK: usize = 4096;
+const MAX_DECLS_PER_MERGE: usize = 1024;
+
+/// Program/BlockStatement/FunctionBody 내 연속된 같은-kind 선언을 병합한다.
+///
+/// `skip_nodes`가 주어지면 tree-shake로 마킹된 statement는 accumulator에 넣지 않아
+/// merge 대상에서도 제외된다 (statement 자체는 새 리스트에 그대로 남음 — codegen이
+/// skip_nodes를 보고 출력을 생략).
+fn mergeAdjacentDecls(ast: *Ast, node_idx: u32, node: Node, skip_nodes: ?*const std.DynamicBitSet) void {
+    const list = node.data.list;
+    if (list.len < 2) return;
+    if (list.len > MAX_STMTS_PER_BLOCK) return;
+    if (@as(usize, list.start) + list.len > ast.extra_data.items.len) return;
+
+    // 원본 리스트 복사 — 이후 extra_data append가 슬라이스를 무효화할 수 있음.
+    var stmts_buf: [MAX_STMTS_PER_BLOCK]u32 = undefined;
+    const stmts = stmts_buf[0..list.len];
+    @memcpy(stmts, ast.extra_data.items[list.start .. list.start + list.len]);
+
+    var out_buf: [MAX_STMTS_PER_BLOCK]u32 = undefined;
+    var out_len: usize = 0;
+    var changed = false;
+
+    for (stmts) |stmt_ni| {
+        // skip_nodes 마킹된 statement는 merge 후보에서 제외. prev로도, cur로도 취급 안 함.
+        // 대신 원본 순서대로 out_buf에 포함 — codegen이 skip_nodes 보고 출력 생략.
+        const is_skipped = if (skip_nodes) |s| (stmt_ni < s.capacity() and s.isSet(stmt_ni)) else false;
+
+        if (!is_skipped and tryMergeWithPrev(ast, stmt_ni, out_buf[0..out_len], skip_nodes)) {
+            changed = true;
+            continue;
+        }
+        out_buf[out_len] = stmt_ni;
+        out_len += 1;
+    }
+
+    if (!changed) return;
+
+    // 새 리스트를 extra_data 끝에 append — 원본 슬롯은 garbage로 남는다.
+    // 두 번째 호출 시엔 이미 merge 완료 상태라 `changed=false`로 조기 반환 → idempotent.
+    const new_start = ast.addExtras(out_buf[0..out_len]) catch return;
+    ast.nodes.items[node_idx].data = .{
+        .list = .{ .start = new_start, .len = @intCast(out_len) },
+    };
+}
+
+/// `cur_ni`가 `accumulated`의 마지막 non-skipped 선언과 병합 가능하면 병합하고 true 반환.
+/// 병합 시: prev의 declarator list를 `[prev_decls ++ cur_decls]`로 확장.
+fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes: ?*const std.DynamicBitSet) bool {
+    if (accumulated.len == 0) return false;
+    if (cur_ni >= ast.nodes.items.len) return false;
+    const cur = ast.nodes.items[cur_ni];
+    if (cur.tag != .variable_declaration) return false;
+
+    // prev 탐색 시 skip_nodes 마킹된 항목은 건너뜀 — 이들은 codegen에서도 출력 안 되므로
+    // 인접성 기준으로 삼으면 tree-shake 결과와 어긋날 수 있다.
+    var prev_ni: u32 = 0;
+    var found_prev = false;
+    var idx: usize = accumulated.len;
+    while (idx > 0) {
+        idx -= 1;
+        const candidate = accumulated[idx];
+        const is_skipped = if (skip_nodes) |s| (candidate < s.capacity() and s.isSet(candidate)) else false;
+        if (is_skipped) continue;
+        prev_ni = candidate;
+        found_prev = true;
+        break;
+    }
+    if (!found_prev) return false;
+
+    if (prev_ni >= ast.nodes.items.len) return false;
+    const prev = ast.nodes.items[prev_ni];
+    if (prev.tag != .variable_declaration) return false;
+
+    const kind_prev = ast.variableDeclarationKind(prev);
+    const kind_cur = ast.variableDeclarationKind(cur);
+    if (kind_prev != kind_cur) return false;
+    // `using`/`await using`: declarator 좌→우로 dispose 스택에 push되고 block 끝에서
+    // LIFO로 pop되므로, 개별 선언과 merged 선언의 dispose 순서가 동일 → 안전하게 merge.
+
+    const pe = prev.data.extra;
+    const ce = cur.data.extra;
+    if (pe + 2 >= ast.extra_data.items.len) return false;
+    if (ce + 2 >= ast.extra_data.items.len) return false;
+
+    const p_start = ast.extra_data.items[pe + 1];
+    const p_len = ast.extra_data.items[pe + 2];
+    const c_start = ast.extra_data.items[ce + 1];
+    const c_len = ast.extra_data.items[ce + 2];
+
+    if (@as(usize, p_start) + p_len > ast.extra_data.items.len) return false;
+    if (@as(usize, c_start) + c_len > ast.extra_data.items.len) return false;
+
+    const total_len: usize = @as(usize, p_len) + c_len;
+    if (total_len > MAX_DECLS_PER_MERGE) return false;
+
+    var buf: [MAX_DECLS_PER_MERGE]u32 = undefined;
+    @memcpy(buf[0..p_len], ast.extra_data.items[p_start .. p_start + p_len]);
+    @memcpy(buf[p_len..total_len], ast.extra_data.items[c_start .. c_start + c_len]);
+
+    const new_start = ast.addExtras(buf[0..total_len]) catch return false;
+    // pe+1/pe+2는 고정 인덱스이므로 addExtras 후에도 직접 쓰기 가능.
+    ast.extra_data.items[pe + 1] = new_start;
+    ast.extra_data.items[pe + 2] = @intCast(total_len);
+    // `cur`의 declarator list를 비워 idempotency 보장. 번들러는 같은 module 내용을
+    // module-program과 wrapper-program 양쪽에 담아 ast.nodes에 남기므로, 두 container가
+    // 각각 minify를 한 번씩 실행한다. 두 번째 container가 동일 pair를 재병합하면
+    // prev의 list(이미 a,b)에 cur의 list(b)를 또 붙여 중복(a,b,b)이 되므로 방지 필요.
+    ast.extra_data.items[ce + 2] = 0;
+    return true;
 }

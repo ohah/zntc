@@ -343,6 +343,7 @@ pub fn transpileWithCallback(
 
     if (options.minify_syntax) {
         @import("transformer/minify.zig").minify(&transformer.ast);
+        @import("transformer/minify.zig").mergeDecls(&transformer.ast, null);
     }
 
     // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
