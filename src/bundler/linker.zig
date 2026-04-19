@@ -1241,6 +1241,92 @@ pub const Linker = struct {
         return false;
     }
 
+    /// namespace 심볼에 대한 AST 수준의 멤버 접근 정밀도 분석 결과 (#1603 Phase 1).
+    ///
+    /// `kind == .member_only`: 모든 참조가 `ns.prop` 형태 — `members` 집합이 접근된 프로퍼티.
+    /// `kind == .opaque`: 값으로 사용되거나 computed access 등 → `members`는 비어 있고 fallback 필요.
+    pub const NamespaceAccess = struct {
+        kind: Kind,
+        members: std.StringHashMapUnmanaged(void) = .{},
+
+        pub const Kind = enum { member_only, @"opaque" };
+
+        pub fn deinit(self: *NamespaceAccess, allocator: std.mem.Allocator) void {
+            self.members.deinit(allocator);
+        }
+    };
+
+    /// namespace 심볼의 모든 참조를 스캔해 member-only 접근 여부와 접근된 프로퍼티 집합을 수집.
+    /// tree-shaker가 이 정보를 바탕으로 target 모듈의 `export` 중 실제 필요한 것만 live로 표시.
+    ///
+    /// member_only 조건:
+    ///   - 모든 ns 참조가 `static_member_expression` / `private_field_expression`의 object 위치
+    ///   - import specifier / binding_identifier 등 선언 위치는 제외 (참조 아님)
+    ///
+    /// opaque 처리되는 경우:
+    ///   - 값 전달(`f(ns)`), spread(`{...ns}`), 리플렉션(`Object.keys(ns)`)
+    ///   - computed access (`ns[key]`) — key가 동적이라 정밀도 보장 불가
+    ///
+    /// 주의: members의 문자열은 `ast.getText` 결과 (source 버퍼 참조). ast 수명 동안만 유효.
+    pub fn analyzeNamespaceAccess(
+        allocator: std.mem.Allocator,
+        ast: *const Ast,
+        symbol_ids: []const ?u32,
+        ns_sym_id: u32,
+    ) std.mem.Allocator.Error!NamespaceAccess {
+        const node_count = ast.nodes.items.len;
+        var access: NamespaceAccess = .{ .kind = .member_only };
+        errdefer access.deinit(allocator);
+        if (node_count == 0) return access;
+
+        // obj_node_idx → prop_node_idx 매핑. ns 참조가 member-expr의 object인지 O(1)로 확인.
+        // computed_member_expression은 제외 — key가 literal이 아니면 opaque 취급이 안전.
+        var prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{};
+        defer prop_by_obj.deinit(allocator);
+
+        for (ast.nodes.items) |node| {
+            if (node.tag != .static_member_expression and node.tag != .private_field_expression) continue;
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 2)) continue;
+            const obj_idx = ast.readExtra(e, 0);
+            const prop_idx = ast.readExtra(e, 1);
+            if (obj_idx < node_count and prop_idx < node_count) {
+                try prop_by_obj.put(allocator, obj_idx, prop_idx);
+            }
+        }
+
+        for (symbol_ids, 0..) |maybe_sid, node_i| {
+            const sid = maybe_sid orelse continue;
+            if (sid != ns_sym_id) continue;
+            if (node_i >= node_count) {
+                // 인덱스 범위 밖 참조는 보수적으로 opaque
+                access.members.deinit(allocator);
+                access.members = .{};
+                access.kind = .@"opaque";
+                return access;
+            }
+
+            const tag = ast.nodes.items[node_i].tag;
+            // 선언 위치는 참조 아님 — 건너뜀
+            if (tag == .import_namespace_specifier or tag == .import_default_specifier or
+                tag == .import_specifier or tag == .binding_identifier) continue;
+
+            if (prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
+                const prop_node = ast.nodes.items[prop_node_idx];
+                const name = ast.getText(prop_node.span);
+                if (name.len > 0) try access.members.put(allocator, name, {});
+            } else {
+                // member-expr object가 아닌 참조 위치 — opaque
+                access.members.deinit(allocator);
+                access.members = .{};
+                access.kind = .@"opaque";
+                return access;
+            }
+        }
+
+        return access;
+    }
+
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
