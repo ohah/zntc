@@ -153,12 +153,9 @@ pub const SemanticAnalyzer = struct {
     current_top_stmt_idx: ?u32 = null,
     /// top-level statement 개수 (초기화 완료 후 유효)
     stmt_info_count: u32 = 0,
-    /// Per-statement 선언 심볼 (top-level scope에 선언된 것만)
+    /// Per-statement 선언 심볼 (top-level scope에 선언된 것만).
+    /// 참조 심볼은 `references` 에서 `buildFromSemantic` 이 재구성 — analyzer 는 미리 그룹핑하지 않는다.
     stmt_declared: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
-    /// Per-statement 참조 심볼 (declared에 없는 identifier_reference만)
-    stmt_referenced: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
-    /// stmt_referenced 중복 체크용 비트셋 (statement별 clear 후 재사용)
-    stmt_ref_seen: std.DynamicBitSetUnmanaged = .{},
 
     const PrivateUsage = enum { read, write };
 
@@ -233,9 +230,6 @@ pub const SemanticAnalyzer = struct {
         // StmtInfo 사전 수집 데이터 해제
         for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
         self.stmt_declared.deinit(self.allocator);
-        for (self.stmt_referenced.items) |*b| b.deinit(self.allocator);
-        self.stmt_referenced.deinit(self.allocator);
-        self.stmt_ref_seen.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -822,27 +816,6 @@ pub const SemanticAnalyzer = struct {
                     .symbol_id = @enumFromInt(sym_idx),
                     .kind = if (is_write) .write else .read,
                 }) catch {};
-
-                // StmtInfo 사전 수집: 현재 top-level statement가 참조하는 심볼 기록
-                // (declared에 포함된 심볼은 제외 — 자기 자신 선언은 참조가 아님)
-                if (self.enable_stmt_info and self.current_top_stmt_idx != null) {
-                    const si = self.current_top_stmt_idx.?;
-                    if (si < self.stmt_referenced.items.len) {
-                        const sym_u32: u32 = @intCast(sym_idx);
-                        // declared에 없는 경우에만 referenced로 기록
-                        if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
-                            // 비트셋으로 O(1) 중복 체크 (stmt_referenced는 항목이 많을 수 있음)
-                            if (sym_u32 < self.stmt_ref_seen.bit_length and self.stmt_ref_seen.isSet(sym_u32)) {
-                                // 이미 기록됨 — skip
-                            } else {
-                                if (sym_u32 < self.stmt_ref_seen.bit_length) {
-                                    self.stmt_ref_seen.set(sym_u32);
-                                }
-                                self.stmt_referenced.items[si].append(self.allocator, sym_u32) catch {};
-                            }
-                        }
-                    }
-                }
 
                 return;
             }
@@ -1509,23 +1482,22 @@ pub const SemanticAnalyzer = struct {
         try self.predeclareTopLevelBindings(node.data.list);
         self.predeclared_scope = self.current_scope;
 
-        // StmtInfo 사전 수집: per-statement 버퍼 초기화
+        // StmtInfo 사전 수집: per-statement declared 버퍼만 초기화.
+        // referenced 는 `references` 배열에서 buildFromSemantic 이 재구성한다.
         if (self.enable_stmt_info) {
             const list = node.data.list;
             if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
                 const count = list.len;
                 self.stmt_info_count = count;
                 try self.stmt_declared.ensureTotalCapacity(self.allocator, count);
-                try self.stmt_referenced.ensureTotalCapacity(self.allocator, count);
                 for (0..count) |_| {
                     try self.stmt_declared.append(self.allocator, .empty);
-                    try self.stmt_referenced.append(self.allocator, .empty);
                 }
             }
         }
 
         // 2nd pass: top-level statement를 순회하면서 current_top_stmt_idx 추적.
-        // enable_stmt_info일 때만 인덱스를 설정하여 declareSymbol/resolveIdentifier에서 수집.
+        // enable_stmt_info일 때만 인덱스를 설정하여 declareSymbol에서 수집.
         {
             const list = node.data.list;
             if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
@@ -1533,11 +1505,6 @@ pub const SemanticAnalyzer = struct {
                 for (indices, 0..) |raw_idx, i| {
                     if (self.enable_stmt_info) {
                         self.current_top_stmt_idx = @intCast(i);
-                        // 비트셋이 현재 심볼 수보다 작으면 리사이즈 후 클리어, 아니면 클리어만
-                        if (self.stmt_ref_seen.bit_length < self.symbols.items.len) {
-                            self.stmt_ref_seen.resize(self.allocator, self.symbols.items.len, false) catch {};
-                        }
-                        self.stmt_ref_seen.unsetAll();
                     }
                     const idx: NodeIndex = @enumFromInt(raw_idx);
                     try self.visitNode(idx);
