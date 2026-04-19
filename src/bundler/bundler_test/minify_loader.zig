@@ -2188,3 +2188,135 @@ test "Plugin load hook overrides asset loader" {
     // registerAsset는 없어야 함 (플러그인이 없으므로)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "registerAsset") == null);
 }
+
+// ============================================================
+// #1618: Runtime helper name shortening in minify mode
+// ============================================================
+
+// Helper: CJS wrap이 발생하도록 require를 호출하는 fixture.
+fn writeCjsWrapFixture(tmp_dir: std.fs.Dir) !void {
+    try writeFile(tmp_dir, "lib.cjs", "module.exports = { greet: () => \"hi\" };");
+    try writeFile(tmp_dir, "entry.ts",
+        \\const lib = require('./lib.cjs');
+        \\console.log(lib.greet());
+    );
+}
+
+test "#1618 minify: __commonJS → $cj short name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeCjsWrapFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // minify 모드: preamble이 `var $cj=` 형태로 축약, 호출부도 `=$cj({`
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$cj({") != null);
+    // 원본 `__commonJS` 이름은 나타나지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+}
+
+test "#1618 non-minify: __commonJS name preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeCjsWrapFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        // minify_whitespace=false → 기본(디버그 친화) 이름 유지
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS") != null);
+    // 축약 이름은 나타나지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") == null);
+}
+
+// Edge case: 사용자 코드가 `$cj`와 동일한 이름의 로컬(non-exported) const를 선언.
+// mangler가 `$cj`를 reserved로 알고, base54 할당 시에도 skip하므로 사용자 심볼이
+// `$cj`로 emit되지 않아 preamble 정의와 충돌하지 않아야 함.
+// (mangler는 non-exported + len>1 심볼을 rename 대상으로 가져가므로 사용자 `$cj`는
+//  base54 이름으로 rename됨.)
+test "#1618 minify: user-defined `$cj` local const doesn't collide with runtime helper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = { greet: () => \"hi\" };");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const lib = require('./lib.cjs');
+        \\const $cj = { tag: 42 };
+        \\console.log(lib.greet(), $cj.tag);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preamble: runtime helper 정의 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=(cb,mod)=>") != null);
+    // 사용자 `$cj`는 mangle되어 별도 선언으로 출력되지 않아야 함 —
+    // preamble의 runtime helper 정의가 `var $cj` 유일한 선언이어야 한다
+    // (두 번째 `var $cj` = 충돌, 사용자 값이 runtime helper를 덮어씀).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var $cj"));
+}
+
+// Edge case: 사용자 코드가 `$cj` 함수 호출 (`$cj()` 형태)을 사용하지만 정의는 없는 경우.
+// (외부 글로벌이라 가정) mangler가 이 참조를 그대로 두더라도 bundle이 깨지지 않아야 함.
+test "#1618 minify: non-CJS bundle doesn't emit runtime helper" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const x = 42;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './dep';
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM-only 번들: CJS wrap 불필요 → $cj preamble 미출현
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS") == null);
+}

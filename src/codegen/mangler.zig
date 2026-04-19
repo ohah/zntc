@@ -489,17 +489,21 @@ pub fn isReservedOrGlobal(name: []const u8) bool {
         // 3글자
         "for",    "let",    "new",    "try",
         "var",    "NaN",
+        // #1618: bundler runtime helper 축약 이름 — base54가 사용자 심볼에 동일 이름
+        //        배정해 preamble 정의를 덮어쓰는 것을 방지.
+           "$cj",
         // 4글자
-           "case",   "else",
-        "enum",   "null",   "this",   "true",
-        "void",   "with",
+           "case",
+        "else",   "enum",   "null",   "this",
+        "true",   "void",   "with",
         // 5글자
-          "await",  "break",
-        "catch",  "class",  "const",  "false",
-        "super",  "throw",  "while",  "yield",
+          "await",
+        "break",  "catch",  "class",  "const",
+        "false",  "super",  "throw",  "while",
+        "yield",
         // 6글자
-        "delete", "export", "import", "return",
-        "switch", "typeof",
+         "delete", "export", "import",
+        "return", "switch", "typeof",
     };
     for (reserved) |r| {
         if (std.mem.eql(u8, name, r)) return true;
