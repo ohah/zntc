@@ -501,7 +501,7 @@ pub const TreeShaker = struct {
                     if (self.sym_to_ib[item.mod]) |sym_map| {
                         if (ref_sym < sym_map.len) {
                             if (sym_map[ref_sym]) |ib_idx| {
-                                try self.followImport(item.mod, ib_idx, &queue, module_stmt_infos, reachable_stmts);
+                                try self.followImport(item.mod, ib_idx, item.stmt, &queue, module_stmt_infos, reachable_stmts);
                             }
                         }
                     }
@@ -567,6 +567,10 @@ pub const TreeShaker = struct {
         self: *TreeShaker,
         mod_idx: u32,
         ib_idx: u32,
+        /// #1626: 이 import 참조가 발생한 dispatch stmt 인덱스.
+        /// namespace 바인딩에서 per-prop stmt 정보가 있으면 이 stmt에 귀속된 prop만 seed.
+        /// `maxInt(u32)` sentinel = gating 적용 안 함 (기존 전체 seed 동작).
+        dispatch_stmt: u32,
         queue: *std.ArrayListUnmanaged(BfsItem),
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
@@ -583,7 +587,21 @@ pub const TreeShaker = struct {
 
         if (ib.kind == .namespace) {
             if (ib.namespace_used_properties) |props| {
-                for (props) |prop_name| {
+                // per-prop stmt 정보가 있으면 dispatch_stmt에 귀속된 prop만 seed (#1626).
+                const prop_stmts_opt = ib.namespace_used_property_stmts;
+                for (props, 0..) |prop_name, pi| {
+                    if (prop_stmts_opt) |prop_stmts| {
+                        if (dispatch_stmt != std.math.maxInt(u32) and pi < prop_stmts.len) {
+                            var in_dispatch = false;
+                            for (prop_stmts[pi]) |s| {
+                                if (s == dispatch_stmt) {
+                                    in_dispatch = true;
+                                    break;
+                                }
+                            }
+                            if (!in_dispatch) continue;
+                        }
+                    }
                     try self.seedExport(target, prop_name, queue, module_stmt_infos, reachable_stmts);
                 }
             } else {

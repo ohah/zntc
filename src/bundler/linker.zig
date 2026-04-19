@@ -23,6 +23,7 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
+const stmt_info_mod = @import("stmt_info.zig");
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -1251,11 +1252,17 @@ pub const Linker = struct {
     /// `kind == .opaque`: 값으로 사용되거나 computed access 등 → `members`는 비어 있고 fallback 필요.
     pub const NamespaceAccess = struct {
         kind: Kind,
-        members: std.StringHashMapUnmanaged(void) = .{},
+        /// property → 해당 `ns.prop` 접근이 발생한 top-level stmt 인덱스 목록.
+        /// stmt_spans가 전달된 경우에만 채워지며, 없으면 빈 리스트.
+        /// ArrayListUnmanaged는 allocator 없이 생성되어 deinit도 해당 allocator 필요.
+        /// #1626 dead-scope gating 기반 자료.
+        members: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .{},
 
         pub const Kind = enum { member_only, @"opaque" };
 
         pub fn deinit(self: *NamespaceAccess, allocator: std.mem.Allocator) void {
+            var it = self.members.valueIterator();
+            while (it.next()) |list| list.deinit(allocator);
             self.members.deinit(allocator);
         }
     };
@@ -1277,6 +1284,9 @@ pub const Linker = struct {
         ast: *const Ast,
         symbol_ids: []const ?u32,
         ns_sym_id: u32,
+        /// top-level statement의 source span. 전달하면 각 access의 owning stmt 인덱스를
+        /// `members[prop]`에 기록 (#1626 dead-scope gating). null이면 기록하지 않는다.
+        stmt_spans: ?[]const Span,
     ) std.mem.Allocator.Error!NamespaceAccess {
         const node_count = ast.nodes.items.len;
         var access: NamespaceAccess = .{ .kind = .member_only };
@@ -1346,7 +1356,27 @@ pub const Linker = struct {
             if (prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
                 const prop_node = ast.nodes.items[prop_node_idx];
                 const name = ast.getText(prop_node.span);
-                if (name.len > 0) try access.members.put(allocator, name, {});
+                if (name.len == 0) continue;
+
+                const gop = try access.members.getOrPut(allocator, name);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+
+                if (stmt_spans) |spans| {
+                    // owning statement 인덱스 기록. 함수 body 내부 access도 그 함수의
+                    // 선언 statement span 안에 있으므로 binary search로 귀속 가능.
+                    if (stmt_info_mod.findStmtForPos(spans, node.span.start)) |stmt_idx| {
+                        // 중복 방지: 같은 stmt에서 같은 prop이 여러 번 accessed될 수 있다.
+                        const list = gop.value_ptr;
+                        var exists = false;
+                        for (list.items) |existing| {
+                            if (existing == stmt_idx) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) try list.append(allocator, stmt_idx);
+                    }
+                }
             } else {
                 // member-expr object가 아닌 참조 위치 — opaque
                 access.members.deinit(allocator);
@@ -1534,19 +1564,31 @@ pub const Linker = struct {
                 // 소비자 모듈에서 local symbol id 조회. top-level import이므로 scope_maps[0].
                 const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
 
+                // prebuilt stmt_info의 stmt spans — dead-scope gating용. 없으면 null로 fallback.
+                const stmt_spans_opt: ?[]const Span = if (importer.prebuilt_stmt_info) |*infos| spans_blk: {
+                    // infos.stmts[i].span 배열을 임시 슬라이스로 만들기 위해 arena에 할당.
+                    const spans_buf = arena.alloc(Span, infos.stmts.len) catch break :spans_blk null;
+                    for (infos.stmts, 0..) |s, si| spans_buf[si] = s.span;
+                    break :spans_blk spans_buf;
+                } else null;
+
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
                 var access = analyzeNamespaceAccess(
                     self.allocator,
                     ast,
                     sem.symbol_ids,
                     @intCast(sym_idx),
+                    stmt_spans_opt,
                 ) catch continue;
                 defer access.deinit(self.allocator);
 
                 if (access.kind == .@"opaque") {
                     // `.namespace`는 text-based 결과를 신뢰하지 않음 — null로 덮어써 fallback.
                     // `.named` virtual ns는 null 유지(기존 동작).
-                    if (is_namespace) ib.namespace_used_properties = null;
+                    if (is_namespace) {
+                        ib.namespace_used_properties = null;
+                        ib.namespace_used_property_stmts = null;
+                    }
                     continue;
                 }
 
@@ -1555,12 +1597,24 @@ pub const Linker = struct {
                 // 슬라이스 자체도 arena로 할당해 deinit 시 자동 해제.
                 const count = access.members.count();
                 const props = arena.alloc([]const u8, count) catch continue;
+                const prop_stmts: ?[][]const u32 = if (stmt_spans_opt != null)
+                    (arena.alloc([]const u32, count) catch null)
+                else
+                    null;
+
                 var i: usize = 0;
-                var kit = access.members.keyIterator();
-                while (kit.next()) |key| : (i += 1) {
-                    props[i] = key.*;
+                var it = access.members.iterator();
+                while (it.next()) |entry| : (i += 1) {
+                    props[i] = entry.key_ptr.*;
+                    if (prop_stmts) |ps| {
+                        const src = entry.value_ptr.items;
+                        const dst = arena.alloc(u32, src.len) catch continue;
+                        @memcpy(dst, src);
+                        ps[i] = dst;
+                    }
                 }
                 ib.namespace_used_properties = props;
+                ib.namespace_used_property_stmts = if (prop_stmts) |ps| ps else null;
             }
         }
     }
