@@ -2882,10 +2882,13 @@ pub const Codegen = struct {
             return self.emitExportNamedCJS(decl, specs_start, specs_len, source);
         }
 
-        // 번들 모드: export 키워드 생략, declaration만 출력
-        if (self.options.linking_metadata != null and !decl.isNone()) {
-            try self.emitNode(decl);
-            return;
+        // 번들 모드: export 키워드 생략, declaration만 출력.
+        // 단일 파일 transpile 은 rename map 전달용으로만 linking_metadata 를 쓰므로 분기 제외.
+        if (self.options.linking_metadata) |lm| {
+            if (lm.is_bundle_context and !decl.isNone()) {
+                try self.emitNode(decl);
+                return;
+            }
         }
 
         try self.write("export ");
@@ -3067,28 +3070,30 @@ pub const Codegen = struct {
             try self.writeByte(';');
             return;
         }
-        // 번들 모드: export default 키워드 생략, 내부 선언만 출력
-        if (self.options.linking_metadata != null) {
-            const inner = node.data.unary.operand;
-            if (!inner.isNone()) {
-                const inner_node = self.ast.getNode(inner);
-                // 이름이 있는 function/class → 그대로 출력
-                const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
-                    !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
-                if (is_named_decl) {
-                    try self.emitNode(inner);
-                } else {
-                    const def_name = self.options.linking_metadata.?.default_export_name;
-                    if (!self.isExportDefaultSelfRef(inner, def_name)) {
-                        // namespace import는 실제 값이 `X_ns` 변수에 저장되므로
-                        // `def_name = X_ns;` 로 할당. 일반 케이스는 inner 표현식 직접 대입.
-                        if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
-                            try self.emitDefaultVarAssignment(def_name, inner);
+        // 번들 모드: export default 키워드 생략, 내부 선언만 출력.
+        if (self.options.linking_metadata) |lm| {
+            if (lm.is_bundle_context) {
+                const inner = node.data.unary.operand;
+                if (!inner.isNone()) {
+                    const inner_node = self.ast.getNode(inner);
+                    // 이름이 있는 function/class → 그대로 출력
+                    const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
+                        !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
+                    if (is_named_decl) {
+                        try self.emitNode(inner);
+                    } else {
+                        const def_name = lm.default_export_name;
+                        if (!self.isExportDefaultSelfRef(inner, def_name)) {
+                            // namespace import는 실제 값이 `X_ns` 변수에 저장되므로
+                            // `def_name = X_ns;` 로 할당. 일반 케이스는 inner 표현식 직접 대입.
+                            if (!(try self.tryEmitNsVarAssignment(def_name, inner))) {
+                                try self.emitDefaultVarAssignment(def_name, inner);
+                            }
                         }
                     }
                 }
+                return;
             }
-            return;
         }
         try self.write("export default ");
         const inner_idx = node.data.unary.operand;

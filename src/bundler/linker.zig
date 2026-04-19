@@ -70,6 +70,11 @@ pub const LinkingMetadata = struct {
     /// named import를 namespace 접근 패턴으로 전환할 때 사용.
     /// e.g., ["__ns_0", "__ns_1"] → 호이스팅: var __ns_0, __ns_1;
     dev_ns_vars: ?[]const []const u8 = null,
+    /// true  = scope-hoisted 번들러 → codegen 이 export 키워드를 생략하고 declaration 만 출력.
+    /// false = 단일 파일 transpile — rename map 전달 목적으로만 사용, export 선언 구조 보존.
+    /// 기본값 true 는 현재 모든 생성 지점이 번들러(`buildMetadataForAst` 계열)라는 사실에
+    /// 의존한다. 비-번들러 생성 지점을 추가할 때는 반드시 false 를 명시할 것.
+    is_bundle_context: bool = true,
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {

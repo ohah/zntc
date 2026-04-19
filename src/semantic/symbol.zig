@@ -119,9 +119,11 @@ pub const DeclFlags = packed struct(u16) {
     is_catch_binding: bool = false,
     /// import binding
     is_import: bool = false,
-    /// export된 심볼
+    /// export 된 top-level 심볼. `analyzer.visitExportNamedDeclaration` /
+    /// `visitExportDefaultDeclaration` 에서 세팅. `mangler.shouldSkip` 이 단일 파일 transpile
+    /// 에서 이름 보존 근거로 소비. 번들러는 `Module.export_bindings` 로 entry-boundary 를 별도 관리.
     is_exported: bool = false,
-    /// export default
+    /// `export default` 대상. `is_exported` 와 함께 세팅됨.
     is_default_export: bool = false,
     /// @__NO_SIDE_EFFECTS__ 어노테이션 — 이 함수의 모든 호출이 pure
     no_side_effects: bool = false,
