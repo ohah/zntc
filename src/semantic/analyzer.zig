@@ -134,6 +134,12 @@ pub const SemanticAnalyzer = struct {
     /// (symbol_index, reference_scope_id) — liveness BitSet 계산에 사용.
     ref_scope_pairs: std.ArrayList(symbol_mod.RefScopePair),
 
+    /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
+    /// node_index가 없는 경로(predeclared 보충 등)는 건너뛴다 — 즉 `Symbol.reference_count`
+    /// 가 항상 authoritative 하고, 이 배열은 위치 기반 최적화(mangler liveness, dead store
+    /// 분석, single-use inline 등) consumer의 입력.
+    references: std.ArrayList(symbol_mod.Reference),
+
     /// Annex B: if/else/labeled body에서 function declaration을 만나면
     /// var hoisting conflict check를 건너뛴다.
     /// sloppy mode에서 `if (true) function f() {}` 같은 구문이 let/const와 충돌하지 않도록 한다.
@@ -203,6 +209,7 @@ pub const SemanticAnalyzer = struct {
             .unresolved_references = std.StringHashMap(void).init(allocator),
             .symbol_ids = .empty,
             .ref_scope_pairs = .empty,
+            .references = .empty,
             .errors = .empty,
             .allocator = allocator,
         };
@@ -230,6 +237,7 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.ref_scope_pairs.deinit(self.allocator);
+        self.references.deinit(self.allocator);
         // StmtInfo 사전 수집 데이터 해제
         for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
         self.stmt_declared.deinit(self.allocator);
@@ -254,6 +262,10 @@ pub const SemanticAnalyzer = struct {
         try self.symbol_ids.ensureTotalCapacity(self.allocator, self.ast.nodes.items.len);
         self.symbol_ids.items.len = self.ast.nodes.items.len;
         @memset(self.symbol_ids.items, null);
+
+        // references capacity hint: 경험적으로 참조는 노드 수의 ~25% 정도.
+        // 하한을 미리 확보해 growth realloc 횟수를 줄인다 (measured ~11회 → ~2회).
+        try self.references.ensureTotalCapacity(self.allocator, self.ast.nodes.items.len / 4);
 
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1)));
         try self.visitNode(root_idx);
@@ -793,9 +805,6 @@ pub const SemanticAnalyzer = struct {
     /// tree-shaking에서 reference_count == 0인 심볼은 미사용으로 판단할 수 있다.
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
     ///
-    /// Note: 원 계획(D053)의 per-reference 위치 배열은 미구현. `reference_count` +
-    /// `write_count` scalar로 대체되어 tree-shake/let→const promotion에는 충분하나
-    /// dead store / single-use inline 같이 위치 기반 최적화는 현재 불가 (BACKLOG #61).
     fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32, is_write: bool) void {
         var scope_id = self.current_scope;
 
@@ -818,6 +827,12 @@ pub const SemanticAnalyzer = struct {
                     if (ni < self.symbol_ids.items.len) {
                         self.symbol_ids.items[ni] = @intCast(sym_idx);
                     }
+                    self.references.append(self.allocator, .{
+                        .node_index = @enumFromInt(ni),
+                        .scope_id = self.current_scope,
+                        .symbol_id = @enumFromInt(sym_idx),
+                        .kind = if (is_write) .write else .read,
+                    }) catch {};
                 }
 
                 // StmtInfo 사전 수집: 현재 top-level statement가 참조하는 심볼 기록
