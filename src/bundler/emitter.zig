@@ -995,6 +995,15 @@ pub fn emitModule(
     // 번들 모드에서는 linker의 scope hoisting과 이름 충돌 해결이 먼저 필요하므로
     // 별도 통합이 필요 (후속 PR).
 
+    // 인접 선언 merge (#1588) — tree-shake 직후에 실행해 skip_nodes 결정과 충돌 방지.
+    // `var A=1; var B=2;`에서 `B`만 미사용으로 마킹된 경우, 먼저 merge했다면 합쳐진
+    // statement는 A가 사용되므로 제거 불가 → B의 초기화식이 살아남아 죽은 심볼을 참조.
+    // 순서: transform → minify(fold) → tree-shake → mergeDecls → codegen.
+    @import("../transformer/minify.zig").mergeDecls(
+        &transformer.ast,
+        if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
+    );
+
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
     if (module.wrap_kind == .esm) {
         const esm_result = try emitEsmWrappedModule(
