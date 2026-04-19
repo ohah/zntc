@@ -39,9 +39,9 @@ D053에서 "Phase 6(minifier/bundler)에서 추가"로 예정됐던 semantic 확
 
 | # | 항목 | 상태 | 대체물 / 영향 |
 |---|------|------|---------------|
-| 61 | `Reference[]` 배열 (read/write/read_write 종류 + 정확한 위치) | ⚪ 미구현 (RFC #1634) | `reference_count`/`write_count` scalar로 대체. dead store 분석·single-use inline 등 고급 최적화 포기 |
+| 61 | `Reference[]` 배열 (read/write 종류 + 정확한 위치) | ✅ RFC #1634 완료 | `references: ArrayList(Reference)` 재도입 (`node_index, scope_id, symbol_id, stmt_idx, kind`). mangler liveness / StmtInfo / 후속 최적화의 공통 입력. `ReferenceFlags` bitset 풍부화 (declare/type 구분) 는 별도 후속 이슈 |
 | 62 | `is_reassigned` / `is_read` 개별 플래그 | ⚪ 필드 자체 미추가 | `write_count`/`reference_count` scalar가 같은 정보 제공 (let const promotion, tree-shake 기준) — 실질 대체 완료 |
-| 63 | Dead store 분석 | ⚪ 미구현 | 쓰기 후 미사용 검출 불가. write_count만으로는 판별 안 됨 — per-reference 위치 배열이 선행 필요 |
+| 63 | Dead store 분석 | ⚪ 미구현 | #61 완료로 선행 조건 해제. per-reference 위치 + kind 로 구현 가능 — 별도 이슈 |
 
 ※ #60 (`is_exported`/`is_default_export` 세팅) 은 #1633 에서 해결됨.
 
