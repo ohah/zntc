@@ -139,9 +139,9 @@ test "virtual ns (#1603): opaque 사용 시 fallback — 전체 유지" {
 // 해당 export 보존. svelte 번들 기준 약 16-20개 에러 함수 불필요 보존.
 // ============================================================
 
-test "virtual ns (#1626 repro): dead function body 내 namespace access는 target을 보존하면 안 됨" {
-    // 현재는 실패해서는 안 되는 regression 테스트 — 버그 동작을 기록하고,
-    // fix PR에서 expected 값을 뒤집어 올바른 동작을 문서화한다.
+test "virtual ns (#1626): dead function body 내 namespace access는 target을 보존하면 안 됨" {
+    // #1626 fix: linker.analyzeNamespaceAccess가 각 member access의 owning stmt를 기록하고,
+    // tree_shaker.followImport가 dispatch_stmt 기준으로 per-prop seed를 gating한다.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "errors.ts",
@@ -166,10 +166,8 @@ test "virtual ns (#1626 repro): dead function body 내 namespace access는 targe
     try testing.expect(std.mem.indexOf(u8, code, "live-err-marker") != null);
 
     // dead 경로: `unused_lifecycle`가 entry에서 도달 불가 → body의 `e.dead_err` 접근도 dead.
-    // TODO(#1626): 아래 두 assertion은 현재 버그 동작을 기록.
-    //   fix 후에는 `!= null` → `== null`로 뒤집어야 한다.
-    try testing.expect(std.mem.indexOf(u8, code, "unused_lifecycle") == null); // 함수 자체는 이미 제거되는 듯
-    try testing.expect(std.mem.indexOf(u8, code, "dead-err-marker") != null); // 현재: 남아있음 (버그)
+    try testing.expect(std.mem.indexOf(u8, code, "unused_lifecycle") == null);
+    try testing.expect(std.mem.indexOf(u8, code, "dead-err-marker") == null);
 }
 
 test "virtual ns (#1603): 여러 소비자가 모두 precise하면 union만 유지" {

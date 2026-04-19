@@ -64,7 +64,7 @@ fn runAccess(allocator: std.mem.Allocator, source: []const u8, ns_name: []const 
     }
     const sid = ns_sym_id orelse return error.NamespaceSymbolNotFound;
 
-    const access = try Linker.analyzeNamespaceAccess(allocator, ast, analyzer.symbol_ids.items, sid);
+    const access = try Linker.analyzeNamespaceAccess(allocator, ast, analyzer.symbol_ids.items, sid, null);
     return .{
         .scanner = scanner,
         .parser = parser,
