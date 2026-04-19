@@ -852,15 +852,14 @@ fn areAllReExportNsConsumersPrecise(
     reexporter_idx: u32,
     reexport_name: []const u8,
 ) bool {
-    var saw_any = false;
     for (modules) |consumer| {
         for (consumer.import_bindings) |ib| {
             if (!Linker.isReExportNsConsumer(consumer, ib, reexporter_idx, reexport_name)) continue;
-            saw_any = true;
             if (ib.namespace_used_properties == null) return false;
         }
     }
-    return saw_any;
+    // 소비자 0명이면 기본 true — 아무도 안 쓰는 re-export이므로 markAll 불필요.
+    return true;
 }
 
 /// 모든 모듈의 used_names를 사전 계산한다 (순차).
