@@ -1036,6 +1036,15 @@ pub const Codegen = struct {
     // Statement 출력
     // ================================================================
 
+    /// skip_nodes로 마킹되어 codegen 시 생략되는지 확인. emitNode 내부의 early-return과
+    /// 동일 판정 — list emission에서 newline/indent를 미리 쓰지 않기 위해 사전 체크용.
+    fn isSkipped(self: *const Codegen, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const meta = self.options.linking_metadata orelse return false;
+        const node_idx = @intFromEnum(idx);
+        return node_idx < meta.skip_nodes.capacity() and meta.skip_nodes.isSet(node_idx);
+    }
+
     fn emitProgram(self: *Codegen, node: Node) !void {
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -1043,6 +1052,9 @@ pub const Codegen = struct {
         for (indices) |raw_idx| {
             const node_idx: NodeIndex = @enumFromInt(raw_idx);
             if (node_idx.isNone()) continue;
+            // skip_nodes된 statement는 emitNode가 early-return하지만 newline은 이미 찍혀
+            // 빈 줄이 남는다 (#1602). 사전 체크로 해당 slot 전체를 건너뛴다.
+            if (self.isSkipped(node_idx)) continue;
             if (emitted) try self.writeNewline();
             try self.emitNode(node_idx);
             emitted = true;
@@ -1071,9 +1083,11 @@ pub const Codegen = struct {
         if (indices.len > 0) {
             self.indent_level += 1;
             for (indices) |raw_idx| {
+                const idx: NodeIndex = @enumFromInt(raw_idx);
+                if (self.isSkipped(idx)) continue;
                 try self.writeNewline();
                 try self.writeIndent();
-                try self.emitNode(@enumFromInt(raw_idx));
+                try self.emitNode(idx);
             }
             self.indent_level -= 1;
         }
