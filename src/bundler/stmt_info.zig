@@ -211,6 +211,7 @@ pub fn buildFromSemantic(
     symbols: []const Symbol,
     stmt_declared: []const std.ArrayListUnmanaged(u32),
     stmt_referenced: []const std.ArrayListUnmanaged(u32),
+    unresolved_globals: ?*const purity.GlobalRefSet,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)에서 top-level statement 인덱스 추출
     if (ast.nodes.items.len == 0) return null;
@@ -262,7 +263,7 @@ pub fn buildFromSemantic(
             };
         } else {
             const node = ast.nodes.items[ni];
-            const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
+            const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node, unresolved_globals);
             stmts[stmt_i] = .{
                 .node_idx = @intCast(ni),
                 .span = node.span,
@@ -298,6 +299,7 @@ pub fn build(
     ast: *const Ast,
     symbols: []const Symbol,
     symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)
     if (ast.nodes.items.len == 0) return null;
@@ -344,7 +346,7 @@ pub fn build(
         }
         const node = ast.nodes.items[ni];
         stmt_spans[stmt_i] = node.span;
-        const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
+        const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node, unresolved_globals);
         stmts[stmt_i] = .{
             .node_idx = @intCast(ni),
             .span = node.span,
