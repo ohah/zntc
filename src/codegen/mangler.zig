@@ -148,6 +148,14 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     var binding_buf: std.ArrayListUnmanaged(SymBinding) = .empty;
     defer binding_buf.deinit(allocator);
 
+    // mangling에서 제외된 심볼의 원본 이름은 그대로 출력에 남거나(shouldSkip,
+    // blocksMangling) 번들러가 별도로 canonicalize하므로(skip_symbols), base54가
+    // 해당 이름을 다른 slot에 재할당하면 동일 스코프 중복 선언(#1609: 9-param
+    // pipe의 1글자 param) 또는 shadowing 오염으로 이어진다. 이들 이름을 Phase 4
+    // 이름 할당에서 reserved로 취급한다.
+    var reserved_names = std.StringHashMap(void).init(allocator);
+    defer reserved_names.deinit();
+
     // DFS로 scope tree 순회
     var dfs_stack: std.ArrayListUnmanaged(u32) = .empty;
     defer dfs_stack.deinit(allocator);
@@ -167,15 +175,24 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 const sym = symbols[sym_idx];
                 const name = entry.key_ptr.*;
 
-                // skip 판정
-                if (shouldSkip(sym, name)) continue;
+                // skip 판정 — 아래 세 경로는 원본 이름이 출력에 살아남으므로 reserved
+                if (shouldSkip(sym, name)) {
+                    try reserved_names.put(name, {});
+                    continue;
+                }
                 // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258)
                 if (!sym.scope_id.isNone()) {
                     const s_idx = sym.scope_id.toIndex();
-                    if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) continue;
+                    if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) {
+                        try reserved_names.put(name, {});
+                        continue;
+                    }
                 }
                 if (skip_symbols) |ss| {
-                    if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) continue;
+                    if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) {
+                        try reserved_names.put(name, {});
+                        continue;
+                    }
                 }
 
                 try binding_buf.append(allocator, .{ .sym_idx = sym_idx, .name = name });
@@ -271,10 +288,10 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     var name_counter: u32 = 0;
     var name_buf: [8]u8 = undefined;
     for (sorted_slots) |entry| {
-        // 예약어 충돌 건너뜀
+        // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609)
         var name = base54(name_counter, &name_buf);
         name_counter += 1;
-        while (isReservedOrGlobal(name)) {
+        while (isReservedOrGlobal(name) or reserved_names.contains(name)) {
             name = base54(name_counter, &name_buf);
             name_counter += 1;
         }
