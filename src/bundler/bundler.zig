@@ -62,10 +62,6 @@ pub const BundleOptions = struct {
     minify_whitespace: bool = false,
     minify_identifiers: bool = false,
     minify_syntax: bool = false,
-    /// #1608 dry-run: bundle-wide slot coloring 시뮬레이션. `minify_identifiers`가
-    /// 켜져 있을 때만 동작하며 실제 mangling 결과는 변경하지 않는다. slot 수/
-    /// name length 히스토그램만 stderr에 JSON으로 출력한다.
-    mangle_preview: bool = false,
     /// 스코프 호이스팅 활성화 (import/export 제거 + 변수 리네임). false면 기존 동작.
     scope_hoist: bool = true,
     /// tree-shaking 활성화 (미사용 export/모듈 제거). scope_hoist가 true일 때만 동작.
@@ -705,14 +701,6 @@ pub const Bundler = struct {
                 try l.computeRenames();
                 if (self.options.minify_identifiers) {
                     try l.computeMangling();
-                    if (self.options.mangle_preview) {
-                        const preview = @import("../codegen/bundle_mangler_preview.zig");
-                        const stats = try preview.previewBundleWide(self.allocator, graph.modules.items);
-                        const stderr = std.fs.File.stderr().deprecatedWriter();
-                        stderr.writeAll(preview.STDERR_PREFIX) catch {};
-                        stats.writeJson(stderr) catch {};
-                        stderr.writeAll("\n") catch {};
-                    }
                 }
             }
             // Phase 3b (#1328): re_export_alias 심볼의 canonical_name 채우기.
