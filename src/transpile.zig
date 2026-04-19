@@ -312,7 +312,7 @@ pub fn transpileWithCallback(
                 .scopes = analyzer.scopes.items,
                 .symbols = analyzer.symbols.items,
                 .scope_maps = analyzer.scope_maps.items,
-                .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                .references = analyzer.references.items,
                 .source = source,
             }) catch null;
         }

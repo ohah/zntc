@@ -130,10 +130,6 @@ pub const SemanticAnalyzer = struct {
     /// resolveIdentifier/declareSymbol에서 채워진다.
     symbol_ids: std.ArrayList(?u32),
 
-    /// mangler용 참조 scope 페어. resolveIdentifier에서 심볼을 찾을 때마다 기록.
-    /// (symbol_index, reference_scope_id) — liveness BitSet 계산에 사용.
-    ref_scope_pairs: std.ArrayList(symbol_mod.RefScopePair),
-
     /// per-reference 배열. resolveIdentifier에서 symbol resolve 성공 시 기록.
     /// node_index가 없는 경로(predeclared 보충 등)는 건너뛴다 — 즉 `Symbol.reference_count`
     /// 가 항상 authoritative 하고, 이 배열은 위치 기반 최적화(mangler liveness, dead store
@@ -208,7 +204,6 @@ pub const SemanticAnalyzer = struct {
             .scope_maps = .empty,
             .unresolved_references = std.StringHashMap(void).init(allocator),
             .symbol_ids = .empty,
-            .ref_scope_pairs = .empty,
             .references = .empty,
             .errors = .empty,
             .allocator = allocator,
@@ -236,7 +231,6 @@ pub const SemanticAnalyzer = struct {
         self.resolved_names.deinit(self.allocator);
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
-        self.ref_scope_pairs.deinit(self.allocator);
         self.references.deinit(self.allocator);
         // StmtInfo 사전 수집 데이터 해제
         for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
@@ -805,7 +799,7 @@ pub const SemanticAnalyzer = struct {
     /// tree-shaking에서 reference_count == 0인 심볼은 미사용으로 판단할 수 있다.
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
     ///
-    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32, is_write: bool) void {
+    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, is_write: bool) void {
         var scope_id = self.current_scope;
 
         // 스코프 체인을 따라 올라가며 심볼 검색
@@ -817,23 +811,19 @@ pub const SemanticAnalyzer = struct {
                 // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
                 if (is_write) self.symbols.items[sym_idx].write_count += 1;
-                // mangler용 참조 scope 기록 (liveness 계산에 사용)
-                self.ref_scope_pairs.append(self.allocator, .{
-                    .symbol_idx = @intCast(sym_idx),
-                    .scope_id = self.current_scope,
-                }) catch {};
-                // symbol_ids에 기록: 이 노드가 어떤 심볼을 참조하는지
-                if (node_idx) |ni| {
-                    if (ni < self.symbol_ids.items.len) {
-                        self.symbol_ids.items[ni] = @intCast(sym_idx);
-                    }
-                    self.references.append(self.allocator, .{
-                        .node_index = @enumFromInt(ni),
-                        .scope_id = self.current_scope,
-                        .symbol_id = @enumFromInt(sym_idx),
-                        .kind = if (is_write) .write else .read,
-                    }) catch {};
+                // symbol_ids + references 기록. node_idx 는 non-none 으로 강제 (NodeIndex
+                // 타입). nullable 경로를 우회하면 mangler liveness 에 silent 누락이 생기므로
+                // 타입 수준에서 차단한다.
+                const ni: u32 = @intFromEnum(node_idx);
+                if (ni < self.symbol_ids.items.len) {
+                    self.symbol_ids.items[ni] = @intCast(sym_idx);
                 }
+                self.references.append(self.allocator, .{
+                    .node_index = node_idx,
+                    .scope_id = self.current_scope,
+                    .symbol_id = @enumFromInt(sym_idx),
+                    .kind = if (is_write) .write else .read,
+                }) catch {};
 
                 // StmtInfo 사전 수집: 현재 top-level statement가 참조하는 심볼 기록
                 // (declared에 포함된 심볼은 제외 — 자기 자신 선언은 참조가 아님)
@@ -989,7 +979,7 @@ pub const SemanticAnalyzer = struct {
         switch (node.tag) {
             .identifier_reference, .assignment_target_identifier => {
                 const name = self.ast.getSourceText(node.span);
-                self.resolveIdentifier(name, @intFromEnum(idx), true);
+                self.resolveIdentifier(name, idx, true);
             },
             .array_assignment_target, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
@@ -1031,7 +1021,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const name = self.ast.getSourceText(node.span);
-            self.resolveIdentifier(name, @intFromEnum(node_idx), true);
+            self.resolveIdentifier(name, node_idx, true);
             return true;
         }
         return false;
@@ -1257,14 +1247,14 @@ pub const SemanticAnalyzer = struct {
                 // assignment_target_identifier는 parser가 LHS로 확정한 쓰기 위치.
                 // identifier_reference는 읽기.
                 const is_write = node.tag == .assignment_target_identifier;
-                self.resolveIdentifier(name, @intFromEnum(idx), is_write);
+                self.resolveIdentifier(name, idx, is_write);
             },
 
             // JSX tag name이 대문자로 시작하면 컴포넌트 참조 (e.g. <Header />)
             .jsx_identifier => {
                 const name = self.ast.getSourceText(node.span);
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                    self.resolveIdentifier(name, @intFromEnum(idx), false);
+                    self.resolveIdentifier(name, idx, false);
                 }
             },
             // JSX member expression: <Foo.Bar> → left(Foo)를 재귀 방문하여 symbol 등록

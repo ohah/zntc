@@ -530,7 +530,7 @@ pub fn buildMetadataForAst(
                 .scopes = sem.scopes,
                 .symbols = sem.symbols.items,
                 .scope_maps = sem.scope_maps,
-                .ref_scope_pairs = sem.ref_scope_pairs,
+                .references = sem.references,
                 .source = m.source,
                 .skip_symbols = skip_syms,
             });

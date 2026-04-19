@@ -783,7 +783,7 @@ pub const ModuleGraph = struct {
                     .exported_names = analyzer.exported_names,
                     .symbol_ids = analyzer.symbol_ids.items,
                     .unresolved_references = analyzer.unresolved_references,
-                    .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                    .references = analyzer.references.items,
                 };
                 if (analyzer.stmt_declared.items.len > 0) {
                     module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
@@ -1000,7 +1000,7 @@ pub const ModuleGraph = struct {
                 .exported_names = analyzer.exported_names,
                 .symbol_ids = analyzer.symbol_ids.items,
                 .unresolved_references = analyzer.unresolved_references,
-                .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                .references = analyzer.references.items,
             };
             // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
             module.uses_top_level_await = analyzer.has_top_level_await;

@@ -5,7 +5,7 @@
 //!
 //! 알고리즘 (oxc/esbuild 기반, 그래프 컬러링):
 //!   1. parent 배열에서 children 역산 (O(n), 2-pass)
-//!   2. ref_scope_pairs로 per-symbol liveness BitSet 계산
+//!   2. references로 per-symbol liveness BitSet 계산
 //!   3. DFS로 scope tree 순회, alive하지 않은 slot 재사용 (그래프 컬러링)
 //!   4. 빈도순 이름 할당 (Base54, 고빈도 심볼이 짧은 이름)
 //!
@@ -23,7 +23,7 @@ const std = @import("std");
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
-const RefScopePair = @import("../semantic/symbol.zig").RefScopePair;
+const Reference = @import("../semantic/symbol.zig").Reference;
 
 pub const ManglerResult = struct {
     /// symbol_id -> 새 이름. codegen의 linking_metadata.renames에 주입.
@@ -50,7 +50,9 @@ pub const MangleInput = struct {
     scopes: []const Scope,
     symbols: []const Symbol,
     scope_maps: []const std.StringHashMap(usize),
-    ref_scope_pairs: []const RefScopePair,
+    /// Mangler 는 (symbol_id, scope_id) 만 소비. node_index/kind 필드는
+    /// dead store / property mangle 등 다른 consumer 용.
+    references: []const Reference,
     source: []const u8,
     /// 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
     skip_symbols: ?std.DynamicBitSet = null,
@@ -61,7 +63,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     const scopes = input.scopes;
     const symbols = input.symbols;
     const scope_maps = input.scope_maps;
-    const ref_scope_pairs = input.ref_scope_pairs;
+    const references = input.references;
     const source = input.source;
     const skip_symbols = input.skip_symbols;
 
@@ -116,13 +118,13 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         }
     }
 
-    // ref_scope_pairs: 참조 scope에서 선언 scope까지 ancestor 경로를 모두 set
-    for (ref_scope_pairs) |pair| {
-        if (pair.symbol_idx >= symbol_count) continue;
-        const sym = symbols[pair.symbol_idx];
-        const decl_scope = sym.scope_id;
+    // references: 참조 scope에서 선언 scope까지 ancestor 경로를 모두 set
+    for (references) |r| {
+        const sym_idx: u32 = @intFromEnum(r.symbol_id);
+        if (sym_idx >= symbol_count) continue;
+        const decl_scope = symbols[sym_idx].scope_id;
         if (decl_scope.isNone()) continue;
-        markAncestorPath(&symbol_liveness[pair.symbol_idx], scopes, pair.scope_id, decl_scope);
+        markAncestorPath(&symbol_liveness[sym_idx], scopes, r.scope_id, decl_scope);
     }
 
     // ================================================================
