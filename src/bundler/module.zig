@@ -45,8 +45,7 @@ pub const ModuleSemanticData = struct {
     /// 미해결 참조 (unresolved references). 스코프 체인에서 선언을 찾지 못한 이름.
     /// 번들러 linker가 scope hoisting 시 이 이름들을 예약하여 shadowing 방지.
     unresolved_references: std.StringHashMap(void),
-    /// per-reference 배열. 현재 consumer: mangler liveness. default `&.{}` 는 analyzer
-    /// OOM 으로 append 가 부분 실패한 경로에서 slice 가 비어있을 수 있음을 허용.
+    /// per-reference 배열. 현재 consumer: mangler liveness.
     references: []const Reference = &.{},
 
     /// 심볼 id에 해당하는 이름을 반환. `Symbol.nameText` 래퍼.
