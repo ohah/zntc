@@ -211,6 +211,12 @@ pub const Linker = struct {
     /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
     nested_mangling_enabled: bool = false,
 
+    /// #1608: bundle-wide mangler 결과. non-null이면 `computeBundleWideMangling` 완료 상태로,
+    /// `buildMetadataForAst`가 per-module `Mangler.mangle`을 건너뛰고 `renames_per_module[i]`를
+    /// merge한다. top-level은 `assignSymbolCanonical`이 설정한 canonical_name 경로를 그대로 쓴다.
+    /// deinit에서 해제.
+    bundle_wide_result: ?@import("../codegen/bundle_mangler.zig").BundleManglerResult = null,
+
     /// 모듈별 중첩 스코프 바인딩 이름 집합 (사전 구축).
     /// computeRenames에서 한 번 구축, hasNestedBinding에서 O(1) 조회.
     nested_name_sets: []std.StringHashMapUnmanaged(void) = &.{},
@@ -277,6 +283,7 @@ pub const Linker = struct {
         self.canonical_strings.deinit(self.allocator);
         self.canonical_symbols.deinit(self.allocator);
         self.canonical_names_used.deinit();
+        if (self.bundle_wide_result) |*r| r.deinit();
         self.reserved_globals.deinit();
         for (self.nested_name_sets) |*set| {
             set.deinit(self.allocator);
@@ -805,6 +812,43 @@ pub const Linker = struct {
         }
 
         self.nested_mangling_enabled = true;
+    }
+
+    /// #1608 Option C: 번들 전역 단일 slot coloring으로 top-level + nested를 한 번에 mangle.
+    /// `computeMangling()`과 per-module `Mangler.mangle` 호출을 동시에 대체.
+    /// `computeRenames()` 이후, `buildMetadataForAst` 이전에 호출해야 한다.
+    pub fn computeBundleWideMangling(self: *Linker) !void {
+        const bundle_mangler = @import("../codegen/bundle_mangler.zig");
+
+        var result = try bundle_mangler.mangleBundleWide(self.allocator, .{
+            .modules = self.modules,
+            .global_identifiers = self.global_identifiers,
+        });
+        errdefer result.deinit();
+
+        // top-level 심볼(scope_maps[0])의 mangled 이름은 canonical_name 경로에도 주입해야
+        // cross-module import가 올바른 이름을 참조한다. nested 심볼은 metadata.zig의 merge
+        // 단계에서 LinkingMetadata.renames로 소비되므로 canonical_name 설정 불필요.
+        // `computeRenames`가 충돌 해결로 이미 canonical_name을 설정한 심볼도 mangled 이름으로
+        // 덮어써야 한다 — `assignSymbolCanonical`이 이전 등록을 정리해 준다.
+        for (self.modules, 0..) |m, mi| {
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            const module_scope = sem.scope_maps[0];
+            const module_renames = result.renames_per_module[mi];
+            var sit = module_scope.iterator();
+            while (sit.next()) |entry| {
+                const sym_idx: u32 = @intCast(entry.value_ptr.*);
+                if (module_renames.get(sym_idx)) |mangled| {
+                    if (sym_idx >= sem.symbols.items.len) continue;
+                    const sym_ptr = &sem.symbols.items[sym_idx];
+                    const dup = try self.allocator.dupe(u8, mangled);
+                    try self.assignSymbolCanonical(sym_ptr, dup);
+                }
+            }
+        }
+
+        self.bundle_wide_result = result;
     }
 
     /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.

@@ -31,6 +31,9 @@ const CliOptions = struct {
     /// #1608 dry-run: bundle-wide slot coloring 시뮬레이션. 실제 mangling 결과는
     /// 변경하지 않고, slot 수/name length 히스토그램을 stderr에 JSON으로 출력.
     mangle_preview: bool = false,
+    /// #1608 Option C: Linker.computeMangling + per-module nested mangle을 번들 전역
+    /// 단일 slot coloring으로 대체. `--minify`와 함께 사용. 기본 off (검증 후 default on).
+    bundle_wide_mangler: bool = false,
     module_format: lib.codegen.codegen.ModuleFormat = .esm,
     drop_console: bool = false,
     drop_debugger: bool = false,
@@ -361,6 +364,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.minify_syntax = true;
         } else if (std.mem.eql(u8, arg, "--mangle-preview")) {
             opts.mangle_preview = true;
+        } else if (std.mem.eql(u8, arg, "--bundle-wide-mangler")) {
+            opts.bundle_wide_mangler = true;
         } else if (std.mem.eql(u8, arg, "--format=cjs")) {
             opts.module_format = .cjs;
             opts.bundle_format = .cjs;
@@ -1449,6 +1454,7 @@ pub fn main() !void {
             .minify_identifiers = opts.minify_identifiers,
             .minify_syntax = opts.minify_syntax,
             .mangle_preview = opts.mangle_preview,
+            .bundle_wide_mangler = opts.bundle_wide_mangler,
             .code_splitting = opts.splitting,
             .define = opts.define_list.items,
             .experimental_decorators = opts.experimental_decorators orelse false,
@@ -2307,6 +2313,8 @@ fn printUsage(writer: anytype) !void {
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
         \\  --mangle-preview                 #1608: bundle-wide slot coloring dry-run to stderr
         \\                                   (stats JSON only, actual output unchanged)
+        \\  --bundle-wide-mangler            #1608 Option C: replace per-module mangling with
+        \\                                   single bundle-wide slot coloring (experimental)
         \\
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)

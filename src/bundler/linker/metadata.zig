@@ -511,8 +511,26 @@ pub fn buildMetadataForAst(
         }
 
         // nested scope mangling (liveness 기반)
-        // top-level은 computeMangling에서 처리됨 → nested만 수행
-        if (self.nested_mangling_enabled and sem.symbols.items.len > 0) {
+        // #1608: bundle-wide 모드면 computeBundleWideMangling이 사전에 모든 심볼의 rename을
+        // 계산해 두었으므로 여기서는 cached 결과를 merge만 한다 (per-module Mangler.mangle skip).
+        if (self.bundle_wide_result) |*bw_const| {
+            // `self`가 *const Linker이지만 bundle_wide_result는 per-module index별로 한 번씩
+            // takeModuleRenames로 소비되도록 설계된 ownership transfer 슬롯이라 mutation 허용.
+            // buildMetadataForAst는 module_index별로 직렬 호출되므로 race 없음.
+            const bw: *@import("../../codegen/bundle_mangler.zig").BundleManglerResult = @constCast(bw_const);
+            var taken = bw.takeModuleRenames(module_index);
+            defer taken.deinit();
+            var nit = taken.iterator();
+            while (nit.next()) |n_entry| {
+                if (!renames.contains(n_entry.key_ptr.*)) {
+                    try renames.put(n_entry.key_ptr.*, n_entry.value_ptr.*);
+                    try owned_nested_renames.append(self.allocator, n_entry.value_ptr.*);
+                } else {
+                    self.allocator.free(n_entry.value_ptr.*);
+                }
+            }
+        } else if (self.nested_mangling_enabled and sem.symbols.items.len > 0) {
+            // Legacy 경로: top-level은 computeMangling에서 처리됨 → nested만 수행
             const Mangler = @import("../../codegen/mangler.zig");
 
             // top-level scope + export/import 심볼은 skip
