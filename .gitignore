@@ -29,6 +29,7 @@ documents/dist/
 
 # JS build output
 packages/core/dist/
+packages/wasm/dist/
 
 # Build artifacts
 *.o
