@@ -539,6 +539,7 @@ pub const Bundler = struct {
         }
         worker_linker.populateReExportAliases(worker_graph.modules.items);
         worker_linker.populateImportSymbols(worker_graph.modules.items);
+        worker_linker.populateVirtualNamespaceAccesses(worker_graph.modules.items);
         worker_linker.populateSymbolRefCounts(worker_graph.modules.items);
         defer worker_linker.deinit();
 
@@ -707,6 +708,10 @@ pub const Bundler = struct {
             l.populateReExportAliases(graph.modules.items);
             // ImportBinding.symbol(source-side) + local_symbol(current-side) 채움.
             l.populateImportSymbols(graph.modules.items);
+            // #1603 Phase 1b: `import { M }` → `export * as M from ...` (virtual namespace)
+            // 패턴에서 소비자 측 AST 멤버 접근을 수집해 namespace_used_properties 채움.
+            // tree-shaker가 source 모듈의 미사용 export를 정밀 prune 가능.
+            l.populateVirtualNamespaceAccesses(graph.modules.items);
             // symbol-level ref_count 수집. tree-shaking companion metric.
             l.populateSymbolRefCounts(graph.modules.items);
             break :blk l;

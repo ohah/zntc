@@ -845,6 +845,31 @@ const UsedNamesEntry = struct {
     all_used: bool, // true이면 emitModule에 null 전달 (모든 export 사용)
 };
 
+/// `export * as X from './src'` 형태 re-export의 모든 소비자가 precise member 접근인지 확인.
+/// - 소비자의 `.named` import_binding이 (reexporter_idx, reexport_name)을 겨냥
+/// - 모든 소비자가 `namespace_used_properties != null` 이면 true (subset 적용 가능)
+/// - 하나라도 null(opaque)이거나 소비자가 없으면 false (전체 fallback)
+fn areAllReExportNsConsumersPrecise(
+    modules: []const Module,
+    reexporter_idx: u32,
+    reexport_name: []const u8,
+) bool {
+    var saw_any = false;
+    for (modules) |consumer| {
+        for (consumer.import_bindings) |ib| {
+            if (ib.kind != .named) continue;
+            if (ib.import_record_index >= consumer.import_records.len) continue;
+            const resolved = consumer.import_records[ib.import_record_index].resolved;
+            if (resolved == .none) continue;
+            if (@intFromEnum(resolved) != reexporter_idx) continue;
+            if (!std.mem.eql(u8, ib.imported_name, reexport_name)) continue;
+            saw_any = true;
+            if (ib.namespace_used_properties == null) return false;
+        }
+    }
+    return saw_any;
+}
+
 /// 모든 모듈의 used_names를 사전 계산한다 (순차).
 /// tree-shaking의 used export names 로직을 emit 루프에서 분리.
 pub fn computeAllUsedNames(
@@ -1015,8 +1040,12 @@ pub fn computeAllUsedNames(
                 switch (re.kind) {
                     .re_export_star => {},
                     .re_export_namespace => {
-                        // namespace 객체로 노출되는 경우 소스 모듈 전체 export 사용.
-                        all_used = true;
+                        // #1603 Phase 1b: 모든 소비자가 precise member 접근(namespace_used_properties
+                        // 설정됨)이면 subset은 이미 line 957 루프에서 `isExportUsed` 기준으로 반영됨.
+                        // 하나라도 opaque(null)이면 source 모듈 전체 export fallback.
+                        if (!areAllReExportNsConsumersPrecise(graph.modules.items, re.importer_module_index, re.exported_name)) {
+                            all_used = true;
+                        }
                     },
                     .re_export => {},
                     .import_binding_named => {
