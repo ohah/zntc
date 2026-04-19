@@ -2424,8 +2424,11 @@ pub const SemanticAnalyzer = struct {
                             self.markSymbolNoSideEffects(binding_node.span);
                         }
                     }
-                    // const/let 리터럴 → const_value 설정 (번들러 상수 인라인용)
-                    if (sym_kind == .variable_const or sym_kind == .variable_let) {
+                    // const 리터럴 → const_value 설정 (번들러 상수 인라인용).
+                    // `let`은 후속 재할당 가능성이 있어 초기값 인라인이 틀린 값을 출력할 수 있으므로 제외
+                    // (예: `export let counter = 42; counter++;` 후 cross-module 참조가 42로 inline되는 버그).
+                    // 재할당 분석 없이 안전하게 `const`만 대상으로 제한한다.
+                    if (sym_kind == .variable_const) {
                         const cv = self.extractConstValue(init_node);
                         if (cv.kind != .none) {
                             if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
