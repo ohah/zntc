@@ -33,6 +33,20 @@
 
 ---
 
+## Phase 6 semantic 확장 — 미구현 / 대체됨
+
+D053에서 "Phase 6(minifier/bundler)에서 추가"로 예정됐던 semantic 확장 항목. 번들러는 별도 자료구조로 우회 구현되어 필수 기능은 충족됐으나, 아래는 남은 갭.
+
+| # | 항목 | 상태 | 대체물 / 영향 |
+|---|------|------|---------------|
+| 61 | `Reference[]` 배열 (read/write/read_write 종류 + 정확한 위치) | ⚪ 미구현 (RFC #1634) | `reference_count`/`write_count` scalar로 대체. dead store 분석·single-use inline 등 고급 최적화 포기 |
+| 62 | `is_reassigned` / `is_read` 개별 플래그 | ⚪ 필드 자체 미추가 | `write_count`/`reference_count` scalar가 같은 정보 제공 (let const promotion, tree-shake 기준) — 실질 대체 완료 |
+| 63 | Dead store 분석 | ⚪ 미구현 | 쓰기 후 미사용 검출 불가. write_count만으로는 판별 안 됨 — per-reference 위치 배열이 선행 필요 |
+
+※ #60 (`is_exported`/`is_default_export` 세팅) 은 #1633 에서 해결됨.
+
+---
+
 ## TS 타입 전용 (d.ts 생성 시 필요)
 
 ZTS는 타입 체크를 하지 않으므로 (스트리핑만) 당장 필요하지 않음.

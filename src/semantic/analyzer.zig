@@ -793,8 +793,9 @@ pub const SemanticAnalyzer = struct {
     /// tree-shaking에서 reference_count == 0인 심볼은 미사용으로 판단할 수 있다.
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
     ///
-    /// Note: 번들러(Phase 6)에서는 Reference 배열도 기록하여 read/write/read_write
-    /// 종류와 정확한 위치를 추적할 예정 (dead store 분석 등).
+    /// Note: 원 계획(D053)의 per-reference 위치 배열은 미구현. `reference_count` +
+    /// `write_count` scalar로 대체되어 tree-shake/let→const promotion에는 충분하나
+    /// dead store / single-use inline 같이 위치 기반 최적화는 현재 불가 (BACKLOG #61).
     fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32, is_write: bool) void {
         var scope_id = self.current_scope;
 
@@ -2595,6 +2596,10 @@ pub const SemanticAnalyzer = struct {
                             if (local_node.tag != .string_literal) {
                                 const local_name = self.ast.getText(local_node.span);
                                 try self.checkExportBinding(local_name, local_node.span);
+                                // local 심볼에 is_exported 세팅 — mangler.shouldSkip 이 단일 파일
+                                // transpile 에서 이름을 보존하고, specifier 출력이 원본 이름을
+                                // 그대로 쓰더라도 참조 정합성이 유지된다.
+                                self.markSymbolExported(local_name, false);
                             }
                         }
                     }
@@ -2610,6 +2615,12 @@ pub const SemanticAnalyzer = struct {
         }
 
         try self.visitNode(decl_idx);
+
+        // visitNode 가 심볼을 생성한 뒤에야 플래그 세팅이 가능. 그 이전에는 심볼이 존재하지 않는다.
+        if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+            const decl_node = self.ast.getNode(decl_idx);
+            self.markExportedDeclSymbols(decl_node);
+        }
     }
 
     /// export default 시 "default" 이름을 등록한다.
@@ -2645,7 +2656,7 @@ pub const SemanticAnalyzer = struct {
                     .name = node.span, // export default 문 전체 span
                     .scope_id = module_scope,
                     .kind = .variable_const,
-                    .decl_flags = .{ .block_scoped = true, .is_const = true },
+                    .decl_flags = .{ .block_scoped = true, .is_const = true, .is_exported = true, .is_default_export = true },
                     .declaration_span = node.span,
                     .origin_scope = module_scope,
                 });
@@ -2678,6 +2689,28 @@ pub const SemanticAnalyzer = struct {
 
         // 내부 선언 순회
         try self.visitNode(inner_idx);
+
+        // needs_facade=false 경로: inner 가 named function/class/identifier 이므로 원본 이름이
+        // public default export 로 노출된다. 해당 심볼의 mangle 을 막기 위해 플래그 세팅.
+        if (!needs_facade and !inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
+            const inner = self.ast.getNode(inner_idx);
+            switch (inner.tag) {
+                .function_declaration, .class_declaration => {
+                    const e = inner.data.extra;
+                    if (e < self.ast.extra_data.items.len) {
+                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                            const name_node = self.ast.getNode(name_idx);
+                            self.markSymbolExported(self.ast.getText(name_node.span), true);
+                        }
+                    }
+                },
+                .identifier_reference => {
+                    self.markSymbolExported(self.ast.getText(inner.span), true);
+                },
+                else => {},
+            }
+        }
     }
 
     /// export * as name — name을 등록한다.
@@ -2748,6 +2781,91 @@ pub const SemanticAnalyzer = struct {
             const name = self.ast.getText(node.span);
             try self.registerExportedName(name, node.span);
         }
+    }
+
+    /// `export` 선언이 만든 심볼들에 `is_exported` 플래그를 세팅한다.
+    /// visitNode 로 심볼 생성이 완료된 후 호출되어야 한다.
+    ///
+    /// Note: `collectExportedDeclNames` 와 동일한 AST 구조 (variable_declaration /
+    /// function_declaration / class_declaration) 를 순회한다. 지원 대상이 바뀌면
+    /// 두 함수를 함께 갱신할 것 — 한쪽만 놓치면 이름은 exported 로 기록되는데
+    /// 심볼 플래그가 안 세팅되거나 반대의 불일치가 발생한다.
+    fn markExportedDeclSymbols(self: *SemanticAnalyzer, node: Node) void {
+        switch (node.tag) {
+            .variable_declaration => {
+                const extra_start = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (extra_start + 2 >= extras.len) return;
+                const decl_start = extras[extra_start + 1];
+                const decl_len = extras[extra_start + 2];
+                if (decl_start + decl_len > extras.len) return;
+                for (extras[decl_start .. decl_start + decl_len]) |raw_idx| {
+                    const decl_idx: NodeIndex = @enumFromInt(raw_idx);
+                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_node = self.ast.getNode(decl_idx);
+                    if (decl_node.tag == .variable_declarator) {
+                        const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                        self.markExportedBinding(binding_idx);
+                    }
+                }
+            },
+            .function_declaration, .class_declaration => {
+                const extras = self.ast.extra_data.items;
+                if (node.data.extra >= extras.len) return;
+                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.getText(name_node.span);
+                    self.markSymbolExported(name, false);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// 바인딩 패턴을 재귀 순회하며 식별자 심볼에 `is_exported` 세팅.
+    /// destructuring export 지원 (`export const { a, b } = obj`). 지원 태그는
+    /// `registerBinding` 의 부분집합 — assignment_target_* 은 export 가 아니므로 제외.
+    fn markExportedBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier => {
+                const name = self.ast.getText(node.span);
+                self.markSymbolExported(name, false);
+            },
+            .array_pattern, .object_pattern => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw_idx| {
+                    self.markExportedBinding(@enumFromInt(raw_idx));
+                }
+                if (split.rest_operand) |op| self.markExportedBinding(op);
+            },
+            .binding_property => {
+                // binary: { left = key, right = value (binding) }
+                self.markExportedBinding(node.data.binary.right);
+            },
+            .assignment_pattern => {
+                // binary: { left = binding, right = default_value }
+                self.markExportedBinding(node.data.binary.left);
+            },
+            else => {},
+        }
+    }
+
+    /// module scope 에서 `name` 심볼을 찾아 export 플래그를 세팅한다.
+    /// `is_default` true 이면 `is_default_export` 도 함께 세팅.
+    /// 찾지 못하면 no-op — `export { x } from 'mod'` 처럼 local binding 이 없는 재export,
+    /// 또는 import binding 만 있는 이름이 대상일 수 있다.
+    fn markSymbolExported(self: *SemanticAnalyzer, name: []const u8, is_default: bool) void {
+        const module_scope = self.findVarScope();
+        if (module_scope.isNone()) return;
+        const scope_idx = module_scope.toIndex();
+        if (scope_idx >= self.scope_maps.items.len) return;
+        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return;
+        if (sym_idx >= self.symbols.items.len) return;
+        self.symbols.items[sym_idx].decl_flags.is_exported = true;
+        if (is_default) self.symbols.items[sym_idx].decl_flags.is_default_export = true;
     }
 
     /// 내보낸 이름을 등록한다. JS에서 중복이면 에러, TS에서는 허용 (oxc 동일).

@@ -362,6 +362,8 @@ pub fn transpileWithCallback(
                 analyzer.symbol_ids.items
             else
                 &.{},
+            // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
+            .is_bundle_context = false,
             .allocator = arena_alloc,
         };
     }
