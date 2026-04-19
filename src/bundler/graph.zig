@@ -791,7 +791,7 @@ pub const ModuleGraph = struct {
                         &(module.ast.?),
                         analyzer.symbols.items,
                         analyzer.stmt_declared.items,
-                        analyzer.stmt_referenced.items,
+                        analyzer.references.items,
                         if (module.semantic) |*s| &s.unresolved_references else null,
                     ) catch null;
                 }
@@ -1013,7 +1013,7 @@ pub const ModuleGraph = struct {
                     &parser.ast,
                     analyzer.symbols.items,
                     analyzer.stmt_declared.items,
-                    analyzer.stmt_referenced.items,
+                    analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
                 ) catch null;
             }

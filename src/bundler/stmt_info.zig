@@ -13,6 +13,7 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const Reference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const purity = @import("purity.zig");
 
@@ -204,13 +205,14 @@ fn buildReverseIndex(allocator: std.mem.Allocator, stmts: []const StmtInfo, sym_
 }
 
 /// Semantic Analyzer에서 사전 수집한 데이터로 ModuleStmtInfos를 구축한다.
-/// AST 재순회 없이 O(S) (S = statement 수)로 완료. tree_shaker Phase 2 최적화.
+/// - declared: analyzer 의 `stmt_declared` 에서 그대로 복사 (top-level 선언)
+/// - referenced: `references` 배열을 순회해 stmt 단위로 재구성 (`findStmtForPos` 로 역추적)
 pub fn buildFromSemantic(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     symbols: []const Symbol,
     stmt_declared: []const std.ArrayListUnmanaged(u32),
-    stmt_referenced: []const std.ArrayListUnmanaged(u32),
+    references: []const Reference,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)에서 top-level statement 인덱스 추출
@@ -224,7 +226,7 @@ pub fn buildFromSemantic(
     const stmt_raw_indices = ast.extra_data.items[list.start .. list.start + list.len];
 
     const stmt_count = stmt_raw_indices.len;
-    if (stmt_count != stmt_declared.len or stmt_count != stmt_referenced.len) return null;
+    if (stmt_count != stmt_declared.len) return null;
 
     var stmts = try allocator.alloc(StmtInfo, stmt_count);
     errdefer {
@@ -239,17 +241,13 @@ pub fn buildFromSemantic(
     errdefer allocator.free(sym_to_stmt);
     for (sym_to_stmt) |*s| s.* = null;
 
+    // Pass 1: declared + span + side-effect 결정. referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
         const ni = @intFromEnum(idx);
 
-        // declared/referenced 복사
         const declared = if (stmt_declared[stmt_i].items.len > 0)
             try allocator.dupe(u32, stmt_declared[stmt_i].items)
-        else
-            &[_]u32{};
-        const referenced = if (stmt_referenced[stmt_i].items.len > 0)
-            try allocator.dupe(u32, stmt_referenced[stmt_i].items)
         else
             &[_]u32{};
 
@@ -259,7 +257,7 @@ pub fn buildFromSemantic(
                 .span = .{ .start = 0, .end = 0 },
                 .has_side_effects = true,
                 .declared_symbols = declared,
-                .referenced_symbols = referenced,
+                .referenced_symbols = &[_]u32{},
             };
         } else {
             const node = ast.nodes.items[ni];
@@ -269,16 +267,59 @@ pub fn buildFromSemantic(
                 .span = node.span,
                 .has_side_effects = side_effects,
                 .declared_symbols = declared,
-                .referenced_symbols = referenced,
+                .referenced_symbols = &[_]u32{},
             };
         }
 
-        // symbol_to_stmt 역매핑
         for (declared) |sym_idx| {
             if (sym_idx < sym_to_stmt.len) {
                 sym_to_stmt[sym_idx] = @intCast(stmt_i);
             }
         }
+    }
+
+    // Pass 2: references → per-stmt bucket 분배 (node_index 의 span 으로 binary search).
+    var stmt_spans = try allocator.alloc(Span, stmt_count);
+    defer allocator.free(stmt_spans);
+    for (stmts, 0..) |s, i| stmt_spans[i] = s.span;
+
+    var buckets = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
+    defer {
+        for (buckets) |*b| b.deinit(allocator);
+        allocator.free(buckets);
+    }
+    for (buckets) |*b| b.* = .empty;
+
+    for (references) |r| {
+        const ni = @intFromEnum(r.node_index);
+        if (ni >= ast.nodes.items.len) continue;
+        const pos = ast.nodes.items[ni].span.start;
+        const stmt_i = findStmtForPos(stmt_spans, pos) orelse continue;
+        const sym_u32: u32 = @intFromEnum(r.symbol_id);
+        if (sym_u32 >= symbols.len) continue;
+        try buckets[stmt_i].append(allocator, sym_u32);
+    }
+
+    // Pass 3: bucket 을 sort + dedupe + (같은 stmt 의 declared 제외) → stmts[i].referenced_symbols.
+    for (0..stmt_count) |stmt_i| {
+        const bucket = &buckets[stmt_i];
+        if (bucket.items.len == 0) continue;
+
+        std.mem.sort(u32, bucket.items, {}, std.sort.asc(u32));
+
+        const declared = stmts[stmt_i].declared_symbols;
+        var out_len: usize = 0;
+        var last: ?u32 = null;
+        for (bucket.items) |sym| {
+            if (last != null and last.? == sym) continue;
+            last = sym;
+            if (declared.len != 0 and std.mem.indexOfScalar(u32, declared, sym) != null) continue;
+            bucket.items[out_len] = sym;
+            out_len += 1;
+        }
+        if (out_len == 0) continue;
+
+        stmts[stmt_i].referenced_symbols = try allocator.dupe(u32, bucket.items[0..out_len]);
     }
 
     // 역인덱스 구축 (buildReverseIndex 재사용)
