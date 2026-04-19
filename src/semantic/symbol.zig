@@ -251,8 +251,13 @@ pub const Symbol = struct {
     /// read/write/read_write 모두 카운트에 포함.
     reference_count: u32 = 0,
 
+    /// 이 심볼이 write로 참조된 횟수. `x = ...`, `x += ...`, `x++` 등 LHS 등장 수.
+    /// `let` const promotion 결정용 — 0이면 초기값 이후 재할당 없는 "사실상 const"로 간주하여
+    /// 크로스-모듈 인라인 대상. oxc/rolldown과 동일한 접근.
+    write_count: u32 = 0,
+
     /// 컴파일 타임 상수 값 (번들러 크로스-모듈 인라인용).
-    /// const/let 선언의 초기화 값이 리터럴이면 설정.
+    /// const/let 선언의 초기화 값이 리터럴이면 설정 (단 let은 `write_count == 0`일 때만 인라인).
     const_value: ConstValue = .{},
 
     /// Bundler가 추가한 합성 심볼 종류. null = AST 선언에서 온 정규 심볼.
