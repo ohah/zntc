@@ -285,8 +285,9 @@
 - **이유**: 재선언 검증에 필요한 최소 정보만. references(참조 추적)는 Phase 6(minifier/bundler)에서 추가
 - **SymbolKind**: var/let/const/function/class/parameter/catch_binding/import_binding (8가지). 재선언 규칙이 kind별로 다르므로 세분화
 - **D053a 이행 현황 (Phase 6 완료 후 재정리)**:
-  - **대체 구현**: 계획된 `Reference[]`(종류 + 위치 배열)는 **scalar 카운터로 대체**됨 — `reference_count`(tree-shake 기준), `write_count`(let→const promotion 기준). oxc/rolldown과 동일한 패턴. dead store 분석 같이 per-reference 위치가 필요한 최적화는 포기 (RFC #1634 에서 재도입 논의).
+  - **`references: ArrayList(Reference)` 재도입 (RFC #1634 완료)**: 2026-03-21 `/simplify` 에서 제거됐던 구조를 per-reference 위치 기반 최적화의 전제로 재도입. `Reference { node_index, scope_id, symbol_id, stmt_idx, kind }` — analyzer 가 resolve 성공 시 append. `reference_count`/`write_count` scalar 는 hot path O(1) 캐시로 유지. mangler liveness, `StmtInfo.referenced_symbols`, 후속 dead store/single-use inline 등이 이 배열을 소비.
   - **`is_exported`/`is_default_export` (#1633 완료)**: `analyzer.visitExportNamedDeclaration`/`visitExportDefaultDeclaration` 경로에서 대상 심볼에 세팅. 단일 파일 `--minify-identifiers` 경로의 export mangle 버그를 해소. 번들러는 여전히 `Module.export_bindings` + `linker.collectManglingCandidates` 를 entry-boundary 필터링의 권원으로 사용하며, 플래그는 단일 파일 mangler.shouldSkip 의 근거로 한정.
+  - **후속**: `ReferenceFlags` bitset 으로 풍부화 (declare/type/value 구분) 는 별도 이슈로 관리 — `stmt_declared` 까지 제거해 analyzer 가 "references 하나" 만 보유하는 이상적 구조 도달 경로.
 
 ### D054: Strict Mode 추적
 - **결정**: 파서에서 추적 ("use strict" directive + module mode)
