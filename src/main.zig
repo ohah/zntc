@@ -28,9 +28,6 @@ const CliOptions = struct {
     minify_whitespace: bool = false,
     minify_identifiers: bool = false,
     minify_syntax: bool = false,
-    /// #1608 dry-run: bundle-wide slot coloring 시뮬레이션. 실제 mangling 결과는
-    /// 변경하지 않고, slot 수/name length 히스토그램을 stderr에 JSON으로 출력.
-    mangle_preview: bool = false,
     module_format: lib.codegen.codegen.ModuleFormat = .esm,
     drop_console: bool = false,
     drop_debugger: bool = false,
@@ -359,8 +356,6 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.minify_identifiers = true;
         } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
             opts.minify_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--mangle-preview")) {
-            opts.mangle_preview = true;
         } else if (std.mem.eql(u8, arg, "--format=cjs")) {
             opts.module_format = .cjs;
             opts.bundle_format = .cjs;
@@ -1448,7 +1443,6 @@ pub fn main() !void {
             .minify_whitespace = opts.minify_whitespace,
             .minify_identifiers = opts.minify_identifiers,
             .minify_syntax = opts.minify_syntax,
-            .mangle_preview = opts.mangle_preview,
             .code_splitting = opts.splitting,
             .define = opts.define_list.items,
             .experimental_decorators = opts.experimental_decorators orelse false,
@@ -2305,8 +2299,6 @@ fn printUsage(writer: anytype) !void {
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)
-        \\  --mangle-preview                 #1608: bundle-wide slot coloring dry-run to stderr
-        \\                                   (stats JSON only, actual output unchanged)
         \\
         \\TypeScript options:
         \\  --experimental-decorators         Legacy decorator (__decorateClass)
