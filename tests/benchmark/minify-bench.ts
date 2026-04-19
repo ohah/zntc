@@ -10,14 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import {
-  mkdtempSync,
-  writeFileSync,
-  rmSync,
-  existsSync,
-  statSync,
-  readFileSync,
-} from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -104,16 +97,67 @@ function histTotal(h: LengthHistogram): number {
 
 // JS 예약어 — identifier 카운트에서 제외하여 순수 식별자만 집계
 const KEYWORDS = new Set([
-  "var","let","const","function","return","if","else","for","while","do",
-  "switch","case","default","break","continue","throw","try","catch","finally",
-  "new","delete","typeof","instanceof","in","of","void","null","undefined",
-  "true","false","this","super","class","extends","import","export","from","as",
-  "async","await","yield","static","get","set","public","private","protected",
-  "debugger","with","enum","implements","interface","package",
+  "var",
+  "let",
+  "const",
+  "function",
+  "return",
+  "if",
+  "else",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "case",
+  "default",
+  "break",
+  "continue",
+  "throw",
+  "try",
+  "catch",
+  "finally",
+  "new",
+  "delete",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "void",
+  "null",
+  "undefined",
+  "true",
+  "false",
+  "this",
+  "super",
+  "class",
+  "extends",
+  "import",
+  "export",
+  "from",
+  "as",
+  "async",
+  "await",
+  "yield",
+  "static",
+  "get",
+  "set",
+  "public",
+  "private",
+  "protected",
+  "debugger",
+  "with",
+  "enum",
+  "implements",
+  "interface",
+  "package",
 ]);
 
 const EMPTY_HIST: LengthHistogram = {
-  len1: 0, len2: 0, len3: 0, len4: 0, len5plus: 0,
+  len1: 0,
+  len2: 0,
+  len3: 0,
+  len4: 0,
+  len5plus: 0,
 };
 
 // 문자열 리터럴 내부 텍스트도 일부 잡히지만, 세 도구 모두에 동일하게 노이즈가 적용되므로 비교는 유효.
@@ -172,32 +216,55 @@ function benchFixture(f: Fixture): BenchResult {
     const esOut = join(dir, "es.js");
     const rdOut = join(dir, "rd.js");
 
-    const zts = runTool("zts", ZTS_BIN, [
-      "--bundle", entryFile, "-o", ztsOut,
-      "--minify", `--platform=${platform}`,
-      ...(format === "cjs" ? ["--format=cjs"] : []),
-    ], ztsOut);
+    const zts = runTool(
+      "zts",
+      ZTS_BIN,
+      [
+        "--bundle",
+        entryFile,
+        "-o",
+        ztsOut,
+        "--minify",
+        `--platform=${platform}`,
+        ...(format === "cjs" ? ["--format=cjs"] : []),
+      ],
+      ztsOut,
+    );
 
     const esb = existsSync(ESBUILD_BIN)
-      ? runTool("esbuild", ESBUILD_BIN, [
-          entryFile, "--bundle", `--outfile=${esOut}`,
-          "--minify", "--loader:.ts=ts", `--platform=${platform}`,
-          `--format=${format}`,
-        ], esOut, __dirname)
+      ? runTool(
+          "esbuild",
+          ESBUILD_BIN,
+          [
+            entryFile,
+            "--bundle",
+            `--outfile=${esOut}`,
+            "--minify",
+            "--loader:.ts=ts",
+            `--platform=${platform}`,
+            `--format=${format}`,
+          ],
+          esOut,
+          __dirname,
+        )
       : null;
 
     const rd = existsSync(ROLLDOWN_BIN)
-      ? runTool("rolldown", ROLLDOWN_BIN, [
-          entryFile, "-o", rdOut,
-          "--format", format,
-          "--platform", platform, "--minify",
-        ], rdOut, __dirname)
+      ? runTool(
+          "rolldown",
+          ROLLDOWN_BIN,
+          [entryFile, "-o", rdOut, "--format", format, "--platform", platform, "--minify"],
+          rdOut,
+          __dirname,
+        )
       : null;
 
     return { name: f.name, zts, esbuild: esb, rolldown: rd };
   } finally {
     rmSync(dir, { recursive: true, force: true });
-    try { rmSync(entryFile); } catch {}
+    try {
+      rmSync(entryFile);
+    } catch {}
   }
 }
 
@@ -211,12 +278,14 @@ function pad(s: string | number, n: number): string {
 }
 
 function formatResult(res: BenchResult): string {
-  const header = `\n## ${res.name}\n\n` +
+  const header =
+    `\n## ${res.name}\n\n` +
     `| Tool     | Size     | Time    | 1-ch | 2-ch | 3-ch | 4-ch | 5+-ch | Total |\n` +
     `|----------|----------|---------|------|------|------|------|-------|-------|`;
 
   const row = (label: string, r: ToolResult | null): string => {
-    if (!r) return `| ${pad(label, 8)} | n/a      | n/a     | -    | -    | -    | -    | -     | -     |`;
+    if (!r)
+      return `| ${pad(label, 8)} | n/a      | n/a     | -    | -    | -    | -    | -     | -     |`;
     if (!r.ok) {
       return `| ${pad(label, 8)} | FAIL     | ${pad(r.time + "ms", 7)} | -    | -    | -    | -    | -     | -     |`;
     }
@@ -224,7 +293,12 @@ function formatResult(res: BenchResult): string {
     return `| ${pad(label, 8)} | ${formatKb(r.size)} | ${pad(r.time + "ms", 7)} | ${pad(h.len1, 4)} | ${pad(h.len2, 4)} | ${pad(h.len3, 4)} | ${pad(h.len4, 4)} | ${pad(h.len5plus, 5)} | ${pad(histTotal(h), 5)} |`;
   };
 
-  return [header, row("zts", res.zts), row("esbuild", res.esbuild), row("rolldown", res.rolldown)].join("\n");
+  return [
+    header,
+    row("zts", res.zts),
+    row("esbuild", res.esbuild),
+    row("rolldown", res.rolldown),
+  ].join("\n");
 }
 
 function main() {
