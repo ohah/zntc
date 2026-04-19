@@ -848,8 +848,8 @@ pub const TreeShaker = struct {
     }
 
     /// #1603 Phase 1b: `export * as X from './src'` 재export에 대해 모든 소비자의 member 접근
-    /// 집합을 집계. 전체 소비자가 `namespace_used_properties`로 subset을 지정했으면 union만
-    /// `markExportUsed`하고 true 반환. 하나라도 opaque면 false 반환 (호출자가 전체 fallback).
+    /// 집합을 집계. 반환값 `true`: precision 성공(또는 소비자 0명 — markAll 불필요).
+    /// `false`: 적어도 한 소비자가 opaque → 호출자가 전체 fallback 적용.
     fn tryMarkReExportNsSubset(
         self: *TreeShaker,
         reexport_mod: u32,
@@ -859,26 +859,18 @@ pub const TreeShaker = struct {
         var union_set: std.StringHashMapUnmanaged(void) = .{};
         defer union_set.deinit(self.allocator);
 
-        var saw_consumer = false;
-
         // 소비자 검색: 모든 모듈의 .named import_bindings에서 이 re-export 소비자 찾기
         for (self.modules) |consumer| {
             for (consumer.import_bindings) |ib| {
                 if (!Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) continue;
 
-                saw_consumer = true;
                 const props = ib.namespace_used_properties orelse return false; // opaque → fallback
                 for (props) |p| try union_set.put(self.allocator, p, {});
             }
         }
 
-        if (!saw_consumer) {
-            // 소비자가 없다? entry 직접 사용일 수도 있고 tree-shaker가 이미 걸러냈을 수도.
-            // 보수적으로 false 반환 → 기존 fallback 경로.
-            return false;
-        }
-
-        // union에 포함된 member만 source 모듈에서 used로 마킹
+        // union에 포함된 member만 source 모듈에서 used로 마킹.
+        // 소비자 0명이면 union_set이 비어 아무것도 마킹 안 함 — precision 성공으로 취급(markAll 불필요).
         var kit = union_set.keyIterator();
         while (kit.next()) |key| {
             try self.markExportUsed(src_mod, key.*);
