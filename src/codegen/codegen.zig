@@ -777,10 +777,7 @@ pub const Codegen = struct {
         if (idx.isNone()) return;
 
         // 번들 모드: skip_nodes에 있으면 출력하지 않음 (import/export 제거)
-        if (self.options.linking_metadata) |meta| {
-            const node_idx = @intFromEnum(idx);
-            if (node_idx < meta.skip_nodes.capacity() and meta.skip_nodes.isSet(node_idx)) return;
-        }
+        if (self.isSkipped(idx)) return;
 
         const node = self.ast.getNode(idx);
 
