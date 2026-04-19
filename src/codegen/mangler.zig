@@ -340,7 +340,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
 // ============================================================
 
 /// ref_scope에서 decl_scope까지 ancestor 경로의 모든 scope를 liveness에 set.
-fn markAncestorPath(
+pub fn markAncestorPath(
     liveness: *std.DynamicBitSet,
     scopes: []const Scope,
     ref_scope: ScopeId,
@@ -358,7 +358,7 @@ fn markAncestorPath(
 
 /// 두 BitSet이 교집합을 가지는지 검사 (하나라도 겹치면 true).
 /// std.DynamicBitSet에는 non-destructive 교집합 검사가 없으므로 직접 구현.
-fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
+pub fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
     const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
     const bits_per_mask = @bitSizeOf(MaskInt);
     const na = (a.unmanaged.bit_length + bits_per_mask - 1) / bits_per_mask;
@@ -374,14 +374,14 @@ fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
 // Children 역산 (parent -> children adjacency list)
 // ============================================================
 
-const ChildrenList = struct {
+pub const ChildrenList = struct {
     /// offsets[scope_id] = children_list 내 시작 인덱스. 길이 = scope_count + 1.
     offsets: []u32,
     /// flat children 배열.
     list: []u32,
 };
 
-fn buildChildrenList(allocator: std.mem.Allocator, scopes: []const Scope) !ChildrenList {
+pub fn buildChildrenList(allocator: std.mem.Allocator, scopes: []const Scope) !ChildrenList {
     const n = scopes.len;
 
     // Pass 1: 각 scope의 children 수 카운트
