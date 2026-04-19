@@ -409,6 +409,24 @@ const projects: ProjectConfig[] = [
     pkg: "svelte",
     entry: `import { readable } from 'svelte/store';\nconst t = readable(0, set => { set(42); return () => {}; });\nlet v; t.subscribe(x => v = x);\nconsole.log(v);`,
   },
+  // svelte tree-shaking 스펙트럼 — 같은 패키지에서 import 범위를 3단계로 달리해
+  // 용량이 단조증가하는지, 각 단계에서 output이 esbuild와 MATCH인지 검증한다.
+  // 회귀 감지: #1567(pure builtin) / #1626(dead-scope namespace) 최적화가 깨지면
+  // svelte-mount 시나리오의 용량이 esbuild 대비 다시 벌어진다.
+  {
+    // core 5개 API — reactivity + effect + props 서브시스템 대부분 reachable.
+    // (#1567/#1626 회귀 방지 핵심 지표.)
+    name: "svelte-mount",
+    pkg: "svelte",
+    entry: `import { mount, unmount, untrack, tick, flushSync } from 'svelte';\nconsole.log([mount, unmount, untrack, tick, flushSync].map(f => typeof f).join(','));`,
+  },
+  {
+    // 광범위 surface — lifecycle + context + store까지 끌어옴.
+    // tree-shaking이 제대로 안 되면 여기서 번들이 급격히 부풀어야 정상.
+    name: "svelte-full",
+    pkg: "svelte",
+    entry: `import { mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext } from 'svelte';\nimport { readable, writable, derived } from 'svelte/store';\nconsole.log([mount, unmount, untrack, tick, flushSync, onMount, onDestroy, getContext, setContext, hasContext, readable, writable, derived].map(f => typeof f).join(','));`,
+  },
   {
     name: "solid-js",
     pkg: "solid-js",
