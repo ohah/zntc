@@ -814,6 +814,7 @@ pub const SemanticAnalyzer = struct {
                     .node_index = node_idx,
                     .scope_id = self.current_scope,
                     .symbol_id = @enumFromInt(sym_idx),
+                    .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .kind = if (is_write) .write else .read,
                 }) catch {};
 

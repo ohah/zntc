@@ -278,11 +278,8 @@ pub fn buildFromSemantic(
         }
     }
 
-    // Pass 2: references → per-stmt bucket 분배 (node_index 의 span 으로 binary search).
-    var stmt_spans = try allocator.alloc(Span, stmt_count);
-    defer allocator.free(stmt_spans);
-    for (stmts, 0..) |s, i| stmt_spans[i] = s.span;
-
+    // Pass 2: references → per-stmt bucket 분배. analyzer 가 이미 `stmt_idx` 를 기록했으므로
+    // span 기반 역추적은 불필요 (decorator 등 stmt span 외부 노드 누락을 방지).
     var buckets = try allocator.alloc(std.ArrayListUnmanaged(u32), stmt_count);
     defer {
         for (buckets) |*b| b.deinit(allocator);
@@ -291,13 +288,11 @@ pub fn buildFromSemantic(
     for (buckets) |*b| b.* = .empty;
 
     for (references) |r| {
-        const ni = @intFromEnum(r.node_index);
-        if (ni >= ast.nodes.items.len) continue;
-        const pos = ast.nodes.items[ni].span.start;
-        const stmt_i = findStmtForPos(stmt_spans, pos) orelse continue;
+        if (r.stmt_idx == Reference.NO_STMT) continue;
+        if (r.stmt_idx >= stmt_count) continue;
         const sym_u32: u32 = @intFromEnum(r.symbol_id);
         if (sym_u32 >= symbols.len) continue;
-        try buckets[stmt_i].append(allocator, sym_u32);
+        try buckets[r.stmt_idx].append(allocator, sym_u32);
     }
 
     // Pass 3: bucket 을 sort + dedupe + (같은 stmt 의 declared 제외) → stmts[i].referenced_symbols.

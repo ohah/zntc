@@ -334,8 +334,14 @@ pub const Reference = struct {
     scope_id: ScopeId,
     /// 참조 대상 심볼의 인덱스
     symbol_id: SymbolId,
+    /// 이 참조가 속한 top-level statement 인덱스. top-level 이 아니거나 enable_stmt_info=false 이면
+    /// `NO_STMT`. span 기반 역추적은 decorator 등 "stmt span 외부 노드" 에서 누락되므로
+    /// analyzer 가 `current_top_stmt_idx` 를 직접 저장한다.
+    stmt_idx: u32 = NO_STMT,
     /// 참조 종류 (read/write/read_write)
     kind: ReferenceKind,
+
+    pub const NO_STMT: u32 = std.math.maxInt(u32);
 };
 
 /// 참조 종류. 식별자가 읽기/쓰기/둘 다인지 구분.
