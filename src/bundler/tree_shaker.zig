@@ -567,10 +567,9 @@ pub const TreeShaker = struct {
         self: *TreeShaker,
         mod_idx: u32,
         ib_idx: u32,
-        /// #1626: 이 import 참조가 발생한 dispatch stmt 인덱스.
-        /// namespace 바인딩에서 per-prop stmt 정보가 있으면 이 stmt에 귀속된 prop만 seed.
-        /// `maxInt(u32)` sentinel = gating 적용 안 함 (기존 전체 seed 동작).
-        dispatch_stmt: u32,
+        /// 이 import 참조가 발생한 dispatch stmt 인덱스. null이면 gating 적용 안 함
+        /// (기존 전체 seed 동작 유지 — dynamic seed 경로 등에서 사용).
+        dispatch_stmt: ?u32,
         queue: *std.ArrayListUnmanaged(BfsItem),
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
@@ -587,20 +586,13 @@ pub const TreeShaker = struct {
 
         if (ib.kind == .namespace) {
             if (ib.namespace_used_properties) |props| {
-                // per-prop stmt 정보가 있으면 dispatch_stmt에 귀속된 prop만 seed (#1626).
-                const prop_stmts_opt = ib.namespace_used_property_stmts;
                 for (props, 0..) |prop_name, pi| {
-                    if (prop_stmts_opt) |prop_stmts| {
-                        if (dispatch_stmt != std.math.maxInt(u32) and pi < prop_stmts.len) {
-                            var in_dispatch = false;
-                            for (prop_stmts[pi]) |s| {
-                                if (s == dispatch_stmt) {
-                                    in_dispatch = true;
-                                    break;
-                                }
-                            }
-                            if (!in_dispatch) continue;
-                        }
+                    // per-prop stmt 정보와 dispatch_stmt가 모두 있을 때만 gating 적용.
+                    // 어느 한쪽이라도 없으면 기존 전체 seed로 fallback.
+                    if (dispatch_stmt) |ds| gate: {
+                        const prop_stmts = ib.namespace_used_property_stmts orelse break :gate;
+                        if (pi >= prop_stmts.len) break :gate;
+                        if (!containsU32(prop_stmts[pi], ds)) continue;
                     }
                     try self.seedExport(target, prop_name, queue, module_stmt_infos, reachable_stmts);
                 }
@@ -1029,3 +1021,8 @@ pub const TreeShaker = struct {
         return false;
     }
 };
+
+fn containsU32(slice: []const u32, target: u32) bool {
+    for (slice) |v| if (v == target) return true;
+    return false;
+}
