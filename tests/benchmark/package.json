@@ -6,6 +6,7 @@
     "bench": "bun run bench.ts",
     "bench:transpile": "bun run bench.ts --transpile",
     "bench:bundle": "bun run bench.ts --bundle",
+    "bench:minify": "bun run minify-bench.ts",
     "pipeline": "bun run pipeline.ts"
   },
   "dependencies": {
