@@ -651,6 +651,10 @@ pub const Linker = struct {
 
                 if (sym_idx >= sem.symbols.items.len) continue;
                 const sym = &sem.symbols.items[sym_idx];
+                // import binding은 mangling 대상이 아님 (#1623). 후보로 잡으면 자체 mangled
+                // 이름이 부여되고, buildMetadataForAst의 self-rename 루프가 그 이름으로
+                // cross-module rename(target export의 canonical name)을 덮어써 reference가 깨진다.
+                if (sym.kind == .import_binding) continue;
                 // canonical_name이 이미 할당된 상태(충돌 해결 후 `_default$1` 등)라면
                 // dirty list 치환이 그 canonical_name으로 lookup하므로 name_refs도
                 // 그 키로 맞춰야 rename이 연결된다 (#1585).
