@@ -1479,11 +1479,21 @@ pub const Linker = struct {
         return std.mem.eql(u8, ib.imported_name, reexport_name);
     }
 
-    /// `import { M } from './idx'`에서 M이 `export * as M from './src'`를 겨냥하는 경우
-    /// 소비자 관점의 namespace 값. `binding_scanner.collectNamespaceAccesses`는 `.kind==.namespace`
-    /// 만 처리하므로 이 post-link 보완 pass가 필요 — AST 재스캔해 member 접근을 `namespace_used_properties`에
-    /// 저장. opaque 사용은 null 유지(fallback). `populateImportSymbols` 이후 호출.
-    pub fn populateVirtualNamespaceAccesses(self: *const Linker, modules: []Module) void {
+    /// 두 가지 post-link 정밀화를 수행한다 (#1616):
+    ///
+    /// 1. `.named` + virtual namespace (`import { M } from './idx'`가
+    ///    `export * as M from './src'`를 겨냥) — `collectNamespaceAccesses`가
+    ///    `.named` 바인딩을 namespace로 보지 않아 null로 남는 것을 채움.
+    ///
+    /// 2. `.namespace` 재정밀화 — `collectNamespaceAccesses`는 text-based
+    ///    identifier matching이라 함수 파라미터/로컬 선언에 의한 shadowing을
+    ///    감지 못해 false-positive escape로 null을 설정하는 경우가 많다
+    ///    (예: Effect `export const sort = dual(2, (self, O) => ...)` —
+    ///    파라미터 O가 `import * as O`를 shadow해도 text match로는 탈출).
+    ///    `analyzeNamespaceAccess`는 `semantic.symbol_ids` 기반이라 scope-aware.
+    ///    `.namespace` 바인딩은 collectNamespaceAccesses 결과를 신뢰하지 않고
+    ///    symbol-aware 판정으로 **덮어쓴다**.
+    pub fn populateNamespaceAccesses(self: *const Linker, modules: []Module) void {
         for (modules) |*importer| {
             const sem = importer.semantic orelse continue;
             const ast = if (importer.ast) |*a| a else continue;
@@ -1491,28 +1501,33 @@ pub const Linker = struct {
             // deinit 시 자동 해제. linker.allocator를 쓰면 누수 위험.
             const arena = if (importer.parse_arena) |*pa| pa.allocator() else continue;
 
+            if (sem.scope_maps.len == 0) continue;
+
             for (importer.import_bindings) |*ib| {
-                if (ib.kind != .named) continue;
-                if (ib.namespace_used_properties != null) continue; // 이미 설정됨
+                const is_namespace = ib.kind == .namespace;
+                const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
+                if (!is_namespace and !is_named_candidate) continue;
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
                 const source_i = @intFromEnum(source_mod_idx);
                 if (source_i >= modules.len) continue;
 
-                // imported_name이 source 모듈에서 re_export_namespace인지 확인
-                const source = modules[source_i];
-                var is_virtual_ns = false;
-                for (source.export_bindings) |eb| {
-                    if (eb.kind == .re_export_namespace and std.mem.eql(u8, eb.exported_name, ib.imported_name)) {
-                        is_virtual_ns = true;
-                        break;
+                // `.named` 경로는 virtual namespace (re_export_namespace 타겟)일 때만 처리.
+                // `.namespace`는 항상 대상 — collectNamespaceAccesses 결과를 scope-aware로 재평가.
+                if (is_named_candidate) {
+                    const source = modules[source_i];
+                    var is_virtual_ns = false;
+                    for (source.export_bindings) |eb| {
+                        if (eb.kind == .re_export_namespace and std.mem.eql(u8, eb.exported_name, ib.imported_name)) {
+                            is_virtual_ns = true;
+                            break;
+                        }
                     }
+                    if (!is_virtual_ns) continue;
                 }
-                if (!is_virtual_ns) continue;
 
-                // 소비자 모듈에서 local symbol id 조회
-                if (sem.scope_maps.len == 0) continue;
+                // 소비자 모듈에서 local symbol id 조회. top-level import이므로 scope_maps[0].
                 const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
 
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
@@ -1524,7 +1539,12 @@ pub const Linker = struct {
                 ) catch continue;
                 defer access.deinit(self.allocator);
 
-                if (access.kind == .@"opaque") continue; // null 유지 — fallback
+                if (access.kind == .@"opaque") {
+                    // `.namespace`는 text-based 결과를 신뢰하지 않음 — null로 덮어써 fallback.
+                    // `.named` virtual ns는 null 유지(기존 동작).
+                    if (is_namespace) ib.namespace_used_properties = null;
+                    continue;
+                }
 
                 // 접근된 멤버를 namespace_used_properties에 복사.
                 // 문자열은 source buffer 참조 (ast.getText 결과) — module.parse_arena 수명 동안 유효.

@@ -180,3 +180,33 @@ test "analyzeNamespaceAccess: 표현식 내 member 접근" {
     defer h.deinit(std.testing.allocator);
     try expectMembers(&h.access, &.{ "a", "b", "c" });
 }
+
+// #1616: 함수 파라미터/로컬 변수가 namespace 이름을 shadow해도 namespace의 opaque
+// 판정을 유발하지 않아야 한다 (scope-aware). Effect 라이브러리의
+// `export const sort = dual(2, (self, O) => ... O)` 같은 짧은 alias 패턴이
+// 텍스트 매칭 기반 `binding_scanner.collectNamespaceAccesses`에서 false-positive escape로
+// 전체 모듈을 포함시켰던 것을 해소하기 위함.
+test "analyzeNamespaceAccess: 함수 파라미터 shadowing — namespace 탈출 아님" {
+    var h = try runAccess(std.testing.allocator,
+        \\import * as X from './mod';
+        \\X.foo();
+        \\export const fn = (X) => X.bar();
+    , "X");
+    defer h.deinit(std.testing.allocator);
+    // semantic.symbol_ids가 파라미터 X와 namespace X를 다른 심볼로 분리하므로
+    // 내부 `X.bar()`는 ns_sym_id 참조로 카운트되지 않음 → top-level `X.foo()`만 수집.
+    try expectMembers(&h.access, &.{"foo"});
+}
+
+test "analyzeNamespaceAccess: 함수 내부 로컬 변수 shadowing" {
+    var h = try runAccess(std.testing.allocator,
+        \\import * as X from './mod';
+        \\X.foo();
+        \\function inner() {
+        \\  const X = 42;
+        \\  return X + 1;
+        \\}
+    , "X");
+    defer h.deinit(std.testing.allocator);
+    try expectMembers(&h.access, &.{"foo"});
+}
