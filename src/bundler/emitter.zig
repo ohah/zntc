@@ -866,7 +866,19 @@ pub fn emitModule(
     // mangling/주석 제거 같은 compression 은 없다. `--define`으로 치환된 상수 비교
     // (`"production" === "production"`)나 `if (false)` dead branch를 bundle 기본 모드에서도
     // 접어야 rolldown/esbuild와 동등한 DCE 효과를 낸다.
-    @import("../transformer/minify.zig").minify(&transformer.ast);
+    //
+    // Dead store (#1644 PR1): semantic 정보가 있을 때만 unused declaration 제거 활성.
+    // tree-shaker 가 top-level export 미사용은 이미 커버하지만, 함수 내부 local 은 여기서 처리.
+    {
+        const minify_mod = @import("../transformer/minify.zig");
+        const ctx: minify_mod.MinifyCtx = if (module.semantic) |sem| .{
+            .symbols = sem.symbols.items,
+            .symbol_ids = transformer.symbol_ids.items,
+            .scopes = sem.scopes,
+            .unresolved_globals = &sem.unresolved_references,
+        } else .empty;
+        minify_mod.minify(&transformer.ast, ctx);
+    }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
     // packed struct(u32)이므로 bitwise OR로 한번에 합친다

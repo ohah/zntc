@@ -22,8 +22,38 @@ const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
+const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const Kind = @import("../lexer/token.zig").Kind;
+const symbol_mod = @import("../semantic/symbol.zig");
+const scope_mod = @import("../semantic/scope.zig");
+const purity = @import("../bundler/purity.zig");
+
+/// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
+/// `symbols` 는 mutable slice — dead declaration 제거 시 init 내부 identifier reference 의
+/// `reference_count` 를 감산하기 위해 필요하다 (stale 방지).
+/// `scopes` 는 eval / with 포함 여부 조회용 (dynamic lookup 보호).
+pub const MinifyCtx = struct {
+    symbols: []symbol_mod.Symbol,
+    symbol_ids: []const ?u32,
+    scopes: []const scope_mod.Scope,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+
+    /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
+    pub const empty: MinifyCtx = .{
+        .symbols = &.{},
+        .symbol_ids = &.{},
+        .scopes = &.{},
+        .unresolved_globals = null,
+    };
+
+    /// semantic 정보 3축 (symbols / symbol_ids / scopes) 이 모두 채워졌는지 확인.
+    /// scopes 누락 시 eval / with 가드가 silent 통과되어 직접 eval 스코프 안의 변수가
+    /// 잘못 제거될 수 있으므로, 세 필드 모두 요구하는 all-or-nothing 계약.
+    inline fn hasSemantic(self: MinifyCtx) bool {
+        return self.symbols.len > 0 and self.symbol_ids.len > 0 and self.scopes.len > 0;
+    }
+};
 
 /// f64 → i32 (ToInt32, ECMAScript 7.1.6)
 fn toI32(val: f64) i32 {
@@ -128,7 +158,8 @@ fn isGuaranteedBoolean(ast: *const Ast, node: Node) bool {
 }
 
 /// AST minify 패스를 실행한다. ast를 in-place 수정.
-pub fn minify(ast: *Ast) void {
+/// `ctx` 에 semantic 정보가 있으면 dead store (unused declaration) 제거도 함께 수행.
+pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
     for (ast.nodes.items, 0..) |node, i| {
         switch (node.tag) {
             .binary_expression => foldBinary(ast, @intCast(i), node),
@@ -140,6 +171,163 @@ pub fn minify(ast: *Ast) void {
             .sequence_expression => simplifySequence(ast, @intCast(i), node),
             else => {},
         }
+    }
+    if (ctx.hasSemantic()) {
+        removeDeadStores(ast, ctx);
+    }
+}
+
+// ================================================================
+// Dead Store Elimination — Unused Declaration (#1644 PR1)
+// ================================================================
+//
+// 제거 조건 (모두 만족):
+//   - `var` / `let` / `const` 의 **단일** `binding_identifier` declarator
+//   - symbol 의 `scope_id != 0` (함수/블록 local 만) — top-level 은 tree-shaker 영역
+//   - `reference_count == 0` and `write_count == 0`
+//   - `is_exported` / `is_default_export` 둘 다 false
+//   - init 이 없거나 `purity.isExprPure` 가 true
+//
+// 제외:
+//   - top-level (module scope) 선언     — tree-shaker 가 커버, 중복 제거는 fixture 회귀
+//   - `using` / `await using`           — `[Symbol.dispose]` 호출이 side-effect
+//   - destructuring / non-identifier    — pattern 은 간접 getter 호출 가능
+//   - declarator 2개 이상               — 부분 제거는 PR 범위 밖 (복잡도)
+//   - init 이 불순                      — "강등" (→ expression_statement) 은 PR1.5
+//
+// 제거 시 init expression 내 모든 identifier_reference 의 `reference_count` 를
+// 감산해 semantic scalar 와의 정합성을 유지한다 (미래 fixed-point loop 도입 시 필수).
+
+fn removeDeadStores(ast: *Ast, ctx: MinifyCtx) void {
+    for (ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .variable_declaration) continue;
+        tryRemoveDeadDecl(ast, ctx, @intCast(i), node);
+    }
+}
+
+fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
+    const kind = ast.variableDeclarationKind(node);
+    // `using` / `await using`: Symbol.dispose 호출 side-effect → 보존
+    if (kind.isUsing()) return;
+
+    const extra = node.data.extra;
+    if (extra + 2 >= ast.extra_data.items.len) return;
+    const list_start = ast.extra_data.items[extra + 1];
+    const list_len = ast.extra_data.items[extra + 2];
+    // 단일 declarator 만 처리 (부분 제거는 PR 범위 밖)
+    if (list_len != 1) return;
+    if (list_start >= ast.extra_data.items.len) return;
+
+    const decl_raw = ast.extra_data.items[list_start];
+    if (decl_raw >= ast.nodes.items.len) return;
+    const decl = ast.nodes.items[decl_raw];
+    if (decl.tag != .variable_declarator) return;
+
+    // variable_declarator: extra = [name, type_ann, init]
+    const de = decl.data.extra;
+    if (de + 2 >= ast.extra_data.items.len) return;
+    const name_raw = ast.extra_data.items[de];
+    const init_raw = ast.extra_data.items[de + 2];
+
+    if (name_raw >= ast.nodes.items.len) return;
+    const name_node = ast.nodes.items[name_raw];
+    // 단일 binding_identifier 만 — destructuring/array/object pattern 제외
+    if (name_node.tag != .binding_identifier) return;
+
+    // symbol_ids[name_node_idx] → symbol index
+    if (name_raw >= ctx.symbol_ids.len) return;
+    const sym_id = ctx.symbol_ids[name_raw] orelse return;
+    if (sym_id >= ctx.symbols.len) return;
+    const sym = ctx.symbols[sym_id];
+
+    // top-level (module scope=0) 는 tree-shaker 영역 — 여기서 지우면 bundle 경로의 entry
+    // top-level 선언이 사라져 fixture 가 깨진다. 함수/블록 local 만 대상.
+    const scope_idx = @intFromEnum(sym.scope_id);
+    if (scope_idx == 0) return;
+
+    // eval / with 스코프 안의 선언은 동적 lookup 대상이 될 수 있다. mangler 와 동일 보호
+    // (Scope.blocksMangling — subtree_has_direct_eval / subtree_has_with).
+    if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
+
+    // exported binding 보호 — transpile 단독 경로는 tree-shaker 가 없어 직접 지키는 외엔 없다
+    if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
+
+    // reference 가 있거나 다른 곳에서 쓰이면 dead 아님
+    if (sym.reference_count != 0 or sym.write_count != 0) return;
+
+    // init 이 있으면 purity 검사 — 불순하면 RHS 보존을 위해 (아직) 제거 불가
+    const init_idx: NodeIndex = @enumFromInt(init_raw);
+    if (!init_idx.isNone()) {
+        if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+        // init 내부의 pure identifier_reference 들의 reference_count 를 감산
+        decrementRefsInExpr(ast, ctx, init_idx);
+    }
+
+    // variable_declaration 전체를 empty_statement 로 교체
+    ast.nodes.items[node_idx] = .{
+        .tag = .empty_statement,
+        .span = node.span,
+        .data = .{ .none = 0 },
+    };
+}
+
+/// expression 안의 모든 `identifier_reference` 노드를 찾아, symbol_ids 로 symbol 을
+/// 역매핑해 `reference_count` 를 1 감산한다. init expression 은 RHS 이므로
+/// assignment_target_identifier 는 등장하지 않아 read 경로만 처리.
+fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
+    if (idx.isNone()) return;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return;
+    const node = ast.nodes.items[ni];
+
+    if (node.tag == .identifier_reference) {
+        if (ni < ctx.symbol_ids.len) {
+            if (ctx.symbol_ids[ni]) |sid| {
+                if (sid < ctx.symbols.len and ctx.symbols[sid].reference_count > 0) {
+                    ctx.symbols[sid].reference_count -= 1;
+                }
+            }
+        }
+        return;
+    }
+
+    switch (Node.Tag.dataKind(node.tag)) {
+        .leaf => {},
+        .unary => decrementRefsInExpr(ast, ctx, node.data.unary.operand),
+        .binary => {
+            decrementRefsInExpr(ast, ctx, node.data.binary.left);
+            decrementRefsInExpr(ast, ctx, node.data.binary.right);
+        },
+        .ternary => {
+            decrementRefsInExpr(ast, ctx, node.data.ternary.a);
+            decrementRefsInExpr(ast, ctx, node.data.ternary.b);
+            decrementRefsInExpr(ast, ctx, node.data.ternary.c);
+        },
+        .list => walkListChildren(ast, ctx, node.data.list),
+        .extra => {
+            for (Node.Tag.extraChildOffsets(node.tag)) |off| {
+                const ei = node.data.extra + off;
+                if (ei >= ast.extra_data.items.len) continue;
+                decrementRefsInExpr(ast, ctx, @enumFromInt(ast.extra_data.items[ei]));
+            }
+            for (Node.Tag.extraListOffsets(node.tag)) |pair| {
+                const start_off = node.data.extra + pair[0];
+                const len_off = node.data.extra + pair[1];
+                if (len_off >= ast.extra_data.items.len) continue;
+                const start = ast.extra_data.items[start_off];
+                const len = ast.extra_data.items[len_off];
+                walkListChildren(ast, ctx, .{ .start = start, .len = len });
+            }
+        },
+    }
+}
+
+fn walkListChildren(ast: *const Ast, ctx: MinifyCtx, list: ast_mod.NodeList) void {
+    if (list.len == 0) return;
+    const end = list.start + list.len;
+    if (end > ast.extra_data.items.len) return;
+    for (ast.extra_data.items[list.start..end]) |raw| {
+        decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
     }
 }
 

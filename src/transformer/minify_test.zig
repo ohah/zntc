@@ -31,7 +31,7 @@ fn expectMinifyOpts(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast);
+    minify_mod.minify(&transformer.ast, .empty);
     minify_mod.mergeDecls(&transformer.ast, null);
 
     var cg = Codegen.initWithOptions(a, &transformer.ast, codegen_opts);
@@ -54,7 +54,7 @@ fn expectMergeIdempotent(input: []const u8, expected: []const u8) !void {
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast);
+    minify_mod.minify(&transformer.ast, .empty);
     minify_mod.mergeDecls(&transformer.ast, null);
     minify_mod.mergeDecls(&transformer.ast, null); // 두 번째 호출 — 결과 동일해야 함
 
@@ -86,7 +86,7 @@ fn expectMergeWithSkip(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     _ = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast);
+    minify_mod.minify(&transformer.ast, .empty);
 
     var skip = try std.DynamicBitSet.initEmpty(a, transformer.ast.nodes.items.len);
     // substring의 시작 위치와 일치하는 variable_declaration을 **전부** 마킹.
@@ -724,4 +724,272 @@ test "merge decls: skip_nodes가 kind 차이가 있는 경계에서는 merge 차
         2,
         2,
     );
+}
+
+// ================================================================
+// Dead Store Elimination — Unused Declaration (#1644 PR1)
+// ================================================================
+
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+
+/// Semantic analyzer 를 포함한 minify 파이프라인. dead store pass 가 활성화된다.
+/// 함수 body 안에 코드를 넣어야 top-level 제외 규칙을 피할 수 있다 — 헬퍼가 자동 래핑.
+fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // 함수 본문으로 감싸서 로컬 스코프 안의 선언으로 만듬 (top-level 제외 규칙 우회).
+    // 외부에서 run 을 호출하므로 run 자체는 reference_count > 0 → 제거 안 됨.
+    const wrapped = try std.fmt.allocPrint(a, "function run(){{{s}}}run();", .{body});
+
+    var scanner = try Scanner.init(a, wrapped);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    const root = try transformer.transform();
+
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+    };
+    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.mergeDecls(&transformer.ast, null);
+
+    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    const result = try cg.generate(root);
+    const trimmed = std.mem.trimRight(u8, result, "\n");
+    try std.testing.expectEqualStrings(expected, trimmed);
+}
+
+// ---- 제거 가능 (함수 local, unused, pure init) ----
+
+test "dead store: unused let with literal init 제거" {
+    try expectMinifyDead("let x = 1;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "dead store: unused const with literal init 제거" {
+    try expectMinifyDead("const x = 1;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "dead store: unused var with literal init 제거" {
+    try expectMinifyDead("var x = 1;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "dead store: unused let init 없음 — 제거" {
+    try expectMinifyDead("let x;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "dead store: unused let with string literal 제거" {
+    try expectMinifyDead("let x = \"secret\";", "function run() {\n\t;\n}\nrun();");
+}
+
+test "dead store: unused let with member access (pure) 제거 — 연쇄로 o 도 제거" {
+    // obj.prop 은 purity 관점 pure. x 제거 시 o 의 ref_count 가 0 → 같은 pass 안에서
+    // o 가 아직 방문 안 된 상태면 연쇄 제거됨 (oxc fixed-point 효과를 단일 pass 로 부분 달성).
+    try expectMinifyDead(
+        "const o = { a: 1 }; let x = o.a;",
+        "function run() {\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "dead store: unused let with pure binary 제거" {
+    try expectMinifyDead("let x = 1 + 2;", "function run() {\n\t;\n}\nrun();");
+}
+
+// ---- 제거 금지 — 사용됨 ----
+
+test "dead store: read 1회 — 유지" {
+    try expectMinifyDead(
+        "let x = 1; console.log(x);",
+        "function run() {\n\tlet x = 1;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "dead store: write (reassign) — 유지 (write_count 증가)" {
+    try expectMinifyDead(
+        "let x = 1; x = 2;",
+        "function run() {\n\tlet x = 1;\n\tx = 2;\n}\nrun();",
+    );
+}
+
+test "dead store: compound assign — 유지" {
+    try expectMinifyDead(
+        "let x = 1; x += 2;",
+        "function run() {\n\tlet x = 1;\n\tx += 2;\n}\nrun();",
+    );
+}
+
+test "dead store: update expression — 유지" {
+    try expectMinifyDead(
+        "let x = 0; x++;",
+        "function run() {\n\tlet x = 0;\n\tx++;\n}\nrun();",
+    );
+}
+
+// ---- 제거 금지 — init 불순 ----
+
+test "dead store: unused let with impure call — 유지" {
+    // helper() 는 @__PURE__ 없으면 불순. 강등(→ expression_statement)은 PR1.5 범위
+    try expectMinifyDead(
+        "let x = helper();",
+        "function run() {\n\tlet x = helper();\n}\nrun();",
+    );
+}
+
+test "dead store: unused let with @__PURE__ call — 제거" {
+    try expectMinifyDead(
+        "let x = /*#__PURE__*/ helper();",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+// ---- 제거 금지 — 안전성 체크리스트 ----
+
+test "dead store: using declaration — 유지 (Symbol.dispose side-effect)" {
+    try expectMinifyDead(
+        "using x = getResource();",
+        "function run() {\n\tusing x = getResource();\n}\nrun();",
+    );
+}
+
+test "dead store: await using — 유지" {
+    // await 은 async function 안에서만 유효해서 이 테스트는 별도 래퍼 필요
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src = "async function run(){await using x = getResource();}run();";
+    var scanner = try Scanner.init(a, src);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    const root = try transformer.transform();
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+    };
+    minify_mod.minify(&transformer.ast, ctx);
+    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    const result = try cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, result, "await using x") != null);
+}
+
+test "dead store: destructuring binding — 유지 (pattern 은 getter 호출 가능)" {
+    try expectMinifyDead(
+        "const { x } = { x: 1 };",
+        "function run() {\n\tconst { x:x } = { x: 1 };\n}\nrun();",
+    );
+}
+
+test "dead store: array destructuring — 유지" {
+    try expectMinifyDead(
+        "const [x] = [1];",
+        "function run() {\n\tconst [x] = [1];\n}\nrun();",
+    );
+}
+
+test "dead store: declarator 2개 — 유지 (부분 제거는 PR 범위 밖)" {
+    try expectMinifyDead(
+        "let x = 1, y = 2;",
+        "function run() {\n\tlet x = 1,y = 2;\n}\nrun();",
+    );
+}
+
+test "dead store: eval 포함 스코프 — 유지 (direct eval 이 동적 lookup)" {
+    try expectMinifyDead(
+        "const veryLongPasswordVar = \"secret\"; return eval(\"veryLongPasswordVar\");",
+        "function run() {\n\tconst veryLongPasswordVar = \"secret\";\n\treturn eval(\"veryLongPasswordVar\");\n}\nrun();",
+    );
+}
+
+test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
+    // 함수 래핑 없이 직접 top-level 로 — scope_id == 0 가드 검증
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src = "const x = 1;";
+    var scanner = try Scanner.init(a, src);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    const root = try transformer.transform();
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+    };
+    minify_mod.minify(&transformer.ast, ctx);
+    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    const result = try cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, result, "const x = 1") != null);
+}
+
+// ---- reference_count decrement 검증 ----
+
+test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
+    // `let y = 1; let x = y;` 에서 x 제거 시 y 의 reference_count 가 1 → 0 이 되어야 함.
+    // (fixed-point loop 가 도입되면 다음 pass 에서 y 도 제거되는 기반.)
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src = "function run(){let y = 1; let x = y;}run();";
+    var scanner = try Scanner.init(a, src);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    _ = try transformer.transform();
+
+    // 초기: x 는 0 ref, y 는 1 ref (x 의 init 에서 읽힘)
+    var y_ref_before: u32 = 0;
+    for (analyzer.symbols.items) |sym| {
+        const name = sym.nameText(parser.ast.source);
+        if (std.mem.eql(u8, name, "y")) y_ref_before = sym.reference_count;
+    }
+    try std.testing.expectEqual(@as(u32, 1), y_ref_before);
+
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+    };
+    minify_mod.minify(&transformer.ast, ctx);
+
+    // 제거 후: x 가 사라지면서 y 의 reference_count 도 1 → 0
+    var y_ref_after: u32 = 0;
+    for (analyzer.symbols.items) |sym| {
+        const name = sym.nameText(parser.ast.source);
+        if (std.mem.eql(u8, name, "y")) y_ref_after = sym.reference_count;
+    }
+    try std.testing.expectEqual(@as(u32, 0), y_ref_after);
 }

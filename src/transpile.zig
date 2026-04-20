@@ -342,8 +342,15 @@ pub fn transpileWithCallback(
     const root = transformer.transform() catch return error.TransformError;
 
     if (options.minify_syntax) {
-        @import("transformer/minify.zig").minify(&transformer.ast);
-        @import("transformer/minify.zig").mergeDecls(&transformer.ast, null);
+        const minify_mod = @import("transformer/minify.zig");
+        const ctx: minify_mod.MinifyCtx = .{
+            .symbols = analyzer.symbols.items,
+            .symbol_ids = transformer.symbol_ids.items,
+            .scopes = analyzer.scopes.items,
+            .unresolved_globals = null,
+        };
+        minify_mod.minify(&transformer.ast, ctx);
+        minify_mod.mergeDecls(&transformer.ast, null);
     }
 
     // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
