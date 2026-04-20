@@ -1311,3 +1311,154 @@ test "unused: conditional kept operand 가 sequence → paren 삽입" {
         "function run() {\n\tfoo() || (bar(),baz());\n}\nrun();",
     );
 }
+
+// ================================================================
+// Unused Multi-Element Rewrite — Array / New / Object (#1650 follow-up)
+// ================================================================
+//
+// pure 원소는 drop, impure 는 sequence 로 flatten. spread / getter/proxy 위험은 가드.
+
+// ---- ArrayExpression ----
+
+test "unused: [1, 2, 3]; → empty" {
+    try expectMinifyDead(
+        "[1, 2, 3];",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: [foo(), 1, bar()]; → pure drop, impure sequence" {
+    try expectMinifyDead(
+        "[foo(), 1, bar()];",
+        "function run() {\n\tfoo(),bar();\n}\nrun();",
+    );
+}
+
+test "unused: [foo(), 1]; → single impure 로 축약" {
+    try expectMinifyDead(
+        "[foo(), 1];",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: []; → empty" {
+    try expectMinifyDead(
+        "[];",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: [...x]; — spread 있으면 rewrite 포기" {
+    // spread 는 iterator protocol 호출 side-effect — 축약 자체가 의미 변경
+    try expectMinifyDead(
+        "[...foo()];",
+        "function run() {\n\t[...foo()];\n}\nrun();",
+    );
+}
+
+// ---- NewExpression ----
+
+test "unused: /*#__PURE__*/ new X(1, 2); → empty" {
+    try expectMinifyDead(
+        "/*#__PURE__*/ new X(1, 2);",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: /*#__PURE__*/ new X(foo(), 1, bar()); → pure drop sequence" {
+    try expectMinifyDead(
+        "/*#__PURE__*/ new X(foo(), 1, bar());",
+        "function run() {\n\tfoo(),bar();\n}\nrun();",
+    );
+}
+
+test "unused: new X(1, 2); — @__PURE__ 없으면 유지" {
+    try expectMinifyDead(
+        "new X(1, 2);",
+        "function run() {\n\tnew X(1, 2);\n}\nrun();",
+    );
+}
+
+test "unused: /*#__PURE__*/ pure(foo()); — CallExpression 동일 처리" {
+    try expectMinifyDead(
+        "/*#__PURE__*/ pure(foo());",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+// ---- ObjectExpression ----
+
+test "unused: {a: 1, b: 2}; → empty" {
+    try expectMinifyDead(
+        "({a: 1, b: 2});",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: {a: foo(), b: 1}; → impure sequence" {
+    try expectMinifyDead(
+        "({a: foo(), b: 1});",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: {[foo()]: 1, b: bar()}; → computed key + value impure 모두 추출" {
+    // sequence 로 축약됐지만 paren unwrap 은 sequence tag 를 whitelist 밖이라 유지.
+    try expectMinifyDead(
+        "({[foo()]: 1, b: bar()});",
+        "function run() {\n\t(foo(),bar());\n}\nrun();",
+    );
+}
+
+test "unused: {...x}; — spread 유지" {
+    // `...x` 의 x 는 iterator/proxy trap 가능 → 보존. object literal 은 statement 시작에
+    // paren 필수 (block 과 모호) — paren 도 유지.
+    try expectMinifyDead(
+        "({...foo()});",
+        "function run() {\n\t({ ...foo() });\n}\nrun();",
+    );
+}
+
+test "unused: {m() {}}; → method 값은 function_expression 이라 removable" {
+    try expectMinifyDead(
+        "({m() {}});",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: {[foo()]() {}}; → computed key side-effect 보존" {
+    // method 자체는 drop 가능하지만 `[foo()]` key expression 은 객체 생성 시 evaluate → 보존.
+    try expectMinifyDead(
+        "({[foo()]() {}});",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: /*#__PURE__*/ super(x, y) — derived constructor semantic 필수 호출, drop 금지" {
+    // super() 는 binding 역할 (this 접근 전 필수). `@__PURE__` 로도 drop 하면 ReferenceError.
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src = "class A extends B { constructor() { /*#__PURE__*/ super(x, y); } }";
+    var scanner = try Scanner.init(a, src);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    const root = try transformer.transform();
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+    };
+    minify_mod.minify(&transformer.ast, ctx);
+    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    const result = try cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, result, "super(x, y)") != null);
+}
