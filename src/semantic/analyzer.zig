@@ -1812,8 +1812,123 @@ pub const SemanticAnalyzer = struct {
 
     fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const saved = try self.enterScope(.block, self.is_strict_mode);
+        // Lexical hoisting: block 안의 let/const/class 를 현재 block scope 에 미리 등록.
+        // ECMAScript 스펙상 lexical binding 은 block 진입 시 스코프에 존재한다 (TDZ 는
+        // 런타임 개념). 정적 분석에서 선언 위치보다 앞선 중첩 함수가 해당 심볼을 참조할
+        // 수 있으므로, statement 순회 전에 선언을 scope map 에만 등록해 둔다.
+        try self.predeclareLexicalDecls(node.data.list);
         try self.visitStmtList(node.data.list);
         self.exitScope(saved);
+    }
+
+    /// Block 스코프에 let/const/class 선언을 미리 등록 (statement 순회 전).
+    /// `predeclareVarDecls` 의 lexical 버전 — var/function 은 함수 스코프로 hoisting 되므로
+    /// 여기서는 다루지 않고 `visitFunctionBodyInner` 의 기존 경로를 사용한다.
+    fn predeclareLexicalDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            const idx: NodeIndex = @enumFromInt(raw_idx);
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const stmt = self.ast.getNode(idx);
+            switch (stmt.tag) {
+                .variable_declaration => {
+                    const kind = self.ast.variableDeclarationKind(stmt);
+                    if (!kind.isLexical()) continue;
+                    try self.predeclareLexicalVarDecl(stmt, symbolKindFor(kind));
+                },
+                .class_declaration => {
+                    const extra_start = stmt.data.extra;
+                    const extras = self.ast.extra_data.items;
+                    if (extra_start >= extras.len) continue;
+                    const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                    if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
+                    const name_node = self.ast.getNode(name_idx);
+                    if (name_node.tag != .binding_identifier) continue;
+                    self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @intFromEnum(name_idx)) catch {};
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// let/const 의 declarator 들에서 binding_identifier 를 뽑아 현재 scope 에 등록.
+    /// 실제 visit 은 `visitVariableDeclaration` 이 수행하며, 2 차 방문 시 predeclared 감지로
+    /// 중복 등록을 피한다.
+    fn predeclareLexicalVarDecl(self: *SemanticAnalyzer, node: Node, sym_kind: SymbolKind) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 2 >= extras.len) return;
+        const decl_start = extras[extra_start + 1];
+        const decl_len = extras[extra_start + 2];
+        if (decl_start + decl_len > extras.len) return;
+        for (extras[decl_start .. decl_start + decl_len]) |raw| {
+            const decl_idx: NodeIndex = @enumFromInt(raw);
+            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            const decl_node = self.ast.getNode(decl_idx);
+            if (decl_node.tag != .variable_declarator) continue;
+            const decl_extra = decl_node.data.extra;
+            if (decl_extra >= extras.len) continue;
+            const binding_idx: NodeIndex = @enumFromInt(extras[decl_extra]);
+            try self.predeclareLexicalBinding(binding_idx, sym_kind, node.span);
+        }
+    }
+
+    /// binding pattern 을 따라 leaf binding_identifier 중 하나라도 predeclare 로 symbol_id
+    /// 가 박혔으면 true. destructuring pattern 에서는 최소 하나의 leaf만 확인해도 충분하다
+    /// (predeclareLexicalBinding 이 동일 선언 안의 leaf 를 묶어 등록하므로).
+    fn isLexicalPredeclared(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const ni = @intFromEnum(idx);
+        if (ni >= self.ast.nodes.items.len) return false;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier => {
+                if (ni >= self.symbol_ids.items.len) return false;
+                return self.symbol_ids.items[ni] != null;
+            },
+            .array_pattern, .object_pattern => {
+                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return false;
+                for (self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len]) |raw| {
+                    const child: NodeIndex = @enumFromInt(raw);
+                    if (self.isLexicalPredeclared(child)) return true;
+                }
+                return false;
+            },
+            .assignment_target_with_default => return self.isLexicalPredeclared(node.data.binary.left),
+            .rest_element, .spread_element => return self.isLexicalPredeclared(node.data.unary.operand),
+            else => return false,
+        }
+    }
+
+    /// binding pattern 을 따라 내려가며 binding_identifier 를 현재 scope 에 등록.
+    fn predeclareLexicalBinding(self: *SemanticAnalyzer, idx: NodeIndex, sym_kind: SymbolKind, decl_span: Span) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const n = self.ast.getNode(idx);
+        switch (n.tag) {
+            .binding_identifier => {
+                self.declareSymbolWithNode(n.span, sym_kind, decl_span, @intFromEnum(idx)) catch {};
+            },
+            .array_pattern, .object_pattern => {
+                if (n.data.list.start + n.data.list.len > self.ast.extra_data.items.len) return;
+                for (self.ast.extra_data.items[n.data.list.start .. n.data.list.start + n.data.list.len]) |raw| {
+                    const child: NodeIndex = @enumFromInt(raw);
+                    if (child.isNone() or @intFromEnum(child) >= self.ast.nodes.items.len) continue;
+                    const cn = self.ast.getNode(child);
+                    // object_pattern 의 property_property 는 value(binary.right) 에서 실제 binding.
+                    // array 의 rest_element 도 operand 로 내려간다.
+                    switch (cn.tag) {
+                        .binding_identifier => try self.predeclareLexicalBinding(child, sym_kind, decl_span),
+                        .rest_element, .spread_element => try self.predeclareLexicalBinding(cn.data.unary.operand, sym_kind, decl_span),
+                        .assignment_target_with_default => try self.predeclareLexicalBinding(cn.data.binary.left, sym_kind, decl_span),
+                        else => try self.predeclareLexicalBinding(child, sym_kind, decl_span),
+                    }
+                }
+            },
+            .assignment_target_with_default => try self.predeclareLexicalBinding(n.data.binary.left, sym_kind, decl_span),
+            else => {},
+        }
     }
 
     fn visitFunctionDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
@@ -2086,9 +2201,16 @@ pub const SemanticAnalyzer = struct {
         }
 
         // 클래스 이름을 현재 스코프(외부)에 등록
-        // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
+        // predeclared_scope (export pre-pass) 또는 block-level lexical predeclare 로 이미
+        // 등록된 경우 건너뛴다. block 하위 class_declaration 은 `predeclareLexicalDecls` 에서
+        // 미리 등록되므로 binding_identifier 의 symbol_id 로 구분한다.
         if (!name_idx.isNone()) {
-            if (!self.isInPredeclaredScope()) {
+            const already_declared = self.isInPredeclaredScope() or blk: {
+                const ni = @intFromEnum(name_idx);
+                if (ni >= self.symbol_ids.items.len) break :blk false;
+                break :blk self.symbol_ids.items[ni] != null;
+            };
+            if (!already_declared) {
                 const name_node = self.ast.getNode(name_idx);
                 try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
             } else {
@@ -2501,6 +2623,11 @@ pub const SemanticAnalyzer = struct {
                         }
                     }
                     break :blk false;
+                } else if (kind.isLexical()) blk: {
+                    // let/const/using: `visitBlockStatement` 의 `predeclareLexicalDecls` 로
+                    // 이미 현재 block scope 에 등록됐다. binding 의 symbol_ids 가 설정돼 있으면
+                    // 그 심볼을 재사용 (destructuring pattern 은 leaf 에 symbol_id 가 박힘).
+                    break :blk self.isLexicalPredeclared(binding_idx);
                 } else false;
                 if (!is_predeclared) {
                     try self.registerBinding(binding_idx, sym_kind);
