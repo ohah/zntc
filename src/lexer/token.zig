@@ -387,6 +387,12 @@ pub const Kind = enum(u8) {
         return self.inRange(.eq, .question2_eq);
     }
 
+    /// Compound assignment 연산자인지 (+=, -=, ... 단순 = 제외).
+    /// compound 는 LHS 를 읽고 + 연산 + 다시 쓰기 때문에 read+write 참조로 분류된다.
+    pub fn isCompoundAssignment(self: Kind) bool {
+        return self.isAssignment() and self != .eq;
+    }
+
     /// 이 토큰 뒤에 `/`가 나오면 regex로 해석해야 하는지.
     /// false면 division으로 해석.
     ///

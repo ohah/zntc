@@ -17,7 +17,8 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
-const Span = @import("../lexer/token.zig").Span;
+const token = @import("../lexer/token.zig");
+const Span = token.Span;
 const scope_mod = @import("scope.zig");
 const ScopeId = scope_mod.ScopeId;
 const ScopeKind = scope_mod.ScopeKind;
@@ -793,7 +794,7 @@ pub const SemanticAnalyzer = struct {
     /// tree-shaking에서 reference_count == 0인 심볼은 미사용으로 판단할 수 있다.
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
     ///
-    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, is_write: bool) void {
+    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, flags: symbol_mod.ReferenceFlags) void {
         var scope_id = self.current_scope;
 
         // 스코프 체인을 따라 올라가며 심볼 검색
@@ -804,7 +805,7 @@ pub const SemanticAnalyzer = struct {
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
                 // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
-                if (is_write) self.symbols.items[sym_idx].write_count += 1;
+                if (flags.write) self.symbols.items[sym_idx].write_count += 1;
                 // symbol_ids + references 기록. node_idx 는 non-none 으로 강제 (NodeIndex
                 // 타입). nullable 경로를 우회하면 mangler liveness 에 silent 누락이 생기므로
                 // 타입 수준에서 차단한다.
@@ -817,7 +818,7 @@ pub const SemanticAnalyzer = struct {
                     .scope_id = self.current_scope,
                     .symbol_id = @enumFromInt(sym_idx),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
-                    .flags = .{ .read = !is_write, .write = is_write },
+                    .flags = flags,
                 }) catch {};
 
                 return;
@@ -945,7 +946,7 @@ pub const SemanticAnalyzer = struct {
         switch (node.tag) {
             .identifier_reference, .assignment_target_identifier => {
                 const name = self.ast.getSourceText(node.span);
-                self.resolveIdentifier(name, idx, true);
+                self.resolveIdentifier(name, idx, .{ .write = true });
             },
             .array_assignment_target, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
@@ -982,12 +983,13 @@ pub const SemanticAnalyzer = struct {
 
     /// 호출자는 write 컨텍스트(assignment LHS/update operand)이므로 해결된 심볼의
     /// `write_count`를 증가시킨다. 일반 read 참조에서는 `visitNode` 경유.
-    fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex) bool {
+    /// flags 는 호출자가 compound(`x += 1`, `x++`)인지 pure write(`x = 1`)인지 구분해 전달.
+    fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex, flags: symbol_mod.ReferenceFlags) bool {
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const name = self.ast.getSourceText(node.span);
-            self.resolveIdentifier(name, node_idx, true);
+            self.resolveIdentifier(name, node_idx, flags);
             return true;
         }
         return false;
@@ -1210,17 +1212,21 @@ pub const SemanticAnalyzer = struct {
             // ---- 식별자 참조 추적 ----
             .identifier_reference, .assignment_target_identifier => {
                 const name = self.ast.getSourceText(node.span);
-                // assignment_target_identifier는 parser가 LHS로 확정한 쓰기 위치.
-                // identifier_reference는 읽기.
-                const is_write = node.tag == .assignment_target_identifier;
-                self.resolveIdentifier(name, idx, is_write);
+                // assignment_target_identifier 는 parser 가 LHS 로 확정한 pure write 위치
+                // (for-in/of LHS 등 assignment_expression 상위 분기를 거치지 않는 target).
+                // compound/update 는 각각의 분기에서 tryResolveNodeAsRef 로 flags 를 직접 지정.
+                const flags: symbol_mod.ReferenceFlags = if (node.tag == .assignment_target_identifier)
+                    .{ .write = true }
+                else
+                    .{ .read = true };
+                self.resolveIdentifier(name, idx, flags);
             },
 
             // JSX tag name이 대문자로 시작하면 컴포넌트 참조 (e.g. <Header />)
             .jsx_identifier => {
                 const name = self.ast.getSourceText(node.span);
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                    self.resolveIdentifier(name, idx, false);
+                    self.resolveIdentifier(name, idx, .{ .read = true });
                 }
             },
             // JSX member expression: <Foo.Bar> → left(Foo)를 재귀 방문하여 symbol 등록
@@ -1231,7 +1237,13 @@ pub const SemanticAnalyzer = struct {
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
                 const lhs_idx = node.data.binary.left;
-                if (!self.tryResolveNodeAsRef(lhs_idx)) {
+                // operator 토큰은 binary.flags 에 저장. compound 면 LHS 는 read+write, 아니면 pure write.
+                const op_kind: token.Kind = @enumFromInt(node.data.binary.flags);
+                const lhs_flags: symbol_mod.ReferenceFlags = if (op_kind.isCompoundAssignment())
+                    .{ .read = true, .write = true }
+                else
+                    .{ .write = true };
+                if (!self.tryResolveNodeAsRef(lhs_idx, lhs_flags)) {
                     // LHS가 private_field_expression이면 write usage로 기록
                     if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len and
                         self.ast.getNode(lhs_idx).tag == .private_field_expression)
@@ -1261,7 +1273,7 @@ pub const SemanticAnalyzer = struct {
                 const extras = self.ast.extra_data.items;
                 if (e < extras.len) {
                     const operand_idx: NodeIndex = @enumFromInt(extras[e]);
-                    if (!self.tryResolveNodeAsRef(operand_idx)) {
+                    if (!self.tryResolveNodeAsRef(operand_idx, .{ .read = true, .write = true })) {
                         // ++this.#x는 read+write — write로 기록하여 method/getter-only 에러 감지
                         if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
                             self.ast.getNode(operand_idx).tag == .private_field_expression)
