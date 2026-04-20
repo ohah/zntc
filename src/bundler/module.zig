@@ -133,6 +133,9 @@ pub const Module = struct {
     /// 순환 참조 그룹 ID. 0 = 순환 없음 (D065)
     cycle_group: u32,
     state: State,
+    /// 파일 mtime (나노초). graph.build / store 히트 경로에서 설정.
+    /// 0 = 미확인 (가상 모듈, plugin 소스 등). compiled output cache key 구성에 사용.
+    mtime: i128 = 0,
     /// file/copy 로더의 asset 출력 정보. null이면 asset이 아님.
     asset_data: ?AssetData = null,
     /// CSS 번들링 메타데이터. null이면 CSS 모듈이 아님.

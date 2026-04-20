@@ -14,6 +14,7 @@ const BundleOptions = @import("bundler.zig").BundleOptions;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const module_store = @import("module_store.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
+const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
@@ -71,6 +72,9 @@ pub const IncrementalBundler = struct {
     persistent_store: module_store.PersistentModuleStore,
     /// resolve 캐시 (장기 보존). dir_cache 포함.
     resolve_cache: ?ResolveCache = null,
+    /// Compiled output cache — 변경 안 된 모듈의 emit 결과를 빌드 간 보존.
+    /// 첫 빌드 시엔 mtime 이 아직 Module 에 주입되지 않아 miss 만 발생 (B3 에서 확장).
+    compiled_cache: CompiledOutputCache,
 
     /// 모듈 단위 dev/HMR 캐시 엔트리.
     /// `code` = `__zts_register` wrapper (HMR 경로).
@@ -88,6 +92,7 @@ pub const IncrementalBundler = struct {
             .options = options,
             .module_cache = std.StringHashMap(CachedModule).init(allocator),
             .persistent_store = module_store.PersistentModuleStore.init(allocator),
+            .compiled_cache = CompiledOutputCache.init(allocator),
         };
     }
 
@@ -95,6 +100,7 @@ pub const IncrementalBundler = struct {
         self.clearCache();
         self.module_cache.deinit();
         self.persistent_store.deinit();
+        self.compiled_cache.deinit();
         if (self.resolve_cache) |*rc| rc.deinit();
     }
 
@@ -104,6 +110,7 @@ pub const IncrementalBundler = struct {
         self.clearCache();
         self.persistent_store.deinit();
         self.persistent_store = module_store.PersistentModuleStore.init(self.allocator);
+        self.compiled_cache.clear();
         self.needs_full_rebuild = true;
     }
 
@@ -148,8 +155,10 @@ pub const IncrementalBundler = struct {
             });
         }
 
-        // 증분 빌드: 첫 빌드가 아니면 module_store를 전달하여 파싱 캐시 활용
+        // 증분 빌드: 첫 빌드가 아니면 module_store 를 전달하여 파싱 캐시 활용.
+        // compiled_cache 는 매 빌드 주입 — miss 는 안전하게 폴백 (emit 경로가 cache 없을 때와 동일).
         var opts = self.options;
+        opts.compiled_cache = &self.compiled_cache;
         if (!is_first) {
             opts.module_store = &self.persistent_store;
         }
@@ -169,6 +178,11 @@ pub const IncrementalBundler = struct {
         }
 
         const graph_changed = is_first or !self.pathSetsEqual(result.module_paths);
+
+        // 그래프 구조 변경 (모듈 추가/제거) 시 compiled_cache 전체 무효화.
+        // 삭제된 경로 엔트리가 stale 하게 남지 않도록 — 단순히 path 필터로 부분 정리하는
+        // 최적화는 follow-up. is_first 일 때는 cache 가 비어있어 no-op.
+        if (graph_changed and !is_first) self.compiled_cache.clear();
 
         // 변경된 모듈 코드만 수집 (캐시 대비 diff)
         var actually_changed: std.ArrayList(BundleResult.ModuleDevCode) = .empty;

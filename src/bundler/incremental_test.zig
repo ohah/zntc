@@ -392,3 +392,95 @@ test "IncrementalBundler: changed_modules content stays valid after rebuild" {
         }
     }
 }
+
+// ============================================================
+// RFC #1672 Phase B2 — compiled output cache
+// ============================================================
+
+test "IncrementalBundler: compiled_cache populates on rebuild path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const hello = 'world';");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드 — mtime 이 Module 에 주입되지 않는 경로 (first-build). cache 비활성.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    // 두 번째 빌드 — rebuild 경로에서 mtime 주입 → cache miss + put.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(ib.compiled_cache.entries.count() >= 1);
+
+    // 세 번째 빌드 — 동일 mtime/옵션 → cache hit 경로. 엔트리 개수 유지.
+    const count_after_2 = ib.compiled_cache.entries.count();
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expectEqual(count_after_2, ib.compiled_cache.entries.count());
+}
+
+test "IncrementalBundler: compiled_cache invalidates on file change" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드 (first-build: cache skip) + 두 번째 빌드 (rebuild: cache put).
+    for (0..2) |_| {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    const entries_before = ib.compiled_cache.entries.count();
+    try std.testing.expect(entries_before >= 1);
+
+    // util.ts 수정 → mtime 변경 → cache miss → 새 emit + put (기존 엔트리 교체).
+    try writeFile(tmp.dir, "util.ts", "export const x = 42;");
+
+    const result = try ib.rebuild();
+    switch (result) {
+        .success => |r| {
+            defer freeChanged(r.changed_modules);
+            try std.testing.expect(r.changed_modules.len > 0);
+        },
+        .build_error => return error.TestUnexpectedResult,
+        .fatal => return error.TestUnexpectedResult,
+    }
+    // 모듈 수 변동 없으므로 엔트리 개수는 유지 (put 이 기존 entry 교체).
+    try std.testing.expectEqual(entries_before, ib.compiled_cache.entries.count());
+}

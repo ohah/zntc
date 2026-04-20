@@ -443,6 +443,7 @@ pub const ModuleGraph = struct {
                     mod.dependencies = saved_deps;
                     mod.importers = saved_importers;
                     mod.dynamic_imports = saved_dynamic;
+                    mod.mtime = mtime;
                     // parse_arena 소유권 이전: store → graph.
                     cached.module.parse_arena = null;
                     // alias_table 도 동일 패턴: 얕은 복사로 인해 backing 이
@@ -465,6 +466,7 @@ pub const ModuleGraph = struct {
                     // 캐시 미스: 정상 파싱
                     self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
                     self.applySideEffectsFromPackageJson(&self.modules.items[i]);
+                    self.modules.items[i].mtime = mtime;
                     self.modules.items[i].state = .ready;
                     try reparsed.append(self.allocator, @enumFromInt(@as(u32, @intCast(i))));
                 }
