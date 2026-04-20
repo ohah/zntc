@@ -28,6 +28,7 @@ const Kind = @import("../lexer/token.zig").Kind;
 const symbol_mod = @import("../semantic/symbol.zig");
 const scope_mod = @import("../semantic/scope.zig");
 const purity = @import("../bundler/purity.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
 /// `symbols` 는 mutable slice — dead declaration 제거 시 init 내부 identifier reference 의
@@ -333,43 +334,9 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
         return;
     }
 
-    switch (Node.Tag.dataKind(node.tag)) {
-        .leaf => {},
-        .unary => decrementRefsInExpr(ast, ctx, node.data.unary.operand),
-        .binary => {
-            decrementRefsInExpr(ast, ctx, node.data.binary.left);
-            decrementRefsInExpr(ast, ctx, node.data.binary.right);
-        },
-        .ternary => {
-            decrementRefsInExpr(ast, ctx, node.data.ternary.a);
-            decrementRefsInExpr(ast, ctx, node.data.ternary.b);
-            decrementRefsInExpr(ast, ctx, node.data.ternary.c);
-        },
-        .list => walkListChildren(ast, ctx, node.data.list),
-        .extra => {
-            for (Node.Tag.extraChildOffsets(node.tag)) |off| {
-                const ei = node.data.extra + off;
-                if (ei >= ast.extra_data.items.len) continue;
-                decrementRefsInExpr(ast, ctx, @enumFromInt(ast.extra_data.items[ei]));
-            }
-            for (Node.Tag.extraListOffsets(node.tag)) |pair| {
-                const start_off = node.data.extra + pair[0];
-                const len_off = node.data.extra + pair[1];
-                if (len_off >= ast.extra_data.items.len) continue;
-                const start = ast.extra_data.items[start_off];
-                const len = ast.extra_data.items[len_off];
-                walkListChildren(ast, ctx, .{ .start = start, .len = len });
-            }
-        },
-    }
-}
-
-fn walkListChildren(ast: *const Ast, ctx: MinifyCtx, list: ast_mod.NodeList) void {
-    if (list.len == 0) return;
-    const end = list.start + list.len;
-    if (end > ast.extra_data.items.len) return;
-    for (ast.extra_data.items[list.start..end]) |raw| {
-        decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child| {
+        decrementRefsInExpr(ast, ctx, child);
     }
 }
 

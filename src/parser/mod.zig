@@ -4,6 +4,7 @@
 //! 2패스: parse → visit (D040).
 
 pub const ast = @import("ast.zig");
+pub const ast_walk = @import("ast_walk.zig");
 pub const parser = @import("parser.zig");
 
 pub const Ast = ast.Ast;
@@ -16,9 +17,11 @@ pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 test {
     _ = ast;
+    _ = ast_walk;
     _ = parser;
 
     // test files
     _ = @import("parser_test.zig");
     _ = @import("ast_test.zig");
+    _ = @import("ast_walk_test.zig");
 }

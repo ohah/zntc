@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Tag = Node.Tag;
@@ -170,50 +171,17 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         /// 노드의 자식 NodeIndex들을 scratch 버퍼에 수집한다.
-        /// dataKind + extraChildOffsets + extraListOffsets 기반.
-        /// 호출부에서 scratch_top을 저장/복원하고, 수집된 인덱스를 자기 entry type으로 감싼다.
+        /// 공통 `ast_walk.ChildIterator` 로 자식 순회 + `parser_node_count` 가드로
+        /// transformer 신규 노드 영역을 걸러낸다 (extra 자식에만 한정).
         fn collectChildIndices(self: *Transformer, node: Node, buf: *std.ArrayList(NodeIndex)) !void {
-            switch (node.tag.dataKind()) {
-                .leaf => {},
-                .unary => try buf.append(self.allocator, node.data.unary.operand),
-                .binary => {
-                    try buf.append(self.allocator, node.data.binary.left);
-                    try buf.append(self.allocator, node.data.binary.right);
-                },
-                .ternary => {
-                    try buf.append(self.allocator, node.data.ternary.a);
-                    try buf.append(self.allocator, node.data.ternary.b);
-                    try buf.append(self.allocator, node.data.ternary.c);
-                },
-                .list => {
-                    const list = node.data.list;
-                    if (list.start + list.len <= self.ast.extra_data.items.len) {
-                        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                            try buf.append(self.allocator, @enumFromInt(raw));
-                        }
-                    }
-                },
-                .extra => {
-                    const e = node.data.extra;
-                    for (node.tag.extraChildOffsets()) |offset| {
-                        if (e + offset >= self.ast.extra_data.items.len) break;
-                        const raw = self.ast.extra_data.items[e + offset];
-                        if (raw > 0 and raw < self.parser_node_count) {
-                            try buf.append(self.allocator, @enumFromInt(raw));
-                        }
-                    }
-                    for (node.tag.extraListOffsets()) |lo| {
-                        if (e + lo[1] >= self.ast.extra_data.items.len) continue;
-                        const list_start = self.ast.extra_data.items[e + lo[0]];
-                        const list_len = self.ast.extra_data.items[e + lo[1]];
-                        if (list_start + list_len > self.ast.extra_data.items.len) continue;
-                        for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                            if (raw < self.parser_node_count) {
-                                try buf.append(self.allocator, @enumFromInt(raw));
-                            }
-                        }
-                    }
-                },
+            const kind = node.tag.dataKind();
+            var it = ast_walk.children(&self.ast, node);
+            while (it.next()) |child| {
+                if (kind == .extra) {
+                    const raw = @intFromEnum(child);
+                    if (raw == 0 or raw >= self.parser_node_count) continue;
+                }
+                try buf.append(self.allocator, child);
             }
         }
 
