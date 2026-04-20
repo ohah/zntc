@@ -1023,7 +1023,7 @@ test "ES2015: class method default param lowered" {
 test "ES2015: class constructor destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { constructor({x,...rest}:any) { console.log(rest); } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(_c)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(_b)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }

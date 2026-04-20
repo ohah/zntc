@@ -1801,10 +1801,20 @@ fn tryMergeWithPrev(ast: *Ast, cur_ni: u32, accumulated: []const u32, skip_nodes
     // pe+1/pe+2는 고정 인덱스이므로 addExtras 후에도 직접 쓰기 가능.
     ast.extra_data.items[pe + 1] = new_start;
     ast.extra_data.items[pe + 2] = @intCast(total_len);
-    // `cur`의 declarator list를 비워 idempotency 보장. 번들러는 같은 module 내용을
-    // module-program과 wrapper-program 양쪽에 담아 ast.nodes에 남기므로, 두 container가
-    // 각각 minify를 한 번씩 실행한다. 두 번째 container가 동일 pair를 재병합하면
-    // prev의 list(이미 a,b)에 cur의 list(b)를 또 붙여 중복(a,b,b)이 되므로 방지 필요.
-    ast.extra_data.items[ce + 2] = 0;
+    // `cur` 노드를 empty_statement로 교체한다. 이유:
+    // 1) idempotency: 같은 AST가 여러 container에 걸쳐 있을 때(module-program /
+    //    wrapper-program) 두 번째 container가 동일 pair를 재병합하면 prev에 cur의
+    //    declarator가 중복(a,b,b)으로 붙는다.
+    // 2) shared-node 안전성: 클래스 lowering처럼 pass1이 중간 function_declaration을
+    //    남기고 pass2(`lowerAllFunctionParams`)가 dead/live 양쪽 body를 모두 수정하면,
+    //    dead block은 `[var_gestures, var_this]`가 인접해 merge되지만 live block은
+    //    `[var_gestures, __classCallCheck, var_this]`로 비인접이다. cur의 list_len만 0으로
+    //    비우면(기존 구현) live block의 var_this가 `var ;`로 깨진다. 노드 자체를
+    //    empty_statement로 바꾸면 live block은 `;`를 emit하여 구문상 무해하다.
+    ast.nodes.items[cur_ni] = .{
+        .tag = .empty_statement,
+        .span = ast.nodes.items[cur_ni].span,
+        .data = .{ .none = 0 },
+    };
     return true;
 }
