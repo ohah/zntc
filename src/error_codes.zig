@@ -188,9 +188,6 @@ pub const Code = enum(u16) {
     // ═══════════════════════════════════════════════════════
     private_redeclared = 1100,
     private_undeclared = 1101,
-    private_method_assign = 1102,
-    private_getter_only = 1103,
-    private_setter_only = 1104,
 
     // ═══════════════════════════════════════════════════════
     // 1200-1299: 시맨틱 — export/label
@@ -234,8 +231,6 @@ pub const Code = enum(u16) {
             .identifier_redeclared => "Use a different identifier, or change 'let'/'const' to 'var' if redeclaration is intended.",
             .private_redeclared => "Private field names must be unique within a class. Rename one of the declarations.",
             .private_undeclared => "Private fields must be declared in an enclosing class body before being referenced.",
-            .private_getter_only => "Private member has only a getter. Add a 'set' accessor to allow assignment.",
-            .private_setter_only => "Private member has only a setter. Add a 'get' accessor to allow reading.",
             .duplicate_export => "Rename one of the exports, or use a single 'export { x as a, y as b }' form.",
             .export_not_defined => "Ensure the exported name is declared in module scope before the export statement.",
             .label_redeclared => "Label names must be unique within the enclosing function. Rename the inner label.",
@@ -396,9 +391,6 @@ pub const Code = enum(u16) {
             // 시맨틱: private member
             .private_redeclared => "Private field has already been declared",
             .private_undeclared => "Private field must be declared in an enclosing class",
-            .private_method_assign => "Cannot assign to private method",
-            .private_getter_only => "Cannot set private member (getter only)",
-            .private_setter_only => "Cannot read private member (setter only)",
             // 시맨틱: export/label
             .duplicate_export => "Duplicate export name",
             .export_not_defined => "Export is not defined",

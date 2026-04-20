@@ -935,15 +935,19 @@ test "Private: field read/write is allowed" {
     );
 }
 
-test "Private: method assignment is error" {
-    try analyzeHasError(
+// Private method/getter-only/setter-only 의 read/write 정합성은 ECMA §7.3.30
+// PrivateSet / §7.3.29 PrivateGet 의 런타임 TypeError 이다. nested class 에서는
+// 합법적인 shadowing 이 가능하므로 static 단계에서 차단하지 않는다.
+
+test "Private: method assignment parses (runtime TypeError)" {
+    try analyzeNoErrors(
         \\class C {
         \\  #method() { return 1; }
         \\  test() {
         \\    this.#method = 5;
         \\  }
         \\}
-    , "Cannot assign to private method");
+    );
 }
 
 test "Private: method read is allowed" {
@@ -957,15 +961,15 @@ test "Private: method read is allowed" {
     );
 }
 
-test "Private: getter-only assignment is error" {
-    try analyzeHasError(
+test "Private: getter-only assignment parses (runtime TypeError)" {
+    try analyzeNoErrors(
         \\class C {
         \\  get #x() { return 1; }
         \\  test() {
         \\    this.#x = 5;
         \\  }
         \\}
-    , "It only has a getter");
+    );
 }
 
 test "Private: getter-only read is allowed" {
@@ -979,15 +983,15 @@ test "Private: getter-only read is allowed" {
     );
 }
 
-test "Private: setter-only read is error" {
-    try analyzeHasError(
+test "Private: setter-only read parses (runtime TypeError)" {
+    try analyzeNoErrors(
         \\class C {
         \\  set #x(v) {}
         \\  test() {
         \\    console.log(this.#x);
         \\  }
         \\}
-    , "It only has a setter");
+    );
 }
 
 test "Private: setter-only assignment is allowed" {
@@ -1033,13 +1037,13 @@ test "Private: duplicate private field is error" {
     , "has already been declared");
 }
 
-test "Private: update expression on method is error" {
-    try analyzeHasError(
+test "Private: update expression on method parses (runtime TypeError)" {
+    try analyzeNoErrors(
         \\class C {
         \\  #method() {}
         \\  test() { this.#method++; }
         \\}
-    , "Cannot assign to private method");
+    );
 }
 
 test "Private: update expression on field is allowed" {
