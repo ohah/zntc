@@ -1312,11 +1312,10 @@ test "references: read + write 각각 기록" {
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
     var write_seen: usize = 0;
     var read_seen: usize = 0;
-    for (refs.items) |r| switch (r.kind) {
-        .write => write_seen += 1,
-        .read => read_seen += 1,
-        .read_write => {},
-    };
+    for (refs.items) |r| {
+        if (r.flags.write) write_seen += 1;
+        if (r.flags.read) read_seen += 1;
+    }
     try std.testing.expectEqual(@as(usize, 1), write_seen);
     try std.testing.expectEqual(@as(usize, 1), read_seen);
 }
@@ -1333,7 +1332,7 @@ test "references: node_index 로 AST 위치 역참조" {
     const node = fx.parser.ast.getNode(refs.items[0].node_index);
     const text = fx.parser.ast.source[node.span.start..node.span.end];
     try std.testing.expectEqualStrings("y", text);
-    try std.testing.expectEqual(symbol_mod.ReferenceKind.read, refs.items[0].kind);
+    try std.testing.expect(refs.items[0].flags.read and !refs.items[0].flags.write);
 }
 
 test "references: unresolved (전역) 은 기록 안 됨" {
@@ -1356,7 +1355,7 @@ test "references: reference_count 와 정합" {
     try fx.collectRefs("x", &refs);
 
     try std.testing.expectEqual(@as(usize, 3), refs.items.len);
-    for (refs.items) |r| try std.testing.expectEqual(symbol_mod.ReferenceKind.read, r.kind);
+    for (refs.items) |r| try std.testing.expect(r.flags.read and !r.flags.write);
 
     for (fx.ana.symbols.items) |sym| {
         const name = sym.nameText(fx.parser.ast.source);
