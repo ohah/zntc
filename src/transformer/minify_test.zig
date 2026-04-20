@@ -1019,3 +1019,90 @@ test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
     }
     try std.testing.expectEqual(@as(u32, 0), y_ref_after);
 }
+
+// ================================================================
+// PR1.5: Unused Expression Simplify (#1644)
+// ================================================================
+
+// ---- 제거 가능 (expression_statement 축약) ----
+
+test "expr simplify: 리터럴 statement — empty 로 축약" {
+    try expectMinifyDead("1;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "expr simplify: string literal statement 축약" {
+    try expectMinifyDead("\"x\";", "function run() {\n\t;\n}\nrun();");
+}
+
+test "expr simplify: pure binary statement 축약" {
+    try expectMinifyDead("1 + 2;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "expr simplify: pure unary (! / typeof) 축약" {
+    try expectMinifyDead("!0;", "function run() {\n\t;\n}\nrun();");
+}
+
+test "expr simplify: local identifier read statement 축약" {
+    // local binding 이면 제거 안전. unresolved 는 ReferenceError 가능 → 유지.
+    try expectMinifyDead(
+        "let x = 1; x;",
+        "function run() {\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "expr simplify: @__PURE__ call statement 축약" {
+    try expectMinifyDead(
+        "/*#__PURE__*/ helper();",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+// ---- 제거 금지 (getter / ReferenceError / side-effect) ----
+
+test "expr simplify: unresolved identifier statement — 유지 (ReferenceError 가능)" {
+    try expectMinifyDead(
+        "unknownGlobal;",
+        "function run() {\n\tunknownGlobal;\n}\nrun();",
+    );
+}
+
+test "expr simplify: member access statement — 유지 (getter 위험)" {
+    try expectMinifyDead(
+        "obj.prop;",
+        "function run() {\n\tobj.prop;\n}\nrun();",
+    );
+}
+
+test "expr simplify: impure call statement — 유지" {
+    try expectMinifyDead(
+        "helper();",
+        "function run() {\n\thelper();\n}\nrun();",
+    );
+}
+
+test "expr simplify: delete expression — 유지 (side-effect)" {
+    try expectMinifyDead(
+        "delete obj.x;",
+        "function run() {\n\tdelete obj.x;\n}\nrun();",
+    );
+}
+
+// ---- sequence_expression 확장 (마지막 원소 제외 pure 제거) ----
+
+test "expr simplify: sequence 의 중간 리터럴 제거" {
+    // `(1, 2, foo())` 의 pre-fold 는 assignment 같은 곳에서만 등장 — expression_statement 자체는 pure
+    // 이면 a 에서 empty 로 바뀐다. 이 테스트는 sequence 가 dead store 와 함께 쓰이는 경우 확인.
+    try expectMinifyDead(
+        "let x = (1, 2, 3);",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "expr simplify: sequence 의 중간 impure 는 유지" {
+    // `(foo(), bar())` 의 foo() 는 side-effect → 유지 필요.
+    // statement 로 쓰일 수 없어서 let init 으로 래핑.
+    try expectMinifyDead(
+        "let x = (foo(), bar());",
+        "function run() {\n\tlet x = (foo(),bar());\n}\nrun();",
+    );
+}
