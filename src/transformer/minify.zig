@@ -39,9 +39,6 @@ pub const MinifyCtx = struct {
     symbol_ids: []const ?u32,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
-    /// 임시 버퍼 (skip/live bitset, BFS 큐) 전용 allocator. null 이면 `ast.allocator` fallback.
-    /// watch 모드에서 parse_arena 누적을 피하려면 caller 의 ephemeral arena 를 전달.
-    scratch_allocator: ?std.mem.Allocator = null,
 
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
@@ -200,14 +197,11 @@ fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
 /// transformer 가 `visitNode` 에서 매번 새 노드를 만들어 원본을 `ast.nodes` 에 orphan 으로
 /// 남기는데, orphan 의 init 을 제거하면서 `decrementRefsInExpr` 가 살아있는 심볼의
 /// `reference_count` 를 중복 감산해 live 선언까지 잘못 제거되는 문제를 막는다 (#번개 실측).
-pub fn minify(ast: *Ast, ctx: MinifyCtx, root: NodeIndex) void {
-    // 임시 버퍼 (skip/live bitset, BFS 큐) 는 caller 의 scratch arena 가 있으면 그쪽을
-    // 쓰고, 없으면 `ast.allocator` 로 fallback. watch 모드에서 parse_arena 는 모듈 수명
-    // 동안 재활용되므로 매 rebuild 의 임시 할당이 누적될 수 있지만, 호출 빈도가 낮고
-    // bitset/큐 자체가 ~KB 단위라 실측상 눈에 띄지 않는다. caller 가 emit_arena 등을
-    // 넘기고 싶으면 별도 wrapper 로 감싸면 된다.
-    const scratch = ctx.scratch_allocator orelse ast.allocator;
-
+///
+/// `scratch` 는 skip/live bitset 과 BFS 큐 전용 임시 allocator. 호출 종료 시 해제되는
+/// ephemeral arena 를 권장한다 (예: bundler 의 emit_arena). `ast.allocator` (parse_arena)
+/// 를 넘기면 watch 모드 rebuild 마다 버퍼가 모듈 수명 동안 누적되므로 피할 것.
+pub fn minify(ast: *Ast, ctx: MinifyCtx, scratch: std.mem.Allocator, root: NodeIndex) void {
     // for-loop binding 은 fold passes 가 새로 만들지 않아 iter-invariant — 미리 1회만 수집.
     var skip_for_binding: ?std.DynamicBitSet = null;
     defer if (skip_for_binding) |*b| b.deinit();
