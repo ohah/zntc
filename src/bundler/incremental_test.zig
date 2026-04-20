@@ -1,8 +1,15 @@
 const std = @import("std");
 const IncrementalBundler = @import("incremental.zig").IncrementalBundler;
+const BundleResult = @import("bundler.zig").BundleResult;
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
+
+/// RebuildSuccess.changed_modules ownership 을 받아 안전하게 해제.
+/// id/code/map 이 allocator.dupe 복사본이므로 freeAll 필수.
+fn freeChanged(modules: []const BundleResult.ModuleDevCode) void {
+    BundleResult.ModuleDevCode.freeAll(modules, std.testing.allocator);
+}
 
 test "IncrementalBundler: first build is full rebuild" {
     var tmp = std.testing.tmpDir(.{});
@@ -48,7 +55,7 @@ test "IncrementalBundler: second build without changes has no changed modules" {
     {
         const r = try ib.rebuild();
         switch (r) {
-            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .success => |s| freeChanged(s.changed_modules),
             .build_error => |e| std.testing.allocator.free(e),
             .fatal => {},
         }
@@ -58,7 +65,7 @@ test "IncrementalBundler: second build without changes has no changed modules" {
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
-            defer std.testing.allocator.free(r.changed_modules);
+            defer freeChanged(r.changed_modules);
             try std.testing.expectEqual(false, r.graph_changed);
             try std.testing.expectEqual(@as(usize, 0), r.changed_modules.len);
         },
@@ -87,7 +94,7 @@ test "IncrementalBundler: detects code change in modified file" {
     {
         const r = try ib.rebuild();
         switch (r) {
-            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .success => |s| freeChanged(s.changed_modules),
             .build_error => |e| std.testing.allocator.free(e),
             .fatal => {},
         }
@@ -100,7 +107,7 @@ test "IncrementalBundler: detects code change in modified file" {
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
-            defer std.testing.allocator.free(r.changed_modules);
+            defer freeChanged(r.changed_modules);
             try std.testing.expect(r.changed_modules.len > 0);
         },
         .build_error => return error.TestUnexpectedResult,
@@ -126,7 +133,7 @@ test "IncrementalBundler: detects graph change (new import)" {
     {
         const r = try ib.rebuild();
         switch (r) {
-            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .success => |s| freeChanged(s.changed_modules),
             .build_error => |e| std.testing.allocator.free(e),
             .fatal => {},
         }
@@ -140,7 +147,7 @@ test "IncrementalBundler: detects graph change (new import)" {
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
-            defer std.testing.allocator.free(r.changed_modules);
+            defer freeChanged(r.changed_modules);
             try std.testing.expect(r.graph_changed);
         },
         .build_error => return error.TestUnexpectedResult,
@@ -167,7 +174,7 @@ test "IncrementalBundler: detects graph change when import removed (module delet
     {
         const r = try ib.rebuild();
         switch (r) {
-            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .success => |s| freeChanged(s.changed_modules),
             .build_error => |e| std.testing.allocator.free(e),
             .fatal => {},
         }
@@ -180,7 +187,7 @@ test "IncrementalBundler: detects graph change when import removed (module delet
     const result = try ib.rebuild();
     switch (result) {
         .success => |r| {
-            defer std.testing.allocator.free(r.changed_modules);
+            defer freeChanged(r.changed_modules);
             try std.testing.expect(r.graph_changed);
         },
         .build_error => return error.TestUnexpectedResult,
@@ -216,7 +223,7 @@ test "IncrementalBundler: second file change should NOT trigger graph_changed (#
             .success => |s| {
                 try std.testing.expect(s.graph_changed);
                 first_path_count = s.paths.len;
-                std.testing.allocator.free(s.changed_modules);
+                freeChanged(s.changed_modules);
             },
             .build_error => |e| {
                 std.testing.allocator.free(e);
@@ -236,7 +243,7 @@ test "IncrementalBundler: second file change should NOT trigger graph_changed (#
         const r = try ib.rebuild();
         switch (r) {
             .success => |s| {
-                defer std.testing.allocator.free(s.changed_modules);
+                defer freeChanged(s.changed_modules);
                 second_path_count = s.paths.len;
                 try std.testing.expectEqual(first_path_count, second_path_count);
                 try std.testing.expectEqual(false, s.graph_changed);
@@ -259,7 +266,7 @@ test "IncrementalBundler: second file change should NOT trigger graph_changed (#
         const r = try ib.rebuild();
         switch (r) {
             .success => |s| {
-                defer std.testing.allocator.free(s.changed_modules);
+                defer freeChanged(s.changed_modules);
                 // 핵심 검증: 두 번째 변경에서도 graph_changed=false여야 함
                 try std.testing.expectEqual(second_path_count, s.paths.len);
                 try std.testing.expectEqual(false, s.graph_changed);
@@ -280,7 +287,7 @@ test "IncrementalBundler: second file change should NOT trigger graph_changed (#
         const r = try ib.rebuild();
         switch (r) {
             .success => |s| {
-                defer std.testing.allocator.free(s.changed_modules);
+                defer freeChanged(s.changed_modules);
                 try std.testing.expectEqual(false, s.graph_changed);
             },
             .build_error => |e| {
@@ -310,7 +317,7 @@ test "IncrementalBundler: build error returns error message" {
     {
         const r = try ib.rebuild();
         switch (r) {
-            .success => |s| std.testing.allocator.free(s.changed_modules),
+            .success => |s| freeChanged(s.changed_modules),
             .build_error => |e| std.testing.allocator.free(e),
             .fatal => {},
         }
@@ -324,12 +331,64 @@ test "IncrementalBundler: build error returns error message" {
     // 파서 에러 복구 수준에 따라 build_error 또는 success
     switch (result) {
         .success => |r| {
-            std.testing.allocator.free(r.changed_modules);
+            freeChanged(r.changed_modules);
         },
         .build_error => |err_msg| {
             defer std.testing.allocator.free(err_msg);
             try std.testing.expect(std.mem.indexOf(u8, err_msg, "error") != null);
         },
         .fatal => {},
+    }
+}
+
+test "IncrementalBundler: changed_modules content stays valid after rebuild" {
+    // 번개 HMR 경로에서 발견된 use-after-free 재현.
+    // 기존에는 result.deinit 이 module_codes 의 id/code 를 freeAll 하는데,
+    // actually_changed 가 동일 slice 를 포인터 복사로 가지고 있어 반환 후 dangling.
+    // 수정: actually_changed 에 넣을 때 dupe 하여 caller 에게 ownership 이전.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    // 여러 번 파일 수정 + rebuild + changed_modules 의 content 실제 읽기로 corruption 노출.
+    const payloads = [_][]const u8{
+        "export const x = 2;",
+        "export const x = 3;",
+        "export const x = 4;",
+    };
+    for (payloads) |payload| {
+        try writeFile(tmp.dir, "util.ts", payload);
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| {
+                defer freeChanged(s.changed_modules);
+                for (s.changed_modules) |c| {
+                    try std.testing.expect(c.id.len > 0);
+                    try std.testing.expect(c.code.len > 0);
+                    try std.testing.expect(std.mem.indexOf(u8, c.code, "function") != null);
+                }
+            },
+            else => return error.TestUnexpectedResult,
+        }
     }
 }
