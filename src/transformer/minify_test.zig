@@ -1152,3 +1152,136 @@ test "fixed-point: 사용 중인 chain 은 보존" {
         "function run() {\n\tlet y = 1,x = y;\n\tconsole.log(x);\n}\nrun();",
     );
 }
+
+// ================================================================
+// Unused Expression In-Place Simplify (#1650 step 2 — c/d)
+// ================================================================
+//
+// statement / sequence 비마지막 원소 자리에서 결과값이 버려지므로 short-circuit 의미만
+// 보존되면 내부 부분 제거가 안전. fixed-point loop 로 연쇄됨.
+// 대부분 테스트가 `foo()` / `bar()` 같은 unresolved identifier call (impure) 을 써서
+// dead store 연쇄를 차단하고 rewrite 자체를 검증한다.
+
+// ---- c.1 conditional → logical rewrite ----
+
+test "unused: foo() ? pure : bar() → foo() || bar()" {
+    try expectMinifyDead(
+        "foo() ? 1 : bar();",
+        "function run() {\n\tfoo() || bar();\n}\nrun();",
+    );
+}
+
+test "unused: foo() ? bar() : pure → foo() && bar()" {
+    try expectMinifyDead(
+        "foo() ? bar() : 1;",
+        "function run() {\n\tfoo() && bar();\n}\nrun();",
+    );
+}
+
+test "unused: foo() ? pure : pure → foo()" {
+    // b, c 둘 다 removable — test 로 교체 후 test 는 impure 라 유지
+    try expectMinifyDead(
+        "foo() ? 1 : 2;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: pure ? pure : pure → empty" {
+    try expectMinifyDead(
+        "1 ? 2 : 3;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: foo() ? bar() : baz() → 그대로 (둘 다 impure)" {
+    try expectMinifyDead(
+        "foo() ? bar() : baz();",
+        "function run() {\n\tfoo() ? bar() : baz();\n}\nrun();",
+    );
+}
+
+// ---- c.2 logical simplify ----
+
+test "unused: foo() && pure → foo()" {
+    try expectMinifyDead(
+        "foo() && 42;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: foo() || pure → foo()" {
+    try expectMinifyDead(
+        "foo() || 1;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: foo() ?? pure → foo()" {
+    try expectMinifyDead(
+        "foo() ?? 42;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: foo() && bar() → 그대로 (right impure)" {
+    try expectMinifyDead(
+        "foo() && bar();",
+        "function run() {\n\tfoo() && bar();\n}\nrun();",
+    );
+}
+
+// ---- c.3 binary 비교 ----
+
+test "unused: foo() === pure → foo()" {
+    try expectMinifyDead(
+        "foo() === 1;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: pure < foo() → foo()" {
+    try expectMinifyDead(
+        "1 < foo();",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+test "unused: foo() == bar() → 그대로 (둘 다 impure)" {
+    try expectMinifyDead(
+        "foo() == bar();",
+        "function run() {\n\tfoo() == bar();\n}\nrun();",
+    );
+}
+
+// ---- d template literal ----
+
+test "unused: `static`; → empty" {
+    try expectMinifyDead(
+        "`hello`;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: `a ${pure} c` — substitution 모두 pure → empty" {
+    try expectMinifyDead(
+        "`a ${1 + 2} c`;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: `a ${foo()} b` — substitution impure → 유지" {
+    try expectMinifyDead(
+        "`a ${foo()} b`;",
+        "function run() {\n\t`a ${foo()} b`;\n}\nrun();",
+    );
+}
+
+// ---- 안전성: RHS 자리에선 rewrite 안 됨 ----
+
+test "unused: assignment RHS 의 conditional 은 rewrite 안 됨" {
+    // `x = foo() ? 1 : 2;` 은 결과값이 x 에 할당되므로 건드리면 안 됨 — RHS 는 statement 자리 아님
+    try expectMinifyDead(
+        "let x = foo() ? 1 : 2; console.log(x);",
+        "function run() {\n\tlet x = foo() ? 1 : 2;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
