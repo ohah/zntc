@@ -1075,7 +1075,12 @@ pub const Parser = struct {
                     try self.addErrorCode(node.span, "'await' is not allowed in async arrow function parameters", .await_in_async_arrow_params);
                 }
             },
-            .parenthesized_expression, .spread_element, .assignment_target_rest => {
+            .parenthesized_expression,
+            .spread_element,
+            .assignment_target_rest,
+            .rest_element,
+            .binding_rest_element,
+            => {
                 try self.checkAsyncArrowParamsForAwait(node.data.unary.operand);
             },
             .sequence_expression,
@@ -1083,6 +1088,7 @@ pub const Parser = struct {
             .object_expression,
             .array_assignment_target,
             .object_assignment_target,
+            .formal_parameters,
             => {
                 const list = node.data.list;
                 var i: u32 = 0;
@@ -1102,9 +1108,11 @@ pub const Parser = struct {
                 try self.checkAsyncArrowParamsForAwait(node.data.binary.left);
                 try self.checkAsyncArrowParamsForAwait(node.data.binary.right);
             },
-            // 중첩 arrow의 파라미터에도 await 사용 금지
+            // 중첩 arrow 의 파라미터에도 await 사용 금지 (body 는 별개 scope 라 검사 제외).
+            // arrow_function_expression 의 data 는 extra 레이아웃: {params, body, flags}.
             .arrow_function_expression => {
-                try self.checkAsyncArrowParamsForAwait(node.data.binary.left);
+                const params_idx = self.ast.readExtraNode(node.data.extra, 0);
+                try self.checkAsyncArrowParamsForAwait(params_idx);
             },
             else => {},
         }
