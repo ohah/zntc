@@ -1380,3 +1380,29 @@ test "references: scope_id 가 참조 발생 위치" {
     const decl_scope = fx.ana.symbols.items[@intFromEnum(refs.items[0].symbol_id)].scope_id;
     try std.testing.expect(!std.meta.eql(ref_scope, decl_scope));
 }
+
+test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" {
+    // PR B: `stmt_declared` 중간 캐시 제거 후, buildFromSemantic 이 references 의 declare flag 로
+    // declared_symbols 를 재구성하는지 검증. enable_stmt_info 꺼져 있으면 declare ref 는 생성 안 됨.
+    const source = "let x = 1; f(x);";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    var declare_count: usize = 0;
+    var read_count: usize = 0;
+    for (ana.references.items) |r| {
+        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        if (!std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) continue;
+        if (r.flags.declare) declare_count += 1;
+        if (r.flags.read) read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), declare_count);
+    try std.testing.expectEqual(@as(usize, 1), read_count);
+}

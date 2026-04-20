@@ -785,12 +785,11 @@ pub const ModuleGraph = struct {
                     .unresolved_references = analyzer.unresolved_references,
                     .references = analyzer.references.items,
                 };
-                if (analyzer.stmt_declared.items.len > 0) {
+                if (analyzer.stmt_info_count > 0) {
                     module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
                         arena_alloc,
                         &(module.ast.?),
                         analyzer.symbols.items,
-                        analyzer.stmt_declared.items,
                         analyzer.references.items,
                         if (module.semantic) |*s| &s.unresolved_references else null,
                     ) catch null;
@@ -1007,12 +1006,11 @@ pub const ModuleGraph = struct {
 
             // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
             // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).
-            if (analyzer.stmt_declared.items.len > 0) {
+            if (analyzer.stmt_info_count > 0) {
                 module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
                     arena_alloc,
                     &parser.ast,
                     analyzer.symbols.items,
-                    analyzer.stmt_declared.items,
                     analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
                 ) catch null;

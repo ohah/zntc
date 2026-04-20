@@ -153,9 +153,6 @@ pub const SemanticAnalyzer = struct {
     current_top_stmt_idx: ?u32 = null,
     /// top-level statement 개수 (초기화 완료 후 유효)
     stmt_info_count: u32 = 0,
-    /// Per-statement 선언 심볼 (top-level scope에 선언된 것만).
-    /// 참조 심볼은 `references` 에서 `buildFromSemantic` 이 재구성 — analyzer 는 미리 그룹핑하지 않는다.
-    stmt_declared: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
 
     const PrivateUsage = enum { read, write };
 
@@ -227,9 +224,6 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.references.deinit(self.allocator);
-        // StmtInfo 사전 수집 데이터 해제
-        for (self.stmt_declared.items) |*b| b.deinit(self.allocator);
-        self.stmt_declared.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -625,16 +619,24 @@ pub const SemanticAnalyzer = struct {
             try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
 
-        // StmtInfo 사전 수집: top-level scope(scope_id==0)의 선언을 현재 statement에 기록
-        if (self.enable_stmt_info and self.current_top_stmt_idx != null and @intFromEnum(target_scope) == 0) {
-            const si = self.current_top_stmt_idx.?;
-            if (si < self.stmt_declared.items.len) {
-                const sym_u32: u32 = @intCast(sym_index);
-                if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
-                    try self.stmt_declared.items[si].append(self.allocator, sym_u32);
-                }
-            }
+        // StmtInfo 사전 수집: top-level scope(scope_id==0)의 선언을 references 에 declare 플래그로 기록.
+        if (@intFromEnum(target_scope) == 0) {
+            self.recordTopLevelDeclareRef(@intCast(sym_index));
         }
+    }
+
+    /// top-level 선언을 `references` 배열에 `flags.declare` 로 기록. enable_stmt_info + current
+    /// top-level stmt 가 있을 때만. buildFromSemantic 에서 stmt_idx 로 bucket 분배.
+    fn recordTopLevelDeclareRef(self: *SemanticAnalyzer, sym_index: u32) void {
+        if (!self.enable_stmt_info) return;
+        const stmt_idx = self.current_top_stmt_idx orelse return;
+        self.references.append(self.allocator, .{
+            .node_index = .none,
+            .scope_id = @enumFromInt(0),
+            .symbol_id = @enumFromInt(sym_index),
+            .stmt_idx = stmt_idx,
+            .flags = .{ .declare = true },
+        }) catch {};
     }
 
     /// 가장 가까운 var scope(function/global/module)를 찾는다.
@@ -857,18 +859,10 @@ pub const SemanticAnalyzer = struct {
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
-        // StmtInfo 사전 수집: predeclared 심볼도 declared로 기록.
-        // declareSymbolWithNode가 skip되므로 여기서 보충한다.
-        if (self.enable_stmt_info and self.current_top_stmt_idx != null) {
-            if (sym_idx < self.symbols.items.len and @intFromEnum(self.symbols.items[sym_idx].scope_id) == 0) {
-                const si = self.current_top_stmt_idx.?;
-                if (si < self.stmt_declared.items.len) {
-                    const sym_u32: u32 = @intCast(sym_idx);
-                    if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
-                        self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
-                    }
-                }
-            }
+        // StmtInfo 사전 수집: predeclared 심볼도 declared 로 기록.
+        // declareSymbolWithNode 가 skip 되므로 여기서 보충한다.
+        if (sym_idx < self.symbols.items.len and @intFromEnum(self.symbols.items[sym_idx].scope_id) == 0) {
+            self.recordTopLevelDeclareRef(@intCast(sym_idx));
         }
     }
 
@@ -1483,17 +1477,12 @@ pub const SemanticAnalyzer = struct {
         try self.predeclareTopLevelBindings(node.data.list);
         self.predeclared_scope = self.current_scope;
 
-        // StmtInfo 사전 수집: per-statement declared 버퍼만 초기화.
-        // referenced 는 `references` 배열에서 buildFromSemantic 이 재구성한다.
+        // StmtInfo 사전 수집: statement 개수만 기록. declared/referenced 둘 다 references 배열에서
+        // buildFromSemantic 이 재구성한다.
         if (self.enable_stmt_info) {
             const list = node.data.list;
             if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
-                const count = list.len;
-                self.stmt_info_count = count;
-                try self.stmt_declared.ensureTotalCapacity(self.allocator, count);
-                for (0..count) |_| {
-                    try self.stmt_declared.append(self.allocator, .empty);
-                }
+                self.stmt_info_count = list.len;
             }
         }
 
@@ -2638,15 +2627,9 @@ pub const SemanticAnalyzer = struct {
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
-                // StmtInfo 사전 수집: facade 심볼을 declared로 기록
-                if (self.enable_stmt_info and self.current_top_stmt_idx != null and @intFromEnum(module_scope) == 0) {
-                    const si = self.current_top_stmt_idx.?;
-                    if (si < self.stmt_declared.items.len) {
-                        const sym_u32: u32 = @intCast(sym_index);
-                        if (std.mem.indexOfScalar(u32, self.stmt_declared.items[si].items, sym_u32) == null) {
-                            self.stmt_declared.items[si].append(self.allocator, sym_u32) catch {};
-                        }
-                    }
+                // StmtInfo 사전 수집: facade 심볼을 declared 로 기록
+                if (@intFromEnum(module_scope) == 0) {
+                    self.recordTopLevelDeclareRef(@intCast(sym_index));
                 }
                 // export default <literal> → facade 심볼에 const_value 설정
                 if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {

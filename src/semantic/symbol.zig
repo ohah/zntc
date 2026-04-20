@@ -347,10 +347,13 @@ pub const Reference = struct {
 /// 참조 종류 플래그 (packed bitset).
 ///
 /// 현재 analyzer 가 생성하는 조합:
-///   - `{ .read = true }`  — `f(x)`, `y = x` 등 값 읽기
-///   - `{ .write = true }` — `x = 1`, `x += 1`, `x++` (compound/update 도 현재는 write 로만 뭉뚱)
+///   - `{ .read = true }`    — `f(x)`, `y = x` 등 값 읽기
+///   - `{ .write = true }`   — `x = 1`, `x += 1`, `x++` (compound/update 도 현재는 write 로만 뭉뚱)
+///   - `{ .declare = true }` — top-level scope 선언 위치. node_index 는 NodeIndex.none
+///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 stmt_idx 로만 bucket 분배)
 pub const ReferenceFlags = packed struct(u8) {
     read: bool = false,
     write: bool = false,
-    _reserved: u6 = 0,
+    declare: bool = false,
+    _reserved: u5 = 0,
 };
