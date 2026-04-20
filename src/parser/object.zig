@@ -164,11 +164,9 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
-/// Object literal 의 property key 가 private identifier 인 경우 early SyntaxError 를 보고한다.
-/// ECMA §sec-method-definitions-static-semantics-early-errors / §sec-object-initializer:
-///   PrivateIdentifier 는 class body 안 에서만 허용된다. object literal 에서는
-///   shorthand field · shorthand method · get/set · async · generator · async-generator
-///   어떤 형태로도 허용되지 않는다.
+/// Object literal 의 property key 가 PrivateIdentifier 면 early SyntaxError.
+/// 모든 MethodDefinition variant (shorthand · get/set · async · generator · async-generator)
+/// 에서 금지 — ECMA §sec-method-definitions-static-semantics-early-errors.
 fn checkObjectPropertyKeyNotPrivate(self: *Parser, key: NodeIndex) ParseError2!void {
     if (key.isNone()) return;
     const key_node = self.ast.getNode(key);
