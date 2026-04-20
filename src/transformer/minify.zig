@@ -951,18 +951,20 @@ fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, 
     unwrapRedundantStmtParen(ast, node_idx, changed);
 }
 
-/// `expression_statement` 의 operand 가 `parenthesized_expression` 이고 그 inner 가
-/// **확실히 안전한 tag** 면 paren 을 벗긴다.
+/// `expression_statement` 의 operand 가 `parenthesized_expression` 이고 inner 가 statement
+/// 시작 시 파싱 모호성이 없으면 paren 을 벗긴다.
 ///
-/// Statement 시작 시 paren 이 필요한 케이스:
-///   - `{...}` object_expression — block 과 모호
-///   - `function () {}` / `class {}` — declaration 과 모호
-///   - `{v} = o` / `[a] = b` — destructuring assignment 의 LHS object/array pattern 이 block/array 과 모호
-///   - `(1, {v} = o)` / `(1, {a})` — sequence 첫 원소가 위 조건 유발
+/// **Leading-token 판정**: Statement 시작 자리에서 모호성을 유발하는 **첫 토큰** 은
+///   - `{` — block 시작 → object / object-pattern assignment 모호
+///   - `function` — function declaration → function expression 모호
+///   - `class` — class declaration → class expression 모호
 ///
-/// 정확한 재귀 판정은 LHS tag / sequence head 까지 내려가야 하므로 **whitelist 로 단순화** —
-/// rewrite 결과 흔히 나오는 안전한 expression tag 에 대해서만 unwrap 허용, 그 외는 유지.
-/// 바이트 2 손해 (paren 2개) 대신 정확성 확보.
+/// 이 토큰은 inner 자체뿐 아니라 `call(callee, args)` 의 callee, `a.b` 의 object, `a + b` 의
+/// left, `(a, b, c)` 의 첫 원소 등 **leading operand 체인** 을 통해 드러난다.
+/// 예: `(function(){})();` — call 의 callee 가 function_expression → statement 시작 시
+/// `function(){}(...)` 가 되면 anonymous function declaration 으로 파싱 (syntax error).
+///
+/// `isSafeStmtLead` 가 leading operand 를 재귀로 따라 최상위 dangerous tag 를 탐지.
 fn unwrapRedundantStmtParen(ast: *Ast, stmt_idx: u32, changed: *bool) void {
     const stmt = ast.nodes.items[stmt_idx];
     const op_ni = @intFromEnum(stmt.data.unary.operand);
@@ -971,40 +973,74 @@ fn unwrapRedundantStmtParen(ast: *Ast, stmt_idx: u32, changed: *bool) void {
     if (op_node.tag != .parenthesized_expression) return;
 
     const inner_idx = op_node.data.unary.operand;
-    const inner_ni = @intFromEnum(inner_idx);
-    if (inner_ni >= ast.nodes.items.len) return;
-
-    // Whitelist: statement 시작 시 파싱 모호성이 없는 tag 만 unwrap.
-    const safe = switch (ast.nodes.items[inner_ni].tag) {
-        .call_expression,
-        .new_expression,
-        .identifier_reference,
-        .numeric_literal,
-        .string_literal,
-        .boolean_literal,
-        .null_literal,
-        .bigint_literal,
-        .regexp_literal,
-        .this_expression,
-        .static_member_expression,
-        .private_field_expression,
-        .computed_member_expression,
-        .binary_expression,
-        .logical_expression,
-        .unary_expression,
-        .update_expression,
-        .conditional_expression,
-        .template_literal,
-        .tagged_template_expression,
-        .await_expression,
-        .yield_expression,
-        => true,
-        else => false,
-    };
-    if (!safe) return;
+    if (!isSafeStmtLead(ast, inner_idx, 0)) return;
 
     ast.nodes.items[stmt_idx].data = .{ .unary = .{ .operand = inner_idx, .flags = stmt.data.unary.flags } };
     changed.* = true;
+}
+
+const max_stmt_lead_depth: u32 = 64;
+
+/// expression 의 **leading token chain** 이 statement 시작 자리에서 파싱 모호성을
+/// 유발하는지 판정. true 면 안전 (paren 없이 statement 시작 가능), false 면 paren 필요.
+///
+/// 재귀: call/new 의 callee, member 의 object, binary/logical 의 left, conditional 의 test,
+/// sequence 의 첫 원소, tagged_template 의 tag, assignment 의 left 등 leading 따라 내려감.
+fn isSafeStmtLead(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
+    if (depth >= max_stmt_lead_depth) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+    const d = depth + 1;
+
+    return switch (node.tag) {
+        // Leading token 이 `function` / `class` / `{` / `[` — statement 시작 시 모호.
+        .function_expression,
+        .arrow_function_expression,
+        .class_expression,
+        .object_expression,
+        .array_expression,
+        // Destructuring assignment target — `{v} = o;` / `[a] = b;` 가 block/array 시작으로 파싱.
+        .object_assignment_target,
+        .array_assignment_target,
+        .object_pattern,
+        .array_pattern,
+        => false,
+
+        // Assignment 의 LHS 재귀 판정 (위 target 이 directly LHS 면 false 로 떨어짐).
+        .assignment_expression => isSafeStmtLead(ast, node.data.binary.left, d),
+
+        // Leading operand 로 내려가는 케이스.
+        .call_expression, .new_expression => blk: {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 0)) break :blk false;
+            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+        },
+        .static_member_expression,
+        .computed_member_expression,
+        .private_field_expression,
+        => blk: {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 0)) break :blk false;
+            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+        },
+        .tagged_template_expression => blk: {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 0)) break :blk false;
+            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+        },
+        .binary_expression, .logical_expression => isSafeStmtLead(ast, node.data.binary.left, d),
+        .conditional_expression => isSafeStmtLead(ast, node.data.ternary.a, d),
+        .sequence_expression => blk: {
+            const list = node.data.list;
+            if (list.len == 0 or list.start >= ast.extra_data.items.len) break :blk false;
+            break :blk isSafeStmtLead(ast, @enumFromInt(ast.extra_data.items[list.start]), d);
+        },
+        .parenthesized_expression => true, // 이미 paren — 벗겨도 새 paren 이 생기지 않음
+        // unary / update / literal / identifier / this / template 등은 leading 이
+        // `!` / `+` / `++` / 리터럴 / identifier / backtick 등으로 안전.
+        else => true,
+    };
 }
 
 // ================================================================
