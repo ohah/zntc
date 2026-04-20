@@ -1285,3 +1285,29 @@ test "unused: assignment RHS 의 conditional 은 rewrite 안 됨" {
         "function run() {\n\tlet x = foo() ? 1 : 2;\n\tconsole.log(x);\n}\nrun();",
     );
 }
+
+// ---- 안전성: conditional rewrite 시 logical operand 에 paren 자동 삽입 ----
+
+test "unused: conditional kept operand 가 assignment → paren 삽입 rewrite (mobx 회귀)" {
+    // `foo() ? pure : x = bar()` 의 alt 는 AssignmentExpression (paren 없이 허용).
+    // `foo() || (x = bar())` 로 재작성해야 `||` 우측 grammar 만족.
+    // 실제 mobx 번들의 `(_a = annotations) != null ? _a : (annotations = ...)` 회귀 가드.
+    try expectMinifyDead(
+        "let x = 0; foo() ? 1 : x = bar(); console.log(x);",
+        "function run() {\n\tlet x = 0;\n\tfoo() || (x = bar());\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "unused: conditional alt_rem 의 cons 가 assignment → paren 삽입" {
+    try expectMinifyDead(
+        "let x = 0; foo() ? x = bar() : 1; console.log(x);",
+        "function run() {\n\tlet x = 0;\n\tfoo() && (x = bar());\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "unused: conditional kept operand 가 sequence → paren 삽입" {
+    try expectMinifyDead(
+        "foo() ? 1 : (bar(), baz());",
+        "function run() {\n\tfoo() || (bar(),baz());\n}\nrun();",
+    );
+}
