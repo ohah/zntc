@@ -311,6 +311,10 @@ pub fn buildFromSemantic(
         const sym_u32: u32 = @intFromEnum(r.symbol_id);
         if (sym_u32 >= symbols.len) continue;
         if (r.flags.declare) {
+            // #1669: analyzer 가 모든 scope 선언에 declare ref 를 남기므로 top-level (scope_id==0)
+            // 만 bucket 분배. 함수/블록 내부 declare ref 는 `scope_stmt_idx` 와 함께 references
+            // 배열에 남아 optimizer pass (single-use inline 등) 가 직접 소비.
+            if (@intFromEnum(r.scope_id) != 0) continue;
             try declared_buckets[r.stmt_idx].append(allocator, sym_u32);
         } else {
             try referenced_buckets[r.stmt_idx].append(allocator, sym_u32);
