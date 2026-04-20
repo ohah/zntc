@@ -1008,10 +1008,18 @@ pub fn emitModule(
     // 번들 모드에서는 linker의 scope hoisting과 이름 충돌 해결이 먼저 필요하므로
     // 별도 통합이 필요 (후속 PR).
 
+    // Top-level const/let → var 다운그레이드 (#1630) — scope-hoist + minify_syntax 조합에서만.
+    // module 이 IIFE / __commonJS / __esm 로 감싸져 top-level 이 function scope 가 되므로
+    // block-scope 의미 변경 위험 없음. dev 빌드에선 원본 kind 유지 (DX) — esbuild/rolldown
+    // 동일 관습. mergeDecls 직전에 호출해 var 끼리 연쇄 merge 극대화.
+    if (linker != null and options.minify_syntax) {
+        @import("../transformer/minify.zig").downgradeToVar(&transformer.ast);
+    }
+
     // 인접 선언 merge (#1588) — tree-shake 직후에 실행해 skip_nodes 결정과 충돌 방지.
     // `var A=1; var B=2;`에서 `B`만 미사용으로 마킹된 경우, 먼저 merge했다면 합쳐진
     // statement는 A가 사용되므로 제거 불가 → B의 초기화식이 살아남아 죽은 심볼을 참조.
-    // 순서: transform → minify(fold) → tree-shake → mergeDecls → codegen.
+    // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
     @import("../transformer/minify.zig").mergeDecls(
         &transformer.ast,
         if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
