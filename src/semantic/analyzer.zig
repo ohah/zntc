@@ -2001,8 +2001,9 @@ pub const SemanticAnalyzer = struct {
     /// source 접근 시 범위를 초과하므로, body + params만 함수 스코프로 방문한다.
     fn visitFlowComponentWrapper(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const e = node.data.extra;
-        if (!self.ast.hasExtra(e, 0)) return;
+        if (!self.ast.hasExtra(e, 1)) return;
         const func_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const const_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
         if (func_idx.isNone()) return;
         const func_node = self.ast.getNode(func_idx);
         if (func_node.tag != .function_declaration) return;
@@ -2011,11 +2012,19 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
         if (body_idx.isNone()) return;
 
+        // 1) Name_withRef 함수: 독립 function 스코프로 진입해 body 순회.
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const params_list = self.ast.functionParamsList(func_node);
         try self.registerParams(params_list);
         try self.visitFunctionBodyInner(body_idx);
         self.exitScope(saved);
+
+        // 2) `const Name = React.forwardRef(Name_withRef)` (const_decl): 외부 스코프에서 순회해야
+        //    `React` / `Name_withRef` identifier_reference 의 `symbol_ids` 가 채워지고, bundler
+        //    의 `ns_member_rewrites` / `ns_inline_objects` 가 React namespace import 를 정상적으로
+        //    `__ns_N_0` 로 치환할 수 있다. 누락되면 `React.forwardRef` 가 그대로 emit 되어
+        //    `ReferenceError: Property 'React' doesn't exist` 로 런타임 크래시.
+        if (!const_idx.isNone()) try self.visitNode(const_idx);
     }
 
     fn visitFunctionExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
