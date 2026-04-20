@@ -338,7 +338,7 @@ pub const Reference = struct {
     /// `NO_STMT`. span 기반 역추적은 decorator 등 "stmt span 외부 노드" 에서 누락되므로
     /// analyzer 가 `current_top_stmt_idx` 를 직접 저장한다.
     stmt_idx: u32 = NO_STMT,
-    /// 참조 종류 (bitset). 현재 analyzer 는 read 또는 write 한 플래그만 set 한다.
+    /// 참조 종류 (bitset). read / write / read+write / declare 조합.
     flags: ReferenceFlags = .{},
 
     pub const NO_STMT: u32 = std.math.maxInt(u32);
@@ -347,9 +347,10 @@ pub const Reference = struct {
 /// 참조 종류 플래그 (packed bitset).
 ///
 /// 현재 analyzer 가 생성하는 조합:
-///   - `{ .read = true }`    — `f(x)`, `y = x` 등 값 읽기
-///   - `{ .write = true }`   — `x = 1`, `x += 1`, `x++` (compound/update 도 현재는 write 로만 뭉뚱)
-///   - `{ .declare = true }` — top-level scope 선언 위치. node_index 는 NodeIndex.none
+///   - `{ .read = true }`               — `f(x)`, `y = x` 등 값 읽기
+///   - `{ .write = true }`              — `x = 1` (pure assign)
+///   - `{ .read = true, .write = true }` — `x += 1`, `x++`, `--x` 등 compound/update
+///   - `{ .declare = true }`            — top-level scope 선언 위치. node_index 는 NodeIndex.none
 ///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 stmt_idx 로만 bucket 분배)
 pub const ReferenceFlags = packed struct(u8) {
     read: bool = false,

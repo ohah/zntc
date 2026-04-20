@@ -89,6 +89,14 @@ test "Kind.isAssignment" {
     try std.testing.expect(!Kind.eq2.isAssignment());
 }
 
+test "Kind.isCompoundAssignment" {
+    try std.testing.expect(!Kind.eq.isCompoundAssignment());
+    try std.testing.expect(Kind.plus_eq.isCompoundAssignment());
+    try std.testing.expect(Kind.question2_eq.isCompoundAssignment());
+    try std.testing.expect(!Kind.plus.isCompoundAssignment());
+    try std.testing.expect(!Kind.eq2.isCompoundAssignment());
+}
+
 test "Kind.slashIsRegex" {
     // 식별자/리터럴 뒤 → division (false)
     try std.testing.expect(!Kind.identifier.slashIsRegex());

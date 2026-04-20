@@ -1381,6 +1381,51 @@ test "references: scope_id 가 참조 발생 위치" {
     try std.testing.expect(!std.meta.eql(ref_scope, decl_scope));
 }
 
+test "references: compound assign 은 read+write 동시 기록" {
+    // PR C: `x += 1` → `{read=true, write=true}`. 이전에는 write 만 set.
+    var fx = try RefFixture.init("let x = 1; x += 2;");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    // 1 read/write combined (compound) — 초기 선언의 read 는 없음.
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    try std.testing.expect(refs.items[0].flags.read);
+    try std.testing.expect(refs.items[0].flags.write);
+}
+
+test "references: pure assign 은 write 만" {
+    // `x = 1` (초기 선언 아님) → write 만 set.
+    var fx = try RefFixture.init("let x = 1; x = 2;");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    try std.testing.expect(!refs.items[0].flags.read);
+    try std.testing.expect(refs.items[0].flags.write);
+}
+
+test "references: update expression 은 read+write" {
+    // `x++`, `++x`, `x--`, `--x` 모두 read+write.
+    var fx = try RefFixture.init("let x = 0; x++; ++x;");
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("x", &refs);
+
+    try std.testing.expectEqual(@as(usize, 2), refs.items.len);
+    for (refs.items) |r| {
+        try std.testing.expect(r.flags.read);
+        try std.testing.expect(r.flags.write);
+    }
+}
+
 test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" {
     // PR B: `stmt_declared` 중간 캐시 제거 후, buildFromSemantic 이 references 의 declare flag 로
     // declared_symbols 를 재구성하는지 검증. enable_stmt_info 꺼져 있으면 declare ref 는 생성 안 됨.
