@@ -158,27 +158,61 @@ fn isGuaranteedBoolean(ast: *const Ast, node: Node) bool {
     };
 }
 
+/// fixed-point loop 반복 상한. oxc `PeepholeOptimizations::run_in_loop` 와 동일 값.
+/// pathological AST 에서 무한 교환 (e.g. A↔B) 을 방지.
+const max_fixpoint_iterations: u32 = 3;
+
+/// 전체 노드 치환 + fixed-point 신호. fold / simplify 사이트가 반복적으로 쓰는 패턴.
+inline fn replaceNode(ast: *Ast, idx: u32, new_node: Node, changed: *bool) void {
+    ast.nodes.items[idx] = new_node;
+    changed.* = true;
+}
+
 /// AST minify 패스를 실행한다. ast를 in-place 수정.
 /// `ctx` 에 semantic 정보가 있으면 dead store (unused declaration) 제거도 함께 수행.
+///
+/// **Fixed-point loop** (#1650): constant fold → simplify → dead store 가 서로의 제거
+/// 기회를 만들기 때문에 (`let y = 1 + 2; let x = y;` → 1 iter: fold + x dead, y.ref 감산
+/// → 2 iter: y dead), `runOnce` 를 변경 없을 때까지 반복한다.
 pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
+    // for-loop binding 은 fold passes 가 새로 만들지 않아 iter-invariant — 미리 1회만 수집.
+    var skip_for_binding: ?std.DynamicBitSet = null;
+    defer if (skip_for_binding) |*b| b.deinit();
+    if (ctx.hasSemantic()) {
+        skip_for_binding = std.DynamicBitSet.initEmpty(ast.allocator, ast.nodes.items.len) catch null;
+        if (skip_for_binding) |*b| markForLoopBindings(ast, b);
+    }
+
+    var i: u32 = 0;
+    while (i < max_fixpoint_iterations) : (i += 1) {
+        const skip_ptr: ?*const std.DynamicBitSet = if (skip_for_binding) |*b| b else null;
+        if (!runOnce(ast, ctx, skip_ptr)) break;
+    }
+}
+
+/// minify 1 iteration. 변경이 있었으면 true 반환 (fixed-point 종료 판정용).
+/// `changed` 는 보수적 true 허용 — 실제 mutation 없이 true 설정해도 최악 1 iter 더 돌고 끝.
+fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet) bool {
+    var changed = false;
     for (ast.nodes.items, 0..) |node, i| {
         switch (node.tag) {
-            .binary_expression => foldBinary(ast, @intCast(i), node),
-            .logical_expression => foldLogical(ast, @intCast(i), node),
-            .unary_expression => foldUnary(ast, @intCast(i), node),
-            .conditional_expression => foldConditional(ast, @intCast(i), node),
-            .if_statement => foldIf(ast, @intCast(i), node),
-            .while_statement => foldWhile(ast, @intCast(i), node),
-            .sequence_expression => simplifySequence(ast, ctx, @intCast(i), node),
+            .binary_expression => foldBinary(ast, @intCast(i), node, &changed),
+            .logical_expression => foldLogical(ast, @intCast(i), node, &changed),
+            .unary_expression => foldUnary(ast, @intCast(i), node, &changed),
+            .conditional_expression => foldConditional(ast, @intCast(i), node, &changed),
+            .if_statement => foldIf(ast, @intCast(i), node, &changed),
+            .while_statement => foldWhile(ast, @intCast(i), node, &changed),
+            .sequence_expression => simplifySequence(ast, ctx, @intCast(i), node, &changed),
             // PR1.5 (a): unused expression statement 축약 — semantic 정보 있을 때만
             // (symbol_ids 가 없으면 identifier local binding 판정 불가)
-            .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, @intCast(i), node),
+            .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, @intCast(i), node, &changed),
             else => {},
         }
     }
     if (ctx.hasSemantic()) {
-        removeDeadStores(ast, ctx);
+        removeDeadStores(ast, ctx, skip_for_binding, &changed);
     }
+    return changed;
 }
 
 // ================================================================
@@ -200,23 +234,18 @@ pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
 //   - init 이 불순                      — "강등" (→ expression_statement) 은 PR1.5
 //
 // 제거 시 init expression 내 모든 identifier_reference 의 `reference_count` 를
-// 감산해 semantic scalar 와의 정합성을 유지한다 (미래 fixed-point loop 도입 시 필수).
+// 감산해 semantic scalar 와의 정합성을 유지한다 — fixed-point loop 의 다음 iter 가
+// 연쇄 dead 탐지를 위해 정확한 ref_count 를 필요로 한다.
 
-fn removeDeadStores(ast: *Ast, ctx: MinifyCtx) void {
-    // Pre-pass: for-loop 의 binding 위치에 있는 variable_declaration 을 모두 수집.
-    // for (let x = 0; ...), for (const x of it), for await (const x of it) 등에서 `x` 가
-    // body 안에서 참조되지 않아도 binding 자체를 지우면 구문 붕괴 (#1647).
-    // ast.allocator 는 bundle 경로에선 arena (CLAUDE.md Memory ownership) — defer 와 함께
-    // 써도 arena.deinit 시 이중 해제 없음 (DynamicBitSet 은 개별 free 가 no-op 이 되도록
-    // arena 안 bytes 만 사용). 단일 transpile 경로에선 일반 allocator.
-    var skip_for_binding = std.DynamicBitSet.initEmpty(ast.allocator, ast.nodes.items.len) catch return;
-    defer skip_for_binding.deinit();
-    markForLoopBindings(ast, &skip_for_binding);
+/// `skip_for_binding` 은 `minify` 가 1회 수집해 모든 iter 에 공유 — fold passes 가
+/// for-loop 을 새로 만들지 않아 재계산 불필요. null 이면 (OOM) 보수적으로 전부 skip.
+fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, changed: *bool) void {
+    const skip = skip_for_binding orelse return;
 
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
-        if (skip_for_binding.isSet(i)) continue;
-        tryRemoveDeadDecl(ast, ctx, @intCast(i), node);
+        if (skip.isSet(i)) continue;
+        tryRemoveDeadDecl(ast, ctx, @intCast(i), node, changed);
     }
 }
 
@@ -251,7 +280,7 @@ fn markForLoopBindings(ast: *const Ast, skip: *std.DynamicBitSet) void {
     }
 }
 
-fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
+fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const kind = ast.variableDeclarationKind(node);
     // `using` / `await using`: Symbol.dispose 호출 side-effect → 보존
     if (kind.isUsing()) return;
@@ -310,11 +339,11 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void 
     }
 
     // variable_declaration 전체를 empty_statement 로 교체
-    ast.nodes.items[node_idx] = .{
+    replaceNode(ast, node_idx, .{
         .tag = .empty_statement,
         .span = node.span,
         .data = .{ .none = 0 },
-    };
+    }, changed);
 }
 
 /// expression 안의 모든 `identifier_reference` 노드를 찾아, symbol_ids 로 symbol 을
@@ -362,7 +391,7 @@ pub fn mergeDecls(ast: *Ast, skip_nodes: ?*const std.DynamicBitSet) void {
 // Constant Folding — Binary Expression
 // ================================================================
 
-fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldBinary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const left_ni = @intFromEnum(node.data.binary.left);
     const right_ni = @intFromEnum(node.data.binary.right);
     if (left_ni >= ast.nodes.items.len or right_ni >= ast.nodes.items.len) return;
@@ -374,17 +403,20 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
     // 비교 연산 (산술보다 먼저 — 숫자 === 숫자도 여기서 처리)
     if (op == .eq3 or op == .neq2) {
         // x === true → x, x === false → !x (한쪽만 boolean이면 축약)
-        if (simplifyBooleanComparison(ast, node_idx, left, right, left_ni, right_ni, op)) return;
+        if (simplifyBooleanComparison(ast, node_idx, left, right, left_ni, right_ni, op)) {
+            changed.* = true;
+            return;
+        }
 
         if (foldStrictEquality(ast, left, right)) |result| {
             const value = if (op == .neq2) !result else result;
             const text = if (value) "true" else "false";
             if (ast.addString(text)) |span| {
-                ast.nodes.items[node_idx] = .{
+                replaceNode(ast, node_idx, .{
                     .tag = .boolean_literal,
                     .span = span,
                     .data = .{ .none = 0 },
-                };
+                }, changed);
             } else |_| {}
         }
         return;
@@ -397,11 +429,11 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
                 const orig_len = (node.span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
                 const new_len = (new_span.end & ~ast_mod.Ast.STRING_TABLE_BIT) -| (new_span.start & ~ast_mod.Ast.STRING_TABLE_BIT);
                 if (new_len <= orig_len) {
-                    ast.nodes.items[node_idx] = .{
+                    replaceNode(ast, node_idx, .{
                         .tag = .numeric_literal,
                         .span = new_span,
                         .data = .{ .none = 0 },
-                    };
+                    }, changed);
                 }
             }
         }
@@ -410,7 +442,7 @@ fn foldBinary(ast: *Ast, node_idx: u32, node: Node) void {
 
     // 문자열 연결 (+ 연산자만)
     if (left.tag == .string_literal and right.tag == .string_literal and op == .plus) {
-        foldStringConcat(ast, node_idx, left, right);
+        foldStringConcat(ast, node_idx, left, right, changed);
         return;
     }
 }
@@ -433,7 +465,7 @@ fn foldNumericBinary(ast: *const Ast, left: Node, right: Node, op: Kind) ?f64 {
     };
 }
 
-fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node) void {
+fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node, changed: *bool) void {
     const left_text = ast.getText(left.span);
     const right_text = ast.getText(right.span);
 
@@ -457,11 +489,11 @@ fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node) void {
     const total = 2 + a.len + b.len;
 
     const span = ast.addString(buf[0..total]) catch return;
-    ast.nodes.items[node_idx] = .{
+    replaceNode(ast, node_idx, .{
         .tag = .string_literal,
         .span = span,
         .data = .{ .none = 0 },
-    };
+    }, changed);
 }
 
 /// 문자열 리터럴의 quote char — `"` / `'` / backtick. 리터럴 형식이 아니면 null.
@@ -563,7 +595,7 @@ fn foldStrictEquality(ast: *const Ast, left: Node, right: Node) ?bool {
 // Constant Folding — Unary Expression
 // ================================================================
 
-fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return;
     const operand_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
@@ -586,7 +618,7 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
                         if (inner_operand_ni < ast.nodes.items.len) {
                             const unwrapped = unwrapParens(ast, ast.nodes.items[inner_operand_ni]);
                             if (isGuaranteedBoolean(ast, unwrapped)) {
-                                ast.nodes.items[node_idx] = unwrapped;
+                                replaceNode(ast, node_idx, unwrapped, changed);
                                 return;
                             }
                         }
@@ -597,11 +629,11 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
             if (evalTruthiness(ast, operand)) |truthy| {
                 const text = if (!truthy) "true" else "false";
                 if (ast.addString(text)) |span| {
-                    ast.nodes.items[node_idx] = .{
+                    replaceNode(ast, node_idx, .{
                         .tag = .boolean_literal,
                         .span = span,
                         .data = .{ .none = 0 },
-                    };
+                    }, changed);
                 } else |_| {}
             }
         },
@@ -610,11 +642,11 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
             // typeof null → "object", typeof undefined → "undefined"
             if (foldTypeof(ast, operand)) |type_str| {
                 if (makeQuotedString(ast, type_str)) |span| {
-                    ast.nodes.items[node_idx] = .{
+                    replaceNode(ast, node_idx, .{
                         .tag = .string_literal,
                         .span = span,
                         .data = .{ .none = 0 },
-                    };
+                    }, changed);
                 }
             }
         },
@@ -623,11 +655,11 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
             if (operand.tag == .numeric_literal) {
                 if (parseNumericLiteral(ast, operand)) |val| {
                     if (formatNumber(ast, -val)) |span| {
-                        ast.nodes.items[node_idx] = .{
+                        replaceNode(ast, node_idx, .{
                             .tag = .numeric_literal,
                             .span = span,
                             .data = .{ .none = 0 },
-                        };
+                        }, changed);
                     }
                 }
             }
@@ -635,7 +667,7 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node) void {
         .plus => {
             // +리터럴 → 그대로 (불필요한 단항 + 제거)
             if (operand.tag == .numeric_literal) {
-                ast.nodes.items[node_idx] = operand;
+                replaceNode(ast, node_idx, operand, changed);
             }
         },
         .kw_void => {
@@ -702,7 +734,7 @@ fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
 // ================================================================
 
 /// conditional_expression: false ? a : b → b, true ? a : b → a
-fn foldConditional(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldConditional(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
@@ -712,11 +744,11 @@ fn foldConditional(ast: *Ast, node_idx: u32, node: Node) void {
     const kept = if (truthy) node.data.ternary.b else node.data.ternary.c;
     const kept_ni = @intFromEnum(kept);
     if (kept_ni >= ast.nodes.items.len) return;
-    ast.nodes.items[node_idx] = ast.nodes.items[kept_ni];
+    replaceNode(ast, node_idx, ast.nodes.items[kept_ni], changed);
 }
 
 /// if_statement: if (false) { A } else { B } → B, if (true) { A } → A
-fn foldIf(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldIf(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
@@ -726,42 +758,42 @@ fn foldIf(ast: *Ast, node_idx: u32, node: Node) void {
         // if (true) { A } → A (then 분기)
         const then_ni = @intFromEnum(node.data.ternary.b);
         if (then_ni >= ast.nodes.items.len) return;
-        ast.nodes.items[node_idx] = ast.nodes.items[then_ni];
+        replaceNode(ast, node_idx, ast.nodes.items[then_ni], changed);
     } else {
         // if (false) { A } else { B } → B (else 분기가 있으면)
         if (!node.data.ternary.c.isNone()) {
             const else_ni = @intFromEnum(node.data.ternary.c);
             if (else_ni >= ast.nodes.items.len) return;
-            ast.nodes.items[node_idx] = ast.nodes.items[else_ni];
+            replaceNode(ast, node_idx, ast.nodes.items[else_ni], changed);
         } else {
             // if (false) { A } → empty_statement
-            ast.nodes.items[node_idx] = .{
+            replaceNode(ast, node_idx, .{
                 .tag = .empty_statement,
                 .span = node.span,
                 .data = .{ .none = 0 },
-            };
+            }, changed);
         }
     }
 }
 
 /// while (false) { ... } → empty_statement
-fn foldWhile(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldWhile(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const cond_ni = @intFromEnum(node.data.binary.left);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
     const truthy = evalTruthiness(ast, cond) orelse return;
     if (!truthy) {
-        ast.nodes.items[node_idx] = .{
+        replaceNode(ast, node_idx, .{
             .tag = .empty_statement,
             .span = node.span,
             .data = .{ .none = 0 },
-        };
+        }, changed);
     }
 }
 
 /// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x
-fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
+fn foldLogical(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const left_ni = @intFromEnum(node.data.binary.left);
     if (left_ni >= ast.nodes.items.len) return;
     const left = ast.nodes.items[left_ni];
@@ -775,21 +807,21 @@ fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
                 // true && x → x
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
             } else {
                 // false && x → false (left 값 유지)
-                ast.nodes.items[node_idx] = left;
+                replaceNode(ast, node_idx, left, changed);
             }
         },
         .pipe2 => { // ||
             if (truthy) {
                 // true || x → true (left 값 유지)
-                ast.nodes.items[node_idx] = left;
+                replaceNode(ast, node_idx, left, changed);
             } else {
                 // false || x → x
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
             }
         },
         .question2 => { // ??
@@ -797,13 +829,13 @@ fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
             if (left.tag == .null_literal) {
                 const right_ni = @intFromEnum(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
-                ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+                replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
             } else if (left.tag == .identifier_reference) {
                 const text = ast.getText(left.span);
                 if (std.mem.eql(u8, text, "undefined")) {
                     const right_ni = @intFromEnum(node.data.binary.right);
                     if (right_ni >= ast.nodes.items.len) return;
-                    ast.nodes.items[node_idx] = ast.nodes.items[right_ni];
+                    replaceNode(ast, node_idx, ast.nodes.items[right_ni], changed);
                 }
             }
         },
@@ -824,7 +856,7 @@ fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
 /// **Two-phase**: (1) 유지 / 제거 원소를 먼저 수집 완료 + extra_data 에 append 성공까지
 /// 확인한 뒤 (2) reference_count 감산 + list rewrite 를 **한 번에** commit. 중간 OOM 시
 /// symbol 상태가 stale 이 되지 않도록 원자적 처리.
-fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
+fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const list = node.data.list;
     if (list.len < 2) return;
     if (list.start + list.len > ast.extra_data.items.len) return;
@@ -854,7 +886,7 @@ fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
     if (kept_buf.items.len == 0) {
         // 마지막 하나만 남음 → sequence 를 해당 노드로 교체. list rewrite 불필요.
         for (removed_buf.items) |raw| decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
-        ast.nodes.items[node_idx] = ast.nodes.items[last_raw];
+        replaceNode(ast, node_idx, ast.nodes.items[last_raw], changed);
         return;
     }
 
@@ -868,21 +900,22 @@ fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
     ast.nodes.items[node_idx].data = .{
         .list = .{ .start = new_start, .len = @intCast(kept_buf.items.len) },
     };
+    changed.* = true;
 }
 
 /// expression_statement 의 자식 expression 이 side-effect 없이 제거 가능하면
 /// `empty_statement` 로 교체한다. 제거 시 내부 identifier_reference 의
 /// reference_count 를 감산 (dead store PR1 과 동일 방식).
-fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
+fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const operand = node.data.unary.operand;
     if (!isStmtRemovable(ast, operand, ctx)) return;
 
     decrementRefsInExpr(ast, ctx, operand);
-    ast.nodes.items[node_idx] = .{
+    replaceNode(ast, node_idx, .{
         .tag = .empty_statement,
         .span = node.span,
         .data = .{ .none = 0 },
-    };
+    }, changed);
 }
 
 /// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`

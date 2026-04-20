@@ -1106,3 +1106,47 @@ test "expr simplify: sequence 의 중간 impure 는 유지" {
         "function run() {\n\tlet x = (foo(),bar());\n}\nrun();",
     );
 }
+
+// ================================================================
+// Fixed-Point Loop (#1650)
+// ================================================================
+//
+// 각 pass (fold / simplify / dead store) 결과가 다음 pass 의 제거 기회를 만들어
+// `let y = 1; let x = y;` 같은 체인에서 연쇄 dead 가 수렴한다 (1 iter: x 제거 +
+// y.ref 1→0 감산, 2 iter: y 제거). `max_fixpoint_iterations = 3` 상한.
+
+test "fixed-point: let y=1; let x=y; — 2 iter 수렴" {
+    try expectMinifyDead(
+        "let y = 1; let x = y;",
+        "function run() {\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "fixed-point: let y=1+2; let x=y; — fold + 연쇄 dead" {
+    try expectMinifyDead(
+        "let y = 1 + 2; let x = y;",
+        "function run() {\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "fixed-point: let y = \"a\" + \"b\"; let x = y; — 문자열 concat 연쇄" {
+    try expectMinifyDead(
+        "let y = \"a\" + \"b\"; let x = y;",
+        "function run() {\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "fixed-point: 3-단 연쇄 (z→y→x) — max 안에 수렴" {
+    try expectMinifyDead(
+        "let z = 1; let y = z; let x = y;",
+        "function run() {\n\t;\n\t;\n\t;\n}\nrun();",
+    );
+}
+
+test "fixed-point: 사용 중인 chain 은 보존" {
+    // 인접 `let y=1; let x=y;` 는 mergeDecls 가 `let y=1,x=y;` 로 병합하므로 expected 반영.
+    try expectMinifyDead(
+        "let y = 1; let x = y; console.log(x);",
+        "function run() {\n\tlet y = 1,x = y;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
