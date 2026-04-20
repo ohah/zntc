@@ -92,7 +92,8 @@ test "Bundler: minified output" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x=1;") != null);
+    // minify_syntax 에서 top-level const → var 다운그레이드 (#1630)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var x=1;") != null);
     // minify: 모듈 경계 주석 없음
     try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
 }

@@ -396,6 +396,51 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
     }
 }
 
+/// Top-level `const` / `let` 선언을 `var` 로 다운그레이드 (#1630).
+///
+/// **호출자 계약**: `scope_hoist = true` 일 때만 호출 — module top-level 이 IIFE / CJS wrap
+/// 으로 function scope 에 통합되어 block-scope 의미가 function-scope 와 동일해진다.
+/// 그 외엔 TDZ / block-scope hoisting 의미 변경 위험.
+///
+/// 범위: `program` 노드의 직속 statement 중 `variable_declaration` 의 kind 만 수정.
+/// 함수/블록 내부는 건드리지 않음 (block scope 내 let/const 를 var 로 바꾸면 function scope
+/// 로 hoist 되어 semantic 변경). for-loop init/left binding 은 각 iter 새 바인딩 특성을
+/// 유지해야 하므로 `markForLoopBindings` 로 제외.
+///
+/// **merge 와 조합**: `mergeDecls` 직전에 호출하면 같은 kind(`.var`) 끼리 연쇄 merge —
+/// svelte-mount-min 에서 `const 168개 → var` 전환 후 단일 `var a=1,b=2,...` 로 압축.
+pub fn downgradeToVar(ast: *Ast) void {
+    // program 노드 찾기 (codegen 이 쓰는 최종 program)
+    var prog_idx: ?u32 = null;
+    for (ast.nodes.items, 0..) |n, i| {
+        if (n.tag == .program) prog_idx = @intCast(i);
+    }
+    const prog_ni = prog_idx orelse return;
+    const prog = ast.nodes.items[prog_ni];
+    const list = prog.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+
+    // for-loop binding 은 각 iter 새 바인딩 의미 → downgrade 금지.
+    var skip_for_binding = std.DynamicBitSet.initEmpty(ast.allocator, ast.nodes.items.len) catch return;
+    defer skip_for_binding.deinit();
+    markForLoopBindings(ast, &skip_for_binding);
+
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        if (skip_for_binding.isSet(raw)) continue;
+        const stmt = ast.nodes.items[raw];
+        if (stmt.tag != .variable_declaration) continue;
+
+        const kind = ast.variableDeclarationKind(stmt);
+        // var / using / await_using 은 유지 — using 은 dispose semantic, var 는 이미 target.
+        if (kind != .let and kind != .@"const") continue;
+
+        const e = stmt.data.extra;
+        if (e >= ast.extra_data.items.len) continue;
+        ast.extra_data.items[e] = 0; // VariableDeclarationKind.var = 0
+    }
+}
+
 /// 인접한 같은-kind `var`/`let`/`const` 선언을 단일 선언으로 병합한다 (#1588).
 ///
 /// 반드시 tree-shaking **이후**에 호출해야 한다. 번들러는 `var A=1; var B=2;`에서
