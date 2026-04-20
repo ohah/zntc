@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -338,47 +339,11 @@ fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.String
         },
         else => {},
     }
-    // generic 순회
-    const kind = node.tag.dataKind();
-    switch (kind) {
-        .leaf => {},
-        .unary => {
-            if (!node.data.unary.operand.isNone()) try collectAllIdentifiers(self, node.data.unary.operand, locals, depth + 1);
-        },
-        .binary => {
-            try collectAllIdentifiers(self, node.data.binary.left, locals, depth + 1);
-            try collectAllIdentifiers(self, node.data.binary.right, locals, depth + 1);
-        },
-        .ternary => {
-            try collectAllIdentifiers(self, node.data.ternary.a, locals, depth + 1);
-            try collectAllIdentifiers(self, node.data.ternary.b, locals, depth + 1);
-            try collectAllIdentifiers(self, node.data.ternary.c, locals, depth + 1);
-        },
-        .list => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                if (list.start + i < self.ast.extra_data.items.len)
-                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), locals, depth + 1);
-            }
-        },
-        .extra => {
-            const e = node.data.extra;
-            for (node.tag.extraChildOffsets()) |offset| {
-                if (self.ast.hasExtra(e, @as(u32, offset) + 1))
-                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e + offset]), locals, depth + 1);
-            }
-            for (node.tag.extraListOffsets()) |lo| {
-                if (!self.ast.hasExtra(e, @as(u32, lo[1]) + 1)) continue;
-                const ls = self.ast.extra_data.items[e + lo[0]];
-                const ll = self.ast.extra_data.items[e + lo[1]];
-                var li: u32 = 0;
-                while (li < ll) : (li += 1) {
-                    if (ls + li < self.ast.extra_data.items.len)
-                        try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[ls + li]), locals, depth + 1);
-                }
-            }
-        },
+    // generic 재귀 순회 — 공통 ChildIterator 사용
+    var it = ast_walk.children(&self.ast, node);
+    while (it.next()) |child| {
+        if (child.isNone()) continue;
+        try collectAllIdentifiers(self, child, locals, depth + 1);
     }
 }
 
@@ -427,47 +392,11 @@ fn collectNewExpressionCallees(
             }
         }
     }
-    // 자식 재귀 (generic layout 기반)
-    const tag = node.tag;
-    const kind = tag.dataKind();
-    switch (kind) {
-        .leaf => {},
-        .unary => if (!node.data.unary.operand.isNone()) try collectNewExpressionCallees(self, node.data.unary.operand, new_classes, depth + 1),
-        .binary => {
-            try collectNewExpressionCallees(self, node.data.binary.left, new_classes, depth + 1);
-            try collectNewExpressionCallees(self, node.data.binary.right, new_classes, depth + 1);
-        },
-        .ternary => {
-            try collectNewExpressionCallees(self, node.data.ternary.a, new_classes, depth + 1);
-            try collectNewExpressionCallees(self, node.data.ternary.b, new_classes, depth + 1);
-            try collectNewExpressionCallees(self, node.data.ternary.c, new_classes, depth + 1);
-        },
-        .list => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                if (list.start + i >= self.ast.extra_data.items.len) break;
-                try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), new_classes, depth + 1);
-            }
-        },
-        .extra => {
-            const e = node.data.extra;
-            for (tag.extraChildOffsets()) |offset| {
-                if (self.ast.hasExtra(e, @as(u32, offset) + 1)) {
-                    try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[e + offset]), new_classes, depth + 1);
-                }
-            }
-            for (tag.extraListOffsets()) |lo| {
-                if (!self.ast.hasExtra(e, @as(u32, lo[1]) + 1)) continue;
-                const ls = self.ast.extra_data.items[e + lo[0]];
-                const ll = self.ast.extra_data.items[e + lo[1]];
-                var li: u32 = 0;
-                while (li < ll) : (li += 1) {
-                    if (ls + li >= self.ast.extra_data.items.len) break;
-                    try collectNewExpressionCallees(self, @enumFromInt(self.ast.extra_data.items[ls + li]), new_classes, depth + 1);
-                }
-            }
-        },
+    // 자식 재귀 — 공통 ChildIterator 로 generic 순회
+    var it = ast_walk.children(&self.ast, node);
+    while (it.next()) |child| {
+        if (child.isNone()) continue;
+        try collectNewExpressionCallees(self, child, new_classes, depth + 1);
     }
 }
 
@@ -618,54 +547,11 @@ fn walkBodyForClosureAnalysis(
         else => {},
     }
 
-    // --- Generic 순회: nodeLayout() 기반 ---
-    const kind = tag.dataKind();
-    switch (kind) {
-        .leaf => {},
-        .unary => {
-            if (!node.data.unary.operand.isNone()) {
-                try walkBodyForClosureAnalysis(self, node.data.unary.operand, locals, refs, depth + 1);
-            }
-        },
-        .binary => {
-            try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
-        },
-        .ternary => {
-            try walkBodyForClosureAnalysis(self, node.data.ternary.a, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.b, locals, refs, depth + 1);
-            try walkBodyForClosureAnalysis(self, node.data.ternary.c, locals, refs, depth + 1);
-        },
-        .list => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                if (list.start + i >= self.ast.extra_data.items.len) break;
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[list.start + i]), locals, refs, depth + 1);
-            }
-        },
-        .extra => {
-            const e = node.data.extra;
-            // child_offsets: 직접 NodeIndex 자식
-            for (tag.extraChildOffsets()) |offset| {
-                if (self.ast.hasExtra(e, @as(u32, offset) + 1)) {
-                    try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + offset]), locals, refs, depth + 1);
-                }
-            }
-            // list_offsets: 간접 NodeIndex 리스트 (e.g. args, statements)
-            for (tag.extraListOffsets()) |lo| {
-                const start_off = lo[0];
-                const len_off = lo[1];
-                if (!self.ast.hasExtra(e, @as(u32, len_off) + 1)) continue;
-                const list_start = self.ast.extra_data.items[e + start_off];
-                const list_len = self.ast.extra_data.items[e + len_off];
-                var li: u32 = 0;
-                while (li < list_len) : (li += 1) {
-                    if (list_start + li >= self.ast.extra_data.items.len) break;
-                    try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[list_start + li]), locals, refs, depth + 1);
-                }
-            }
-        },
+    // --- Generic 순회: 공통 ChildIterator ---
+    var it = ast_walk.children(&self.ast, node);
+    while (it.next()) |child| {
+        if (child.isNone()) continue;
+        try walkBodyForClosureAnalysis(self, child, locals, refs, depth + 1);
     }
 }
 

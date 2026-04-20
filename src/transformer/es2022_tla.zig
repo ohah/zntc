@@ -30,6 +30,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const es_helpers = @import("es_helpers.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -71,45 +72,10 @@ fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) bool {
         else => {},
     }
 
-    // 자식 순회. data union 은 extern 이므로 tag 의 dataKind 로 분기.
-    switch (Tag.dataKind(node.tag)) {
-        .unary => return hasTopLevelAwait(ast, node.data.unary.operand),
-        .binary => return hasTopLevelAwait(ast, node.data.binary.left) or hasTopLevelAwait(ast, node.data.binary.right),
-        .ternary => return hasTopLevelAwait(ast, node.data.ternary.a) or hasTopLevelAwait(ast, node.data.ternary.b) or hasTopLevelAwait(ast, node.data.ternary.c),
-        .list => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const child: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
-                if (hasTopLevelAwait(ast, child)) return true;
-            }
-            return false;
-        },
-        .extra => return extraHasTopLevelAwait(ast, node),
-        .leaf => return false,
-    }
-}
-
-/// extra 기반 노드에서 child_offsets / list_offsets 를 따라 await 탐색.
-fn extraHasTopLevelAwait(ast: *const ast_mod.Ast, node: Node) bool {
-    if (Tag.dataKind(node.tag) != .extra) return false;
-    const base = node.data.extra;
-    for (Tag.extraChildOffsets(node.tag)) |off| {
-        const raw = ast.extra_data.items[base + off];
-        const child: NodeIndex = @enumFromInt(raw);
+    // 자식 재귀 — 공통 ChildIterator (ast_walk) 로 predicate 탐색.
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child| {
         if (hasTopLevelAwait(ast, child)) return true;
-    }
-    for (Tag.extraListOffsets(node.tag)) |lo| {
-        const start_off = lo[0];
-        const len_off = lo[1];
-        const start = ast.extra_data.items[base + start_off];
-        const len = ast.extra_data.items[base + len_off];
-        var j: u32 = 0;
-        while (j < len) : (j += 1) {
-            const raw = ast.extra_data.items[start + j];
-            const child: NodeIndex = @enumFromInt(raw);
-            if (hasTopLevelAwait(ast, child)) return true;
-        }
     }
     return false;
 }
