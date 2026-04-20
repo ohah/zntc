@@ -3108,3 +3108,21 @@ test "Flow: shorthand function type as method return" {
         \\}
     );
 }
+
+// ============================================================
+// async arrow: 내부 arrow 의 파라미터에서도 'await' 식별자 금지
+// (ECMA §sec-async-arrow-function-definitions)
+// ============================================================
+
+test "Async arrow: nested arrow ident param 'await' is error" {
+    try expectParseError("async(a = await => {}) => {};", .{ .message_contains = "await" });
+}
+
+test "Async arrow: nested arrow rest param 'await' is error" {
+    try expectParseError("async(a = (...await) => {}) => {};", .{ .message_contains = "await" });
+}
+
+test "Async arrow: nested arrow ident 'await' (with preceding statement)" {
+    // 이전 statement 가 있어도 파서 상태가 올바르게 유지되어야 한다.
+    try expectParseError("var x = 1; async(a = await => {}) => {};", .{ .message_contains = "await" });
+}
