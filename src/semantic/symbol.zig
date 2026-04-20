@@ -258,15 +258,6 @@ pub const Symbol = struct {
     /// 크로스-모듈 인라인 대상. oxc/rolldown과 동일한 접근.
     write_count: u32 = 0,
 
-    /// 단일 read 로 확신 가능한 유일 read 의 node_index. 두 번째 read 가 발생하면 `.none` 으로
-    /// invalidate. single-use inline (#1666) 이 AST re-walk 없이 read 위치를 찾는 용도.
-    /// write 발생은 `write_count` 로 별도 판단 — 이 필드는 read-only 추적.
-    single_read_node: NodeIndex = .none,
-
-    /// `variable_declarator` 의 init expression NodeIndex. 단순 binding_identifier 선언에만 설정.
-    /// destructuring / 초기값 없는 선언은 `.none`. single-use inline 과 const-value inline 공통.
-    decl_init: NodeIndex = .none,
-
     /// 컴파일 타임 상수 값 (번들러 크로스-모듈 인라인용).
     /// const/let 선언의 초기화 값이 리터럴이면 설정 (단 let은 `write_count == 0`일 때만 인라인).
     const_value: ConstValue = .{},

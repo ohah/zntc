@@ -802,20 +802,6 @@ pub const SemanticAnalyzer = struct {
                     .flags = flags,
                 }) catch {};
 
-                // #1666 infra: read-only 참조면 single_read_node 관리.
-                // 첫 read → node_idx 저장, 두 번째 read → `.none` 으로 invalidate.
-                // write 가 섞인 compound / assign 은 여기서 건너뛰며, write_count 로 별도 검사.
-                if (flags.read and !flags.write) {
-                    const sym_ptr = &self.symbols.items[sym_idx];
-                    if (sym_ptr.reference_count == 1) {
-                        sym_ptr.single_read_node = node_idx;
-                    } else {
-                        sym_ptr.single_read_node = .none;
-                    }
-                } else if (flags.write) {
-                    self.symbols.items[sym_idx].single_read_node = .none;
-                }
-
                 return;
             }
 
@@ -857,13 +843,6 @@ pub const SemanticAnalyzer = struct {
         const sym_idx = self.symbol_ids.items[ni] orelse return null;
         if (sym_idx >= self.symbols.items.len) return null;
         return sym_idx;
-    }
-
-    /// #1669: binding_identifier node 의 symbol 에 `decl_init` 을 설정.
-    fn setSymbolDeclInit(self: *SemanticAnalyzer, binding_idx: NodeIndex, init_idx: NodeIndex) void {
-        if (init_idx.isNone()) return;
-        const sym_idx = self.symbolIndexOfNode(binding_idx) orelse return;
-        self.symbols.items[sym_idx].decl_init = init_idx;
     }
 
     /// predeclared 심볼에 대해 symbol_ids[node_idx]를 설정한다.
@@ -2539,17 +2518,6 @@ pub const SemanticAnalyzer = struct {
                 }
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
-
-                // #1669: 단순 binding_identifier 에 init 이 있으면 symbol.decl_init 기록.
-                // single-use inline / const-value inline 의 빠른 lookup 용. destructuring 은 대상 외.
-                if (!binding_idx.isNone() and !init_idx.isNone() and
-                    @intFromEnum(binding_idx) < self.ast.nodes.items.len)
-                {
-                    const bnode = self.ast.getNode(binding_idx);
-                    if (bnode.tag == .binding_identifier) {
-                        self.setSymbolDeclInit(binding_idx, init_idx);
-                    }
-                }
 
                 if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
                     const init_node = self.ast.getNode(init_idx);
