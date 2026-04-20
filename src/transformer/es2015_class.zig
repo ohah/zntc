@@ -1882,33 +1882,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// function_declaration의 body 앞에 문들을 삽입
+        /// function_declaration의 body 앞에 문들을 삽입 (in-place).
+        ///
+        /// body 포인터만 덮어써서 orphan function_declaration을 남기지 않는다.
+        /// 이전 구현은 매 호출마다 새 function_declaration 노드를 만들어 intermediate
+        /// function을 `ast.nodes`에 orphan으로 남겼는데, 그 orphan이 pass 2
+        /// (`lowerAllFunctionParams`)에서 rest-param `var rest = [].slice.call(...)`
+        /// 를 prepend받아 `[var rest, var _this, ...]` 같은 인접 var 쌍을 만들고,
+        /// minify의 `mergeAdjacentDecls`가 이를 merge하며 공유된 `var _this` 노드의
+        /// list_len을 0으로 비워 live body의 `var _this;` 출력이 `var ;`로 깨지는
+        /// 문제가 있었다. body만 교체하면 function_declaration은 단일 인스턴스로
+        /// 유지되어 이 경로 자체가 제거된다.
         fn prependToFunctionBody(self: *Transformer, func_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
             const func = self.ast.getNode(func_idx);
             const fe = func.data.extra;
-
-            // extra_data 슬라이스는 prependStatementsToBody 호출 시 재할당될 수 있으므로
-            // 필요한 값을 미리 로컬에 복사
-            const saved_name = self.ast.extra_data.items[fe];
-            const saved_params_idx = self.ast.extra_data.items[fe + 1];
-            const saved_flags = self.ast.extra_data.items[fe + 3];
             const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
 
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
-
-            const none = @intFromEnum(NodeIndex.none);
-            const new_extra = try self.ast.addExtras(&.{
-                saved_name,
-                saved_params_idx,
-                @intFromEnum(new_body),
-                saved_flags,
-                none,
-            });
-            return self.ast.addNode(.{
-                .tag = func.tag,
-                .span = func.span,
-                .data = .{ .extra = new_extra },
-            });
+            self.ast.extra_data.items[fe + 2] = @intFromEnum(new_body);
+            return func_idx;
         }
 
         /// constructor인지 확인 (key가 "constructor" identifier)
