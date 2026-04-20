@@ -2081,7 +2081,11 @@ pub const SemanticAnalyzer = struct {
         if (!body_idx.isNone()) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                // block body — 내부를 직접 순회 (block_statement가 스코프를 또 만들지 않도록)
+                // block body — 내부를 직접 순회 (block_statement가 스코프를 또 만들지 않도록).
+                // 일반 함수와 동일하게 var/function 을 사전 등록해 hoisting 을 반영한다.
+                // 누락되면 arrow body 안의 `var x = function() {}` 이 선언 위치보다 앞의 다른
+                // 함수에서 참조될 때 resolve 실패 → `reference_count == 0` 으로 dead-store 제거.
+                try self.predeclareVarDecls(body_node.data.list);
                 try self.visitNodeList(body_node.data.list);
             } else {
                 // expression body
