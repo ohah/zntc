@@ -179,9 +179,6 @@ ZTS assigns a unique code to every diagnostic. Click a code to see details and a
 |------|--------|
 | [`ZTS1100`](/zts/en/reference/errors/zts1100) | Private field has already been declared |
 | [`ZTS1101`](/zts/en/reference/errors/zts1101) | Private field must be declared in an enclosing class |
-| [`ZTS1102`](/zts/en/reference/errors/zts1102) | Cannot assign to private method |
-| [`ZTS1103`](/zts/en/reference/errors/zts1103) | Cannot set private member (getter only) |
-| [`ZTS1104`](/zts/en/reference/errors/zts1104) | Cannot read private member (setter only) |
 
 ## Semantic — export / label
 

@@ -155,12 +155,9 @@ pub const SemanticAnalyzer = struct {
     /// top-level statement 개수 (초기화 완료 후 유효)
     stmt_info_count: u32 = 0,
 
-    const PrivateUsage = enum { read, write };
-
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
-        usage: PrivateUsage = .read,
     };
 
     /// private name의 종류 (중복 검사에서 getter+setter 쌍을 허용하기 위해 구분).
@@ -380,43 +377,19 @@ pub const SemanticAnalyzer = struct {
         var refs = self.class_private_refs.pop() orelse return;
         defer refs.deinit(self.allocator);
 
-        // 참조된 private name이 선언되었는지 + 사용 컨텍스트가 유효한지 확인
+        // 참조된 private name 이 현재 class 혹은 외부 class 에 선언되었는지 확인.
+        // 선언 kind (method/getter/setter) 와 read/write 정합성은 런타임 검사 사항이라
+        // static 에서는 다루지 않는다 (ECMA §7.3.30 PrivateSet / §7.3.29 PrivateGet).
         for (refs.items) |ref| {
-            const info = declared.get(ref.name);
-            if (info == null) {
-                // 외부 class에 선언되어 있는지 확인 (중첩 class)
-                var found = false;
-                for (self.class_private_declared.items) |outer| {
-                    if (outer.contains(ref.name)) {
-                        found = true;
-                        break;
-                    }
+            if (declared.contains(ref.name)) continue;
+            var found = false;
+            for (self.class_private_declared.items) |outer| {
+                if (outer.contains(ref.name)) {
+                    found = true;
+                    break;
                 }
-                if (!found) {
-                    try self.addPrivateNameError(ref.span, ref.name);
-                }
-                continue;
             }
-
-            const kind = info.?.kind;
-            switch (kind) {
-                .method => if (ref.usage == .write) {
-                    try self.addErrorMsgCode(ref.span, try std.fmt.allocPrint(
-                        self.allocator,
-                        "Cannot assign to private method '{s}'. A method is not writable.",
-                        .{ref.name},
-                    ), .private_method_assign);
-                },
-                .getter => if (ref.usage == .write) {
-                    const msg = try std.fmt.allocPrint(self.allocator, "Cannot set private member '{s}'. It only has a getter.", .{ref.name});
-                    try self.addErrorMsgCodeWithLabel(ref.span, msg, .private_getter_only, info.?.span, "getter declared here");
-                },
-                .setter => if (ref.usage == .read) {
-                    const msg = try std.fmt.allocPrint(self.allocator, "Cannot read private member '{s}'. It only has a setter.", .{ref.name});
-                    try self.addErrorMsgCodeWithLabel(ref.span, msg, .private_setter_only, info.?.span, "setter declared here");
-                },
-                .field, .accessor_pair => {},
-            }
+            if (!found) try self.addPrivateNameError(ref.span, ref.name);
         }
     }
 
@@ -496,18 +469,13 @@ pub const SemanticAnalyzer = struct {
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
     fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
-        return self.usePrivateNameWithUsage(name, span, .read);
-    }
-
-    /// private name 참조를 usage 정보와 함께 기록한다.
-    fn usePrivateNameWithUsage(self: *SemanticAnalyzer, name: []const u8, span: Span, usage: PrivateUsage) AllocError!void {
         if (self.class_private_refs.items.len == 0) {
             // class 밖에서 private name 참조 → 즉시 에러
             try self.addPrivateNameError(span, name);
             return;
         }
         var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
-        try current.append(self.allocator, .{ .name = name, .span = span, .usage = usage });
+        try current.append(self.allocator, .{ .name = name, .span = span });
     }
 
     /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
@@ -515,9 +483,9 @@ pub const SemanticAnalyzer = struct {
         return self.class_private_declared.items.len > 0;
     }
 
-    /// private_field_expression 노드에서 private name을 추출하고 usage와 함께 기록한다.
-    /// read (.private_field_expression 핸들러), write (assignment LHS, update_expression)에서 공유.
-    fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32, usage: PrivateUsage) AllocError!void {
+    /// private_field_expression 노드에서 private name을 추출하고 참조를 기록한다.
+    /// read / write (assignment LHS, update_expression) 진입 모두에서 동일하게 사용.
+    fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32) AllocError!void {
         if (self.ast.hasExtra(extra, 1)) {
             const prop_idx = self.ast.readExtraNode(extra, 1);
             if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
@@ -525,7 +493,7 @@ pub const SemanticAnalyzer = struct {
                 if (prop_node.tag == .private_identifier) {
                     const raw = self.ast.getText(prop_node.span);
                     const name = try self.resolvePrivateName(raw);
-                    try self.usePrivateNameWithUsage(name, prop_node.span, usage);
+                    try self.usePrivateName(name, prop_node.span);
                 }
             }
         }
@@ -1132,7 +1100,7 @@ pub const SemanticAnalyzer = struct {
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
-                try self.visitPrivateFieldExpr(node.data.extra, .read);
+                try self.visitPrivateFieldExpr(node.data.extra);
             },
             .computed_member_expression => {
                 // extra: [object, property, flags]
@@ -1244,11 +1212,10 @@ pub const SemanticAnalyzer = struct {
                 else
                     .{ .write = true };
                 if (!self.tryResolveNodeAsRef(lhs_idx, lhs_flags)) {
-                    // LHS가 private_field_expression이면 write usage로 기록
                     if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len and
                         self.ast.getNode(lhs_idx).tag == .private_field_expression)
                     {
-                        try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra, .write);
+                        try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra);
                     } else {
                         try self.visitNode(lhs_idx);
                     }
@@ -1274,11 +1241,10 @@ pub const SemanticAnalyzer = struct {
                 if (e < extras.len) {
                     const operand_idx: NodeIndex = @enumFromInt(extras[e]);
                     if (!self.tryResolveNodeAsRef(operand_idx, .{ .read = true, .write = true })) {
-                        // ++this.#x는 read+write — write로 기록하여 method/getter-only 에러 감지
                         if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
                             self.ast.getNode(operand_idx).tag == .private_field_expression)
                         {
-                            try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra, .write);
+                            try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra);
                         } else {
                             try self.visitNode(operand_idx);
                         }
