@@ -722,12 +722,13 @@ pub const SemanticAnalyzer = struct {
         // module scope에서의 특별 규칙:
         // ECMAScript: "At the top level of a Module, function declarations are treated
         // like lexical declarations rather than like var declarations."
-        // → function + function 재선언 불가
+        // → function + function 재선언 불가 (JS)
         // → var + function, function + var 충돌
+        // TS 의 function overload 는 본 함수 상단에서 is_ts 분기로 이미 허용되어 여기 도달하지 않는다.
         if (self.is_module and !target_scope.isNone()) {
             const scope = self.scopes.items[target_scope.toIndex()];
             if (scope.kind == .module) {
-                // function + function은 위에서 이미 허용 (TS overload)
+                if (existing.isFunctionLike() and new.isFunctionLike()) return false;
                 if (existing.isFunctionLike() and new == .variable_var) return false;
                 if (existing == .variable_var and new.isFunctionLike()) return false;
             }
@@ -837,6 +838,56 @@ pub const SemanticAnalyzer = struct {
 
     /// variable_declaration의 predeclared 바인딩에 대해 symbol_ids를 설정한다.
     /// 단순 식별자와 destructuring 패턴을 재귀 처리.
+    /// predeclare 된 var 를 실제 선언 위치 (block) 관점에서 재검사한다.
+    /// 1st pass 에서는 current_scope 가 항상 function/module scope 여서 origin_scope 가
+    /// 실제 선언 블록을 반영하지 못한다. 2nd pass 에서 처음 만나는 실제 위치로 origin_scope 를
+    /// 업데이트하고, 현재 블록 체인에 이미 선언된 let/const/class/function 이 있으면
+    /// ECMA §sec-block-static-semantics-early-errors 에 따라 재선언 에러를 보고한다.
+    fn recheckPredeclaredVar(self: *SemanticAnalyzer, binding_idx: NodeIndex) AllocError!void {
+        if (binding_idx.isNone()) return;
+        if (@intFromEnum(binding_idx) >= self.ast.nodes.items.len) return;
+        const bnode = self.ast.getNode(binding_idx);
+        switch (bnode.tag) {
+            .binding_identifier, .assignment_target_identifier => {},
+            // destructuring 은 각 leaf 로 재귀
+            .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
+                const split = self.ast.nodeListSplitRest(bnode.data.list);
+                for (split.elements) |raw| {
+                    try self.recheckPredeclaredVar(@enumFromInt(raw));
+                }
+                if (split.rest_operand) |op| {
+                    try self.recheckPredeclaredVar(op);
+                }
+                return;
+            },
+            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                try self.recheckPredeclaredVar(bnode.data.binary.right);
+                return;
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                try self.recheckPredeclaredVar(bnode.data.binary.left);
+                return;
+            },
+            else => return,
+        }
+
+        const name = self.ast.getText(bnode.span);
+        const var_scope = self.findVarScope();
+        if (var_scope.isNone()) return;
+        if (var_scope.toIndex() >= self.scope_maps.items.len) return;
+
+        // 같은 이름의 var 가 여러 block 에서 나와도 최초 위치만 origin 으로 고정 —
+        // 1st pass 가 origin 을 var_scope 로 세팅해 둔 경우에만 덮어쓴다.
+        if (self.scope_maps.items[var_scope.toIndex()].get(name)) |sym_idx| {
+            const sym = &self.symbols.items[sym_idx];
+            if (@intFromEnum(sym.origin_scope) == @intFromEnum(var_scope)) {
+                sym.origin_scope = self.current_scope;
+            }
+        }
+
+        _ = try self.checkVarHoistingConflict(var_scope, name, bnode.span);
+    }
+
     fn setSymbolIdForPredeclaredBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
         if (idx.isNone()) return;
         const ni = @intFromEnum(idx);
@@ -1738,12 +1789,16 @@ pub const SemanticAnalyzer = struct {
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
             const fn_predeclared = if (self.isInPredeclaredScope()) true else blk: {
-                // 함수 body 내 predeclare로 이미 등록된 함수인지 확인
+                // 함수 body 내 predeclare 로 이미 등록된 **같은 이름의 function-like** 심볼인지 확인.
+                // var f 가 먼저 등록되어 있는 상황 ({ var f; function f() {} }) 에서는
+                // predeclare 재사용이 아니라 declareSymbol 로 보내 재선언 충돌 검사를 수행해야 한다.
                 const name_node = self.ast.getNode(name_idx);
                 const fname = self.ast.getText(name_node.span);
                 const var_scope = self.findVarScope();
                 if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
-                    break :blk self.scope_maps.items[var_scope.toIndex()].contains(fname);
+                    if (self.scope_maps.items[var_scope.toIndex()].get(fname)) |sym_idx| {
+                        break :blk self.symbols.items[sym_idx].kind.isFunctionLike();
+                    }
                 }
                 break :blk false;
             };
@@ -2386,15 +2441,18 @@ pub const SemanticAnalyzer = struct {
                 const is_predeclared = if (self.isInPredeclaredScope())
                     true
                 else if (sym_kind == .variable_var) blk: {
-                    // var가 이미 함수 스코프에 등록되어 있으면 predeclare 경로
+                    // var + var 조합은 ECMA 상 재선언 합법 — 기존 심볼 재사용 (predeclare 경로).
+                    // 그러나 function/let/const/class 가 먼저 등록되어 있는 경우에는 충돌 검사 필요.
                     if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
                         const bnode = self.ast.getNode(binding_idx);
                         if (bnode.tag == .binding_identifier or bnode.tag == .assignment_target_identifier) {
                             const bname = self.ast.getText(bnode.span);
                             const var_scope = self.findVarScope();
                             if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
-                                if (self.scope_maps.items[var_scope.toIndex()].contains(bname)) {
-                                    break :blk true;
+                                if (self.scope_maps.items[var_scope.toIndex()].get(bname)) |existing_idx| {
+                                    if (self.symbols.items[existing_idx].kind == .variable_var) {
+                                        break :blk true;
+                                    }
                                 }
                             }
                         }
@@ -2406,6 +2464,13 @@ pub const SemanticAnalyzer = struct {
                 } else {
                     // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정
                     self.setSymbolIdForPredeclaredBinding(binding_idx);
+                    // 1st pass 의 predeclare 단계는 current_scope 가 function/module scope 여서
+                    // origin_scope 도 그 값으로 기록된다. 2nd pass 에서 실제 선언 위치 (block 등)
+                    // 를 origin_scope 로 정정하고, 현재 블록 체인에 있는 let/const/class/function 과의
+                    // 충돌을 재검사한다 (ECMA §sec-block-static-semantics-early-errors).
+                    if (sym_kind == .variable_var) {
+                        try self.recheckPredeclaredVar(binding_idx);
+                    }
                     // predeclared인 경우에도, destructuring 패턴 내부의 default value
                     // 표현식은 순회해야 한다 (registerBinding이 수행하던 visitNode 호출 대체).
                     try self.visitBindingPatternExpressions(binding_idx);

@@ -1455,3 +1455,41 @@ test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" 
     try std.testing.expectEqual(@as(usize, 1), declare_count);
     try std.testing.expectEqual(@as(usize, 1), read_count);
 }
+
+// ============================================================
+// #1660: block / switch / module / nested-block 에서 var 와 lexical 이름 충돌
+// (ECMA §sec-block-static-semantics-early-errors / §sec-switch-statement-static-semantics-early-errors
+//  / §sec-module-semantics-static-semantics-early-errors)
+// ============================================================
+
+test "Redecl: block var vs function" {
+    try analyzeHasError("{ var f; function f() {} }", "already been declared");
+}
+
+test "Redecl: nested block var vs outer function" {
+    try analyzeHasError("{ { var f; } function f() {} }", "already been declared");
+}
+
+test "Redecl: function body nested block let vs var" {
+    try analyzeHasError("function x() { { let f; var f; } }", "already been declared");
+}
+
+test "Redecl: function body nested block var vs let" {
+    try analyzeHasError("function x() { { var f; let f; } }", "already been declared");
+}
+
+test "Redecl: function body nested block function vs var" {
+    try analyzeHasError("function x() { { function f() {}; var f; } }", "already been declared");
+}
+
+test "Redecl: switch var vs function" {
+    try analyzeHasError("switch (0) { case 1: var f; default: function f() {} }", "already been declared");
+}
+
+test "Redecl: module top-level duplicate function" {
+    try analyzeHasError("function x() {} function x() {}", "already been declared");
+}
+
+test "Redecl: strict IIFE block const vs var" {
+    try analyzeHasError("(function() { 'use strict'; { const f = 1; var f; } })", "already been declared");
+}
