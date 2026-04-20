@@ -880,7 +880,7 @@ pub const SemanticAnalyzer = struct {
         // 1st pass 가 origin 을 var_scope 로 세팅해 둔 경우에만 덮어쓴다.
         if (self.scope_maps.items[var_scope.toIndex()].get(name)) |sym_idx| {
             const sym = &self.symbols.items[sym_idx];
-            if (@intFromEnum(sym.origin_scope) == @intFromEnum(var_scope)) {
+            if (sym.origin_scope == var_scope) {
                 sym.origin_scope = self.current_scope;
             }
         }
@@ -2464,10 +2464,8 @@ pub const SemanticAnalyzer = struct {
                 } else {
                     // predeclared: symbol_ids에 선언 노드→심볼 매핑 설정
                     self.setSymbolIdForPredeclaredBinding(binding_idx);
-                    // 1st pass 의 predeclare 단계는 current_scope 가 function/module scope 여서
-                    // origin_scope 도 그 값으로 기록된다. 2nd pass 에서 실제 선언 위치 (block 등)
-                    // 를 origin_scope 로 정정하고, 현재 블록 체인에 있는 let/const/class/function 과의
-                    // 충돌을 재검사한다 (ECMA §sec-block-static-semantics-early-errors).
+                    // 1st pass 는 origin_scope 를 var scope 로 세팅하므로 2nd pass 에서
+                    // 실제 위치로 정정 + block 체인 충돌 재검사 (ECMA §sec-block-static-semantics-early-errors).
                     if (sym_kind == .variable_var) {
                         try self.recheckPredeclaredVar(binding_idx);
                     }
