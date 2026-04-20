@@ -1403,10 +1403,11 @@ test "unused: {a: foo(), b: 1}; → impure sequence" {
 }
 
 test "unused: {[foo()]: 1, b: bar()}; → computed key + value impure 모두 추출" {
-    // sequence 로 축약됐지만 paren unwrap 은 sequence tag 를 whitelist 밖이라 유지.
+    // sequence 로 축약됨. paren unwrap 은 sequence 의 leading 원소 (foo() — call, identifier
+    // callee) 가 safe 라 unwrap 허용 → `foo(),bar();`.
     try expectMinifyDead(
         "({[foo()]: 1, b: bar()});",
-        "function run() {\n\t(foo(),bar());\n}\nrun();",
+        "function run() {\n\tfoo(),bar();\n}\nrun();",
     );
 }
 
@@ -1536,6 +1537,67 @@ test "unused: `${foo() ? 1 : 2}`; — conditional test impure 는 보존됨" {
     // conditional 의 test 는 simplifyUnusedInPlace 재귀로 축약됨
     try expectMinifyDead(
         "`${foo() ? 1 : 2}`;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+// ================================================================
+// IIFE 회귀 가드 (#1664 E2E 회귀)
+// ================================================================
+//
+// `(function(){})();` 같은 IIFE 는 paren 이 statement 시작 시 파싱 모호성 회피 목적.
+// unwrapRedundantStmtParen 이 call_expression 만 보고 unwrap 하면 callee 의
+// function_expression 이 그대로 statement 시작 → anonymous function declaration → syntax error.
+// isSafeStmtLead 가 leading operand chain 까지 재귀 판정해야 함.
+
+test "unused: (function(){})(args); — IIFE paren 유지 (leading function_expression)" {
+    try expectMinifyDead(
+        "(function(name){return name;})(\"x\");",
+        "function run() {\n\t(function(name) {\n\t\treturn name;\n\t})(\"x\");\n}\nrun();",
+    );
+}
+
+test "unused: (class X{})(); — class callee 도 paren 유지" {
+    try expectMinifyDead(
+        "(class X {})();",
+        "function run() {\n\t(class X {\n\t})();\n}\nrun();",
+    );
+}
+
+test "unused: (() => 1)(); — arrow callee 도 paren 유지" {
+    try expectMinifyDead(
+        "(() => 1)();",
+        "function run() {\n\t(() => 1)();\n}\nrun();",
+    );
+}
+
+test "unused: (foo.bar)(); — call callee 자리 paren 은 minify 범위 밖" {
+    // `(foo.bar)()` 의 paren 은 callee 자리 — statement 시작 모호성과 무관. 내 unwrap 은
+    // expression_statement 의 operand 자리 paren 만 대상 → 이 paren 은 그대로.
+    try expectMinifyDead(
+        "(foo.bar)();",
+        "function run() {\n\t(foo.bar)();\n}\nrun();",
+    );
+}
+
+test "unused: ({v} = o); — object destructuring assignment 은 paren 유지 ({ block 모호)" {
+    // LHS 가 object_assignment_target 이면 unwrap 시 `{v} = o;` — `{` 가 block 시작으로 파싱.
+    try expectMinifyDead(
+        "let v, o = {v: 1}; ({v} = o); console.log(v);",
+        "function run() {\n\tlet v,o = { v: 1 };\n\t({ v } = o);\n\tconsole.log(v);\n}\nrun();",
+    );
+}
+
+test "unused: ([a] = arr); — array destructuring assignment 은 paren 유지" {
+    try expectMinifyDead(
+        "let a, arr = [1]; ([a] = arr); console.log(a);",
+        "function run() {\n\tlet a,arr = [1];\n\t([a] = arr);\n\tconsole.log(a);\n}\nrun();",
+    );
+}
+
+test "unused: (foo()); — 일반 call — unwrap OK" {
+    try expectMinifyDead(
+        "(foo());",
         "function run() {\n\tfoo();\n}\nrun();",
     );
 }
