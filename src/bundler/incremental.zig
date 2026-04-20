@@ -13,6 +13,7 @@ const BundleResult = @import("bundler.zig").BundleResult;
 const BundleOptions = @import("bundler.zig").BundleOptions;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const module_store = @import("module_store.zig");
+const CompiledModule = @import("compiled_module.zig").CompiledModule;
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
@@ -71,9 +72,14 @@ pub const IncrementalBundler = struct {
     /// resolve 캐시 (장기 보존). dir_cache 포함.
     resolve_cache: ?ResolveCache = null,
 
+    /// 모듈 단위 dev/HMR 캐시 엔트리.
+    /// `code` = `__zts_register` wrapper (HMR 경로).
+    /// `compiled` / `input_hash` = compiled output cache 재사용용 (populate 는 별도 PR).
     const CachedModule = struct {
         id: []const u8,
         code: []const u8,
+        compiled: ?CompiledModule = null,
+        input_hash: u64 = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) IncrementalBundler {
@@ -106,6 +112,7 @@ pub const IncrementalBundler = struct {
         while (it.next()) |entry| {
             self.allocator.free(entry.value_ptr.id);
             self.allocator.free(entry.value_ptr.code);
+            if (entry.value_ptr.compiled) |c| c.deinit(self.allocator);
         }
         self.module_cache.clearRetainingCapacity();
 

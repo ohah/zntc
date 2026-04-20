@@ -31,6 +31,7 @@ const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
+const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
@@ -361,13 +362,9 @@ pub fn emitWithTreeShaking(
     }
 
     // Phase 2: emitModule 병렬 실행 (2개 이상이면 스레드 풀, 아니면 순차)
-    var results = try allocator.alloc(ModuleEmitResult, sorted.items.len);
+    var results = try allocator.alloc(CompiledModule, sorted.items.len);
     defer {
-        for (results) |r| {
-            if (r.code) |c| allocator.free(c);
-            if (r.mappings) |m| allocator.free(m);
-            if (r.fn_map_json) |j| allocator.free(j);
-        }
+        for (results) |r| r.deinit(allocator);
         allocator.free(results);
     }
     for (results) |*r| r.* = .{};
@@ -698,16 +695,6 @@ pub const contentHash = chunks.contentHash;
 pub const applyNamingPattern = chunks.applyNamingPattern;
 const computeAllUsedNames = chunks.computeAllUsedNames;
 
-/// 스레드 풀에서 실행되는 emitModule 래퍼.
-const ModuleEmitResult = struct {
-    code: ?[]const u8 = null,
-    helpers: RuntimeHelpers = .{},
-    mappings: ?[]const SourceMap.Mapping = null,
-    /// preamble(cjs_import_preamble 등)과 래핑 헤더로 인해 codegen 매핑과 어긋나는 줄 수.
-    preamble_lines: u32 = 0,
-    /// function map JSON (`{"names":[...],"mappings":"..."}`). null이면 비활성 또는 함수 없음.
-    fn_map_json: ?[]const u8 = null,
-};
 
 /// JS 예약어이거나 유효한 식별자가 아니면 프로퍼티 키에 따옴표가 필요.
 pub fn needsPropertyQuote(name: []const u8) bool {
@@ -773,7 +760,7 @@ fn emitModuleThread(
     is_entry: bool,
     used_names: ?[]const []const u8,
     shaker: ?*const TreeShaker,
-    result: *ModuleEmitResult,
+    result: *CompiledModule,
 ) void {
     result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json) catch null;
 }
