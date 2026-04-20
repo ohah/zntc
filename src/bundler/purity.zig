@@ -320,3 +320,69 @@ fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32, unresolved_glob
     }
     return false;
 }
+
+/// expression 이 **Symbol 값** 일 가능성이 있는지 정적 판정. 보수적 — 확실히 아니면 false,
+/// 그 외는 true. 주로 template literal substitution 의 ToString 변환 시
+/// `TypeError: Cannot convert a Symbol value to a string` 회피 판정에 쓴다.
+///
+/// 확실히 non-Symbol 케이스 (false):
+///   - primitive 리터럴 (numeric/string/boolean/null/bigint/regex)
+///   - template_literal (항상 String)
+///   - array/object/function/arrow/class expression (항상 Object 아니면 non-Symbol)
+///   - unary (`!`, `+`, `-`, `~`, `typeof`, `void`, `delete`) — 결과가 Boolean/Number/String/Undefined
+///   - binary (산술/비교/bitwise/논리/nullish) — Number/Boolean/String/BigInt
+///   - update (`++`/`--`) — Number/BigInt
+///
+/// Symbol 가능 (true, 보수적):
+///   - identifier_reference, this, call/new, member, meta_property, 기타
+pub fn canBeSymbol(ast: *const Ast, idx: NodeIndex) bool {
+    return canBeSymbolDepth(ast, idx, 0);
+}
+
+fn canBeSymbolDepth(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
+    if (depth >= max_depth) return true;
+    if (idx.isNone()) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return true;
+    const node = ast.nodes.items[ni];
+    const d = depth + 1;
+    return switch (node.tag) {
+        .numeric_literal,
+        .string_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .template_literal,
+        .array_expression,
+        .object_expression,
+        .function_expression,
+        .arrow_function_expression,
+        .class_expression,
+        .unary_expression,
+        .binary_expression,
+        .update_expression,
+        => false,
+
+        .parenthesized_expression => canBeSymbolDepth(ast, node.data.unary.operand, d),
+
+        .sequence_expression => blk: {
+            const list = node.data.list;
+            if (list.len == 0 or list.start + list.len > ast.extra_data.items.len) break :blk true;
+            const last_raw = ast.extra_data.items[list.start + list.len - 1];
+            break :blk canBeSymbolDepth(ast, @enumFromInt(last_raw), d);
+        },
+
+        .conditional_expression => blk: {
+            const t = node.data.ternary;
+            break :blk canBeSymbolDepth(ast, t.b, d) or canBeSymbolDepth(ast, t.c, d);
+        },
+
+        .logical_expression => canBeSymbolDepth(ast, node.data.binary.left, d) or
+            canBeSymbolDepth(ast, node.data.binary.right, d),
+
+        .assignment_expression => canBeSymbolDepth(ast, node.data.binary.right, d),
+
+        else => true,
+    };
+}
