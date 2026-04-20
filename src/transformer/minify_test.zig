@@ -4,6 +4,7 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Transformer = @import("transformer.zig").Transformer;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const minify_mod = @import("minify.zig");
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 fn expectMinify(input: []const u8, expected: []const u8) !void {
     return expectMinifyOpts(input, expected, .{});
@@ -31,7 +32,7 @@ fn expectMinifyOpts(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty);
+    minify_mod.minify(&transformer.ast, .empty, root);
     minify_mod.mergeDecls(&transformer.ast, null);
 
     var cg = Codegen.initWithOptions(a, &transformer.ast, codegen_opts);
@@ -54,7 +55,7 @@ fn expectMergeIdempotent(input: []const u8, expected: []const u8) !void {
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty);
+    minify_mod.minify(&transformer.ast, .empty, root);
     minify_mod.mergeDecls(&transformer.ast, null);
     minify_mod.mergeDecls(&transformer.ast, null); // 두 번째 호출 — 결과 동일해야 함
 
@@ -84,9 +85,9 @@ fn expectMergeWithSkip(
     _ = try parser.parse();
 
     var transformer = try Transformer.init(a, &parser.ast, .{});
-    _ = try transformer.transform();
+    const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty);
+    minify_mod.minify(&transformer.ast, .empty, root);
 
     var skip = try std.DynamicBitSet.initEmpty(a, transformer.ast.nodes.items.len);
     // substring의 시작 위치와 일치하는 variable_declaration을 **전부** 마킹.
@@ -762,7 +763,7 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.minify(&transformer.ast, ctx, root);
     minify_mod.mergeDecls(&transformer.ast, null);
 
     var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
@@ -885,7 +886,7 @@ test "dead store: await using — 유지" {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.minify(&transformer.ast, ctx, root);
     var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "await using x") != null);
@@ -968,7 +969,7 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.minify(&transformer.ast, ctx, root);
     var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "const x = 1") != null);
@@ -993,7 +994,7 @@ test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
     var transformer = try Transformer.init(a, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
-    _ = try transformer.transform();
+    const root = try transformer.transform();
 
     // 초기: x 는 0 ref, y 는 1 ref (x 의 init 에서 읽힘)
     var y_ref_before: u32 = 0;
@@ -1009,7 +1010,7 @@ test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.minify(&transformer.ast, ctx, root);
 
     // 제거 후: x 가 사라지면서 y 의 reference_count 도 1 → 0
     var y_ref_after: u32 = 0;
@@ -1458,7 +1459,7 @@ test "unused: /*#__PURE__*/ super(x, y) — derived constructor semantic 필수 
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx);
+    minify_mod.minify(&transformer.ast, ctx, root);
     var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "super(x, y)") != null);

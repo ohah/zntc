@@ -39,6 +39,9 @@ pub const MinifyCtx = struct {
     symbol_ids: []const ?u32,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
+    /// 임시 버퍼 (skip/live bitset, BFS 큐) 전용 allocator. null 이면 `ast.allocator` fallback.
+    /// watch 모드에서 parse_arena 누적을 피하려면 caller 의 ephemeral arena 를 전달.
+    scratch_allocator: ?std.mem.Allocator = null,
 
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
@@ -192,20 +195,60 @@ fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
 /// **Fixed-point loop** (#1650): constant fold → simplify → dead store 가 서로의 제거
 /// 기회를 만들기 때문에 (`let y = 1 + 2; let x = y;` → 1 iter: fold + x dead, y.ref 감산
 /// → 2 iter: y dead), `runOnce` 를 변경 없을 때까지 반복한다.
-pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
+///
+/// `root` 가 .none 이 아니면 root 에서 도달 가능한 노드만 dead-store 제거 대상으로 삼는다.
+/// transformer 가 `visitNode` 에서 매번 새 노드를 만들어 원본을 `ast.nodes` 에 orphan 으로
+/// 남기는데, orphan 의 init 을 제거하면서 `decrementRefsInExpr` 가 살아있는 심볼의
+/// `reference_count` 를 중복 감산해 live 선언까지 잘못 제거되는 문제를 막는다 (#번개 실측).
+pub fn minify(ast: *Ast, ctx: MinifyCtx, root: NodeIndex) void {
+    // 임시 버퍼 (skip/live bitset, BFS 큐) 는 caller 의 scratch arena 가 있으면 그쪽을
+    // 쓰고, 없으면 `ast.allocator` 로 fallback. watch 모드에서 parse_arena 는 모듈 수명
+    // 동안 재활용되므로 매 rebuild 의 임시 할당이 누적될 수 있지만, 호출 빈도가 낮고
+    // bitset/큐 자체가 ~KB 단위라 실측상 눈에 띄지 않는다. caller 가 emit_arena 등을
+    // 넘기고 싶으면 별도 wrapper 로 감싸면 된다.
+    const scratch = ctx.scratch_allocator orelse ast.allocator;
+
     // for-loop binding 은 fold passes 가 새로 만들지 않아 iter-invariant — 미리 1회만 수집.
     var skip_for_binding: ?std.DynamicBitSet = null;
     defer if (skip_for_binding) |*b| b.deinit();
     if (ctx.hasSemantic()) {
-        skip_for_binding = std.DynamicBitSet.initEmpty(ast.allocator, ast.nodes.items.len) catch null;
+        skip_for_binding = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
         if (skip_for_binding) |*b| markForLoopBindings(ast, b);
+    }
+
+    // live reachable set + BFS 큐: iter 간 재사용하여 watch 모드 누적 할당 회피.
+    // fold pass 들이 var_declaration 을 새로 만들지 않고 paren/empty_statement 만 추가하므로
+    // dead-store 탐지 대상은 기존 노드 인덱스로 충분하지만, ast.nodes.items.len 이 커지면
+    // 리사이즈가 필요하므로 매 iter 재확인한다.
+    var live_nodes: ?std.DynamicBitSet = null;
+    defer if (live_nodes) |*b| b.deinit();
+    var bfs_queue: std.ArrayList(NodeIndex) = .empty;
+    defer bfs_queue.deinit(scratch);
+    if (ctx.hasSemantic() and !root.isNone()) {
+        live_nodes = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
     }
 
     var i: u32 = 0;
     while (i < max_fixpoint_iterations) : (i += 1) {
         const skip_ptr: ?*const std.DynamicBitSet = if (skip_for_binding) |*b| b else null;
-        if (!runOnce(ast, ctx, skip_ptr)) break;
+        const live_ptr: ?*const std.DynamicBitSet = if (live_nodes) |*b| blk: {
+            // 매 iter live set 을 재계산 — fold pass 가 노드 tag 를 바꾸면 도달 가능성이 변한다.
+            // capacity 가 부족하면 resize. DynamicBitSet.resize 가 존재해 재할당 없이 확장 가능.
+            if (b.capacity() < ast.nodes.items.len) {
+                b.resize(ast.nodes.items.len, false) catch break :blk null;
+            } else {
+                clearBitSet(b);
+            }
+            markReachableNodes(ast, root, b, &bfs_queue, scratch);
+            break :blk b;
+        } else null;
+        if (!runOnce(ast, ctx, skip_ptr, live_ptr)) break;
     }
+}
+
+fn clearBitSet(b: *std.DynamicBitSet) void {
+    const len = b.capacity();
+    if (len > 0) b.setRangeValue(.{ .start = 0, .end = len }, false);
 }
 
 /// minify 1 iteration. 변경이 있었으면 true 반환 (fixed-point 종료 판정용).
@@ -214,7 +257,7 @@ pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
 /// **Index-based loop**: rewrite 중 `ast.nodes.append` (e.g. paren 노드 생성) 로
 /// items slice 가 재할당되어도 안전 — 매 iter `ast.nodes.items[i]` 재슬라이스.
 /// 새로 append 된 노드는 `items.len` 증가로 자동 순회됨.
-fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet) bool {
+fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet) bool {
     var changed = false;
     var i: u32 = 0;
     while (i < ast.nodes.items.len) : (i += 1) {
@@ -234,9 +277,33 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
         }
     }
     if (ctx.hasSemantic()) {
-        removeDeadStores(ast, ctx, skip_for_binding, &changed);
+        removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
     }
     return changed;
+}
+
+/// root 에서 BFS 로 도달 가능한 노드 인덱스를 `live` 에 표시. `queue` 는 호출자가 재사용.
+/// transformer 가 orphan 으로 남긴 노드는 `live` 밖이라 dead-store 제거 대상에서 제외된다.
+fn markReachableNodes(ast: *const Ast, root: NodeIndex, live: *std.DynamicBitSet, queue: *std.ArrayList(NodeIndex), scratch: std.mem.Allocator) void {
+    if (root.isNone()) return;
+    queue.clearRetainingCapacity();
+    queue.append(scratch, root) catch return;
+
+    while (queue.items.len > 0) {
+        const current = queue.pop() orelse break;
+        const ni = @intFromEnum(current);
+        if (ni >= live.capacity()) continue;
+        if (live.isSet(ni)) continue;
+        live.set(ni);
+
+        if (ni >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[ni];
+        var it = ast_walk.children(ast, node);
+        while (it.next()) |child| {
+            if (child.isNone()) continue;
+            queue.append(scratch, child) catch break;
+        }
+    }
 }
 
 // ================================================================
@@ -263,12 +330,20 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
 
 /// `skip_for_binding` 은 `minify` 가 1회 수집해 모든 iter 에 공유 — fold passes 가
 /// for-loop 을 새로 만들지 않아 재계산 불필요. null 이면 (OOM) 보수적으로 전부 skip.
-fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, changed: *bool) void {
+///
+/// `live_nodes` 가 주어지면 root 에서 도달 가능한 var_declaration 만 처리한다.
+/// orphan (transformer 가 visit 중 복제하고 root 에서 연결 안 한 원본) 을 건드리면
+/// `decrementRefsInExpr` 가 공유 symbol table 의 refcount 를 중복 감산해 live 선언이
+/// 잘못 dead 판정된다.
+fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool) void {
     const skip = skip_for_binding orelse return;
 
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
         if (skip.isSet(i)) continue;
+        if (live_nodes) |lives| {
+            if (i >= lives.capacity() or !lives.isSet(i)) continue;
+        }
         tryRemoveDeadDecl(ast, ctx, @intCast(i), node, changed);
     }
 }

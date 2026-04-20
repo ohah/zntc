@@ -349,7 +349,7 @@ pub fn transpileWithCallback(
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
         };
-        minify_mod.minify(&transformer.ast, ctx);
+        minify_mod.minify(&transformer.ast, ctx, root);
         minify_mod.mergeDecls(&transformer.ast, null);
     }
 
