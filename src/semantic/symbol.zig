@@ -7,7 +7,7 @@
 //!
 //! Reference(참조 추적)는 tree-shaking/번들러에서 활용:
 //!   - reference_count == 0 → 미사용 심볼 (tree-shaking 대상)
-//!   - ReferenceKind로 read/write 구분 (dead store 분석용)
+//!   - ReferenceFlags(packed bitset)로 read/write 구분 (dead store 분석용)
 
 const std = @import("std");
 const ScopeId = @import("scope.zig").ScopeId;
@@ -338,22 +338,19 @@ pub const Reference = struct {
     /// `NO_STMT`. span 기반 역추적은 decorator 등 "stmt span 외부 노드" 에서 누락되므로
     /// analyzer 가 `current_top_stmt_idx` 를 직접 저장한다.
     stmt_idx: u32 = NO_STMT,
-    /// 참조 종류 (read/write/read_write)
-    kind: ReferenceKind,
+    /// 참조 종류 (bitset). 현재 analyzer 는 read 또는 write 한 플래그만 set 한다.
+    flags: ReferenceFlags = .{},
 
     pub const NO_STMT: u32 = std.math.maxInt(u32);
 };
 
-/// 참조 종류. 식별자가 읽기/쓰기/둘 다인지 구분.
+/// 참조 종류 플래그 (packed bitset).
 ///
-/// - read:       `f(x)`, `y = x`에서의 x
-/// - write:      `x = 1`에서의 x
-/// - read_write: `x += 1`, `x++`에서의 x
-///
-/// 현재 analyzer 는 read/write 두 종만 생성 — compound assign/update 의 read_write
-/// 세분화는 미구현(`resolveIdentifier` 가 단일 `is_write: bool` 를 받음).
-pub const ReferenceKind = enum(u2) {
-    read,
-    write,
-    read_write,
+/// 현재 analyzer 가 생성하는 조합:
+///   - `{ .read = true }`  — `f(x)`, `y = x` 등 값 읽기
+///   - `{ .write = true }` — `x = 1`, `x += 1`, `x++` (compound/update 도 현재는 write 로만 뭉뚱)
+pub const ReferenceFlags = packed struct(u8) {
+    read: bool = false,
+    write: bool = false,
+    _reserved: u6 = 0,
 };

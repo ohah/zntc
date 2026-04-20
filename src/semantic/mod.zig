@@ -30,7 +30,7 @@ pub const SymbolId = symbol.SymbolId;
 pub const SymbolKind = symbol.SymbolKind;
 pub const SymbolFlags = symbol.DeclFlags;
 pub const Reference = symbol.Reference;
-pub const ReferenceKind = symbol.ReferenceKind;
+pub const ReferenceFlags = symbol.ReferenceFlags;
 
 test {
     _ = analyzer;
