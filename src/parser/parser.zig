@@ -1108,8 +1108,7 @@ pub const Parser = struct {
                 try self.checkAsyncArrowParamsForAwait(node.data.binary.left);
                 try self.checkAsyncArrowParamsForAwait(node.data.binary.right);
             },
-            // 중첩 arrow 의 파라미터에도 await 사용 금지 (body 는 별개 scope 라 검사 제외).
-            // arrow_function_expression 의 data 는 extra 레이아웃: {params, body, flags}.
+            // 중첩 arrow: params (extra[0]) 만 검사 — body 는 별개 scope 라 무관.
             .arrow_function_expression => {
                 const params_idx = self.ast.readExtraNode(node.data.extra, 0);
                 try self.checkAsyncArrowParamsForAwait(params_idx);
