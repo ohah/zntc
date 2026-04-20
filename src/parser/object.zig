@@ -68,6 +68,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
             const method_flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04;
             try self.advance(); // skip get/set
             const key = try self.parsePropertyKey();
+            try checkObjectPropertyKeyNotPrivate(self, key);
             return parseObjectMethodBody(self, start, key, method_flags);
         }
     }
@@ -84,6 +85,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
             // async generator: { async *foo() {} }
             if (try self.eat(.star)) method_flags |= 0x10;
             const key = try self.parsePropertyKey();
+            try checkObjectPropertyKeyNotPrivate(self, key);
             return parseObjectMethodBody(self, start, key, method_flags);
         }
     }
@@ -92,16 +94,17 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .star) {
         try self.advance(); // skip '*'
         const key = try self.parsePropertyKey();
+        try checkObjectPropertyKeyNotPrivate(self, key);
         return parseObjectMethodBody(self, start, key, 0x10); // generator
     }
 
     // 키: identifier, string, number, 또는 computed [expr]
     const key = try self.parsePropertyKey();
 
-    // object literal에서 private identifier는 키로 사용 불가
-    if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        try self.addErrorCode(self.ast.getNode(key).span, "Private identifier is not allowed as object property key", .private_object_key);
-    }
+    // object literal에서 private identifier는 키로 사용 불가 — shorthand method 포함.
+    // ECMA §sec-method-definitions-static-semantics-early-errors:
+    //   PrivateBoundNames of MethodDefinition must be empty in PropertyDefinition context.
+    try checkObjectPropertyKeyNotPrivate(self, key);
 
     // 메서드 shorthand: { foo() {} } 또는 { foo<T>() {} }
     if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
@@ -161,6 +164,23 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
+/// Object literal 의 property key 가 private identifier 인 경우 early SyntaxError 를 보고한다.
+/// ECMA §sec-method-definitions-static-semantics-early-errors / §sec-object-initializer:
+///   PrivateIdentifier 는 class body 안 에서만 허용된다. object literal 에서는
+///   shorthand field · shorthand method · get/set · async · generator · async-generator
+///   어떤 형태로도 허용되지 않는다.
+fn checkObjectPropertyKeyNotPrivate(self: *Parser, key: NodeIndex) ParseError2!void {
+    if (key.isNone()) return;
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag == .private_identifier) {
+        try self.addErrorCode(
+            key_node.span,
+            "Private identifier is not allowed as object property key",
+            .private_object_key,
+        );
+    }
+}
+
 pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u16) ParseError2!NodeIndex {
     // 메서드 컨텍스트 진입 — 파라미터/본문 모두 이 컨텍스트에서 파싱
     const saved_ctx = self.enterFunctionContext(

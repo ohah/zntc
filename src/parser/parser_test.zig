@@ -3109,7 +3109,6 @@ test "Flow: shorthand function type as method return" {
     );
 }
 
-// ============================================================
 // async arrow: 내부 arrow 의 파라미터에서도 'await' 식별자 금지
 // (ECMA §sec-async-arrow-function-definitions)
 // ============================================================
@@ -3125,4 +3124,41 @@ test "Async arrow: nested arrow rest param 'await' is error" {
 test "Async arrow: nested arrow ident 'await' (with preceding statement)" {
     // 이전 statement 가 있어도 파서 상태가 올바르게 유지되어야 한다.
     try expectParseError("var x = 1; async(a = await => {}) => {};", .{ .message_contains = "await" });
+}
+
+// ============================================================
+// Object literal: private identifier 금지 (ECMA §sec-method-definitions-static-semantics-early-errors)
+// 모든 method definition variant 와 shorthand 에서 PrivateIdentifier 는 early SyntaxError.
+// ============================================================
+
+test "Object literal: private shorthand method is error" {
+    try expectParseError("var o = { #m() {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal: private generator method is error" {
+    try expectParseError("var o = { *#m() {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal: private async method is error" {
+    try expectParseError("var o = { async #m() {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal: private async generator method is error" {
+    try expectParseError("var o = { async *#m() {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal: private getter is error" {
+    try expectParseError("var o = { get #m() {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal: private setter is error" {
+    try expectParseError("var o = { set #m(x) {} };", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal inside class field: private generator is error" {
+    try expectParseError("class C { field = { *#m() {} } }", .{ .message_contains = "Private identifier" });
+}
+
+test "Object literal inside class field: private async is error" {
+    try expectParseError("class C { field = { async #m() {} } }", .{ .message_contains = "Private identifier" });
 }
