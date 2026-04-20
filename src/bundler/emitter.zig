@@ -51,6 +51,9 @@ pub const EmitOptions = struct {
     minify_whitespace: bool = false,
     /// AST 레벨 최적화 (constant folding, DCE 등)
     minify_syntax: bool = false,
+    /// Identifier mangle 활성화 (linker 가 주 mangle 을 담당하지만 private field mangle 은
+    /// AST-level pass 가 별도로 수행 — 이 플래그로 게이트).
+    minify_identifiers: bool = false,
     /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
     sourcemap: bool = false,
     /// Sentry Debug ID. --sourcemap-debug-ids 활성화 시 true.
@@ -1014,6 +1017,13 @@ pub fn emitModule(
     // 동일 관습. mergeDecls 직전에 호출해 var 끼리 연쇄 merge 극대화.
     if (linker != null and options.minify_syntax) {
         @import("../transformer/minify.zig").downgradeToVar(&transformer.ast);
+    }
+
+    // Private field name mangle (#1632 Phase 1) — `#commit_callbacks` 같은 긴 이름을
+    // class 별 독립 범위로 `#a`, `#b`, ... 단축. JS 언어 규약상 private name 은 선언된
+    // class body 바깥에서 참조 불가 → per-class 안전. minify_identifiers 플래그와 묶음.
+    if (options.minify_identifiers) {
+        @import("../codegen/private_mangler.zig").manglePrivateFields(&transformer.ast);
     }
 
     // 인접 선언 merge (#1588) — tree-shake 직후에 실행해 skip_nodes 결정과 충돌 방지.

@@ -409,6 +409,7 @@ pub const Bundler = struct {
             .format = self.options.format,
             .minify_whitespace = self.options.minify_whitespace,
             .minify_syntax = self.options.minify_syntax,
+            .minify_identifiers = self.options.minify_identifiers,
             .define = self.options.define,
             .platform = self.options.platform,
             .experimental_decorators = self.options.experimental_decorators,
