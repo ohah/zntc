@@ -935,14 +935,76 @@ fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
 fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const operand = node.data.unary.operand;
     const removable = simplifyUnusedInPlace(ast, ctx, operand, changed, 0);
-    if (!removable) return;
+    if (removable) {
+        decrementRefsInExpr(ast, ctx, operand);
+        replaceNode(ast, node_idx, .{
+            .tag = .empty_statement,
+            .span = node.span,
+            .data = .{ .none = 0 },
+        }, changed);
+        return;
+    }
 
-    decrementRefsInExpr(ast, ctx, operand);
-    replaceNode(ast, node_idx, .{
-        .tag = .empty_statement,
-        .span = node.span,
-        .data = .{ .none = 0 },
-    }, changed);
+    // Post-rewrite paren unwrap: `({a: foo()});` 의 object 가 rewrite 로 `foo()` 가 되면
+    // paren 은 statement 자리에서 redundant — inner 가 statement 시작 시 모호한 tag
+    // (object / function / class expression) 가 아니면 paren 을 벗긴다.
+    unwrapRedundantStmtParen(ast, node_idx, changed);
+}
+
+/// `expression_statement` 의 operand 가 `parenthesized_expression` 이고 그 inner 가
+/// **확실히 안전한 tag** 면 paren 을 벗긴다.
+///
+/// Statement 시작 시 paren 이 필요한 케이스:
+///   - `{...}` object_expression — block 과 모호
+///   - `function () {}` / `class {}` — declaration 과 모호
+///   - `{v} = o` / `[a] = b` — destructuring assignment 의 LHS object/array pattern 이 block/array 과 모호
+///   - `(1, {v} = o)` / `(1, {a})` — sequence 첫 원소가 위 조건 유발
+///
+/// 정확한 재귀 판정은 LHS tag / sequence head 까지 내려가야 하므로 **whitelist 로 단순화** —
+/// rewrite 결과 흔히 나오는 안전한 expression tag 에 대해서만 unwrap 허용, 그 외는 유지.
+/// 바이트 2 손해 (paren 2개) 대신 정확성 확보.
+fn unwrapRedundantStmtParen(ast: *Ast, stmt_idx: u32, changed: *bool) void {
+    const stmt = ast.nodes.items[stmt_idx];
+    const op_ni = @intFromEnum(stmt.data.unary.operand);
+    if (op_ni >= ast.nodes.items.len) return;
+    const op_node = ast.nodes.items[op_ni];
+    if (op_node.tag != .parenthesized_expression) return;
+
+    const inner_idx = op_node.data.unary.operand;
+    const inner_ni = @intFromEnum(inner_idx);
+    if (inner_ni >= ast.nodes.items.len) return;
+
+    // Whitelist: statement 시작 시 파싱 모호성이 없는 tag 만 unwrap.
+    const safe = switch (ast.nodes.items[inner_ni].tag) {
+        .call_expression,
+        .new_expression,
+        .identifier_reference,
+        .numeric_literal,
+        .string_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .this_expression,
+        .static_member_expression,
+        .private_field_expression,
+        .computed_member_expression,
+        .binary_expression,
+        .logical_expression,
+        .unary_expression,
+        .update_expression,
+        .conditional_expression,
+        .template_literal,
+        .tagged_template_expression,
+        .await_expression,
+        .yield_expression,
+        => true,
+        else => false,
+    };
+    if (!safe) return;
+
+    ast.nodes.items[stmt_idx].data = .{ .unary = .{ .operand = inner_idx, .flags = stmt.data.unary.flags } };
+    changed.* = true;
 }
 
 // ================================================================
@@ -976,12 +1038,15 @@ fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bo
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
 
-    // 3개 rewritable tag 만 여기서 mutation. 그 외는 `isStmtRemovableDepth` 판정에 위임 —
-    // literal / identifier / unary / sequence / template / call 등은 판정만 필요.
+    // Rewritable tag 만 여기서 mutation. 그 외는 `isStmtRemovableDepth` 판정에 위임 —
+    // literal / identifier / unary / sequence / template 등은 판정만 필요.
     return switch (node.tag) {
         .binary_expression => rewriteBinaryUnused(ast, ctx, ni, node, changed, depth),
         .logical_expression => rewriteLogicalUnused(ast, ctx, ni, node, changed, depth),
         .conditional_expression => rewriteConditionalUnused(ast, ctx, ni, node, changed, depth),
+        .array_expression => rewriteArrayUnused(ast, ctx, ni, node, changed, depth),
+        .object_expression => rewriteObjectUnused(ast, ctx, ni, node, changed, depth),
+        .call_expression, .new_expression => rewriteCallOrNewUnused(ast, ctx, ni, node, changed, depth),
         .parenthesized_expression => simplifyUnusedInPlace(ast, ctx, node.data.unary.operand, changed, depth + 1),
         else => isStmtRemovableDepth(ast, idx, ctx, depth),
     };
@@ -1122,6 +1187,206 @@ fn ensureLogicalOperand(ast: *Ast, idx: NodeIndex) !NodeIndex {
         .assignment_expression, .sequence_expression => try wrapInParen(ast, idx),
         else => idx,
     };
+}
+
+// ================================================================
+// Unused Multi-Element Rewrite (#1650 follow-up: Array / New / Object)
+// ================================================================
+//
+// `[a, b, c];` / `new Pure(a, b);` / `{k: v, [k()]: v2};` 가 statement 자리 (또는 unused
+// sequence 원소 자리) 에 있을 때, pure 원소는 drop 하고 impure 만 남겨 sequence 로 flatten.
+// oxc `remove_unused_expression.rs` 의 `remove_unused_array_expr` / `remove_unused_new_expr`
+// / `remove_unused_object_expr` 와 동등 동작.
+//
+// 모두 공통 축소 로직: kept 원소 개수에 따라
+//   0 → 전체 removable (호출자가 empty 로 교체)
+//   1 → 단일 노드로 slot 교체
+//   N → sequence_expression 으로 교체 (새 list entry + 새 sequence 노드)
+
+/// `kept` 원소로 `ni` slot 을 축소한다. 반환: 최종 removable 여부 (kept.len == 0).
+/// kept 가 1 이면 해당 노드 복사로 slot 교체, 2+ 이면 sequence_expression 생성.
+/// `span` 은 원본 노드의 span (sequence 의 표시용).
+fn reduceToSequenceExpr(
+    ast: *Ast,
+    ni: u32,
+    span: Span,
+    kept: []const NodeIndex,
+    changed: *bool,
+) !bool {
+    if (kept.len == 0) return true;
+    if (kept.len == 1) {
+        const single_ni = @intFromEnum(kept[0]);
+        if (single_ni >= ast.nodes.items.len) return false;
+        replaceNode(ast, ni, ast.nodes.items[single_ni], changed);
+        return false;
+    }
+    // kept >= 2: sequence_expression 생성
+    const new_start: u32 = @intCast(ast.extra_data.items.len);
+    try ast.extra_data.ensureUnusedCapacity(ast.allocator, kept.len);
+    for (kept) |idx| ast.extra_data.appendAssumeCapacity(@intFromEnum(idx));
+    ast.nodes.items[ni] = .{
+        .tag = .sequence_expression,
+        .span = span,
+        .data = .{ .list = .{ .start = new_start, .len = @intCast(kept.len) } },
+    };
+    changed.* = true;
+    return false;
+}
+
+/// `[a, b, c];` 원소 중 pure 를 drop. spread 원소가 있으면 skip — `[...x]` 의 x 는
+/// iterator protocol 호출로 side-effect 가능 + 배열 축약 자체가 의미 변경 (arity).
+fn rewriteArrayUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    const list = node.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+
+    // spread 가드 — 원소 중 하나라도 spread_element 이면 전체 rewrite 포기 (drop 자체 불가).
+    for (indices) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[raw].tag == .spread_element) return false;
+    }
+
+    if (list.len == 0) return true;
+
+    var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer kept.deinit(ast.allocator);
+
+    for (indices) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        // array hole — NodeIndex.none — drop
+        if (idx.isNone()) continue;
+        const child_rem = simplifyUnusedInPlace(ast, ctx, idx, changed, depth + 1);
+        if (child_rem) continue;
+        kept.append(ast.allocator, idx) catch return false;
+    }
+
+    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+}
+
+/// `new F(a, b, c);` / `F(a, b, c);` 를 `@__PURE__` 등으로 purity 확정된 경우
+/// args 중 pure 를 drop 하고 impure 만 sequence 로 남김. callee 는 pure 가정이므로 drop.
+/// purity 미확정이면 유지.
+///
+/// **super() 가드**: `super(...)` 는 derived constructor 에서 binding 역할 (this 접근 전
+/// 반드시 호출). `@__PURE__` annotation 이 붙어도 drop 금지 — side-effect 와 별개로 semantic
+/// 필수 호출.
+fn rewriteCallOrNewUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    // call_expression / new_expression extras: [callee, args_start, args_len, flags]
+    const e = node.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return false;
+    const callee_raw = ast.extra_data.items[e];
+    if (callee_raw < ast.nodes.items.len and
+        ast.nodes.items[callee_raw].tag == .super_expression) return false;
+
+    // purity 는 전체 expression 단위. pure 가 아니면 args drop 자체도 안전하지 않음.
+    // (callee 가 impure 면 인자 evaluate 순서/횟수 관측 가능).
+    if (!purity.isExprPure(ast, @enumFromInt(ni), ctx.unresolved_globals)) return false;
+
+    const args_start = ast.extra_data.items[e + 1];
+    const args_len = ast.extra_data.items[e + 2];
+    if (args_start + args_len > ast.extra_data.items.len) return true;
+
+    if (args_len == 0) return true;
+
+    var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer kept.deinit(ast.allocator);
+
+    for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (idx.isNone()) continue;
+        const child_rem = simplifyUnusedInPlace(ast, ctx, idx, changed, depth + 1);
+        if (child_rem) continue;
+        kept.append(ast.allocator, idx) catch return false;
+    }
+
+    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+}
+
+/// `{k: v, [k()]: v2};` 의 key / value / spread 를 분해해 pure 는 drop, impure 만 남김.
+/// spread 는 `{...x}` 의 x 가 side-effect (iterator, proxy trap) 이므로 sequence 원소로 보존.
+/// method / getter / setter 는 value 가 function_expression 이라 pure — 전체 drop 가능.
+/// computed key (`[expr]`) 의 expr 은 pure 면 drop, impure 면 sequence 에 추가.
+fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    const list = node.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+
+    if (list.len == 0) return true;
+
+    const props = ast.extra_data.items[list.start .. list.start + list.len];
+
+    // Spread 혼합 처리 (oxc 방식): spread 원소는 expression 자리에 직접 놓을 수 없고
+    // `{...x}` 형태 유지가 필요하므로 변환 복잡도 대비 ROI 가 낮다.
+    //   - 전원 spread: 각 spread 의 argument 가 모두 pure 면 전체 drop, 아니면 유지.
+    //   - 일부만 spread: 변환 포기 (유지).
+    //   - 전원 non-spread: 아래 일반 경로에서 pure value / computed key 분해.
+    var any_spread = false;
+    var all_spread = true;
+    for (props) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        const tag = ast.nodes.items[raw].tag;
+        if (tag == .spread_element) {
+            any_spread = true;
+        } else {
+            all_spread = false;
+        }
+    }
+
+    if (all_spread) {
+        for (props) |raw| {
+            const spread = ast.nodes.items[raw];
+            if (!isStmtRemovableDepth(ast, spread.data.unary.operand, ctx, depth + 1)) return false;
+        }
+        return true;
+    }
+    if (any_spread) return false;
+
+    var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer kept.deinit(ast.allocator);
+
+    for (props) |raw| {
+        const prop = ast.nodes.items[raw];
+
+        switch (prop.tag) {
+            .object_property => {
+                // data.binary: left = key, right = value
+                const key_idx = prop.data.binary.left;
+                const value_idx = prop.data.binary.right;
+
+                // computed key 는 evaluate side-effect 가능 — pure 면 drop, 아니면 남김.
+                const key_ni = @intFromEnum(key_idx);
+                if (key_ni < ast.nodes.items.len and
+                    ast.nodes.items[key_ni].tag == .computed_property_key)
+                {
+                    const inner = ast.nodes.items[key_ni].data.unary.operand;
+                    const key_rem = simplifyUnusedInPlace(ast, ctx, inner, changed, depth + 1);
+                    if (!key_rem) kept.append(ast.allocator, inner) catch return false;
+                }
+
+                // value — shorthand 면 key 와 같지만 판정 동일. 재귀로 축약 + removable 판정.
+                const value_rem = simplifyUnusedInPlace(ast, ctx, value_idx, changed, depth + 1);
+                if (!value_rem) kept.append(ast.allocator, value_idx) catch return false;
+            },
+            // method_definition / getter / setter — function body 는 evaluate 시 pure (객체
+            // 생성 시 호출 안 됨). 단 computed key (`[foo()]() {}`) 의 expression 은 객체
+            // 생성 시 evaluate → side-effect 보존 필요.
+            .method_definition => {
+                const me = prop.data.extra;
+                if (me + @as(u32, ast_mod.MethodExtra.key) >= ast.extra_data.items.len) return false;
+                const key_raw = ast.extra_data.items[me + ast_mod.MethodExtra.key];
+                if (key_raw >= ast.nodes.items.len) continue;
+                if (ast.nodes.items[key_raw].tag != .computed_property_key) continue;
+                const inner = ast.nodes.items[key_raw].data.unary.operand;
+                const key_rem = simplifyUnusedInPlace(ast, ctx, inner, changed, depth + 1);
+                if (!key_rem) kept.append(ast.allocator, inner) catch return false;
+            },
+            else => {
+                // 알 수 없는 property — 보수적으로 전체 유지.
+                return false;
+            },
+        }
+    }
+
+    return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
 }
 
 /// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`
