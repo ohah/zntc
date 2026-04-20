@@ -793,9 +793,9 @@ pub const DevServer = struct {
                         getLog().print("  [hmr] no code change, skipping\n", .{}) catch {};
                     }
 
-                    // free changed_modules
+                    // free changed_modules (id/code/map 각각 dupe 소유권 이전됨 — freeAll 필수).
                     if (result.changed_modules.len > 0) {
-                        self.allocator.free(result.changed_modules);
+                        BundleResult.ModuleDevCode.freeAll(result.changed_modules, self.allocator);
                     }
 
                     // watch 대상 갱신

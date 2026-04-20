@@ -176,16 +176,29 @@ pub const IncrementalBundler = struct {
 
         if (!is_first) {
             if (result.module_dev_codes) |new_codes| {
-                // 최대 크기를 사전 확보 → appendAssumeCapacity는 OOM 불가
                 try actually_changed.ensureTotalCapacity(self.allocator, new_codes.len);
 
                 for (new_codes) |nc| {
                     const cached = self.module_cache.get(nc.id);
-                    // 캐시와 코드가 다르면 변경된 것 — 조건 없이 전송
                     const code_changed = if (cached) |c| !std.mem.eql(u8, c.code, nc.code) else true;
-                    if (code_changed) {
-                        actually_changed.appendAssumeCapacity(nc);
-                    }
+                    if (!code_changed) continue;
+                    // id/code/map 을 dupe — result.deinit 후에도 slice 가 유효해야 함.
+                    // ownership 은 caller 에게 넘어간다 (BundleResult.ModuleDevCode.freeAll 호출 필수).
+                    const id_copy = self.allocator.dupe(u8, nc.id) catch continue;
+                    const code_copy = self.allocator.dupe(u8, nc.code) catch {
+                        self.allocator.free(id_copy);
+                        continue;
+                    };
+                    const map_copy: ?[]const u8 = if (nc.map) |m| self.allocator.dupe(u8, m) catch {
+                        self.allocator.free(id_copy);
+                        self.allocator.free(code_copy);
+                        continue;
+                    } else null;
+                    actually_changed.appendAssumeCapacity(.{
+                        .id = id_copy,
+                        .code = code_copy,
+                        .map = map_copy,
+                    });
                 }
             }
         }
@@ -255,6 +268,9 @@ pub const IncrementalBundler = struct {
 
     pub const RebuildSuccess = struct {
         paths: []const []const u8,
+        /// Ownership 은 caller 에게 이전 — 각 엔트리의 `id`/`code`/`map` 은
+        /// `allocator.dupe` 복사본이므로 `BundleResult.ModuleDevCode.freeAll(_, allocator)`
+        /// 로 정리해야 한다. 단순히 slice 만 free 하면 leak.
         changed_modules: []const BundleResult.ModuleDevCode,
         graph_changed: bool,
     };
