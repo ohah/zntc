@@ -919,6 +919,32 @@ test "dead store: eval 포함 스코프 — 유지 (direct eval 이 동적 looku
     );
 }
 
+test "dead store: for (let i=0;...) 의 i — 유지 (for-loop binding, #1647)" {
+    try expectMinifyDead(
+        "for (let i = 0; i < 3; i++) { break; }",
+        "function run() {\n\tfor (let i = 0; i < 3; i++) {\n\t\tbreak;\n\t}\n}\nrun();",
+    );
+}
+
+test "dead store: for-of 의 binding 은 body 미사용이어도 유지 (#1647)" {
+    // for-of binding 을 제거하면 `for (of arr)` 로 구문 붕괴
+    try expectMinifyDead(
+        "for (const x of [1,2,3]) { break; }",
+        "function run() {\n\tfor (const x of [1, 2, 3]) {\n\t\tbreak;\n\t}\n}\nrun();",
+    );
+}
+
+test "dead store: for-in 의 binding 유지 (#1647)" {
+    try expectMinifyDead(
+        "for (const k in {a:1}) { break; }",
+        "function run() {\n\tfor (const k in { a: 1 }) {\n\t\tbreak;\n\t}\n}\nrun();",
+    );
+}
+
+// for-await-of 케이스는 async function 래퍼 안에서만 유효하고 codegen 경로도 다름.
+// 통합 테스트 (`tests/integration/tests/downlevel-edge.test.ts` - "for-await-of break +
+// async iterator return()") 가 회귀를 검증한다.
+
 test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
     // 함수 래핑 없이 직접 top-level 로 — scope_id == 0 가드 검증
     const allocator = std.testing.allocator;

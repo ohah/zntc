@@ -199,9 +199,51 @@ pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
 // 감산해 semantic scalar 와의 정합성을 유지한다 (미래 fixed-point loop 도입 시 필수).
 
 fn removeDeadStores(ast: *Ast, ctx: MinifyCtx) void {
+    // Pre-pass: for-loop 의 binding 위치에 있는 variable_declaration 을 모두 수집.
+    // for (let x = 0; ...), for (const x of it), for await (const x of it) 등에서 `x` 가
+    // body 안에서 참조되지 않아도 binding 자체를 지우면 구문 붕괴 (#1647).
+    // ast.allocator 는 bundle 경로에선 arena (CLAUDE.md Memory ownership) — defer 와 함께
+    // 써도 arena.deinit 시 이중 해제 없음 (DynamicBitSet 은 개별 free 가 no-op 이 되도록
+    // arena 안 bytes 만 사용). 단일 transpile 경로에선 일반 allocator.
+    var skip_for_binding = std.DynamicBitSet.initEmpty(ast.allocator, ast.nodes.items.len) catch return;
+    defer skip_for_binding.deinit();
+    markForLoopBindings(ast, &skip_for_binding);
+
     for (ast.nodes.items, 0..) |node, i| {
         if (node.tag != .variable_declaration) continue;
+        if (skip_for_binding.isSet(i)) continue;
         tryRemoveDeadDecl(ast, ctx, @intCast(i), node);
+    }
+}
+
+/// for-loop (for / for-in / for-of / for-await-of) 의 init/left 자리에 있는
+/// variable_declaration 노드 인덱스를 bitset 에 set. 해당 binding 은 body 에서
+/// 사용되지 않더라도 구문상 필수이므로 dead store 제거 대상이 아니다.
+fn markForLoopBindings(ast: *const Ast, skip: *std.DynamicBitSet) void {
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .for_statement => {
+                // extra = [init, test, update, body] — init 이 자식 0
+                const ei = node.data.extra;
+                if (ei >= ast.extra_data.items.len) continue;
+                const raw = ast.extra_data.items[ei];
+                if (raw < ast.nodes.items.len and
+                    ast.nodes.items[raw].tag == .variable_declaration)
+                {
+                    skip.set(raw);
+                }
+            },
+            .for_in_statement, .for_of_statement, .for_await_of_statement => {
+                // ternary: a = LHS (variable_declaration 또는 assignment target)
+                const raw = @intFromEnum(node.data.ternary.a);
+                if (raw < ast.nodes.items.len and
+                    ast.nodes.items[raw].tag == .variable_declaration)
+                {
+                    skip.set(raw);
+                }
+            },
+            else => {},
+        }
     }
 }
 
