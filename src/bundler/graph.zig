@@ -497,8 +497,18 @@ pub const ModuleGraph = struct {
         };
     }
 
-    /// 파일의 mtime을 나노초로 반환.
+    /// 파일의 mtime 을 나노초로 반환. virtual module / embedded null byte / overlong
+    /// path 는 error 로 폴백해 호출부가 `catch 0` 으로 처리하도록 한다.
+    ///
+    /// `std.fs.Dir.statFile` 은 내부에서 `toPosixPath` 를 거치는데, 그 함수가
+    /// `runtime_safety` (Debug / ReleaseSafe) 빌드에서 path 내 null byte 존재 시
+    /// `assert(indexOfScalar == null)` 로 panic (reached unreachable code) 한다.
+    /// plugin 이 합성한 virtual path, AssetRegistry 등 에서 실제로 이런 path 가 들어와
+    /// HMR rebuild 중 번들러가 통째로 죽던 버그를 막는다.
     pub fn getMtime(path: []const u8) !i128 {
+        if (path.len == 0) return error.InvalidPath;
+        if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
+        if (path.len >= std.fs.max_path_bytes) return error.NameTooLong;
         const stat = try std.fs.cwd().statFile(path);
         return stat.mtime;
     }
