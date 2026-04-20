@@ -32,6 +32,8 @@ const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
+const cache_mod = @import("compiled_cache.zig");
+pub const CompiledOutputCache = cache_mod.CompiledOutputCache;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
@@ -151,6 +153,11 @@ pub const EmitOptions = struct {
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
     preserve_modules_root: ?[]const u8 = null,
+
+    /// Compiled output cache (HMR/watch 전용, in-memory).
+    /// 주입되면 변경 안 된 모듈의 emit 을 스킵하고 cache 의 결과를 재사용.
+    /// null 이거나 모듈의 `mtime == 0` 이면 cache 비활성 — 항상 emit.
+    compiled_cache: ?*CompiledOutputCache = null,
 
     pub const PolyfillEntry = struct {
         name: []const u8,
@@ -369,6 +376,32 @@ pub fn emitWithTreeShaking(
     }
     for (results) |*r| r.* = .{};
 
+    // Phase 1.5: compiled output cache lookup. input_hashes 는 Phase 2.5 put 에
+    // 재사용 — miss 당 hash 를 두 번 계산하지 않기 위함.
+    var hit_mask = try allocator.alloc(bool, sorted.items.len);
+    defer allocator.free(hit_mask);
+    @memset(hit_mask, false);
+    var input_hashes = try allocator.alloc(u64, sorted.items.len);
+    defer allocator.free(input_hashes);
+    @memset(input_hashes, 0);
+
+    const options_hash: u64 = if (options.compiled_cache != null)
+        cache_mod.computeOptionsHash(options)
+    else
+        0;
+
+    if (options.compiled_cache) |cache| {
+        for (sorted.items, 0..) |m, i| {
+            if (m.mtime == 0) continue; // mtime unknown → cache 비활성
+            const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
+            const input_hash = cache_mod.computeInputHash(m, options_hash, used_names);
+            input_hashes[i] = input_hash;
+            const hit = cache.tryHit(m.path, input_hash) orelse continue;
+            results[i] = hit.dupe(allocator) catch continue;
+            hit_mask[i] = true;
+        }
+    }
+
     var use_pool = sorted.items.len >= 2;
     var pool: std.Thread.Pool = undefined;
     if (use_pool) {
@@ -379,6 +412,7 @@ pub fn emitWithTreeShaking(
     if (use_pool) {
         var wg: std.Thread.WaitGroup = .{};
         for (sorted.items, 0..) |m, i| {
+            if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             pool.spawnWg(&wg, emitModuleThread, .{ allocator, m, options, linker, is_entry, used_names, shaker, &results[i] });
@@ -386,9 +420,21 @@ pub fn emitWithTreeShaking(
         pool.waitAndWork(&wg);
     } else {
         for (sorted.items, 0..) |m, i| {
+            if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json) catch null;
+        }
+    }
+
+    // Phase 2.5: miss 결과를 cache 에 put. StringHashMap.put 은 thread-unsafe 이므로
+    // 병렬 emit 완료 후 순차 처리. put 실패는 다음 빌드에서 재시도되므로 silent continue.
+    if (options.compiled_cache) |cache| {
+        for (sorted.items, 0..) |m, i| {
+            if (hit_mask[i]) continue;
+            if (m.mtime == 0) continue;
+            if (results[i].code == null) continue;
+            cache.put(m.path, input_hashes[i], results[i]) catch continue;
         }
     }
 

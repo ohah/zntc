@@ -27,4 +27,21 @@ pub const CompiledModule = struct {
         if (self.mappings) |m| allocator.free(m);
         if (self.fn_map_json) |j| allocator.free(j);
     }
+
+    /// 모든 slice 자원을 `allocator` 로 복사한 새 CompiledModule 반환.
+    /// cache hit 결과를 호출자 소유로 옮길 때 사용 (ownership 전이를 단순화).
+    pub fn dupe(self: CompiledModule, allocator: std.mem.Allocator) !CompiledModule {
+        const code = if (self.code) |c| try allocator.dupe(u8, c) else null;
+        errdefer if (code) |c| allocator.free(c);
+        const mappings = if (self.mappings) |m| try allocator.dupe(SourceMap.Mapping, m) else null;
+        errdefer if (mappings) |m| allocator.free(m);
+        const fn_map = if (self.fn_map_json) |j| try allocator.dupe(u8, j) else null;
+        return .{
+            .code = code,
+            .helpers = self.helpers,
+            .mappings = mappings,
+            .preamble_lines = self.preamble_lines,
+            .fn_map_json = fn_map,
+        };
+    }
 };

@@ -207,6 +207,9 @@ pub const BundleOptions = struct {
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
+    /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
+    /// IncrementalBundler 가 소유.
+    compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
     /// --outbase: 엔트리 포인트 공통 기준 경로
     outbase: ?[]const u8 = null,
     /// --packages=external: 모든 bare import를 external 처리
@@ -454,6 +457,7 @@ pub const Bundler = struct {
             .strict_execution_order = self.options.strict_execution_order,
             .worklet_transform = self.options.worklet_transform,
             .worklet_plugin_version = self.options.worklet_plugin_version,
+            .compiled_cache = self.options.compiled_cache,
         };
     }
 
