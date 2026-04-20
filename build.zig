@@ -170,17 +170,26 @@ pub fn build(b: *std.Build) void {
     // ─── NAPI 네이티브 모듈 빌드 ───
     // `zig build napi` — .node 파일(공유 라이브러리)을 빌드한다.
     // Node.js/Bun/Deno에서 require()로 로드하여 in-process 트랜스파일을 수행한다.
+    //
+    // 기본 최적화: ReleaseFast (프로덕션 배포). 디버깅 시 `-Dnapi-optimize=Debug`
+    // 또는 `-Dnapi-optimize=ReleaseSafe` 로 덮어써 stack trace + safety 활성.
     {
+        const napi_optimize = b.option(
+            std.builtin.OptimizeMode,
+            "napi-optimize",
+            "NAPI .node 최적화 모드 (기본: ReleaseFast, 디버깅 시 Debug/ReleaseSafe)",
+        ) orelse .ReleaseFast;
+
         const napi_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = napi_optimize,
         });
 
         const napi_mod = b.createModule(.{
             .root_source_file = b.path("packages/core/src/napi_entry.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = napi_optimize,
         });
         napi_mod.addImport("zts_lib", napi_lib_mod);
         napi_mod.addIncludePath(b.path("vendor/node-api-headers"));
