@@ -829,7 +829,13 @@ pub const Codegen = struct {
             .catch_clause => try self.emitCatch(node),
             .labeled_statement => try self.emitLabeled(node),
             .with_statement => try self.emitWith(node),
-            .directive => try self.writeNodeSpan(node),
+            .directive => {
+                // span 은 문자열 리터럴 범위 (따옴표 포함). quote_style 정규화를 적용해
+                // `'use server'` → `"use server"` 같은 변환이 일반 string_literal 과 동일하게
+                // 일어나도록 writeStringLiteral 사용. 항상 `;` 를 붙여 ASI 의존을 피한다.
+                try self.writeStringLiteral(node.span);
+                try self.writeByte(';');
+            },
             .hashbang => {
                 if (!self.options.strip_hashbang) try self.writeNodeSpan(node);
             },

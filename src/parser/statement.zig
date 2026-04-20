@@ -52,20 +52,16 @@ pub fn parse(self: *Parser) !NodeIndex {
     while (self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
 
-        if (in_directive_prologue) {
-            if (self.isUseStrictDirective()) {
-                self.is_strict_mode = true;
-                self.strict_from_directive = true;
-            } else if (self.current() != .string_literal) {
-                // directive prologue는 문자열 expression statement가 연속되는 동안 유효
-                in_directive_prologue = false;
-            }
+        // Pre-parse: "use strict" 는 파싱 결과가 strict mode 파싱에 영향을 주므로
+        // parseStatement 호출 전에 미리 감지해 플래그를 세팅한다. directive 노드로의
+        // 실제 변환은 post-parse (tryConvertToDirective) 에서 수행.
+        if (in_directive_prologue and self.isUseStrictDirective()) {
+            self.is_strict_mode = true;
+            self.strict_from_directive = true;
         }
 
         const stmt = try parseStatement(self);
-        if (!stmt.isNone()) {
-            try stmts.append(self.allocator, stmt);
-        }
+        try self.appendStatementTrackingPrologue(&stmts, stmt, &in_directive_prologue);
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
@@ -339,6 +335,8 @@ fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
 }
 
 pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
+    // span.start = 첫 토큰 위치 불변식 — Parser.tryConvertToDirective 가 괄호 방어에
+    // 이를 이용 (bare string 이면 stmt.span.start == string_literal.span.start).
     const start = self.currentSpan().start;
     self.has_cover_init_name = false;
     const expr = try self.parseExpression();

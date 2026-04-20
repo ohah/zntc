@@ -1427,6 +1427,52 @@ pub const Parser = struct {
         return std.mem.eql(u8, inner, "use strict");
     }
 
+    /// 파싱된 statement 가 bare `StringLiteral ;` 형태이면 `.directive` 노드로 재해석.
+    /// oxc 의 post-parse 판정 방식 (crates/oxc_parser/src/js/statement.rs, `parse_directives_and_statements`):
+    /// ASI/peek 예측 없이 실제 파스 결과를 검사하므로 정확하다.
+    ///
+    /// 괄호 방어: `("use strict");` 은 directive 아님. 현재 파서는 괄호를
+    /// `.parenthesized_expression` 로 보존하므로 operand tag 검사만으로 걸러지지만,
+    /// span.start 비교도 함께 둬 paren unwrapping 이 생길 경우에도 견딘다.
+    ///
+    /// 효율: 새 노드를 할당하지 않고 기존 slot 의 tag/data 를 in-place 로 덮어쓴다
+    /// (minify.zig 의 empty_statement 치환과 동일한 관행). 반환값은 directive 면
+    /// 동일한 stmt_idx, 아니면 `.none`.
+    pub fn tryConvertToDirective(self: *Parser, stmt_idx: NodeIndex) NodeIndex {
+        if (stmt_idx.isNone()) return NodeIndex.none;
+        const stmt = self.ast.getNode(stmt_idx);
+        if (stmt.tag != .expression_statement) return NodeIndex.none;
+        const operand = stmt.data.unary.operand;
+        if (operand.isNone()) return NodeIndex.none;
+        const expr = self.ast.getNode(operand);
+        if (expr.tag != .string_literal) return NodeIndex.none;
+        if (stmt.span.start != expr.span.start) return NodeIndex.none;
+        // span 은 문자열 리터럴 범위 (따옴표 포함). worklet 의 getText(span)[1..len-1]
+        // 슬라이싱과 호환. codegen 은 `.directive` 출력 시 span + `;` 를 쓴다.
+        self.ast.nodes.items[@intFromEnum(stmt_idx)] = .{
+            .tag = .directive,
+            .span = expr.span,
+            .data = .{ .none = 0 },
+        };
+        return stmt_idx;
+    }
+
+    /// parseStatement 결과를 stmts 에 추가하면서 directive prologue 상태를 갱신한다.
+    /// prologue 중이고 stmt 이 bare string 이면 `.directive` 로 in-place 전환, 아니면
+    /// prologue 종료. program 파서와 function body 파서에서 공유.
+    pub fn appendStatementTrackingPrologue(
+        self: *Parser,
+        stmts: *std.ArrayList(NodeIndex),
+        stmt: NodeIndex,
+        in_prologue: *bool,
+    ) !void {
+        if (stmt.isNone()) return;
+        if (in_prologue.* and self.tryConvertToDirective(stmt).isNone()) {
+            in_prologue.* = false;
+        }
+        try stmts.append(self.allocator, stmt);
+    }
+
     /// 루프 본문을 파싱한다. in_loop를 save/restore.
     pub fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
         const saved_in_loop = self.in_loop;
@@ -1677,6 +1723,9 @@ pub const Parser = struct {
 
         while (self.current() != .r_curly and self.current() != .eof) {
             const loop_guard_pos = self.scanner.token.span.start;
+
+            // Pre-parse: "use strict" 및 octal escape 감지는 파싱 결과에 영향을 주므로
+            // parseStatement 호출 전에 수행. directive 노드로의 변환은 post-parse.
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
                     // non-simple parameters + "use strict" → 에러
@@ -1696,13 +1745,12 @@ pub const Parser = struct {
                         has_prologue_octal = true;
                         prologue_octal_span = self.currentSpan();
                     }
-                } else {
-                    in_directive_prologue = false;
                 }
             }
 
             const stmt = try self.parseStatement();
-            if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
+            try self.appendStatementTrackingPrologue(&stmts, stmt, &in_directive_prologue);
+
             if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
 
