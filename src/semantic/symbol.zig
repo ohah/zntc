@@ -258,6 +258,15 @@ pub const Symbol = struct {
     /// 크로스-모듈 인라인 대상. oxc/rolldown과 동일한 접근.
     write_count: u32 = 0,
 
+    /// 단일 read 로 확신 가능한 유일 read 의 node_index. 두 번째 read 가 발생하면 `.none` 으로
+    /// invalidate. single-use inline (#1666) 이 AST re-walk 없이 read 위치를 찾는 용도.
+    /// write 발생은 `write_count` 로 별도 판단 — 이 필드는 read-only 추적.
+    single_read_node: NodeIndex = .none,
+
+    /// `variable_declarator` 의 init expression NodeIndex. 단순 binding_identifier 선언에만 설정.
+    /// destructuring / 초기값 없는 선언은 `.none`. single-use inline 과 const-value inline 공통.
+    decl_init: NodeIndex = .none,
+
     /// 컴파일 타임 상수 값 (번들러 크로스-모듈 인라인용).
     /// const/let 선언의 초기화 값이 리터럴이면 설정 (단 let은 `write_count == 0`일 때만 인라인).
     const_value: ConstValue = .{},
@@ -334,10 +343,15 @@ pub const Reference = struct {
     scope_id: ScopeId,
     /// 참조 대상 심볼의 인덱스
     symbol_id: SymbolId,
-    /// 이 참조가 속한 top-level statement 인덱스. top-level 이 아니거나 enable_stmt_info=false 이면
-    /// `NO_STMT`. span 기반 역추적은 decorator 등 "stmt span 외부 노드" 에서 누락되므로
-    /// analyzer 가 `current_top_stmt_idx` 를 직접 저장한다.
+    /// 이 참조가 속한 **enclosing top-level** statement 인덱스. top-level 외에서 일어난 참조라도
+    /// 이 값은 해당 참조를 포함하는 top-level stmt (함수 선언 등)의 idx 로 세팅되어 tree-shaker
+    /// 가 "top-level stmt 가 어떤 심볼을 참조하는가" 를 추적할 수 있게 한다. top-level 이 아니거나
+    /// enable_stmt_info=false 이면 `NO_STMT`.
     stmt_idx: u32 = NO_STMT,
+    /// #1669: 이 참조가 속한 **enclosing scope** statement 인덱스 (per-scope 0-base).
+    /// program / function body / block 각각 자체 카운터. single-use inline 이 선언-read adjacency
+    /// 를 같은 scope 내에서 판단할 때 사용. top-level 에서는 `stmt_idx` 와 동일.
+    scope_stmt_idx: u32 = NO_STMT,
     /// 참조 종류 (bitset). read / write / read+write / declare 조합.
     flags: ReferenceFlags = .{},
 
@@ -350,8 +364,8 @@ pub const Reference = struct {
 ///   - `{ .read = true }`               — `f(x)`, `y = x` 등 값 읽기
 ///   - `{ .write = true }`              — `x = 1` (pure assign)
 ///   - `{ .read = true, .write = true }` — `x += 1`, `x++`, `--x` 등 compound/update
-///   - `{ .declare = true }`            — top-level scope 선언 위치. node_index 는 NodeIndex.none
-///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 stmt_idx 로만 bucket 분배)
+///   - `{ .declare = true }`            — 선언 위치 (#1669 부터 모든 scope). node_index 는 NodeIndex.none
+///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 scope_id==0 + stmt_idx 로 bucket 분배)
 pub const ReferenceFlags = packed struct(u8) {
     read: bool = false,
     write: bool = false,

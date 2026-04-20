@@ -150,9 +150,16 @@ pub const SemanticAnalyzer = struct {
 
     /// StmtInfo 사전 수집 활성화 여부. 번들러 모드에서만 true.
     enable_stmt_info: bool = false,
-    /// 현재 순회 중인 top-level statement 인덱스. visitProgram 2nd pass에서 설정.
+    /// 현재 순회 중인 top-level statement 인덱스. visitProgram 2nd pass 에서만 설정되고
+    /// 함수/블록 진입 후에도 유지 — 내부 참조를 enclosing top-level stmt 로 귀속시키는 용도.
+    /// tree-shaker `stmt_info` 의 referenced_symbols 분배에 사용된다.
     current_top_stmt_idx: ?u32 = null,
-    /// top-level statement 개수 (초기화 완료 후 유효)
+    /// #1669: 현재 순회 중인 statement 인덱스 — per-scope 기준 (0부터).
+    /// program / function body / block 각각 자체 카운터를 가지며 `visitStmtList` 가
+    /// save → per-stmt set → restore 로 관리. `NO_STMT` = stmt list 순회 밖.
+    /// single-use inline 등 scope 내부 adjacency 판단 용.
+    current_stmt_idx: u32 = symbol_mod.Reference.NO_STMT,
+    /// top-level statement 개수 (초기화 완료 후 유효). bundler stmt_info bucket 크기.
     stmt_info_count: u32 = 0,
 
     const PrivateRef = struct {
@@ -588,22 +595,26 @@ pub const SemanticAnalyzer = struct {
             try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
 
-        // StmtInfo 사전 수집: top-level scope(scope_id==0)의 선언을 references 에 declare 플래그로 기록.
-        if (@intFromEnum(target_scope) == 0) {
-            self.recordTopLevelDeclareRef(@intCast(sym_index));
-        }
+        // StmtInfo 사전 수집: 선언 위치를 references 에 declare 플래그로 기록. #1669 부터 모든 scope.
+        // top-level (scope_id==0) 은 bundler stmt_info bucket 분배, 함수/블록 내부는
+        // per-scope stmt index 로 optimizer pass (single-use inline 등) 가 소비.
+        self.recordDeclareRef(@intCast(sym_index), target_scope);
     }
 
-    /// top-level 선언을 `references` 배열에 `flags.declare` 로 기록. enable_stmt_info + current
-    /// top-level stmt 가 있을 때만. buildFromSemantic 에서 stmt_idx 로 bucket 분배.
-    fn recordTopLevelDeclareRef(self: *SemanticAnalyzer, sym_index: u32) void {
+    /// 선언을 `references` 배열에 `flags.declare` 로 기록. #1669.
+    /// 현재 `enable_stmt_info` + 유효 stmt_idx 가 있을 때만 기록.
+    /// `scope_id` 는 선언 대상 scope — top-level 판별은 buildFromSemantic 에서 수행.
+    /// `stmt_idx` (enclosing top-level) 는 bundler bucket 분배용, `scope_stmt_idx` 는 per-scope
+    /// adjacency 검사용 — 둘 다 저장한다.
+    fn recordDeclareRef(self: *SemanticAnalyzer, sym_index: u32, scope_id: ScopeId) void {
         if (!self.enable_stmt_info) return;
-        const stmt_idx = self.current_top_stmt_idx orelse return;
+        if (self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
         self.references.append(self.allocator, .{
             .node_index = .none,
-            .scope_id = @enumFromInt(0),
+            .scope_id = scope_id,
             .symbol_id = @enumFromInt(sym_index),
-            .stmt_idx = stmt_idx,
+            .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
+            .scope_stmt_idx = self.current_stmt_idx,
             .flags = .{ .declare = true },
         }) catch {};
     }
@@ -787,8 +798,23 @@ pub const SemanticAnalyzer = struct {
                     .scope_id = self.current_scope,
                     .symbol_id = @enumFromInt(sym_idx),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
+                    .scope_stmt_idx = self.current_stmt_idx,
                     .flags = flags,
                 }) catch {};
+
+                // #1666 infra: read-only 참조면 single_read_node 관리.
+                // 첫 read → node_idx 저장, 두 번째 read → `.none` 으로 invalidate.
+                // write 가 섞인 compound / assign 은 여기서 건너뛰며, write_count 로 별도 검사.
+                if (flags.read and !flags.write) {
+                    const sym_ptr = &self.symbols.items[sym_idx];
+                    if (sym_ptr.reference_count == 1) {
+                        sym_ptr.single_read_node = node_idx;
+                    } else {
+                        sym_ptr.single_read_node = .none;
+                    }
+                } else if (flags.write) {
+                    self.symbols.items[sym_idx].single_read_node = .none;
+                }
 
                 return;
             }
@@ -821,6 +847,25 @@ pub const SemanticAnalyzer = struct {
         self.symbols.items[sym_idx].decl_flags.no_side_effects = true;
     }
 
+    /// AST node_idx → symbol index 역조회. `declareSymbol` 이 채워둔 `symbol_ids` 를 사용하므로
+    /// var 호이스팅으로 current_scope 에 없는 심볼도 찾을 수 있다 (binding span 이 아닌 노드 기반).
+    /// 경계 / `.none` / empty 매핑을 모두 null 로 통일.
+    fn symbolIndexOfNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) ?usize {
+        if (node_idx.isNone()) return null;
+        const ni: u32 = @intFromEnum(node_idx);
+        if (ni >= self.symbol_ids.items.len) return null;
+        const sym_idx = self.symbol_ids.items[ni] orelse return null;
+        if (sym_idx >= self.symbols.items.len) return null;
+        return sym_idx;
+    }
+
+    /// #1669: binding_identifier node 의 symbol 에 `decl_init` 을 설정.
+    fn setSymbolDeclInit(self: *SemanticAnalyzer, binding_idx: NodeIndex, init_idx: NodeIndex) void {
+        if (init_idx.isNone()) return;
+        const sym_idx = self.symbolIndexOfNode(binding_idx) orelse return;
+        self.symbols.items[sym_idx].decl_init = init_idx;
+    }
+
     /// predeclared 심볼에 대해 symbol_ids[node_idx]를 설정한다.
     /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
     /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
@@ -830,9 +875,9 @@ pub const SemanticAnalyzer = struct {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
         // StmtInfo 사전 수집: predeclared 심볼도 declared 로 기록.
-        // declareSymbolWithNode 가 skip 되므로 여기서 보충한다.
-        if (sym_idx < self.symbols.items.len and @intFromEnum(self.symbols.items[sym_idx].scope_id) == 0) {
-            self.recordTopLevelDeclareRef(@intCast(sym_idx));
+        // declareSymbolWithNode 가 skip 되므로 여기서 보충한다. #1669: 모든 scope.
+        if (sym_idx < self.symbols.items.len) {
+            self.recordDeclareRef(@intCast(sym_idx), self.symbols.items[sym_idx].scope_id);
         }
     }
 
@@ -1489,6 +1534,22 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    /// stmt list 를 per-stmt `current_stmt_idx` 로 순회한다. #1669 per-scope stmt counter.
+    /// program / function body / block 각각 진입 시 save, 종료 시 restore 하여 중첩 scope 간
+    /// stmt_idx 오염을 방지. `enable_stmt_info == false` 이면 그냥 `visitNodeList` 위임.
+    fn visitStmtList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (!self.enable_stmt_info) return self.visitNodeList(list);
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        const saved = self.current_stmt_idx;
+        for (indices, 0..) |raw_idx, i| {
+            self.current_stmt_idx = @intCast(i);
+            try self.visitNode(@enumFromInt(raw_idx));
+        }
+        self.current_stmt_idx = saved;
+    }
+
     // ================================================================
     // Visitor 구현 — 스코프 생성 노드
     // ================================================================
@@ -1515,21 +1576,24 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
-        // 2nd pass: top-level statement를 순회하면서 current_top_stmt_idx 추적.
-        // enable_stmt_info일 때만 인덱스를 설정하여 declareSymbol에서 수집.
+        // 2nd pass: top-level statement를 순회하면서 stmt_idx 추적.
+        // `current_top_stmt_idx` 는 enclosing top-level (tree-shaker 의 참조-stmt 귀속용),
+        // `current_stmt_idx` 는 per-scope (#1669 single-use inline adjacency 용) — 둘 다 세팅.
         {
             const list = node.data.list;
             if (list.len > 0 and list.start + list.len <= self.ast.extra_data.items.len) {
                 const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                const saved_scope_idx = self.current_stmt_idx;
                 for (indices, 0..) |raw_idx, i| {
                     if (self.enable_stmt_info) {
                         self.current_top_stmt_idx = @intCast(i);
+                        self.current_stmt_idx = @intCast(i);
                     }
-                    const idx: NodeIndex = @enumFromInt(raw_idx);
-                    try self.visitNode(idx);
+                    try self.visitNode(@enumFromInt(raw_idx));
                 }
                 if (self.enable_stmt_info) {
                     self.current_top_stmt_idx = null;
+                    self.current_stmt_idx = saved_scope_idx;
                 }
             }
         }
@@ -1769,7 +1833,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const saved = try self.enterScope(.block, self.is_strict_mode);
-        try self.visitNodeList(node.data.list);
+        try self.visitStmtList(node.data.list);
         self.exitScope(saved);
     }
 
@@ -2476,6 +2540,17 @@ pub const SemanticAnalyzer = struct {
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
 
+                // #1669: 단순 binding_identifier 에 init 이 있으면 symbol.decl_init 기록.
+                // single-use inline / const-value inline 의 빠른 lookup 용. destructuring 은 대상 외.
+                if (!binding_idx.isNone() and !init_idx.isNone() and
+                    @intFromEnum(binding_idx) < self.ast.nodes.items.len)
+                {
+                    const bnode = self.ast.getNode(binding_idx);
+                    if (bnode.tag == .binding_identifier) {
+                        self.setSymbolDeclInit(binding_idx, init_idx);
+                    }
+                }
+
                 if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
                     const init_node = self.ast.getNode(init_idx);
                     // @__NO_SIDE_EFFECTS__ 전파
@@ -2668,10 +2743,8 @@ pub const SemanticAnalyzer = struct {
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
-                // StmtInfo 사전 수집: facade 심볼을 declared 로 기록
-                if (@intFromEnum(module_scope) == 0) {
-                    self.recordTopLevelDeclareRef(@intCast(sym_index));
-                }
+                // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
+                self.recordDeclareRef(@intCast(sym_index), module_scope);
                 // export default <literal> → facade 심볼에 const_value 설정
                 if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
                     const cv = self.extractConstValue(self.ast.getNode(inner_idx));
@@ -2954,7 +3027,7 @@ pub const SemanticAnalyzer = struct {
             // ECMAScript var는 함수 진입 시 hoisting되므로 사용 위치가 선언보다 앞이어도 유효.
             // predeclared_scope는 설정하지 않음 — isVarPredeclared가 var 전용으로 처리.
             try self.predeclareVarDecls(body_node.data.list);
-            try self.visitNodeList(body_node.data.list);
+            try self.visitStmtList(body_node.data.list);
         } else {
             try self.visitNode(body_idx);
         }

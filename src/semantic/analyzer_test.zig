@@ -1457,6 +1457,145 @@ test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" 
 }
 
 // ============================================================
+// #1669: scope-wide declare ref + per-scope stmt index + Symbol 확장
+// ============================================================
+
+test "#1669: 함수 body 내부 선언도 declare ref 로 기록" {
+    // 이전에는 top-level (scope_id==0) 선언만 `flags.declare` 로 기록됐으나, #1669 이후
+    // 모든 scope 의 선언을 기록한다. bundler stmt_info 는 scope_id==0 만 bucket 에 분배.
+    const source = "function f() { const y = 2; return y; }";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    var y_declare_count: usize = 0;
+    var y_declare_scope: u32 = 0;
+    for (ana.references.items) |r| {
+        if (!r.flags.declare) continue;
+        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "y")) {
+            y_declare_count += 1;
+            y_declare_scope = @intFromEnum(r.scope_id);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), y_declare_count);
+    try std.testing.expect(y_declare_scope != 0); // 함수 scope (top-level 아님)
+}
+
+test "#1669: per-scope stmt_idx 는 함수 body 내부에서 0 부터 재시작" {
+    // `current_stmt_idx` 가 scope 별로 0..N 을 할당하는지 검증. 함수 body 내부의 선언은
+    // scope_stmt_idx 가 함수 body 기준 0-based. top-level stmt_idx (`stmt_idx`) 는 별도 유지.
+    const source = "const a = 1;\nfunction f() {\n  const b = 2;\n  const c = 3;\n}\n";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    var b_scope_idx: u32 = std.math.maxInt(u32);
+    var c_scope_idx: u32 = std.math.maxInt(u32);
+    for (ana.references.items) |r| {
+        if (!r.flags.declare) continue;
+        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const name = sym.nameText(parser.ast.source);
+        if (std.mem.eql(u8, name, "b")) b_scope_idx = r.scope_stmt_idx;
+        if (std.mem.eql(u8, name, "c")) c_scope_idx = r.scope_stmt_idx;
+    }
+    try std.testing.expectEqual(@as(u32, 0), b_scope_idx);
+    try std.testing.expectEqual(@as(u32, 1), c_scope_idx);
+}
+
+test "#1669: Symbol.decl_init 이 variable_declarator 의 init 을 가리킴" {
+    const source = "const x = 42; const y = x + 1;";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    var x_init: @TypeOf(@as(@import("../parser/ast.zig").NodeIndex, .none)) = .none;
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) {
+            x_init = sym.decl_init;
+        }
+    }
+    try std.testing.expect(!x_init.isNone());
+    // decl_init 노드가 실제로 literal `42` 인지 확인
+    const init_node = parser.ast.getNode(x_init);
+    try std.testing.expect(init_node.tag == .numeric_literal);
+}
+
+test "#1669: Symbol.single_read_node — 단일 read 만 있을 때 설정" {
+    const source = "const x = 1; f(x);";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    var found = false;
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) {
+            try std.testing.expect(!sym.single_read_node.isNone());
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "#1669: Symbol.single_read_node — read 가 두 번이면 invalidate" {
+    const source = "const x = 1; f(x); g(x);";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) {
+            try std.testing.expect(sym.single_read_node.isNone());
+        }
+    }
+}
+
+test "#1669: Symbol.single_read_node — write 가 섞이면 invalidate" {
+    const source = "let x = 1; x = 2; f(x);";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) {
+            try std.testing.expect(sym.single_read_node.isNone());
+        }
+    }
+}
+
+// ============================================================
 // #1660: block / switch / module / nested-block 에서 var 와 lexical 이름 충돌
 // (ECMA §sec-block-static-semantics-early-errors / §sec-switch-statement-static-semantics-early-errors
 //  / §sec-module-semantics-static-semantics-early-errors)
