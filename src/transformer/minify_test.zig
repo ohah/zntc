@@ -1030,8 +1030,10 @@ test "expr simplify: 리터럴 statement — empty 로 축약" {
     try expectMinifyDead("1;", "function run() {\n\t;\n}\nrun();");
 }
 
-test "expr simplify: string literal statement 축약" {
-    try expectMinifyDead("\"x\";", "function run() {\n\t;\n}\nrun();");
+test "expr simplify: string literal statement 축약 (non-prologue)" {
+    // 선두 `1;` 로 directive prologue 를 종료 — 뒤 `"x";` 는 .directive 가 아닌 일반
+    // expression_statement 로 파싱되어 unused simplify 대상이 된다.
+    try expectMinifyDead("1; \"x\";", "function run() {\n\t;\n\t;\n}\nrun();");
 }
 
 test "expr simplify: pure binary statement 축약" {

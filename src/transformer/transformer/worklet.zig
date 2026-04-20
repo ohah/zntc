@@ -39,10 +39,32 @@ pub const ClosureVar = struct {
 // Phase 1: "worklet" 디렉티브 감지 + 제거
 // ================================================================
 
-/// 함수 body의 첫 문장이 지정된 디렉티브인지 확인한다 (범용).
-/// 함수 body에서 지정된 디렉티브를 찾는다.
-/// ES5 변환(rest params 등)이 body 앞에 문장을 삽입할 수 있으므로,
-/// 첫 문장뿐 아니라 앞쪽 몇 문장 내에서 탐색한다.
+/// statement 가 directive prologue 형태면 따옴표 제거된 내부 문자열을 반환.
+/// `.directive` (신 경로, parser post-parse 변환) 와 `.expression_statement` + `.string_literal`
+/// (레거시 경로, 변환 단계에서 재구성되는 경우 대비) 둘 다 지원.
+/// 괄호 / 다른 모양은 null 반환.
+pub fn directiveText(ast: anytype, stmt_idx: NodeIndex) ?[]const u8 {
+    if (stmt_idx.isNone()) return null;
+    const stmt = ast.getNode(stmt_idx);
+    const literal_span = switch (stmt.tag) {
+        .directive => stmt.span,
+        .expression_statement => blk: {
+            const inner_idx = stmt.data.unary.operand;
+            if (inner_idx.isNone()) return null;
+            const inner = ast.getNode(inner_idx);
+            if (inner.tag != .string_literal) return null;
+            break :blk inner.span;
+        },
+        else => return null,
+    };
+    const text = ast.getText(literal_span);
+    if (text.len < 2) return null;
+    return text[1 .. text.len - 1];
+}
+
+/// 함수 body에서 지정된 디렉티브를 찾는다. ES5 변환(rest params 등)이 body 앞에 문장을
+/// 삽입할 수 있으므로 첫 문장뿐 아니라 앞쪽 최대 5문장 내에서 탐색한다 — non-directive
+/// 문장은 건너뛰고 계속 탐색.
 /// 발견 시 해당 문장의 리스트 내 오프셋을 반환, 없으면 null.
 pub fn findDirectiveOffset(self: *Transformer, body_idx: NodeIndex, directive: []const u8) ?u32 {
     if (body_idx.isNone()) return null;
@@ -50,33 +72,12 @@ pub fn findDirectiveOffset(self: *Transformer, body_idx: NodeIndex, directive: [
     if (body.tag != .block_statement and body.tag != .function_body) return null;
 
     const list = body.data.list;
-    // 앞쪽 최대 5문장 내에서 탐색 (rest params, default params 등이 삽입될 수 있음)
     const search_len = @min(list.len, 5);
     var si: u32 = 0;
     while (si < search_len) : (si += 1) {
-        const stmt_raw = self.ast.extra_data.items[list.start + si];
-        const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
-        if (stmt_idx.isNone()) continue;
-
-        const stmt = self.ast.getNode(stmt_idx);
-
-        if (stmt.tag == .directive) {
-            const text = self.ast.getText(stmt.span);
-            if (text.len >= 2 and std.mem.eql(u8, text[1 .. text.len - 1], directive)) {
-                return si;
-            }
-        } else if (stmt.tag == .expression_statement) {
-            const operand_idx = stmt.data.unary.operand;
-            if (!operand_idx.isNone()) {
-                const operand = self.ast.getNode(operand_idx);
-                if (operand.tag == .string_literal) {
-                    const text = self.ast.getText(operand.data.string_ref);
-                    if (text.len >= 2 and std.mem.eql(u8, text[1 .. text.len - 1], directive)) {
-                        return si;
-                    }
-                }
-            }
-        }
+        const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + si]);
+        const text = directiveText(&self.ast, stmt_idx) orelse continue;
+        if (std.mem.eql(u8, text, directive)) return si;
     }
     return null;
 }

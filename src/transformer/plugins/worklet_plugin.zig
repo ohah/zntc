@@ -465,15 +465,9 @@ fn hasFileWorkletDirective(t: *Transformer, list_start: u32, list_len: u32) bool
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
-        if (idx.isNone()) continue;
-        const stmt = t.ast.getNode(idx);
-        if (stmt.tag != .expression_statement) return false;
-        const inner_idx = stmt.data.unary.operand;
-        if (inner_idx.isNone()) return false;
-        const inner = t.ast.getNode(inner_idx);
-        if (inner.tag != .string_literal) return false;
-        const text = t.ast.getText(inner.span);
-        if (std.mem.eql(u8, text, "\"worklet\"") or std.mem.eql(u8, text, "'worklet'")) return true;
+        // prologue 종료 감지: directive 가 아닌 첫 문장에서 바로 false.
+        const text = worklet_mod.directiveText(&t.ast, idx) orelse return false;
+        if (std.mem.eql(u8, text, "worklet")) return true;
     }
     return false;
 }
