@@ -61,9 +61,7 @@ describe("bundle es5: extends + super + rest param class ctor", () => {
       expect(output).toContain("var _this;");
 
       // 생성자 body 안에서 _this가 선언된 뒤 대입되어야 함 (undeclared assignment 금지).
-      const ctorBody = output.match(
-        /function\s+ComposedGesture\s*\(\s*\)\s*\{([\s\S]*?)\n\s*\}/,
-      );
+      const ctorBody = output.match(/function\s+ComposedGesture\s*\(\s*\)\s*\{([\s\S]*?)\n\s*\}/);
       expect(ctorBody).not.toBeNull();
       expect(ctorBody![1]).toContain("var _this;");
       expect(ctorBody![1]).toContain("_this = __callSuper");
