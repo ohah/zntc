@@ -443,8 +443,16 @@ pub const ModuleGraph = struct {
                     mod.dependencies = saved_deps;
                     mod.importers = saved_importers;
                     mod.dynamic_imports = saved_dynamic;
-                    // parse_arena 소유권 이전: store → graph
+                    // parse_arena 소유권 이전: store → graph.
                     cached.module.parse_arena = null;
+                    // alias_table 도 동일 패턴: 얕은 복사로 인해 backing 이
+                    // graph 와 store 에 동시에 잡혀있어 graph.deinit 에서 free 되면
+                    // store 쪽 포인터가 dangling — 다음 rebuild 가 그 메모리를
+                    // nested_name_sets HashMap backing 으로 재사용하면
+                    // setCanonicalName 의 write 가 Header 를 덮어써 deinit 시
+                    // malloc abort. ownership 을 graph 로 이전해 graph.deinit
+                    // 한 번만 free 되도록 한다.
+                    cached.module.alias_table = null;
                     mod.state = .ready;
                 } else {
                     // 캐시 미스: 정상 파싱

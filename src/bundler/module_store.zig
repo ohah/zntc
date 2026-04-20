@@ -40,8 +40,9 @@ pub const PersistentModuleStore = struct {
     }
 
     fn freeCachedModule(self: *PersistentModuleStore, cached: *CachedModule) void {
-        // parse_arena가 아직 store에 있으면 해제
+        // parse_arena / alias_table 가 아직 store 에 있으면 해제.
         if (cached.module.parse_arena) |*arena| arena.deinit();
+        if (cached.module.alias_table) |*t| t.deinit();
         // dependencies/importers/dynamic_imports ArrayList 해제
         cached.module.dependencies.deinit(self.allocator);
         cached.module.importers.deinit(self.allocator);
@@ -79,8 +80,14 @@ pub const PersistentModuleStore = struct {
         cached_module.importers = .empty;
         cached_module.dynamic_imports = .empty;
 
-        // parse_arena 소유권 이전: module → store
+        // parse_arena / alias_table 소유권 이전: module → store.
+        // alias_table 은 AliasTable struct (ArrayList backing) 로 graph module 과
+        // store 가 shallow copy 로 backing 을 공유한다. graph.deinit 이 먼저 free 하면
+        // store 의 복사본이 dangling pointer 로 남고, 다음 rebuild cache-hit 에서
+        // 그 포인터를 통해 setCanonicalName 이 uaf 쓰기를 해 임의의 heap 영역
+        // (특히 nested_name_sets HashMap backing 의 Header.capacity) 을 덮어쓴다.
         module.parse_arena = null;
+        module.alias_table = null;
 
         if (had_existing) {
             // 기존 키 재사용 — put은 값만 업데이트
@@ -90,12 +97,14 @@ pub const PersistentModuleStore = struct {
                 .import_specifiers = specs,
             }) catch {
                 if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
                 if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
                 return;
@@ -108,6 +117,7 @@ pub const PersistentModuleStore = struct {
             }) catch {
                 self.allocator.free(key);
                 if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };
@@ -136,3 +146,67 @@ pub const PersistentModuleStore = struct {
         return false;
     }
 };
+
+// ── tests ─────────────────────────────────────────────────────
+
+const symbol_mod = @import("symbol.zig");
+
+// Regression: `putModule` 이 `module.alias_table = null` 로 ownership 을 store
+// 로 넘기고, cache-hit 시 graph 가 ownership 을 가져간 뒤 다시 putModule 로 돌아오는
+// 왕복에서 double-free / UAF 가 없어야 한다.
+//
+// 과거 버그: graph 쪽 `Module.deinit` 이 `alias_table.deinit` 을 호출한 뒤에도
+// store 측 `cached_module.alias_table` 이 같은 backing 을 가리켜 dangling pointer
+// 발생 → 다음 rebuild 의 `setCanonicalName` 이 해제된 메모리에 쓰면서 heap 오염
+// (nested_name_sets HashMap Header.capacity 를 덮어써 `Linker.deinit` 에서 malloc
+// abort). GPA 의 double-free 검출로 이 테스트는 수정 전 반드시 실패한다.
+test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+
+    // build 1: graph 가 새 module 을 만든다
+    var module = Module.init(@enumFromInt(0), "/virtual/mod.ts");
+    module.alias_table = symbol_mod.AliasTable.init(allocator);
+    _ = try module.alias_table.?.declare("foo");
+    _ = try module.alias_table.?.declare("bar");
+
+    // build 1 end: store 로 소유권 이전.
+    store.putModule("/virtual/mod.ts", &module, 1);
+    try testing.expect(module.alias_table == null); // graph 는 더이상 소유하지 않음
+
+    // graph.deinit 시뮬레이션 — alias_table 이 null 이므로 deinit 이 no-op 이어야 함.
+    module.deinit(allocator);
+
+    // build 2: cache-hit — store 에서 graph 로 소유권 환원.
+    const cached = store.getIfFresh("/virtual/mod.ts", 1) orelse return error.CacheMiss;
+    var mod2 = Module.init(@enumFromInt(0), "/virtual/mod.ts");
+    const saved_deps = mod2.dependencies;
+    const saved_importers = mod2.importers;
+    const saved_dynamic = mod2.dynamic_imports;
+    mod2 = cached.module;
+    mod2.dependencies = saved_deps;
+    mod2.importers = saved_importers;
+    mod2.dynamic_imports = saved_dynamic;
+    cached.module.parse_arena = null;
+    cached.module.alias_table = null;
+    try testing.expect(mod2.alias_table != null);
+    try testing.expectEqual(@as(u32, 2), mod2.alias_table.?.count());
+
+    // build 2 에서 alias_table 을 조작 (과거 버그는 여기서 UAF 쓰기 발생).
+    const id = try mod2.alias_table.?.declare("baz");
+    mod2.alias_table.?.setCanonicalName(id, "baz$2");
+
+    // build 2 end: 다시 store 로 이전.
+    store.putModule("/virtual/mod.ts", &mod2, 2);
+    try testing.expect(mod2.alias_table == null);
+
+    mod2.deinit(allocator);
+
+    // 재조회해 데이터가 살아있는지 확인.
+    const cached2 = store.getIfFresh("/virtual/mod.ts", 2) orelse return error.CacheMiss;
+    try testing.expect(cached2.module.alias_table != null);
+    try testing.expectEqual(@as(u32, 3), cached2.module.alias_table.?.count());
+}
