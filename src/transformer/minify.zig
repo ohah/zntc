@@ -873,7 +873,9 @@ fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
 
     for (indices[0 .. list.len - 1]) |raw| {
         if (raw >= ast.nodes.items.len) return;
-        if (isStmtRemovable(ast, @enumFromInt(raw), ctx)) {
+        // 내부 부분 rewrite 도 동시에 수행 (`a ? b : c` → `a || c` 등).
+        // rewriter 가 내부 제거분은 이미 감산함 — 최종 removable 로 판정되면 호출자가 raw 전체 감산.
+        if (simplifyUnusedInPlace(ast, ctx, @enumFromInt(raw), changed, 0)) {
             removed_buf.append(ast.allocator, raw) catch return;
         } else {
             kept_buf.append(ast.allocator, raw) catch return;
@@ -903,12 +905,13 @@ fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
     changed.* = true;
 }
 
-/// expression_statement 의 자식 expression 이 side-effect 없이 제거 가능하면
-/// `empty_statement` 로 교체한다. 제거 시 내부 identifier_reference 의
-/// reference_count 를 감산 (dead store PR1 과 동일 방식).
+/// expression_statement 의 자식 expression 을 unused 맥락에서 축약하고, 최종적으로
+/// removable 이면 `empty_statement` 로 교체한다.
+/// `simplifyUnusedInPlace` 가 내부 부분 제거 (`a ? b : c;` → `a || c;` 등) 를 수행.
 fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
     const operand = node.data.unary.operand;
-    if (!isStmtRemovable(ast, operand, ctx)) return;
+    const removable = simplifyUnusedInPlace(ast, ctx, operand, changed, 0);
+    if (!removable) return;
 
     decrementRefsInExpr(ast, ctx, operand);
     replaceNode(ast, node_idx, .{
@@ -916,6 +919,166 @@ fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, 
         .span = node.span,
         .data = .{ .none = 0 },
     }, changed);
+}
+
+// ================================================================
+// Unused Expression In-Place Simplify (#1650 step 2 — c/d)
+// ================================================================
+//
+// **호출 site contract**: `idx` 의 expression 결과값이 **버려지는 자리** (statement 자리 또는
+// `sequence_expression` 비마지막 원소) 전용. call callee (`(0, f)()` 의 `0`), assignment RHS,
+// return expression 등 결과값이 관측되는 자리에 쓰면 semantic 위반.
+//
+// **Mutation contract**:
+//   - 내부 rewrite 시 제거되는 sub-expression 의 `reference_count` 를 **내부에서 감산**.
+//   - 반환 `true`: 현재 idx 전체가 removable — 호출자는 idx 를 drop 하고 **추가로** idx 전체의
+//     refs 를 감산해야 함 (최종 drop).
+//   - 반환 `false`: 호출자는 idx 를 유지. 감산 금지.
+//
+// **Rewrites** (모두 fixed-point loop 하에서 연쇄):
+//   - `a ? b : c` 에서 b / c 가 removable → `a && b` / `a || c` (logical_expression 으로 변환)
+//   - `a ? b : c` 에서 둘 다 removable → `a` (conditional 을 test 로 교체)
+//   - `a <op> b` (비교) 에서 한쪽 removable → 나머지로 교체
+//   - `a && b` / `a || b` / `a ?? b` 에서 right removable → left 만 남김 (short-circuit 의미상 OK)
+//   - template_literal 전체 (모든 substitution removable) → true 판정만
+
+// depth 제한은 `isStmtRemovableDepth` 와 맞춤 — 두 함수가 상호 재귀.
+const max_unused_simplify_depth: u32 = max_stmt_removable_depth;
+
+fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bool, depth: u32) bool {
+    if (depth >= max_unused_simplify_depth) return false;
+    if (idx.isNone()) return true;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+
+    // 3개 rewritable tag 만 여기서 mutation. 그 외는 `isStmtRemovableDepth` 판정에 위임 —
+    // literal / identifier / unary / sequence / template / call 등은 판정만 필요.
+    return switch (node.tag) {
+        .binary_expression => rewriteBinaryUnused(ast, ctx, ni, node, changed, depth),
+        .logical_expression => rewriteLogicalUnused(ast, ctx, ni, node, changed, depth),
+        .conditional_expression => rewriteConditionalUnused(ast, ctx, ni, node, changed, depth),
+        .parenthesized_expression => simplifyUnusedInPlace(ast, ctx, node.data.unary.operand, changed, depth + 1),
+        else => isStmtRemovableDepth(ast, idx, ctx, depth),
+    };
+}
+
+/// 비교 연산 (`==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=`, `in`, `instanceof`) 은
+/// 양쪽 operand 가 pure 면 전체 removable. 한쪽만 removable 이면 나머지로 교체.
+/// 비교 외 binary (`+`, `-`, `*`, `|`, ...) 는 양쪽 pure 여야 removable — JS `valueOf`/`toString`
+/// 의 side-effect 는 purity 가 이미 식별. 부분 rewrite 는 안 함 (의미 보존 복잡).
+fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const is_comparison = switch (op) {
+        .eq3, .neq2, .eq2, .neq, .l_angle, .r_angle, .lt_eq, .gt_eq, .kw_in, .kw_instanceof => true,
+        else => false,
+    };
+
+    const left_idx = node.data.binary.left;
+    const right_idx = node.data.binary.right;
+    const d = depth + 1;
+
+    if (!is_comparison) {
+        return isStmtRemovableDepth(ast, left_idx, ctx, d) and
+            isStmtRemovableDepth(ast, right_idx, ctx, d);
+    }
+
+    const left_rem = isStmtRemovableDepth(ast, left_idx, ctx, d);
+    const right_rem = isStmtRemovableDepth(ast, right_idx, ctx, d);
+
+    if (left_rem and right_rem) return true;
+
+    if (left_rem) {
+        // `pure == impure` → `impure`
+        const right_ni = @intFromEnum(right_idx);
+        if (right_ni >= ast.nodes.items.len) return false;
+        decrementRefsInExpr(ast, ctx, left_idx);
+        replaceNode(ast, ni, ast.nodes.items[right_ni], changed);
+        return false;
+    }
+    if (right_rem) {
+        // `impure == pure` → `impure`
+        const left_ni = @intFromEnum(left_idx);
+        if (left_ni >= ast.nodes.items.len) return false;
+        decrementRefsInExpr(ast, ctx, right_idx);
+        replaceNode(ast, ni, ast.nodes.items[left_ni], changed);
+        return false;
+    }
+    return false;
+}
+
+/// `&&`, `||`, `??` 는 short-circuit 때문에 left 의 truthy/nullish 판정이 b 의 실행을 제어.
+/// statement 자리에선 결과값은 버려지므로:
+///   - right removable → `left` 만 남김 (b 의 실행 여부 차이는 "pure" 라 관측 불가)
+///   - left removable only → 그대로 유지 (b 의 실행 여부가 바뀜 → 의미 변경)
+///   - 둘 다 removable → 전체 removable
+fn rewriteLogicalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    const left_idx = node.data.binary.left;
+    const right_idx = node.data.binary.right;
+    const d = depth + 1;
+
+    const right_rem = isStmtRemovableDepth(ast, right_idx, ctx, d);
+    if (!right_rem) return false;
+
+    const left_rem = isStmtRemovableDepth(ast, left_idx, ctx, d);
+    if (left_rem) return true;
+
+    // right drop, left 만 남김
+    const left_ni = @intFromEnum(left_idx);
+    if (left_ni >= ast.nodes.items.len) return false;
+    decrementRefsInExpr(ast, ctx, right_idx);
+    replaceNode(ast, ni, ast.nodes.items[left_ni], changed);
+    return false;
+}
+
+/// Conditional `a ? b : c` 를 unused 자리에서 축약:
+///   - b, c 둘 다 removable → `a` 로 교체 (a 자체 removable 여부로 반환)
+///   - b removable → `a || c` (b 는 a truthy 시 실행되므로 drop OK)
+///   - c removable → `a && b`
+///   - 둘 다 impure → 그대로
+fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    const test_idx = node.data.ternary.a;
+    const cons_idx = node.data.ternary.b;
+    const alt_idx = node.data.ternary.c;
+    const d = depth + 1;
+
+    const cons_rem = isStmtRemovableDepth(ast, cons_idx, ctx, d);
+    const alt_rem = isStmtRemovableDepth(ast, alt_idx, ctx, d);
+
+    if (cons_rem and alt_rem) {
+        const test_ni = @intFromEnum(test_idx);
+        if (test_ni >= ast.nodes.items.len) return false;
+        decrementRefsInExpr(ast, ctx, cons_idx);
+        decrementRefsInExpr(ast, ctx, alt_idx);
+        replaceNode(ast, ni, ast.nodes.items[test_ni], changed);
+        return isStmtRemovableDepth(ast, test_idx, ctx, d);
+    }
+
+    if (cons_rem) {
+        // a ? [pure] : c → a || c
+        decrementRefsInExpr(ast, ctx, cons_idx);
+        ast.nodes.items[ni] = .{
+            .tag = .logical_expression,
+            .span = node.span,
+            .data = .{ .binary = .{ .left = test_idx, .right = alt_idx, .flags = @intFromEnum(Kind.pipe2) } },
+        };
+        changed.* = true;
+        return false;
+    }
+
+    if (alt_rem) {
+        // a ? b : [pure] → a && b
+        decrementRefsInExpr(ast, ctx, alt_idx);
+        ast.nodes.items[ni] = .{
+            .tag = .logical_expression,
+            .span = node.span,
+            .data = .{ .binary = .{ .left = test_idx, .right = cons_idx, .flags = @intFromEnum(Kind.amp2) } },
+        };
+        changed.* = true;
+        return false;
+    }
+
+    return false;
 }
 
 /// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`
@@ -1001,6 +1164,21 @@ fn isStmtRemovableDepth(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx, depth: 
             const list = node.data.list;
             if (list.start + list.len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (!isStmtRemovableDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
+            }
+            break :blk true;
+        },
+
+        .template_literal => blk: {
+            // 단순 문자열 template (data.none = 0) — substitution 없음, removable.
+            if (node.data.none == 0) break :blk true;
+            const list = node.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (raw >= ast.nodes.items.len) break :blk false;
+                const child = ast.nodes.items[raw];
+                // template_element 는 리터럴 문자열 조각 — 항상 removable.
+                if (child.tag == .template_element) continue;
                 if (!isStmtRemovableDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
             }
             break :blk true;
