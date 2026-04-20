@@ -1047,6 +1047,7 @@ fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bo
         .array_expression => rewriteArrayUnused(ast, ctx, ni, node, changed, depth),
         .object_expression => rewriteObjectUnused(ast, ctx, ni, node, changed, depth),
         .call_expression, .new_expression => rewriteCallOrNewUnused(ast, ctx, ni, node, changed, depth),
+        .template_literal => rewriteTemplateLiteralUnused(ast, ctx, ni, node, changed, depth),
         .parenthesized_expression => simplifyUnusedInPlace(ast, ctx, node.data.unary.operand, changed, depth + 1),
         else => isStmtRemovableDepth(ast, idx, ctx, depth),
     };
@@ -1387,6 +1388,112 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
     }
 
     return reduceToSequenceExpr(ast, ni, node.span, kept.items, changed) catch false;
+}
+
+/// Template literal 의 substitution expression 을 부분 축약 (oxc 방식).
+///   - substitution 이 Symbol 가능성이 있으면 pending 에 쌓아 ToString 호출 유지 (`Symbol →
+///     String` 변환은 TypeError — 관측 가능한 side-effect).
+///   - impure substitution 을 만나면 쌓인 pending 을 새 template_literal 로 감싸 transformed
+///     에 flush + impure 자체도 추가.
+///   - pure substitution 은 drop.
+///   - 끝에 남은 pending 도 새 template_literal 로 flush.
+/// transformed 를 최종 sequence / single / empty 로 환원.
+///
+/// `data.none == 0` (substitution 없는 단순 `` `static` ``) 는 그대로 removable.
+fn rewriteTemplateLiteralUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
+    if (node.data.none == 0) return true;
+    const list = node.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+    const items = ast.extra_data.items[list.start .. list.start + list.len];
+
+    var pending: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer pending.deinit(ast.allocator);
+    var transformed: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer transformed.deinit(ast.allocator);
+    // 진짜 축약이 있었는지 추적 — 모든 substitution 이 canBeSymbol 이라 전부 pending 으로만
+    // 쌓이면 결과물 template 이 원본과 의미 동일. fixed-point 에서 무한 재생성 방지.
+    var dropped_or_split = false;
+
+    for (items) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        const child = ast.nodes.items[raw];
+        if (child.tag == .template_element) continue;
+
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (purity.canBeSymbol(ast, idx)) {
+            pending.append(ast.allocator, idx) catch return false;
+            continue;
+        }
+
+        const child_rem = simplifyUnusedInPlace(ast, ctx, idx, changed, depth + 1);
+        if (child_rem) {
+            dropped_or_split = true;
+            continue;
+        }
+
+        // impure — flush pending 후 자체도 추가
+        if (pending.items.len > 0) {
+            const tmpl = buildTemplateLiteral(ast, pending.items, node.span) catch return false;
+            transformed.append(ast.allocator, tmpl) catch return false;
+            pending.clearRetainingCapacity();
+        }
+        transformed.append(ast.allocator, idx) catch return false;
+        dropped_or_split = true;
+    }
+
+    // 아무것도 drop 되거나 split 되지 않았으면 rewrite 이득 없음 — 원본 유지.
+    if (!dropped_or_split) return false;
+
+    if (pending.items.len > 0) {
+        const tmpl = buildTemplateLiteral(ast, pending.items, node.span) catch return false;
+        transformed.append(ast.allocator, tmpl) catch return false;
+    }
+
+    return reduceToSequenceExpr(ast, ni, node.span, transformed.items, changed) catch false;
+}
+
+/// `exprs` 를 substitution 으로 갖는 새 template_literal 노드를 생성한다. 각 quasi 는
+/// 빈 literal 조각 (`` ` ``, `` }${ ``, `` }` ``) 으로 raw text 없이 `${}` 만 남기는 형태.
+/// string_table 에 넣은 리터럴 텍스트의 span 을 element 에 할당 — codegen 의 `writeNodeSpan`
+/// 이 template_element 의 span 을 그대로 출력한다.
+fn buildTemplateLiteral(ast: *Ast, exprs: []const NodeIndex, span: Span) !NodeIndex {
+    std.debug.assert(exprs.len > 0);
+
+    const n = exprs.len;
+    const total_items = 2 * n + 1;
+
+    try ast.extra_data.ensureUnusedCapacity(ast.allocator, total_items);
+    try ast.nodes.ensureUnusedCapacity(ast.allocator, n + 2); // N+1 elements + 1 template_literal
+
+    const new_start: u32 = @intCast(ast.extra_data.items.len);
+
+    // 첫 quasi: `` `${ `` — backtick + ${
+    ast.extra_data.appendAssumeCapacity(appendTemplateElement(ast, try ast.addString("`${")));
+
+    for (exprs, 0..) |expr, i| {
+        ast.extra_data.appendAssumeCapacity(@intFromEnum(expr));
+        const elem_text = if (i == n - 1) "}`" else "}${";
+        ast.extra_data.appendAssumeCapacity(appendTemplateElement(ast, try ast.addString(elem_text)));
+    }
+
+    const tmpl_ni: u32 = @intCast(ast.nodes.items.len);
+    ast.nodes.appendAssumeCapacity(.{
+        .tag = .template_literal,
+        .span = span,
+        .data = .{ .list = .{ .start = new_start, .len = @intCast(total_items) } },
+    });
+    return @enumFromInt(tmpl_ni);
+}
+
+/// 호출자 `buildTemplateLiteral` 이 `ensureUnusedCapacity` 로 미리 확보 — assume capacity 안전.
+fn appendTemplateElement(ast: *Ast, elem_span: Span) u32 {
+    const ni: u32 = @intCast(ast.nodes.items.len);
+    ast.nodes.appendAssumeCapacity(.{
+        .tag = .template_element,
+        .span = elem_span,
+        .data = .{ .none = 0 },
+    });
+    return ni;
 }
 
 /// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`

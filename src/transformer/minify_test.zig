@@ -1462,3 +1462,80 @@ test "unused: /*#__PURE__*/ super(x, y) — derived constructor semantic 필수 
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "super(x, y)") != null);
 }
+
+// ================================================================
+// TemplateLiteral Partial Rewrite (#1650 step 2/d 확장)
+// ================================================================
+//
+// substitution 중 Symbol 가능성이 있으면 전체 유지 (ToString TypeError 보존).
+// 모두 non-symbol 이면 pure 는 drop, impure 는 sequence / single 로 축약.
+
+test "unused: `${pure-literal} ${call}`; → call 만 남은 새 template" {
+    // 1 + 2 는 canBeSymbol=false + pure → drop. foo() 는 canBeSymbol=true → pending flush 로
+    // 새 template literal 에 감싸짐. 기존 literal quasi (space) 는 재구성 시 버려짐.
+    try expectMinifyDead(
+        "`${1 + 2} ${foo()}`;",
+        "function run() {\n\t`${foo()}`;\n}\nrun();",
+    );
+}
+
+test "unused: `${call1} ${call2}`; — 모든 substitution Symbol 가능 → 원본 유지 (rewrite 이득 없음)" {
+    // 둘 다 canBeSymbol=true → pending 에만 쌓임. dropped_or_split=false → mutation 안 함.
+    // fixed-point 무한 재생성 방지 가드.
+    try expectMinifyDead(
+        "`${foo()} ${bar()}`;",
+        "function run() {\n\t`${foo()} ${bar()}`;\n}\nrun();",
+    );
+}
+
+test "unused: `${pure} ${call}`; → pure drop 되며 template 재구성" {
+    // 한쪽이라도 drop 되면 dropped_or_split=true → template 재구성. pure quasi 버려져 축약.
+    try expectMinifyDead(
+        "`${1} ${foo()}`;",
+        "function run() {\n\t`${foo()}`;\n}\nrun();",
+    );
+}
+
+test "unused: `${Symbol()}`; — Symbol 가능 → 전체 유지" {
+    // Symbol() 호출 결과는 Symbol — ToString 호출 시 TypeError. template literal 유지.
+    try expectMinifyDead(
+        "`${Symbol()}`;",
+        "function run() {\n\t`${Symbol()}`;\n}\nrun();",
+    );
+}
+
+test "unused: `${x}`; — local identifier 는 Symbol 가능 (보수적 유지)" {
+    try expectMinifyDead(
+        "let x = 1; `${x}`; console.log(x);",
+        "function run() {\n\tlet x = 1;\n\t`${x}`;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "unused: `${1 + 2}${true}`; → 모두 non-symbol pure → empty" {
+    try expectMinifyDead(
+        "`${1 + 2}${true}`;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: `static`; → empty (substitution 없음, 기존)" {
+    try expectMinifyDead(
+        "`hello`;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: `${a ? 1 : 2}`; — conditional 양쪽 non-symbol → drop" {
+    try expectMinifyDead(
+        "`${true ? 1 : 2}`;",
+        "function run() {\n\t;\n}\nrun();",
+    );
+}
+
+test "unused: `${foo() ? 1 : 2}`; — conditional test impure 는 보존됨" {
+    // conditional 의 test 는 simplifyUnusedInPlace 재귀로 축약됨
+    try expectMinifyDead(
+        "`${foo() ? 1 : 2}`;",
+        "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
