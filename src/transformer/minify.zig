@@ -169,7 +169,10 @@ pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
             .conditional_expression => foldConditional(ast, @intCast(i), node),
             .if_statement => foldIf(ast, @intCast(i), node),
             .while_statement => foldWhile(ast, @intCast(i), node),
-            .sequence_expression => simplifySequence(ast, @intCast(i), node),
+            .sequence_expression => simplifySequence(ast, ctx, @intCast(i), node),
+            // PR1.5 (a): unused expression statement 축약 — semantic 정보 있을 때만
+            // (symbol_ids 가 없으면 identifier local binding 판정 불가)
+            .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, @intCast(i), node),
             else => {},
         }
     }
@@ -812,43 +815,168 @@ fn foldLogical(ast: *Ast, node_idx: u32, node: Node) void {
 // Phase 4: Comma Operator + Template Literal Folding
 // ================================================================
 
-/// sequence_expression (comma operator) 축약.
-/// side-effect-free 리터럴만 있는 앞쪽 항목 제거: (0, foo) → foo
-/// 단, 2개 항목이고 좌측이 리터럴인 경우만.
-fn simplifySequence(ast: *Ast, node_idx: u32, node: Node) void {
+/// sequence_expression (comma operator) 축약. #1644 PR1.5 확장.
+/// 마지막 원소 **앞에** 오는 모든 `isStmtRemovable` 원소 제거: `(1, foo, bar, baz())` → `baz()`.
+/// 단일 원소만 남으면 sequence 자체를 그 노드로 교체.
+///
+/// 이전 구현은 prefix 리터럴만 제거. 이번 PR 에서 중간 원소도 제거 가능하도록 확장.
+///
+/// **Two-phase**: (1) 유지 / 제거 원소를 먼저 수집 완료 + extra_data 에 append 성공까지
+/// 확인한 뒤 (2) reference_count 감산 + list rewrite 를 **한 번에** commit. 중간 OOM 시
+/// symbol 상태가 stale 이 되지 않도록 원자적 처리.
+fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
     const list = node.data.list;
     if (list.len < 2) return;
     if (list.start + list.len > ast.extra_data.items.len) return;
 
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    const last_raw = indices[list.len - 1];
+    if (last_raw >= ast.nodes.items.len) return;
 
-    // 마지막 항목 앞의 모든 side-effect-free 리터럴을 건너뛴다
-    var first_kept: u32 = 0;
-    while (first_kept + 1 < list.len) {
-        const ni = indices[first_kept];
-        if (ni >= ast.nodes.items.len) return;
-        if (!isSideEffectFreeLiteral(ast.nodes.items[ni])) break;
-        first_kept += 1;
+    // Phase 1 (collect only, no mutation): 유지할 원소 / 제거할 원소 분류.
+    var kept_buf: std.ArrayListUnmanaged(u32) = .empty;
+    defer kept_buf.deinit(ast.allocator);
+    var removed_buf: std.ArrayListUnmanaged(u32) = .empty;
+    defer removed_buf.deinit(ast.allocator);
+
+    for (indices[0 .. list.len - 1]) |raw| {
+        if (raw >= ast.nodes.items.len) return;
+        if (isStmtRemovable(ast, @enumFromInt(raw), ctx)) {
+            removed_buf.append(ast.allocator, raw) catch return;
+        } else {
+            kept_buf.append(ast.allocator, raw) catch return;
+        }
     }
 
-    if (first_kept == 0) return; // 제거할 항목 없음
+    if (removed_buf.items.len == 0) return; // 아무것도 제거 안 됨
 
-    if (first_kept + 1 == list.len) {
-        // 마지막 하나만 남음 → sequence 자체를 해당 노드로 교체
-        const last_ni = indices[list.len - 1];
-        if (last_ni >= ast.nodes.items.len) return;
-        ast.nodes.items[node_idx] = ast.nodes.items[last_ni];
-    } else {
-        // 여러 개 남음 → list 시작점을 조정
-        ast.nodes.items[node_idx].data = .{
-            .list = .{ .start = list.start + first_kept, .len = list.len - first_kept },
-        };
+    // Phase 2 (commit): 모든 allocation 성공 확인 후 mutation.
+    if (kept_buf.items.len == 0) {
+        // 마지막 하나만 남음 → sequence 를 해당 노드로 교체. list rewrite 불필요.
+        for (removed_buf.items) |raw| decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
+        ast.nodes.items[node_idx] = ast.nodes.items[last_raw];
+        return;
     }
+
+    // extra_data 에 새 list 먼저 append — 실패 시 mutation 없이 return.
+    kept_buf.append(ast.allocator, last_raw) catch return;
+    const new_start: u32 = @intCast(ast.extra_data.items.len);
+    ast.extra_data.appendSlice(ast.allocator, kept_buf.items) catch return;
+
+    // 이 지점부터는 allocation 실패 없음 — 안전하게 decrement + rewrite.
+    for (removed_buf.items) |raw| decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
+    ast.nodes.items[node_idx].data = .{
+        .list = .{ .start = new_start, .len = @intCast(kept_buf.items.len) },
+    };
 }
 
-fn isSideEffectFreeLiteral(node: Node) bool {
+/// expression_statement 의 자식 expression 이 side-effect 없이 제거 가능하면
+/// `empty_statement` 로 교체한다. 제거 시 내부 identifier_reference 의
+/// reference_count 를 감산 (dead store PR1 과 동일 방식).
+fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node) void {
+    const operand = node.data.unary.operand;
+    if (!isStmtRemovable(ast, operand, ctx)) return;
+
+    decrementRefsInExpr(ast, ctx, operand);
+    ast.nodes.items[node_idx] = .{
+        .tag = .empty_statement,
+        .span = node.span,
+        .data = .{ .none = 0 },
+    };
+}
+
+/// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`
+/// 는 "expression 내부로서" pure 를 보므로 identifier_reference / member access 도
+/// pure 로 인정하지만, statement 자리에서는:
+///   - unresolved identifier → `ReferenceError` side-effect
+///   - member access → getter / Proxy trap 실행
+/// 가 발생하므로 엄격 기준이 필요하다.
+///
+/// 보수적 허용 목록:
+///   - 리터럴 (numeric, string, boolean, null, bigint, regex)
+///   - `this` / function expression / arrow
+///   - pure unary (`!x`, `+1`, `~0`, `typeof x` — delete 제외)
+///   - pure binary / logical / conditional — 자식이 모두 removable
+///   - parenthesized — 내부 expression 이 removable
+///   - @__PURE__ call/new
+///   - identifier_reference: function 스코프 이하 local 바인딩만 (top-level / import / 미해결 제외)
+///   - member access: 제외 (getter 위험)
+///
+/// **호출 site contract**: statement 자리 또는 sequence_expression 원소 자리 전용.
+/// call_expression 의 callee 자리에 쓰면 `(0, f)()` 의 `0` 을 제거해 this 바인딩을
+/// 바꾸는 회귀 가능 — 새 호출 site 추가 시 contract 확인.
+fn isStmtRemovable(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx) bool {
+    return isStmtRemovableDepth(ast, idx, ctx, 0);
+}
+
+const max_stmt_removable_depth: u32 = 128;
+
+fn isStmtRemovableDepth(ast: *const Ast, idx: NodeIndex, ctx: MinifyCtx, depth: u32) bool {
+    if (depth >= max_stmt_removable_depth) return false;
+    if (idx.isNone()) return true;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+    const d = depth + 1;
+
     return switch (node.tag) {
-        .numeric_literal, .string_literal, .boolean_literal, .null_literal => true,
+        .numeric_literal,
+        .string_literal,
+        .boolean_literal,
+        .null_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .this_expression,
+        .function_expression,
+        .arrow_function_expression,
+        => true,
+
+        // identifier_reference: function 스코프 이하 local 만. top-level (scope_id=0) 과
+        // import 바인딩은 live binding 이라 `import * as ns` 등의 초기화 순서를 건드릴 수
+        // 있어 보수적으로 유지 (dead store removeDeadStores 와 동일 가드).
+        .identifier_reference => blk: {
+            if (ni >= ctx.symbol_ids.len) break :blk false;
+            const sid = ctx.symbol_ids[ni] orelse break :blk false;
+            if (sid >= ctx.symbols.len) break :blk false;
+            const sym = ctx.symbols[sid];
+            if (@intFromEnum(sym.scope_id) == 0) break :blk false;
+            if (sym.decl_flags.is_import) break :blk false;
+            break :blk true;
+        },
+
+        .parenthesized_expression => isStmtRemovableDepth(ast, node.data.unary.operand, ctx, d),
+
+        .unary_expression => blk: {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 1)) break :blk false;
+            const op_kind: u8 = @truncate(ast.readExtra(e, 1) & 0xFF);
+            if (op_kind == @intFromEnum(Kind.kw_delete)) break :blk false;
+            break :blk isStmtRemovableDepth(ast, @enumFromInt(ast.readExtra(e, 0)), ctx, d);
+        },
+
+        .binary_expression, .logical_expression => isStmtRemovableDepth(ast, node.data.binary.left, ctx, d) and
+            isStmtRemovableDepth(ast, node.data.binary.right, ctx, d),
+
+        .conditional_expression => blk: {
+            const t = node.data.ternary;
+            break :blk isStmtRemovableDepth(ast, t.a, ctx, d) and
+                isStmtRemovableDepth(ast, t.b, ctx, d) and
+                isStmtRemovableDepth(ast, t.c, ctx, d);
+        },
+
+        .sequence_expression => blk: {
+            const list = node.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (!isStmtRemovableDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
+            }
+            break :blk true;
+        },
+
+        // @__PURE__ call/new — 사용자 assertion. member callee 여도 "제거해도 됨" 선언이므로
+        // purity 가 true 면 그대로 따름 (esbuild/rolldown 동일).
+        .call_expression, .new_expression => purity.isExprPure(ast, idx, ctx.unresolved_globals),
+
         else => false,
     };
 }
