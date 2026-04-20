@@ -865,8 +865,9 @@ pub fn emitModule(
             .symbol_ids = transformer.symbol_ids.items,
             .scopes = sem.scopes,
             .unresolved_globals = &sem.unresolved_references,
+            .scratch_allocator = arena_alloc,
         } else .empty;
-        minify_mod.minify(&transformer.ast, ctx);
+        minify_mod.minify(&transformer.ast, ctx, root);
     }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
