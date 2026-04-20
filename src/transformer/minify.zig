@@ -168,6 +168,24 @@ inline fn replaceNode(ast: *Ast, idx: u32, new_node: Node, changed: *bool) void 
     changed.* = true;
 }
 
+/// `inner_idx` 를 감싸는 새 `parenthesized_expression` 노드를 append 하고 그 NodeIndex 반환.
+/// 실패 시 (OOM) `inner_idx` 를 그대로 반환 — 호출자가 grammar 위반이 발생할 수 있는 자리에
+/// 이 결과를 넣으면 안 됨. 필요 시 호출자가 사전에 realloc 감수.
+fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
+    const inner_ni = @intFromEnum(inner_idx);
+    const span = if (inner_ni < ast.nodes.items.len)
+        ast.nodes.items[inner_ni].span
+    else
+        Span{ .start = 0, .end = 0 };
+    const new_ni: u32 = @intCast(ast.nodes.items.len);
+    try ast.nodes.append(ast.allocator, .{
+        .tag = .parenthesized_expression,
+        .span = span,
+        .data = .{ .unary = .{ .operand = inner_idx, .flags = 0 } },
+    });
+    return @enumFromInt(new_ni);
+}
+
 /// AST minify 패스를 실행한다. ast를 in-place 수정.
 /// `ctx` 에 semantic 정보가 있으면 dead store (unused declaration) 제거도 함께 수행.
 ///
@@ -192,20 +210,26 @@ pub fn minify(ast: *Ast, ctx: MinifyCtx) void {
 
 /// minify 1 iteration. 변경이 있었으면 true 반환 (fixed-point 종료 판정용).
 /// `changed` 는 보수적 true 허용 — 실제 mutation 없이 true 설정해도 최악 1 iter 더 돌고 끝.
+///
+/// **Index-based loop**: rewrite 중 `ast.nodes.append` (e.g. paren 노드 생성) 로
+/// items slice 가 재할당되어도 안전 — 매 iter `ast.nodes.items[i]` 재슬라이스.
+/// 새로 append 된 노드는 `items.len` 증가로 자동 순회됨.
 fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet) bool {
     var changed = false;
-    for (ast.nodes.items, 0..) |node, i| {
+    var i: u32 = 0;
+    while (i < ast.nodes.items.len) : (i += 1) {
+        const node = ast.nodes.items[i];
         switch (node.tag) {
-            .binary_expression => foldBinary(ast, @intCast(i), node, &changed),
-            .logical_expression => foldLogical(ast, @intCast(i), node, &changed),
-            .unary_expression => foldUnary(ast, @intCast(i), node, &changed),
-            .conditional_expression => foldConditional(ast, @intCast(i), node, &changed),
-            .if_statement => foldIf(ast, @intCast(i), node, &changed),
-            .while_statement => foldWhile(ast, @intCast(i), node, &changed),
-            .sequence_expression => simplifySequence(ast, ctx, @intCast(i), node, &changed),
+            .binary_expression => foldBinary(ast, i, node, &changed),
+            .logical_expression => foldLogical(ast, i, node, &changed),
+            .unary_expression => foldUnary(ast, i, node, &changed),
+            .conditional_expression => foldConditional(ast, i, node, &changed),
+            .if_statement => foldIf(ast, i, node, &changed),
+            .while_statement => foldWhile(ast, i, node, &changed),
+            .sequence_expression => simplifySequence(ast, ctx, i, node, &changed),
             // PR1.5 (a): unused expression statement 축약 — semantic 정보 있을 때만
             // (symbol_ids 가 없으면 identifier local binding 판정 불가)
-            .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, @intCast(i), node, &changed),
+            .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, i, node, &changed),
             else => {},
         }
     }
@@ -1036,6 +1060,11 @@ fn rewriteLogicalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed:
 ///   - b removable → `a || c` (b 는 a truthy 시 실행되므로 drop OK)
 ///   - c removable → `a && b`
 ///   - 둘 다 impure → 그대로
+///
+/// **Grammar**: conditional 의 cons/alt 는 `AssignmentExpression` 을 paren 없이 허용
+/// (`a ? b : c = d` → `a ? b : (c = d)` 로 파싱). 그러나 `logical_expression` 의 right 자리는
+/// `LogicalORExpression` 이라 assignment / sequence 직접 불가. rewrite 시 kept operand 가
+/// 이 두 tag 이면 `parenthesized_expression` 노드를 새로 만들어 감싸서 옮긴다.
 fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
     const test_idx = node.data.ternary.a;
     const cons_idx = node.data.ternary.b;
@@ -1056,11 +1085,12 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
 
     if (cons_rem) {
         // a ? [pure] : c → a || c
+        const right_idx = ensureLogicalOperand(ast, alt_idx) catch return false;
         decrementRefsInExpr(ast, ctx, cons_idx);
         ast.nodes.items[ni] = .{
             .tag = .logical_expression,
             .span = node.span,
-            .data = .{ .binary = .{ .left = test_idx, .right = alt_idx, .flags = @intFromEnum(Kind.pipe2) } },
+            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @intFromEnum(Kind.pipe2) } },
         };
         changed.* = true;
         return false;
@@ -1068,17 +1098,30 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
 
     if (alt_rem) {
         // a ? b : [pure] → a && b
+        const right_idx = ensureLogicalOperand(ast, cons_idx) catch return false;
         decrementRefsInExpr(ast, ctx, alt_idx);
         ast.nodes.items[ni] = .{
             .tag = .logical_expression,
             .span = node.span,
-            .data = .{ .binary = .{ .left = test_idx, .right = cons_idx, .flags = @intFromEnum(Kind.amp2) } },
+            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @intFromEnum(Kind.amp2) } },
         };
         changed.* = true;
         return false;
     }
 
     return false;
+}
+
+/// `logical_expression` 의 operand 자리에 paren 없이 올 수 있는 `NodeIndex` 로 변환.
+/// `assignment_expression` / `sequence_expression` 은 JS grammar 상 paren 필수 (LogicalOR
+/// 자리에 직접 못 옴) — `wrapInParen` 으로 감싼다. 그 외는 그대로 반환.
+fn ensureLogicalOperand(ast: *Ast, idx: NodeIndex) !NodeIndex {
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return idx;
+    return switch (ast.nodes.items[ni].tag) {
+        .assignment_expression, .sequence_expression => try wrapInParen(ast, idx),
+        else => idx,
+    };
 }
 
 /// expression 이 **statement 자리에서 안전히 삭제 가능한지** 판정. `purity.isExprPure`
