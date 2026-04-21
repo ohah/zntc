@@ -228,7 +228,9 @@ pub const RuntimeHelpers = packed struct(u32) {
 pub const Transformer = struct {
     /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
     /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
-    ast: Ast,
+    /// `*Ast` — Transformer 가 소유권을 가진다 (clone 경로). D1b-2 의 `initInPlace` 는
+    /// 외부 소유 AST 를 borrow 하는 variant 로 같은 필드를 공유.
+    ast: *Ast,
 
     /// 파서 노드 수. transform() 시작 시 루트 인덱스(parser_node_count - 1) 계산에 사용.
     parser_node_count: u32,
@@ -452,13 +454,15 @@ pub const Transformer = struct {
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
-        // 파서 AST를 트랜스포머 allocator로 복제 (원본 보존)
-        var cloned_ast = try Ast.cloneForTransformer(source_ast, allocator);
+        // 파서 AST를 트랜스포머 allocator 의 heap cell 로 복제 (원본 보존).
+        const ast_ptr = try allocator.create(Ast);
+        errdefer allocator.destroy(ast_ptr);
+        ast_ptr.* = try Ast.cloneForTransformer(source_ast, allocator);
         // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
-        cloned_ast.transform_boundary = @intCast(cloned_ast.nodes.items.len);
+        ast_ptr.transform_boundary = @intCast(ast_ptr.nodes.items.len);
 
         var self: Transformer = .{
-            .ast = cloned_ast,
+            .ast = ast_ptr,
             .parser_node_count = @intCast(source_ast.nodes.items.len),
             .options = opts,
             .allocator = allocator,
@@ -471,11 +475,13 @@ pub const Transformer = struct {
 
     pub fn deinit(self: *Transformer) void {
         self.ast.deinit();
+        self.allocator.destroy(self.ast);
         self.deinitExceptAst();
     }
 
     /// AST를 제외한 모든 리소스를 해제한다.
-    /// 테스트에서 AST를 별도로 관리할 때 사용.
+    /// 테스트에서 AST를 별도로 관리할 때 사용. `.ast` 는 `*Ast` 이므로 호출자가
+    /// `ast.deinit()` + `allocator.destroy(ast)` 둘 다 책임.
     pub fn deinitExceptAst(self: *Transformer) void {
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);

@@ -466,7 +466,7 @@ fn hasFileWorkletDirective(t: *Transformer, list_start: u32, list_len: u32) bool
     while (i < list_len) : (i += 1) {
         const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
         // prologue 종료 감지: directive 가 아닌 첫 문장에서 바로 false.
-        const text = worklet_mod.directiveText(&t.ast, idx) orelse return false;
+        const text = worklet_mod.directiveText(t.ast, idx) orelse return false;
         if (std.mem.eql(u8, text, "worklet")) return true;
     }
     return false;

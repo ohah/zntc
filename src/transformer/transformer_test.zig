@@ -174,8 +174,9 @@ test "Transformer: strip ts_as_expression" {
 // ============================================================
 
 /// 통합 테스트 결과. deinit()으로 모든 리소스를 한 번에 해제.
+/// `ast` 는 transformer 에서 소유권 이전받은 heap-allocated `*Ast`.
 const TestResult = struct {
-    ast: Ast,
+    ast: *Ast,
     root: NodeIndex,
     scanner: *Scanner,
     parser: *Parser,
@@ -183,6 +184,7 @@ const TestResult = struct {
 
     pub fn deinit(self: *TestResult) void {
         self.ast.deinit();
+        self.allocator.destroy(self.ast);
         self.parser.deinit();
         self.allocator.destroy(self.parser);
         self.scanner.deinit();
@@ -740,7 +742,7 @@ pub fn transformWorklet(allocator: std.mem.Allocator, source: []const u8) !TestR
 /// 반환값은 r.allocator로 할당된 복제본 — r.deinit() 후에도 안전하지만 별도 free 필요.
 /// 테스트에서는 allocator가 GPA이므로 검사됨.
 pub fn generateCode(r: *TestResult) ![]const u8 {
-    var codegen = Codegen.init(r.allocator, &r.ast);
+    var codegen = Codegen.init(r.allocator, r.ast);
     const code = try codegen.generate(r.root);
     // 코드를 복제 후 codegen 해제 (buf 누수 방지)
     const duped = try r.allocator.dupe(u8, code);

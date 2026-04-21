@@ -349,8 +349,8 @@ pub fn transpileWithCallback(
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
         };
-        minify_mod.minify(&transformer.ast, ctx, arena_alloc, root);
-        minify_mod.mergeDecls(&transformer.ast, null);
+        minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
+        minify_mod.mergeDecls(transformer.ast, null);
     }
 
     // 5. Mangling 메타데이터 구성. skip_nodes는 arena-owned이라 별도 deinit 불필요
@@ -376,7 +376,7 @@ pub fn transpileWithCallback(
     }
 
     // 6. 코드 생성
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
         .minify_whitespace = options.minify_whitespace,
         .minify_syntax = options.minify_syntax,

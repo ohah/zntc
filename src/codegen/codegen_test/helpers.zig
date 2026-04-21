@@ -76,7 +76,7 @@ pub fn e2eSourceMap(backing_allocator: std.mem.Allocator, source: []const u8) !S
     var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .sourcemap = true });
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{ .sourcemap = true });
     cg.line_offsets = scanner.line_offsets.items;
     try cg.addSourceFile("input.ts");
     const output = try cg.generate(root);
@@ -135,7 +135,7 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     t.line_offsets = scanner.line_offsets.items;
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.ast, cg_options);
+    var cg = Codegen.initWithOptions(allocator, t.ast, cg_options);
     const raw_output = try cg.generate(root);
 
     // JSX import prepend (transformer가 JSX lowering 수행한 경우)
@@ -198,7 +198,7 @@ pub fn e2eFlowImpl(backing_allocator: std.mem.Allocator, source: []const u8, is_
     var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .minify_whitespace = true });
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{ .minify_whitespace = true });
     const output = try cg.generate(root);
 
     return .{ .output = output, .arena = arena };

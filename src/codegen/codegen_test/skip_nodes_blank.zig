@@ -50,7 +50,7 @@ fn codegenWithSkippedStatements(
         .allocator = a,
     };
 
-    var cg = Codegen.initWithOptions(a, &t.ast, .{ .linking_metadata = &md });
+    var cg = Codegen.initWithOptions(a, t.ast, .{ .linking_metadata = &md });
     const out = try cg.generate(root);
     return backing.dupe(u8, out);
 }

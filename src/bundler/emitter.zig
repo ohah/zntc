@@ -915,7 +915,7 @@ pub fn emitModule(
             .scopes = sem.scopes,
             .unresolved_globals = &sem.unresolved_references,
         } else .empty;
-        minify_mod.minify(&transformer.ast, ctx, arena_alloc, root);
+        minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 
     // 런타임 헬퍼 사용 추적: transformer가 설정한 플래그를 out parameter로 전달
@@ -936,7 +936,7 @@ pub fn emitModule(
             null;
         // ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 ast와 일치)
         var md = try l.buildMetadataForAst(
-            &transformer.ast,
+            transformer.ast,
             module.index.toU32(),
             is_entry,
             override_syms,
@@ -953,7 +953,7 @@ pub fn emitModule(
                     const sem = module.semantic orelse {
                         statement_shaker.markUnusedStatements(
                             arena_alloc,
-                            &transformer.ast,
+                            transformer.ast,
                             root,
                             names,
                             &md.skip_nodes,
@@ -997,7 +997,7 @@ pub fn emitModule(
                         }
                     } else {
                         // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                        if (stmt_info_mod.build(arena_alloc, &transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
+                        if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
                             if (maybe_infos) |infos| {
                                 var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                 defer used_sym_buf.deinit(arena_alloc);
@@ -1039,7 +1039,7 @@ pub fn emitModule(
     // 현재 모듈의 해당 호출에 is_pure 플래그를 자동 설정한다.
     if (linker) |l| {
         const sym_ids = if (metadata) |md| md.symbol_ids else &.{};
-        propagateCrossModulePurity(l, module, &transformer.ast, sym_ids, arena_alloc);
+        propagateCrossModulePurity(l, module, transformer.ast, sym_ids, arena_alloc);
     }
 
     // Identifier mangling은 단일 파일 트랜스파일(main.zig)에서만 적용.
@@ -1051,14 +1051,14 @@ pub fn emitModule(
     // block-scope 의미 변경 위험 없음. dev 빌드에선 원본 kind 유지 (DX) — esbuild/rolldown
     // 동일 관습. mergeDecls 직전에 호출해 var 끼리 연쇄 merge 극대화.
     if (linker != null and options.minify_syntax) {
-        @import("../transformer/minify.zig").downgradeToVar(&transformer.ast);
+        @import("../transformer/minify.zig").downgradeToVar(transformer.ast);
     }
 
     // Private field name mangle (#1632 Phase 1) — `#commit_callbacks` 같은 긴 이름을
     // class 별 독립 범위로 `#a`, `#b`, ... 단축. JS 언어 규약상 private name 은 선언된
     // class body 바깥에서 참조 불가 → per-class 안전. minify_identifiers 플래그와 묶음.
     if (options.minify_identifiers) {
-        @import("../codegen/private_mangler.zig").manglePrivateFields(&transformer.ast);
+        @import("../codegen/private_mangler.zig").manglePrivateFields(transformer.ast);
     }
 
     // 인접 선언 merge (#1588) — tree-shake 직후에 실행해 skip_nodes 결정과 충돌 방지.
@@ -1066,7 +1066,7 @@ pub fn emitModule(
     // statement는 A가 사용되므로 제거 불가 → B의 초기화식이 살아남아 죽은 심볼을 참조.
     // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
     @import("../transformer/minify.zig").mergeDecls(
-        &transformer.ast,
+        transformer.ast,
         if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
     );
 
@@ -1075,7 +1075,7 @@ pub fn emitModule(
         const esm_result = try emitEsmWrappedModule(
             allocator,
             arena_alloc,
-            &transformer.ast,
+            transformer.ast,
             root,
             module,
             if (metadata) |*m| @as(?*const LinkingMetadata, m) else null,
@@ -1090,7 +1090,7 @@ pub fn emitModule(
     }
 
     // Codegen: AST → JS 문자열
-    var cg = Codegen.initWithOptions(arena_alloc, &transformer.ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
         // Peephole boolean 축약 등 codegen-레벨 출력 최적화(#1552).
         .minify_syntax = options.minify_syntax,

@@ -25,7 +25,7 @@ fn e2eFunctionMap(backing_allocator: std.mem.Allocator, source: []const u8) !str
     var t = try h.Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.ast, .{
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{
         .sourcemap = true,
         .sourcemap_function_map = true,
     });
@@ -116,7 +116,7 @@ test "function_map: sourcemap_function_map=false — no x_facebook_sources" {
     _ = try parser.parse();
     var t = try h.Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
-    var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .sourcemap = true });
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{ .sourcemap = true });
     cg.line_offsets = scanner.line_offsets.items;
     try cg.addSourceFile("input.ts");
     _ = try cg.generate(root);

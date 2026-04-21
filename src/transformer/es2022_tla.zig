@@ -96,7 +96,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (isModuleDeclaration(child_node.tag)) continue;
-        if (hasTopLevelAwait(&self.ast, child)) {
+        if (hasTopLevelAwait(self.ast, child)) {
             has_tla = true;
             break;
         }
