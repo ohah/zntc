@@ -15,7 +15,6 @@ const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const module_store = @import("module_store.zig");
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
-const debug_log = @import("../debug_log.zig");
 
 /// JSON 문자열 값 내부의 특수 문자를 이스케이프한다 (RFC 8259 준수).
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
@@ -221,14 +220,7 @@ pub const IncrementalBundler = struct {
         self.updateCache(&result);
         if (is_first) self.needs_full_rebuild = false;
 
-        if (debug_log.enabled(.compiled_cache)) {
-            const stats = self.compiled_cache.takeStats();
-            debug_log.print(
-                .compiled_cache,
-                "first={} hits={d} misses={d} no_mtime_skipped={d} (entries={d})\n",
-                .{ is_first, stats.hits, stats.misses, stats.skipped, self.compiled_cache.entries.count() },
-            );
-        }
+        self.compiled_cache.logStats(if (is_first) "first=true " else "first=false ");
 
         result.deinit(self.allocator);
 
