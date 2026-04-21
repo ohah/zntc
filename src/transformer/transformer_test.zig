@@ -1276,3 +1276,188 @@ test "define: optional chaining + global root prefix 매칭" {
         }
     }
 }
+
+// ================================================================
+// initInPlace borrow-mode tests (RFC #1672 D1b-2 / D1c)
+// ================================================================
+
+/// clone 경로 transform+codegen. 반환값은 outer allocator 로 dupe 되므로 caller 가 free.
+fn runTransformCloned(outer: std.mem.Allocator, source: []const u8) ![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(outer);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var t = try Transformer.init(a, &parser.ast, .{});
+    defer t.deinit();
+    const root = try t.transform();
+    var cg = Codegen.init(a, t.ast);
+    const code = try cg.generate(root);
+    return outer.dupe(u8, code);
+}
+
+/// in-place 경로 transform+codegen. deinit 는 codegen 후에 수동 호출 — truncate 가
+/// codegen 전에 일어나면 출력이 날아가므로. 반환값은 outer allocator 로 dupe.
+fn runTransformInPlace(outer: std.mem.Allocator, source: []const u8) ![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(outer);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var t = try Transformer.initInPlace(a, &parser.ast, a, .{});
+    const root = try t.transform();
+    var cg = Codegen.init(a, t.ast);
+    const code = try cg.generate(root);
+    const duped = try outer.dupe(u8, code);
+    t.deinit();
+    return duped;
+}
+
+test "initInPlace: round-trip output byte-exact matches Transformer.init (clone)" {
+    // 다양한 TS/JS 구문에서 in-place 와 clone 이 정확히 같은 codegen 출력을 내는지 검증.
+    // transform 의 모든 경로 (타입 strip, class field, generator, import/export,
+    // decorator 등) 가 in-place 로도 동일하게 동작해야 함.
+    const sources = [_][]const u8{
+        "const x: number = 1 + 2;",
+        "type Foo = string; interface Bar { x: number } const v: Bar = { x: 1 };",
+        "class C { #x = 1; get value() { return this.#x; } }",
+        "const fn = <T>(x: T): T => x; fn<number>(42);",
+        "import { a } from './m'; export default a + 1;",
+        "async function* gen() { for (const x of [1,2,3]) yield await Promise.resolve(x); }",
+        "enum E { A = 1, B, C = 'hi' }",
+        "const [a, b = 2, ...rest] = [1, 2, 3, 4];",
+        "export const f = <T extends string>(x: T) => x as const;",
+        "class D { constructor(public x: number, private readonly y: string) {} }",
+    };
+
+    for (sources) |src| {
+        const clone_out = try runTransformCloned(std.testing.allocator, src);
+        defer std.testing.allocator.free(clone_out);
+        const in_place_out = try runTransformInPlace(std.testing.allocator, src);
+        defer std.testing.allocator.free(in_place_out);
+
+        std.testing.expectEqualStrings(clone_out, in_place_out) catch |e| {
+            std.debug.print("\n--- source ---\n{s}\n--- clone ---\n{s}\n--- in-place ---\n{s}\n", .{ src, clone_out, in_place_out });
+            return e;
+        };
+    }
+}
+
+test "initInPlace: re-entry on same Ast produces identical output (idempotent)" {
+    // 같은 parser.ast 로 initInPlace + transform + codegen 을 두 번 실행했을 때
+    // 두 번째 호출이 첫 번째와 byte-exact 동일한 출력을 내는지 검증.
+    // transform_boundary / shrinkRetainingCapacity 로직의 idempotency.
+    const source = "const x: number = 1 + 2; type Foo = string; class C { m() { return 42; } } export default C;";
+    const outer = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(outer);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+
+    const first_output = blk: {
+        var t = try Transformer.initInPlace(a, &parser.ast, a, .{});
+        const root = try t.transform();
+        var cg = Codegen.init(a, t.ast);
+        const code = try cg.generate(root);
+        const duped = try outer.dupe(u8, code);
+        t.deinit();
+        break :blk duped;
+    };
+    defer outer.free(first_output);
+
+    // 두 번째 호출: 동일한 parser.ast (이미 truncated) 로 다시 시작
+    const second_output = blk: {
+        var t = try Transformer.initInPlace(a, &parser.ast, a, .{});
+        const root = try t.transform();
+        var cg = Codegen.init(a, t.ast);
+        const code = try cg.generate(root);
+        const duped = try outer.dupe(u8, code);
+        t.deinit();
+        break :blk duped;
+    };
+    defer outer.free(second_output);
+
+    try std.testing.expectEqualStrings(first_output, second_output);
+}
+
+test "initInPlace: deinit restores ast to parser-only state (nodes.len, boundary, transformed_root)" {
+    // borrow-mode deinit 의 truncation 이 AST 를 parse 직후 상태로 되돌리는지 검증.
+    // cross-emit 오염 방지 불변식의 핵심.
+    const source = "const x: number = 1 + 2; type Foo = string; class C { m() { return 42; } }";
+    const outer = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(outer);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var scanner = try Scanner.init(a, source);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+
+    const parser_count: u32 = @intCast(parser.ast.nodes.items.len);
+    const parser_extra_len = parser.ast.extra_data.items.len;
+    const parser_string_len = parser.ast.string_table.items.len;
+    try std.testing.expect(parser.ast.transform_boundary == null);
+    try std.testing.expect(parser.ast.transformed_root == null);
+
+    {
+        var t = try Transformer.initInPlace(a, &parser.ast, a, .{});
+        // initInPlace 직후: boundary 는 현재 parser_count 로 세팅됨.
+        try std.testing.expectEqual(@as(?u32, parser_count), parser.ast.transform_boundary);
+        try std.testing.expect(parser.ast.transformed_root == null);
+
+        _ = try t.transform();
+
+        // transform 후: transformer 가 노드를 append 했을 수 있고, transformed_root 기록됨.
+        try std.testing.expect(parser.ast.nodes.items.len >= parser_count);
+        try std.testing.expect(parser.ast.transformed_root != null);
+
+        t.deinit();
+    }
+
+    // deinit 이후: nodes 는 parser count 로 truncate, boundary/root 필드 null 복구.
+    try std.testing.expectEqual(@as(usize, parser_count), parser.ast.nodes.items.len);
+    try std.testing.expect(parser.ast.transform_boundary == null);
+    try std.testing.expect(parser.ast.transformed_root == null);
+    // 설계 불변식: extra_data / string_table 은 append-only 이므로 **절대 shrink 하지
+    // 않는다** (parser span 이 뒤쪽도 가리킬 수 있어 truncate 불가). transformer 가
+    // 추가로 append 했다면 tail 이 남아있고, 그렇지 않았다면 parser 길이 그대로.
+    try std.testing.expect(parser.ast.extra_data.items.len >= parser_extra_len);
+    try std.testing.expect(parser.ast.string_table.items.len >= parser_string_len);
+}
+
+test "initInPlace: refreshes source_ast.allocator from ast_allocator param" {
+    // initInPlace 가 호출 시 받은 ast_allocator 로 source_ast.allocator 를 **교체**
+    // 하는지 검증. parse 시점 캡처된 allocator 가 graph.modules relocation 으로 stale
+    // 이 되는 시나리오를 방지하는 핵심 메커니즘.
+    const source = "const x = 1;";
+    const outer = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(outer);
+    defer arena.deinit();
+    const parse_alloc = arena.allocator();
+    var scanner = try Scanner.init(parse_alloc, source);
+    var parser = Parser.init(parse_alloc, &scanner);
+    _ = try parser.parse();
+
+    // stale 시뮬레이션: parse 후 ast.allocator 를 의도적으로 다른 값으로 오염.
+    const original_ptr = parser.ast.allocator.ptr;
+    parser.ast.allocator = outer;
+    try std.testing.expect(parser.ast.allocator.ptr != original_ptr);
+
+    // fresh allocator 로 initInPlace 호출 — ast.allocator 가 여기로 refresh 되어야 함.
+    var fresh_arena = std.heap.ArenaAllocator.init(outer);
+    defer fresh_arena.deinit();
+    const fresh_alloc = fresh_arena.allocator();
+
+    var t = try Transformer.initInPlace(parse_alloc, &parser.ast, fresh_alloc, .{});
+    defer t.deinit();
+
+    // 핵심 assertion: ast.allocator 가 fresh_alloc 로 교체됐다.
+    try std.testing.expectEqual(fresh_alloc.ptr, parser.ast.allocator.ptr);
+    try std.testing.expect(parser.ast.allocator.ptr != outer.ptr);
+}
