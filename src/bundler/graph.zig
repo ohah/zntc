@@ -746,6 +746,9 @@ pub const ModuleGraph = struct {
 
         var module = &self.modules.items[mod_idx];
         module.state = .parsing;
+        // compiled_cache key 는 mtime 을 요구한다. first build 경로는 여기서 처음 계산,
+        // rebuild 경로는 cache lookup 시 이미 설정됐으므로 fsStat 재호출 없이 통과.
+        if (module.mtime == 0) module.mtime = getMtime(module.path) catch 0;
 
         // Plugin runner: parseModule 내에서 load + transform 훅에 공용
         const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
