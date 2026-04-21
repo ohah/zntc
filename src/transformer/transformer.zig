@@ -679,7 +679,7 @@ pub const Transformer = struct {
             .ts_instantiation_expression,
             .flow_as_expression,
             .flow_type_cast_expression,
-            => self.visitTsExpression(node),
+            => self.visitTsExpression(idx),
 
             .flow_match_expression => self.visitFlowMatch(node),
 
@@ -719,7 +719,7 @@ pub const Transformer = struct {
                 }
                 // no-substitution template (data.none == 0)은 리프 노드 — visitListNode으로 처리하면
                 // data.list = {start: X, len: 0}이 되어 codegen의 data.none == 0 체크가 깨짐
-                if (node.data.none == 0) return self.copyNodeDirect(node);
+                if (node.data.none == 0) return self.copyNodeDirect(idx);
                 return self.visitListNode(node);
             },
 
@@ -1193,7 +1193,7 @@ pub const Transformer = struct {
                 if (self.super_call_this_alias) {
                     return es_helpers.makeIdentifierRef(self, "_this");
                 }
-                return self.copyNodeDirect(node);
+                return self.copyNodeDirect(idx);
             },
 
             // meta_property: new.target / import.meta
@@ -1202,23 +1202,23 @@ pub const Transformer = struct {
                 if (node.data.none == 1 and self.options.unsupported.new_target) {
                     return self.lowerNewTarget(node.span);
                 }
-                return self.copyNodeDirect(node);
+                return self.copyNodeDirect(idx);
             },
 
             .boolean_literal,
             .null_literal,
             .numeric_literal,
             .bigint_literal,
-            => self.copyNodeDirect(node),
+            => self.copyNodeDirect(idx),
             .string_literal => blk: {
-                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(node);
+                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(idx);
                 const raw = self.ast.getText(node.span);
                 // raw는 따옴표를 포함. content 만 변환 후 다시 조립.
-                if (raw.len < 2) break :blk self.copyNodeDirect(node);
+                if (raw.len < 2) break :blk self.copyNodeDirect(idx);
                 const quote = raw[0];
-                if (quote != '"' and quote != '\'') break :blk self.copyNodeDirect(node);
+                if (quote != '"' and quote != '\'') break :blk self.copyNodeDirect(idx);
                 const content = raw[1 .. raw.len - 1];
-                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, content)) orelse break :blk self.copyNodeDirect(node);
+                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, content)) orelse break :blk self.copyNodeDirect(idx);
                 defer self.allocator.free(lowered);
                 const new_raw = try std.fmt.allocPrint(self.allocator, "{c}{s}{c}", .{ quote, lowered, quote });
                 defer self.allocator.free(new_raw);
@@ -1232,11 +1232,11 @@ pub const Transformer = struct {
             .regexp_literal => blk: {
                 const u = self.options.unsupported;
                 if (!(u.regex_dotall or u.regex_named_groups or u.regex_sticky or u.unicode_brace_escape)) {
-                    break :blk self.copyNodeDirect(node);
+                    break :blk self.copyNodeDirect(idx);
                 }
                 const raw = self.ast.getText(node.span);
                 const result = try regex_lower.lower(self.allocator, raw, .{ .unsupported = u });
-                const new_text = result.text orelse break :blk self.copyNodeDirect(node);
+                const new_text = result.text orelse break :blk self.copyNodeDirect(idx);
                 defer self.allocator.free(new_text);
                 const new_span = try self.ast.addString(new_text);
                 break :blk try self.ast.addNode(.{
@@ -1271,7 +1271,7 @@ pub const Transformer = struct {
                         });
                     }
                 }
-                return self.copyNodeDirect(node);
+                return self.copyNodeDirect(idx);
             },
             .binding_identifier => {
                 // ES2015 block scoping 격리: 리네이밍된 변수 선언 교체
@@ -1286,12 +1286,12 @@ pub const Transformer = struct {
                         });
                     }
                 }
-                return self.copyNodeDirect(node);
+                return self.copyNodeDirect(idx);
             },
             .template_element => blk: {
-                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(node);
+                if (!self.options.unsupported.unicode_brace_escape) break :blk self.copyNodeDirect(idx);
                 const raw = self.ast.getText(node.span);
-                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, raw)) orelse break :blk self.copyNodeDirect(node);
+                const lowered = (try unicode_escape_lower.lowerContent(self.allocator, raw)) orelse break :blk self.copyNodeDirect(idx);
                 defer self.allocator.free(lowered);
                 const new_span = try self.ast.addString(lowered);
                 break :blk try self.ast.addNode(.{
@@ -1313,14 +1313,14 @@ pub const Transformer = struct {
             .jsx_opening_fragment,
             .jsx_closing_fragment,
             .assignment_target_identifier,
-            => self.copyNodeDirect(node),
+            => self.copyNodeDirect(idx),
 
             // JSX leaf — jsx_text는 별도 처리 (jsx_transform 시 lowerJSXText)
             .jsx_text => {
                 if (self.options.jsx_transform) {
                     return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXText(self, node);
                 }
-                return self.copyNodeDirect(node);
+                return self.copyNodeDirect(idx);
             },
 
             // === import/export specifiers ===
@@ -1330,7 +1330,7 @@ pub const Transformer = struct {
             .import_default_specifier,
             .import_namespace_specifier,
             .import_attribute,
-            => self.copyNodeDirect(node),
+            => self.copyNodeDirect(idx),
 
             // === Pattern 노드: 자식 재귀 방문 ===
             .array_pattern,
@@ -1362,7 +1362,7 @@ pub const Transformer = struct {
             // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
             // 여기 도달하면 strip_types=false인 경우 → 그대로 복사.
             .invalid => .none,
-            else => self.copyNodeDirect(node),
+            else => self.copyNodeDirect(idx),
         };
     }
 
@@ -1370,9 +1370,14 @@ pub const Transformer = struct {
     // 노드 복사 헬퍼
     // ================================================================
 
-    /// 노드를 그대로 새 AST에 복사한다 (자식 없는 리프 노드용).
-    fn copyNodeDirect(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.ast.addNode(node);
+    /// 리프/불변 노드를 identity 로 반환한다 — 새 NodeIndex 를 할당하지 않음.
+    /// 통합 AST 에서는 parser/transformer 가 같은 배열을 공유하므로 old_idx 그대로
+    /// 유효하며, Symbol 의 NodeIndex 필드(`single_read_node` 등)가 stale 되지 않는다.
+    /// 내용이 변하는 리프(unicode escape lowering 등)는 여전히 `self.ast.addNode`
+    /// 로 새 노드를 만들어야 한다 — 이 함수는 "값 그대로 복제" 경로 전용.
+    fn copyNodeDirect(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        _ = self;
+        return idx;
     }
 
     /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.
@@ -1985,9 +1990,10 @@ pub const Transformer = struct {
         return self.visitNode(const_decl_idx);
     }
 
-    fn visitTsExpression(self: *Transformer, node: Node) Error!NodeIndex {
+    fn visitTsExpression(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        const node = self.ast.getNode(idx);
         if (!self.options.strip_types) {
-            return self.copyNodeDirect(node);
+            return self.copyNodeDirect(idx);
         }
         const operand = node.data.unary.operand;
         // ts_type_assertion: <T>(expr) → expr (괄호 불필요)
@@ -4074,7 +4080,7 @@ pub const Transformer = struct {
         // codegen이 writeSpan으로 출력하므로 symbol_id가 있어도 무시됨.
         const key_idx = node.data.binary.left;
         const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag != .computed_property_key)
-            try self.copyNodeDirect(self.ast.getNode(key_idx))
+            try self.copyNodeDirect(key_idx)
         else
             try self.visitNode(key_idx);
         self.propagateSymbolId(key_idx, new_key);
@@ -4538,7 +4544,7 @@ pub const Transformer = struct {
                         self.plugins.worklet.auto_next = saved;
                         const key_idx = prop.data.binary.left;
                         const new_key = if (!key_idx.isNone() and self.ast.getNode(key_idx).tag != .computed_property_key)
-                            try self.copyNodeDirect(self.ast.getNode(key_idx))
+                            try self.copyNodeDirect(key_idx)
                         else
                             try self.visitNode(key_idx);
                         const new_prop = try self.ast.addNode(.{
