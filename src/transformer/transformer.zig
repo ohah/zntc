@@ -67,13 +67,6 @@ pub const DefineEntry = struct {
     value: []const u8,
 };
 
-/// emitModule 이 Transformer 를 어떤 방식으로 초기화할지 (RFC #1672 D1b-2).
-/// - `.in_place`: `Transformer.initInPlace` — module.ast 를 직접 mutate, 종료 시 parser
-///   상태로 truncate 복구. single-bundle 경로 (`emitWithTreeShaking`) 전용.
-/// - `.cloned`: `Transformer.init` — ast 를 heap cell 로 clone. splitting 처럼 같은
-///   module 을 여러 번 emit 하는 경로에서 사용.
-pub const AstHandling = enum { in_place, cloned };
-
 /// 정규화 버퍼 크기. `process.env.NODE_ENV`류 식별자 체인은 훨씬 짧지만 여유.
 /// 초과 시 normalizeOptionalChain은 null을 반환해 치환을 스킵한다.
 const DEFINE_KEY_NORM_BUF: usize = 256;
