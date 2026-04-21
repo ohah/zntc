@@ -30,6 +30,8 @@ const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
+const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
+const AstHandling = @import("../transformer/transformer.zig").AstHandling;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const cache_mod = @import("compiled_cache.zig");
@@ -426,7 +428,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json, .in_place) catch null;
         }
     }
 
@@ -810,12 +812,17 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *CompiledModule,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json) catch null;
+    // emitWithTreeShaking 경로 — 모듈당 emitModule 1회 호출이 보장되므로 in-place.
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json, .in_place) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
 /// 모듈별 arena에 AST가 보존되어 있으므로 재파싱 불필요.
 /// emitChunks에서도 사용하므로 pub으로 노출.
+///
+/// `ast_handling` (D1b-2, RFC #1672): `.in_place` 는 module.ast 를 직접 mutate 후
+/// parser 상태로 truncate 복구. `.cloned` 은 기존 clone 경로 (splitting 처럼 같은 module
+/// 을 여러 번 emit 하는 경로 전용).
 pub fn emitModule(
     allocator: std.mem.Allocator,
     module: *const Module,
@@ -828,6 +835,7 @@ pub fn emitModule(
     mappings_out: ?*?[]const SourceMap.Mapping,
     preamble_lines_out: ?*u32,
     fn_map_json_out: ?*?[]const u8,
+    ast_handling: AstHandling,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -844,7 +852,7 @@ pub fn emitModule(
         return emitAssetModule(allocator, module, options);
     }
 
-    const ast = &(module.ast orelse return null);
+    if (module.ast == null) return null;
 
     // 변환용 arena (Transformer/Codegen 내부 메모리)
     var emit_arena = std.heap.ArenaAllocator.init(allocator);
@@ -855,7 +863,7 @@ pub fn emitModule(
     // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환.
     // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
     // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
-    const jsx_active = ast.has_jsx;
+    const jsx_active = module.ast.?.has_jsx;
     const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
     const apply_refresh = options.react_refresh and is_user_code;
     const builtin = @import("../transformer/plugins/builtin.zig");
@@ -868,7 +876,7 @@ pub fn emitModule(
         .worklet = options.worklet_transform and !exclude_worklet,
     }, options.plugins, arena_alloc) catch return error.OutOfMemory;
 
-    var transformer = try Transformer.init(arena_alloc, ast, .{
+    const transform_opts: TransformOptions = .{
         .react_refresh = apply_refresh,
         .plugins = merged_plugins,
         .define = options.define,
@@ -887,7 +895,19 @@ pub fn emitModule(
         .worklet_plugin_version = options.worklet_plugin_version,
         .minify_syntax = options.minify_syntax,
         .keep_names = options.keep_names,
-    });
+    };
+    var transformer = switch (ast_handling) {
+        .in_place => blk: {
+            // parse_arena 로부터 **지금** 새로 allocator 를 캡처 — module.ast.allocator 는
+            // parse 시점 캡처라 graph.modules 가 relocated 되면 stale 가능. initInPlace
+            // 가 ast 에 refresh. scratch 는 emit_arena.
+            const parse_alloc = @constCast(&module.parse_arena.?).allocator();
+            break :blk try Transformer.initInPlace(arena_alloc, @constCast(&module.ast.?), parse_alloc, transform_opts);
+        },
+        .cloned => try Transformer.init(arena_alloc, &module.ast.?, transform_opts),
+    };
+    // borrow 경로에서 deinit 이 ast 를 parser 상태로 truncate — 에러 경로 포함 보장.
+    defer transformer.deinit();
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 ast 기준으로 재매핑. symbols slice도 함께 전달하여
     // reference_count 기반 optimization(#1587 등)이 번들 경로에서도 동작하도록 함.
