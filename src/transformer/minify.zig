@@ -31,14 +31,20 @@ const purity = @import("../bundler/purity.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 
 /// Minify pass 컨텍스트. semantic 정보가 있을 때만 dead store 제거가 동작한다.
-/// `symbols` 는 mutable slice — dead declaration 제거 시 init 내부 identifier reference 의
-/// `reference_count` 를 감산하기 위해 필요하다 (stale 방지).
+/// `symbols` 는 read-only 로 사용한다 — 과거엔 `reference_count` 를 직접 감산했지만,
+/// `module.semantic` 이 `PersistentModuleStore` 에 캐시되어 rebuild 간 재사용되므로
+/// 영구 뮤테이션은 누적 감산 → live 선언 오제거로 이어진다. emit 당 임시 delta
+/// 는 `minify` 내부 scratch 배열에 기록하고, check/rewrite 는 그 조합으로 판정한다.
 /// `scopes` 는 eval / with 포함 여부 조회용 (dynamic lookup 보호).
 pub const MinifyCtx = struct {
-    symbols: []symbol_mod.Symbol,
+    symbols: []const symbol_mod.Symbol,
     symbol_ids: []const ?u32,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
+    /// symbol 별 누적 감산량 (이번 emit 한정). length == symbols.len 또는 0.
+    /// 비어있으면 `symbols[*].reference_count` 를 그대로 사용 (최초 호출 경로).
+    /// `minify()` 진입부에서 scratch 로 할당 → `decrementRefsInExpr` 가 증가.
+    ref_deltas: []u32 = &.{},
 
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
@@ -53,6 +59,14 @@ pub const MinifyCtx = struct {
     /// 잘못 제거될 수 있으므로, 세 필드 모두 요구하는 all-or-nothing 계약.
     inline fn hasSemantic(self: MinifyCtx) bool {
         return self.symbols.len > 0 and self.symbol_ids.len > 0 and self.scopes.len > 0;
+    }
+
+    /// 심볼 id 의 effective reference_count (ref_deltas 적용).
+    inline fn effectiveRefCount(self: MinifyCtx, sid: u32) u32 {
+        const base = self.symbols[sid].reference_count;
+        if (sid >= self.ref_deltas.len) return base;
+        const delta = self.ref_deltas[sid];
+        return if (delta >= base) 0 else base - delta;
     }
 };
 
@@ -201,7 +215,26 @@ fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
 /// `scratch` 는 skip/live bitset 과 BFS 큐 전용 임시 allocator. 호출 종료 시 해제되는
 /// ephemeral arena 를 권장한다 (예: bundler 의 emit_arena). `ast.allocator` (parse_arena)
 /// 를 넘기면 watch 모드 rebuild 마다 버퍼가 모듈 수명 동안 누적되므로 피할 것.
-pub fn minify(ast: *Ast, ctx: MinifyCtx, scratch: std.mem.Allocator, root: NodeIndex) void {
+pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: NodeIndex) void {
+    var ctx = ctx_in;
+    // per-emit ref delta 배열: dead-store 가 `symbols.reference_count` 를 직접
+    // 감산하던 경로를 대체. semantic 이 `PersistentModuleStore` 에 캐시되어 rebuild
+    // 마다 누적 감산되던 live 선언 오제거 (#번개 실측: react-devtools-core 의
+    // `operatorResMap` 이 2회차 rebuild 에서 사라짐) 를 방지한다. 호출자가
+    // 이미 ref_deltas 를 제공하면 재사용.
+    var owned_deltas: ?[]u32 = null;
+    defer if (owned_deltas) |d| scratch.free(d);
+    if (ctx.hasSemantic() and ctx.ref_deltas.len == 0) {
+        if (scratch.alloc(u32, ctx.symbols.len)) |buf| {
+            @memset(buf, 0);
+            owned_deltas = buf;
+            ctx.ref_deltas = buf;
+        } else |_| {
+            // OOM — ref_deltas 없이 진행 (기존 동작: ctx.symbols 바로 읽음).
+            // symbols 는 const slice 이므로 여기서 쓸 수 없어 decrement 는 noop 된다.
+        }
+    }
+
     // for-loop binding 은 fold passes 가 새로 만들지 않아 iter-invariant — 미리 1회만 수집.
     var skip_for_binding: ?std.DynamicBitSet = null;
     defer if (skip_for_binding) |*b| b.deinit();
@@ -420,8 +453,9 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     // exported binding 보호 — transpile 단독 경로는 tree-shaker 가 없어 직접 지키는 외엔 없다
     if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
 
-    // reference 가 있거나 다른 곳에서 쓰이면 dead 아님
-    if (sym.reference_count != 0 or sym.write_count != 0) return;
+    // reference 가 있거나 다른 곳에서 쓰이면 dead 아님.
+    // ref_deltas 가 이번 emit 에서 감산된 양을 반영.
+    if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
 
     // init 이 있으면 purity 검사 — 불순하면 RHS 보존을 위해 (아직) 제거 불가
     const init_idx: NodeIndex = @enumFromInt(init_raw);
@@ -451,8 +485,8 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
     if (node.tag == .identifier_reference) {
         if (ni < ctx.symbol_ids.len) {
             if (ctx.symbol_ids[ni]) |sid| {
-                if (sid < ctx.symbols.len and ctx.symbols[sid].reference_count > 0) {
-                    ctx.symbols[sid].reference_count -= 1;
+                if (sid < ctx.ref_deltas.len and ctx.effectiveRefCount(sid) > 0) {
+                    ctx.ref_deltas[sid] += 1;
                 }
             }
         }

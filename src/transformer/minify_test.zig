@@ -977,9 +977,12 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
 
 // ---- reference_count decrement 검증 ----
 
-test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
-    // `let y = 1; let x = y;` 에서 x 제거 시 y 의 reference_count 가 1 → 0 이 되어야 함.
-    // (fixed-point loop 가 도입되면 다음 pass 에서 y 도 제거되는 기반.)
+test "dead store: cascading — y dead 여부는 x 제거의 감산으로 결정" {
+    // `let y = 1; let x = y;` 에서 x 제거 → init 내부 y reference 감산 → 다음 iter 에서
+    // y 도 제거. minify 는 `sym.reference_count` 를 뮤테이션하지 않고 내부 delta 로만
+    // 관리한다 (#번개 실측: 캐시된 semantic 에 감산이 누적되면 rebuild 마다 live 선언이
+    // 지워진다). 따라서 "감산됐음" 을 외부 reference_count 로 검증할 수 없고, 최종
+    // AST 가 y 도 empty_statement 인지로 확인한다.
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -996,7 +999,7 @@ test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
     transformer.symbols = analyzer.symbols.items;
     const root = try transformer.transform();
 
-    // 초기: x 는 0 ref, y 는 1 ref (x 의 init 에서 읽힘)
+    // 초기: y 의 reference_count 가 1 (x 의 init 에서 읽힘)
     var y_ref_before: u32 = 0;
     for (analyzer.symbols.items) |sym| {
         const name = sym.nameText(parser.ast.source);
@@ -1012,13 +1015,20 @@ test "dead store: 제거 시 init 내부 식별자 reference_count 감산" {
     };
     minify_mod.minify(&transformer.ast, ctx, a, root);
 
-    // 제거 후: x 가 사라지면서 y 의 reference_count 도 1 → 0
+    // minify 는 sem.reference_count 를 뮤테이션하지 않아야 한다 (rebuild 누적 감산 방지).
     var y_ref_after: u32 = 0;
     for (analyzer.symbols.items) |sym| {
         const name = sym.nameText(parser.ast.source);
         if (std.mem.eql(u8, name, "y")) y_ref_after = sym.reference_count;
     }
-    try std.testing.expectEqual(@as(u32, 0), y_ref_after);
+    try std.testing.expectEqual(@as(u32, 1), y_ref_after);
+
+    // 최종 AST: x 와 y 둘 다 empty_statement 여야 함 (cascading dead-store 동작).
+    var codegen = Codegen.init(a, &transformer.ast);
+    defer codegen.deinit();
+    const output = try codegen.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "let x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "let y") == null);
 }
 
 // ================================================================
