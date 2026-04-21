@@ -453,7 +453,9 @@ pub const Transformer = struct {
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
         // 파서 AST를 트랜스포머 allocator로 복제 (원본 보존)
-        const cloned_ast = try Ast.cloneForTransformer(source_ast, allocator);
+        var cloned_ast = try Ast.cloneForTransformer(source_ast, allocator);
+        // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
+        cloned_ast.transform_boundary = @intCast(cloned_ast.nodes.items.len);
 
         var self: Transformer = .{
             .ast = cloned_ast,
@@ -520,6 +522,12 @@ pub const Transformer = struct {
     /// 반환값: 새 AST에서의 루트 NodeIndex.
     /// 변환된 AST는 self.ast에 저장된다.
     pub fn transform(self: *Transformer) Error!NodeIndex {
+        // D1 (RFC #1672): 재진입 가드 (D1b in-place 전환 시 shared module 이중 transform 을 조기 탐지).
+        self.ast.assertInvariants();
+        if (@import("builtin").mode == .Debug) {
+            std.debug.assert(self.ast.transformed_root == null);
+        }
+
         // define value를 미리 string_table에 저장하여 tryDefineReplace에서 중복 addString 방지
         if (self.options.define.len > 0) {
             self.define_spans = self.allocator.alloc(Span, self.options.define.len) catch return Error.OutOfMemory;
@@ -559,9 +567,11 @@ pub const Transformer = struct {
 
         // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거)
         if (self.options.react_refresh and self.plugins.refresh.registrations.items.len > 0) {
-            return try self.appendRefreshRegistrations(root);
+            root = try self.appendRefreshRegistrations(root);
         }
 
+        self.ast.transformed_root = root;
+        self.ast.assertInvariants();
         return root;
     }
 

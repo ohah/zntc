@@ -66,9 +66,9 @@ append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser
 결과. boundary 가 null 이면 아직 transform 전.
 
 함께 제공되는 인프라:
-- `Ast.transform_boundary: ?u32` — 변환 시작 시점 snapshot (필드만 정의, 사용은 D1 에서)
-- `Ast.transformed_root: ?NodeIndex` — transform() 결과 root cache (재진입 방지)
-- `Ast.assertInvariants()` — Debug 빌드 전용 invariant 검증
+- `Ast.transform_boundary: ?u32` — `Transformer.init` 시점 snapshot. D1a 부터 clone 경로에서 활성 (`cloneForTransformer` 가 생성한 AST 의 `nodes.items.len`).
+- `Ast.transformed_root: ?NodeIndex` — `transform()` 종료 시 root 기록. D1a 부터 활성. 이중 호출 (재진입) 은 `transform()` 진입 시 null 검증으로 탐지.
+- `Ast.assertInvariants()` — Debug 빌드 전용 invariant 검증. boundary 범위 + transformed_root 유효성.
 - `Module.ast` 의 ownership 주석 — parse_arena 소유 규약 명시
 
 ## 코드 사용법
