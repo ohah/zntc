@@ -918,7 +918,11 @@ pub fn emitModule(
     //
     // Dead store (#1644 PR1): semantic 정보가 있을 때만 unused declaration 제거 활성.
     // tree-shaker 가 top-level export 미사용은 이미 커버하지만, 함수 내부 local 은 여기서 처리.
-    {
+    //
+    // **dev_mode 예외**: HMR rebuild 체감 우선 — minify pass 전체 skip. fold/dead-store/
+    // inline 은 출력 품질 개선이지 correctness 가 아니라 런타임 의미 동일. Metro 가
+    // dev 에서 아무 minify 안 하는 것과 동일한 trade-off.
+    if (!options.dev_mode) {
         const minify_mod = @import("../transformer/minify.zig");
         const ctx: minify_mod.MinifyCtx = if (module.semantic) |sem| .{
             .symbols = sem.symbols.items,
@@ -1077,10 +1081,13 @@ pub fn emitModule(
     // `var A=1; var B=2;`에서 `B`만 미사용으로 마킹된 경우, 먼저 merge했다면 합쳐진
     // statement는 A가 사용되므로 제거 불가 → B의 초기화식이 살아남아 죽은 심볼을 참조.
     // 순서: transform → minify(fold) → tree-shake → downgradeToVar → mergeDecls → codegen.
-    @import("../transformer/minify.zig").mergeDecls(
-        transformer.ast,
-        if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
-    );
+    // dev_mode 에선 skip — 병합은 출력 크기 최적화용이라 런타임 의미 불변. HMR 체감 우선.
+    if (!options.dev_mode) {
+        @import("../transformer/minify.zig").mergeDecls(
+            transformer.ast,
+            if (metadata) |*m| @as(?*const std.DynamicBitSet, &m.skip_nodes) else null,
+        );
+    }
 
     // __esm 모듈: AST 수준 var/function 호이스팅 (esbuild/rolldown 방식)
     if (module.wrap_kind == .esm) {
