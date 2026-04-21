@@ -63,8 +63,6 @@ pub const ModuleGraph = struct {
 
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
-    /// 파이프라인 단계별 타이밍 출력 (--timing)
-    timing: bool = false,
     /// 확장자별 로더 오버라이드 (--loader:.png=file). bundler에서 전달.
     loader_overrides: []const types.LoaderOverride = &.{},
     /// 에셋/청크 URL prefix (--public-path). asset 로더에서 사용.
@@ -189,8 +187,6 @@ pub const ModuleGraph = struct {
         const pool_ok = if (pool.init(pool_opts)) |_| true else |_| false;
         defer if (pool_ok) pool.deinit();
 
-        var scan_timer: ?std.time.Timer = if (self.timing) std.time.Timer.start() catch null else null;
-
         if (pool_ok) {
             var channel = MpscChannel(ScanResult).init(self.allocator);
             defer channel.deinit();
@@ -290,20 +286,6 @@ pub const ModuleGraph = struct {
                     try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
                 }
                 parse_start = parse_end;
-            }
-        }
-
-        if (self.timing) {
-            if (scan_timer) |*t| {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
-                stderr.print(
-                    \\  Graph scan: {d:.3} ms  ({d} modules, pool={s})
-                    \\
-                , .{
-                    @as(f64, @floatFromInt(t.read())) / 1_000_000.0,
-                    self.modules.items.len,
-                    if (pool_ok) "yes" else "no",
-                }) catch {};
             }
         }
 

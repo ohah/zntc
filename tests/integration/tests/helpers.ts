@@ -100,10 +100,17 @@ export async function linkNodeModules(dir: string, packages: string[]): Promise<
   );
 }
 
+interface RunOptions {
+  env?: Record<string, string | undefined>;
+}
+
 async function runCmd(
   cmd: string[],
+  options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" });
+  const spawnOpts: Parameters<typeof spawn>[0] = { cmd, stdout: "pipe", stderr: "pipe" };
+  if (options?.env) spawnOpts.env = options.env as Record<string, string>;
+  const proc = spawn(spawnOpts);
 
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -116,8 +123,9 @@ async function runCmd(
 
 export async function runZts(
   args: string[],
+  options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return runCmd([ZTS_BIN, ...args]);
+  return runCmd([ZTS_BIN, ...args], options);
 }
 
 /// Node로 JS 파일을 실행. exit != 0 시 stdout/stderr를 포함한 에러 throw (디버깅 편의).

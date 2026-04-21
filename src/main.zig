@@ -68,7 +68,12 @@ const CliOptions = struct {
     /// 사용자가 --target을 명시적으로 전달했는지 (RN 프리셋 경고용).
     target_explicit: bool = false,
     conditions_list: std.ArrayList([]const u8) = .empty,
-    timing: bool = false,
+    /// --profile=<CSV>: 활성화할 profile category 목록. e.g. "all", "parse,transform".
+    profile_csv: ?[]const u8 = null,
+    /// --profile-level=<summary|detailed|per-module|per-pass>.
+    profile_level: ?[]const u8 = null,
+    /// --profile-format=<table|tree|json|csv>.
+    profile_format: ?[]const u8 = null,
     preserve_symlinks: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
@@ -450,8 +455,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             while (it.next()) |field| {
                 if (field.len > 0) try opts.main_fields_list.append(allocator, field);
             }
-        } else if (std.mem.eql(u8, arg, "--timing")) {
-            opts.timing = true;
+        } else if (std.mem.startsWith(u8, arg, "--profile=")) {
+            opts.profile_csv = arg["--profile=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--profile-level=")) {
+            opts.profile_level = arg["--profile-level=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--profile-format=")) {
+            opts.profile_format = arg["--profile-format=".len..];
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             opts.is_bundle = true;
         } else if (std.mem.eql(u8, arg, "--serve")) {
@@ -831,8 +840,6 @@ const DefineEntry = lib.transformer.DefineEntry;
 const TranspileOptions = struct {
     /// 핵심 트랜스파일 옵션 (transpile.zig에 직접 전달)
     core: lib.transpile.TranspileOptions = .{},
-    /// CLI 전용: 파이프라인 단계별 소요시간 출력 (--timing)
-    timing: bool = false,
     /// --allow-overwrite: 출력 파일이 입력 파일을 덮어쓰는 것을 허용
     allow_overwrite: bool = false,
 };
@@ -884,12 +891,6 @@ fn transpileFile(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // 타이밍 측정용 타이머 (--timing일 때만 시작)
-    var timer: ?std.time.Timer = if (options.timing) std.time.Timer.start() catch null else null;
-    var t_read: u64 = 0;
-    var t_scan: u64 = 0;
-    var t_transpile: u64 = 0;
-
     // 소스 읽기
     const source = source_override orelse blk: {
         break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
@@ -897,33 +898,10 @@ fn transpileFile(
             return error.TranspileFailed;
         };
     };
-    if (timer) |*t| {
-        t_read = t.read();
-        t.reset();
-    }
 
-    // --timing: scan-only 패스로 순수 토큰화 시간 측정
-    if (options.timing) {
-        if (timer) |*t| t.reset();
-        var scan_only = try Scanner.init(arena_alloc, source);
-        const ext = std.fs.path.extension(file_path);
-        if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs") or
-            std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".cts"))
-        {
-            scan_only.is_module = true;
-        }
-        try scan_only.next();
-        while (scan_only.token.kind != .eof) {
-            try scan_only.next();
-        }
-        if (timer) |*t| {
-            t_scan = t.read();
-            t.reset();
-        }
-    }
-
-    // 핵심 트랜스파일 — transpile.zig에 위임 (에러 시 코드 프레임 출력 콜백)
+    // 핵심 트랜스파일 — transpile.zig에 위임 (에러 시 코드 프레임 출력 콜백).
+    // 파이프라인 단계별 타이밍은 `--profile` 플래그가 활성화됐을 때 `profile` 모듈이
+    // hot-path timer 로 수집한다 (PR 3 이후 hot-path 에 삽입).
     var result = transpile_mod.transpileWithCallback(allocator, source, file_path, options.core, &printErrors) catch |err| {
         // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
@@ -935,11 +913,6 @@ fn transpileFile(
         return error.TranspileFailed;
     };
     defer result.deinit(allocator);
-
-    if (timer) |*t| {
-        t_transpile = t.read();
-        t.reset();
-    }
 
     // --allow-overwrite 체크
     if (!options.allow_overwrite) {
@@ -977,30 +950,6 @@ fn transpileFile(
 
     // 시맨틱 에러가 있었으면 exit 1 (tsc 호환: output은 생성하되 에러 코드 반환)
     if (result.diagnostics.len > 0) return error.TranspileFailed;
-
-    // --timing
-    if (options.timing) {
-        const total = t_read + t_transpile;
-        const f_scan = @as(f64, @floatFromInt(t_scan)) / 1_000_000.0;
-        const f_transpile = @as(f64, @floatFromInt(t_transpile)) / 1_000_000.0;
-        try stderr.print(
-            \\
-            \\  Timing for '{s}' ({d} bytes):
-            \\    read:      {d:.3} ms
-            \\    scan:      {d:.3} ms  (standalone)
-            \\    transpile: {d:.3} ms  (parse+semantic+transform+codegen)
-            \\    ─────────────────
-            \\    total:     {d:.3} ms  (excludes standalone scan)
-            \\
-        , .{
-            file_path,
-            source.len,
-            @as(f64, @floatFromInt(t_read)) / 1_000_000.0,
-            f_scan,
-            f_transpile,
-            @as(f64, @floatFromInt(total)) / 1_000_000.0,
-        });
-    }
 }
 
 /// 디렉토리를 재귀 순회하며 .ts/.tsx 파일을 찾아 트랜스파일한다.
@@ -1117,6 +1066,7 @@ pub fn main() !void {
     const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else @import("mimalloc.zig").allocator;
 
     lib.debug_log.initFromEnv(allocator);
+    lib.profile.initFromEnv(allocator);
 
     // CLI 인자 파싱
     const args = try std.process.argsAlloc(allocator);
@@ -1124,6 +1074,33 @@ pub fn main() !void {
 
     var opts = try parseCliArguments(args, allocator) orelse return;
     defer opts.deinit(allocator);
+
+    // --profile / --profile-level / --profile-format 반영 (env 와 합집합).
+    if (opts.profile_csv) |csv| lib.profile.addFromCsv(csv);
+    if (opts.profile_level) |lvl| {
+        if (lib.profile.Level.fromString(lvl)) |parsed| {
+            lib.profile.setLevel(parsed);
+        } else {
+            try stderr.print("zts: invalid --profile-level='{s}' (expected summary|detailed|per-module|per-pass)\n", .{lvl});
+            std.process.exit(1);
+        }
+    }
+    const profile_report_format: ?lib.profile.Format = if (opts.profile_format) |fmt| blk: {
+        if (lib.profile.Format.fromString(fmt)) |parsed| {
+            break :blk parsed;
+        }
+        try stderr.print("zts: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
+        std.process.exit(1);
+    } else null;
+
+    // 작업 완료 후 profile 수집 결과 출력 (활성 category 가 있을 때만).
+    defer {
+        if (opts.profile_csv != null or profile_report_format != null) {
+            const fmt = profile_report_format orelse .table;
+            const stderr_file = std.fs.File.stderr();
+            lib.profile.report(stderr_file.deprecatedWriter(), fmt) catch {};
+        }
+    }
 
     // crash report 컨텍스트: panic 시 어떤 입력/타겟에서 죽었는지 알려 준다.
     lib.crash_handler.setContext(.{
@@ -1453,7 +1430,6 @@ pub fn main() !void {
             .verbatim_module_syntax = opts.verbatim_module_syntax orelse false,
             .unsupported = opts.unsupported,
             .conditions = opts.conditions_list.items,
-            .timing = opts.timing,
             .preserve_symlinks = opts.preserve_symlinks,
             .alias = opts.alias_list.items,
             .ts_paths = resolved_paths.entries,
@@ -1973,7 +1949,6 @@ pub fn main() !void {
             .jsx_fragment = opts.jsx_fragment,
             .jsx_import_source = opts.jsx_import_source,
         },
-        .timing = opts.timing,
         .allow_overwrite = opts.allow_overwrite,
     };
 
@@ -2313,6 +2288,28 @@ fn printUsage(writer: anytype) !void {
         \\Resolve options:
         \\  --resolve-extensions=<exts>       Comma-separated extension order (e.g. .ios.ts,.ts,.js)
         \\  --main-fields=<fields>            Comma-separated package.json field order (e.g. react-native,browser,main)
+        \\
+        \\Profiling (pipeline timing):
+        \\  --profile=<CATS>                  Categories to profile. CSV of:
+        \\                                      all, none, scan, parse, semantic, resolve, graph,
+        \\                                      link, shake, transform, codegen, metadata, emit,
+        \\                                      hmr, cache (dot notation for sub-phases:
+        \\                                      parse.ast_build, transform.jsx, hmr.detect, ...).
+        \\                                      Parent category activates all children.
+        \\                                      Examples:
+        \\                                        --profile=all
+        \\                                        --profile=parse,transform
+        \\                                        --profile=transform.jsx,transform.ts_strip
+        \\  --profile-level=<L>               Detail level: summary | detailed | per-module | per-pass
+        \\                                      (default: summary)
+        \\  --profile-format=<F>              Output format: table | tree | json | csv
+        \\                                      (default: table)
+        \\
+        \\  Env equivalents:
+        \\    ZTS_PROFILE=<CATS>              Same as --profile
+        \\    ZTS_PROFILE_LEVEL=<L>           Same as --profile-level
+        \\
+        \\  See `docs/design/profile-infrastructure.md` for full reference.
         \\
     , .{});
 }

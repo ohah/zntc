@@ -89,11 +89,11 @@ const GENERATORS: Record<PatternName, (lines: number) => string> = {
 };
 
 // ============================================================
-// Timing parser — ZTS --timing stderr 파싱
+// Timing parser — ZTS `--profile=all --profile-format=json` stderr 파싱
+// (기존 `--timing` 은 제거됨 — #1672 D2 profile infrastructure)
 // ============================================================
 
 interface PipelineTiming {
-  read: number;
   scan: number;
   parse: number;
   semantic: number;
@@ -102,24 +102,32 @@ interface PipelineTiming {
   total: number;
 }
 
+interface ProfileJson {
+  profile_version: number;
+  total_ms: number;
+  level: string;
+  phases: Record<string, { total_ms: number; count: number; pct: number }>;
+}
+
 function parseTiming(stderr: string): PipelineTiming | null {
-  const extract = (label: string): number => {
-    const re = new RegExp(`${label}:\\s+([\\d.]+)\\s+ms`);
-    const m = stderr.match(re);
-    return m ? parseFloat(m[1]) : 0;
-  };
-
-  const total = extract("total");
-  if (total === 0) return null;
-
+  // `--profile-format=json` 은 `{ ... }` JSON 블록을 stderr 로 출력한다.
+  const start = stderr.indexOf("{");
+  if (start < 0) return null;
+  const json = stderr.slice(start);
+  let data: ProfileJson;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const get = (name: string): number => data.phases[name]?.total_ms ?? 0;
   return {
-    read: extract("read"),
-    scan: extract("scan"),
-    parse: extract("parse"),
-    semantic: extract("semantic"),
-    transform: extract("transform"),
-    codegen: extract("codegen"),
-    total,
+    scan: get("scan"),
+    parse: get("parse"),
+    semantic: get("semantic"),
+    transform: get("transform"),
+    codegen: get("codegen"),
+    total: data.total_ms,
   };
 }
 
@@ -134,7 +142,6 @@ function median(values: number[]): number {
 
 function medianTiming(timings: PipelineTiming[]): PipelineTiming {
   const keys: (keyof PipelineTiming)[] = [
-    "read",
     "scan",
     "parse",
     "semantic",
@@ -151,15 +158,16 @@ function medianTiming(timings: PipelineTiming[]): PipelineTiming {
 
 function measureZtsTiming(inputFile: string, outFile: string): PipelineTiming | null {
   const timings: PipelineTiming[] = [];
+  const profileArgs = ["--profile=all", "--profile-format=json"];
 
   // warmup
-  spawnSync(ZTS_BIN, [inputFile, "--timing", "-o", outFile], {
+  spawnSync(ZTS_BIN, [inputFile, ...profileArgs, "-o", outFile], {
     stdio: "pipe",
     timeout: 60000,
   });
 
   for (let i = 0; i < ITERATIONS; i++) {
-    const result = spawnSync(ZTS_BIN, [inputFile, "--timing", "-o", outFile], {
+    const result = spawnSync(ZTS_BIN, [inputFile, ...profileArgs, "-o", outFile], {
       stdio: "pipe",
       timeout: 60000,
     });
@@ -294,17 +302,13 @@ for (const pattern of PATTERNS) {
   if (group.length === 0) continue;
 
   console.log(`### ${pattern}\n`);
-  console.log(
-    "| Lines | Size (KB) | read | scan | parse | semantic | transform | codegen | total |",
-  );
-  console.log(
-    "|------:|----------:|-----:|-----:|------:|---------:|----------:|--------:|------:|",
-  );
+  console.log("| Lines | Size (KB) | scan | parse | semantic | transform | codegen | total |");
+  console.log("|------:|----------:|-----:|------:|---------:|----------:|--------:|------:|");
 
   for (const r of group) {
     const t = r.timing;
     console.log(
-      `| ${r.lines.toLocaleString()} | ${r.sizeKB} | ${fmt(t.read)} | ${fmt(t.scan)} | ` +
+      `| ${r.lines.toLocaleString()} | ${r.sizeKB} | ${fmt(t.scan)} | ` +
         `${fmt(t.parse)} | ${fmt(t.semantic)} | ${fmt(t.transform)} | ` +
         `${fmt(t.codegen)} | ${fmt(t.total)} |`,
     );

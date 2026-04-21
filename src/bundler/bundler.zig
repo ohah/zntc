@@ -92,8 +92,6 @@ pub const BundleOptions = struct {
     unsupported: compat.UnsupportedFeatures = .{},
     /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
     conditions: []const []const u8 = &.{},
-    /// 파이프라인 단계별 타이밍 출력 (--timing)
-    timing: bool = false,
     /// symlink를 따라가지 않고 링크 자체 경로로 해석 (--preserve-symlinks)
     preserve_symlinks: bool = false,
     /// import 경로 별칭 (--alias:K=V). resolve 시 specifier 앞부분을 치환.
@@ -584,7 +582,6 @@ pub const Bundler = struct {
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
     pub fn bundle(self: *Bundler) !BundleResult {
-        const timing = self.options.timing;
         var t_graph: u64 = 0;
         var t_link: u64 = 0;
         var t_shake: u64 = 0;
@@ -646,7 +643,6 @@ pub const Bundler = struct {
         // 1. 모듈 그래프 구축
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
-        graph.timing = timing;
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.project_root = self.options.project_root;
@@ -947,30 +943,9 @@ pub const Bundler = struct {
             t_emit = t.read();
         }
 
-        // 타이밍 출력
-        if (timing) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
-            const total = t_graph + t_link + t_shake + t_emit;
-            const module_count = graph.modules.items.len;
-            stderr.print(
-                \\
-                \\  Bundle timing ({d} modules):
-                \\    graph:      {d:.3} ms  (resolve + parse + finalize)
-                \\    link:       {d:.3} ms
-                \\    tree-shake: {d:.3} ms
-                \\    emit:       {d:.3} ms  (transform + codegen)
-                \\    ─────────────────
-                \\    total:      {d:.3} ms
-                \\
-            , .{
-                module_count,
-                @as(f64, @floatFromInt(t_graph)) / 1_000_000.0,
-                @as(f64, @floatFromInt(t_link)) / 1_000_000.0,
-                @as(f64, @floatFromInt(t_shake)) / 1_000_000.0,
-                @as(f64, @floatFromInt(t_emit)) / 1_000_000.0,
-                @as(f64, @floatFromInt(total)) / 1_000_000.0,
-            }) catch {};
-        }
+        // 파이프라인 단계별 타이밍 출력은 `--profile` 을 통해 `profile` 모듈이 담당.
+        // 이 `t_graph/t_link/t_shake/t_emit` 은 `BundleResult.timings` 를 채워
+        // NAPI `WatchRebuildEvent.phaseDurations` 로 노출 (HMR 관측성).
 
         // 4. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
         const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0) blk: {
