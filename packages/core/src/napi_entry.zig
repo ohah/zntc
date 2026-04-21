@@ -1728,11 +1728,29 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             if (graph_changed_flag) {
                 event.graph_changed = true;
             } else {
+                // 재파싱된 모듈의 path 집합 — cache-hit 모듈의 phantom update 필터용.
+                // canonical-name 배정이 rebuild 간 비결정적으로 움직여, 소스가 안 변한
+                // 모듈의 emit 결과도 cache 와 달라져 HMR payload 에 섞여 들어오면
+                // runtime 의 `__zts_apply_update` 가 hot-accept 없는 모듈 (React 내부
+                // 등) 에 대해 `__zts_reload` 를 호출해 첫 rebuild 가 full reload 로
+                // 끝나는 문제가 있었다 (#번개 실측). reparsed_paths 가 있으면 그
+                // 교집합만 업데이트로 올린다.
+                var reparsed_set: std.StringHashMap(void) = .init(allocator);
+                defer reparsed_set.deinit();
+                if (rebuild_result.reparsed_paths) |paths| {
+                    for (paths) |p| reparsed_set.put(p, {}) catch {};
+                }
+                const use_reparsed_filter = reparsed_set.count() > 0;
+
                 // 단일 패스: 캐시와 비교하여 변경된 모듈만 수집
                 var update_list: std.ArrayList(WatchRebuildEvent.ModuleUpdate) = .empty;
                 for (dev_codes) |dc| {
                     const cached = module_code_cache.get(dc.id);
                     if (cached == null or !std.mem.eql(u8, cached.?, dc.code)) {
+                        // 재파싱 목록이 있을 때만 필터 적용. 첫 증분 빌드 이후 캐시가
+                        // 안정화되면 자연히 줄어들므로 후속 rebuild 에선 필터가 무해.
+                        if (use_reparsed_filter and !reparsed_set.contains(dc.id)) continue;
+
                         const id_copy = allocator.dupe(u8, dc.id) catch continue;
                         const code_copy = allocator.dupe(u8, dc.code) catch {
                             allocator.free(id_copy);

@@ -261,6 +261,10 @@ pub const BundleResult = struct {
     /// 증분 빌드에서 실제로 재파싱된 모듈 수.
     /// non-incremental 빌드에서는 `null` (전체 파싱). HMR 관측성용.
     reparsed_modules: ?usize = null,
+    /// 재파싱된 모듈의 path 목록. allocator 소유, `BundleResult.deinit` 이 해제.
+    /// HMR 페이로드에서 cache-hit 모듈을 필터링할 때 사용 — canonical-name
+    /// 비결정성으로 rebuild 간 emit 이 달라지는 phantom update 방지.
+    reparsed_paths: ?[]const []const u8 = null,
 
     /// 단계별 빌드 시간 (나노초).
     pub const BundleTimings = struct {
@@ -311,6 +315,10 @@ pub const BundleResult = struct {
             allocator.free(diags);
         }
         if (self.module_paths) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
+        }
+        if (self.reparsed_paths) |paths| {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
         }
@@ -652,10 +660,23 @@ pub const Bundler = struct {
 
         // graph.build() 또는 buildIncremental() 호출.
         // reparsed_count: 증분 경로(=store 전달)일 때만 set — null은 전체 파싱을 의미.
+        // reparsed_paths_out: 재파싱된 모듈의 경로 (self.allocator 소유).
+        //   HMR 페이로드 필터링용 — cache-hit 모듈은 canonical-name 비결정성으로
+        //   rebuild 간 emit 이 달라져도 HMR update 에서 제외.
         var reparsed_count: ?usize = null;
+        var reparsed_paths_out: ?[]const []const u8 = null;
         if (self.options.module_store) |store| {
             const inc_result = try graph.buildIncremental(self.options.entry_points, store);
             reparsed_count = inc_result.reparsed_indices.len;
+            if (inc_result.reparsed_indices.len > 0) {
+                const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
+                for (inc_result.reparsed_indices, 0..) |mod_idx, i| {
+                    const mi = @intFromEnum(mod_idx);
+                    const src = if (mi < graph.modules.items.len) graph.modules.items[mi].path else "";
+                    list[i] = try self.allocator.dupe(u8, src);
+                }
+                reparsed_paths_out = list;
+            }
             self.allocator.free(inc_result.reparsed_indices);
         } else {
             try graph.build(self.options.entry_points);
@@ -1091,6 +1112,7 @@ pub const Bundler = struct {
                 .emit_ns = t_emit,
             },
             .reparsed_modules = reparsed_count,
+            .reparsed_paths = reparsed_paths_out,
         };
     }
 };
