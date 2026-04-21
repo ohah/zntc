@@ -25,6 +25,7 @@ pub const transpile = @import("transpile.zig");
 pub const string_escape = @import("string_escape.zig");
 pub const util = @import("util/mod.zig");
 pub const crash_handler = @import("crash_handler.zig");
+pub const debug_log = @import("debug_log.zig");
 
 test {
     _ = lexer;

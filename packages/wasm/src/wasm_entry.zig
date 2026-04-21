@@ -27,6 +27,10 @@ pub const panic = @import("zts_lib").crash_handler.panic;
 /// WASM에서는 wasm_allocator 사용 (memory.grow 기반)
 const wasm_alloc = std.heap.wasm_allocator;
 
+// WASM transpile-only 진입점. 번들러/HMR 경로가 없어 debug_log 초기화 생략.
+// 향후 WASM 에서 bundler 기능을 export 하게 되면 `debug_log.initFromEnv` 추가 필요.
+// (docs/DEBUG.md 참조)
+
 /// 마지막 에러 메시지를 저장하는 전역 버퍼
 var last_error_buf: ?[]const u8 = null;
 

@@ -210,6 +210,9 @@ pub const BundleOptions = struct {
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
+    /// 활성화할 디버그 로그 카테고리 (ZTS_DEBUG env 와 합집합).
+    /// 예: `&.{"compiled_cache", "hmr"}`. 카테고리 enum 은 `src/debug_log.zig` 참조.
+    debug: []const []const u8 = &.{},
     /// --outbase: 엔트리 포인트 공통 기준 경로
     outbase: ?[]const u8 = null,
     /// --packages=external: 모든 bare import를 external 처리
@@ -370,6 +373,7 @@ pub const Bundler = struct {
     pub fn init(allocator: std.mem.Allocator, options: BundleOptions) Bundler {
         var opts = options;
         applyPlatformPreset(&opts);
+        @import("../debug_log.zig").addCategories(opts.debug);
         return .{
             .allocator = allocator,
             .options = opts,
@@ -395,6 +399,7 @@ pub const Bundler = struct {
     pub fn initWithResolveCache(allocator: std.mem.Allocator, options: BundleOptions, rc: *ResolveCache) Bundler {
         var opts = options;
         applyPlatformPreset(&opts);
+        @import("../debug_log.zig").addCategories(opts.debug);
         return .{
             .allocator = allocator,
             .options = opts,
