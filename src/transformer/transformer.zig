@@ -228,13 +228,9 @@ pub const RuntimeHelpers = packed struct(u32) {
 pub const Transformer = struct {
     /// 통합 AST. 파서 노드(0..parser_node_count-1)는 읽기 전용,
     /// 트랜스포머가 추가한 노드(parser_node_count..)는 append-only.
-    /// `init` 은 heap cell 을 owns=true 로 만들어 clone, `initInPlace` 는 외부
-    /// AST 를 owns=false 로 borrow.
+    /// `*Ast` — Transformer 가 소유권을 가진다 (clone 경로). D1b-2 의 `initInPlace` 는
+    /// 외부 소유 AST 를 borrow 하는 variant 로 같은 필드를 공유.
     ast: *Ast,
-
-    /// AST 소유권 플래그. true → deinit 이 ast.deinit() + destroy.
-    /// false → deinit 이 parser 영역 경계로 truncate 만 수행 (parse_arena 가 소유).
-    owns_ast: bool,
 
     /// 파서 노드 수. transform() 시작 시 루트 인덱스(parser_node_count - 1) 계산에 사용.
     parser_node_count: u32,
@@ -467,7 +463,6 @@ pub const Transformer = struct {
 
         var self: Transformer = .{
             .ast = ast_ptr,
-            .owns_ast = true,
             .parser_node_count = @intCast(source_ast.nodes.items.len),
             .options = opts,
             .allocator = allocator,
@@ -478,73 +473,9 @@ pub const Transformer = struct {
         return self;
     }
 
-    /// Borrow-mode initializer — AST 를 clone 하지 않고 외부 소유 AST 를 직접 변이한다.
-    /// D1b-2 (RFC #1672).
-    ///
-    /// **왜 `ast_allocator` 를 따로 받는가**: `source_ast.allocator` 는 parse 시점에
-    /// 캡처된 `*ArenaAllocator` 주소인데, owning Module 이 `graph.modules` ArrayList 의
-    /// 재할당으로 이동하면 stale pointer 가 된다. 기존 clone 경로는 `source_ast.allocator`
-    /// 를 쓰지 않아서 드러나지 않았지만 in-place 는 그걸로 addNode append 를 하면 즉시
-    /// segfault. 호출자가 지금 이 시점의 Module 위치 기준으로 parse_arena 를 다시
-    /// 캡처해 넘기고, 이 함수가 `source_ast.allocator` 를 그 값으로 refresh 한다.
-    ///
-    /// **재진입**: 이전 transform 잔재가 있으면 parser boundary 로 truncate 하고 시작.
-    /// `deinit` 이 다시 truncate 해서 cross-emit consumer 가 transformer 노드를 보지
-    /// 않게 한다.
-    ///
-    /// - `scratch_allocator`: transformer 자체 scratch/pending_nodes 용 (보통 emit_arena).
-    /// - `ast_allocator`: AST ArrayList 의 mutation 용 (보통 parse_arena — 호출자가 fresh 캡처).
-    pub fn initInPlace(
-        scratch_allocator: std.mem.Allocator,
-        source_ast: *Ast,
-        ast_allocator: std.mem.Allocator,
-        options: TransformOptions,
-    ) Error!Transformer {
-        var opts = options;
-        if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
-
-        // source_ast.allocator 를 fresh 한 값으로 교체 — parse 시 캡처된 값은 Module
-        // relocation 후 stale 일 수 있음.
-        source_ast.allocator = ast_allocator;
-
-        // 재진입: 이전 transform 잔재가 있으면 boundary 이상 노드를 truncate.
-        // extra_data / string_table 은 단조 증가 (parser 스팬이 string_table 뒤쪽을
-        // 참조할 수 있어 truncate 불가). 불변식: transform() 은 extra_data/string_table 의
-        // 기존 엔트리를 덮어쓰지 않고 append 만 한다 — 이 불변식이 깨지면 (예: copy-GC
-        // 최적화 도입 시) 재진입 경로에서 corrupted 출력이 나올 수 있으니 주의.
-        // 현재 orphaned tail 은 새 node 가 가리키지 않아 출력에는 영향 없음.
-        if (source_ast.transform_boundary) |boundary| {
-            source_ast.nodes.shrinkRetainingCapacity(boundary);
-            source_ast.transformed_root = null;
-        }
-        source_ast.transform_boundary = @intCast(source_ast.nodes.items.len);
-
-        var self: Transformer = .{
-            .ast = source_ast,
-            .owns_ast = false,
-            .parser_node_count = @intCast(source_ast.nodes.items.len),
-            .options = opts,
-            .allocator = scratch_allocator,
-            .scratch = .empty,
-            .pending_nodes = .empty,
-        };
-        if (opts.unsupported.arrow) self.runtime_es5_compat = true;
-        return self;
-    }
-
     pub fn deinit(self: *Transformer) void {
-        if (self.owns_ast) {
-            self.ast.deinit();
-            self.allocator.destroy(self.ast);
-        } else if (self.ast.transform_boundary) |boundary| {
-            // borrow-mode: parse_arena 가 소유한 AST 를 parser-only 상태로 복구.
-            // 다음 emit 때 linker/shaker 등 consumer 가 transformer append 영역을 보지
-            // 않도록 함. extra_data/string_table 은 append-only 라 그대로 둠 — 다음
-            // transform 이 계속 append.
-            self.ast.nodes.shrinkRetainingCapacity(boundary);
-            self.ast.transform_boundary = null;
-            self.ast.transformed_root = null;
-        }
+        self.ast.deinit();
+        self.allocator.destroy(self.ast);
         self.deinitExceptAst();
     }
 
