@@ -64,6 +64,9 @@ pub fn buildMetadataForAst(
     is_entry: bool,
     override_symbol_ids: ?[]const ?u32,
 ) !LinkingMetadata {
+    var scope = @import("../../profile.zig").begin(.metadata);
+    defer scope.end();
+
     if (module_index >= self.modules.len) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
