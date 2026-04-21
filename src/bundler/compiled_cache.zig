@@ -227,6 +227,10 @@ pub const CompiledOutputCache = struct {
     allocator: std.mem.Allocator,
     /// absolute path → entry. key 는 cache 가 owning.
     entries: std.StringHashMap(Entry),
+    /// 디버그: 실측용 hit/miss 카운터. emit 루프 밖에서 주기적으로 읽어 리셋.
+    hits: u64 = 0,
+    misses: u64 = 0,
+    skipped_no_mtime: u64 = 0,
 
     pub const Entry = struct {
         input_hash: u64,
@@ -238,6 +242,17 @@ pub const CompiledOutputCache = struct {
             .allocator = allocator,
             .entries = std.StringHashMap(Entry).init(allocator),
         };
+    }
+
+    pub const Stats = struct { hits: u64, misses: u64, skipped: u64 };
+
+    /// 현재 카운터를 snapshot 으로 반환하고 0 으로 리셋.
+    pub fn takeStats(self: *CompiledOutputCache) Stats {
+        const s: Stats = .{ .hits = self.hits, .misses = self.misses, .skipped = self.skipped_no_mtime };
+        self.hits = 0;
+        self.misses = 0;
+        self.skipped_no_mtime = 0;
+        return s;
     }
 
     pub fn deinit(self: *CompiledOutputCache) void {
@@ -256,9 +271,16 @@ pub const CompiledOutputCache = struct {
     }
 
     /// `input_hash` 일치 시 cache 소유의 compiled 포인터 반환 (borrow, 호출자 free 금지).
-    pub fn tryHit(self: *const CompiledOutputCache, path: []const u8, input_hash: u64) ?*const CompiledModule {
-        const ptr = self.entries.getPtr(path) orelse return null;
-        if (ptr.input_hash != input_hash) return null;
+    pub fn tryHit(self: *CompiledOutputCache, path: []const u8, input_hash: u64) ?*const CompiledModule {
+        const ptr = self.entries.getPtr(path) orelse {
+            self.misses += 1;
+            return null;
+        };
+        if (ptr.input_hash != input_hash) {
+            self.misses += 1;
+            return null;
+        }
+        self.hits += 1;
         return &ptr.compiled;
     }
 
