@@ -1276,3 +1276,117 @@ test "define: optional chaining + global root prefix 매칭" {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// HMR regression guard
+//
+// 같은 parser ast 로 Transformer.init → transform 을 여러 번 호출할 때 parser
+// 노드 영역이 변경되지 않음을 보장. HMR rebuild 2회차에서 stale 상태를 읽어
+// Ast.getNode OOB 가 나는 시나리오 (번개 ExampleApp 1172 모듈에서 재현됨) 를
+// 유닛 단에서 포착. 현재 구현은 `source_ast: *const Ast` 로 타입 레벨에서
+// 보호하지만 D1 in-place 경로 재도입 시엔 이 검증이 필수다.
+// ─────────────────────────────────────────────────────────────────
+
+/// 테스트 전용 — Ast 내부 배열 bit-identical 비교용 스냅샷.
+const AstSnapshot = struct {
+    nodes: []Node,
+    extra_data: []u32,
+    string_table: []u8,
+
+    fn take(allocator: std.mem.Allocator, ast: *const Ast) !AstSnapshot {
+        return .{
+            .nodes = try allocator.dupe(Node, ast.nodes.items),
+            .extra_data = try allocator.dupe(u32, ast.extra_data.items),
+            .string_table = try allocator.dupe(u8, ast.string_table.items),
+        };
+    }
+
+    fn deinit(self: *AstSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.nodes);
+        allocator.free(self.extra_data);
+        allocator.free(self.string_table);
+    }
+
+    fn assertMatches(self: AstSnapshot, ast: *const Ast) !void {
+        try std.testing.expectEqual(self.extra_data.len, ast.extra_data.items.len);
+        try std.testing.expectEqual(self.string_table.len, ast.string_table.items.len);
+        try std.testing.expectEqualSlices(u32, self.extra_data, ast.extra_data.items);
+        try std.testing.expectEqualSlices(u8, self.string_table, ast.string_table.items);
+        // Node 는 extern struct 라 padding 없는 bit-identical 비교 가능.
+        try std.testing.expectEqualSlices(
+            u8,
+            std.mem.sliceAsBytes(self.nodes),
+            std.mem.sliceAsBytes(ast.nodes.items),
+        );
+    }
+};
+
+fn runTransformTwiceAndAssertParserUnchanged(allocator: std.mem.Allocator, source: []const u8) !void {
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var snap = try AstSnapshot.take(allocator, &parser.ast);
+    defer snap.deinit(allocator);
+
+    var t1 = try Transformer.init(allocator, &parser.ast, .{});
+    _ = try t1.transform();
+    t1.deinit();
+    try snap.assertMatches(&parser.ast);
+
+    // 2회차: 1회차가 오염됐다면 여기서 stale state 위에서 시작해 OOB/오답 유발.
+    var t2 = try Transformer.init(allocator, &parser.ast, .{});
+    _ = try t2.transform();
+    t2.deinit();
+    try snap.assertMatches(&parser.ast);
+}
+
+test "HMR guard: plain module — transform twice, parser ast unchanged" {
+    try runTransformTwiceAndAssertParserUnchanged(
+        std.testing.allocator,
+        "export const x = 1; export function foo() { return x; }",
+    );
+}
+
+test "HMR guard: function with default + destructuring + rest params" {
+    // function parameter lowering (default/rest/destructuring) 이 parser function
+    // 노드의 params/body 참조를 새 노드로 바꾸는 대표 경로.
+    try runTransformTwiceAndAssertParserUnchanged(std.testing.allocator,
+        \\export function foo(a = 1, [b, c], ...rest) {
+        \\  const { x, y } = bar();
+        \\  return a + b + c + x + y + rest.length;
+        \\}
+    );
+}
+
+test "HMR guard: class with private field + method" {
+    // class lowering 이 method body 와 private 필드 접근을 재작성하는 경로.
+    try runTransformTwiceAndAssertParserUnchanged(std.testing.allocator,
+        \\export class K extends Base {
+        \\  #secret = 1;
+        \\  method() { return this.#secret; }
+        \\  static factory(x = 1) { return new K(x); }
+        \\}
+    );
+}
+
+test "HMR guard: export default with function + async" {
+    // default export wrapper + async 조합 — OOB 스택에 visitExportDefaultDeclaration 로 자주 등장.
+    try runTransformTwiceAndAssertParserUnchanged(std.testing.allocator,
+        \\export default async function main(opts = {}) {
+        \\  const { count = 3, name } = opts;
+        \\  for (let i = 0; i < count; i++) await work(name, i);
+        \\}
+    );
+}
+
+test "HMR guard: variable declaration with complex initializers" {
+    // downgradeToVar / mergeDecls 가 variable_declaration 의 kind/list 를 건드리는 경로.
+    try runTransformTwiceAndAssertParserUnchanged(std.testing.allocator,
+        \\const x = { a: 1, b: [2, 3], c: foo() };
+        \\const y = (n) => n * 2;
+        \\const z = typeof x === "object";
+    );
+}
