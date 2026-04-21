@@ -528,6 +528,9 @@ pub const Transformer = struct {
     /// 반환값: 새 AST에서의 루트 NodeIndex.
     /// 변환된 AST는 self.ast에 저장된다.
     pub fn transform(self: *Transformer) Error!NodeIndex {
+        var scope = @import("../profile.zig").begin(.transform);
+        defer scope.end();
+
         // D1 (RFC #1672): 재진입 가드 (D1b in-place 전환 시 shared module 이중 transform 을 조기 탐지).
         self.ast.assertInvariants();
         if (@import("builtin").mode == .Debug) {
