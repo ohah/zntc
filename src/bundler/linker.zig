@@ -1447,6 +1447,11 @@ pub const Linker = struct {
                 switch (ib.symbol) {
                     .alias => |a| {
                         const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
+                        // Cached import_binding 이 rebuild 된 source 의 새 alias_table 보다
+                        // 많은 alias id 를 가리킬 수 있어 (e.g. source 가 재파싱되며 re_export
+                        // 엔트리가 줄어든 경우) 경계 검사. 벗어난 참조는 이번 build 에서
+                        // stale — ref_count 증가 건너뜀.
+                        if (@intFromEnum(a.symbol) >= table_ptr.count()) continue;
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
