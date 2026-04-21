@@ -241,6 +241,9 @@ pub const SemanticAnalyzer = struct {
 
     /// 분석을 실행한다. AST의 루트(마지막 노드 = program)부터 시작.
     pub fn analyze(self: *SemanticAnalyzer) AllocError!void {
+        var scope = @import("../profile.zig").begin(.semantic);
+        defer scope.end();
+
         if (self.ast.nodes.items.len == 0) return;
 
         // symbol_ids 배열 초기화: 노드 수만큼 null로 채움
