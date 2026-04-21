@@ -249,7 +249,9 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null, null) orelse continue;
+            // splitting 경로는 같은 module 이 여러 chunk 에 걸쳐 emit 될 수 있어
+            // in-place mutation 과 호환 안 됨 — 반드시 clone 경로.
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null, null, .cloned) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
