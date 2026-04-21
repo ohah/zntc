@@ -193,6 +193,205 @@ test "emitter: TS enum and interface stripping" {
 }
 
 // ============================================================
+// Single-use Inline Bundle Tests (#1666 Phase 2+3)
+// ============================================================
+
+test "inline (bundle): 함수 body 안 literal — inline" {
+    // single-file 테스트는 minify_test.zig 가 커버. 이 테스트는 bundler 경로 (emit)
+    // 에서도 inline 이 동작함을 확인 — emitter 가 initInPlace 를 통해 module.ast 를
+    // mutate 하고 minify 의 inline pass 가 그 위에서 도는 흐름을 end-to-end 검증.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\function work() {
+        \\  const n = 42;
+        \\  return n;
+        \\}
+        \\console.log(work());
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
+    // work 내부 const n=42 는 return 에 inline 되어 사라졌어야.
+    try std.testing.expect(std.mem.indexOf(u8, output, "const n = 42") == null);
+    // return 42 가 출력에 존재 (inline 결과).
+    try std.testing.expect(std.mem.indexOf(u8, output, "return 42") != null);
+}
+
+test "inline (bundle): top-level const — 보존 (scope=0)" {
+    // module top-level 은 tree-shaker 영역이라 inline 하지 않는다 (scope_id=0 가드).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\const MODE = "production";
+        \\console.log(MODE);
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
+    // 여전히 MODE 선언이 남아있고 console.log 가 그걸 참조.
+    try std.testing.expect(std.mem.indexOf(u8, output, "MODE") != null);
+}
+
+test "inline (bundle): 크로스 모듈 — 각 모듈 함수 내부 별개로 inline" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "helpers.ts",
+        \\export function dbl(x: number) {
+        \\  const factor = 2;
+        \\  return x * factor;
+        \\}
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { dbl } from "./helpers";
+        \\function run() {
+        \\  const base = 10;
+        \\  return dbl(base);
+        \\}
+        \\console.log(run());
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
+    // 두 함수의 internal const 모두 inline.
+    try std.testing.expect(std.mem.indexOf(u8, output, "const factor") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "const base") == null);
+    // inline 결과물 확인.
+    try std.testing.expect(std.mem.indexOf(u8, output, "x * 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "dbl(10)") != null);
+}
+
+test "inline (bundle): container literal 여러 모듈에 걸쳐" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "config.ts",
+        \\export function defaults() {
+        \\  const cfg = { timeout: 5000, retries: 3 };
+        \\  return cfg;
+        \\}
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { defaults } from "./config";
+        \\function load() {
+        \\  const opts = [1, 2, 3];
+        \\  return { opts, ...defaults() };
+        \\}
+        \\console.log(load());
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
+    // cfg 는 inline 되어 사라짐.
+    try std.testing.expect(std.mem.indexOf(u8, output, "const cfg") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "return { timeout: 5000, retries: 3 }") != null);
+    // opts 는 shorthand property 의 value 가 identifier_reference 라 inline 조건 미충족 → 보존.
+    try std.testing.expect(std.mem.indexOf(u8, output, "const opts") != null);
+}
+
+test "inline (bundle): minify_syntax 플래그 없어도 inline 실행 (#1552)" {
+    // #1552 per: minify pass 는 --minify 여부와 무관하게 항상 실행 — inline 도 따라간다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\function compute() {
+        \\  const answer = 42;
+        \\  return answer;
+        \\}
+        \\compute();
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    // minify_syntax=false (기본) — 그래도 inline 돌아야 함.
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{ .minify_syntax = false }, null);
+    defer emit_result.deinit(std.testing.allocator);
+    const output = emit_result.output;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "const answer") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "return 42") != null);
+}
+
+test "inline (bundle): shared module 내부 inline — emitChunks 경로" {
+    // code splitting 으로 shared module 이 common chunk 에 올라가는 시나리오.
+    // emitChunks 도 D1c 이후 in-place 경로라 inline 동작해야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "shared.ts",
+        \\export function helper() {
+        \\  const secret = "x";
+        \\  return secret;
+        \\}
+    );
+    try writeFile(tmp.dir, "a.ts",
+        \\import { helper } from "./shared";
+        \\console.log("a:", helper());
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { helper } from "./shared";
+        \\console.log("b:", helper());
+    );
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // common chunk 에서 helper 의 const secret 이 inline 되었는지 확인.
+    var found_inlined = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "const secret") != null) return error.TestUnexpectedResult;
+        if (std.mem.indexOf(u8, o.contents, "return \"x\"") != null) {
+            found_inlined = true;
+        }
+    }
+    try std.testing.expect(found_inlined);
+}
+
+// ============================================================
 // emitChunks Tests
 // ============================================================
 

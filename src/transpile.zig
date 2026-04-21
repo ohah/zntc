@@ -348,6 +348,7 @@ pub fn transpileWithCallback(
             .symbol_ids = transformer.symbol_ids.items,
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
+            .references = analyzer.references.items,
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         minify_mod.mergeDecls(transformer.ast, null);

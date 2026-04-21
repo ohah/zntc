@@ -925,6 +925,7 @@ pub fn emitModule(
             .symbol_ids = transformer.symbol_ids.items,
             .scopes = sem.scopes,
             .unresolved_globals = &sem.unresolved_references,
+            .references = sem.references,
         } else .empty;
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
