@@ -1441,7 +1441,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     initial_opts.module_store = &persistent_store;
     initial_opts.compiled_cache = &async_data.compiled_cache;
     // rebuild 루프와 동일한 collect_module_codes 로 맞춘다 — options_hash 가 같아야
-    // first-build 의 cache put 이 첫 rebuild 에서 그대로 hit 된다 (#1687 follow-up).
+    // first-build 의 cache put 이 첫 rebuild 에서 그대로 hit 된다.
     initial_opts.collect_module_codes = bundle_opts.dev_mode;
 
     var bundler = Bundler.init(allocator, initial_opts);
