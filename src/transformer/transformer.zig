@@ -777,7 +777,7 @@ pub const Transformer = struct {
             .return_statement,
             .throw_statement,
             .spread_element,
-            => self.visitUnaryNode(node),
+            => self.visitUnaryNode(idx),
             .parenthesized_expression => {
                 // (expr as T) → expr: TS expression이면 괄호 불필요
                 const inner = node.data.unary.operand;
@@ -793,18 +793,18 @@ pub const Transformer = struct {
                         return self.visitNode(inner);
                     }
                 }
-                return self.visitUnaryNode(node);
+                return self.visitUnaryNode(idx);
             },
             .await_expression => {
                 if (self.options.unsupported.async_await) {
                     return es2017_mod.ES2017(Transformer).lowerAwaitExpression(self, node);
                 }
-                return self.visitUnaryNode(node);
+                return self.visitUnaryNode(idx);
             },
             .yield_expression,
             .rest_element,
             .decorator,
-            => self.visitUnaryNode(node),
+            => self.visitUnaryNode(idx),
             // JSX
             .jsx_spread_attribute,
             .jsx_expression_container,
@@ -812,7 +812,7 @@ pub const Transformer = struct {
                 if (self.options.jsx_transform) {
                     return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXExpressionContainer(self, node);
                 }
-                return self.visitUnaryNode(node);
+                return self.visitUnaryNode(idx);
             },
             .jsx_spread_child,
             .chain_expression,
@@ -821,7 +821,7 @@ pub const Transformer = struct {
             .continue_statement,
             .import_expression,
             .static_block,
-            => self.visitUnaryNode(node),
+            => self.visitUnaryNode(idx),
 
             // === 이항 노드: 자식 2개 재귀 방문 ===
             .binary_expression,
@@ -853,7 +853,7 @@ pub const Transformer = struct {
                         }
                     }
                 }
-                return self.visitBinaryNode(node);
+                return self.visitBinaryNode(idx);
             },
             .assignment_expression => {
                 // Private field 좌변은 모든 assignment 연산자(=, +=, ??=, ||=, &&= ...)를
@@ -905,7 +905,7 @@ pub const Transformer = struct {
                         }
                     }
                 }
-                return self.visitBinaryNode(node);
+                return self.visitBinaryNode(idx);
             },
             .while_statement,
             .do_while_statement,
@@ -914,7 +914,7 @@ pub const Transformer = struct {
             .jsx_attribute,
             .jsx_namespaced_name,
             .jsx_member_expression,
-            => self.visitBinaryNode(node),
+            => self.visitBinaryNode(idx),
 
             // === member expression: extra = [object, property, flags] ===
             .static_member_expression => {
@@ -1031,7 +1031,7 @@ pub const Transformer = struct {
                         return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatementLabeled(self, child, new_label);
                     }
                 }
-                return self.visitBinaryNode(node);
+                return self.visitBinaryNode(idx);
             },
 
             // === extra 기반 노드: 별도 처리 ===
@@ -1159,16 +1159,16 @@ pub const Transformer = struct {
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => self.visitExportDefaultDeclaration(node),
-            .export_all_declaration => self.visitBinaryNode(node),
+            .export_all_declaration => self.visitBinaryNode(idx),
             .catch_clause => {
                 if (self.options.unsupported.optional_catch_binding) {
                     return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
                 }
-                return self.visitBinaryNode(node);
+                return self.visitBinaryNode(idx);
             },
             .binding_property,
             .assignment_pattern,
-            => self.visitBinaryNode(node),
+            => self.visitBinaryNode(idx),
             .accessor_property => self.visitAccessorProperty(node),
 
             // === 리프 노드: 그대로 복사 (자식 없음) ===
@@ -1324,8 +1324,8 @@ pub const Transformer = struct {
             },
 
             // === import/export specifiers ===
-            .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
-            .export_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
+            .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(idx),
+            .export_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(idx),
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
@@ -1341,16 +1341,16 @@ pub const Transformer = struct {
 
             .binding_rest_element,
             .assignment_target_rest,
-            => self.visitUnaryNode(node),
+            => self.visitUnaryNode(idx),
             .assignment_target_with_default,
             .assignment_target_property_identifier,
             .assignment_target_property_property,
-            => self.visitBinaryNode(node),
+            => self.visitBinaryNode(idx),
             // assignment_target_identifier: string_ref → 변환 불필요 (identifier와 동일)
 
             // === TS enum/namespace: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
             .ts_enum_declaration => self.visitEnumDeclaration(node),
-            .ts_enum_member => self.visitBinaryNode(node),
+            .ts_enum_member => self.visitBinaryNode(idx),
             .ts_enum_body => self.visitListNode(node),
             .ts_module_declaration => self.visitNamespaceDeclaration(node),
             .ts_module_block => self.visitListNode(node),
@@ -1476,8 +1476,12 @@ pub const Transformer = struct {
     }
 
     /// 단항 노드: operand를 재귀 방문 후 복사.
-    fn visitUnaryNode(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_operand = try self.visitNode(node.data.unary.operand);
+    fn visitUnaryNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        const node = self.ast.getNode(idx);
+        const old_operand = node.data.unary.operand;
+        const new_operand = try self.visitNode(old_operand);
+        // 자식 unchanged → 부모도 identity. ast.addNode 호출 제거.
+        if (new_operand == old_operand) return idx;
         return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
@@ -1486,9 +1490,13 @@ pub const Transformer = struct {
     }
 
     /// 이항 노드: left, right를 재귀 방문 후 복사.
-    fn visitBinaryNode(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_left = try self.visitNode(node.data.binary.left);
-        const new_right = try self.visitNode(node.data.binary.right);
+    fn visitBinaryNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        const node = self.ast.getNode(idx);
+        const old_left = node.data.binary.left;
+        const old_right = node.data.binary.right;
+        const new_left = try self.visitNode(old_left);
+        const new_right = try self.visitNode(old_right);
+        if (new_left == old_left and new_right == old_right) return idx;
         return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
