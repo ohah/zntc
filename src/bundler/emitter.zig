@@ -392,7 +392,10 @@ pub fn emitWithTreeShaking(
 
     if (options.compiled_cache) |cache| {
         for (sorted.items, 0..) |m, i| {
-            if (m.mtime == 0) continue; // mtime unknown → cache 비활성
+            if (m.mtime == 0) {
+                cache.skipped_no_mtime += 1;
+                continue; // mtime unknown → cache 비활성
+            }
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             const input_hash = cache_mod.computeInputHash(m, options_hash, used_names);
             input_hashes[i] = input_hash;
