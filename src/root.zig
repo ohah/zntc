@@ -26,6 +26,7 @@ pub const string_escape = @import("string_escape.zig");
 pub const util = @import("util/mod.zig");
 pub const crash_handler = @import("crash_handler.zig");
 pub const debug_log = @import("debug_log.zig");
+pub const profile = @import("profile.zig");
 
 test {
     _ = lexer;
