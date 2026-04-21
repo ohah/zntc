@@ -1,6 +1,15 @@
-# Debug Logging
+# Debug & Profile
 
-런타임에 진단 로그를 카테고리별로 켜고 끄는 경량 인프라. ZTS 바이너리와 `@zts/core` NAPI 양쪽에서 동일 구조로 동작한다.
+ZTS 는 두 가지 경량 인프라를 제공한다:
+
+1. **Debug Logging** (`src/debug_log.zig`) — 이벤트 로그 (AST mutation, cache hit/miss 등).
+2. **Profile** (`src/profile.zig`) — 파이프라인 phase 별 **타이밍 측정** + CLI `zts bench` 로 통계 벤치마크.
+
+둘 다 ZTS 바이너리와 `@zts/core` NAPI 양쪽에서 동일 구조로 동작. 비활성 상태 hot path 오버헤드 < 1%.
+
+---
+
+# 1. Debug Logging
 
 - 구현: `src/debug_log.zig`
 - 활성 카테고리 enum: `src/debug_log.zig` 의 `Category`
@@ -104,3 +113,237 @@ if (debug_log.enabled(.compiled_cache)) {
 - 카테고리 세부 레벨 (info/debug/trace) 필요하면 `Category` 를 `{category, level}` 쌍으로 확장
 - 구조화 출력 (JSON) 이 필요하면 별도 포매터 분기 — env `ZTS_DEBUG_FORMAT=json` 등
 - 와일드카드 (`ZTS_DEBUG=*` 혹은 `ZTS_DEBUG=bundler:*`) 는 현재 미지원. 카테고리 수가 많아지기 전에는 쉼표 구분이 충분
+
+---
+
+# 2. Profile (파이프라인 타이밍)
+
+파이프라인 phase 별 (scan/parse/semantic/transform/codegen/...) 타이밍 측정. CLI/NAPI/env 동일 인터페이스.
+
+- 설계 문서: [`docs/design/profile-infrastructure.md`](./design/profile-infrastructure.md)
+- 구현: `src/profile.zig`
+- Zero-overhead when disabled: 비활성 category 는 `Timer.start` 호출 없음 (single AND branch)
+
+## 2.1 활성화
+
+### CLI
+
+```bash
+# 전체 phase
+zts input.ts --profile=all
+
+# 특정 phase 만
+zts bundle entry.ts --profile=parse,transform
+
+# 상세 level (sub-phase 포함)
+zts input.ts --profile=all --profile-level=detailed
+
+# JSON output (스크립트 용)
+zts bundle entry.ts --profile=all --profile-format=json > profile.json
+```
+
+옵션:
+- `--profile=<CSV>`: `all` / `none` / 구체 카테고리 CSV (dot notation 지원: `parse.ast_build`, `transform.jsx`)
+- `--profile-level=<L>`: `summary` | `detailed` | `per-module` | `per-pass` (default `summary`)
+- `--profile-format=<F>`: `table` | `tree` | `json` | `csv` (default `table`)
+- `--stop-after=<P>`: `scan` | `parse` | `semantic` | `transform` | `codegen` — 지정 phase 이후 skip
+
+### NAPI
+
+```ts
+import { build, transpile } from "@zts/core";
+
+await build({
+  entryPoints: ["src/index.ts"],
+  profile: ["parse", "transform"],
+  profileLevel: "detailed",
+  profileFormat: "json",
+});
+
+transpile(source, {
+  filename: "input.ts",
+  stopAfter: "parse",  // debug: AST 생성 후 종료
+});
+```
+
+### Env
+
+```bash
+ZTS_PROFILE=all ZTS_PROFILE_LEVEL=detailed zts bundle entry.ts
+BUNGAE_HMR_PROFILE=1 bun run start:bungae    # 내부적으로 ZTS_PROFILE=hmr 매핑
+```
+
+## 2.2 카테고리
+
+| Category | 대상 |
+|----------|------|
+| `scan` | Scanner tokenization (현재 lazy 구조라 `.parse` 안에 포함됨) |
+| `parse` | Parser AST 구축 |
+| `semantic` | Semantic analyzer (scope/symbol) |
+| `resolve` | Dependency resolution |
+| `graph` | Module graph build (resolve + parse + semantic 상위) |
+| `link` | Linker (scope hoisting) |
+| `shake` | Tree shaker |
+| `transform` | Transformer 전체 |
+| `transform.ts_strip` / `transform.jsx` / `transform.class_field` / `transform.decorator` / `transform.pass2` | Transformer sub-pass (detailed level) |
+| `codegen` | Codegen emit |
+| `codegen.walk` / `codegen.sourcemap` | Codegen sub-phase |
+| `metadata` | Linker metadata build |
+| `emit` | `transform + codegen + metadata` 상위 |
+| `hmr` / `hmr.detect` / `hmr.delta` | HMR watch loop |
+| `cache` | compiled_cache hit/miss 이벤트 |
+
+**Parent/child 전파**: `--profile=transform` 지정 시 모든 `transform.*` sub-phase 도 자동 활성.
+**`all` / `none`**: 전체 활성 / 전체 비활성 키워드.
+
+## 2.3 출력 포맷
+
+### table (default)
+
+```
+=== ZTS Profile ===
+Phase                Total       %      Count
+--------------------|-----------|-------|------
+parse                   0.43ms  54.7%      1
+semantic                0.36ms  45.3%      1
+total                   0.78ms  100.0%
+```
+
+### tree (detailed)
+
+```
+=== ZTS Profile (detailed) ===
+total: 1.20ms
+├─ parse             0.77ms  (64.2%)
+│  └─ ast.build      0.72ms  (93.5% of parse)
+├─ transform         0.34ms  (28.4%)
+│  ├─ ts.strip       0.12ms  (35.1% of transform)
+│  └─ jsx            0.08ms  (23.5% of transform)
+└─ codegen           0.09ms  ( 7.5%)
+```
+
+### json (스크립팅)
+
+```json
+{
+  "profile_version": 1,
+  "total_ms": 1.196,
+  "level": "summary",
+  "phases": {
+    "parse":     { "total_ms": 0.767, "count": 1, "pct": 64.17 },
+    "transform": { "total_ms": 0.339, "count": 1, "pct": 28.37 },
+    "codegen":   { "total_ms": 0.089, "count": 1, "pct":  7.46 }
+  }
+}
+```
+
+### csv (스프레드시트)
+
+```csv
+phase,total_ms,count,pct
+parse,0.767,1,64.17
+transform,0.339,1,28.37
+codegen,0.089,1,7.46
+```
+
+---
+
+# 3. Benchmark (`zts bench`)
+
+특정 phase 를 N 회 반복 실행하며 통계 (mean/median/p95/p99/stddev/min/max) 출력. 최적화 전후 비교 가능.
+
+## 3.1 CLI
+
+```bash
+# 100 회 반복 (기본)
+zts bench --phase=parse ./src/App.tsx
+
+# 여러 phase 동시
+zts bench --phase=parse,transform,codegen ./src/App.tsx
+
+# baseline 저장
+zts bench --phase=parse ./App.tsx --save=./perf/baseline.json
+
+# baseline 과 비교
+zts bench --phase=parse ./App.tsx --compare=./perf/baseline.json
+# Phase       before     after      delta     %         verdict
+# parse        42.3ms    31.8ms   -10.5ms  -24.8%  + improved
+
+# JSON / CSV
+zts bench --phase=parse ./App.tsx --format=json > stats.json
+zts bench --phase=parse ./App.tsx --format=csv >> history.csv
+```
+
+옵션:
+- `--phase=<CATS>`: 측정 카테고리 (required, CSV, `all` / `none` 불허).
+- `--iterations=<N>`: 반복 횟수 (default 100).
+- `--warmup=<N>`: warmup 반복 (default 10, 결과에서 제외).
+- `--profile-level=<L>`: `summary` | `detailed`.
+- `--format=<F>`: `table` | `json` | `csv`.
+- `--save=<PATH>` / `--compare=<PATH>`: baseline I/O.
+
+## 3.2 NAPI
+
+```ts
+import { benchmark } from "@zts/core";
+
+const result = benchmark({
+  source: "...",         // 또는 file: "./App.tsx"
+  filename: "input.ts",
+  phases: ["parse"],
+  iterations: 100,
+  warmup: 10,
+});
+
+result.phases.parse.mean_ms;    // 42.3
+result.phases.parse.p95_ms;     // 48.2
+result.phases.parse.stddev_ms;  // 2.1
+```
+
+## 3.3 다른 번들러와 비교
+
+| 도구 | CLI 벤치마크 |
+|------|------------|
+| oxc / swc | ❌ — `cargo bench` (criterion.rs) 개발자 전용 |
+| esbuild | ❌ |
+| TypeScript (tsc) | `--extendedDiagnostics` (반복/통계 없음) |
+| **ZTS** | **`zts bench` + NAPI `benchmark()` (CLI ↔ NAPI parity)** |
+
+---
+
+# 4. HMR Profile
+
+HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
+
+기본 phase (항상 측정):
+- `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
+- 주의: `parse` 는 실제로 graph build 전체, `semantic` 은 link+shake 의미 (레거시 호환 이름).
+
+Sub-phase (`ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` 활성 시):
+- `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
+- 비활성 상태에선 모두 0.
+
+## 4.1 번개 (bungae) HMR 실측
+
+```bash
+BUNGAE_HMR_PROFILE=1 bun run start:bungae
+# Rebuilt [ios] (1 files, 175ms) [detect=27 parse=65 sem=5 emit=67 delta=1]
+```
+
+번개는 `phaseDurations.*` 필드를 읽어 log formatting. ZTS 는 필드만 제공 — UI 는 번개 쪽 책임.
+
+## 4.2 profile 활성 후 세부 breakdown
+
+```ts
+import { watch } from "@zts/core";
+
+watch({
+  entryPoints: ["src/index.ts"],
+  profile: ["hmr"],  // sub-phase 수집 활성
+  onRebuild: (event) => {
+    const pd = event.phaseDurations!;
+    console.log("graph=%d link=%d shake=%d transform=%d codegen=%d",
+      pd.graph, pd.link, pd.shake, pd.transform, pd.codegen);
+  },
+});
+```

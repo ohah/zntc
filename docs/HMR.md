@@ -88,3 +88,27 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 - **Metro**: `references/metro/packages/metro-runtime/` — `module.hot`, Metro HMR 프로토콜
 - **Vite**: `references/vite/packages/vite/src/client/` — `import.meta.hot`, Vite HMR 프로토콜
 - **esbuild**: `--serve` 모드 — 최소 구현 참고
+
+## HMR Profiling
+
+HMR rebuild 의 각 phase 소요시간은 `WatchRebuildEvent.phaseDurations` 에 노출된다.
+`ZTS_PROFILE=hmr` 또는 `BUNGAE_HMR_PROFILE=1` 활성 시 sub-phase breakdown 수집 가능.
+
+자세한 내용: [`docs/DEBUG.md`](./DEBUG.md) § 4 HMR Profile.
+
+기본 측정 항목 (항상):
+- `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
+
+Sub-phase (profile 활성 시):
+- `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
+
+```ts
+watch({
+  entryPoints: ["src/index.ts"],
+  profile: ["hmr"],
+  onRebuild: (event) => {
+    const pd = event.phaseDurations!;
+    console.log(`total=${pd.total}ms emit=${pd.emit}ms transform=${pd.transform}ms`);
+  },
+});
+```
