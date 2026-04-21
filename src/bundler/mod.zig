@@ -77,6 +77,8 @@ pub const SymbolKind = symbol.SymbolKind;
 pub const AliasTable = symbol.AliasTable;
 pub const incremental = @import("incremental.zig");
 pub const IncrementalBundler = incremental.IncrementalBundler;
+pub const compiled_cache = @import("compiled_cache.zig");
+pub const CompiledOutputCache = compiled_cache.CompiledOutputCache;
 
 test {
     _ = types;
