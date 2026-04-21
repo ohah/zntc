@@ -809,13 +809,16 @@ pub const Ast = struct {
     has_jsx: bool = false,
 
     /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
-    /// null = 미변환. D1 이 in-place mutation 으로 전환되면 이 boundary 이상의 노드가
-    /// transformer append. 현재 main 은 cloneForTransformer 경로 — 필드만 정의, 사용
-    /// 안 됨. debug_log 의 `ast_mutation` 카테고리 + `assertInvariants` 에서 활용.
+    /// null = 미변환. boundary 이상의 노드는 transformer 가 append 한 것.
+    /// D1a 부터 clone 경로 (Transformer.init → cloneForTransformer) 에서 활성.
+    /// D1b 이후 in-place mutation 경로에서도 동일 의미 유지. debug_log 의
+    /// `ast_mutation` 카테고리 + `assertInvariants` 에서 활용.
     transform_boundary: ?u32 = null,
 
     /// D1 디버그 인프라. transform() 완료 시 root NodeIndex snapshot.
-    /// code splitting 의 shared module 재진입 시 기존 결과 재사용 용 (D1 에서 연결).
+    /// D1a 부터 clone AST 에 기록 — 같은 Transformer 인스턴스의 이중 transform 을
+    /// `assertInvariants` 가 탐지. D1b (in-place) 전환 시 shared module 재진입
+    /// 탐지/차단 용도로 확장 예정.
     transformed_root: ?NodeIndex = null,
 
     /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
