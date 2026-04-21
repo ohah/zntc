@@ -29,6 +29,12 @@ const stmt_info_mod = @import("stmt_info.zig");
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
 pub const NS_VAR_PREFIX = "__ns_";
 
+/// `__ns_N.prop` 형태의 namespace-access rename 인지 판정.
+/// CJS-in-ESM-wrapped named import가 이 rename을 가진다 (metadata.zig 참조).
+pub inline fn isNamespaceRename(rename: []const u8) bool {
+    return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
+}
+
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
 /// codegen에 전달하는 per-module 메타데이터.
 /// AST를 수정하지 않고 codegen이 출력 시 참조.
@@ -385,6 +391,10 @@ pub const Linker = struct {
                         if (target_idx >= self.modules.len) break :blk m.wrap_kind == .esm;
                         const target_wrap = self.modules[target_idx].wrap_kind;
                         if (m.wrap_kind == .esm) {
+                            // CJS-in-ESM-wrapped named import는 __ns_N.prop rename으로 처리되어
+                            // top-level var가 emit되지 않음 (metadata.zig:262-281 + emitter.zig:1565).
+                            // → 이름 충돌 owner에서 제외해야 canonical rename이 __ns_ rename을 덮지 않는다.
+                            if (target_wrap == .cjs and ib.kind == .named and !ib.isSynthetic()) break :blk false;
                             // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
                             break :blk target_wrap != .none;
                         } else {
