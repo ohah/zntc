@@ -102,16 +102,25 @@ fn isNodePureDepth(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
     };
 }
 
-/// call/new expression 순수성.
-/// 1) `@__PURE__` 플래그가 있으면 순수
-/// 2) callee가 `new Set()`/`new Map()` 등 빌트인 pure 생성자이고 인자가 모두 순수이면 순수
+/// call/new expression 순수성. (oxc `known_globals.rs` 포팅)
+///
+/// 판정 순서:
+///   1. `@__PURE__` 플래그 → 무조건 pure
+///   2. callee 가 identifier_reference + unresolved global 이어야 함 (사용자 shadow 차단)
+///   3. 이름별 category 판정:
+///      - collection (Set/Map/WeakSet/WeakMap): `new` 전용 (call 은 throw). 인자는
+///        엄격 — 무인자/null/undefined/ArrayExpression 만. 그 외는 iterator protocol
+///        의 Symbol.iterator getter side-effect 를 놓칠 위험 있어 보수적 impure.
+///      - dotcall_only (Symbol): call 전용 (new Symbol() 은 throw).
+///      - unconditional / either (Object/Boolean/Array/Date/String + Error 계열):
+///        new/call 양쪽 safe. 인자는 재귀 pure 검사.
 fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     // (1) @__PURE__ 플래그
     if (ast.hasExtra(node.data.extra, 3)) {
         if ((ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0) return true;
     }
 
-    // (2) 빌트인 화이트리스트. unresolved_globals 컨텍스트가 있을 때만 활성.
+    // (2) 빌트인 화이트리스트 — unresolved_globals 컨텍스트 + identifier_reference callee
     const globals = unresolved_globals orelse return false;
     if (!ast.hasExtra(node.data.extra, 2)) return false;
 
@@ -121,18 +130,172 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
     if (callee.tag != .identifier_reference) return false;
 
     const name = ast.getText(callee.span);
-    if (!isPureBuiltinConstructor(name)) return false;
 
-    // 모듈 스코프에서 선언/import가 없어야 전역 빌트인임이 확정된다.
-    // 로컬 `const Set = ...` 또는 `import { Set }`가 있으면 unresolved에 없으므로 pure 판정 안 됨.
+    // 모듈 스코프에서 선언/import 없는 전역 참조여야 함.
+    // 로컬 `const Set = ...` / `import { Set }` / `class Set {}` 는 shadow → unresolved
+    // 에 없음 → 안전하게 false.
     if (!globals.contains(name)) return false;
 
-    // 인자 순회: 모두 순수여야 함. spread는 iterator 호출 side effect가 있으므로 제외.
+    const kind = categorizeBuiltin(name);
+    const is_new = node.tag == .new_expression;
     const args_start = ast.readExtra(node.data.extra, 1);
     const args_len = ast.readExtra(node.data.extra, 2);
+
+    return switch (kind) {
+        .unknown => false,
+        .collection => blk: {
+            if (!is_new) break :blk false; // `Set()` / `Map()` 등 call 은 TypeError
+            break :blk isPureCollectionArgs(ast, name, args_start, args_len, unresolved_globals, depth);
+        },
+        .dotcall_only => blk: {
+            if (is_new) break :blk false; // `new Symbol()` 은 TypeError
+            break :blk allArgsPure(ast, args_start, args_len, unresolved_globals, depth);
+        },
+        .error_ctor => isPureErrorArgs(ast, args_start, args_len, unresolved_globals, depth),
+        .unconditional, .either => allArgsPure(ast, args_start, args_len, unresolved_globals, depth),
+    };
+}
+
+/// 빌트인 이름별 분류.
+///
+/// - `collection` (new 전용, strict args): `Set` / `Map` / `WeakSet` / `WeakMap`
+///   call 로 쓰면 TypeError.
+/// - `dotcall_only` (call 전용): `Symbol` — `new Symbol()` 은 TypeError.
+/// - `unconditional` (new/call 어느 쪽도 safe, 인자 무관한 내부 연산만): `Object`,
+///   `Boolean` — ToBoolean 은 user code 호출 없음.
+/// - `either` (new/call 모두 safe, 인자는 재귀 pure): `Array`, `Date`, `String`.
+/// - `error_ctor` (new/call 양쪽 OK 이지만 msg 인자가 Symbol 이면 TypeError throw —
+///   ECMA-262 §20.5.1 Error constructor 가 `ToString(msg)` 호출, `ToString(Symbol)` 은
+///   TypeError): `Error` + 하위 타입 (EvalError/RangeError/ReferenceError/SyntaxError/
+///   TypeError/URIError). 인자가 Symbol 이 **아님** 을 정적으로 증명 가능할 때만 pure.
+/// - `unknown`: 위 목록 외.
+///
+/// 제외된 것들:
+/// - `RegExp(pattern, flags)` — invalid pattern SyntaxError 가능
+/// - `BigInt(x)` — invalid value TypeError
+/// - `Number(x)` — Symbol 피연산자에 ToNumber → TypeError
+/// - `Proxy`, `WeakRef`, `Function` — 임의 사용자 코드 실행
+/// - TypedArray (`Int8Array` 등) — iteration side-effect 가능
+const BuiltinKind = enum { unknown, collection, dotcall_only, unconditional, either, error_ctor };
+
+fn categorizeBuiltin(name: []const u8) BuiltinKind {
+    const eql = std.mem.eql;
+    if (eql(u8, name, "Set") or eql(u8, name, "Map") or eql(u8, name, "WeakSet") or eql(u8, name, "WeakMap")) {
+        return .collection;
+    }
+    if (eql(u8, name, "Symbol")) return .dotcall_only;
+    if (eql(u8, name, "Object") or eql(u8, name, "Boolean")) return .unconditional;
+    if (eql(u8, name, "Array") or eql(u8, name, "Date") or eql(u8, name, "String")) return .either;
+    if (eql(u8, name, "Error") or eql(u8, name, "EvalError") or eql(u8, name, "RangeError") or
+        eql(u8, name, "ReferenceError") or eql(u8, name, "SyntaxError") or
+        eql(u8, name, "TypeError") or eql(u8, name, "URIError")) return .error_ctor;
+    return .unknown;
+}
+
+/// Collection constructor (new Set/Map/WeakSet/WeakMap) 의 인자 safety.
+/// ECMAScript 명세상 인자는 단일 iterable — iterator protocol 발동이 Symbol.iterator
+/// getter side-effect 를 트리거할 수 있어, 아래 형태만 pure:
+/// - 무인자
+/// - `null` literal
+/// - 전역 `undefined` identifier
+/// - ArrayExpression — Set/WeakSet 은 원소 각각 재귀 pure, Map/WeakMap 은 각 원소가
+///   추가로 ArrayExpression ([k,v] 쌍) 이어야 + 재귀 pure.
+///
+/// 그 외 (identifier / call / member_expression / object_expression / spread) 는
+/// iterator 가 custom 구현/Proxy/getter 일 수 있어 보수적 impure.
+fn isPureCollectionArgs(
+    ast: *const Ast,
+    name: []const u8,
+    args_start: u32,
+    args_len: u32,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (args_len == 0) return true;
+    if (args_len > 1) return false; // spec: 단일 인자. 초과면 보수적
+    if (args_start >= ast.extra_data.items.len) return false;
+
+    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+
+    return switch (arg.tag) {
+        .null_literal => true,
+        .identifier_reference => blk: {
+            const arg_name = ast.getText(arg.span);
+            if (!std.mem.eql(u8, arg_name, "undefined")) break :blk false;
+            const g = unresolved_globals orelse break :blk false;
+            break :blk g.contains("undefined");
+        },
+        .array_expression => blk: {
+            const is_map = std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "WeakMap");
+            const list = arg.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_el| {
+                const el_idx: NodeIndex = @enumFromInt(raw_el);
+                if (el_idx.isNone()) continue; // elision NodeIndex.none
+                if (@intFromEnum(el_idx) >= ast.nodes.items.len) break :blk false;
+                const el = ast.nodes.items[@intFromEnum(el_idx)];
+                if (el.tag == .elision) continue;
+                if (el.tag == .spread_element) break :blk false;
+                // Map/WeakMap: 각 원소가 [k,v] ArrayExpression 이어야
+                if (is_map and el.tag != .array_expression) break :blk false;
+                // 재귀 pure — foo()/identifier 등 side-effect 방지
+                if (!isNodePureDepth(ast, el, unresolved_globals, depth + 1)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+/// Error 계열 생성자의 msg 인자 safety.
+/// ECMA-262 §20.5.1 Error 는 `ToString(msg)` 호출 — Symbol 이면 TypeError throw.
+/// msg 가 Symbol 이 아님을 정적으로 보장할 수 있는 케이스만 pure.
+/// 기존 `canBeSymbol` 을 재사용 (literal/template_literal/array/object/function/unary/
+/// binary/update 는 non-Symbol 확정, identifier/call/member 는 보수적 Symbol 가능).
+/// - 무인자: 항상 pure
+/// - 단일 msg 인자: non-Symbol 확정 + 재귀 pure
+/// - 2개 이상 인자: 보수적 impure (spec: `options.cause` 는 실사용 드묾 + toString 부수효과 가능)
+/// - `undefined` 전역 identifier 는 Symbol 아닌 게 확정이므로 특수 허용
+fn isPureErrorArgs(
+    ast: *const Ast,
+    args_start: u32,
+    args_len: u32,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (args_len == 0) return true;
+    if (args_len > 1) return false;
+    if (args_start >= ast.extra_data.items.len) return false;
+
+    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg.tag == .spread_element) return false;
+
+    // Symbol 가능성 배제: canBeSymbol + 전역 undefined 특수 허용.
+    const undef_ok = arg.tag == .identifier_reference and blk: {
+        const name = ast.getText(arg.span);
+        if (!std.mem.eql(u8, name, "undefined")) break :blk false;
+        const g = unresolved_globals orelse break :blk false;
+        break :blk g.contains("undefined");
+    };
+    if (!undef_ok and canBeSymbol(ast, arg_idx)) return false;
+
+    return isNodePureDepth(ast, arg, unresolved_globals, depth);
+}
+
+/// 인자 전체가 pure + spread 없음 체크. collection 외 category 용.
+fn allArgsPure(
+    ast: *const Ast,
+    args_start: u32,
+    args_len: u32,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
     if (args_len == 0) return true;
     if (args_start + args_len > ast.extra_data.items.len) return false;
-
     for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
         const arg_idx: NodeIndex = @enumFromInt(raw);
         if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) continue;
@@ -141,23 +304,6 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
         if (!isNodePureDepth(ast, arg, unresolved_globals, depth)) return false;
     }
     return true;
-}
-
-/// 빌트인 pure 생성자 이름. (esbuild `isPrimitiveConstructor`, rolldown `is_primitive_constructor`)
-///
-/// RegExp는 invalid pattern이 SyntaxError를 throw할 수 있어 제외.
-/// Boolean/Number/String/BigInt는 coercion으로 인자 평가 외 부수효과 없지만
-/// 실사용이 드물어 당장은 생략 (필요 시 추가).
-fn isPureBuiltinConstructor(name: []const u8) bool {
-    const pure_names = [_][]const u8{
-        "Set",    "Map",   "WeakMap", "WeakSet",
-        "Symbol", "Array", "Object",  "Date",
-        "Error",
-    };
-    for (pure_names) |candidate| {
-        if (std.mem.eql(u8, name, candidate)) return true;
-    }
-    return false;
 }
 
 fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
