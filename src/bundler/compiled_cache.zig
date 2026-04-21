@@ -306,6 +306,20 @@ pub const CompiledOutputCache = struct {
         try self.entries.put(owned_key, .{ .input_hash = input_hash, .compiled = owned });
     }
 
+    /// 디버그 로그에 hit/miss stats 출력 + 카운터 리셋. `ZTS_DEBUG=compiled_cache`
+    /// 비활성 시 takeStats 호출도 스킵 — counter 부작용 없음.
+    /// `prefix` 는 caller 가 추가할 선행 키 (예: "first=true "). 빈 문자열이면 prefix 없음.
+    pub fn logStats(self: *CompiledOutputCache, prefix: []const u8) void {
+        const debug_log = @import("../debug_log.zig");
+        if (!debug_log.enabled(.compiled_cache)) return;
+        const stats = self.takeStats();
+        debug_log.print(
+            .compiled_cache,
+            "{s}hits={d} misses={d} no_mtime_skipped={d} (entries={d})\n",
+            .{ prefix, stats.hits, stats.misses, stats.skipped, self.entries.count() },
+        );
+    }
+
     /// 특정 경로 엔트리를 무효화 (파일 삭제/graph 변경 시).
     pub fn invalidate(self: *CompiledOutputCache, path: []const u8) void {
         if (self.entries.fetchRemove(path)) |kv| {
