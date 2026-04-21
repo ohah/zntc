@@ -287,8 +287,29 @@ interface BuildOptionsCommon {
   preserveModules?: boolean;
   /** preserve-modules 출력 디렉토리 구조 기준 경로 */
   preserveModulesRoot?: string;
-  /** 파이프라인 단계별 타이밍 출력 */
-  timing?: boolean;
+  /**
+   * 활성화할 profile category 목록 (ZTS_PROFILE env 와 합집합).
+   * 예: `["all"]`, `["parse", "transform"]`, `["transform.jsx"]`.
+   * Parent 를 지정하면 child 도 자동 활성 (e.g. "transform" → "transform.jsx"/"transform.ts_strip"/...).
+   * 사용 가능한 category: docs/design/profile-infrastructure.md 참조.
+   */
+  profile?: string[];
+  /**
+   * Profile 상세도.
+   * - "summary": phase 총합만 (기본)
+   * - "detailed": sub-phase 포함
+   * - "per-module": 모듈별 breakdown
+   * - "per-pass": transformer visit 수준
+   */
+  profileLevel?: "summary" | "detailed" | "per-module" | "per-pass";
+  /**
+   * Profile 리포트 출력 포맷.
+   * - "table": 사람 가독 (기본)
+   * - "tree": parent/child 트리
+   * - "json": 기계 판독
+   * - "csv": 스프레드시트
+   */
+  profileFormat?: "table" | "tree" | "json" | "csv";
   /** dev mode: 모듈을 __zts_register() 팩토리로 래핑 + HMR 런타임 주입 */
   devMode?: boolean;
   /** dev mode 모듈 ID 기준 경로 */

@@ -2146,6 +2146,22 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, cats)) return null;
     }
 
+    // profile / profileLevel / profileFormat: 프로세스 전역 `profile` 모듈 상태를 조작.
+    // JS 에서 \{ profile: ["parse", "transform"], profileLevel: "detailed", profileFormat: "json" \}
+    // 식으로 전달. env (ZTS_PROFILE) 와 합집합. CLI `--profile=...` 와 동일한 의미.
+    if (getObjectStringArray(env, opts_obj, "profile", native_alloc)) |cats| {
+        for (cats) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, cats)) return null;
+        @import("zts_lib").profile.addCategories(cats);
+    }
+    if (getObjectString(env, opts_obj, "profileLevel", native_alloc)) |lvl| {
+        defer native_alloc.free(lvl);
+        if (@import("zts_lib").profile.Level.fromString(lvl)) |parsed| {
+            @import("zts_lib").profile.setLevel(parsed);
+        }
+    }
+    // profileFormat 은 NAPI 반환 포맷 결정 — BundleOptions 에 별도 필드로 저장 (아래).
+
     // 문자열 옵션 헬퍼
     const ownStr = struct {
         fn f(e: c.napi_env, obj: c.napi_value, key: [*:0]const u8, list: *std.ArrayList([]const u8)) ?[]const u8 {
@@ -2491,7 +2507,6 @@ fn parseBuildOptions(
         .legal_comments = legal_comments,
         .preserve_modules = getObjectBool(env, opts_obj, "preserveModules", false),
         .preserve_modules_root = preserve_modules_root,
-        .timing = getObjectBool(env, opts_obj, "timing", false),
         .dev_mode = getObjectBool(env, opts_obj, "devMode", false),
         .root_dir = root_dir,
         .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
@@ -2516,6 +2531,19 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     // ZTS_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
     // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
     @import("zts_lib").debug_log.initFromEnv(native_alloc);
+
+    // ZTS_PROFILE / ZTS_PROFILE_LEVEL 도 동일하게 1회 파싱. 개별 build 호출마다
+    // `BundleOptions.profile` / `profileLevel` 로 추가 가능.
+    @import("zts_lib").profile.initFromEnv(native_alloc);
+
+    // BUNGAE_HMR_PROFILE=1 호환 — 번개의 기존 HMR profile 토글을 새 인프라로 매핑.
+    // 내부적으로 ZTS_PROFILE=hmr 과 동등.
+    if (std.process.getEnvVarOwned(native_alloc, "BUNGAE_HMR_PROFILE")) |v| {
+        defer native_alloc.free(v);
+        if (v.len > 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
+            @import("zts_lib").profile.addFromCsv("hmr");
+        }
+    } else |_| {}
 
     var fn_value: c.napi_value = undefined;
     _ = c.napi_create_function(env, "transpile", "transpile".len, napiTranspile, null, &fn_value);
