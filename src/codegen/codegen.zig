@@ -237,6 +237,9 @@ pub const Codegen = struct {
 
     /// AST를 JS 문자열로 출력한다.
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
+        var scope = @import("../profile.zig").begin(.codegen);
+        defer scope.end();
+
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
 
