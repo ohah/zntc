@@ -220,13 +220,6 @@ pub const IncrementalBundler = struct {
         self.updateCache(&result);
         if (is_first) self.needs_full_rebuild = false;
 
-        // 디버그: compiled_cache 실측용 로그. emit 루프에서 hit/miss 집계값을 출력.
-        const stats = self.compiled_cache.takeStats();
-        std.debug.print(
-            "[compiled_cache] first={} hits={} misses={} no_mtime_skipped={} (entries={})\n",
-            .{ is_first, stats.hits, stats.misses, stats.skipped, self.compiled_cache.entries.count() },
-        );
-
         result.deinit(self.allocator);
 
         return .{
