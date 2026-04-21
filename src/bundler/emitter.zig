@@ -30,7 +30,6 @@ const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
-const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
 const cache_mod = @import("compiled_cache.zig");
@@ -817,9 +816,6 @@ fn emitModuleThread(
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
 /// 모듈별 arena에 AST가 보존되어 있으므로 재파싱 불필요.
 /// emitChunks에서도 사용하므로 pub으로 노출.
-///
-/// D1 (RFC #1672) 이후 모든 bundle emit 경로는 `Transformer.initInPlace` 를 사용 —
-/// module.ast 를 직접 mutate 후 deinit 에서 parser 상태로 truncate 복구한다.
 pub fn emitModule(
     allocator: std.mem.Allocator,
     module: *const Module,
@@ -848,7 +844,7 @@ pub fn emitModule(
         return emitAssetModule(allocator, module, options);
     }
 
-    if (module.ast == null) return null;
+    const ast = &(module.ast orelse return null);
 
     // 변환용 arena (Transformer/Codegen 내부 메모리)
     var emit_arena = std.heap.ArenaAllocator.init(allocator);
@@ -859,7 +855,7 @@ pub fn emitModule(
     // JSX lowering: 번들 모드에서 Transformer가 jsx_element → call_expression 변환.
     // classic: React.createElement() 호출, automatic: _jsx/_jsxs/_jsxDEV 호출.
     // graph.zig의 synthetic import가 automatic 모드 바인딩을 처리.
-    const jsx_active = module.ast.?.has_jsx;
+    const jsx_active = ast.has_jsx;
     const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
     const apply_refresh = options.react_refresh and is_user_code;
     const builtin = @import("../transformer/plugins/builtin.zig");
@@ -872,7 +868,7 @@ pub fn emitModule(
         .worklet = options.worklet_transform and !exclude_worklet,
     }, options.plugins, arena_alloc) catch return error.OutOfMemory;
 
-    const transform_opts: TransformOptions = .{
+    var transformer = try Transformer.init(arena_alloc, ast, .{
         .react_refresh = apply_refresh,
         .plugins = merged_plugins,
         .define = options.define,
@@ -891,14 +887,7 @@ pub fn emitModule(
         .worklet_plugin_version = options.worklet_plugin_version,
         .minify_syntax = options.minify_syntax,
         .keep_names = options.keep_names,
-    };
-    // parse_arena 로부터 **지금** 새로 allocator 를 캡처 — module.ast.allocator 는
-    // parse 시점 캡처라 graph.modules 가 relocated 되면 stale 가능. initInPlace
-    // 가 ast 에 refresh. scratch 는 emit_arena.
-    const parse_alloc = @constCast(&module.parse_arena.?).allocator();
-    var transformer = try Transformer.initInPlace(arena_alloc, @constCast(&module.ast.?), parse_alloc, transform_opts);
-    // deinit 이 ast 를 parser 상태로 truncate — 에러 경로 포함 보장.
-    defer transformer.deinit();
+    });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 ast 기준으로 재매핑. symbols slice도 함께 전달하여
     // reference_count 기반 optimization(#1587 등)이 번들 경로에서도 동작하도록 함.
