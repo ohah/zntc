@@ -857,7 +857,8 @@ pub const Ast = struct {
             .has_jsx = source_ast.has_jsx,
             .allocator = allocator,
         };
-        // 파서 데이터를 새 allocator로 복사
+        // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.
+        errdefer cloned.deinit();
         try cloned.nodes.appendSlice(allocator, source_ast.nodes.items);
         try cloned.extra_data.appendSlice(allocator, source_ast.extra_data.items);
         try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);

@@ -32,10 +32,10 @@ fn expectMinifyOpts(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty, a, root);
-    minify_mod.mergeDecls(&transformer.ast, null);
+    minify_mod.minify(transformer.ast, .empty, a, root);
+    minify_mod.mergeDecls(transformer.ast, null);
 
-    var cg = Codegen.initWithOptions(a, &transformer.ast, codegen_opts);
+    var cg = Codegen.initWithOptions(a, transformer.ast, codegen_opts);
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
@@ -55,11 +55,11 @@ fn expectMergeIdempotent(input: []const u8, expected: []const u8) !void {
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty, a, root);
-    minify_mod.mergeDecls(&transformer.ast, null);
-    minify_mod.mergeDecls(&transformer.ast, null); // 두 번째 호출 — 결과 동일해야 함
+    minify_mod.minify(transformer.ast, .empty, a, root);
+    minify_mod.mergeDecls(transformer.ast, null);
+    minify_mod.mergeDecls(transformer.ast, null); // 두 번째 호출 — 결과 동일해야 함
 
-    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
@@ -87,7 +87,7 @@ fn expectMergeWithSkip(
     var transformer = try Transformer.init(a, &parser.ast, .{});
     const root = try transformer.transform();
 
-    minify_mod.minify(&transformer.ast, .empty, a, root);
+    minify_mod.minify(transformer.ast, .empty, a, root);
 
     var skip = try std.DynamicBitSet.initEmpty(a, transformer.ast.nodes.items.len);
     // substring의 시작 위치와 일치하는 variable_declaration을 **전부** 마킹.
@@ -102,7 +102,7 @@ fn expectMergeWithSkip(
         }
     }
 
-    minify_mod.mergeDecls(&transformer.ast, &skip);
+    minify_mod.mergeDecls(transformer.ast, &skip);
 
     // program 노드 찾기 (codegen이 쓰는 마지막 .program)
     var prog_idx: ?u32 = null;
@@ -763,10 +763,10 @@ fn expectMinifyDead(body: []const u8, expected: []const u8) !void {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx, a, root);
-    minify_mod.mergeDecls(&transformer.ast, null);
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    minify_mod.mergeDecls(transformer.ast, null);
 
-    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
     const trimmed = std.mem.trimRight(u8, result, "\n");
     try std.testing.expectEqualStrings(expected, trimmed);
@@ -886,8 +886,8 @@ test "dead store: await using — 유지" {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx, a, root);
-    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "await using x") != null);
 }
@@ -969,8 +969,8 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx, a, root);
-    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "const x = 1") != null);
 }
@@ -1013,7 +1013,7 @@ test "dead store: cascading — y dead 여부는 x 제거의 감산으로 결정
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx, a, root);
+    minify_mod.minify(transformer.ast, ctx, a, root);
 
     // minify 는 sem.reference_count 를 뮤테이션하지 않아야 한다 (rebuild 누적 감산 방지).
     var y_ref_after: u32 = 0;
@@ -1024,7 +1024,7 @@ test "dead store: cascading — y dead 여부는 x 제거의 감산으로 결정
     try std.testing.expectEqual(@as(u32, 1), y_ref_after);
 
     // 최종 AST: x 와 y 둘 다 empty_statement 여야 함 (cascading dead-store 동작).
-    var codegen = Codegen.init(a, &transformer.ast);
+    var codegen = Codegen.init(a, transformer.ast);
     defer codegen.deinit();
     const output = try codegen.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, output, "let x") == null);
@@ -1469,8 +1469,8 @@ test "unused: /*#__PURE__*/ super(x, y) — derived constructor semantic 필수 
         .scopes = analyzer.scopes.items,
         .unresolved_globals = null,
     };
-    minify_mod.minify(&transformer.ast, ctx, a, root);
-    var cg = Codegen.initWithOptions(a, &transformer.ast, .{});
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{});
     const result = try cg.generate(root);
     try std.testing.expect(std.mem.indexOf(u8, result, "super(x, y)") != null);
 }

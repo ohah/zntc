@@ -43,7 +43,7 @@ fn e2e(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
     var t = try Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
 
-    var cg = Codegen.initWithOptions(allocator, &t.ast, .{ .minify = true });
+    var cg = Codegen.initWithOptions(allocator, t.ast, .{ .minify = true });
     const output = try cg.generate(root);
 
     return .{ .output = output, .arena = arena };

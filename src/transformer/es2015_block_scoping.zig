@@ -175,7 +175,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// transformer 신규 노드 영역을 걸러낸다 (extra 자식에만 한정).
         fn collectChildIndices(self: *Transformer, node: Node, buf: *std.ArrayList(NodeIndex)) !void {
             const kind = node.tag.dataKind();
-            var it = ast_walk.children(&self.ast, node);
+            var it = ast_walk.children(self.ast, node);
             while (it.next()) |child| {
                 if (kind == .extra) {
                     const raw = @intFromEnum(child);

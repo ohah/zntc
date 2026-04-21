@@ -76,7 +76,7 @@ pub fn findDirectiveOffset(self: *Transformer, body_idx: NodeIndex, directive: [
     var si: u32 = 0;
     while (si < search_len) : (si += 1) {
         const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + si]);
-        const text = directiveText(&self.ast, stmt_idx) orelse continue;
+        const text = directiveText(self.ast, stmt_idx) orelse continue;
         if (std.mem.eql(u8, text, directive)) return si;
     }
     return null;
@@ -341,7 +341,7 @@ fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.String
         else => {},
     }
     // generic 재귀 순회 — 공통 ChildIterator 사용
-    var it = ast_walk.children(&self.ast, node);
+    var it = ast_walk.children(self.ast, node);
     while (it.next()) |child| {
         if (child.isNone()) continue;
         try collectAllIdentifiers(self, child, locals, depth + 1);
@@ -394,7 +394,7 @@ fn collectNewExpressionCallees(
         }
     }
     // 자식 재귀 — 공통 ChildIterator 로 generic 순회
-    var it = ast_walk.children(&self.ast, node);
+    var it = ast_walk.children(self.ast, node);
     while (it.next()) |child| {
         if (child.isNone()) continue;
         try collectNewExpressionCallees(self, child, new_classes, depth + 1);
@@ -549,7 +549,7 @@ fn walkBodyForClosureAnalysis(
     }
 
     // --- Generic 순회: 공통 ChildIterator ---
-    var it = ast_walk.children(&self.ast, node);
+    var it = ast_walk.children(self.ast, node);
     while (it.next()) |child| {
         if (child.isNone()) continue;
         try walkBodyForClosureAnalysis(self, child, locals, refs, depth + 1);
@@ -965,7 +965,7 @@ pub fn generateInitCode(
 
     // Codegen으로 code string 생성 (minified, TS 타입 스트리핑 완료된 AST 사용)
     const codegen_mod = @import("../../codegen/codegen.zig");
-    var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, &self.ast, .{
+    var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, self.ast, .{
         .minify_whitespace = true,
     });
     const code = codegen.generate(program) catch return error.OutOfMemory;
