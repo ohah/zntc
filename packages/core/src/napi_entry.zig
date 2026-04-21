@@ -1186,6 +1186,9 @@ const WatchAsyncData = struct {
     watch_include: []const []const u8 = &.{},
     /// watch_roots 스캔 시 제외할 파일 glob (루트 기준 상대).
     watch_exclude: []const []const u8 = &.{},
+    /// Compiled output cache (B2). 워커 스레드에서 매 rebuild 마다 주입.
+    /// watch worker 수명 내내 유지되어 변경 안 된 모듈의 emit 을 스킵.
+    compiled_cache: bundler_mod.CompiledOutputCache,
 
     fn deinit(self: *WatchAsyncData) void {
         // 소유된 문자열 해제
@@ -1198,6 +1201,7 @@ const WatchAsyncData = struct {
         for (self.napi_plugins.items) |np| np.deinit();
         self.napi_plugins.deinit(native_alloc);
         self.zig_plugins.deinit(native_alloc);
+        self.compiled_cache.deinit();
         native_alloc.destroy(self);
     }
 };
@@ -1636,10 +1640,11 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         if (changed_files.items.len == 0) continue;
 
-        // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache 재사용
+        // 재번들 — 증분 빌드: persistent_store + compiled_cache 재사용
         var incremental_opts = bundle_opts;
         incremental_opts.collect_module_codes = bundle_opts.dev_mode;
         incremental_opts.module_store = &persistent_store;
+        incremental_opts.compiled_cache = &async_data.compiled_cache;
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
@@ -1657,6 +1662,16 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             continue;
         };
         defer rebuild_result.deinit(allocator);
+
+        // compiled_cache 디버그 통계 — `ZTS_DEBUG=compiled_cache` 활성 시만 출력.
+        if (zts_lib.debug_log.enabled(.compiled_cache)) {
+            const stats = async_data.compiled_cache.takeStats();
+            zts_lib.debug_log.print(
+                .compiled_cache,
+                "hits={d} misses={d} no_mtime_skipped={d} (entries={d})\n",
+                .{ stats.hits, stats.misses, stats.skipped, async_data.compiled_cache.entries.count() },
+            );
+        }
 
         // 출력 파일 쓰기 + 바이트 수 계산
         var output_bytes: usize = 0;
@@ -1906,6 +1921,7 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         .ready_tsfn = undefined,
         .rebuild_tsfn = undefined,
         .stop_flag = std.atomic.Value(bool).init(false),
+        .compiled_cache = bundler_mod.CompiledOutputCache.init(native_alloc),
     };
 
     // watchFolders/watchInclude/watchExclude 파싱 (parseBuildOptions 바깥에서 수집)
