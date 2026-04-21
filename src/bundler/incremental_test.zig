@@ -443,6 +443,78 @@ test "IncrementalBundler: conflict 가 사라진 cache-hit 모듈의 canonical_n
     }
 }
 
+// ============================================================
+// RFC #1672 Phase B3 — first-build cache reuse
+// ============================================================
+
+test "IncrementalBundler: compiled_cache populates on FIRST build (B3)" {
+    // B3: parseModule 이 Module.mtime 을 주입하게 되어 첫 build 부터 cache put.
+    // 이전 (B2 단독): 첫 build 는 mtime=0 이라 cache 비활성.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드 — 이제 mtime 이 주입되어 cache put 이 작동해야 함.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // 2개 모듈 (util + index) 모두 cache 에 저장됐어야.
+    try std.testing.expect(ib.compiled_cache.entries.count() >= 2);
+}
+
+test "IncrementalBundler: first rebuild hits cache from first build (B3)" {
+    // B3 효과 검증: util.ts 는 변경 안 함 → index.ts 수정 후 첫 rebuild 에서 cache hit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "util.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer ib.deinit();
+
+    // 첫 빌드 (cache populate).
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    _ = ib.compiled_cache.takeStats(); // 카운터 리셋 — 첫 빌드의 miss 는 제외하고 rebuild 만 관측.
+
+    // index.ts 만 수정, util.ts 는 그대로.
+    try writeFile(tmp.dir, "index.ts", "import { x } from './util';\nconsole.log(x + 1);");
+
+    const r = try ib.rebuild();
+    switch (r) {
+        .success => |s| freeChanged(s.changed_modules),
+        else => return error.TestUnexpectedResult,
+    }
+    // util.ts 가 변경 안 됐으므로 cache hit 되어야 함.
+    try std.testing.expect(ib.compiled_cache.hits >= 1);
+}
+
 test "BundleResult.reparsed_paths: cache-hit 모듈은 제외, cache-miss 만 포함" {
     // HMR `phantom updates` 필터의 source-of-truth. napi_entry 가 이 리스트로
     // cache-hit 모듈을 HMR payload 에서 제외하므로, 리스트가 정확해야 한다.

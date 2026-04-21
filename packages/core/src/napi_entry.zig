@@ -1439,6 +1439,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     var initial_opts = bundle_opts;
     initial_opts.module_store = &persistent_store;
+    initial_opts.compiled_cache = &async_data.compiled_cache;
 
     var bundler = Bundler.init(allocator, initial_opts);
     var result = bundler.bundle() catch |err| {
