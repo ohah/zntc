@@ -696,21 +696,21 @@ pub const Transformer = struct {
                         return wrapped;
                     }
                 }
-                return self.visitListNode(node);
+                return self.visitListNode(idx);
             },
             .block_statement,
             .sequence_expression,
             .class_body,
             .formal_parameters,
             .function_body,
-            => self.visitListNode(node),
+            => self.visitListNode(idx),
 
             // JSX — fragment는 .list, element/opening_element는 .extra
             .jsx_fragment => {
                 if (self.options.jsx_transform) {
                     return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXFragment(self, node);
                 }
-                return self.visitListNode(node);
+                return self.visitListNode(idx);
             },
 
             .template_literal => {
@@ -720,7 +720,7 @@ pub const Transformer = struct {
                 // no-substitution template (data.none == 0)은 리프 노드 — visitListNode으로 처리하면
                 // data.list = {start: X, len: 0}이 되어 codegen의 data.none == 0 체크가 깨짐
                 if (node.data.none == 0) return self.copyNodeDirect(idx);
-                return self.visitListNode(node);
+                return self.visitListNode(idx);
             },
 
             // array_expression: spread(ES2015) 다운레벨링
@@ -730,7 +730,7 @@ pub const Transformer = struct {
                         return es2015_spread.ES2015Spread(Transformer).lowerSpreadArray(self, node);
                     }
                 }
-                return self.visitListNode(node);
+                return self.visitListNode(idx);
             },
 
             // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
@@ -760,7 +760,7 @@ pub const Transformer = struct {
                         return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
                     }
                 }
-                return self.visitListNode(node);
+                return self.visitListNode(idx);
             },
 
             // JSX element/opening_element: .extra 형식 (tag, attrs, children)
@@ -1337,7 +1337,7 @@ pub const Transformer = struct {
             .object_pattern,
             .array_assignment_target,
             .object_assignment_target,
-            => self.visitListNode(node),
+            => self.visitListNode(idx),
 
             .binding_rest_element,
             .assignment_target_rest,
@@ -1351,9 +1351,9 @@ pub const Transformer = struct {
             // === TS enum/namespace: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
             .ts_enum_declaration => self.visitEnumDeclaration(node),
             .ts_enum_member => self.visitBinaryNode(idx),
-            .ts_enum_body => self.visitListNode(node),
+            .ts_enum_body => self.visitListNode(idx),
             .ts_module_declaration => self.visitNamespaceDeclaration(node),
-            .ts_module_block => self.visitListNode(node),
+            .ts_module_block => self.visitListNode(idx),
 
             // import x = require('y') → const x = require('y')
             .ts_import_equals_declaration => self.visitImportEqualsDeclaration(node),
@@ -1701,7 +1701,8 @@ pub const Transformer = struct {
     }
 
     /// 리스트 노드: 각 자식을 방문, .none이 아닌 것만 새 리스트로 수집.
-    fn visitListNode(self: *Transformer, node: Node) Error!NodeIndex {
+    fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+        const node = self.ast.getNode(idx);
         // ES2015 block scoping 격리: block_statement 진입 시 리네이밍 처리
         if (self.options.unsupported.block_scoping and node.tag == .block_statement) {
             return self.visitBlockWithScoping(node);
@@ -1710,9 +1711,6 @@ pub const Transformer = struct {
         if (self.options.unsupported.block_scoping and (node.tag == .program or node.tag == .function_body)) {
             self.collectTopLevelVarNames(node.data.list.start, node.data.list.len);
         }
-        // Plugin visitor 훅 — program 노드 선취권 (file-level worklet directive 등)
-        // visitListNode는 idx를 직접 받지 않으므로 caller(visitNodeInner)에서 이미 dispatch 완료 상태.
-        // 여기서는 추가 작업 없음.
         // ES2025: using/await using → try-finally 래핑
         if (self.options.unsupported.using) {
             const Using = es2025_using.ES2025Using(Transformer);
@@ -1726,6 +1724,10 @@ pub const Transformer = struct {
             }
         }
         const new_list = try self.visitExtraList(node.data.list);
+        // visitExtraList 가 identity (원본 list 그대로) 반환 → 부모도 identity.
+        if (new_list.start == node.data.list.start and new_list.len == node.data.list.len) {
+            return idx;
+        }
         return self.ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
@@ -1798,6 +1800,9 @@ pub const Transformer = struct {
     /// 해당 자식 앞에 삽입한다. 이를 통해 1→N 노드 확장이 가능하다.
     /// 예: enum 변환 시 visitNode가 IIFE를 반환하면서 `var Color;`을
     ///     pending_nodes에 push → 리스트에 `var Color;` + IIFE 순서로 삽입.
+    /// 리스트의 각 자식을 방문해 새 NodeList 반환.
+    /// 변경이 하나도 없으면 원본 `list` 를 그대로 반환한다 (identity) — extra_data
+    /// 재할당을 피해 메모리 성장을 억제. caller 가 start/len 동일성으로 판별 가능.
     pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
         // 주의: extra_data.items 슬라이스를 캐시하면 안 됨.
         // visitNode 내부에서 ast.extra_data에 append하면 배열이 재할당되어
@@ -1840,7 +1845,20 @@ pub const Transformer = struct {
             }
         }
 
-        return self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        const scratch_slice = self.scratch.items[scratch_top..];
+        // 변경 없음 감지: 자식 개수 동일 + 각 idx 가 원본과 같음 → 원본 list 그대로 반환.
+        // 이 경우 extra_data 재할당이 없고 caller 도 부모 노드를 identity 로 전파 가능.
+        if (scratch_slice.len == list.len) {
+            var identical = true;
+            for (scratch_slice, 0..) |new_idx, j| {
+                if (@intFromEnum(new_idx) != self.ast.extra_data.items[list.start + j]) {
+                    identical = false;
+                    break;
+                }
+            }
+            if (identical) return list;
+        }
+        return self.ast.addNodeList(scratch_slice);
     }
 
     // ================================================================
