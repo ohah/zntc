@@ -407,20 +407,48 @@ export interface WatchRebuildEvent {
     map?: string;
   }>;
   bytes?: number;
-  /** 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출. */
+  /**
+   * 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출.
+   *
+   * **기본 phase** (항상 측정):
+   * - `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
+   * - 주의: `parse` 는 실제로 graph build 전체 (resolve+parse+semantic+finalize) 이고,
+   *   `semantic` 은 link+shake 를 의미. 정확한 분해는 아래 sub-phase 참조.
+   *
+   * **Sub-phase** (`ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` / `profile: ["hmr"]` 활성 시):
+   * - `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
+   * - 비활성 상태에선 모두 0.
+   */
   phaseDurations?: {
     /** 변경 감지 (mtime 스캔) */
     detect: number;
-    /** 파싱 (resolve + parse + finalize) */
+    /** 파싱 (레거시: graph build 전체) */
     parse: number;
-    /** 의미 분석 (scope hoisting + linking + tree-shaking) */
+    /** 의미 분석 (레거시: link + shake) */
     semantic: number;
-    /** 코드 생성 (transform + codegen) */
+    /** 코드 생성 (transform + codegen + metadata 상위) */
     emit: number;
     /** HMR delta 추출 */
     delta: number;
     /** 총 리빌드 시간 (detect → delta 합산) */
     total: number;
+
+    /** Scanner tokenization (profile 활성 시에만) */
+    scan: number;
+    /** Dependency resolution */
+    resolve: number;
+    /** Module graph build (resolve + parse + semantic) */
+    graph: number;
+    /** Scope hoisting + linker */
+    link: number;
+    /** Tree shaking */
+    shake: number;
+    /** Transformer 전체 */
+    transform: number;
+    /** Codegen 전체 */
+    codegen: number;
+    /** Linker metadata build */
+    metadata: number;
   };
   /** 증분 그래프에서 재파싱된 모듈 수. 캐시 미스된 모듈만 카운트. 전체 빌드에서는 미노출. */
   reparsedModules?: number;

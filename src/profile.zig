@@ -261,10 +261,17 @@ pub fn initFromEnv(allocator: std.mem.Allocator) void {
     } else |_| {}
 }
 
-/// 테스트 / 재초기화용. 전체 상태 초기화.
+/// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
 pub fn resetForTest() void {
     enabled_mask = 0;
     current_level = .summary;
+    @memset(&totals_ns, 0);
+    @memset(&counts, 0);
+}
+
+/// counters 만 reset (mask 와 level 은 유지).
+/// HMR rebuild 시작 전에 호출 — 이전 rebuild 의 누적치가 이월되지 않도록.
+pub fn resetCounters() void {
     @memset(&totals_ns, 0);
     @memset(&counts, 0);
 }

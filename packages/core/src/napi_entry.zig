@@ -1215,7 +1215,14 @@ const WatchReadyEvent = struct {
     bytes: usize,
 };
 
-/// 단계별 빌드 시간 (밀리초). Issue #1223 관측성.
+/// HMR rebuild phase 별 소요시간 (밀리초). Issue #1223 관측성.
+///
+/// 기본 phase 들 (`detect_ms`/`parse_ms`/`semantic_ms`/`emit_ms`/`delta_ms`/`total_ms`) 은
+/// profile 비활성 상태에서도 항상 측정됨 (bundler `BundleTimings` 기반 — 가벼움).
+///
+/// Sub-phase (`scan_ms`/`resolve_ms`/`graph_ms`/`link_ms`/`shake_ms`/`transform_ms`/
+/// `codegen_ms`/`metadata_ms`) 는 `ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` /
+/// `BundleOptions.profile` 활성 상태에서만 의미있는 값. 비활성 시 모두 0.
 const PhaseDurations = struct {
     detect_ms: f64 = 0,
     parse_ms: f64 = 0,
@@ -1223,6 +1230,16 @@ const PhaseDurations = struct {
     emit_ms: f64 = 0,
     delta_ms: f64 = 0,
     total_ms: f64 = 0,
+
+    // ── Sub-phase (ZTS_PROFILE=hmr 활성 시에만 값 기록) ──
+    scan_ms: f64 = 0,
+    resolve_ms: f64 = 0,
+    graph_ms: f64 = 0,
+    link_ms: f64 = 0,
+    shake_ms: f64 = 0,
+    transform_ms: f64 = 0,
+    codegen_ms: f64 = 0,
+    metadata_ms: f64 = 0,
 };
 
 /// onRebuild 콜백에 전달할 이벤트 데이터
@@ -1372,6 +1389,15 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 .{ .name = "emit", .value = pd.emit_ms },
                 .{ .name = "delta", .value = pd.delta_ms },
                 .{ .name = "total", .value = pd.total_ms },
+                // Sub-phase (ZTS_PROFILE=hmr 활성 시 의미있는 값, 아니면 0).
+                .{ .name = "scan", .value = pd.scan_ms },
+                .{ .name = "resolve", .value = pd.resolve_ms },
+                .{ .name = "graph", .value = pd.graph_ms },
+                .{ .name = "link", .value = pd.link_ms },
+                .{ .name = "shake", .value = pd.shake_ms },
+                .{ .name = "transform", .value = pd.transform_ms },
+                .{ .name = "codegen", .value = pd.codegen_ms },
+                .{ .name = "metadata", .value = pd.metadata_ms },
             };
             for (fields) |f| {
                 var js_num: c.napi_value = undefined;
@@ -1647,6 +1673,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         if (changed_files.items.len == 0) continue;
 
+        // Profile counters reset — 이전 rebuild 의 누적치가 이월되지 않도록.
+        // mask 와 level 은 유지 (`ZTS_PROFILE=hmr` 등의 활성 상태는 보존).
+        @import("zts_lib").profile.resetCounters();
+
         // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache + compiled_cache 재사용
         var incremental_opts = bundle_opts;
         incremental_opts.collect_module_codes = bundle_opts.dev_mode;
@@ -1816,13 +1846,28 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const total_ns: u64 = if (total_timer) |*t| t.read() else 0;
 
         const nsToMs = bundler_mod.BundleResult.nsToMs;
+        const Profile = @import("zts_lib").profile;
         event.phase_durations = .{
+            // 기본 phase — BundleTimings 기반 (profile 비활성에서도 항상 측정).
+            // 주의: `parse_ms` / `semantic_ms` 는 레거시 이름 — 실제로는 각각
+            // graph build 전체 / link+shake 를 의미. 정확한 sub-phase 분해는
+            // ZTS_PROFILE=hmr 활성 시 sub 필드 참조.
             .detect_ms = nsToMs(detect_ns),
             .parse_ms = nsToMs(rebuild_result.timings.graph_ns),
             .semantic_ms = nsToMs(rebuild_result.timings.link_ns + rebuild_result.timings.shake_ns),
             .emit_ms = nsToMs(rebuild_result.timings.emit_ns),
             .delta_ms = nsToMs(delta_ns),
             .total_ms = nsToMs(total_ns),
+
+            // Sub-phase — profile 활성 시에만 의미있는 값. 비활성이면 0.
+            .scan_ms = nsToMs(Profile.totalNs(.scan)),
+            .resolve_ms = nsToMs(Profile.totalNs(.resolve)),
+            .graph_ms = nsToMs(Profile.totalNs(.graph)),
+            .link_ms = nsToMs(Profile.totalNs(.link)),
+            .shake_ms = nsToMs(Profile.totalNs(.shake)),
+            .transform_ms = nsToMs(Profile.totalNs(.transform)),
+            .codegen_ms = nsToMs(Profile.totalNs(.codegen)),
+            .metadata_ms = nsToMs(Profile.totalNs(.metadata)),
         };
         event.reparsed_modules = rebuild_result.reparsed_modules;
 
