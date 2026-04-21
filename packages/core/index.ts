@@ -56,6 +56,21 @@ interface NativeModule {
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   build(options: Record<string, unknown>): Promise<NativeBuildResult>;
   watch(options: Record<string, unknown>): NativeWatchHandle;
+  benchmark(options: Record<string, unknown>): {
+    phases: Record<
+      string,
+      {
+        samples: number;
+        mean_ms: number;
+        median_ms: number;
+        p95_ms: number;
+        p99_ms: number;
+        min_ms: number;
+        max_ms: number;
+        stddev_ms: number;
+      }
+    >;
+  };
 }
 
 let native: NativeModule | null = null;
@@ -756,6 +771,87 @@ export function buildSync(options: BuildOptions): BuildResult {
  */
 export function close(): void {
   native = null;
+}
+
+// ─── Benchmark API (CLI `zts bench` 의 NAPI 대응) ───
+
+/**
+ * 벤치마크 옵션. `source` 또는 `file` 중 하나는 반드시 지정.
+ */
+export interface BenchmarkOptions {
+  /** Source 코드 문자열 (file 과 둘 중 하나) */
+  source?: string;
+  /** 파일 경로 (source 와 둘 중 하나) */
+  file?: string;
+  /** filename (source 와 함께 사용, 확장자 감지) */
+  filename?: string;
+  /**
+   * 측정할 profile category 목록 (required, non-empty).
+   * 예: `["parse"]`, `["scan", "parse", "transform"]`, `["transform.jsx"]`.
+   * `all` / `none` 은 허용되지 않음 — 구체적 phase 이름만.
+   */
+  phases: string[];
+  /** 반복 횟수 (default 100) */
+  iterations?: number;
+  /** Warmup 반복 (default 10) */
+  warmup?: number;
+}
+
+/**
+ * Phase 하나의 통계 (모든 값 ms 단위).
+ */
+export interface BenchmarkPhaseStats {
+  samples: number;
+  mean_ms: number;
+  median_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  min_ms: number;
+  max_ms: number;
+  stddev_ms: number;
+}
+
+/**
+ * 벤치마크 결과 — `phases` 옵션에 지정된 각 category 별 통계.
+ */
+export interface BenchmarkResult {
+  phases: Record<string, BenchmarkPhaseStats>;
+}
+
+/**
+ * 특정 phase 를 N 회 반복 실행하고 통계 (mean/median/p95/p99/stddev/min/max) 를 반환한다.
+ *
+ * CLI `zts bench --phase=...` 의 NAPI 대응 — 같은 engine 사용.
+ *
+ * @example
+ * ```ts
+ * import { init, benchmark } from "@zts/core";
+ * init();
+ *
+ * const result = benchmark({
+ *   file: "./src/App.tsx",
+ *   phases: ["parse"],
+ *   iterations: 100,
+ * });
+ * console.log(result.phases.parse.mean_ms);  // 42.3
+ * ```
+ */
+export function benchmark(options: BenchmarkOptions): BenchmarkResult {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!options.source && !options.file) {
+    throw new Error("@zts/core.benchmark: 'source' or 'file' is required");
+  }
+  if (!Array.isArray(options.phases) || options.phases.length === 0) {
+    throw new Error("@zts/core.benchmark: 'phases' must be a non-empty string array");
+  }
+  return native.benchmark({
+    source: options.source,
+    file: options.file,
+    filename: options.filename ?? "input.ts",
+    phases: options.phases,
+    iterations: options.iterations ?? 100,
+    warmup: options.warmup ?? 10,
+  });
 }
 
 // ─── Vite/Rollup 플러그인 어댑터 ───
