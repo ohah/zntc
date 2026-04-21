@@ -38,6 +38,7 @@ await build({
 | 이름 | 출력 내용 | 추가된 PR |
 |------|-----------|-----------|
 | `compiled_cache` | HMR/watch 의 compiled output cache hit/miss 집계 | RFC #1672 B2 |
+| `ast_mutation` | `Ast.addNode` 추적 (idx, tag, total, transform_boundary) | RFC #1672 D1 prep |
 
 추가 시: `src/debug_log.zig` 의 `Category` enum 에 이름만 추가 → 사용처에서 `debug_log.print(.new_category, ...)` 호출 → 이 표 업데이트.
 
@@ -54,7 +55,21 @@ await build({
 예시:
 ```
 [compiled_cache] first=false hits=3 misses=1 no_mtime_skipped=0 (entries=4)
+[ast_mutation] addNode idx=42 tag=identifier_reference (total=43, boundary=37)
 ```
+
+### `ast_mutation` 활용 (RFC #1672 D1 디버깅)
+
+D1 (Ast mutable + clone 제거) 재개 시 transformer 가 parse_arena 의 AST 에 in-place
+append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser 영역의 경계
+(`Transformer.init` 시점의 `nodes.items.len`) — 이후 추가되는 노드는 transformer 의
+결과. boundary 가 null 이면 아직 transform 전.
+
+함께 제공되는 인프라:
+- `Ast.transform_boundary: ?u32` — 변환 시작 시점 snapshot (필드만 정의, 사용은 D1 에서)
+- `Ast.transformed_root: ?NodeIndex` — transform() 결과 root cache (재진입 방지)
+- `Ast.assertInvariants()` — Debug 빌드 전용 invariant 검증
+- `Module.ast` 의 ownership 주석 — parse_arena 소유 규약 명시
 
 ## 코드 사용법
 
