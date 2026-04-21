@@ -341,6 +341,105 @@ test "IncrementalBundler: build error returns error message" {
     }
 }
 
+test "IncrementalBundler: cache-hit rebuild emit 은 garbage canonical 을 내지 않는다 (smoke)" {
+    // Regression smoke test: Linker 가 conflict rename 에서 `Symbol.canonical_name`
+    // 에 자신의 `canonical_strings` 버퍼 포인터를 심는다. `Linker.deinit` 이후
+    // string 은 freed 지만 Symbol 은 `parse_arena` 에 살아 PersistentModuleStore
+    // 를 통해 다음 rebuild 까지 살아남는다. 다음 rebuild 의 cache-hit emit 이
+    // freed memory 를 읽으면 임의의 heap 내용이 identifier 로 출력 → JSC 의
+    // `'identifier' expected in declaration` syntax error.
+    //
+    // 수정 (graph.buildIncremental cache-hit): cache-hit 모듈의 symbol
+    // canonical_name 을 빈 문자열로 리셋해 stale pointer 를 끊고, 새 Linker 가
+    // 다시 assign 하도록 한다.
+    //
+    // 한계: 이 unit test 는 fixture 가 작아 GPA 가 freed canonical_strings
+    // 버퍼를 garbage 로 즉시 재사용하지 않을 수 있어, fix 가 빠져도 통과할 수
+    // 있다 (실제 번개 App rebuild 처럼 heap pressure 가 있어야 deterministic).
+    // 즉 smoke test 로서 cache-hit reset 경로가 깨지지 않았는지 + emit 이 명백한
+    // garbage 를 내지 않는지만 확인한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const count = 1;");
+    try writeFile(tmp.dir, "b.ts", "export const count = 2;");
+    try writeFile(tmp.dir, "index.ts",
+        \\import { count as A } from './a';
+        \\import { count as B } from './b';
+        \\console.log(A, B);
+        \\
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+    });
+    defer ib.deinit();
+
+    // build 1: full. store 비어있음.
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // build 2: incremental, store 채움 (a.ts, b.ts 의 conflict rename 발생).
+    try writeFile(tmp.dir, "index.ts",
+        \\import { count as A } from './a';
+        \\import { count as B } from './b';
+        \\console.log(A, B, 1);
+        \\
+    );
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    // build 3: incremental, a.ts/b.ts cache-hit.
+    // 수정이 빠지면 cache-hit 모듈의 stale canonical_name 이 emit 에 누출.
+    // 수정 후엔 reset → fresh assign 으로 정상.
+    try writeFile(tmp.dir, "index.ts",
+        \\import { count as A } from './a';
+        \\import { count as B } from './b';
+        \\console.log(A, B, 1, 2);
+        \\
+    );
+    const r = try ib.rebuild();
+    switch (r) {
+        .success => |s| {
+            defer freeChanged(s.changed_modules);
+            // emit 에 path 가 식별자 위치 (= 직전 char 가 `"` 아님) 에 등장하면
+            // canonical_name UAF 누출. 정상 path 키는 항상 `"` 직후.
+            for (s.changed_modules) |c| {
+                var i: usize = 0;
+                while (std.mem.indexOfPos(u8, c.code, i, "/Users/")) |idx| {
+                    const prev = if (idx == 0) 0 else c.code[idx - 1];
+                    if (prev != '"' and prev != '\'') {
+                        std.debug.print(
+                            "garbage path identifier in {s} at offset {} (prev=0x{x}): ...{s}...\n",
+                            .{ c.id, idx, prev, c.code[@max(idx, 16) - 16 .. @min(idx + 32, c.code.len)] },
+                        );
+                        return error.GarbagePathInEmit;
+                    }
+                    i = idx + 1;
+                }
+                // GPA poison byte (0xAA) 식별자 누출 — UAF 의 또 다른 양상.
+                if (std.mem.indexOf(u8, c.code, "\xaa\xaa\xaa")) |idx| {
+                    std.debug.print("0xAA poison bytes in {s} at offset {}\n", .{ c.id, idx });
+                    return error.PoisonInEmit;
+                }
+            }
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "IncrementalBundler: changed_modules content stays valid after rebuild" {
     // 번개 HMR 경로에서 발견된 use-after-free 재현.
     // 기존에는 result.deinit 이 module_codes 의 id/code 를 freeAll 하는데,

@@ -2361,3 +2361,16 @@ test "findProjectRoot: yarn pnp — .pnp.cjs + package.json 단일 패키지" {
     const root = try findProjectRoot(std.testing.allocator, start);
     try std.testing.expectEqualStrings(expected, root);
 }
+
+// Regression: `toPosixPath` 가 Debug/ReleaseSafe 빌드에서 null byte path 를
+// `reached unreachable code` 로 panic 시키던 걸 `getMtime` 이 error 로
+// 폴백하도록 만든 가드. plugin 합성 virtual path / AssetRegistry / 빈 경로
+// 등이 실제로 putModule loop 을 타고 들어와 서버가 통째로 죽던 사례 (#1682).
+test "getMtime: reject null-byte / empty / overlong path" {
+    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime(""));
+    try std.testing.expectError(error.InvalidPath, ModuleGraph.getMtime("/tmp/foo\x00bar"));
+
+    var long_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memset(&long_buf, 'a');
+    try std.testing.expectError(error.NameTooLong, ModuleGraph.getMtime(&long_buf));
+}
