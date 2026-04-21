@@ -582,12 +582,15 @@ pub const Bundler = struct {
 
     /// 번들 파이프라인 실행: resolve → graph → emit.
     pub fn bundle(self: *Bundler) !BundleResult {
+        const profile = @import("../profile.zig");
+
         var t_graph: u64 = 0;
         var t_link: u64 = 0;
         var t_shake: u64 = 0;
         var t_emit: u64 = 0;
 
-        // 타이머는 항상 동작 (watch 관측성용). Timer.read()는 ns 단위 syscall 한 번으로 저렴.
+        // 타이머는 항상 동작 (watch 관측성용 — HMR phaseDurations 에 노출).
+        // 추가로 `profile` 모듈 activation 시 같은 구간에 .graph/.link/.shake/.emit scope 가 기록된다.
         var timer: ?std.time.Timer = std.time.Timer.start() catch null;
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입.
@@ -641,6 +644,7 @@ pub const Bundler = struct {
         }
 
         // 1. 모듈 그래프 구축
+        var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
         graph.loader_overrides = self.options.loader_overrides;
@@ -715,10 +719,12 @@ pub const Bundler = struct {
             t_graph = t.read();
             t.reset();
         }
+        graph_scope.end();
 
         // 2. 링킹 (scope hoisting)
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
+        var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
@@ -749,9 +755,11 @@ pub const Bundler = struct {
             t_link = t.read();
             t.reset();
         }
+        link_scope.end();
 
         // 2.5. Tree-shaking (scope_hoist + tree_shaking 둘 다 켜져 있을 때)
         // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
+        var shake_scope = profile.begin(.shake);
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
             var s = try TreeShaker.init(self.allocator, graph.modules.items, &(linker.?));
             try s.analyze(self.options.entry_points);
@@ -763,6 +771,10 @@ pub const Bundler = struct {
             t_shake = t.read();
             t.reset();
         }
+        shake_scope.end();
+
+        var emit_scope = profile.begin(.emit);
+        defer emit_scope.end();
 
         // 2.7. 폴리필 파일 내용 로딩 (--polyfill)
         var polyfill_entries: std.ArrayList(EmitOptions.PolyfillEntry) = .empty;
