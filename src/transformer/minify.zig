@@ -41,6 +41,9 @@ pub const MinifyCtx = struct {
     symbol_ids: []const ?u32,
     scopes: []const scope_mod.Scope,
     unresolved_globals: ?*const purity.GlobalRefSet,
+    /// per-reference 배열. #1666 single-use inline 이 declaration ↔ read adjacency
+    /// 를 판단하는 데 사용 (`scope_stmt_idx`). 비어있으면 inline pass 는 skip.
+    references: []const symbol_mod.Reference = &.{},
     /// symbol 별 누적 감산량 (이번 emit 한정). length == symbols.len 또는 0.
     /// 비어있으면 `symbols[*].reference_count` 를 그대로 사용 (최초 호출 경로).
     /// `minify()` 진입부에서 scratch 로 할당 → `decrementRefsInExpr` 가 증가.
@@ -269,7 +272,7 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
             markReachableNodes(ast, root, b, &bfs_queue, scratch);
             break :blk b;
         } else null;
-        if (!runOnce(ast, ctx, skip_ptr, live_ptr)) break;
+        if (!runOnce(ast, ctx, skip_ptr, live_ptr, scratch)) break;
     }
 }
 
@@ -284,7 +287,7 @@ fn clearBitSet(b: *std.DynamicBitSet) void {
 /// **Index-based loop**: rewrite 중 `ast.nodes.append` (e.g. paren 노드 생성) 로
 /// items slice 가 재할당되어도 안전 — 매 iter `ast.nodes.items[i]` 재슬라이스.
 /// 새로 append 된 노드는 `items.len` 증가로 자동 순회됨.
-fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet) bool {
+fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, scratch: std.mem.Allocator) bool {
     var changed = false;
     var i: u32 = 0;
     while (i < ast.nodes.items.len) : (i += 1) {
@@ -304,6 +307,11 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
         }
     }
     if (ctx.hasSemantic()) {
+        // single-use inline 을 dead-store 보다 먼저 실행 — inline 이 삭제하는 선언은
+        // ref_count==1 (dead-store 는 0 대상) 이므로 간섭 없음. inline 이 먼저 돌면
+        // 연쇄된 새 dead expression 을 같은 iter 의 fold pass 들이 다음 runOnce 에서
+        // 포착하기 쉬움.
+        inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
     }
     return changed;
@@ -497,6 +505,234 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
     while (it.next()) |child| {
         decrementRefsInExpr(ast, ctx, child);
     }
+}
+
+// ================================================================
+// Single-use Identifier Inline (#1666 Phase 2+3)
+// ================================================================
+//
+// 제거 조건 (모두 만족):
+//   - `const` / `let` 선언, 단일 `binding_identifier` declarator (using/var 제외)
+//   - `scope_id != 0` — top-level 은 tree-shaker 영역
+//   - `reference_count == 1` and `write_count == 0`
+//   - init 이 `isConstantExpr` — literal 또는 literal 만 담은 array/object (식별자
+//     의존성 없음). mutable state 와 무관해 선언→read 사이 개입 write 가 결과를
+//     바꿀 수 없으므로 adjacency 검사 불필요.
+//   - init 이 purity.isExprPure (이중 안전망 — constant expr 은 자동 pure).
+//   - `is_exported` / `is_default_export` 아님
+//   - eval / with 스코프 아님
+//
+// 동작: 유일한 read 위치의 identifier_reference 노드를 init 노드의 내용으로 in-place
+// 덮어쓴다 (같은 NodeIndex 유지, tag/span/data 교체 — init 의 자식은 extra_data 를
+// 공유하므로 별도 복제 불필요). 선언 statement 는 empty_statement 로 교체.
+//
+// **Traversal-based** (esbuild `substituteSingleUseSymbolInExpr`, oxc
+// `peephole/inline.rs` 방식). `ctx.references` 의 `node_index` 는 parser 시점
+// 캡처라 transformer 의 copyNodeDirect 이후 orphan 이 되므로 **사용하지 않고**,
+// live AST 를 직접 walk 해서 symbol_ids 로 read 위치를 찾는다.
+//
+// 일반 expression inline (식별자 포함 init) 은 이 PR 범위 밖 — 개입 write 의
+// evaluate-order 안전성을 별도로 증명해야 함 (esbuild 의 sequence-rewrite).
+
+/// Phase 2+3 inline: constant-expr init 을 유일 read 에 inline.
+fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
+    if (!ctx.hasSemantic()) return;
+    const skip = skip_for_binding orelse return;
+
+    // Pre-pass: replace 시 구문 깨지는 NodeIndex 를 forbidden 으로 마킹.
+    // 대표 케이스: shorthand object property `{ x }` — key(=value) 위치의
+    // identifier_reference 를 다른 tag 로 덮어쓰면 codegen 이 `{[1,2,3]}` 같은
+    // 잘못된 문법을 낸다. object_property 에서 right(value) 가 .none 인 경우
+    // left(key) NodeIndex 를 금지 목록에 추가.
+    var forbidden = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
+    defer forbidden.deinit();
+    for (ast.nodes.items) |node| {
+        if (node.tag != .object_property) continue;
+        if (!node.data.binary.right.isNone()) continue;
+        const key_ni = @intFromEnum(node.data.binary.left);
+        if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
+    }
+
+    // symbol 별 identifier_reference 등장 횟수 + 첫 등장 NodeIndex 를 스캔.
+    // 오직 live 영역의 identifier_reference 만 집계한다 — transformer 가 남긴 orphan
+    // 을 세면 ref_count 미스매치로 inline 이 어긋난다.
+    const counts = scratch.alloc(u32, ctx.symbols.len) catch return;
+    defer scratch.free(counts);
+    const first_loc = scratch.alloc(u32, ctx.symbols.len) catch return;
+    defer scratch.free(first_loc);
+    @memset(counts, 0);
+    @memset(first_loc, std.math.maxInt(u32));
+
+    for (ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .identifier_reference) continue;
+        if (live_nodes) |lives| {
+            if (i >= lives.capacity() or !lives.isSet(i)) continue;
+        }
+        if (i >= ctx.symbol_ids.len) continue;
+        const sid = ctx.symbol_ids[i] orelse continue;
+        if (sid >= counts.len) continue;
+        // shorthand key 위치의 identifier_reference 는 "read" 로 세되 inline 대상
+        // 으로는 쓰지 않는다 — replace 하면 syntax 깨짐. counts 는 증가시키고 (read 수
+        // 일치 보장), first_loc 는 non-forbidden 위치만 기록.
+        counts[sid] += 1;
+        if (first_loc[sid] == std.math.maxInt(u32) and !forbidden.isSet(i)) first_loc[sid] = @intCast(i);
+    }
+
+    for (ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .variable_declaration) continue;
+        if (skip.isSet(i)) continue;
+        if (live_nodes) |lives| {
+            if (i >= lives.capacity() or !lives.isSet(i)) continue;
+        }
+        tryInlineDecl(ast, ctx, counts, first_loc, @intCast(i), node, changed);
+    }
+}
+
+fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []const u32, decl_stmt_idx: u32, node: Node, changed: *bool) void {
+    const kind = ast.variableDeclarationKind(node);
+    if (kind.isUsing()) return;
+    if (kind == .@"var") return;
+
+    const extra = node.data.extra;
+    if (extra + 2 >= ast.extra_data.items.len) return;
+    const list_len = ast.extra_data.items[extra + 2];
+    if (list_len != 1) return;
+    const list_start = ast.extra_data.items[extra + 1];
+    if (list_start >= ast.extra_data.items.len) return;
+
+    const decl_raw = ast.extra_data.items[list_start];
+    if (decl_raw >= ast.nodes.items.len) return;
+    const decl = ast.nodes.items[decl_raw];
+    if (decl.tag != .variable_declarator) return;
+
+    const de = decl.data.extra;
+    if (de + 2 >= ast.extra_data.items.len) return;
+    const name_raw = ast.extra_data.items[de];
+    const init_raw = ast.extra_data.items[de + 2];
+
+    if (name_raw >= ast.nodes.items.len) return;
+    const name_node = ast.nodes.items[name_raw];
+    if (name_node.tag != .binding_identifier) return;
+
+    if (name_raw >= ctx.symbol_ids.len) return;
+    const sym_id = ctx.symbol_ids[name_raw] orelse return;
+    if (sym_id >= ctx.symbols.len) return;
+    const sym = ctx.symbols[sym_id];
+
+    const scope_idx = @intFromEnum(sym.scope_id);
+    if (scope_idx == 0) return;
+    if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
+    if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
+
+    if (ctx.effectiveRefCount(sym_id) != 1 or sym.write_count != 0) return;
+
+    const init_idx: NodeIndex = @enumFromInt(init_raw);
+    if (init_idx.isNone()) return;
+    if (!isConstantExpr(ast, init_idx)) return;
+    if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
+
+    // 실측 identifier_reference 수 확인 — ref_deltas 를 감안한 ref_count 와 정확히 1 일치.
+    if (sym_id >= counts.len) return;
+    if (counts[sym_id] != 1) return;
+    const read_ni = first_loc[sym_id];
+    if (read_ni == std.math.maxInt(u32) or read_ni >= ast.nodes.items.len) return;
+
+    const init_ni = @intFromEnum(init_idx);
+    if (init_ni >= ast.nodes.items.len) return;
+    const init_node = ast.nodes.items[init_ni];
+
+    // in-place swap: read 위치의 identifier_reference 를 init 의 tag/data 로 덮어쓴다.
+    // init 의 자식은 extra_data 공유 → codegen 은 read_ni 에서 init 전체를 출력.
+    // span 은 init 의 것을 사용 (source map 에서 inlined 값의 위치 유지).
+    ast.nodes.items[read_ni] = .{
+        .tag = init_node.tag,
+        .span = init_node.span,
+        .data = init_node.data,
+    };
+
+    replaceNode(ast, decl_stmt_idx, .{
+        .tag = .empty_statement,
+        .span = node.span,
+        .data = .{ .none = 0 },
+    }, changed);
+    if (sym_id < ctx.ref_deltas.len) ctx.ref_deltas[sym_id] += 1;
+    changed.* = true;
+}
+
+/// init 이 식별자 의존성 없는 constant expression 인지 판정.
+/// - numeric / string / bigint / boolean / null / regexp literal
+/// - template_literal (정적 — expression 슬롯 없음)
+/// - array_expression / object_expression: 모든 원소/값이 재귀적으로 constant
+///   (object_property 의 key 는 identifier/string/numeric/bigint 만 허용, computed/
+///   shorthand 제외)
+///
+/// identifier_reference, this_expression, call_expression, binary/unary 등은 전부 false
+/// 반환. 식별자 의존성이 있으면 "개입 write" 의 evaluate-order 안전성을 증명해야 하는데,
+/// 그건 esbuild 의 substituteSingleUseSymbolInExpr sequence-rewrite 수준이라 본 PR
+/// 범위 밖. 이 pass 는 mutable state 의존이 전혀 없는 constant-only subset 에 한정.
+fn isConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[ni];
+    return switch (node.tag) {
+        .numeric_literal,
+        .string_literal,
+        .bigint_literal,
+        .boolean_literal,
+        .null_literal,
+        .regexp_literal,
+        => true,
+        // template_literal: no-substitution (`.{ .none = 0 }`) vs interpolated (`.list`)
+        // 을 extern union 에서 런타임 구분할 안전한 수단이 없어 (data.list.len 읽으면
+        // `.none` 에서 padding 읽기) 보수적으로 전부 skip. 실사용 impact 은 미미.
+        .template_literal => false,
+        .array_expression => blk: {
+            const list = node.data.list;
+            var j: u32 = 0;
+            while (j < list.len) : (j += 1) {
+                if (list.start + j >= ast.extra_data.items.len) break :blk false;
+                const child_raw = ast.extra_data.items[list.start + j];
+                const child_idx: NodeIndex = @enumFromInt(child_raw);
+                if (child_idx.isNone()) continue; // elision NodeIndex.none
+                const child_ni = @intFromEnum(child_idx);
+                if (child_ni < ast.nodes.items.len and ast.nodes.items[child_ni].tag == .elision) continue;
+                if (!isConstantExpr(ast, child_idx)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object_expression => blk: {
+            const list = node.data.list;
+            var j: u32 = 0;
+            while (j < list.len) : (j += 1) {
+                if (list.start + j >= ast.extra_data.items.len) break :blk false;
+                const prop_raw = ast.extra_data.items[list.start + j];
+                if (prop_raw >= ast.nodes.items.len) break :blk false;
+                const prop = ast.nodes.items[prop_raw];
+                if (prop.tag != .object_property) break :blk false;
+                // object_property: binary = { left: key, right: value }.
+                const key_idx = prop.data.binary.left;
+                const value_idx = prop.data.binary.right;
+                const key_ni = @intFromEnum(key_idx);
+                if (key_ni >= ast.nodes.items.len) break :blk false;
+                const key_tag = ast.nodes.items[key_ni].tag;
+                // 정적 key 만: identifier_reference (속성명 자체), string/numeric literal.
+                // computed_property_key 는 expression 이 들어갈 수 있어 제외. 쇼트핸드 `{a}` 는
+                // value 도 identifier_reference 라 value 검사에서 자연히 false.
+                switch (key_tag) {
+                    .identifier_reference, .string_literal, .numeric_literal, .bigint_literal => {},
+                    else => break :blk false,
+                }
+                if (!isConstantExpr(ast, value_idx)) break :blk false;
+            }
+            break :blk true;
+        },
+        // 그 외 (identifier_reference, member_expression, call_expression, new_expression,
+        // arrow_function_expression, function_expression, unary, binary, ...) 는 보수적
+        // 으로 false. unary (!1) / binary (1+2) 등 constant fold 대상은 다른 pass 가
+        // 이미 리터럴로 접었을 것.
+        else => false,
+    };
 }
 
 /// Top-level `const` / `let` 선언을 `var` 로 다운그레이드 (#1630).

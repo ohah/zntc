@@ -809,10 +809,24 @@ test "dead store: unused let with pure binary 제거" {
 
 // ---- 제거 금지 — 사용됨 ----
 
-test "dead store: read 1회 — 유지" {
+test "dead store: read 1회 + literal init — Phase 2 inline" {
+    // #1666 Phase 2: single-use + constant-expr init → inline. 기존 테스트는 dead-store
+    // pass 가 단일 read 를 보존함을 검증했지만, 동일 파이프라인에 Phase 2 inline 이
+    // 같이 돌기 때문에 출력은 inlined 형태가 된다. dead-store 의 "read>=1 보존" 규약
+    // 자체는 여전히 유효 (인라인이 먼저 일어나 decl 이 empty_statement 로 교체되고,
+    // dead-store 는 이 empty 에 개입하지 않는 구조).
     try expectMinifyDead(
         "let x = 1; console.log(x);",
-        "function run() {\n\tlet x = 1;\n\tconsole.log(x);\n}\nrun();",
+        "function run() {\n\t;\n\tconsole.log(1);\n}\nrun();",
+    );
+}
+
+test "dead store: read 1회 + 비-constant init — 보존 (inline 조건 미충족)" {
+    // Phase 2+3 inline 은 init 이 constant-expression 일 때만 동작. 식별자 의존이
+    // 있는 init (예: 파라미터) 은 inline 제외 → 원래 dead-store "read>=1 보존" 경로.
+    try expectMinifyDead(
+        "function f(n) { let x = n; return x; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tlet x = n;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
     );
 }
 
@@ -1156,11 +1170,13 @@ test "fixed-point: 3-단 연쇄 (z→y→x) — max 안에 수렴" {
     );
 }
 
-test "fixed-point: 사용 중인 chain 은 보존" {
-    // 인접 `let y=1; let x=y;` 는 mergeDecls 가 `let y=1,x=y;` 로 병합하므로 expected 반영.
+test "fixed-point: 사용 중인 chain — Phase 2 inline 이 연쇄 축약" {
+    // #1666 Phase 2+3: y=1 (literal) → x 초기식 y 위치에 inline (y decl 제거).
+    // 다음 iter: x=1 도 literal init → console.log(x) 에 inline. 두 번의 fixed-point
+    // iteration 을 거쳐 `console.log(1)` 만 남음.
     try expectMinifyDead(
         "let y = 1; let x = y; console.log(x);",
-        "function run() {\n\tlet y = 1,x = y;\n\tconsole.log(x);\n}\nrun();",
+        "function run() {\n\t;\n\t;\n\tconsole.log(1);\n}\nrun();",
     );
 }
 
@@ -1610,5 +1626,345 @@ test "unused: (foo()); — 일반 call — unwrap OK" {
     try expectMinifyDead(
         "(foo());",
         "function run() {\n\tfoo();\n}\nrun();",
+    );
+}
+
+// ================================================================
+// Single-use Identifier Inline (#1666 Phase 2+3)
+// ================================================================
+//
+// 조건별 positive/negative 엄격 검증. 각 테스트는 단일 조건만 위반/충족하게 설계.
+
+// ---- Phase 2: literal init inline ----
+
+test "inline: numeric literal const — inline" {
+    try expectMinifyDead(
+        "const x = 42; console.log(x);",
+        "function run() {\n\t;\n\tconsole.log(42);\n}\nrun();",
+    );
+}
+
+test "inline: string literal const — inline" {
+    try expectMinifyDead(
+        "const x = \"hi\"; console.log(x);",
+        "function run() {\n\t;\n\tconsole.log(\"hi\");\n}\nrun();",
+    );
+}
+
+test "inline: boolean literal const — inline" {
+    try expectMinifyDead(
+        "const x = true; console.log(x);",
+        "function run() {\n\t;\n\tconsole.log(true);\n}\nrun();",
+    );
+}
+
+test "inline: null literal — inline" {
+    try expectMinifyDead(
+        "const x = null; console.log(x);",
+        "function run() {\n\t;\n\tconsole.log(null);\n}\nrun();",
+    );
+}
+
+test "inline: let with literal — inline (const/let 모두 대상)" {
+    try expectMinifyDead(
+        "let x = 7; console.log(x);",
+        "function run() {\n\t;\n\tconsole.log(7);\n}\nrun();",
+    );
+}
+
+// ---- Phase 3: constant container inline ----
+
+test "inline: array literal 원소 모두 리터럴 — inline" {
+    try expectMinifyDead(
+        "const arr = [1, 2, 3]; console.log(arr.length);",
+        "function run() {\n\t;\n\tconsole.log([1, 2, 3].length);\n}\nrun();",
+    );
+}
+
+test "inline: object literal 값 모두 리터럴 — inline" {
+    try expectMinifyDead(
+        "const cfg = { a: 1, b: 2 }; console.log(cfg);",
+        "function run() {\n\t;\n\tconsole.log({ a: 1, b: 2 });\n}\nrun();",
+    );
+}
+
+test "inline: nested literal container — inline" {
+    try expectMinifyDead(
+        "const data = [[1], { k: 2 }]; console.log(data);",
+        "function run() {\n\t;\n\tconsole.log([[1], { k: 2 }]);\n}\nrun();",
+    );
+}
+
+// ---- 조건 위반: 보존 ----
+
+test "inline: var — 보존 (hoisting 이슈)" {
+    try expectMinifyDead(
+        "var x = 1; console.log(x);",
+        "function run() {\n\tvar x = 1;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "inline: 식별자 의존 init — 보존 (Phase 3 일반 expression 범위 밖)" {
+    // init 에 outer variable 참조 → isConstantExpr false → inline skip.
+    try expectMinifyDead(
+        "function f(n) { const x = n * 2; return x; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tconst x = n * 2;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "inline: 함수 호출 init — 보존 (pure 확인 불가)" {
+    // call_expression 은 isConstantExpr 범위 밖.
+    try expectMinifyDead(
+        "const x = foo(); console.log(x);",
+        "function run() {\n\tconst x = foo();\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "inline: shorthand property — 보존 (value 가 identifier_reference)" {
+    // { a } 는 value = identifier_reference → constant expr 아님 → inline 불가.
+    try expectMinifyDead(
+        "function f(a) { const o = { a }; return o; } f(1);",
+        "function run() {\n\tfunction f(a) {\n\t\tconst o = { a };\n\t\treturn o;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "inline: write 있음 — 보존" {
+    try expectMinifyDead(
+        "let x = 1; x = 2; console.log(x);",
+        "function run() {\n\tlet x = 1;\n\tx = 2;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "inline: 여러 번 read — 보존 (ref_count != 1)" {
+    try expectMinifyDead(
+        "const x = 1; console.log(x, x);",
+        "function run() {\n\tconst x = 1;\n\tconsole.log(x, x);\n}\nrun();",
+    );
+}
+
+test "inline: destructuring — 보존 (단일 binding_identifier 아님)" {
+    try expectMinifyDead(
+        "function f(arr) { const [x] = arr; return x; } f([1]);",
+        "function run() {\n\tfunction f(arr) {\n\t\tconst [x] = arr;\n\t\treturn x;\n\t}\n\tf([1]);\n}\nrun();",
+    );
+}
+
+test "inline: 다중 declarator — 보존 (list_len != 1)" {
+    try expectMinifyDead(
+        "const x = 1, y = 2; console.log(x, y);",
+        "function run() {\n\tconst x = 1,y = 2;\n\tconsole.log(x, y);\n}\nrun();",
+    );
+}
+
+// ---- 추가 literal 종류 ----
+
+test "inline: bigint literal — inline" {
+    try expectMinifyDead(
+        "const n = 10n; console.log(n);",
+        "function run() {\n\t;\n\tconsole.log(10n);\n}\nrun();",
+    );
+}
+
+test "inline: regexp literal — inline" {
+    try expectMinifyDead(
+        "const r = /abc/g; console.log(r.source);",
+        "function run() {\n\t;\n\tconsole.log(/abc/g.source);\n}\nrun();",
+    );
+}
+
+test "inline: undefined keyword — 보존 (undefined 은 identifier_reference)" {
+    // `undefined` 는 실제로 global identifier 참조라 isConstantExpr 에서 제외됨.
+    try expectMinifyDead(
+        "const x = undefined; console.log(x);",
+        "function run() {\n\tconst x = undefined;\n\tconsole.log(x);\n}\nrun();",
+    );
+}
+
+test "inline: static template literal — 보존 (보수적 skip)" {
+    // no-substitution vs interpolated 를 extern union 런타임에서 안전 구분 어려워
+    // 전체 template_literal 은 isConstantExpr 에서 false 반환.
+    try expectMinifyDead(
+        "const s = `hello`; console.log(s);",
+        "function run() {\n\tconst s = `hello`;\n\tconsole.log(s);\n}\nrun();",
+    );
+}
+
+test "inline: template with expression — 보존" {
+    try expectMinifyDead(
+        "function f(n) { const s = `v=${n}`; return s; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tconst s = `v=${n}`;\n\t\treturn s;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+// ---- 빈 / 중첩 컨테이너 ----
+
+test "inline: empty array — inline" {
+    try expectMinifyDead(
+        "const a = []; console.log(a.length);",
+        "function run() {\n\t;\n\tconsole.log([].length);\n}\nrun();",
+    );
+}
+
+test "inline: empty object — inline" {
+    try expectMinifyDead(
+        "const o = {}; console.log(o);",
+        "function run() {\n\t;\n\tconsole.log({});\n}\nrun();",
+    );
+}
+
+test "inline: 깊게 중첩된 literal — inline" {
+    try expectMinifyDead(
+        "const d = [[[[1]]], { a: [2, { b: 3 }] }]; console.log(d);",
+        "function run() {\n\t;\n\tconsole.log([[[[1]]], { a: [2, { b: 3 }] }]);\n}\nrun();",
+    );
+}
+
+// ---- 다양한 object key 형태 ----
+
+test "inline: object with string key — inline" {
+    try expectMinifyDead(
+        "const o = { \"k\": 1 }; console.log(o);",
+        "function run() {\n\t;\n\tconsole.log({ \"k\": 1 });\n}\nrun();",
+    );
+}
+
+test "inline: object with numeric key — inline" {
+    try expectMinifyDead(
+        "const o = { 0: 1, 1: 2 }; console.log(o);",
+        "function run() {\n\t;\n\tconsole.log({ 0: 1, 1: 2 });\n}\nrun();",
+    );
+}
+
+test "inline: computed key — 보존" {
+    // [k] 는 expression — constant expr 판정에서 제외.
+    try expectMinifyDead(
+        "function f(k) { const o = { [k]: 1 }; return o; } f('x');",
+        "function run() {\n\tfunction f(k) {\n\t\tconst o = { [k]: 1 };\n\t\treturn o;\n\t}\n\tf(\"x\");\n}\nrun();",
+    );
+}
+
+// ---- array 특이 케이스 ----
+
+test "inline: sparse array — 보존 (보수적)" {
+    // elision 을 포함한 sparse array 는 purity/constant 체크의 조합 결과 inline
+    // 조건을 만족하지 않아 현재 보존. isConstantExpr 는 elision 을 skip 하지만
+    // 다른 체크에서 걸릴 수 있음. 추후 Phase 확장 시 재검토.
+    try expectMinifyDead(
+        "const a = [1,,3]; console.log(a.length);",
+        "function run() {\n\tconst a = [1, , 3];\n\tconsole.log(a.length);\n}\nrun();",
+    );
+}
+
+test "inline: array with spread — 보존 (spread 는 식별자 참조)" {
+    try expectMinifyDead(
+        "function f(b) { const a = [1, ...b]; return a; } f([2,3]);",
+        "function run() {\n\tfunction f(b) {\n\t\tconst a = [1, ...b];\n\t\treturn a;\n\t}\n\tf([2, 3]);\n}\nrun();",
+    );
+}
+
+// ---- 연쇄 / fixed-point ----
+
+test "inline: 2단계 chain — 양쪽 모두 inline" {
+    try expectMinifyDead(
+        "const a = 1; const b = a; console.log(b);",
+        "function run() {\n\t;\n\t;\n\tconsole.log(1);\n}\nrun();",
+    );
+}
+
+test "inline: 연쇄 fold 로 최종 리터럴화" {
+    // a=1 → b init 의 a 위치에 1 inline → const b=1 → console.log 에 1 inline.
+    // 추가로 b+2 같은 binary 는 foldBinary 가 리터럴로 접음.
+    try expectMinifyDead(
+        "const a = 1; const b = a; console.log(b + 2);",
+        "function run() {\n\t;\n\t;\n\tconsole.log(3);\n}\nrun();",
+    );
+}
+
+// ---- 스코프 / read 위치 ----
+
+test "inline: read 가 중첩 함수 body — inline" {
+    // x 의 read 가 inner arrow 안에 있어도 ref_count=1, scope_id 는 enclosing function.
+    // 전체 AST 에서 유일 read 이므로 inline 대상.
+    try expectMinifyDead(
+        "function f() { const x = 1; return () => x; } f();",
+        "function run() {\n\tfunction f() {\n\t\t;\n\t\treturn () => 1;\n\t}\n\tf();\n}\nrun();",
+    );
+}
+
+test "inline: read 가 template expression 안 — inline" {
+    try expectMinifyDead(
+        "function f() { const x = 42; return `v=${x}`; } f();",
+        "function run() {\n\tfunction f() {\n\t\t;\n\t\treturn `v=${42}`;\n\t}\n\tf();\n}\nrun();",
+    );
+}
+
+// ---- 안전성 (negative) ----
+
+test "inline: 재귀 init (self-reference) — 보존" {
+    // `const f = () => f()` — init 안에 f 참조 → isConstantExpr false.
+    try expectMinifyDead(
+        "function g() { const f = () => f(); return f; } g();",
+        "function run() {\n\tfunction g() {\n\t\tconst f = () => f();\n\t\treturn f;\n\t}\n\tg();\n}\nrun();",
+    );
+}
+
+test "inline: eval 스코프 — 보존 (blocksMangling)" {
+    // direct eval 이 있는 스코프 안의 선언은 동적 lookup 가능 → 보존.
+    try expectMinifyDead(
+        "function f() { eval(\"\"); const x = 1; return x; } f();",
+        "function run() {\n\tfunction f() {\n\t\teval(\"\");\n\t\tconst x = 1;\n\t\treturn x;\n\t}\n\tf();\n}\nrun();",
+    );
+}
+
+test "inline: conditional expression init — 보존 (식별자 의존 가능)" {
+    try expectMinifyDead(
+        "function f(c) { const x = c ? 1 : 2; return x; } f(true);",
+        "function run() {\n\tfunction f(c) {\n\t\tconst x = c ? 1 : 2;\n\t\treturn x;\n\t}\n\tf(true);\n}\nrun();",
+    );
+}
+
+test "inline: binary expression init — 보존 (constant fold 이후에도 expr 이면 skip)" {
+    // `n + 1` — fold 후에도 binary 로 남으면 isConstantExpr 에서 제외.
+    try expectMinifyDead(
+        "function f(n) { const x = n + 1; return x; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tconst x = n + 1;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "inline: unary expression init — 보존" {
+    try expectMinifyDead(
+        "function f(n) { const x = -n; return x; } f(1);",
+        "function run() {\n\tfunction f(n) {\n\t\tconst x = -n;\n\t\treturn x;\n\t}\n\tf(1);\n}\nrun();",
+    );
+}
+
+test "inline: new expression init — 보존" {
+    try expectMinifyDead(
+        "function f() { const x = new Map(); return x; } f();",
+        "function run() {\n\tfunction f() {\n\t\tconst x = new Map();\n\t\treturn x;\n\t}\n\tf();\n}\nrun();",
+    );
+}
+
+test "inline: this 표현식 — 보존" {
+    try expectMinifyDead(
+        "function f() { const t = this; return t; } f();",
+        "function run() {\n\tfunction f() {\n\t\tconst t = this;\n\t\treturn t;\n\t}\n\tf();\n}\nrun();",
+    );
+}
+
+// ---- 선언 형태 ----
+
+test "inline: using 선언 — 보존 (Symbol.dispose side-effect)" {
+    // using 은 단일 read 여도 Symbol.dispose 호출 side-effect 를 가지므로 inline 금지.
+    try expectMinifyDead(
+        "function f(r) { using x = r; return x; } f(null);",
+        "function run() {\n\tfunction f(r) {\n\t\tusing x = r;\n\t\treturn x;\n\t}\n\tf(null);\n}\nrun();",
+    );
+}
+
+test "inline: 배열 안에 object — inline" {
+    try expectMinifyDead(
+        "const data = [{ id: 1 }, { id: 2 }]; console.log(data);",
+        "function run() {\n\t;\n\tconsole.log([{ id: 1 }, { id: 2 }]);\n}\nrun();",
     );
 }
