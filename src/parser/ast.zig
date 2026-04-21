@@ -808,6 +808,16 @@ pub const Ast = struct {
     /// 파싱 중 JSX element/fragment가 발견되었는지 (automatic JSX import 주입용)
     has_jsx: bool = false,
 
+    /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
+    /// null = 미변환. D1 이 in-place mutation 으로 전환되면 이 boundary 이상의 노드가
+    /// transformer append. 현재 main 은 cloneForTransformer 경로 — 필드만 정의, 사용
+    /// 안 됨. debug_log 의 `ast_mutation` 카테고리 + `assertInvariants` 에서 활용.
+    transform_boundary: ?u32 = null,
+
+    /// D1 디버그 인프라. transform() 완료 시 root NodeIndex snapshot.
+    /// code splitting 의 shared module 재진입 시 기존 결과 재사용 용 (D1 에서 연결).
+    transformed_root: ?NodeIndex = null,
+
     /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
     allocator: std.mem.Allocator,
 
@@ -855,7 +865,35 @@ pub const Ast = struct {
     pub fn addNode(self: *Ast, node: Node) !NodeIndex {
         const index: u32 = @intCast(self.nodes.items.len);
         try self.nodes.append(self.allocator, node);
+        const debug_log = @import("../debug_log.zig");
+        if (debug_log.enabled(.ast_mutation)) {
+            debug_log.print(
+                .ast_mutation,
+                "addNode idx={d} tag={s} (total={d}, boundary={?})\n",
+                .{ index, @tagName(node.tag), self.nodes.items.len, self.transform_boundary },
+            );
+        }
         return @enumFromInt(index);
+    }
+
+    /// Debug-only invariant 검증 (D1 디버깅 인프라).
+    /// `transform_boundary` 가 설정됐다면 boundary 이하의 노드는 parser 가 채운 것,
+    /// 이상의 노드는 transformer 가 append 한 것. 이 영역이 명확한지 확인한다.
+    /// 프로덕션에서는 no-op — Debug 빌드에서만 실행.
+    pub fn assertInvariants(self: *const Ast) void {
+        if (@import("builtin").mode != .Debug) return;
+        if (self.transform_boundary) |boundary| {
+            // boundary 는 nodes.items.len 을 넘지 않아야 — transformer 가 노드를
+            // 제거하지 않고 append 만 한다는 설계 규약.
+            std.debug.assert(boundary <= self.nodes.items.len);
+        }
+        // transformed_root 가 있다면 valid index 여야.
+        if (self.transformed_root) |root| {
+            const idx = @intFromEnum(root);
+            if (!root.isNone()) {
+                std.debug.assert(idx < self.nodes.items.len);
+            }
+        }
     }
 
     /// 인덱스로 노드를 가져온다.

@@ -63,7 +63,17 @@ pub const Module = struct {
     dev_id: []const u8 = "",
     /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
     source: []const u8,
-    /// 파싱된 AST. parse_arena에서 할당 (Module.arena가 소유).
+    /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
+    ///
+    /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)
+    /// - 소유자: `parse_arena`. `Module.deinit` / `graph.deinit` 시 arena 를 해제하면
+    ///   ast 도 함께 free. 별도로 `ast.deinit()` 호출 금지.
+    /// - 변이 경로: 현재는 `cloneForTransformer` 로 별도 allocator 에 복제된 AST 위에서
+    ///   transformer 가 mutation. main 의 `Module.ast` 는 parse 직후 상태 유지.
+    /// - D1 이 in-place 로 전환하면 transformer 가 이 `ast` 에 직접 append. 그때는
+    ///   `transform_boundary` 로 parser 영역을 표시, `assertInvariants` 로 검증.
+    /// - 재진입: code splitting 의 shared module 은 같은 `ast` 에 여러 chunk 경로로
+    ///   접근할 수 있음. D1 완료 후 `transformed_root` cache 로 멱등 보장 예정.
     ast: ?Ast,
     /// import_scanner가 추출한 레코드. graph allocator에서 할당 (소스 텍스트를 참조).
     import_records: []ImportRecord,

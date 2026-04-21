@@ -28,6 +28,10 @@ const std = @import("std");
 /// 로그 카테고리. 추가 시 이 enum 에만 이름 넣으면 됨.
 pub const Category = enum {
     compiled_cache,
+    /// AST mutation 추적 — `Ast.addNode` / `addString` / `addNodeList` 시점 로그.
+    /// RFC #1672 D1 (Ast mutable + clone 제거) 디버깅용. parse_arena 소유권과
+    /// transformer 의 in-place append 상호작용 확인.
+    ast_mutation,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
@@ -87,7 +91,8 @@ pub fn resetForTest() void {
 
 /// 카테고리 prefix 를 붙여 stderr 로 출력. 비활성이면 no-op.
 /// 호출 예: `print(.compiled_cache, "hits={d}\n", .{count})`
-pub fn print(cat: Category, comptime fmt: []const u8, args: anytype) void {
+/// `cat` 은 comptime — prefix 를 comptime concat 하여 호출 사이트별 zero-cost.
+pub fn print(comptime cat: Category, comptime fmt: []const u8, args: anytype) void {
     if (!enabled(cat)) return;
     std.debug.print("[" ++ @tagName(cat) ++ "] " ++ fmt, args);
 }
