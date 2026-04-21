@@ -1116,6 +1116,8 @@ pub fn main() !void {
     };
     const allocator: std.mem.Allocator = if (is_debug) gpa.allocator() else @import("mimalloc.zig").allocator;
 
+    lib.debug_log.initFromEnv(allocator);
+
     // CLI 인자 파싱
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);

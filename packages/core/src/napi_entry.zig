@@ -2124,6 +2124,13 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, exts)) return null;
     }
 
+    // debug: 활성화할 디버그 로그 카테고리 목록 (ZTS_DEBUG env 와 합집합).
+    const debug_categories = getObjectStringArray(env, opts_obj, "debug", native_alloc);
+    if (debug_categories) |cats| {
+        for (cats) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, cats)) return null;
+    }
+
     // 문자열 옵션 헬퍼
     const ownStr = struct {
         fn f(e: c.napi_env, obj: c.napi_value, key: [*:0]const u8, list: *std.ArrayList([]const u8)) ?[]const u8 {
@@ -2400,6 +2407,7 @@ fn parseBuildOptions(
         .format = format,
         .platform = platform,
         .external = external orelse &.{},
+        .debug = debug_categories orelse &.{},
         .define = define_entries,
         .alias = alias_entries,
         .ts_paths = ts_path_entries,
@@ -2490,6 +2498,10 @@ fn parseBuildOptions(
 // ─── 모듈 등록 ───
 
 export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi_value {
+    // ZTS_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
+    // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
+    @import("zts_lib").debug_log.initFromEnv(native_alloc);
+
     var fn_value: c.napi_value = undefined;
     _ = c.napi_create_function(env, "transpile", "transpile".len, napiTranspile, null, &fn_value);
     _ = c.napi_set_named_property(env, exports, "transpile", fn_value);
