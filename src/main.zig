@@ -74,6 +74,11 @@ const CliOptions = struct {
     profile_level: ?[]const u8 = null,
     /// --profile-format=<table|tree|json|csv>.
     profile_format: ?[]const u8 = null,
+    /// --stop-after=<scan|parse|semantic|transform|codegen>. debug/profile 용.
+    /// 지정된 phase 이후 파이프라인 skip → empty output.
+    stop_after_str: ?[]const u8 = null,
+    /// 파싱된 stop_after — main() 에서 파싱 후 transpile/bundle 옵션에 전달.
+    core_stop_after: ?lib.transpile.StopAfter = null,
     preserve_symlinks: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
@@ -461,6 +466,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.profile_level = arg["--profile-level=".len..];
         } else if (std.mem.startsWith(u8, arg, "--profile-format=")) {
             opts.profile_format = arg["--profile-format=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--stop-after=")) {
+            opts.stop_after_str = arg["--stop-after=".len..];
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             opts.is_bundle = true;
         } else if (std.mem.eql(u8, arg, "--serve")) {
@@ -1092,6 +1099,16 @@ pub fn main() !void {
         try stderr.print("zts: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
         std.process.exit(1);
     } else null;
+
+    // --stop-after=<phase> 파싱 → TranspileOptions.stop_after 로 전달.
+    if (opts.stop_after_str) |s| {
+        if (lib.transpile.StopAfter.fromString(s)) |parsed| {
+            opts.core_stop_after = parsed;
+        } else {
+            try stderr.print("zts: invalid --stop-after='{s}' (expected scan|parse|semantic|transform|codegen)\n", .{s});
+            std.process.exit(1);
+        }
+    }
 
     // 작업 완료 후 profile 수집 결과 출력 (활성 category 가 있을 때만).
     defer {
@@ -1948,6 +1965,7 @@ pub fn main() !void {
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,
             .jsx_import_source = opts.jsx_import_source,
+            .stop_after = opts.core_stop_after,
         },
         .allow_overwrite = opts.allow_overwrite,
     };
@@ -2304,6 +2322,12 @@ fn printUsage(writer: anytype) !void {
         \\                                      (default: summary)
         \\  --profile-format=<F>              Output format: table | tree | json | csv
         \\                                      (default: table)
+        \\  --stop-after=<P>                  Stop pipeline after the given phase (debug / profile):
+        \\                                      scan | parse | semantic | transform | codegen
+        \\                                      Output is empty; useful for isolating phase cost with --profile.
+        \\                                      Examples:
+        \\                                        zts input.ts --stop-after=parse --profile=parse
+        \\                                        zts input.ts --stop-after=semantic --profile=all
         \\
         \\  Env equivalents:
         \\    ZTS_PROFILE=<CATS>              Same as --profile

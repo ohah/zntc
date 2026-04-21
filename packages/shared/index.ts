@@ -92,6 +92,17 @@ export interface TranspileOptions {
    * 예: `[{ key: "process.env.NODE_ENV", value: "\"production\"" }]`
    */
   define?: Array<{ key: string; value: string }>;
+  /**
+   * 파이프라인 조기 종료 지점 — debug/profile 용. 지정 시 해당 phase 이후 단계는 skip 하고
+   * 빈 output 을 반환. `profile` 과 조합해 특정 phase 비용을 격리 측정할 때 유용.
+   *
+   * - "scan": Scanner 토큰 drain 만
+   * - "parse": Parser AST 생성 후
+   * - "semantic": Semantic analyzer 후
+   * - "transform": Transformer 후
+   * - "codegen": 전체 실행 (기본 동작과 동일)
+   */
+  stopAfter?: "scan" | "parse" | "semantic" | "transform" | "codegen";
 }
 
 export interface TranspileResult {
@@ -200,6 +211,7 @@ export function buildOptionsJson(
   if (opts.sourcesContent === false) payload.sourcesContent = false;
   if (opts.sourceRoot) payload.sourceRoot = opts.sourceRoot;
   if (opts.define && opts.define.length > 0) payload.define = opts.define;
+  if (opts.stopAfter) payload.stopAfter = opts.stopAfter;
   return JSON.stringify(payload);
 }
 

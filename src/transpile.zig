@@ -23,10 +23,37 @@ const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const OwnedDiagnostic = @import("diagnostic.zig").OwnedDiagnostic;
 
+/// 파이프라인 조기 종료 지점. `--stop-after=<phase>` / `stopAfter` 옵션과 매핑.
+///
+/// 주로 debug/profile 용 — 특정 phase 까지만 실행하고 빈 output 반환. 예를 들어
+/// `stop_after = .parse` 이면 AST 는 생성되지만 semantic/transform/codegen 은 skip.
+/// `--profile` 과 결합해 phase 별 비용을 격리 측정할 수 있다.
+pub const StopAfter = enum {
+    scan,
+    parse,
+    semantic,
+    transform,
+    codegen,
+
+    pub fn fromString(s: []const u8) ?StopAfter {
+        const trimmed = std.mem.trim(u8, s, " \t");
+        if (std.ascii.eqlIgnoreCase(trimmed, "scan")) return .scan;
+        if (std.ascii.eqlIgnoreCase(trimmed, "parse")) return .parse;
+        if (std.ascii.eqlIgnoreCase(trimmed, "semantic")) return .semantic;
+        if (std.ascii.eqlIgnoreCase(trimmed, "transform")) return .transform;
+        if (std.ascii.eqlIgnoreCase(trimmed, "codegen")) return .codegen;
+        return null;
+    }
+};
+
 pub const TranspileOptions = struct {
     // --- 파싱 ---
     flow: bool = false,
     jsx_in_js: bool = false,
+
+    /// 파이프라인 조기 종료 지점. null(기본)이면 codegen 까지 실행.
+    /// 지정 시 해당 phase 이후 단계는 skip — debug/profile 용.
+    stop_after: ?StopAfter = null,
 
     // --- 변환 ---
     define: []const DefineEntry = &.{},
@@ -106,6 +133,8 @@ pub const TranspileOptionsDto = struct {
     sourcesContent: ?bool = null,
     sourceRoot: ?[]const u8 = null,
     define: ?[]const DefineEntry = null,
+    /// `--stop-after=<phase>` 동등. JSON 값은 `scan`/`parse`/`semantic`/`transform`/`codegen`.
+    stopAfter: ?StopAfter = null,
 };
 
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
@@ -160,6 +189,7 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
         opts.source_root = s;
     };
     if (parsed.define) |d| opts.define = d;
+    if (parsed.stopAfter) |v| opts.stop_after = v;
 
     // tsconfig.json 로드 + merge — JSON에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
     // `parsed.<field> == null` 인 필드만 tsconfig 값으로 채움. 이로써 JSON > tsconfig > default 우선순위 유지.
@@ -261,6 +291,17 @@ pub fn transpileWithCallback(
 
     // 1. 파싱
     var scanner = Scanner.init(arena_alloc, source) catch return error.OutOfMemory;
+
+    // --stop-after=scan: 파서 호출 없이 토큰 drain 만 수행 (profile/debug 용).
+    // Scanner 가 lazy 이므로 next() 로 EOF 까지 소비해야 실제 tokenization 비용이 발생.
+    if (options.stop_after == .scan) {
+        scanner.next() catch return error.ParseError;
+        while (scanner.token.kind != .eof) {
+            scanner.next() catch return error.ParseError;
+        }
+        return .{ .code = try allocator.dupe(u8, "") };
+    }
+
     var parser = Parser.init(arena_alloc, &scanner);
     parser.configureFromExtension(std.fs.path.extension(file_path));
 
@@ -286,6 +327,10 @@ pub fn transpileWithCallback(
         return error.ParseError;
     }
 
+    if (options.stop_after == .parse) {
+        return .{ .code = try allocator.dupe(u8, "") };
+    }
+
     // 2. Semantic analysis
     // tsc 호환: 시맨틱 에러가 있어도 codegen을 진행한다.
     // 에러는 콜백으로 stderr에 출력하되, 변환 결과도 함께 반환한다.
@@ -300,6 +345,10 @@ pub fn transpileWithCallback(
     if (analyzer.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
         // tsc처럼 에러와 함께 output도 생성 — 중단하지 않음
+    }
+
+    if (options.stop_after == .semantic) {
+        return .{ .code = try allocator.dupe(u8, "") };
     }
 
     // 3. Identifier mangling (--minify-identifiers)
@@ -340,6 +389,10 @@ pub fn transpileWithCallback(
     transformer.symbols = analyzer.symbols.items;
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
+
+    if (options.stop_after == .transform) {
+        return .{ .code = try allocator.dupe(u8, "") };
+    }
 
     if (options.minify_syntax) {
         const minify_mod = @import("transformer/minify.zig");
