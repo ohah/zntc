@@ -952,85 +952,91 @@ pub fn emitModule(
         }
         // statement-level tree-shaking: StmtInfo 기반 도달성 분석으로 미사용 statement 제거.
         // rolldown 방식: 심볼 인덱스로 추적하여 linker rename 후에도 정확한 판정.
-        if (used_export_names) |names| {
-            if (!is_entry and !module.wrap_kind.isWrapped()) {
-                stmt_shake: {
-                    const sem = module.semantic orelse {
-                        statement_shaker.markUnusedStatements(
-                            arena_alloc,
-                            transformer.ast,
-                            root,
-                            names,
-                            &md.skip_nodes,
-                            null,
-                        ) catch {};
-                        break :stmt_shake;
-                    };
-                    const sym_ids: []const ?u32 = if (transformer.symbol_ids.items.len > 0)
-                        transformer.symbol_ids.items
-                    else
-                        sem.symbol_ids;
+        //
+        // **dev_mode 예외**: HMR rebuild 체감 우선. 미사용 statement 를 skip_nodes 로
+        // 마킹하는 것은 출력 크기 최적화지 correctness 가 아니다 — 포함해도 런타임 의미 동일.
+        // dev 번들은 크기 허용, speed 우선 (Metro/esbuild 관습).
+        if (!options.dev_mode) {
+            if (used_export_names) |names| {
+                if (!is_entry and !module.wrap_kind.isWrapped()) {
+                    stmt_shake: {
+                        const sem = module.semantic orelse {
+                            statement_shaker.markUnusedStatements(
+                                arena_alloc,
+                                transformer.ast,
+                                root,
+                                names,
+                                &md.skip_nodes,
+                                null,
+                            ) catch {};
+                            break :stmt_shake;
+                        };
+                        const sym_ids: []const ?u32 = if (transformer.symbol_ids.items.len > 0)
+                            transformer.symbol_ids.items
+                        else
+                            sem.symbol_ids;
 
-                    // 크로스-모듈 BFS 결과: tree-shaker의 reachable_stmts로 skip_nodes 설정
-                    const mod_idx: u32 = module.index.toU32();
-                    if (shaker) |s| {
-                        if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
-                            // 변환 후 AST의 program statement list에서 span 매칭
-                            const new_root = transformer.ast.nodes.items[transformer.ast.nodes.items.len - 1];
-                            if (new_root.tag == .program and new_root.data.list.len > 0) {
-                                const new_list = new_root.data.list;
-                                if (new_list.start + new_list.len <= transformer.ast.extra_data.items.len) {
-                                    const new_stmt_indices = transformer.ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
-                                    for (ts_infos.stmts, 0..) |ts_stmt, si| {
-                                        if (s.isStmtReachable(mod_idx, @intCast(si))) continue;
-                                        // 변환 후 top-level statement만 스캔 (O(stmts) not O(nodes))
-                                        for (new_stmt_indices) |raw_ni| {
-                                            const ni = @as(usize, raw_ni);
-                                            if (ni >= transformer.ast.nodes.items.len) continue;
-                                            const new_node = transformer.ast.nodes.items[ni];
-                                            if (new_node.span.start == ts_stmt.span.start and
-                                                new_node.span.end == ts_stmt.span.end and
-                                                ni < md.skip_nodes.capacity())
-                                            {
-                                                md.skip_nodes.set(ni);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                        if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
-                            if (maybe_infos) |infos| {
-                                var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
-                                defer used_sym_buf.deinit(arena_alloc);
-                                if (sem.scope_maps.len > 0) {
-                                    for (names) |name| {
-                                        if (sem.scope_maps[0].get(name)) |sym_idx| {
-                                            used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
-                                        } else {
-                                            for (module.export_bindings) |eb| {
-                                                if (std.mem.eql(u8, eb.exported_name, name)) {
-                                                    if (eb.symbol.semanticIndex()) |sym_idx| {
-                                                        used_sym_buf.append(arena_alloc, sym_idx) catch {};
-                                                    }
+                        // 크로스-모듈 BFS 결과: tree-shaker의 reachable_stmts로 skip_nodes 설정
+                        const mod_idx: u32 = module.index.toU32();
+                        if (shaker) |s| {
+                            if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
+                                // 변환 후 AST의 program statement list에서 span 매칭
+                                const new_root = transformer.ast.nodes.items[transformer.ast.nodes.items.len - 1];
+                                if (new_root.tag == .program and new_root.data.list.len > 0) {
+                                    const new_list = new_root.data.list;
+                                    if (new_list.start + new_list.len <= transformer.ast.extra_data.items.len) {
+                                        const new_stmt_indices = transformer.ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
+                                        for (ts_infos.stmts, 0..) |ts_stmt, si| {
+                                            if (s.isStmtReachable(mod_idx, @intCast(si))) continue;
+                                            // 변환 후 top-level statement만 스캔 (O(stmts) not O(nodes))
+                                            for (new_stmt_indices) |raw_ni| {
+                                                const ni = @as(usize, raw_ni);
+                                                if (ni >= transformer.ast.nodes.items.len) continue;
+                                                const new_node = transformer.ast.nodes.items[ni];
+                                                if (new_node.span.start == ts_stmt.span.start and
+                                                    new_node.span.end == ts_stmt.span.end and
+                                                    ni < md.skip_nodes.capacity())
+                                                {
+                                                    md.skip_nodes.set(ni);
                                                     break;
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
-                                    for (infos.stmts, 0..) |stmt, si| {
-                                        if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
-                                            md.skip_nodes.set(stmt.node_idx);
+                            }
+                        } else {
+                            // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
+                            if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
+                                if (maybe_infos) |infos| {
+                                    var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
+                                    defer used_sym_buf.deinit(arena_alloc);
+                                    if (sem.scope_maps.len > 0) {
+                                        for (names) |name| {
+                                            if (sem.scope_maps[0].get(name)) |sym_idx| {
+                                                used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
+                                            } else {
+                                                for (module.export_bindings) |eb| {
+                                                    if (std.mem.eql(u8, eb.exported_name, name)) {
+                                                        if (eb.symbol.semanticIndex()) |sym_idx| {
+                                                            used_sym_buf.append(arena_alloc, sym_idx) catch {};
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                } else |_| {}
-                            }
-                        } else |_| {}
+                                    if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
+                                        for (infos.stmts, 0..) |stmt, si| {
+                                            if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
+                                                md.skip_nodes.set(stmt.node_idx);
+                                            }
+                                        }
+                                    } else |_| {}
+                                }
+                            } else |_| {}
+                        }
                     }
                 }
             }
@@ -1042,9 +1048,15 @@ pub fn emitModule(
     // Cross-module @__NO_SIDE_EFFECTS__ 전파:
     // import한 함수가 원본 모듈에서 no_side_effects로 선언되었으면
     // 현재 모듈의 해당 호출에 is_pure 플래그를 자동 설정한다.
+    //
+    // **dev_mode 예외**: is_pure 플래그는 minify 의 DCE 만이 읽는다. dev_mode 에선
+    // minify pass 전체가 skip 되므로 전파 결과가 소비되지 않는다. HMR rebuild 체감
+    // 우선 — scope map 스캔 + 2단계 AST 순회 비용 제거.
     if (linker) |l| {
-        const sym_ids = if (metadata) |md| md.symbol_ids else &.{};
-        propagateCrossModulePurity(l, module, transformer.ast, sym_ids, arena_alloc);
+        if (!options.dev_mode) {
+            const sym_ids = if (metadata) |md| md.symbol_ids else &.{};
+            propagateCrossModulePurity(l, module, transformer.ast, sym_ids, arena_alloc);
+        }
     }
 
     // Identifier mangling은 단일 파일 트랜스파일(main.zig)에서만 적용.
