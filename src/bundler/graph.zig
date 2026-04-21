@@ -453,6 +453,13 @@ pub const ModuleGraph = struct {
                     // malloc abort. ownership 을 graph 로 이전해 graph.deinit
                     // 한 번만 free 되도록 한다.
                     cached.module.alias_table = null;
+                    // canonical_name 은 이전 Build 의 Linker 가 소유한 문자열을
+                    // 가리키는데, 그 Linker.deinit 이후 이미 freed 상태다.
+                    // 다음 Linker 가 conflict 마다 새로 assign 하므로 stale 한
+                    // 포인터를 비워 emit 이 freed memory 를 읽지 못하도록 한다.
+                    if (mod.semantic) |*sem| {
+                        for (sem.symbols.items) |*sym| sym.canonical_name = "";
+                    }
                     mod.state = .ready;
                 } else {
                     // 캐시 미스: 정상 파싱
