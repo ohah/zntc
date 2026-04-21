@@ -2736,7 +2736,7 @@ pub const Codegen = struct {
                 if (!local_idx.isNone()) {
                     if (self.resolveSymbolId(local_idx, meta)) |sid| {
                         if (meta.renames.get(sid)) |rename| {
-                            if (!std.mem.startsWith(u8, rename, linker_mod.NS_VAR_PREFIX)) {
+                            if (!linker_mod.isNamespaceRename(rename)) {
                                 all_ns_renamed = false;
                                 break;
                             }

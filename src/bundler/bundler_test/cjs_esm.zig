@@ -1691,3 +1691,72 @@ test "CJS: Flow export type alias + module.exports stays CJS (regression)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
 }
+
+// Regression (mirrors react-native-gesture-handler's NativeRNGestureHandlerModule.ts):
+// ESM-wrapped module does `import { Registry, Handle } from './lib.cjs'`, and a colliding
+// top-level declaration elsewhere in the bundle forces the linker to hand `Registry` a
+// canonical `$N` rename. The canonical-rename pass used to overwrite the CJS-in-ESM
+// namespace rename (`__ns_N.Registry`), causing codegen to emit shorthand destructuring
+// `({Registry,Handle}=require_lib())` into globals, leaving the module-local `Registry$N`
+// undefined — `Registry$N.getEnforcing(...)` then throws at runtime.
+//
+// `early.ts` wins the name race (lowest exec_index) so spec.ts's imported bindings are
+// the losers and get `$N` suffixes — the exact shape the original RN bundle hit.
+test "CJS: ESM-wrapped named import from CJS — namespace rename must survive canonical rename (regression)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import Early from './early';
+        \\import Spec from './spec';
+        \\import Other from './other';
+        \\console.log(Early, Spec, Other);
+    );
+    try writeFile(tmp.dir, "early.ts",
+        \\const Registry = { kind: 'early-registry' };
+        \\const Handle = { tag: 'early-handle' };
+        \\export default { Registry: Registry, Handle: Handle };
+    );
+    try writeFile(tmp.dir, "spec.ts",
+        \\import { Registry, Handle } from './lib.cjs';
+        \\const _handle: Handle = { id: 0 };
+        \\export default Registry.getEnforcing('Foo');
+    );
+    try writeFile(tmp.dir, "other.ts",
+        \\const Registry = { kind: 'other-registry' };
+        \\const Handle = { tag: 'other-handle' };
+        \\export default { Registry: Registry, Handle: Handle };
+    );
+    try writeFile(tmp.dir, "lib.cjs",
+        \\exports.Registry = { getEnforcing: function(n) { return { name: n }; } };
+        \\exports.Handle = {};
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // BUG MARKER: body must not contain destructuring assignment that writes to
+    //   GLOBAL `Registry`/`Handle` while the module-local vars are `Registry$N`/`Handle$N`.
+    //   `({Registry,Handle}=require_lib())` leaves `Registry$1` undefined and
+    //   `Registry$1.getEnforcing(...)` throws at runtime.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry,Handle}=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry, Handle}=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry}=") == null);
+
+    // CORRECT SHAPE: namespace var preamble + ns-access reference (rolldown style).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".Registry.getEnforcing(") != null);
+
+    // spec.ts's references must go through the __ns_ var, NOT the ghost `Registry$N`
+    // binding that the broken destructuring creates.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry$1.getEnforcing(") == null);
+}
