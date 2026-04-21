@@ -9,6 +9,7 @@
 //! - references/oxc/crates/oxc_parser/src/
 
 const std = @import("std");
+const profile = @import("../profile.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const token_mod = @import("../lexer/token.zig");
 const Kind = token_mod.Kind;
@@ -1787,6 +1788,8 @@ pub const Parser = struct {
     const statement = @import("statement.zig");
 
     pub fn parse(self: *Parser) !NodeIndex {
+        var scope = profile.begin(.parse);
+        defer scope.end();
         return statement.parse(self);
     }
 

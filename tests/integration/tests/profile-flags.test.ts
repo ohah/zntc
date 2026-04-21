@@ -195,4 +195,36 @@ describe("profile CLI flags", () => {
     expect(result.stdout).toContain("--profile-format=");
     expect(result.stdout).toContain("ZTS_PROFILE");
   });
+
+  // ─── Phase 실제 수치 기록 검증 (PR 3+ 에서 hot-path timer 가 삽입됨) ───
+
+  test("--profile=parse 는 parse phase 에 실제 수치 기록", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        export const x: number = 1;
+        export function foo(a: string, b: number) {
+          return a + b.toString();
+        }
+        export class K {
+          constructor(public name: string) {}
+          greet() { return "Hi " + this.name; }
+        }
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await runZts([
+      join(fixture.dir, "index.ts"),
+      "--profile=parse",
+      "--profile-format=json",
+      "-o",
+      join(fixture.dir, "out.js"),
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
+    expect(parsed.phases.parse).toBeDefined();
+    expect(parsed.phases.parse.total_ms).toBeGreaterThan(0);
+    expect(parsed.phases.parse.count).toBeGreaterThanOrEqual(1);
+  });
 });
