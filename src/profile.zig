@@ -271,15 +271,19 @@ pub fn initFromEnv(allocator: std.mem.Allocator) void {
 pub fn resetForTest() void {
     enabled_mask = 0;
     current_level = .summary;
-    @memset(&totals_ns, 0);
-    @memset(&counts, 0);
+    // Debug + x86_64 에서 `@memset` 이 mov m64 m64 로 encode 되어 Zig 0.15.2
+    // 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
+    totals_ns = [_]u64{0} ** num_categories;
+    counts = [_]u32{0} ** num_categories;
 }
 
 /// counters 만 reset (mask 와 level 은 유지).
 /// HMR rebuild 시작 전에 호출 — 이전 rebuild 의 누적치가 이월되지 않도록.
 pub fn resetCounters() void {
-    @memset(&totals_ns, 0);
-    @memset(&counts, 0);
+    // Debug + x86_64 에서 `@memset` 이 mov m64 m64 로 encode 되어 Zig 0.15.2
+    // 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
+    totals_ns = [_]u64{0} ** num_categories;
+    counts = [_]u32{0} ** num_categories;
 }
 
 /// 하나의 category 를 활성화하고, prefix 로 시작하는 child category 도 모두 활성화.
