@@ -23,137 +23,16 @@ pub fn appendRequireShim(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
 }
 
-// #1618 / #1621: minify 모드에서 runtime helper 이름을 2~3자로 축약하여 수 KB 감축.
-// 이름 충돌 방지: `mangler.isReservedOrGlobal` 이 `PAIRS` 를 소비해 reserved 등록 —
-// base54 가 사용자 심볼에 동일 이름을 배정해 preamble 정의를 덮어쓰는 것을 차단.
-// dev mode 는 `__zts_g.<name>` 글로벌 공유 경로라 축약 대상이 아님.
-// ZTS 는 `importHelpers: true` 를 honor 하지 않고 자체 preamble 만 쓰므로 tslib 이름과
-// 충돌 없음 — 모든 helper 의 rename 은 안전.
-pub const NAMES = struct {
-    // bundler interop
-    pub const CJS_FACTORY_MIN = "$cj"; // __commonJS
-    pub const REQUIRE_MIN = "$r"; // __commonJS body 내부 function __require
-    pub const ESM_FACTORY_MIN = "$e"; // __esm
-    pub const EXPORT_MIN = "$x"; // __export
-    pub const TOESM_MIN = "$tE"; // __toESM
-    pub const TOCOMMONJS_MIN = "$tC"; // __toCommonJS
-    // Object.* alias — __toESM/__export body 에서 참조.
-    pub const CREATE_MIN = "$cr"; // __create
-    pub const GET_PROTO_OF_MIN = "$gP"; // __getProtoOf
-    pub const DEF_PROP_MIN = "$dp"; // __defProp
-    pub const GET_OWN_PROP_NAMES_MIN = "$gN"; // __getOwnPropNames
-    pub const GET_OWN_PROP_DESC_MIN = "$gD"; // __getOwnPropDesc
-    pub const HAS_OWN_MIN = "$hO"; // __hasOwn
-    pub const COPY_PROPS_MIN = "$cp"; // __copyProps
-    // transformer-emitted downlevel (RN/ES5 타겟에서 다수 emit)
-    pub const EXTENDS_MIN = "$eX"; // __extends (ES2015 class)
-    pub const CLASS_CALL_CHECK_MIN = "$cC"; // __classCallCheck
-    pub const CALL_SUPER_MIN = "$cS"; // __callSuper
-    pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
-    pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
-    pub const GENERATOR_MIN = "$gn"; // __generator
-    pub const REST_MIN = "$rs"; // __rest (object rest destructure)
-    pub const TAGGED_TEMPLATE_MIN = "$tt"; // __taggedTemplateLiteral
-    pub const ARRAY_LIKE_TO_ARRAY_MIN = "$aL"; // __arrayLikeToArray
-    pub const TO_CONSUMABLE_ARRAY_MIN = "$tA"; // __toConsumableArray (array spread)
-    pub const NAME_MIN = "$nm"; // __name (--keep-names)
-    pub const TO_BINARY_MIN = "$tb"; // __toBinary (binary loader asset)
-    // ES2022 private field downlevel
-    pub const PRIVATE_METHOD_INIT_MIN = "$pI"; // __classPrivateMethodInit
-    pub const PRIVATE_METHOD_GET_MIN = "$pG"; // __classPrivateMethodGet
-    pub const PRIVATE_FIELD_SET_MIN = "$pF"; // __classPrivateFieldSet
-    pub const STATIC_PRIVATE_ACCESS_MIN = "$sA"; // __classCheckPrivateStaticAccess
-    pub const STATIC_PRIVATE_DESC_MIN = "$sD"; // __classCheckPrivateStaticFieldDescriptor
-    pub const STATIC_PRIVATE_GET_MIN = "$sG"; // __classStaticPrivateFieldSpecGet
-    pub const STATIC_PRIVATE_SET_MIN = "$sS"; // __classStaticPrivateFieldSpecSet
-    // decorator
-    pub const DECORATE_CLASS_MIN = "$dC"; // __decorateClass
-    pub const DECORATE_PARAM_MIN = "$dK"; // __decorateParam (K = param 식별)
-    pub const DEF_PROP_2_MIN = "$dp2"; // __defProp2 (DECORATOR body, $dp 와 분리)
-    pub const METADATA_MIN = "$mD"; // __metadata
-    pub const ES_DECORATE_MIN = "$eD"; // __esDecorate
-    pub const RUN_INITIALIZERS_MIN = "$rI"; // __runInitializers
-    pub const SET_FUNCTION_NAME_MIN = "$sF"; // __setFunctionName
-    pub const PROP_KEY_MIN = "$pK"; // __propKey
-    // ES2025 explicit resource management
-    pub const USING_MIN = "$us"; // __using
-    pub const CALL_DISPOSE_MIN = "$cD"; // __callDispose
-};
-
-/// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
-/// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
-/// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.
-pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
-    // bundler interop (#1618 + #1621)
-    .{ .base = "__commonJS", .short = NAMES.CJS_FACTORY_MIN },
-    .{ .base = "__require", .short = NAMES.REQUIRE_MIN },
-    .{ .base = "__esm", .short = NAMES.ESM_FACTORY_MIN },
-    .{ .base = "__export", .short = NAMES.EXPORT_MIN },
-    .{ .base = "__toESM", .short = NAMES.TOESM_MIN },
-    .{ .base = "__toCommonJS", .short = NAMES.TOCOMMONJS_MIN },
-    .{ .base = "__create", .short = NAMES.CREATE_MIN },
-    .{ .base = "__getProtoOf", .short = NAMES.GET_PROTO_OF_MIN },
-    .{ .base = "__defProp", .short = NAMES.DEF_PROP_MIN },
-    .{ .base = "__getOwnPropNames", .short = NAMES.GET_OWN_PROP_NAMES_MIN },
-    .{ .base = "__getOwnPropDesc", .short = NAMES.GET_OWN_PROP_DESC_MIN },
-    .{ .base = "__hasOwn", .short = NAMES.HAS_OWN_MIN },
-    .{ .base = "__copyProps", .short = NAMES.COPY_PROPS_MIN },
-    // transformer-emitted downlevel (#1621)
-    .{ .base = "__extends", .short = NAMES.EXTENDS_MIN },
-    .{ .base = "__classCallCheck", .short = NAMES.CLASS_CALL_CHECK_MIN },
-    .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
-    .{ .base = "__async", .short = NAMES.ASYNC_MIN },
-    .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
-    .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },
-    .{ .base = "__rest", .short = NAMES.REST_MIN },
-    .{ .base = "__taggedTemplateLiteral", .short = NAMES.TAGGED_TEMPLATE_MIN },
-    .{ .base = "__arrayLikeToArray", .short = NAMES.ARRAY_LIKE_TO_ARRAY_MIN },
-    .{ .base = "__toConsumableArray", .short = NAMES.TO_CONSUMABLE_ARRAY_MIN },
-    .{ .base = "__name", .short = NAMES.NAME_MIN },
-    .{ .base = "__toBinary", .short = NAMES.TO_BINARY_MIN },
-    .{ .base = "__classPrivateMethodInit", .short = NAMES.PRIVATE_METHOD_INIT_MIN },
-    .{ .base = "__classPrivateMethodGet", .short = NAMES.PRIVATE_METHOD_GET_MIN },
-    .{ .base = "__classPrivateFieldSet", .short = NAMES.PRIVATE_FIELD_SET_MIN },
-    .{ .base = "__classCheckPrivateStaticAccess", .short = NAMES.STATIC_PRIVATE_ACCESS_MIN },
-    .{ .base = "__classCheckPrivateStaticFieldDescriptor", .short = NAMES.STATIC_PRIVATE_DESC_MIN },
-    .{ .base = "__classStaticPrivateFieldSpecGet", .short = NAMES.STATIC_PRIVATE_GET_MIN },
-    .{ .base = "__classStaticPrivateFieldSpecSet", .short = NAMES.STATIC_PRIVATE_SET_MIN },
-    .{ .base = "__decorateClass", .short = NAMES.DECORATE_CLASS_MIN },
-    .{ .base = "__decorateParam", .short = NAMES.DECORATE_PARAM_MIN },
-    .{ .base = "__defProp2", .short = NAMES.DEF_PROP_2_MIN },
-    .{ .base = "__metadata", .short = NAMES.METADATA_MIN },
-    .{ .base = "__esDecorate", .short = NAMES.ES_DECORATE_MIN },
-    .{ .base = "__runInitializers", .short = NAMES.RUN_INITIALIZERS_MIN },
-    .{ .base = "__setFunctionName", .short = NAMES.SET_FUNCTION_NAME_MIN },
-    .{ .base = "__propKey", .short = NAMES.PROP_KEY_MIN },
-    .{ .base = "__using", .short = NAMES.USING_MIN },
-    .{ .base = "__callDispose", .short = NAMES.CALL_DISPOSE_MIN },
-};
-
-/// PAIRS 로부터 base_name → short_name comptime 해시맵.
-const helper_map: std.StaticStringMap([]const u8) = blk: {
-    var entries: [PAIRS.len]struct { []const u8, []const u8 } = undefined;
-    for (PAIRS, 0..) |p, i| entries[i] = .{ p.base, p.short };
-    break :blk std.StaticStringMap([]const u8).initComptime(entries);
-};
-
-/// PAIRS 의 short name 만 뽑은 comptime 배열. mangler 예약/테스트 iterate 용.
-pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
-    var names: [PAIRS.len][]const u8 = undefined;
-    for (PAIRS, 0..) |p, i| names[i] = p.short;
-    break :blk names;
-};
-
-/// transformer 가 AST identifier 로 emit 하는 runtime helper 이름을
-/// minify 플래그에 따라 축약/원본으로 선택한다. non-helper identifier (Math, writable 등)
-/// 는 호출하지 않는다 — 이 함수는 `PAIRS` 테이블에 등록된 이름만 처리.
-///
-/// 매핑에 없으면 원본 그대로 반환 → preamble 과 호출부가 어긋나 런타임 에러.
-/// mangler_test "runtime_helpers names are registered" 가 빌드 타임에 drift 를 잡는다.
-pub fn helperName(base_name: []const u8, minify: bool) []const u8 {
-    if (!minify) return base_name;
-    return helper_map.get(base_name) orelse base_name;
-}
+// #1618 / #1621 / #1752: runtime helper 축약 이름 테이블은 `src/runtime_helper_names.zig`
+// 공용 모듈로 이전. transformer (`es_helpers.makeRuntimeHelperRef`) 와 bundler (이 파일의
+// preamble 템플릿 + `mangler.isReservedOrGlobal`) 가 해당 공용 모듈에만 의존하여 레이어
+// 역전이 없다. 기존 `runtime_helpers.NAMES` / `PAIRS` / `helperName` 접근 경로는
+// re-export 로 호환 유지.
+const names_mod = @import("../runtime_helper_names.zig");
+pub const NAMES = names_mod.NAMES;
+pub const PAIRS = names_mod.PAIRS;
+pub const ALL_SHORT_NAMES = names_mod.ALL_SHORT_NAMES;
+pub const helperName = names_mod.helperName;
 
 /// __commonJS 팩토리 함수 (esbuild 호환)
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";

@@ -18,7 +18,8 @@ const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const PrivateMethodMapping = Transformer.PrivateMethodMapping;
 const es_helpers = @import("../es_helpers.zig");
-const rt = @import("../../bundler/runtime_helpers.zig");
+// #1752: 공용 helper 이름 모듈 (transformer → bundler 역의존 회피).
+const rt = @import("../../runtime_helper_names.zig");
 const es2022 = @import("../es2022.zig");
 
 pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
