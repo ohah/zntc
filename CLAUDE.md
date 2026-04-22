@@ -24,6 +24,16 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 5. `gh pr create` 시 `--label`, `--assignee` 항상 지정
 6. Zig 초보자에게 설명 포함
 
+## 외부 Consumer 동기화
+- **bungae monorepo** (`/Users/yoonhb/Documents/workspace/bungae/`) 가 ZTS 를 git submodule 로 참조. `.gitmodules` 에 branch 추적 없어서 ZTS 머지 후 수동 sync 필요:
+  ```bash
+  cd /Users/yoonhb/Documents/workspace/bungae && git submodule update --remote zts
+  cd zts && zig build napi && cp zig-out/lib/zts.node packages/core/zts.node
+  cd packages/core && bun build index.ts --outdir dist --format esm --target bun
+  ```
+- 번개에서 HMR 실측 전에는 반드시 submodule update 먼저 — drift 상태면 최신 profile 측정점/NAPI 변경이 반영 안 됨
+- 근본 해결(bungae 측): `.gitmodules` 에 `branch = main` + postinstall 에 `git submodule update --remote` 추가 (별도 bungae PR 필요)
+
 ## Memory ownership
 - **Arena 안 리소스는 개별 deinit 금지**. `arena_alloc`으로 만든 `DynamicBitSet`/`ArrayList` 등은 `arena.deinit()`이 일괄 해제. 개별 `defer X.deinit()`을 함께 걸면 `arena.deinit()` 이후에 실행되어 해제된 메모리 접근 → segfault (#1287).
 - 성공 경로에서 `arena.deinit()`을 명시 호출하지 말 것. `defer arena.deinit()` 하나로 충분.
