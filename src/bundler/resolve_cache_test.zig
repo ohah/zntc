@@ -3,6 +3,7 @@ const resolve_cache = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache.ResolveCache;
 const matchGlob = resolve_cache.matchGlob;
 const isNodeBuiltin = resolve_cache.isNodeBuiltin;
+const profile = @import("../profile.zig");
 
 // ============================================================
 // Tests
@@ -131,4 +132,32 @@ test "resolve: not found cached" {
     // 두 번째 호출도 ModuleNotFound (캐시에서)
     const r2 = cache.resolve(dir_path, "./nonexistent", .static_import);
     try std.testing.expectError(error.ModuleNotFound, r2);
+}
+
+test "resolve: profile .resolve 활성 시 누적" {
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.addFromCsv("resolve");
+
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
+    defer cache.deinit();
+
+    // external 경로로 호출 — filesystem 접근 없이 resolveInner 진입 확인.
+    _ = try cache.resolve("/some/dir", "react", .static_import);
+
+    try std.testing.expect(profile.count(.resolve) > 0);
+    try std.testing.expect(profile.totalNs(.resolve) > 0);
+}
+
+test "resolve: profile .resolve 비활성 시 누적 없음" {
+    profile.resetForTest();
+    defer profile.resetForTest();
+
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
+    defer cache.deinit();
+
+    _ = try cache.resolve("/some/dir", "react", .static_import);
+
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.resolve));
+    try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.resolve));
 }
