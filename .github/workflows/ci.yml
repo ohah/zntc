@@ -26,13 +26,19 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Build
+      # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
+      # ("LLVM ERROR: out of memory"). Debug 빌드·테스트 커버리지는 Linux/macOS
+      # 에서 유지하고, Windows 에서는 Release 빌드만 검증한다.
+      - name: Build (Debug)
+        if: runner.os != 'Windows'
         run: zig build
 
       - name: Run Tests
+        if: runner.os != 'Windows'
         run: zig build test
 
       - name: Run Test262 Runner Tests
+        if: runner.os != 'Windows'
         run: zig build test262
 
       - name: Build (ReleaseSafe)
