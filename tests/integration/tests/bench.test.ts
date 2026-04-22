@@ -12,6 +12,12 @@ import { init, close, benchmark } from "../../../packages/core/index";
 //   - mean/median/p95/p99/stddev/min/max 통계
 //   - save/compare (CLI 만, NAPI 는 결과 객체 직접 조작 가능)
 
+const smallSource = `
+  export const x: number = 1;
+  export function foo(a: string, b: number) { return a + b.toString(); }
+  export class K { constructor(public name: string) {} }
+`;
+
 describe("zts bench subcommand (CLI)", () => {
   let cleanup: (() => Promise<void>) | undefined;
 
@@ -21,12 +27,6 @@ describe("zts bench subcommand (CLI)", () => {
       cleanup = undefined;
     }
   });
-
-  const smallSource = `
-    export const x: number = 1;
-    export function foo(a: string, b: number) { return a + b.toString(); }
-    export class K { constructor(public name: string) {} }
-  `;
 
   test("--phase=parse 로 bench 실행 + 테이블 출력", async () => {
     const fixture = await createFixture({ "input.ts": smallSource });
@@ -195,11 +195,6 @@ describe("zts bench subcommand (CLI)", () => {
 describe("benchmark() NAPI API", () => {
   beforeAll(() => init());
   afterAll(() => close());
-
-  const smallSource = `
-    export const x: number = 1;
-    export function foo(a: string) { return a; }
-  `;
 
   test("source + phases 로 benchmark 호출", () => {
     const result = benchmark({
