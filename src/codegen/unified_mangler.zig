@@ -94,9 +94,14 @@ pub fn mangleAll(
     const sorted = try allocator.alloc(TopLevelCandidate, input.top_level_candidates.len);
     defer allocator.free(sorted);
     @memcpy(sorted, input.top_level_candidates);
+    // Tie-breaker 는 name 우선 — `module_index`/`symbol_id` 는 병렬 파싱으로
+    // run 마다 다를 수 있어 non-deterministic 결과를 유발. 이름은
+    // `computeRenames` 이후 bundle-wide 로 유일하므로 결정적 정렬 보장.
     std.mem.sortUnstable(TopLevelCandidate, sorted, {}, struct {
         fn cmp(_: void, a: TopLevelCandidate, b: TopLevelCandidate) bool {
             if (a.ref_count != b.ref_count) return a.ref_count > b.ref_count;
+            const name_order = std.mem.order(u8, a.name, b.name);
+            if (name_order != .eq) return name_order == .lt;
             if (a.module_index != b.module_index) return a.module_index < b.module_index;
             return a.symbol_id < b.symbol_id;
         }
