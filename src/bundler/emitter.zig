@@ -511,6 +511,19 @@ pub fn emitWithTreeShaking(
     // merge 시 output.items의 줄 수를 기준 오프셋으로 사용
     var module_line: u32 = 0;
 
+    // module_output pre-size: 합계 capacity 를 한 번 확보해 concat 루프의 모듈별 appendSlice
+    // 가 매번 grow (~log2(N) realloc) 하는 비용을 제거 (Issue #1727 §1).
+    var module_output_estimate: usize = 0;
+    for (sorted.items, 0..) |m, i| {
+        const code = results[i].code orelse continue;
+        module_output_estimate += code.len;
+        if (!options.minify_whitespace) {
+            // `"// --- " + basename + " ---\n"` (12 + basename) + 모듈 말미 개행 1
+            module_output_estimate += std.fs.path.basename(m.path).len + 13;
+        }
+    }
+    try module_output.ensureTotalCapacity(allocator, module_output_estimate);
+
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
         collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
