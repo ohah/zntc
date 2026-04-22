@@ -960,6 +960,10 @@ pub const Linker = struct {
 
                         const sym = &sem.symbols.items[sym_idx];
                         if (sym.kind == .import_binding) continue;
+                        // synthetic default 는 아래 별도 루프가 처리 —
+                        // 같은 symbol 을 candidates 에 중복 추가하면
+                        // mangleAll 의 renames.put 이 이전 value 를 덮어써 leak.
+                        if (sym.synthetic_kind == .default_export) continue;
 
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
                         if (key.len <= 1) continue;
@@ -1020,123 +1024,46 @@ pub const Linker = struct {
 
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
     /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
+    ///
+    /// #1760 Step 3a: 내부가 `collectUnifiedInput` + `mangleAll` 로 교체됨.
+    /// 외부 계약 (`Symbol.canonical_name` 주입, `nested_mangling_enabled` 플래그,
+    /// `metadata.zig` 의 nested mangler 호출) 은 그대로 유지.
     pub fn computeMangling(self: *Linker) !void {
         var scope = profile.begin(.link_compute_mangling);
         defer scope.end();
 
-        const Mangler = @import("../codegen/mangler.zig");
+        const um = @import("../codegen/unified_mangler.zig");
 
-        // ================================================================
-        // Top-level 심볼을 빈도순 Base54로 mangling (cross-module)
-        // ================================================================
+        var collected = try self.collectUnifiedInput();
+        defer collected.deinit();
 
-        // 1. mangling 후보 수집 + 빈도순 정렬
-        var candidates = try self.collectManglingCandidates();
-        defer candidates.deinit(self.allocator);
+        var result = try um.mangleAll(self.allocator, .{
+            .modules = collected.modules,
+            .top_level_candidates = collected.top_level_candidates,
+        });
+        defer result.deinit();
 
-        // 2. 빈도순으로 Base54 이름 할당
-        // 기존에 사용 중인 이름 수집 (충돌 방지)
-        var all_names = std.StringHashMap(void).init(self.allocator);
-        defer all_names.deinit();
-        for (self.modules) |m| {
-            const sem = m.semantic orelse continue;
-            for (sem.scope_maps) |scope_map| {
-                var sit = scope_map.iterator();
-                while (sit.next()) |entry| {
-                    try all_names.put(entry.key_ptr.*, {});
-                }
-            }
-        }
-        // 이미 할당된 canonical 이름들도 충돌 후보에서 제외.
-        for (self.canonical_strings.items) |v| {
-            try all_names.put(v, {});
-        }
-
-        var name_map = std.StringHashMap([]const u8).init(self.allocator);
-        defer {
-            var vit = name_map.valueIterator();
-            while (vit.next()) |v| self.allocator.free(v.*);
-            name_map.deinit();
-        }
-        var used_names = std.StringHashMap(void).init(self.allocator);
-        defer used_names.deinit();
-
-        var name_counter: u32 = 0;
-        var name_buf: [8]u8 = undefined;
-        var slot_name_length_sum: usize = 0;
-        for (candidates.entries.items) |entry| {
-            var new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
-            while (all_names.contains(new_name) or
-                used_names.contains(new_name) or
-                candidates.exported.contains(new_name))
-            {
-                new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
-            }
-            slot_name_length_sum += new_name.len;
-
-            if (!std.mem.eql(u8, entry.name, new_name)) {
-                const duped = try self.allocator.dupe(u8, new_name);
-                try name_map.put(entry.name, duped);
-                try used_names.put(duped, {});
-            }
+        // Phase A 결과 (top-level 심볼) 를 기존 canonical_name 경로에 주입.
+        // Phase B 결과 (nested) 는 `metadata.buildMetadataForAst` 의 nested mangler
+        // 가 여전히 독립적으로 rename 을 생성하므로 여기서 소비하지 않는다 — Step
+        // 3b 에서 metadata nested 를 제거하며 함께 처리.
+        for (collected.top_level_candidates) |cand| {
+            const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
+            const mangled = result.renames.get(key) orelse continue;
+            if (cand.module_index >= self.modules.len) continue;
+            const sem = self.modules[cand.module_index].semantic orelse continue;
+            if (cand.symbol_id >= sem.symbols.items.len) continue;
+            const sym = &sem.symbols.items[cand.symbol_id];
+            const dup = try self.allocator.dupe(u8, mangled);
+            try self.assignSymbolCanonical(sym, dup);
         }
 
         if (self.mangle_report) |r| {
-            r.top_level = .{
-                .slot_count = candidates.entries.items.len,
-                .slot_name_length_sum = slot_name_length_sum,
-                .name_counter_final = name_counter,
-                .reserved_size = 0, // top-level 에는 mangler 내부 reserved_names 개념이 없음
-                .renamed_symbol_count = name_map.count(),
-            };
-            r.top_level_reserved_pool = all_names.count();
-        }
-
-        // 3. 기존 canonical_name이 mangling 대상이면 새 이름으로 교체.
-        //    canonical_symbols dirty list로 O(D) — D = calculateRenames에서 충돌로
-        //    rename된 심볼 수. 전체 심볼 순회 회피.
-        // 주의: dirty list를 순회하며 assignSymbolCanonical을 호출하면 list가
-        //   append되므로 고정 길이만 처리.
-        const dirty_count = self.canonical_symbols.items.len;
-        var di: usize = 0;
-        while (di < dirty_count) : (di += 1) {
-            const sym = self.canonical_symbols.items[di];
-            if (name_map.get(sym.canonical_name)) |mangled| {
-                const dup = try self.allocator.dupe(u8, mangled);
-                try self.assignSymbolCanonical(sym, dup);
-            }
-        }
-
-        // 3-b. 합성 default export 심볼 rename (#1585).
-        //    `_default`는 scope_maps에도 canonical_symbols dirty list에도 없으므로
-        //    위 단계에서 커버되지 않는다. collectManglingCandidates가 수집한
-        //    synthetic_defaults 리스트를 재사용하여 name_map lookup + assign.
-        //    name_map은 이미 exported/길이 필터를 통과한 후보로만 구성되므로
-        //    여기서 중복 가드는 불필요.
-        for (candidates.synthetic_defaults.items) |sym| {
-            const lookup_name = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
-            if (name_map.get(lookup_name)) |mangled| {
-                const dup = try self.allocator.dupe(u8, mangled);
-                try self.assignSymbolCanonical(sym, dup);
-            }
-        }
-
-        // 4. 아직 canonical 미설정인 top-level 심볼에 mangled 이름 적용.
-        //    O(M × top-level) — top-level scope만 순회 (전체 심볼 아님).
-        for (self.modules, 0..) |m, i| {
-            const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            var sit = sem.scope_maps[0].iterator();
-            while (sit.next()) |scope_entry| {
-                const sym_name = scope_entry.key_ptr.*;
-                const sym_idx = scope_entry.value_ptr.*;
-                if (sym_idx >= sem.symbols.items.len) continue;
-                if (sem.symbols.items[sym_idx].canonical_name.len > 0) continue;
-                if (name_map.get(sym_name)) |mangled| {
-                    const dup = self.allocator.dupe(u8, mangled) catch continue;
-                    self.putCanonicalName(@intCast(i), sym_name, dup) catch {};
-                }
-            }
+            r.top_level = result.phase_a;
+            // Phase A 종료 시점의 reserved 크기 스냅샷. Phase B 가 더 누적하기 전이므로
+            // "top-level 이름 풀" 의미 유지 — 구 경로의 `all_names + canonical_strings`
+            // 합집합 크기와 대응.
+            r.top_level_reserved_pool = result.phase_a.reserved_size;
         }
 
         self.nested_mangling_enabled = true;
