@@ -16,12 +16,14 @@ pub const SourceMapBuilder = sourcemap.SourceMapBuilder;
 pub const function_map = @import("function_map.zig");
 pub const FunctionMapBuilder = function_map.FunctionMapBuilder;
 pub const mangler = @import("mangler.zig");
+pub const unified_mangler = @import("unified_mangler.zig");
 
 test {
     _ = codegen;
     _ = sourcemap;
     _ = function_map;
     _ = mangler;
+    _ = unified_mangler;
 
     // test files
     _ = @import("codegen_test.zig");

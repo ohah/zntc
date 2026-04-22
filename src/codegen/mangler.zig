@@ -73,6 +73,12 @@ pub const MangleInput = struct {
     source: []const u8,
     /// 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
     skip_symbols: ?std.DynamicBitSet = null,
+    /// #1760 unified 경로: Phase A 가 소비한 counter 를 Phase B 가 이어받도록.
+    /// default=0 이면 기존 동작 그대로.
+    starting_name_counter: u32 = 0,
+    /// #1760 unified 경로: 외부에서 누적된 reserved set. mangle 시작 시
+    /// 내부 reserved_names 에 복사된다. borrowed — caller 소유 유지.
+    external_reserved: ?*const std.StringHashMap(void) = null,
 };
 
 /// Liveness 기반 mangling.
@@ -174,6 +180,12 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     // 이름 할당에서 reserved로 취급한다.
     var reserved_names = std.StringHashMap(void).init(allocator);
     defer reserved_names.deinit();
+
+    // #1760: Phase A 에서 누적된 예약어를 Phase B 가 물려받음.
+    if (input.external_reserved) |ext| {
+        var it = ext.keyIterator();
+        while (it.next()) |k| try reserved_names.put(k.*, {});
+    }
 
     // DFS로 scope tree 순회
     var dfs_stack: std.ArrayListUnmanaged(u32) = .empty;
@@ -306,7 +318,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
     }
     @memset(slot_names, null);
 
-    var name_counter: u32 = 0;
+    var name_counter: u32 = input.starting_name_counter;
     var name_buf: [8]u8 = undefined;
     var slot_name_length_sum: usize = 0;
     for (sorted_slots) |entry| {
