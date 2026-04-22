@@ -167,27 +167,9 @@ pub fn buildMetadataForAst(
         ns_var_list.deinit(self.allocator);
     }
 
-    // namespace import export 수집 캐시: target_mod_idx → []NsExportPair
-    // 같은 타겟을 여러 모듈이 namespace import할 때 collectExportsRecursive 반복 순회 방지.
-    var ns_export_cache = std.AutoHashMap(u32, []NsExportPair).init(self.allocator);
-    defer {
-        var cache_it = ns_export_cache.iterator();
-        while (cache_it.next()) |entry| {
-            for (entry.value_ptr.*) |exp| {
-                if (exp.owned) self.allocator.free(exp.local);
-            }
-            self.allocator.free(entry.value_ptr.*);
-        }
-        ns_export_cache.deinit();
-    }
-
-    // buildInlineObjectStr 결과 캐시: target_mod_idx → 할당된 인라인 객체 문자열
-    var ns_inline_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
-    defer {
-        var inline_it = ns_inline_cache.valueIterator();
-        while (inline_it.next()) |v| self.allocator.free(v.*);
-        ns_inline_cache.deinit();
-    }
+    // namespace import / inline object 캐시는 linker 전역 필드(`self.ns_export_cache`,
+    // `self.ns_inline_cache`) 로 이동 — 같은 target 을 여러 모듈이 namespace import 해도
+    // collectExportsRecursive DFS 를 한 번만 수행하도록 공유 (#1734).
 
     if (sem.scope_maps.len > 0) {
         const module_scope = sem.scope_maps[0];
@@ -338,8 +320,6 @@ pub fn buildMetadataForAst(
                     ns_sym_id,
                     @intCast(canonical_mod),
                     local_name,
-                    &ns_export_cache,
-                    &ns_inline_cache,
                 );
                 continue;
             }
@@ -398,8 +378,6 @@ pub fn buildMetadataForAst(
                                                 @intCast(import_sym_id),
                                                 @intFromEnum(src),
                                                 ib.local_name,
-                                                &ns_export_cache,
-                                                &ns_inline_cache,
                                             );
                                             break :blk ib.local_name;
                                         }
@@ -426,8 +404,6 @@ pub fn buildMetadataForAst(
                                     @intCast(imp_sym),
                                     @intCast(ns_target_mod),
                                     ib.local_name,
-                                    &ns_export_cache,
-                                    &ns_inline_cache,
                                 );
                                 break :blk ib.local_name;
                             }
