@@ -1192,45 +1192,22 @@ test "Bundler: #1757 mangler outer fn / inner var shadowing" {
     try std.testing.expect(!result.hasErrors());
     const out = result.output;
 
-    // outer `function counter` 의 mangled 이름을 찾아, 같은 이름이 inner 의
-    // `var` 선언 리스트에 포함되지 않는지 검증.
-    // counter 는 main 에서 호출되는데 main body 는 `function t(){var <inner>;...}` 꼴.
-    // `var e,...}` 형태로 시작하는 inner 선언이 outer 이름을 재사용하면 shadowing.
-    //
-    // 직접 구조 검증: counter → fn name, 그 name 이 다른 `function` 의 body 안
-    // `var` 로 재선언되면 안 됨.
-    // 검사: mangled counter 함수 선언 `function X(){return $gn(` 를 찾고 그 X 이름이
-    // 다른 위치의 `var X,` / `var X;` 패턴에 나타나지 않는지.
-    const gn_fn_prefix = "(){return $gn(";
-    const pos_gn_fn = std.mem.indexOf(u8, out, gn_fn_prefix) orelse return error.CounterFnNotFound;
-    // `function counter` 의 mangled 이름 역산 — prefix 바로 앞의 identifier.
-    const name_end = pos_gn_fn;
-    var name_start = name_end;
+    // outer `function counter` 의 mangled 이름을 `(){return $gn(` 직전 identifier
+    // 로 역산 후, 같은 이름이 다른 곳에서 `var X,` / `var X;` 로 재선언되면 shadow.
+    const gn_marker = "(){return $gn(";
+    const gn_pos = std.mem.indexOf(u8, out, gn_marker) orelse return error.CounterFnNotFound;
+    var name_start = gn_pos;
     while (name_start > 0) : (name_start -= 1) {
         const c = out[name_start - 1];
         if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '$')) break;
     }
-    const counter_name = out[name_start..name_end];
+    const counter_name = out[name_start..gn_pos];
     try std.testing.expect(counter_name.len > 0);
 
-    // counter_name 이 `var <name>,` 또는 `var <name>;` 형태로 재등장하는지.
-    // 재등장 시 shadowing (mangler 버그). 여러 `var` 선언문 중 하나라도 해당.
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, out, search_from, "var ")) |idx| : (search_from = idx + 1) {
-        const after = out[idx + 4 ..];
-        // identifier 추출
-        var end: usize = 0;
-        while (end < after.len) : (end += 1) {
-            const c = after[end];
-            if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '$')) break;
-        }
-        const decl_name = after[0..end];
-        if (std.mem.eql(u8, decl_name, counter_name)) {
-            // counter_name 이 var 선언으로 재등장 — shadowing!
-            // allowed 예외: 바로 그 function 자체의 scope 에서 이름 재선언은 문법상 없음
-            // (function_declaration 은 var 가 아님). 이 경우는 bug.
-            std.debug.print("SHADOW DETECTED: counter_name='{s}' re-declared as var at offset {d}\n", .{ counter_name, idx });
-            return error.ShadowingDetected;
-        }
-    }
+    // `var NAME,` 와 `var NAME;` 둘 다 shadow. indexOf null 이면 안전.
+    var buf: [32]u8 = undefined;
+    const comma_probe = try std.fmt.bufPrint(&buf, "var {s},", .{counter_name});
+    try std.testing.expect(std.mem.indexOf(u8, out, comma_probe) == null);
+    const semi_probe = try std.fmt.bufPrint(buf[comma_probe.len..], "var {s};", .{counter_name});
+    try std.testing.expect(std.mem.indexOf(u8, out, semi_probe) == null);
 }

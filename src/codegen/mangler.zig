@@ -177,32 +177,24 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 const sym = symbols[sym_idx];
                 const name = entry.key_ptr.*;
 
-                // skip 판정 — 아래 세 경로는 원본 이름이 출력에 살아남으므로 reserved
+                // skip 판정 — 아래 세 경로는 원본 이름이 출력에 살아남으므로 reserved.
+                // #1757: 원본 이름과 `canonical_name` (top-level mangler rename 결과)
+                // 둘 다 등록해 nested mangler 독립 base54 counter 가 같은 이름 배정 방지.
                 if (shouldSkip(sym, name)) {
-                    try reserved_names.put(name, {});
+                    try reserveNameFor(&reserved_names, sym, name);
                     continue;
                 }
                 // direct eval / with 스코프의 바인딩은 mangling 차단 (#1258)
                 if (!sym.scope_id.isNone()) {
                     const s_idx = sym.scope_id.toIndex();
                     if (s_idx < scopes.len and scopes[s_idx].blocksMangling()) {
-                        try reserved_names.put(name, {});
+                        try reserveNameFor(&reserved_names, sym, name);
                         continue;
                     }
                 }
                 if (skip_symbols) |ss| {
                     if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) {
-                        // #1757: top-level mangler 가 이미 rename 한 심볼의 최종 이름
-                        // (canonical_name) 을 reserved 로 등록. nested mangler 는
-                        // 별도 base54 counter 를 써서 독립 이름 생성하므로, 동일한
-                        // 축약 이름을 선택해 shadow 하는 것을 차단.
-                        // 원본 이름도 함께 reserved — 호출부 식별자 resolve 경로 중
-                        // 혹 renames 가 적용되지 않고 원본으로 emit 되는 노드 보호.
-                        const reserved_name = if (sym.canonical_name.len > 0) sym.canonical_name else name;
-                        try reserved_names.put(reserved_name, {});
-                        if (sym.canonical_name.len > 0 and !std.mem.eql(u8, name, reserved_name)) {
-                            try reserved_names.put(name, {});
-                        }
+                        try reserveNameFor(&reserved_names, sym, name);
                         continue;
                     }
                 }
@@ -495,6 +487,13 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
     if (std.mem.eql(u8, name, "arguments")) return true;
     if (name.len <= 1) return true;
     return false;
+}
+
+/// Phase 3 의 세 skip 경로 공용: 원본 이름 + `canonical_name` (top-level mangler
+/// rename 결과) 둘 다 reserved 로 등록. `StringHashMap.put` 은 idempotent.
+fn reserveNameFor(reserved: *std.StringHashMap(void), sym: Symbol, name: []const u8) !void {
+    try reserved.put(name, {});
+    if (sym.hasCanonicalName()) try reserved.put(sym.canonical_name, {});
 }
 
 // ============================================================
