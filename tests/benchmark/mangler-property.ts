@@ -141,9 +141,8 @@ type Check = { ok: boolean; label: string; detail: string };
 function checkFixture(baseline: FixtureResult, current: FixtureResult): Check[] {
   const checks: Check[] = [];
   const size_delta = current.report.bundle_size_bytes - baseline.report.bundle_size_bytes;
-  const size_ratio = baseline.report.bundle_size_bytes === 0
-    ? 0
-    : size_delta / baseline.report.bundle_size_bytes;
+  const size_ratio =
+    baseline.report.bundle_size_bytes === 0 ? 0 : size_delta / baseline.report.bundle_size_bytes;
   checks.push({
     ok: Math.abs(size_ratio) <= BUNDLE_SIZE_TOLERANCE,
     label: `bundle_size(${baseline.name})`,
