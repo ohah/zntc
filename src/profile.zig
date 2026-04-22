@@ -59,8 +59,16 @@ pub const Category = enum {
 
     // ── Linking / Tree-shaking ──
     link,
+    link_build_export_map,
+    link_resolve_imports,
+    link_compute_renames,
+    link_compute_mangling,
+    link_populate_re_export_aliases,
+    link_populate_import_symbols,
+    link_populate_namespace_accesses,
     shake,
     metadata,
+    metadata_register_ns_rewrites,
 
     // ── Transform ──
     transform,
