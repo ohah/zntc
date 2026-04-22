@@ -56,6 +56,28 @@ pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_import
     return skip_nodes;
 }
 
+/// `Linker.unified_result` 에서 현재 모듈의 Phase B (nested) rename 을
+/// `renames` 에 merge. Phase A 심볼 (module_scope_symbols bitset set) 은
+/// 스킵 — self-rename 루프가 canonical_name 경로로 이미 처리했음.
+fn mergeUnifiedPhaseB(
+    self: *const Linker,
+    module_index: u32,
+    renames: *std.AutoHashMap(u32, []const u8),
+) !void {
+    const ur = &(self.unified_result orelse return);
+    if (module_index >= self.unified_module_scopes.len) return;
+    const module_bits = &self.unified_module_scopes[module_index];
+
+    var it = ur.renames.iterator();
+    while (it.next()) |entry| {
+        if (entry.key_ptr.module_index != module_index) continue;
+        const sid = entry.key_ptr.symbol_id;
+        if (sid < module_bits.capacity() and module_bits.isSet(sid)) continue;
+        if (renames.contains(sid)) continue;
+        try renames.put(sid, entry.value_ptr.*);
+    }
+}
+
 /// transformer 이후의 ast를 기반으로 LinkingMetadata를 생성한다.
 /// skip_nodes와 renames가 ast의 노드 인덱스와 일치.
 pub fn buildMetadataForAst(
@@ -491,50 +513,10 @@ pub fn buildMetadataForAst(
             }
         }
 
-        // nested scope mangling (liveness 기반)
-        // top-level은 computeMangling에서 처리됨 → nested만 수행
-        if (self.nested_mangling_enabled and sem.symbols.items.len > 0) {
-            const Mangler = @import("../../codegen/mangler.zig");
-
-            // top-level scope + export/import 심볼은 skip
-            var skip_syms = try std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.items.len);
-            defer skip_syms.deinit();
-
-            // scope_maps[0] (module scope)의 모든 심볼을 skip
-            var skip_it = module_scope.iterator();
-            while (skip_it.next()) |skip_entry| {
-                const sym_i = skip_entry.value_ptr.*;
-                if (sym_i < sem.symbols.items.len) skip_syms.set(sym_i);
-            }
-
-            var nested_result = try Mangler.mangle(self.allocator, .{
-                .scopes = sem.scopes,
-                .symbols = sem.symbols.items,
-                .scope_maps = sem.scope_maps,
-                .references = sem.references,
-                .source = m.source,
-                .skip_symbols = skip_syms,
-            });
-
-            // #1760 property harness: nested mangler stats 를 collector 로.
-            if (self.mangle_report) |r| {
-                r.recordNested(m.path, nested_result.stats) catch {};
-            }
-
-            // nested renames를 기존 renames에 merge (소유권 이전)
-            var taken = nested_result.takeRenames();
-            defer taken.deinit(); // HashMap 자체만 해제 (값은 owned_nested_renames가 관리)
-            var nit = taken.iterator();
-            while (nit.next()) |n_entry| {
-                if (!renames.contains(n_entry.key_ptr.*)) {
-                    try renames.put(n_entry.key_ptr.*, n_entry.value_ptr.*);
-                    try owned_nested_renames.append(self.allocator, n_entry.value_ptr.*);
-                } else {
-                    self.allocator.free(n_entry.value_ptr.*);
-                }
-            }
-            nested_result.deinit(); // 빈 상태이므로 안전
-        }
+        // nested rename 을 `Linker.unified_result` 에서 조회. Phase A (module
+        // scope) 은 위 self-rename 루프에서 canonical_name 경유로 이미 처리됨.
+        // 값은 linker 소유 (borrowed) — metadata 는 참조만.
+        mergeUnifiedPhaseB(self, module_index, &renames) catch {};
     }
 
     // CJS import preamble 저장

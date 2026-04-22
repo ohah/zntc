@@ -56,6 +56,14 @@ pub const UnifiedCollect = struct {
         for (self.bitsets) |*b| b.deinit();
         self.allocator.free(self.bitsets);
     }
+
+    /// bitsets 소유권을 이전. 이후 `deinit` 이 bitsets 를 건드리지 않음.
+    /// caller 가 각 bitset 과 slice 자체를 해제해야 함.
+    pub fn takeBitsets(self: *UnifiedCollect) []std.DynamicBitSet {
+        const b = self.bitsets;
+        self.bitsets = &.{};
+        return b;
+    }
 };
 
 /// `--mangle-report` 전용 측정 수집기 (#1760 property harness).
@@ -339,12 +347,17 @@ pub const Linker = struct {
     /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
     shim_missing_exports: bool = false,
 
-    /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
-    nested_mangling_enabled: bool = false,
-
     /// --mangle-report 수집기 (#1760). `null` 이면 instrumentation skip.
     /// Bundler 가 생성 및 소유. Linker 는 참조만 보유.
     mangle_report: ?*MangleReportCollector = null,
+
+    /// #1760 Step 3c: `computeMangling` 이 mangleAll 결과 전체를 보관.
+    /// `metadata.buildMetadataForAst` 이 현 모듈의 Phase B rename 을 여기서 조회.
+    /// Phase A 와 Phase B 구분은 `unified_module_scopes[module_index]` bitset.
+    unified_result: ?@import("../codegen/unified_mangler.zig").UnifiedMangleResult = null,
+    /// 각 모듈의 module scope symbol bitset. `unified_result.renames` 의 entry 가
+    /// Phase A (top-level) 인지 Phase B (nested) 인지 이 bitset 으로 판정.
+    unified_module_scopes: []std.DynamicBitSet = &.{},
 
     /// 모듈별 중첩 스코프 바인딩 이름 집합 (사전 구축).
     /// computeRenames에서 한 번 구축, hasNestedBinding에서 O(1) 조회.
@@ -415,6 +428,10 @@ pub const Linker = struct {
     }
 
     pub fn deinit(self: *Linker) void {
+        if (self.unified_result) |*ur| ur.deinit();
+        for (self.unified_module_scopes) |*b| b.deinit();
+        if (self.unified_module_scopes.len > 0) self.allocator.free(self.unified_module_scopes);
+
         var eit = self.export_map.keyIterator();
         while (eit.next()) |key| {
             self.allocator.free(key.*);
@@ -874,9 +891,9 @@ pub const Linker = struct {
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
     /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
     ///
-    /// #1760 Step 3a: 내부가 `collectUnifiedInput` + `mangleAll` 로 교체됨.
-    /// 외부 계약 (`Symbol.canonical_name` 주입, `nested_mangling_enabled` 플래그,
-    /// `metadata.zig` 의 nested mangler 호출) 은 그대로 유지.
+    /// #1760: unified `mangleAll()` 한 번의 호출로 top-level + nested 모두 결정.
+    /// Phase A 결과는 `Symbol.canonical_name` 에 주입 (emit 호환), Phase B 결과는
+    /// linker 필드에 보관되어 `metadata.buildMetadataForAst` 가 조회 (Step 3c).
     pub fn computeMangling(self: *Linker) !void {
         var scope = profile.begin(.link_compute_mangling);
         defer scope.end();
@@ -884,18 +901,22 @@ pub const Linker = struct {
         const um = @import("../codegen/unified_mangler.zig");
 
         var collected = try self.collectUnifiedInput();
-        defer collected.deinit();
+        // bitsets 은 linker 로 이관 후 free, candidates/modules 는 여기서 해제.
+        defer {
+            self.allocator.free(collected.top_level_candidates);
+            self.allocator.free(collected.modules);
+        }
 
         var result = try um.mangleAll(self.allocator, .{
             .modules = collected.modules,
             .top_level_candidates = collected.top_level_candidates,
         });
-        defer result.deinit();
+        // result 소유권을 linker 로 이관 (deinit 은 linker.deinit 이 담당).
+        errdefer result.deinit();
 
-        // Phase A 결과 (top-level 심볼) 를 기존 canonical_name 경로에 주입.
-        // Phase B 결과 (nested) 는 `metadata.buildMetadataForAst` 의 nested mangler
-        // 가 여전히 독립적으로 rename 을 생성하므로 여기서 소비하지 않는다 — Step
-        // 3b 에서 metadata nested 를 제거하며 함께 처리.
+        // Phase A 결과 (top-level 심볼) 를 `Symbol.canonical_name` 에 주입.
+        // dup 는 canonical_strings 가 소유. result.renames 안의 원본 문자열은
+        // linker.deinit 이 해제 — Phase A 값은 이중 보관이지만 단순성 우선.
         for (collected.top_level_candidates) |cand| {
             const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
             const mangled = result.renames.get(key) orelse continue;
@@ -909,13 +930,11 @@ pub const Linker = struct {
 
         if (self.mangle_report) |r| {
             r.top_level = result.phase_a;
-            // Phase A 종료 시점의 reserved 크기 스냅샷. Phase B 가 더 누적하기 전이므로
-            // "top-level 이름 풀" 의미 유지 — 구 경로의 `all_names + canonical_strings`
-            // 합집합 크기와 대응.
             r.top_level_reserved_pool = result.phase_a.reserved_size;
         }
 
-        self.nested_mangling_enabled = true;
+        self.unified_result = result;
+        self.unified_module_scopes = collected.takeBitsets();
     }
 
     /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.
