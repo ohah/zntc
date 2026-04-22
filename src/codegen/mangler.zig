@@ -192,7 +192,17 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
                 }
                 if (skip_symbols) |ss| {
                     if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) {
-                        try reserved_names.put(name, {});
+                        // #1757: top-level mangler 가 이미 rename 한 심볼의 최종 이름
+                        // (canonical_name) 을 reserved 로 등록. nested mangler 는
+                        // 별도 base54 counter 를 써서 독립 이름 생성하므로, 동일한
+                        // 축약 이름을 선택해 shadow 하는 것을 차단.
+                        // 원본 이름도 함께 reserved — 호출부 식별자 resolve 경로 중
+                        // 혹 renames 가 적용되지 않고 원본으로 emit 되는 노드 보호.
+                        const reserved_name = if (sym.canonical_name.len > 0) sym.canonical_name else name;
+                        try reserved_names.put(reserved_name, {});
+                        if (sym.canonical_name.len > 0 and !std.mem.eql(u8, name, reserved_name)) {
+                            try reserved_names.put(name, {});
+                        }
                         continue;
                     }
                 }
