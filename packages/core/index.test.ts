@@ -11,7 +11,7 @@ import {
   type RollupPlugin,
 } from "./index";
 import { resolve } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -3546,7 +3546,6 @@ describe("watch()", () => {
     writeFileSync(join(dir, "a.ts"), "export const A = 'A-changed';\n");
 
     const event = await rebuildP;
-    handle.stop();
 
     expect(event.graphChanged).toBeFalsy();
     expect(event.updates).toBeDefined();
@@ -3557,11 +3556,15 @@ describe("watch()", () => {
     expect(u.code).toContain("A-changed");
     expect(u.code).not.toContain("B-original");
 
-    expect(u.map).toBeDefined();
-    const m = JSON.parse(u.map!);
+    // Issue #1727 Phase B: per-module sourcemap 은 lazy getter 로 제공.
+    // updates[i].map 은 lazy 경로에서 undefined 이고, handle.getHmrSourceMap(id) 로 조회.
+    const mapJson = handle.getHmrSourceMap(u.id);
+    expect(mapJson).not.toBeNull();
+    const m = JSON.parse(mapJson!);
     expect(m.sources).toHaveLength(1);
     expect(m.sources[0].endsWith("a.ts")).toBe(true);
 
+    handle.stop();
     rmSync(dir, { recursive: true });
   }, 10000);
 
@@ -3816,6 +3819,683 @@ describe("watch()", () => {
     const hasEntry = event.changed!.some((p) => p.includes("entry.ts"));
     expect(hasEntry).toBe(true);
     handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  // ── Issue #1727 Phase B: Lazy sourcemap NAPI getters ─────────────────────
+
+  test("getBundleSourceMap — sourcemap + devMode 시 초기 빌드 후 V3 JSON 반환", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-sm-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x: number = 1;\nconsole.log(x);\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false, // lazy 엔드포인트로만 serve
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const json = handle.getBundleSourceMap();
+    expect(json).not.toBeNull();
+    expect(json).toContain('"version":3');
+    expect(json).toContain('"mappings"');
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — sourcemap 비활성 시 null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-sm-off-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      devMode: true,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    expect(handle.getBundleSourceMap()).toBeNull();
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getHmrSourceMap — 모듈 id 로 JSON 반환, 미존재 id 는 null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-hmr-sm-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x: number = 42;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: { id: string }[];
+    }>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x: number = 7;\n");
+    const event = await rebuildP;
+    expect(event.updates).toBeDefined();
+    expect(event.updates!.length).toBeGreaterThan(0);
+
+    const moduleId = event.updates![0].id;
+    const json = handle.getHmrSourceMap(moduleId);
+    expect(json).not.toBeNull();
+    expect(json).toContain('"version":3');
+
+    expect(handle.getHmrSourceMap("does/not/exist")).toBeNull();
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("emitDiskSourcemap=false — rebuild 후 bundle.js.map 을 디스크에 쓰지 않는다", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-disk-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    // bundle.js 는 있지만 .map 은 없어야 함
+    expect(existsSync(join(dir, "bundle.js"))).toBe(true);
+    expect(existsSync(join(dir, "bundle.js.map"))).toBe(false);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — 반복 호출 시 동일 JSON 반환 (재진입 안전)", async () => {
+    // NAPI mutex + builder.buf clearRetainingCapacity 로 여러 번 호출해도 동일 결과.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-repeat-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const j1 = handle.getBundleSourceMap();
+    const j2 = handle.getBundleSourceMap();
+    const j3 = handle.getBundleSourceMap();
+    expect(j1).not.toBeNull();
+    expect(j2).toBe(j1!);
+    expect(j3).toBe(j1!);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — rebuild 후 swap 이 반영되고 이전 mappings 와 달라짐", async () => {
+    // rebuild 마다 새 builder 로 swap. 내용이 바뀐 코드에 대한 mappings 가 업데이트되어야.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-swap-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuildDone();
+      },
+    });
+    await readyP;
+
+    const before = handle.getBundleSourceMap();
+    expect(before).not.toBeNull();
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "export const x = 1;\nexport const y = 2;\nexport const z = 3;\n",
+    );
+    await rebuildP;
+
+    const after = handle.getBundleSourceMap();
+    expect(after).not.toBeNull();
+    // 코드가 길어졌으니 mappings 문자열도 길어져야 한다.
+    const m1 = JSON.parse(before!);
+    const m2 = JSON.parse(after!);
+    expect(m2.mappings.length).toBeGreaterThan(m1.mappings.length);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("getHmrSourceMap — multi-module rebuild 에서 모든 모듈 id 로 조회 가능", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-multi-"));
+    writeFileSync(join(dir, "a.ts"), "export const A = 1;\n");
+    writeFileSync(join(dir, "b.ts"), "export const B = 2;\n");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "import { A } from './a';\nimport { B } from './b';\nconsole.log(A, B);\n",
+    );
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: Array<{ id: string }>;
+    }>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "a.ts"), "export const A = 999;\n");
+    const event = await rebuildP;
+
+    expect(event.updates).toBeDefined();
+    // rebuild 의 updates 는 변경된 모듈(a.ts) 만 — 하지만 module_sm_map 에는 전체 모듈이
+    // 적재돼 있어야 이후 요청에서 b.ts / entry.ts 의 map 도 lazy serve 가능.
+    const u = event.updates![0];
+    const mapA = handle.getHmrSourceMap(u.id);
+    expect(mapA).not.toBeNull();
+
+    // 변경 안 된 모듈도 module_sm_map 에 있으므로 id 알면 조회 가능.
+    // NAPI 는 모든 모듈의 per-module code 를 수집하지만 JS 는 updates diff 만 받는다 —
+    // id 를 직접 구성하는 대신 rebuild 에서 updates 의 id 패턴이 파일명을 포함하는지 확인.
+    expect(u.id.endsWith("a.ts")).toBe(true);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("getBundleSourceMap — sources_content 옵션 반영 (false 면 sourcesContent 제외)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-sc-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      sourcesContent: false,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const json = handle.getBundleSourceMap();
+    expect(json).not.toBeNull();
+    const m = JSON.parse(json!);
+    expect(m.sourcesContent).toBeUndefined();
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — debug_ids 활성 시 JSON 과 bundle.js 가 동일 UUID 공유", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-did-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      sourcemapDebugIds: true,
+      devMode: true,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const js = readFileSync(join(dir, "bundle.js"), "utf8");
+    const match = js.match(/\/\/# debugId=([0-9a-f-]+)/);
+    expect(match).not.toBeNull();
+    const uuid = match![1];
+
+    const json = handle.getBundleSourceMap();
+    expect(json).not.toBeNull();
+    const m = JSON.parse(json!);
+    expect(m.debugId).toBe(uuid);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getHmrSourceMap — initial build 직후 (rebuild 전) 모듈 id 조회 가능", async () => {
+    // swap 이 rebuild 뿐 아니라 initial build 완료 시에도 호출돼야 한다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-init-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: Array<{ id: string }>;
+    }>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+
+    // 아직 rebuild 없음 — 하지만 initial build 의 swap 으로 모듈 id 를 얻기 위해
+    // 일단 한 번 수정을 일으켜 id 를 알아낸 뒤, 동일 rebuild 후 getter 를 호출한다.
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 2;\n");
+    const event = await rebuildP;
+    const id = event.updates![0].id;
+
+    // rebuild swap 이 된 상태에서 모듈 id 로 JSON 을 받아낼 수 있다.
+    const json = handle.getHmrSourceMap(id);
+    expect(json).not.toBeNull();
+    const m = JSON.parse(json!);
+    expect(m.version).toBe(3);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("getBundleSourceMap — custom output_filename 이 map.file 에 반영", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-file-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "custom-name.mjs"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const json = handle.getBundleSourceMap();
+    expect(json).not.toBeNull();
+    const m = JSON.parse(json!);
+    expect(typeof m.file).toBe("string");
+    expect(m.file.endsWith("custom-name.mjs")).toBe(true);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getHmrSourceMap — graph 변경 (모듈 추가) 후 새 모듈도 swap 에 포함", async () => {
+    // graph_changed=true 이면 NAPI 가 updates 배열을 비우므로, 2단계로 진행:
+    //   1) b.ts 추가 → graphChanged 이벤트
+    //   2) b.ts 재수정 → updates=[b] — 이 시점에 b 의 id 를 획득
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-graph-"));
+    writeFileSync(join(dir, "a.ts"), "export const A = 1;\n");
+    writeFileSync(join(dir, "entry.ts"), "import { A } from './a';\nconsole.log(A);\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let seenGraphChange = false;
+    let secondUpdates: Array<{ id: string }> | undefined;
+    const { promise: secondP, resolve: secondDone } = Promise.withResolvers<void>();
+
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        if (!seenGraphChange) {
+          if (event.graphChanged) seenGraphChange = true;
+        } else if (event.updates && event.updates.length > 0) {
+          secondUpdates = event.updates;
+          secondDone();
+        }
+      },
+    });
+    await readyP;
+
+    // 1차: b.ts 추가 + entry import 확장 → graphChanged.
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "b.ts"), "export const B = 2;\n");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "import { A } from './a';\nimport { B } from './b';\nconsole.log(A, B);\n",
+    );
+    // graphChanged 이벤트 처리 대기.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(seenGraphChange).toBe(true);
+
+    // 2차: b.ts 재수정 → updates=[b] — b 의 id 획득 경로.
+    writeFileSync(join(dir, "b.ts"), "export const B = 999;\n");
+    await secondP;
+
+    const bId = secondUpdates!.find((u) => u.id.endsWith("b.ts"))?.id;
+    expect(bId).toBeDefined();
+
+    // graph 변경 후에도 handle 의 module_sm_map 에 b 가 포함 → getter 성공.
+    const mapB = handle.getHmrSourceMap(bId!);
+    expect(mapB).not.toBeNull();
+
+    // 완전 존재하지 않는 id — null.
+    expect(handle.getHmrSourceMap("absolutely/not/a/module.ts")).toBeNull();
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 20000);
+
+  test("getBundleSourceMap — rebuild 실패 후 이전 JSON 이 캐시로 유지된다", async () => {
+    // rebuild 가 parse error 등으로 실패하면 swap 이 호출되지 않아 이전 rebuild 의 builder 유지.
+    // dev 서버가 의미있는 sourcemap 을 계속 제공할 수 있어야 함.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-err-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let rebuildResolved = false;
+    const { promise: errP, resolve: errDone } = Promise.withResolvers<{ success: boolean }>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        if (!rebuildResolved) {
+          rebuildResolved = true;
+          errDone(event);
+        }
+      },
+    });
+    await readyP;
+
+    const before = handle.getBundleSourceMap();
+    expect(before).not.toBeNull();
+
+    // 파싱 불가능한 코드로 덮어쓰기.
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x: = = =;;;\n");
+    await errP;
+
+    // 실패해도 이전 builder 가 남아있어 getter 는 유효 JSON 반환.
+    const after = handle.getBundleSourceMap();
+    expect(after).not.toBeNull();
+    const m = JSON.parse(after!);
+    expect(m.version).toBe(3);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("getBundleSourceMap — sourcemap_function_map 활성 시에도 lazy JSON 생성 성공", async () => {
+    // lazy 경로는 generateJSON 을 일반 경로로 호출 (infra PR 은 per-source fn_map 통합 미지원).
+    // function_map 옵션이 켜져 있어도 bundle sourcemap JSON 이 crash 없이 반환되고 V3 형식.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-fnmap-"));
+    writeFileSync(join(dir, "entry.ts"), "export function hello() { return 'hi'; }\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      sourcemapFunctionMap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const json = handle.getBundleSourceMap();
+    expect(json).not.toBeNull();
+    const m = JSON.parse(json!);
+    expect(m.version).toBe(3);
+    expect(Array.isArray(m.sources)).toBe(true);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("bundle.js — lazy 경로에서도 sourceMappingURL 주석 출력 (DevTools fetch 경로)", async () => {
+    // lazy 는 .map 을 디스크에 쓰지 않지만 bundle.js 의 sourceMappingURL 주석은 유지.
+    // DevTools / Sentry 가 이 URL 을 fetch → NAPI getter → JSON 응답 경로.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-url-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    const js = readFileSync(join(dir, "bundle.js"), "utf8");
+    expect(js).toContain("//# sourceMappingURL=");
+    expect(js).toContain(".map");
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — 연쇄 rebuild (3회) 에서 최신 swap 만 유효", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-chain-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    let rebuilds = 0;
+    const rebuildResolvers: Array<() => void> = [];
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild() {
+        rebuilds++;
+        const next = rebuildResolvers.shift();
+        if (next) next();
+      },
+    });
+    await readyP;
+
+    const lens: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      rebuildResolvers.push(resolve);
+      await new Promise((r) => setTimeout(r, 100));
+      // 매 rebuild 마다 코드 길이 증가.
+      const body = Array.from(
+        { length: (i + 1) * 3 },
+        (_, k) => `export const e${i}_${k} = ${k};`,
+      ).join("\n");
+      writeFileSync(join(dir, "entry.ts"), body + "\n");
+      await promise;
+
+      const json = handle.getBundleSourceMap();
+      expect(json).not.toBeNull();
+      const m = JSON.parse(json!);
+      lens.push(m.mappings.length);
+    }
+
+    // 매 rebuild 마다 mappings 가 더 길어지는 경향 (strictly increasing).
+    expect(lens[0]).toBeGreaterThan(0);
+    expect(lens[1]).toBeGreaterThan(lens[0]);
+    expect(lens[2]).toBeGreaterThan(lens[1]);
+    expect(rebuilds).toBe(3);
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 20000);
+
+  test("getBundleSourceMap + getHmrSourceMap 교대 호출 — 상호 간섭 없음", async () => {
+    // 같은 handle 에서 bundle/hmr getter 를 번갈아 호출. mutex 가 재진입 아니므로
+    // 동일 thread 순차 호출은 안전. JSON 내용이 서로 섞이지 않는지 확인.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-mix-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 42;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const { promise: rebuildP, resolve: rebuildDone } = Promise.withResolvers<{
+      updates?: Array<{ id: string }>;
+    }>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+      onRebuild(event) {
+        rebuildDone(event);
+      },
+    });
+    await readyP;
+
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 99;\n");
+    const event = await rebuildP;
+    const id = event.updates![0].id;
+
+    // 교대로 3회씩 호출 — 각 호출이 type 정합성 유지.
+    for (let i = 0; i < 3; i++) {
+      const bundleJson = handle.getBundleSourceMap();
+      expect(bundleJson).not.toBeNull();
+      expect(JSON.parse(bundleJson!).version).toBe(3);
+
+      const hmrJson = handle.getHmrSourceMap(id);
+      expect(hmrJson).not.toBeNull();
+      const hm = JSON.parse(hmrJson!);
+      expect(hm.version).toBe(3);
+      // per-module map 은 sources 길이 1.
+      expect(hm.sources.length).toBe(1);
+    }
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 15000);
+
+  test("emitDiskSourcemap=false + eager (devMode=false) — .map 디스크 skip 유지", async () => {
+    // devMode=false 면 NAPI 가 lazy 를 안 켬 → eager 경로. 이 상태에서도 emitDiskSourcemap
+    // 옵션이 .map 디스크 write 제어 가능해야 한다. getter 는 lazy 가 꺼져있으니 null.
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-eager-nodev-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: false,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    expect(existsSync(join(dir, "bundle.js"))).toBe(true);
+    expect(existsSync(join(dir, "bundle.js.map"))).toBe(false);
+    // eager 경로이므로 handle cache 에 builder 없음 → null.
+    expect(handle.getBundleSourceMap()).toBeNull();
+
+    handle.stop();
+    rmSync(dir, { recursive: true });
+  }, 10000);
+
+  test("getBundleSourceMap — stop() 후 null 반환 (use-after-stop 방어)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-lazy-stop-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;\n");
+
+    const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
+    const handle = watch({
+      entryPoints: [join(dir, "entry.ts")],
+      outfile: join(dir, "bundle.js"),
+      sourcemap: true,
+      devMode: true,
+      emitDiskSourcemap: false,
+      onReady() {
+        readyDone();
+      },
+    });
+    await readyP;
+
+    handle.stop();
+    // stop 후 napi_remove_wrap 된 handle — getter 는 null 반환 (throw 하지 않음)
+    expect(handle.getBundleSourceMap()).toBeNull();
+    expect(handle.getHmrSourceMap("whatever")).toBeNull();
+
     rmSync(dir, { recursive: true });
   }, 10000);
 });

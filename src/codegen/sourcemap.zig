@@ -149,6 +149,8 @@ pub const SourceMapBuilder = struct {
     }
 
     pub fn deinit(self: *SourceMapBuilder) void {
+        for (self.sources.items) |s| self.allocator.free(s);
+        for (self.source_contents.items) |c| self.allocator.free(c);
         self.mappings.deinit(self.allocator);
         self.sources.deinit(self.allocator);
         self.source_contents.deinit(self.allocator);
@@ -184,16 +186,23 @@ pub const SourceMapBuilder = struct {
         try self.ignored_sources.append(self.allocator, source_index);
     }
 
-    /// 소스 파일 추가. 인덱스를 반환.
+    /// 소스 파일 추가. 인덱스를 반환. `source_name` 은 builder allocator 로 dupe 되어
+    /// 내부 소유 — caller 의 arena 가 해제돼도 유효. lazy sourcemap 경로 (Issue #1727) 에서
+    /// builder 를 emit 밖으로 이관해도 sources 배열이 안전.
     pub fn addSource(self: *SourceMapBuilder, source_name: []const u8) !u32 {
         const idx: u32 = @intCast(self.sources.items.len);
-        try self.sources.append(self.allocator, source_name);
+        const copy = try self.allocator.dupe(u8, source_name);
+        errdefer self.allocator.free(copy);
+        try self.sources.append(self.allocator, copy);
         return idx;
     }
 
-    /// 소스 파일 내용 추가. sources 배열과 인덱스가 대응해야 한다.
+    /// 소스 파일 내용 추가. sources 배열과 인덱스가 대응해야 한다. `addSource` 와 동일
+    /// 소유권 규칙 — content 는 dupe 된다.
     pub fn addSourceContent(self: *SourceMapBuilder, content: []const u8) !void {
-        try self.source_contents.append(self.allocator, content);
+        const copy = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(copy);
+        try self.source_contents.append(self.allocator, copy);
     }
 
     /// 매핑 추가.
