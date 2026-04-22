@@ -15,6 +15,7 @@ const std = @import("std");
 const token = @import("token.zig");
 const unicode = @import("unicode.zig");
 const regexp_mod = @import("../regexp/mod.zig");
+const profile = @import("../profile.zig");
 
 const Token = token.Token;
 const Kind = token.Kind;
@@ -389,6 +390,9 @@ pub const Scanner = struct {
     /// 다음 토큰을 스캔한다.
     /// 파서가 이 함수를 반복 호출하여 토큰을 소비한다.
     pub fn next(self: *Scanner) !void {
+        var scope = profile.begin(.scan);
+        defer scope.end();
+
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
         self.token.has_no_side_effects_comment = false;
@@ -615,6 +619,9 @@ pub const Scanner = struct {
     /// 속성 값 문자열은 이스케이프를 처리하지 않는다.
     /// 파서가 `<` 뒤에서 이 함수를 호출한다.
     pub fn nextInsideJSXElement(self: *Scanner) !void {
+        var scope = profile.begin(.scan);
+        defer scope.end();
+
         self.token.has_newline_before = false;
 
         // JSX element 내에서 주석 스킵 (// line comment, /* block comment */)
@@ -686,6 +693,9 @@ pub const Scanner = struct {
     /// JSX 자식 위치에서 다음 토큰을 스캔한다 (태그 사이의 텍스트).
     /// `<` 또는 `{`를 만날 때까지 텍스트를 소비한다.
     pub fn nextJSXChild(self: *Scanner) !void {
+        var scope = profile.begin(.scan);
+        defer scope.end();
+
         self.token.has_newline_before = false;
         self.start = self.current;
 

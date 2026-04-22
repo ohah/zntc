@@ -3,6 +3,7 @@ const scanner_mod = @import("scanner.zig");
 const Scanner = scanner_mod.Scanner;
 const token_mod = @import("token.zig");
 const Kind = token_mod.Kind;
+const profile = @import("../profile.zig");
 
 test "Scanner: empty source" {
     var scanner = try Scanner.init(std.testing.allocator, "");
@@ -1416,4 +1417,40 @@ test "Scanner: <!-- comment is recorded in comments list" {
     try scanner.next(); // skips <!-- comment, returns x
     try std.testing.expectEqual(@as(usize, 1), scanner.comments.items.len);
     try std.testing.expect(!scanner.comments.items[0].is_multiline);
+}
+
+test "Scanner: profile .scan 활성 시 토큰당 누적" {
+    profile.resetForTest();
+    defer profile.resetForTest();
+    profile.addFromCsv("scan");
+
+    var scanner = try Scanner.init(std.testing.allocator, "const x = 42;");
+    defer scanner.deinit();
+
+    // `Scanner.init` 직후 token.kind 가 불확정 — next() 먼저 한 번 부르고 루프.
+    while (true) {
+        try scanner.next();
+        if (scanner.token.kind == .eof) break;
+    }
+
+    // 정확한 count 보단 "> 0" 만 검증 — 토큰 분리 로직 변화에 brittle 하지 않도록.
+    try std.testing.expect(profile.count(.scan) > 0);
+    try std.testing.expect(profile.totalNs(.scan) > 0);
+}
+
+test "Scanner: profile .scan 비활성 시 누적 없음 (zero-cost)" {
+    profile.resetForTest();
+    defer profile.resetForTest();
+    // addFromCsv 호출 안 함 → .scan 비활성 상태.
+
+    var scanner = try Scanner.init(std.testing.allocator, "a+b");
+    defer scanner.deinit();
+
+    while (true) {
+        try scanner.next();
+        if (scanner.token.kind == .eof) break;
+    }
+
+    try std.testing.expectEqual(@as(u32, 0), profile.count(.scan));
+    try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.scan));
 }
