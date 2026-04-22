@@ -1189,11 +1189,16 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
             .data = .{ .extra = call_extra },
         });
 
-        const binding_span = try self.ast.addString(name_text);
+        // #1751: 원본 `component Name(...)` 의 name 노드 span 을 재사용.
+        // `addString(name_text)` 로 string_table 에 중복 저장하면 bit-31 tagged span
+        // 이 되어, 이후 semantic 이 이 binding 을 const 선언 심볼로 등록할 때
+        // `Symbol.name` 이 string_table 참조가 된다. mangler 가 `source[span.start..]`
+        // 를 naive slice 하면서 OOB 크래시 (RN + --minify + Flow component 조합).
+        // 이름이 이미 원본 source 에 존재하므로 원본 span 그대로 재사용한다.
         const binding = try self.ast.addNode(.{
             .tag = .binding_identifier,
-            .span = binding_span,
-            .data = .{ .string_ref = binding_span },
+            .span = name_node.span,
+            .data = .{ .string_ref = name_node.span },
         });
         // variable_declarator: extra = [name, type_ann, init]
         const decl_extra = try self.ast.addExtras(&.{

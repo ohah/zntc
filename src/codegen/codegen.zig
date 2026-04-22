@@ -2216,6 +2216,11 @@ pub const Codegen = struct {
         try self.writeByte(')');
         try self.emitNode(body);
 
+        // #1751: assignment 로 변환된 form 은 expression statement 라서 `;` 종결 필요.
+        // 다음 statement 가 directive ("use strict") 처럼 ASI 로 구분 안 되는 경우
+        // 문법 오류 유발. function declaration 원형은 `}` 로 충분하지만 변환형은 아님.
+        if (convert_fn_to_assign) try self.writeByte(';');
+
         // keepNames: function_declaration에서 이름이 rename된 경우 entry 수집
         if (self.options.keep_names and node.tag == .function_declaration and !name.isNone()) {
             self.collectKeepNameEntry(name);

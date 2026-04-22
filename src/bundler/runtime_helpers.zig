@@ -161,7 +161,8 @@ pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>funct
 
 /// __commonJS ES5 호환: arrow → function.
 pub const CJS_RUNTIME_ES5 = "var __commonJS = function(cb, mod) { return function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n}; };\n";
-pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}}";
+// #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수 (minify 연속 emit).
+pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}};";
 
 /// __toESM: CJS 모듈을 ESM namespace로 변환 (rolldown 호환).
 /// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.
@@ -256,7 +257,8 @@ pub const ESM_RUNTIME_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=(fn,res)=>funct
 
 /// __esm ES5 호환: arrow → function.
 pub const ESM_RUNTIME_ES5 = "var __esm = function(fn, res) { return function __init() {\n\tif (!fn) return res;\n\tvar f = fn; fn = 0;\n\ttry { res = (0, f[Object.keys(f)[0]])(); }\n\tcatch(e) { fn = f; throw e; }\n\treturn res;\n}; };\n";
-pub const ESM_RUNTIME_ES5_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}}";
+// #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수.
+pub const ESM_RUNTIME_ES5_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}};";
 
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
@@ -628,7 +630,8 @@ pub const PRIVATE_METHOD_GET_RUNTIME =
     \\};
     \\
 ;
-pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_GET_MIN ++ "=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn}";
+// #1751: trailing `;` — 뒤따르는 `var __xxx=...` 와 문법 구분 필수.
+pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_GET_MIN ++ "=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn};";
 
 // ============================================================
 // Static Private Field (ES2022 downlevel)
