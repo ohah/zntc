@@ -130,7 +130,9 @@ function formatStats(s: ManglerStats): string {
 function printFixture(r: FixtureResult): void {
   console.log(`\n## ${r.name}`);
   console.log(`  bundle_size: ${r.report.bundle_size_bytes} B`);
-  console.log(`  top:    ${formatStats(r.report.top_level)} (pool=${r.report.top_level_reserved_pool})`);
+  console.log(
+    `  top:    ${formatStats(r.report.top_level)} (pool=${r.report.top_level_reserved_pool})`,
+  );
   console.log(`  nested: (${r.nested_module_count} mod) ${formatStats(r.nested_totals)}`);
 }
 
