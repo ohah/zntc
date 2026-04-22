@@ -5,6 +5,15 @@ const token_mod = @import("token.zig");
 const Kind = token_mod.Kind;
 const profile = @import("../profile.zig");
 
+/// 스캐너를 eof 까지 소진. line offsets / pragma / profile 등 전체 스캔이
+/// 있어야 관측 가능한 상태를 쌓는 테스트에서 사용.
+fn drainTokensToEof(scanner: *Scanner) !void {
+    while (true) {
+        try scanner.next();
+        if (scanner.token.kind == .eof) break;
+    }
+}
+
 test "Scanner: empty source" {
     var scanner = try Scanner.init(std.testing.allocator, "");
     defer scanner.deinit();
@@ -117,10 +126,7 @@ test "Scanner: line offset table" {
     defer scanner.deinit();
 
     // 전체를 스캔하여 line offset 테이블 구축
-    while (scanner.token.kind != .eof or scanner.start == 0) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     // line 0 → offset 0, line 1 → offset 2, line 2 → offset 4
     try std.testing.expectEqual(@as(u32, 0), scanner.line_offsets.items[0]);
@@ -143,10 +149,7 @@ test "Scanner: line offsets with TypeScript type declaration" {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    while (scanner.token.kind != .eof or scanner.start == 0) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     // 줄 수: 8줄 (7 newlines + 마지막 줄)
     // line 0: import React from "react";
@@ -173,10 +176,7 @@ test "Scanner: getLineColumn" {
     defer scanner.deinit();
 
     // 전체 스캔
-    while (true) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     // 'a' = offset 0 → line 0, col 0
     const lc0 = scanner.getLineColumn(0);
@@ -1200,10 +1200,7 @@ test "Scanner: multiple pragmas in one file" {
     defer scanner.deinit();
 
     // 전체 스캔
-    while (true) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
     try std.testing.expectEqualStrings("Fragment", scanner.jsx_frag_pragma.?);
@@ -1427,11 +1424,7 @@ test "Scanner: profile .scan 활성 시 토큰당 누적" {
     var scanner = try Scanner.init(std.testing.allocator, "const x = 42;");
     defer scanner.deinit();
 
-    // `Scanner.init` 직후 token.kind 가 불확정 — next() 먼저 한 번 부르고 루프.
-    while (true) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     // 정확한 count 보단 "> 0" 만 검증 — 토큰 분리 로직 변화에 brittle 하지 않도록.
     try std.testing.expect(profile.count(.scan) > 0);
@@ -1446,10 +1439,7 @@ test "Scanner: profile .scan 비활성 시 누적 없음 (zero-cost)" {
     var scanner = try Scanner.init(std.testing.allocator, "a+b");
     defer scanner.deinit();
 
-    while (true) {
-        try scanner.next();
-        if (scanner.token.kind == .eof) break;
-    }
+    try drainTokensToEof(&scanner);
 
     try std.testing.expectEqual(@as(u32, 0), profile.count(.scan));
     try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.scan));
