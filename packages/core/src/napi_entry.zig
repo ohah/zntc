@@ -21,6 +21,8 @@ const napi_render_opts: diagnostic_renderer.RenderOptions = .{ .color = false, .
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const TrackedFileSet = zts_lib.server.TrackedFileSet;
+const profile_mod = zts_lib.profile;
+const bench_mod = zts_lib.bench;
 
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
@@ -1675,7 +1677,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
         // Profile counters reset — 이전 rebuild 의 누적치가 이월되지 않도록.
         // mask 와 level 은 유지 (`ZTS_PROFILE=hmr` 등의 활성 상태는 보존).
-        @import("zts_lib").profile.resetCounters();
+        // profile 비활성 상태에선 skip — 불필요한 memset 회피.
+        if (profile_mod.anyEnabled()) profile_mod.resetCounters();
 
         // 재번들 — 증분 빌드: persistent_store + persistent_resolve_cache + compiled_cache 재사용
         var incremental_opts = bundle_opts;
@@ -1846,7 +1849,6 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const total_ns: u64 = if (total_timer) |*t| t.read() else 0;
 
         const nsToMs = bundler_mod.BundleResult.nsToMs;
-        const Profile = @import("zts_lib").profile;
         event.phase_durations = .{
             // 기본 phase — BundleTimings 기반 (profile 비활성에서도 항상 측정).
             // 주의: `parse_ms` / `semantic_ms` 는 레거시 이름 — 실제로는 각각
@@ -1860,14 +1862,14 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .total_ms = nsToMs(total_ns),
 
             // Sub-phase — profile 활성 시에만 의미있는 값. 비활성이면 0.
-            .scan_ms = nsToMs(Profile.totalNs(.scan)),
-            .resolve_ms = nsToMs(Profile.totalNs(.resolve)),
-            .graph_ms = nsToMs(Profile.totalNs(.graph)),
-            .link_ms = nsToMs(Profile.totalNs(.link)),
-            .shake_ms = nsToMs(Profile.totalNs(.shake)),
-            .transform_ms = nsToMs(Profile.totalNs(.transform)),
-            .codegen_ms = nsToMs(Profile.totalNs(.codegen)),
-            .metadata_ms = nsToMs(Profile.totalNs(.metadata)),
+            .scan_ms = nsToMs(profile_mod.totalNs(.scan)),
+            .resolve_ms = nsToMs(profile_mod.totalNs(.resolve)),
+            .graph_ms = nsToMs(profile_mod.totalNs(.graph)),
+            .link_ms = nsToMs(profile_mod.totalNs(.link)),
+            .shake_ms = nsToMs(profile_mod.totalNs(.shake)),
+            .transform_ms = nsToMs(profile_mod.totalNs(.transform)),
+            .codegen_ms = nsToMs(profile_mod.totalNs(.codegen)),
+            .metadata_ms = nsToMs(profile_mod.totalNs(.metadata)),
         };
         event.reparsed_modules = rebuild_result.reparsed_modules;
 
@@ -2197,12 +2199,12 @@ fn parseBuildOptions(
     if (getObjectStringArray(env, opts_obj, "profile", native_alloc)) |cats| {
         for (cats) |s| if (!trackStr(owned_strings, s)) return null;
         if (!trackArr(owned_string_arrays, cats)) return null;
-        @import("zts_lib").profile.addCategories(cats);
+        profile_mod.addCategories(cats);
     }
     if (getObjectString(env, opts_obj, "profileLevel", native_alloc)) |lvl| {
         defer native_alloc.free(lvl);
-        if (@import("zts_lib").profile.Level.fromString(lvl)) |parsed| {
-            @import("zts_lib").profile.setLevel(parsed);
+        if (profile_mod.Level.fromString(lvl)) |parsed| {
+            profile_mod.setLevel(parsed);
         }
     }
     // profileFormat 은 NAPI 반환 포맷 결정 — BundleOptions 에 별도 필드로 저장 (아래).
@@ -2579,14 +2581,14 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
 
     // ZTS_PROFILE / ZTS_PROFILE_LEVEL 도 동일하게 1회 파싱. 개별 build 호출마다
     // `BundleOptions.profile` / `profileLevel` 로 추가 가능.
-    @import("zts_lib").profile.initFromEnv(native_alloc);
+    profile_mod.initFromEnv(native_alloc);
 
     // BUNGAE_HMR_PROFILE=1 호환 — 번개의 기존 HMR profile 토글을 새 인프라로 매핑.
     // 내부적으로 ZTS_PROFILE=hmr 과 동등.
     if (std.process.getEnvVarOwned(native_alloc, "BUNGAE_HMR_PROFILE")) |v| {
         defer native_alloc.free(v);
         if (v.len > 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
-            @import("zts_lib").profile.addFromCsv("hmr");
+            profile_mod.addFromCsv("hmr");
         }
     } else |_| {}
 
@@ -2658,11 +2660,10 @@ fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
         return throwError(env, "benchmark requires 'phases' (string array)");
     if (phase_names.len == 0) return throwError(env, "benchmark: 'phases' must be non-empty");
 
-    const Profile = @import("zts_lib").profile;
-    var phase_cats: std.ArrayList(Profile.Category) = .empty;
+    var phase_cats: std.ArrayList(profile_mod.Category) = .empty;
     defer phase_cats.deinit(arena_alloc);
     for (phase_names) |name| {
-        const cat = Profile.Category.fromString(name) orelse {
+        const cat = profile_mod.Category.fromString(name) orelse {
             return throwError(env, "benchmark: unknown phase name");
         };
         phase_cats.append(arena_alloc, cat) catch return throwError(env, "OutOfMemory");
@@ -2673,18 +2674,17 @@ fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     if (iterations == 0) return throwError(env, "benchmark: 'iterations' must be >= 1");
 
     // Benchmark 실행
-    const Bench = @import("zts_lib").bench;
     const Ctx = struct {
         source: []const u8,
         filename: []const u8,
         fn run(a: std.mem.Allocator, raw_ctx: ?*anyopaque) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(raw_ctx.?));
-            var r = @import("zts_lib").transpile.transpileWithCallback(a, self.source, self.filename, .{}, null) catch return;
+            var r = transpile_mod.transpileWithCallback(a, self.source, self.filename, .{}, null) catch return;
             r.deinit(a);
         }
     };
     var ctx: Ctx = .{ .source = source_owned, .filename = filename };
-    var samples = Bench.runBenchmark(arena_alloc, phase_cats.items, iterations, warmup, Ctx.run, &ctx) catch {
+    var samples = bench_mod.runBenchmark(arena_alloc, phase_cats.items, iterations, warmup, Ctx.run, &ctx) catch {
         return throwError(env, "benchmark: runner failed");
     };
     defer samples.deinit(arena_alloc);
@@ -2698,7 +2698,7 @@ fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     _ = c.napi_set_named_property(env, js_result, "phases", js_phases);
 
     for (phase_names, 0..) |name, i| {
-        const stats = Bench.PhaseStats.fromSamples(samples.per_phase[i].items);
+        const stats = bench_mod.PhaseStats.fromSamples(samples.per_phase[i].items);
         var js_stats: c.napi_value = undefined;
         _ = c.napi_create_object(env, &js_stats);
         setDoubleProp(env, js_stats, "mean_ms", stats.meanMs());

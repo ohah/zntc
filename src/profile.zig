@@ -198,6 +198,12 @@ pub inline fn enabled(cat: Category) bool {
     return (enabled_mask & bit) != 0;
 }
 
+/// 하나라도 활성화된 category 가 있는지. HMR rebuild 에서 counters reset 을 조건부로
+/// 수행할 때 사용 (비활성 상태의 불필요한 memset 회피).
+pub inline fn anyEnabled() bool {
+    return enabled_mask != 0;
+}
+
 /// Level 조회.
 pub inline fn level() Level {
     return current_level;

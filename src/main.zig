@@ -74,10 +74,8 @@ const CliOptions = struct {
     profile_level: ?[]const u8 = null,
     /// --profile-format=<table|tree|json|csv>.
     profile_format: ?[]const u8 = null,
-    /// --stop-after=<scan|parse|semantic|transform|codegen>. debug/profile 용.
-    /// 지정된 phase 이후 파이프라인 skip → empty output.
-    stop_after_str: ?[]const u8 = null,
-    /// 파싱된 stop_after — main() 에서 파싱 후 transpile/bundle 옵션에 전달.
+    /// --stop-after=<scan|parse|semantic|transform|codegen> 파싱 결과. 지정된 phase
+    /// 이후 파이프라인 skip → empty output (debug/profile 용).
     core_stop_after: ?lib.transpile.StopAfter = null,
     preserve_symlinks: bool = false,
     alias_list: std.ArrayList(AliasEntry) = .empty,
@@ -467,7 +465,11 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.startsWith(u8, arg, "--profile-format=")) {
             opts.profile_format = arg["--profile-format=".len..];
         } else if (std.mem.startsWith(u8, arg, "--stop-after=")) {
-            opts.stop_after_str = arg["--stop-after=".len..];
+            const val = arg["--stop-after=".len..];
+            opts.core_stop_after = lib.transpile.StopAfter.fromString(val) orelse {
+                try stderr.print("zts: invalid --stop-after='{s}' (expected scan|parse|semantic|transform|codegen)\n", .{val});
+                std.process.exit(1);
+            };
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             opts.is_bundle = true;
         } else if (std.mem.eql(u8, arg, "--serve")) {
@@ -1364,16 +1366,6 @@ pub fn main() !void {
         try stderr.print("zts: invalid --profile-format='{s}' (expected table|tree|json|csv)\n", .{fmt});
         std.process.exit(1);
     } else null;
-
-    // --stop-after=<phase> 파싱 → TranspileOptions.stop_after 로 전달.
-    if (opts.stop_after_str) |s| {
-        if (lib.transpile.StopAfter.fromString(s)) |parsed| {
-            opts.core_stop_after = parsed;
-        } else {
-            try stderr.print("zts: invalid --stop-after='{s}' (expected scan|parse|semantic|transform|codegen)\n", .{s});
-            std.process.exit(1);
-        }
-    }
 
     // 작업 완료 후 profile 수집 결과 출력 (활성 category 가 있을 때만).
     defer {
