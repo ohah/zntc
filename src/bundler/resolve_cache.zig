@@ -19,6 +19,7 @@ const ResolveError = resolver_mod.ResolveError;
 const types = @import("types.zig");
 const ImportKind = types.ImportKind;
 const pkg_json = @import("package_json.zig");
+const profile = @import("../profile.zig");
 
 /// 타겟 플랫폼. codegen.Platform을 번들러 전체에서 공유.
 pub const Platform = @import("../codegen/codegen.zig").Platform;
@@ -285,6 +286,9 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolveResult {
+        var scope = profile.begin(.resolve);
+        defer scope.end();
+
         if (self.isExternal(specifier)) return null;
 
         // 스택 버퍼로 캐시 키 생성 (alloc/free 제거)
