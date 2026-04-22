@@ -58,14 +58,9 @@ pub const EmitOptions = struct {
     /// Identifier mangle 활성화 (linker 가 주 mangle 을 담당하지만 private field mangle 은
     /// AST-level pass 가 별도로 수행 — 이 플래그로 게이트).
     minify_identifiers: bool = false,
-    /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
-    sourcemap: bool = false,
-    /// Sentry Debug ID. --sourcemap-debug-ids 활성화 시 true.
-    /// 번들 끝에 `//# debugId=<UUID>` 주석을 추가하고, 소스맵 JSON에 `"debugId"` 필드를 삽입.
-    sourcemap_debug_ids: bool = false,
-    /// Metro x_facebook_sources function map 생성.
-    /// Hermes 스택트레이스 심볼리케이션용. RN 플랫폼에서 자동 활성화.
-    sourcemap_function_map: bool = false,
+    /// 소스맵 관련 옵션 묶음. 하위 필드: enable / debug_ids / function_map / lazy /
+    /// source_root / sources_content. `SourceMapOptions` 정의는 `codegen/sourcemap.zig`.
+    sourcemap: SourceMap.SourceMapOptions = .{},
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -108,10 +103,6 @@ pub const EmitOptions = struct {
     out_extension_js: ?[]const u8 = null,
     /// 출력 파일명 (소스맵 참조용, 예: "out.js")
     output_filename: []const u8 = "bundle.js",
-    /// 소스맵 sourceRoot 필드
-    source_root: ?[]const u8 = null,
-    /// 소스맵에 sourcesContent 포함 여부
-    sources_content: bool = true,
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력
     charset_utf8: bool = false,
     /// 엔트리 청크 파일명 패턴 (예: "[name]", "[name]-[hash]", "[dir]/[name]-[hash]")
@@ -179,14 +170,23 @@ pub const OutputFile = struct {
 pub const EmitResult = struct {
     /// 번들 코드. allocator 소유.
     output: []const u8,
-    /// 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
+    /// Eager 소스맵 JSON (V3). null 이면 소스맵 미생성 혹은 lazy 경로. allocator 소유.
     sourcemap: ?[]const u8 = null,
+    /// Lazy 번들 sourcemap builder (Issue #1727 Phase B).
+    /// `EmitOptions.lazy_sourcemap = true` 일 때 JSON 을 emit 단계에서 생성하지 않고 builder 를
+    /// 이관하여 NAPI getter (`getBundleSourceMap`) 호출 시점에 generateJSON 을 수행한다.
+    /// `sourcemap` 과 상호 배타. allocator 소유 — deinit 시 builder.deinit() + destroy.
+    sourcemap_builder: ?*SourceMap.SourceMapBuilder = null,
     /// dev mode per-module codes (HMR용). null이면 미수집. allocator 소유.
     module_codes: ?[]const types.ModuleDevCode = null,
 
     pub fn deinit(self: *const EmitResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
         if (self.sourcemap) |sm| allocator.free(sm);
+        if (self.sourcemap_builder) |sm| {
+            sm.deinit();
+            allocator.destroy(sm);
+        }
         if (self.module_codes) |codes| types.ModuleDevCode.freeAll(codes, allocator);
     }
 };
@@ -320,7 +320,7 @@ pub fn emitWithTreeShaking(
             output_line += 1;
         }
 
-        if (options.sourcemap and poly.path != null) {
+        if (options.sourcemap.enable and poly.path != null) {
             try polyfill_ranges.append(allocator, .{
                 .content_start_line = content_start,
                 .content_line_count = output_line - content_start,
@@ -476,18 +476,29 @@ pub fn emitWithTreeShaking(
         for (dev_module_codes.items) |c| {
             allocator.free(c.id);
             allocator.free(c.code);
+            if (c.map) |m| allocator.free(m);
+            if (c.sm_builder) |sm| {
+                sm.deinit();
+                allocator.destroy(sm);
+            }
         }
         dev_module_codes.deinit(allocator);
     }
 
-    // 소스맵 빌더 (소스맵 활성화 시)
-    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap) blk: {
+    // 소스맵 빌더 (소스맵 활성화 시). eager 경로는 stack 할당으로 기존 zero-overhead 유지.
+    // lazy 경로 (Issue #1727) 에서만 return 직전 heap 으로 얕은 복사 이동 — ArrayList 의 items
+    // 포인터는 이미 allocator 소유이므로 payload 를 heap SourceMapBuilder 로 옮겨도 double-free
+    // 없음. `bundle_sm_moved = true` 시 본 함수의 defer 가 deinit 을 건너뛰어 원본은 drain 된다.
+    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable) blk: {
         var sm = SourceMap.SourceMapBuilder.init(allocator);
-        sm.source_root = options.source_root orelse "";
-        sm.sources_content = options.sources_content;
+        sm.source_root = options.sourcemap.source_root orelse "";
+        sm.sources_content = options.sourcemap.sources_content;
         break :blk sm;
     } else null;
-    defer if (bundle_sm) |*sm| sm.deinit();
+    var bundle_sm_moved = false;
+    defer if (!bundle_sm_moved) {
+        if (bundle_sm) |*sm| sm.deinit();
+    };
 
     // per-source function map JSON 목록 (sources 추가 순서와 1:1 대응).
     // sourcemap + sourcemap_function_map 활성화 시에만 사용.
@@ -532,11 +543,11 @@ pub fn emitWithTreeShaking(
                     maps,
                     module_line,
                     results[i].preamble_lines,
-                    options.sources_content,
+                    options.sourcemap.sources_content,
                     false,
                 );
                 // function map: source 추가 순서와 동기화
-                if (options.sourcemap_function_map) {
+                if (options.sourcemap.function_map) {
                     try per_source_fn_maps.append(allocator, results[i].fn_map_json);
                 }
             }
@@ -575,13 +586,16 @@ pub fn emitWithTreeShaking(
             // 모듈별 standalone sourcemap (Issue #1248): HMR 클라이언트가 전체 번들
             // sourcemap을 재처리하지 않고 변경 모듈만 매핑할 수 있게 한다.
             // 위 hmr_code preamble은 항상 정확히 2줄 — IIFE 시작 + var alias 줄.
+            // eager 는 stack 유지. lazy (Issue #1727) 는 return 직전 heap 으로 얕은 복사 이동.
             const HMR_PREAMBLE_LINES: u32 = 2;
             var module_map: ?[]const u8 = null;
-            if (options.sourcemap) {
+            var module_sm_builder: ?*SourceMap.SourceMapBuilder = null;
+            if (options.sourcemap.enable) {
                 if (results[i].mappings) |maps| {
                     var mod_sm = SourceMap.SourceMapBuilder.init(allocator);
-                    defer mod_sm.deinit();
-                    mod_sm.sources_content = options.sources_content;
+                    var mod_sm_moved = false;
+                    defer if (!mod_sm_moved) mod_sm.deinit();
+                    mod_sm.sources_content = options.sourcemap.sources_content;
                     try addModuleMappings(
                         &mod_sm,
                         sourcemapSourcePath(m.path, options),
@@ -589,12 +603,20 @@ pub fn emitWithTreeShaking(
                         maps,
                         HMR_PREAMBLE_LINES,
                         results[i].preamble_lines,
-                        options.sources_content,
+                        options.sourcemap.sources_content,
                         false,
                     );
-                    _ = try mod_sm.generateJSON(mod_id);
-                    // buf 소유권 이전 — dupe + deinit-free 라운드트립 회피
-                    module_map = try mod_sm.buf.toOwnedSlice(allocator);
+                    if (options.sourcemap.lazy) {
+                        const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
+                        heap_sm.* = mod_sm;
+                        heap_sm.fixSelfReferences();
+                        mod_sm_moved = true;
+                        module_sm_builder = heap_sm;
+                    } else {
+                        _ = try mod_sm.generateJSON(mod_id);
+                        // buf 소유권 이전 — dupe + deinit-free 라운드트립 회피
+                        module_map = try mod_sm.buf.toOwnedSlice(allocator);
+                    }
                 }
             }
 
@@ -602,6 +624,7 @@ pub fn emitWithTreeShaking(
                 .id = try allocator.dupe(u8, mod_id),
                 .code = hmr_code,
                 .map = module_map,
+                .sm_builder = module_sm_builder,
             });
         }
     }
@@ -662,7 +685,7 @@ pub fn emitWithTreeShaking(
 
     // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;
-    const debug_id: ?[]const u8 = if (options.sourcemap_debug_ids) blk: {
+    const debug_id: ?[]const u8 = if (options.sourcemap.debug_ids) blk: {
         SourceMap.generateUuidV4(&debug_id_buf);
         break :blk &debug_id_buf;
     } else null;
@@ -671,10 +694,12 @@ pub fn emitWithTreeShaking(
 
     // emit_sourcemap_finalize: 소스맵 V3 JSON 생성 (mapping VLQ 인코딩 + sources
     // 내용 첨부 + debugId 삽입) + 번들 끝의 sourceMappingURL 주석 추가.
+    // Lazy 경로 (Issue #1727) 에서는 builder 상태만 확정하고 JSON 생성은 NAPI getter
+    // 호출 시점으로 연기 — 본 sub-phase 가 실측상 0ms 로 수렴. builder 의 debug_id 및
+    // 매핑 조정은 emit 단계에서 수행.
     var sm_finalize_scope = profile.begin(.emit_sourcemap_finalize);
     defer sm_finalize_scope.end();
 
-    // 소스맵 JSON 생성
     var sourcemap_json: ?[]const u8 = null;
     if (bundle_sm) |*sm| {
         // prologue 줄 수를 모든 매핑에 추가
@@ -687,7 +712,7 @@ pub fn emitWithTreeShaking(
         // prologue를 가상 소스 "<runtime>"으로 매핑하고 polyfill은 별도 source로 매핑.
         // DevTools가 vendored 프레임을 ignoreList로 스킵 → 유저 코드 프레임을 노출.
         if (prologue_lines > 0) {
-            const runtime_src_idx = try addIdentitySource(sm, "node_modules/.zts/runtime.js", "// zts bundle runtime (polyfills, helpers)\n", options.sources_content);
+            const runtime_src_idx = try addIdentitySource(sm, "node_modules/.zts/runtime.js", "// zts bundle runtime (polyfills, helpers)\n", options.sourcemap.sources_content);
             try sm.addIgnoredSource(runtime_src_idx);
 
             // polyfill content 라인을 건너뛰며 runtime identity 매핑 추가.
@@ -702,34 +727,39 @@ pub fn emitWithTreeShaking(
             }
 
             for (polyfill_ranges.items) |r| {
-                const src_idx = try addIdentitySource(sm, r.entry.path.?, r.entry.content, options.sources_content);
+                const src_idx = try addIdentitySource(sm, r.entry.path.?, r.entry.content, options.sourcemap.sources_content);
                 try sm.addIgnoredSource(src_idx);
                 try addIdentityMappings(sm, src_idx, r.content_start_line, r.content_line_count, 0);
             }
         }
 
-        // debugId 설정
-        sm.debug_id = debug_id;
+        // debugId 설정 — bundle.js 의 `//# debugId=` 주석과 동일 UUID 를 builder 에 보관.
+        // lazy 경로에서는 builder 가 emit 밖으로 이관되므로 내부 버퍼에 복사해 저장 (stack
+        // `debug_id_buf` 의 수명은 emit 함수 스코프로 제한됨).
+        if (debug_id) |did| sm.setDebugId(did);
 
-        // function map: identity source(polyfill/runtime)는 null 패딩
-        if (options.sourcemap_function_map and per_source_fn_maps.items.len > 0) {
-            while (per_source_fn_maps.items.len < sm.sources.items.len) {
-                try per_source_fn_maps.append(allocator, null);
+        if (!options.sourcemap.lazy) {
+            // function map: identity source(polyfill/runtime)는 null 패딩
+            if (options.sourcemap.function_map and per_source_fn_maps.items.len > 0) {
+                while (per_source_fn_maps.items.len < sm.sources.items.len) {
+                    try per_source_fn_maps.append(allocator, null);
+                }
+                const json = try sm.generateJSONWithPerSourceFunctionMaps(
+                    allocator,
+                    options.output_filename,
+                    per_source_fn_maps.items,
+                );
+                sourcemap_json = try allocator.dupe(u8, json);
+            } else {
+                const json = try sm.generateJSON(options.output_filename);
+                sourcemap_json = try allocator.dupe(u8, json);
             }
-            const json = try sm.generateJSONWithPerSourceFunctionMaps(
-                allocator,
-                options.output_filename,
-                per_source_fn_maps.items,
-            );
-            sourcemap_json = try allocator.dupe(u8, json);
-        } else {
-            const json = try sm.generateJSON(options.output_filename);
-            sourcemap_json = try allocator.dupe(u8, json);
         }
     }
 
-    // 소스맵 참조 추가
-    if (sourcemap_json != null) {
+    // 소스맵 참조 추가. Lazy 경로에서도 bungae 의 `/bundle.js.map` 라우트가 serve 하므로
+    // 주석은 항상 붙여 DevTools 가 fetch 하게 한다.
+    if (options.sourcemap.enable) {
         try output.appendSlice(allocator, "//# sourceMappingURL=");
         if (options.dev_mode) try output.append(allocator, '/'); // dev 서버용 절대 경로
         try output.appendSlice(allocator, options.output_filename);
@@ -743,10 +773,23 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
+    // Lazy 경로: stack bundle_sm 을 heap 으로 얕은 복사. ArrayList items 포인터는 allocator 가
+    // 소유하므로 payload 만 heap 으로 옮겨도 double-free 없음. flag 토글 후 본 함수 defer 는 skip.
+    // 반드시 `toOwnedSlice` 성공 후 이관 — 실패 시 defer 가 원본 builder 를 정리.
+    const output_slice = try output.toOwnedSlice(allocator);
+    const module_codes_slice = if (dev_module_codes.items.len > 0) try dev_module_codes.toOwnedSlice(allocator) else null;
+    const builder_to_return: ?*SourceMap.SourceMapBuilder = if (options.sourcemap.lazy and bundle_sm != null) blk: {
+        const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
+        heap_sm.* = bundle_sm.?;
+        heap_sm.fixSelfReferences();
+        bundle_sm_moved = true;
+        break :blk heap_sm;
+    } else null;
     return .{
-        .output = try output.toOwnedSlice(allocator),
+        .output = output_slice,
         .sourcemap = sourcemap_json,
-        .module_codes = if (dev_module_codes.items.len > 0) try dev_module_codes.toOwnedSlice(allocator) else null,
+        .sourcemap_builder = builder_to_return,
+        .module_codes = module_codes_slice,
     };
 }
 
@@ -1155,13 +1198,13 @@ pub fn emitModule(
         // --charset=utf8 → ascii_only=false (명시적 보장)
         .ascii_only = false,
         // 소스맵 옵션 전달
-        .sourcemap = options.sourcemap,
-        .source_root = options.source_root orelse "",
-        .sources_content = options.sources_content,
+        .sourcemap = options.sourcemap.enable,
+        .source_root = options.sourcemap.source_root orelse "",
+        .sources_content = options.sourcemap.sources_content,
         // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
         // Metro function map: sourcemap 활성화 시에만 수집
-        .sourcemap_function_map = options.sourcemap and options.sourcemap_function_map,
+        .sourcemap_function_map = options.sourcemap.enable and options.sourcemap.function_map,
         // JSX: Transformer가 이미 call_expression으로 lowering 완료.
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
         // dev mode: import.meta.hot → __zts_make_hot("dev_id")
@@ -1169,7 +1212,7 @@ pub fn emitModule(
         .import_records = module.import_records,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
-    if (options.sourcemap) {
+    if (options.sourcemap.enable) {
         cg.line_offsets = module.line_offsets;
         try cg.addSourceFile(sourcemapSourcePath(module.path, options));
     }

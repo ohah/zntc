@@ -1295,7 +1295,7 @@ test "Bundler: dev mode per-module sourcemap — sources_content=false (Issue #1
         .entry_points = &.{entry},
         .dev_mode = true,
         .collect_module_codes = true,
-        .sources_content = false,
+        .sourcemap = .{ .sources_content = false },
     });
     defer b.deinit();
 

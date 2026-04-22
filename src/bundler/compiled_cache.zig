@@ -88,7 +88,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 47;
+const expected_emit_options_field_count: usize = 43;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -107,9 +107,14 @@ pub fn hashEmitOptions(h: *InputHasher, options: EmitOptions) void {
     h.addBool(options.minify_whitespace);
     h.addBool(options.minify_syntax);
     h.addBool(options.minify_identifiers);
-    h.addBool(options.sourcemap);
-    h.addBool(options.sourcemap_debug_ids);
-    h.addBool(options.sourcemap_function_map);
+    // sourcemap: SourceMapOptions — 하위 필드 각각 해시. lazy 는 emit 경로 분기
+    // (JSON vs builder 이관) → cache 키 분리 필수.
+    h.addBool(options.sourcemap.enable);
+    h.addBool(options.sourcemap.debug_ids);
+    h.addBool(options.sourcemap.function_map);
+    h.addBool(options.sourcemap.lazy);
+    h.addOptStr(options.sourcemap.source_root);
+    h.addBool(options.sourcemap.sources_content);
     h.addBool(options.dev_mode);
     h.addOptStr(options.root_dir);
     h.addBool(options.react_refresh);
@@ -136,8 +141,6 @@ pub fn hashEmitOptions(h: *InputHasher, options: EmitOptions) void {
     h.addOptStr(options.global_name);
     h.addOptStr(options.out_extension_js);
     h.addStr(options.output_filename);
-    h.addOptStr(options.source_root);
-    h.addBool(options.sources_content);
     h.addBool(options.charset_utf8);
     h.addStr(options.entry_names);
     h.addStr(options.chunk_names);

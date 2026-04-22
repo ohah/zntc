@@ -5,22 +5,29 @@
 
 const std = @import("std");
 const Span = @import("../lexer/token.zig").Span;
+const SourceMapBuilder = @import("../codegen/sourcemap.zig").SourceMapBuilder;
 
 /// dev mode에서 모듈별 HMR 업데이트 코드 (per-module code).
 /// emitter, bundler, incremental 모듈에서 공유.
 pub const ModuleDevCode = struct {
     id: []const u8,
     code: []const u8,
-    /// 모듈별 standalone source map (V3 JSON). null이면 sourcemap 미수집.
+    /// Eager 모듈별 standalone source map (V3 JSON). null이면 sourcemap 미수집 혹은 lazy 경로.
     /// HMR 클라이언트가 eval한 코드에 sourceMappingURL data URL로 부착하여
     /// 전체 번들 sourcemap을 재생성하지 않고도 디버거 매핑을 유지한다 (Issue #1248).
     map: ?[]const u8 = null,
+    /// Lazy per-module sourcemap builder (Issue #1727 Phase B).
+    /// `EmitOptions.lazy_sourcemap = true` 일 때 JSON 을 사전 생성하지 않고 builder 를 이관하여
+    /// NAPI getter (`getHmrSourceMap(moduleId)`) 호출 시점에 generateJSON 을 수행한다.
+    /// `map` 과 상호 배타 — lazy 경로에선 `sm_builder` 만, eager 경로에선 `map` 만 채워진다.
+    sm_builder: ?*SourceMapBuilder = null,
 
     pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
         for (codes) |c| {
             allocator.free(c.id);
             allocator.free(c.code);
             if (c.map) |m| allocator.free(m);
+            if (c.sm_builder) |sm| sm.destroy(allocator);
         }
         allocator.free(codes);
     }

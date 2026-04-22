@@ -18,8 +18,7 @@ test "bundler function_map: single-file — x_facebook_sources in sourcemap" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .sourcemap = true,
-        .sourcemap_function_map = true,
+        .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -49,8 +48,7 @@ test "bundler function_map: multi-file — per-source entries" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .sourcemap = true,
-        .sourcemap_function_map = true,
+        .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -75,8 +73,8 @@ test "bundler function_map: disabled — no x_facebook_sources" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .sourcemap = true,
-        // sourcemap_function_map 기본값 = false
+        .sourcemap = .{ .enable = true },
+        // function_map 기본값 = false
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -99,8 +97,7 @@ test "bundler function_map: class methods — ClassName#method format" {
 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
-        .sourcemap = true,
-        .sourcemap_function_map = true,
+        .sourcemap = .{ .enable = true, .function_map = true },
     });
     defer b.deinit();
     const result = try b.bundle();
@@ -134,7 +131,7 @@ test "bundler sourcemap: hoisted function bodies in __esm factory have mappings 
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .platform = .react_native,
-        .sourcemap = true,
+        .sourcemap = .{ .enable = true },
     });
     defer b.deinit();
     const result = try b.bundle();
