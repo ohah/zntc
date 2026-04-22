@@ -22,7 +22,9 @@ const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
 const OutputFile = emitter.OutputFile;
 const chunk_mod = @import("chunk.zig");
-const Linker = @import("linker.zig").Linker;
+const linker_mod = @import("linker.zig");
+const Linker = linker_mod.Linker;
+const MangleReportCollector = linker_mod.MangleReportCollector;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const module_store = @import("module_store.zig");
 const transpile_mod = @import("../transpile.zig");
@@ -142,6 +144,9 @@ pub const BundleOptions = struct {
     legal_comments: types.LegalComments = .default,
     /// metafile JSON 생성 (--metafile)
     metafile: bool = false,
+    /// `--mangle-report=<path>` — mangler property 측정 JSON 저장 (#1760).
+    /// `minify_identifiers=true` 일 때만 의미 있음 (그 외에는 빈 report).
+    mangle_report_path: ?[]const u8 = null,
     /// 번들 분석 출력 (--analyze). metafile을 내부적으로 강제 활성화.
     analyze: bool = false,
     /// 모든 모듈에 자동 import (--inject:./file.js). 절대 경로 목록.
@@ -645,6 +650,12 @@ pub const Bundler = struct {
             }
         }
 
+        // --mangle-report (#1760) property harness. main linker path 에만 연결.
+        // mangle_report_enabled=false 여도 storage 는 만들어 두지만 deinit/연결 skip.
+        var mangle_collector: MangleReportCollector = .init(self.allocator);
+        const mangle_report_enabled = self.options.mangle_report_path != null;
+        defer if (mangle_report_enabled) mangle_collector.deinit();
+
         // 1. 모듈 그래프 구축
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
@@ -743,6 +754,7 @@ pub const Bundler = struct {
             l.dev_mode = self.options.dev_mode;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
+            if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             if (!self.options.code_splitting) {
                 try l.computeRenames();
@@ -1111,6 +1123,27 @@ pub const Bundler = struct {
             }
             break :blk merged;
         } else asset_outputs;
+
+        // --mangle-report (#1760): 번들 크기 집계 후 JSON 파일 기록.
+        if (mangle_report_enabled) {
+            var total_bytes: usize = output.len;
+            if (outputs) |outs| {
+                total_bytes = 0;
+                for (outs) |o| total_bytes += o.contents.len;
+            }
+            mangle_collector.bundle_size_bytes = total_bytes;
+
+            if (self.options.mangle_report_path) |path| write_blk: {
+                const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                    std.log.warn("--mangle-report: cannot create '{s}': {s}", .{ path, @errorName(err) });
+                    break :write_blk;
+                };
+                defer file.close();
+                mangle_collector.writeJson(file.deprecatedWriter()) catch |err| {
+                    std.log.warn("--mangle-report: write failed ({s}): {s}", .{ path, @errorName(err) });
+                };
+            }
+        }
 
         // 증분 빌드: graph.deinit() 전에 모듈을 store로 이전.
         // putModule이 parse_arena 소유권을 store로 가져가므로

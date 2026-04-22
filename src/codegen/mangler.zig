@@ -29,6 +29,8 @@ pub const ManglerResult = struct {
     /// symbol_id -> 새 이름. codegen의 linking_metadata.renames에 주입.
     renames: std.AutoHashMap(u32, []const u8),
     allocator: std.mem.Allocator,
+    /// 이 호출의 측정값. `--mangle-report` 경로 외엔 무시됨. #1760 property harness.
+    stats: ManglerStats = .{},
 
     pub fn deinit(self: *ManglerResult) void {
         var it = self.renames.valueIterator();
@@ -43,6 +45,21 @@ pub const ManglerResult = struct {
         self.renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
         return taken;
     }
+};
+
+/// Mangler 호출 1회의 측정값. Unified mangler 로 마이그레이션 전/후의
+/// property 검증 (번들 크기 ± 1%, 이름 길이 총합 등) 에 사용.
+pub const ManglerStats = struct {
+    /// Phase 3 에서 생성된 고유 slot 수 (= 고유 base54 이름 수).
+    slot_count: usize = 0,
+    /// Phase 4 에서 할당된 slot 이름 길이의 합.
+    slot_name_length_sum: usize = 0,
+    /// Phase 4 종료 시점의 base54 name_counter 값 (예약어 스킵 포함 소비).
+    name_counter_final: u32 = 0,
+    /// Phase 3 종료 시점의 reserved_names set 크기.
+    reserved_size: usize = 0,
+    /// Phase 5 후 renames 에 기록된 심볼 수 (원본과 동일하면 skip 되므로 slot_count 와 다를 수 있음).
+    renamed_symbol_count: usize = 0,
 };
 
 /// mangle() 입력 데이터.
@@ -291,6 +308,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
 
     var name_counter: u32 = 0;
     var name_buf: [8]u8 = undefined;
+    var slot_name_length_sum: usize = 0;
     for (sorted_slots) |entry| {
         // 예약어/글로벌 + mangling 제외 심볼의 원본 이름은 건너뜀 (#1609)
         var name = base54(name_counter, &name_buf);
@@ -300,6 +318,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
             name_counter += 1;
         }
         slot_names[entry.slot_id] = try allocator.dupe(u8, name);
+        slot_name_length_sum += name.len;
     }
 
     // ================================================================
@@ -344,7 +363,17 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         }
     }
 
-    return .{ .renames = renames, .allocator = allocator };
+    return .{
+        .renames = renames,
+        .allocator = allocator,
+        .stats = .{
+            .slot_count = slot_count,
+            .slot_name_length_sum = slot_name_length_sum,
+            .name_counter_final = name_counter,
+            .reserved_size = reserved_names.count(),
+            .renamed_symbol_count = renames.count(),
+        },
+    };
 }
 
 // ============================================================
