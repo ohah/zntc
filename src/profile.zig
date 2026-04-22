@@ -52,6 +52,8 @@ pub const Category = enum {
     semantic,
     resolve,
     graph,
+    graph_build,
+    graph_worker,
 
     // ── Linking / Tree-shaking ──
     link,
@@ -73,6 +75,11 @@ pub const Category = enum {
 
     // ── Top-level emit ──
     emit,
+    emit_polyfill,
+    emit_refresh,
+    emit_output,
+    emit_metafile,
+    emit_css,
 
     // ── HMR ──
     hmr,

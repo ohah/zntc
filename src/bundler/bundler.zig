@@ -674,21 +674,25 @@ pub const Bundler = struct {
         //   rebuild 간 emit 이 달라져도 HMR update 에서 제외.
         var reparsed_count: ?usize = null;
         var reparsed_paths_out: ?[]const []const u8 = null;
-        if (self.options.module_store) |store| {
-            const inc_result = try graph.buildIncremental(self.options.entry_points, store);
-            reparsed_count = inc_result.reparsed_indices.len;
-            if (inc_result.reparsed_indices.len > 0) {
-                const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
-                for (inc_result.reparsed_indices, 0..) |mod_idx, i| {
-                    const mi = @intFromEnum(mod_idx);
-                    const src = if (mi < graph.modules.items.len) graph.modules.items[mi].path else "";
-                    list[i] = try self.allocator.dupe(u8, src);
+        {
+            var gb_scope = profile.begin(.graph_build);
+            defer gb_scope.end();
+            if (self.options.module_store) |store| {
+                const inc_result = try graph.buildIncremental(self.options.entry_points, store);
+                reparsed_count = inc_result.reparsed_indices.len;
+                if (inc_result.reparsed_indices.len > 0) {
+                    const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
+                    for (inc_result.reparsed_indices, 0..) |mod_idx, i| {
+                        const mi = @intFromEnum(mod_idx);
+                        const src = if (mi < graph.modules.items.len) graph.modules.items[mi].path else "";
+                        list[i] = try self.allocator.dupe(u8, src);
+                    }
+                    reparsed_paths_out = list;
                 }
-                reparsed_paths_out = list;
+                self.allocator.free(inc_result.reparsed_indices);
+            } else {
+                try graph.build(self.options.entry_points);
             }
-            self.allocator.free(inc_result.reparsed_indices);
-        } else {
-            try graph.build(self.options.entry_points);
         }
 
         // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드
@@ -701,18 +705,22 @@ pub const Bundler = struct {
         var worker_output_files: std.ArrayList(OutputFile) = .empty;
         defer worker_output_files.deinit(self.allocator);
 
-        for (graph.worker_entries.items) |we| {
-            // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
-            if (worker_output_map.contains(we.resolved_path)) continue;
+        {
+            var gw_scope = profile.begin(.graph_worker);
+            defer gw_scope.end();
+            for (graph.worker_entries.items) |we| {
+                // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
+                if (worker_output_map.contains(we.resolved_path)) continue;
 
-            const worker_result = self.buildWorker(we.resolved_path) catch {
-                continue;
-            };
-            try worker_output_map.put(we.resolved_path, worker_result.filename);
-            try worker_output_files.append(self.allocator, .{
-                .path = try self.allocator.dupe(u8, worker_result.filename),
-                .contents = worker_result.contents,
-            });
+                const worker_result = self.buildWorker(we.resolved_path) catch {
+                    continue;
+                };
+                try worker_output_map.put(we.resolved_path, worker_result.filename);
+                try worker_output_files.append(self.allocator, .{
+                    .path = try self.allocator.dupe(u8, worker_result.filename),
+                    .contents = worker_result.contents,
+                });
+            }
         }
 
         if (timer) |*t| {
@@ -785,6 +793,7 @@ pub const Bundler = struct {
             }
             polyfill_entries.deinit(self.allocator);
         }
+        var polyfill_scope = profile.begin(.emit_polyfill);
         for (self.options.polyfills) |poly_path| {
             const raw = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
                 std.log.err("zts: cannot read polyfill file '{s}': {}", .{ poly_path, err });
@@ -809,8 +818,10 @@ pub const Bundler = struct {
                 .path = try self.allocator.dupe(u8, poly_path),
             });
         }
+        polyfill_scope.end();
 
         // 2.8. React Refresh 런타임 주입 (dev mode, 브라우저만)
+        var refresh_scope = profile.begin(.emit_refresh);
         // RN: HMR 런타임의 __zts_resolveRefresh()가 모듈 컨텍스트에서 lazy하게
         //      require("react-refresh/runtime")을 호출하여 __ReactRefresh 글로벌에 캐싱.
         //      polyfill 불필요 (polyfill 시점에는 모듈 시스템 미초기화).
@@ -857,7 +868,10 @@ pub const Bundler = struct {
             });
         }
 
+        refresh_scope.end();
+
         // 3. 번들 출력 생성
+        var output_scope = profile.begin(.emit_output);
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
 
@@ -955,6 +969,8 @@ pub const Bundler = struct {
             t_emit = t.read();
         }
 
+        output_scope.end();
+
         // 파이프라인 단계별 타이밍 출력은 `--profile` 을 통해 `profile` 모듈이 담당.
         // 이 `t_graph/t_link/t_shake/t_emit` 은 `BundleResult.timings` 를 채워
         // NAPI `WatchRebuildEvent.phaseDurations` 로 노출 (HMR 관측성).
@@ -1033,10 +1049,12 @@ pub const Bundler = struct {
         const module_dev_codes = module_dev_codes_from_emit;
 
         // 7. Metafile JSON 생성 (--metafile / --analyze)
+        var metafile_scope = profile.begin(.emit_metafile);
         const metafile_json: ?[]const u8 = if (self.options.metafile or self.options.analyze)
             try generateMetafileJson(self.allocator, &graph, output, outputs)
         else
             null;
+        metafile_scope.end();
 
         // 8. Plugin: generateBundle 훅 — 번들 완료 후 모든 플러그인에 알림
         if (self.options.plugins.len > 0) {
@@ -1049,6 +1067,8 @@ pub const Bundler = struct {
         }
 
         // 5.6. CSS 번들 수집 (엔트리별 CSS 모듈 연결)
+        var css_scope = profile.begin(.emit_css);
+        defer css_scope.end();
         var css_output_files: std.ArrayList(OutputFile) = .empty;
         defer css_output_files.deinit(self.allocator);
         {

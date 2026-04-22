@@ -100,7 +100,9 @@ HMR rebuild 의 각 phase 소요시간은 `WatchRebuildEvent.phaseDurations` 에
 - `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
 
 Sub-phase (profile 활성 시):
-- `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+- 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+- Graph 내부: `graphBuild` / `graphWorker`
+- Emit 내부: `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss`
 
 ```ts
 watch({
