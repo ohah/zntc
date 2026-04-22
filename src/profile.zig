@@ -57,6 +57,9 @@ pub const Category = enum {
     graph_discover,
     graph_discover_scan_worker,
     graph_discover_apply,
+    graph_discover_pm_setup,
+    graph_discover_pm_post,
+    graph_discover_pm_is_pkg_type,
     graph_finalize,
 
     // ── Linking / Tree-shaking ──

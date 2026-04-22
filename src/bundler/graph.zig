@@ -58,6 +58,14 @@ pub const ModuleGraph = struct {
     /// 같은 패키지의 여러 모듈이 동일 package.json을 반복 읽지 않도록.
     side_effects_cache: std.StringHashMap(pkg_json.PackageJson.SideEffects),
 
+    /// 패키지 "type": "module" 필드 캐시. pkg_dir_path → isModule 결과.
+    /// 키는 module_path 의 substring (graph 수명 동안 유효) — dupe 불필요.
+    /// date-fns 같이 한 패키지 안 수백 파일이 반복 lookup 하는 케이스에서
+    /// per-file 4.5ms → cache hit 1회로 감소 (#1742).
+    pkg_type_cache: std.StringHashMapUnmanaged(bool) = .{},
+    /// pkg_type_cache 병렬 접근 보호. scanWorker 가 병렬 호출.
+    pkg_type_cache_mutex: std.Thread.Mutex = .{},
+
     // DFS 상태
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
@@ -134,6 +142,7 @@ pub const ModuleGraph = struct {
         var se_it = self.side_effects_cache.valueIterator();
         while (se_it.next()) |se| se.deinit(self.allocator);
         self.side_effects_cache.deinit();
+        self.pkg_type_cache.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         for (self.worker_entries.items) |we| {
             self.allocator.free(we.resolved_path);
@@ -897,6 +906,8 @@ pub const ModuleGraph = struct {
             return;
         }
 
+        var setup_scope = profile.begin(.graph_discover_pm_setup);
+
         // 모듈별 Arena: Scanner/Parser/AST 메모리를 소유 (D061)
         // 플러그인 load 훅에서 이미 설정된 경우 건너뜀
         if (module.parse_arena == null) {
@@ -983,6 +994,7 @@ pub const ModuleGraph = struct {
         }
         // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
         parser.enable_scan = true;
+        setup_scope.end();
         _ = parser.parse() catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
             module.state = .ready;
@@ -1063,6 +1075,9 @@ pub const ModuleGraph = struct {
                 ) catch null;
             }
         }
+
+        var post_scope = profile.begin(.graph_discover_pm_post);
+        defer post_scope.end();
 
         module.ast = parser.ast;
         module.line_offsets = scanner.line_offsets.items;
@@ -1565,12 +1580,32 @@ pub const ModuleGraph = struct {
 
     /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
     fn isPackageTypeModule(self: *ModuleGraph, module_path: []const u8) bool {
+        var scope = profile.begin(.graph_discover_pm_is_pkg_type);
+        defer scope.end();
+
         const pkg_dir_path = findPackageDirPath(module_path) orelse return false;
-        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return false;
-        defer pkg_dir.close();
-        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return false;
-        defer parsed.deinit();
-        return parsed.pkg.isModule();
+
+        // Fast path: 패키지 단위 캐시 조회. date-fns 처럼 한 패키지 안 수백 파일이
+        // 반복 호출하는 케이스에서 fs openDir + readFile + JSON parse 를 1회로.
+        self.pkg_type_cache_mutex.lock();
+        const cache_hit = self.pkg_type_cache.get(pkg_dir_path);
+        self.pkg_type_cache_mutex.unlock();
+        if (cache_hit) |v| return v;
+
+        // Slow path: 실제 package.json 읽기
+        const result = blk: {
+            var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch break :blk false;
+            defer pkg_dir.close();
+            var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch break :blk false;
+            defer parsed.deinit();
+            break :blk parsed.pkg.isModule();
+        };
+
+        // 캐시 put — race 시 다른 스레드가 먼저 put 해도 같은 결과이므로 덮어써도 안전.
+        self.pkg_type_cache_mutex.lock();
+        defer self.pkg_type_cache_mutex.unlock();
+        self.pkg_type_cache.put(self.allocator, pkg_dir_path, result) catch {};
+        return result;
     }
 
     /// TLA 전이적 전파: TLA 모듈을 static import하는 모듈도 TLA로 표시.
