@@ -43,12 +43,20 @@ interface NestedEntry {
   stats: ManglerStats;
 }
 
+interface UnifiedSummary {
+  phase_a: ManglerStats;
+  phase_b_totals: ManglerStats;
+  total_renames: number;
+  module_count: number;
+}
+
 interface ManglerReport {
   top_level: ManglerStats;
   top_level_reserved_pool: number;
   nested: NestedEntry[];
   bundle_size_bytes: number;
   totals: ManglerStats;
+  unified?: UnifiedSummary;
 }
 
 interface FixtureResult {
@@ -127,13 +135,42 @@ function formatStats(s: ManglerStats): string {
   return `slots=${s.slot_count} nameLen=${s.slot_name_length_sum} rename=${s.renamed_symbol_count}`;
 }
 
+function unifiedCombined(u: UnifiedSummary): ManglerStats {
+  return {
+    slot_count: u.phase_a.slot_count + u.phase_b_totals.slot_count,
+    slot_name_length_sum: u.phase_a.slot_name_length_sum + u.phase_b_totals.slot_name_length_sum,
+    name_counter_final: 0,
+    reserved_size: 0,
+    renamed_symbol_count: u.phase_a.renamed_symbol_count + u.phase_b_totals.renamed_symbol_count,
+  };
+}
+
+function deltaPct(base: number, cur: number): string {
+  if (base === 0) return cur === 0 ? "+0.00%" : "+∞";
+  const pct = ((cur - base) / base) * 100;
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+}
+
 function printFixture(r: FixtureResult): void {
   const top = r.report.top_level;
   const nest = r.nested_totals;
   console.log(`\n## ${r.name}`);
   console.log(`  bundle_size: ${r.report.bundle_size_bytes} B`);
-  console.log(`  top_level:   ${formatStats(top)} (pool=${r.report.top_level_reserved_pool})`);
-  console.log(`  nested(${r.nested_module_count} mod): ${formatStats(nest)}`);
+  console.log(`  two-phase top:    ${formatStats(top)} (pool=${r.report.top_level_reserved_pool})`);
+  console.log(`  two-phase nested: (${r.nested_module_count} mod) ${formatStats(nest)}`);
+  if (r.report.unified) {
+    const u = r.report.unified;
+    const combined = unifiedCombined(u);
+    const tp_total = r.report.totals;
+    console.log(`  unified phase A:  ${formatStats(u.phase_a)}`);
+    console.log(`  unified phase B:  (${u.module_count} mod) ${formatStats(u.phase_b_totals)}`);
+    console.log(
+      `  unified total:    ${formatStats(combined)}  ` +
+        `(vs two-phase: slots ${deltaPct(tp_total.slot_count, combined.slot_count)}, ` +
+        `nameLen ${deltaPct(tp_total.slot_name_length_sum, combined.slot_name_length_sum)}, ` +
+        `rename ${deltaPct(tp_total.renamed_symbol_count, combined.renamed_symbol_count)})`,
+    );
+  }
 }
 
 type Check = { ok: boolean; label: string; detail: string };

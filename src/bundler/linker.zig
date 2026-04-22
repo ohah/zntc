@@ -38,6 +38,26 @@ pub inline fn isNamespaceRename(rename: []const u8) bool {
     return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
 }
 
+/// `Linker.collectUnifiedInput` 반환 컨테이너. unified_mangler.mangleAll 에
+/// 그대로 넘길 수 있는 형태.
+///
+/// 수명 주의: `bitsets[i]` 는 `modules[i].module_scope_symbols` 의 backing
+/// store. caller 는 `modules` 를 계속 사용하는 동안 `bitsets` 를 먼저
+/// 해제해서는 안 된다. `deinit()` 이 올바른 순서로 처리.
+pub const UnifiedCollect = struct {
+    top_level_candidates: []@import("../codegen/unified_mangler.zig").TopLevelCandidate,
+    modules: []@import("../codegen/unified_mangler.zig").ModuleMangleInput,
+    bitsets: []std.DynamicBitSet,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *UnifiedCollect) void {
+        self.allocator.free(self.top_level_candidates);
+        self.allocator.free(self.modules);
+        for (self.bitsets) |*b| b.deinit();
+        self.allocator.free(self.bitsets);
+    }
+};
+
 /// `--mangle-report` 전용 측정 수집기 (#1760 property harness).
 ///
 /// Bundler 가 생성해 `Linker.mangle_report` 에 꽂으면 `computeMangling` 과
@@ -57,10 +77,24 @@ pub const MangleReportCollector = struct {
     /// Bundle emit 후 채움.
     bundle_size_bytes: usize = 0,
 
+    /// #1760 Step 2 shadow mode — `mangleAll()` 을 같은 번들에 대해 한 번 더
+    /// 돌려 수집한 수치. 실제 번들 출력에는 영향 없음, 비교 용도.
+    unified: ?UnifiedSummary = null,
+
     pub const NestedEntry = struct {
         /// linker 생명주기 내 유효 (module.path 차용).
         module_path: []const u8,
         stats: ManglerStats,
+    };
+
+    pub const UnifiedSummary = struct {
+        phase_a: ManglerStats,
+        /// 모든 모듈 Phase B stats 의 합 (slot/length/renamed).
+        phase_b_totals: ManglerStats,
+        /// 전체 renames 개수 (Phase A + Phase B 합).
+        total_renames: usize,
+        /// 모듈 수 (phase_b_modules 길이).
+        module_count: usize,
     };
 
     pub fn init(allocator: std.mem.Allocator) MangleReportCollector {
@@ -104,6 +138,15 @@ pub const MangleReportCollector = struct {
         try writer.writeAll(if (self.nested.items.len == 0) "]" else "\n  ]");
         try writer.print(",\n  \"bundle_size_bytes\": {d},\n  \"totals\": ", .{self.bundle_size_bytes});
         try writeStatsJson(writer, totals);
+
+        if (self.unified) |u| {
+            try writer.writeAll(",\n  \"unified\": {\n    \"phase_a\": ");
+            try writeStatsJson(writer, u.phase_a);
+            try writer.writeAll(",\n    \"phase_b_totals\": ");
+            try writeStatsJson(writer, u.phase_b_totals);
+            try writer.print(",\n    \"total_renames\": {d},\n    \"module_count\": {d}\n  }}", .{ u.total_renames, u.module_count });
+        }
+
         try writer.writeAll("\n}\n");
     }
 
@@ -849,6 +892,130 @@ pub const Linker = struct {
         }.cmp);
 
         return .{ .exported = exported, .entries = entries, .synthetic_defaults = synthetic_defaults };
+    }
+
+    /// #1760 shadow mode: unified_mangler.mangleAll() 을 호출하기 위한 입력 수집.
+    /// `collectManglingCandidates` 와 같은 필터 (exported/imported/1-char/default)
+    /// 를 적용하지만 이름별 집계 대신 `(module_index, symbol_id)` 단위 후보를
+    /// 개별 생성한다. 결과는 caller 가 `deinit` 해야 함.
+    ///
+    /// Step 3 (unified 경로로 전환) 시 이 필터 체인과 `collectManglingCandidates`
+    /// 가 통합되며, 이 함수가 기본 경로로 남고 구 함수는 제거 예정.
+    pub fn collectUnifiedInput(self: *const Linker) !UnifiedCollect {
+        const um = @import("../codegen/unified_mangler.zig");
+
+        const modules = try self.allocator.alloc(um.ModuleMangleInput, self.modules.len);
+        errdefer self.allocator.free(modules);
+
+        const bitsets = try self.allocator.alloc(std.DynamicBitSet, self.modules.len);
+        var created: usize = 0;
+        errdefer {
+            for (bitsets[0..created]) |*b| b.deinit();
+            self.allocator.free(bitsets);
+        }
+
+        var candidates: std.ArrayListUnmanaged(um.TopLevelCandidate) = .empty;
+        errdefer candidates.deinit(self.allocator);
+
+        var exported = std.StringHashMap(void).init(self.allocator);
+        defer exported.deinit();
+        for (self.modules) |m| {
+            if (m.is_entry_point) {
+                for (m.export_bindings) |eb| {
+                    try exported.put(eb.exported_name, {});
+                    try exported.put(m.exportBindingLocalName(eb), {});
+                }
+            }
+            for (m.import_bindings) |ib| {
+                if (ib.import_record_index >= m.import_records.len) continue;
+                if (!m.import_records[ib.import_record_index].is_external) continue;
+                try exported.put(m.importBindingLocalName(ib), {});
+            }
+        }
+
+        for (self.modules, 0..) |m, mi| {
+            const sem_opt = m.semantic;
+            const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
+            bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
+            created += 1;
+
+            if (sem_opt) |sem| {
+                const blocks = sem.scopes.len > 0 and sem.scopes[0].blocksMangling();
+                if (sem.scope_maps.len > 0) {
+                    var sit = sem.scope_maps[0].iterator();
+                    while (sit.next()) |entry| {
+                        const sym_name = entry.key_ptr.*;
+                        const sym_idx_usize = entry.value_ptr.*;
+                        if (sym_idx_usize >= sym_count) continue;
+                        const sym_idx: u32 = @intCast(sym_idx_usize);
+
+                        // Phase B 는 module scope 심볼 skip (Phase A 담당).
+                        bitsets[mi].set(sym_idx_usize);
+
+                        if (blocks) continue;
+                        if (exported.contains(sym_name)) continue;
+                        if (sym_name.len <= 1) continue;
+                        if (std.mem.eql(u8, sym_name, "default")) continue;
+                        if (std.mem.eql(u8, sym_name, "arguments")) continue;
+
+                        const sym = &sem.symbols.items[sym_idx];
+                        if (sym.kind == .import_binding) continue;
+
+                        const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
+                        if (key.len <= 1) continue;
+                        if (exported.contains(key)) continue;
+
+                        try candidates.append(self.allocator, .{
+                            .module_index = @intCast(mi),
+                            .symbol_id = sym_idx,
+                            .name = key,
+                            .ref_count = sym.reference_count,
+                        });
+                    }
+                }
+
+                if (!blocks) {
+                    for (sem.symbols.items, 0..) |*sym, si| {
+                        const sk = sym.synthetic_kind orelse continue;
+                        if (sk != .default_export) continue;
+                        const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+                        if (key.len <= 1) continue;
+                        if (exported.contains(key)) continue;
+                        try candidates.append(self.allocator, .{
+                            .module_index = @intCast(mi),
+                            .symbol_id = @intCast(si),
+                            .name = key,
+                            .ref_count = sym.reference_count,
+                        });
+                    }
+                }
+
+                modules[mi] = .{
+                    .scopes = sem.scopes,
+                    .symbols = sem.symbols.items,
+                    .scope_maps = sem.scope_maps,
+                    .references = sem.references,
+                    .source = m.source,
+                    .module_scope_symbols = bitsets[mi],
+                };
+            } else {
+                modules[mi] = .{
+                    .scopes = &.{},
+                    .symbols = &.{},
+                    .scope_maps = &.{},
+                    .references = &.{},
+                    .source = m.source,
+                    .module_scope_symbols = bitsets[mi],
+                };
+            }
+        }
+
+        return .{
+            .top_level_candidates = try candidates.toOwnedSlice(self.allocator),
+            .modules = modules,
+            .bitsets = bitsets,
+            .allocator = self.allocator,
+        };
     }
 
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
