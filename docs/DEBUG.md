@@ -320,7 +320,9 @@ HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
 - 필드 이름과 실제 값이 일치. 2026-04-22 이전의 `parse`/`semantic` 레거시 이름은 제거됨.
 
 Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
-- `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+- 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+- Graph 내부: `graphBuild` (모듈 그래프 구축) / `graphWorker` (worker entries)
+- Emit 내부 (bundler 수준): `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss`
 - 비활성 상태에선 모두 0. `parse`/`semantic` 은 진짜 parser/analyzer 시간.
 
 ## 4.1 번개 (bungae) HMR 실측

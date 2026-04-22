@@ -1252,6 +1252,17 @@ const PhaseDurations = struct {
     transform_ms: f64 = 0,
     codegen_ms: f64 = 0,
     metadata_ms: f64 = 0,
+
+    // ── Graph sub-phase (graph 내부 분해) ──
+    graph_build_ms: f64 = 0,
+    graph_worker_ms: f64 = 0,
+
+    // ── Emit sub-phase (emit 내부 분해) ──
+    emit_polyfill_ms: f64 = 0,
+    emit_refresh_ms: f64 = 0,
+    emit_output_ms: f64 = 0,
+    emit_metafile_ms: f64 = 0,
+    emit_css_ms: f64 = 0,
 };
 
 /// onRebuild 콜백에 전달할 이벤트 데이터
@@ -1411,6 +1422,15 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 .{ .name = "transform", .value = pd.transform_ms },
                 .{ .name = "codegen", .value = pd.codegen_ms },
                 .{ .name = "metadata", .value = pd.metadata_ms },
+                // Graph sub-phase.
+                .{ .name = "graphBuild", .value = pd.graph_build_ms },
+                .{ .name = "graphWorker", .value = pd.graph_worker_ms },
+                // Emit sub-phase (bundler.zig 수준).
+                .{ .name = "emitPolyfill", .value = pd.emit_polyfill_ms },
+                .{ .name = "emitRefresh", .value = pd.emit_refresh_ms },
+                .{ .name = "emitOutput", .value = pd.emit_output_ms },
+                .{ .name = "emitMetafile", .value = pd.emit_metafile_ms },
+                .{ .name = "emitCss", .value = pd.emit_css_ms },
             };
             for (fields) |f| {
                 var js_num: c.napi_value = undefined;
@@ -1880,6 +1900,15 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .transform_ms = nsToMs(profile_mod.totalNs(.transform)),
             .codegen_ms = nsToMs(profile_mod.totalNs(.codegen)),
             .metadata_ms = nsToMs(profile_mod.totalNs(.metadata)),
+
+            // Graph / Emit sub-phase — bundler.zig 내부 단계 분해.
+            .graph_build_ms = nsToMs(profile_mod.totalNs(.graph_build)),
+            .graph_worker_ms = nsToMs(profile_mod.totalNs(.graph_worker)),
+            .emit_polyfill_ms = nsToMs(profile_mod.totalNs(.emit_polyfill)),
+            .emit_refresh_ms = nsToMs(profile_mod.totalNs(.emit_refresh)),
+            .emit_output_ms = nsToMs(profile_mod.totalNs(.emit_output)),
+            .emit_metafile_ms = nsToMs(profile_mod.totalNs(.emit_metafile)),
+            .emit_css_ms = nsToMs(profile_mod.totalNs(.emit_css)),
         };
         event.reparsed_modules = rebuild_result.reparsed_modules;
 

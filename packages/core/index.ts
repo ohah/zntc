@@ -453,6 +453,26 @@ export interface WatchRebuildEvent {
     codegen: number;
     /** Linker metadata build */
     metadata: number;
+
+    // Graph sub-phase (graph 내부 분해)
+
+    /** `graph.build()` / `graph.buildIncremental()` — 모듈 그래프 구축 본체 */
+    graphBuild: number;
+    /** `new Worker(new URL(...))` 패턴 entry 별도 빌드 */
+    graphWorker: number;
+
+    // Emit sub-phase (bundler.zig 수준 분해)
+
+    /** `--polyfill` 파일 내용 로딩 + Flow 트랜스파일 */
+    emitPolyfill: number;
+    /** React Refresh 런타임 preamble/epilogue 조립 (dev + 브라우저) */
+    emitRefresh: number;
+    /** `emitter.emitWithTreeShaking` / `emitChunks` — 번들 출력 생성 본체 */
+    emitOutput: number;
+    /** `--metafile` / `--analyze` JSON 생성 */
+    emitMetafile: number;
+    /** CSS 엔트리별 번들 + lightningcss 후처리 */
+    emitCss: number;
   };
   /** 증분 그래프에서 재파싱된 모듈 수. 캐시 미스된 모듈만 카운트. 전체 빌드에서는 미노출. */
   reparsedModules?: number;
