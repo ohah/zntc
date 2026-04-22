@@ -15,12 +15,12 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 | `src/debug_log.zig` | 카테고리 토글 로그 (`compiled_cache`, `ast_mutation`) | 이벤트 로그 (타이밍 아님) |
 | `--timing` CLI | single-file transpile | `scan / parse / semantic / transform / codegen` 5단계 |
 | `BundleTimings` struct | bundle 모드 내부 | `graph_ns / link_ns / shake_ns / emit_ns` 4 field |
-| HMR `phaseDurations` | NAPI watch 이벤트 | `detect / parse / sem / emit / delta / total` |
+| HMR `phaseDurations` | NAPI watch 이벤트 | `detect / graph / link / shake / emit / delta / total` + sub |
 | `BUNGAE_HMR_PROFILE=1` | 번개 opt-in 로그 | phase breakdown 한 줄 |
 
-### 1.2 파편화의 문제
+### 1.2 파편화의 문제 (2026-04-22 이전, #1 는 해소)
 
-1. **의미 혼재**: `phaseDurations.parse` 가 실제로는 "graph build 전체" (resolve + parse + semantic + finalize). `phaseDurations.sem` 은 "link + shake". 이름이 실체와 다름.
+1. ~~**의미 혼재**: `phaseDurations.parse` 가 실제로는 "graph build 전체"~~ (resolve + parse + semantic + finalize). ~~`phaseDurations.sem` 은 "link + shake"~~. 이름이 실체와 다름. — **해소: 기본 phase 는 `graph/link/shake` 로 분리, sub-phase 의 `parse/semantic` 은 진짜 parser/analyzer 의미**.
 2. **CLI ↔ NAPI 불일치**: `--timing` 은 single-file 만. NAPI watch 는 HMR 전용 포맷. 공통 출력 형식/옵션 없음.
 3. **Sub-phase 없음**: `emit 67ms` 안의 transform / codegen / metadata 비중 모름.
 4. **벤치마크 부재**: 특정 phase 만 반복 측정하는 도구가 없음. 최적화 전후 비교 수동.

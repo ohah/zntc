@@ -315,19 +315,19 @@ result.phases.parse.stddev_ms;  // 2.1
 
 HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
 
-기본 phase (항상 측정):
-- `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
-- 주의: `parse` 는 실제로 graph build 전체, `semantic` 은 link+shake 의미 (레거시 호환 이름).
+기본 phase (항상 측정, BundleTimings 기반):
+- `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
+- 필드 이름과 실제 값이 일치. 2026-04-22 이전의 `parse`/`semantic` 레거시 이름은 제거됨.
 
-Sub-phase (`ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` 활성 시):
-- `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
-- 비활성 상태에선 모두 0.
+Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
+- `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+- 비활성 상태에선 모두 0. `parse`/`semantic` 은 진짜 parser/analyzer 시간.
 
 ## 4.1 번개 (bungae) HMR 실측
 
 ```bash
 BUNGAE_HMR_PROFILE=1 bun run start:bungae
-# Rebuilt [ios] (1 files, 175ms) [detect=27 parse=65 sem=5 emit=67 delta=1]
+# Rebuilt [ios] (1 files, 175ms) [detect=27 graph=65 link=3 shake=2 emit=67 delta=1]
 ```
 
 번개는 `phaseDurations.*` 필드를 읽어 log formatting. ZTS 는 필드만 제공 — UI 는 번개 쪽 책임.
@@ -342,8 +342,8 @@ watch({
   profile: ["hmr"],  // sub-phase 수집 활성
   onRebuild: (event) => {
     const pd = event.phaseDurations!;
-    console.log("graph=%d link=%d shake=%d transform=%d codegen=%d",
-      pd.graph, pd.link, pd.shake, pd.transform, pd.codegen);
+    console.log("parse=%d semantic=%d transform=%d codegen=%d resolve=%d",
+      pd.parse, pd.semantic, pd.transform, pd.codegen, pd.resolve);
   },
 });
 ```

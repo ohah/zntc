@@ -97,10 +97,10 @@ HMR rebuild 의 각 phase 소요시간은 `WatchRebuildEvent.phaseDurations` 에
 자세한 내용: [`docs/DEBUG.md`](./DEBUG.md) § 4 HMR Profile.
 
 기본 측정 항목 (항상):
-- `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
+- `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
 
 Sub-phase (profile 활성 시):
-- `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
+- `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
 
 ```ts
 watch({

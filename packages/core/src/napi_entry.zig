@@ -1219,26 +1219,32 @@ const WatchReadyEvent = struct {
 
 /// HMR rebuild phase 별 소요시간 (밀리초). Issue #1223 관측성.
 ///
-/// 기본 phase 들 (`detect_ms`/`parse_ms`/`semantic_ms`/`emit_ms`/`delta_ms`/`total_ms`) 은
-/// profile 비활성 상태에서도 항상 측정됨 (bundler `BundleTimings` 기반 — 가벼움).
+/// 기본 phase (`detect_ms`/`graph_ms`/`link_ms`/`shake_ms`/`emit_ms`/`delta_ms`/`total_ms`)
+/// 는 profile 비활성 상태에서도 항상 측정 (bundler `BundleTimings` 기반 — 가벼움).
 ///
-/// Sub-phase (`scan_ms`/`resolve_ms`/`graph_ms`/`link_ms`/`shake_ms`/`transform_ms`/
-/// `codegen_ms`/`metadata_ms`) 는 `ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` /
-/// `BundleOptions.profile` 활성 상태에서만 의미있는 값. 비활성 시 모두 0.
+/// Sub-phase (`scan_ms`/`parse_ms`/`resolve_ms`/`semantic_ms`/`transform_ms`/`codegen_ms`/
+/// `metadata_ms`) 는 `ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `BundleOptions.profile`
+/// 활성 상태에서만 의미있는 값. 비활성 시 모두 0.
+///
+/// 이름 매핑 이력: 2026-04-22 이전의 `parse_ms` / `semantic_ms` 는 실제로는 `graph_ns` /
+/// `link+shake` 를 담았던 레거시 이름이었다. 이름=의미 일치를 위해 기본 phase 에서
+/// `parse_ms`/`semantic_ms` 를 제거하고 `graph_ms`/`link_ms`/`shake_ms` 로 분리.
+/// Sub-phase 의 `parse_ms`/`semantic_ms` 는 이제 진짜 parser/analyzer 시간을 의미.
 const PhaseDurations = struct {
+    // ── 기본 phase (항상 측정) ──
     detect_ms: f64 = 0,
-    parse_ms: f64 = 0,
-    semantic_ms: f64 = 0,
+    graph_ms: f64 = 0,
+    link_ms: f64 = 0,
+    shake_ms: f64 = 0,
     emit_ms: f64 = 0,
     delta_ms: f64 = 0,
     total_ms: f64 = 0,
 
-    // ── Sub-phase (ZTS_PROFILE=hmr 활성 시에만 값 기록) ──
+    // ── Sub-phase (ZTS_PROFILE=<cat> 활성 시에만 값 기록) ──
     scan_ms: f64 = 0,
+    parse_ms: f64 = 0,
     resolve_ms: f64 = 0,
-    graph_ms: f64 = 0,
-    link_ms: f64 = 0,
-    shake_ms: f64 = 0,
+    semantic_ms: f64 = 0,
     transform_ms: f64 = 0,
     codegen_ms: f64 = 0,
     metadata_ms: f64 = 0,
@@ -1385,18 +1391,19 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
             var js_pd: c.napi_value = undefined;
             _ = c.napi_create_object(env, &js_pd);
             const fields = [_]struct { name: [:0]const u8, value: f64 }{
+                // 기본 phase (항상 측정).
                 .{ .name = "detect", .value = pd.detect_ms },
-                .{ .name = "parse", .value = pd.parse_ms },
-                .{ .name = "semantic", .value = pd.semantic_ms },
-                .{ .name = "emit", .value = pd.emit_ms },
-                .{ .name = "delta", .value = pd.delta_ms },
-                .{ .name = "total", .value = pd.total_ms },
-                // Sub-phase (ZTS_PROFILE=hmr 활성 시 의미있는 값, 아니면 0).
-                .{ .name = "scan", .value = pd.scan_ms },
-                .{ .name = "resolve", .value = pd.resolve_ms },
                 .{ .name = "graph", .value = pd.graph_ms },
                 .{ .name = "link", .value = pd.link_ms },
                 .{ .name = "shake", .value = pd.shake_ms },
+                .{ .name = "emit", .value = pd.emit_ms },
+                .{ .name = "delta", .value = pd.delta_ms },
+                .{ .name = "total", .value = pd.total_ms },
+                // Sub-phase (ZTS_PROFILE=<cat> 활성 시 의미있는 값, 아니면 0).
+                .{ .name = "scan", .value = pd.scan_ms },
+                .{ .name = "parse", .value = pd.parse_ms },
+                .{ .name = "resolve", .value = pd.resolve_ms },
+                .{ .name = "semantic", .value = pd.semantic_ms },
                 .{ .name = "transform", .value = pd.transform_ms },
                 .{ .name = "codegen", .value = pd.codegen_ms },
                 .{ .name = "metadata", .value = pd.metadata_ms },
@@ -1851,22 +1858,21 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         const nsToMs = bundler_mod.BundleResult.nsToMs;
         event.phase_durations = .{
             // 기본 phase — BundleTimings 기반 (profile 비활성에서도 항상 측정).
-            // 주의: `parse_ms` / `semantic_ms` 는 레거시 이름 — 실제로는 각각
-            // graph build 전체 / link+shake 를 의미. 정확한 sub-phase 분해는
-            // ZTS_PROFILE=hmr 활성 시 sub 필드 참조.
+            // 필드 이름과 실제 값이 정확히 일치.
             .detect_ms = nsToMs(detect_ns),
-            .parse_ms = nsToMs(rebuild_result.timings.graph_ns),
-            .semantic_ms = nsToMs(rebuild_result.timings.link_ns + rebuild_result.timings.shake_ns),
+            .graph_ms = nsToMs(rebuild_result.timings.graph_ns),
+            .link_ms = nsToMs(rebuild_result.timings.link_ns),
+            .shake_ms = nsToMs(rebuild_result.timings.shake_ns),
             .emit_ms = nsToMs(rebuild_result.timings.emit_ns),
             .delta_ms = nsToMs(delta_ns),
             .total_ms = nsToMs(total_ns),
 
             // Sub-phase — profile 활성 시에만 의미있는 값. 비활성이면 0.
+            // graph/link/shake 는 기본 phase 와 동일 의미라 중복 노출 안 함.
             .scan_ms = nsToMs(profile_mod.totalNs(.scan)),
+            .parse_ms = nsToMs(profile_mod.totalNs(.parse)),
             .resolve_ms = nsToMs(profile_mod.totalNs(.resolve)),
-            .graph_ms = nsToMs(profile_mod.totalNs(.graph)),
-            .link_ms = nsToMs(profile_mod.totalNs(.link)),
-            .shake_ms = nsToMs(profile_mod.totalNs(.shake)),
+            .semantic_ms = nsToMs(profile_mod.totalNs(.semantic)),
             .transform_ms = nsToMs(profile_mod.totalNs(.transform)),
             .codegen_ms = nsToMs(profile_mod.totalNs(.codegen)),
             .metadata_ms = nsToMs(profile_mod.totalNs(.metadata)),
