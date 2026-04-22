@@ -24,6 +24,7 @@ const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
 const stmt_info_mod = @import("stmt_info.zig");
+const profile = @import("../profile.zig");
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -541,6 +542,9 @@ pub const Linker = struct {
     /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
     /// exec_index가 가장 낮은 모듈이 원본 이름 유지, 나머지는 $1, $2, ...
     pub fn computeRenames(self: *Linker) !void {
+        var scope = profile.begin(.link_compute_renames);
+        defer scope.end();
+
         // 0. 모든 모듈의 미해결 참조를 수집 → reserved_globals
         try self.collectReservedGlobals();
 
@@ -722,6 +726,9 @@ pub const Linker = struct {
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
     /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
     pub fn computeMangling(self: *Linker) !void {
+        var scope = profile.begin(.link_compute_mangling);
+        defer scope.end();
+
         const Mangler = @import("../codegen/mangler.zig");
 
         // ================================================================
@@ -1028,6 +1035,9 @@ pub const Linker = struct {
     pub const buildMetadata = metadata_mod.buildMetadata;
 
     fn buildExportMap(self: *Linker) !void {
+        var scope = profile.begin(.link_build_export_map);
+        defer scope.end();
+
         for (self.modules, 0..) |m, i| {
             const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
             for (m.export_bindings) |eb| {
@@ -1047,6 +1057,9 @@ pub const Linker = struct {
 
     /// 모든 모듈의 import 바인딩을 해석하여 canonical export에 연결.
     fn resolveImports(self: *Linker) !void {
+        var scope = profile.begin(.link_resolve_imports);
+        defer scope.end();
+
         for (self.modules, 0..) |m, i| {
             for (m.import_bindings) |ib| {
                 if (ib.kind == .namespace) continue; // namespace import는 별도 처리 (후순위)
@@ -1417,6 +1430,9 @@ pub const Linker = struct {
     ///
     /// link() 이후에 호출되어야 한다 — export_map과 canonical_names가 준비된 상태를 전제.
     pub fn populateReExportAliases(self: *const Linker, modules: []Module) void {
+        var scope = profile.begin(.link_populate_re_export_aliases);
+        defer scope.end();
+
         for (modules, 0..) |*m, idx| {
             const mod_idx: ModuleIndex = @enumFromInt(idx);
             const table_ptr = if (m.alias_table) |*t| t else continue;
@@ -1481,6 +1497,9 @@ pub const Linker = struct {
     ///   - `local_symbol`: 현재 모듈 semantic top-level 심볼 (current-side 조회용).
     /// `populateReExportAliases` 이후에 호출되어야 alias canonical이 반영됨.
     pub fn populateImportSymbols(_: *const Linker, modules: []Module) void {
+        var scope = profile.begin(.link_populate_import_symbols);
+        defer scope.end();
+
         for (modules, 0..) |*importer, i| {
             const sem_opt = importer.semantic;
             const module_scope_opt = if (sem_opt) |sem|
@@ -1546,6 +1565,9 @@ pub const Linker = struct {
     ///    `.namespace` 바인딩은 collectNamespaceAccesses 결과를 신뢰하지 않고
     ///    symbol-aware 판정으로 **덮어쓴다**.
     pub fn populateNamespaceAccesses(self: *const Linker, modules: []Module) void {
+        var scope = profile.begin(.link_populate_namespace_accesses);
+        defer scope.end();
+
         for (modules) |*importer| {
             const sem = importer.semantic orelse continue;
             const ast = if (importer.ast) |*a| a else continue;
@@ -1658,6 +1680,9 @@ pub const Linker = struct {
         ns_export_cache: *std.AutoHashMap(u32, []NsExportPair),
         ns_inline_cache: *std.AutoHashMap(u32, []const u8),
     ) std.mem.Allocator.Error!void {
+        var scope = profile.begin(.metadata_register_ns_rewrites);
+        defer scope.end();
+
         // 캐시에서 조회, 없으면 수집 후 캐시에 저장
         const cached_exports = if (ns_export_cache.get(target_mod_idx)) |cached| cached else blk: {
             var exports: std.ArrayList(NsExportPair) = .empty;
