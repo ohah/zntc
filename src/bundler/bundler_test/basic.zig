@@ -1039,3 +1039,84 @@ test "Bundler: AMD external dependencies in wrapper" {
     // factory 매개변수 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "function(Lodash)") != null);
 }
+
+// #1751: Flow `component` + --flow + --minify 조합이 mangler OOB 크래시를 유발했다.
+// Parser (flow.zig) 가 `const Name = React.forwardRef(Name_withRef)` 의 binding
+// identifier span 을 `addString(name_text)` 로 재래핑하면서 bit-31 tagged (string_table)
+// span 을 만들었고, 이게 semantic 에서 const 선언의 Symbol.name 으로 전파되어
+// mangler 가 `source[span.start..]` 슬라이싱 시 OOB. root cause 는 원본 name 노드
+// span 을 재사용하도록 fix. 이 테스트는 crash-free + 정상 실행 검증.
+test "Bundler: #1751 Flow component with ref + minify regression" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\// @flow strict-local
+        \\component MyComp(
+        \\  title: string,
+        \\  ref: (x: any) => void,
+        \\) {
+        \\  return title;
+        \\}
+        \\const v = MyComp({title: "hi", ref: () => {}});
+        \\console.log(v);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .flow = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "React.forwardRef") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_withRef") != null);
+}
+
+// #1751: ESM wrap 의 function_declaration → `foo = function(){...}` 변환형에
+// trailing `;` 을 codegen 이 누락하여, 뒤따르는 `"use strict"` directive 와 ASI
+// 구분 실패 → SyntaxError. 변환형은 expression statement 이므로 `;` 필수.
+test "Bundler: #1751 ESM wrap function decl assignment has trailing semicolon" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "mod.js",
+        \\"use strict";
+        \\var warnedKeys = {};
+        \\function warnOnce(key, message) {
+        \\  if (warnedKeys[key]) return;
+        \\  console.warn(message);
+        \\  warnedKeys[key] = true;
+        \\}
+        \\export default warnOnce;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import w from './mod.js';
+        \\w("x", "hi");
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .platform = .react_native, // ESM wrap + strict_execution_order 강제
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 변환형 `t = function(...){...}` 뒤에 반드시 `;`. `}"use strict"` 붙지 않음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "};\"use strict\"") != null or
+        std.mem.indexOf(u8, result.output, "}\"use strict\"") == null);
+}

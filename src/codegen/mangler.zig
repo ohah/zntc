@@ -317,6 +317,14 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
         // rename은 parser AST의 identifier 노드를 바꾸는 것이라 무의미 — skip.
         if (sym.isSynthetic()) continue;
+        // string_table-backed span (Ast.STRING_TABLE_BIT). parser/transformer 가
+        // `addString` 으로 합성한 identifier 가 semantic 에서 const/let declaration
+        // 으로 재분석될 때 발생 (#1751). 이런 심볼의 이름은 source 에 존재하지 않고
+        // string_table 에만 있으므로 원본 텍스트 비교가 의미 없고 slice 는 OOB.
+        // 현재 mangler 는 `source: []const u8` 만 받아서 string_table 접근 불가 —
+        // 합성 이름은 rename 대상에서 제외한다 (mangle 해도 renames 맵이 span-offset
+        // 기반 codegen 과 맞물리지 않아 효과도 없음).
+        if (sym.name.start & 0x80000000 != 0) continue;
         const orig_name = source[sym.name.start..sym.name.end];
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
