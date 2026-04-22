@@ -104,6 +104,8 @@ const CliOptions = struct {
     asset_registry_explicit_off: bool = false,
     loader_list: std.ArrayList(LoaderOverride) = .empty,
     metafile_path: ?[]const u8 = null,
+    /// --mangle-report=<path>: mangler property 측정 JSON 저장 (#1760).
+    mangle_report_path: ?[]const u8 = null,
     analyze: bool = false,
     legal_comments: @import("zts_lib").bundler.types.LegalComments = .default,
     inject_list: std.ArrayList([]const u8) = .empty,
@@ -665,6 +667,8 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.metafile_path = arg["--metafile=".len..];
         } else if (std.mem.eql(u8, arg, "--metafile")) {
             opts.metafile_path = "meta.json";
+        } else if (std.mem.startsWith(u8, arg, "--mangle-report=")) {
+            opts.mangle_report_path = arg["--mangle-report=".len..];
         } else if (std.mem.eql(u8, arg, "--analyze")) {
             opts.analyze = true;
         } else if (std.mem.eql(u8, arg, "--keep-names")) {
@@ -1721,6 +1725,7 @@ pub fn main() !void {
             .asset_registry = opts.asset_registry,
             .loader_overrides = opts.loader_list.items,
             .metafile = opts.metafile_path != null or opts.analyze,
+            .mangle_report_path = opts.mangle_report_path,
             .analyze = opts.analyze,
             .legal_comments = opts.legal_comments,
             .inject = opts.inject_list.items,

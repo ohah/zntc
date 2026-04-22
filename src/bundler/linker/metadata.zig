@@ -516,6 +516,11 @@ pub fn buildMetadataForAst(
                 .skip_symbols = skip_syms,
             });
 
+            // #1760 property harness: nested mangler stats 를 collector 로.
+            if (self.mangle_report) |r| {
+                r.recordNested(m.path, nested_result.stats) catch {};
+            }
+
             // nested renames를 기존 renames에 merge (소유권 이전)
             var taken = nested_result.takeRenames();
             defer taken.deinit(); // HashMap 자체만 해제 (값은 owned_nested_renames가 관리)

@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { COMMON_FIXTURES, type CommonFixture } from "./_fixtures";
 
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
@@ -25,49 +26,8 @@ const ROLLDOWN_BIN = existsSync(join(__dirname, "node_modules/.bin/rolldown"))
 
 const EXEC_TIMEOUT_MS = 180_000;
 
-interface Fixture {
-  name: string;
-  entry: string;
-  platform?: "node" | "browser";
-  format?: "esm" | "cjs";
-}
-
-const fixtures: Fixture[] = [
-  {
-    name: "effect",
-    entry: `import { Effect, pipe } from 'effect';
-const p = pipe(Effect.succeed(42), Effect.map((n: number) => n + 1));
-Effect.runPromise(p).then(r => console.log(r));`,
-  },
-  {
-    name: "lodash-es",
-    entry: `import { groupBy, sortBy, uniq } from 'lodash-es';
-console.log(groupBy, sortBy, uniq);`,
-  },
-  {
-    name: "zod",
-    entry: `import { z } from 'zod';
-const schema = z.string().email();
-console.log(schema.parse('test@test.com'));`,
-  },
-  {
-    name: "rxjs",
-    entry: `import { of, map, filter, toArray } from 'rxjs';
-of(1,2,3,4,5).pipe(filter(x=>x%2===0), map(x=>x*10), toArray()).subscribe(arr=>console.log(JSON.stringify(arr)));`,
-  },
-  {
-    name: "three",
-    entry: `import { Vector3 } from 'three';
-const v = new Vector3(1, 2, 3);
-console.log(v.length().toFixed(2));`,
-  },
-  {
-    name: "react",
-    entry: `import React from 'react';
-const el = React.createElement('div', {id:'t'}, 'hi');
-console.log(el.type, el.props.id);`,
-  },
-];
+type Fixture = CommonFixture;
+const fixtures: Fixture[] = COMMON_FIXTURES;
 
 interface LengthHistogram {
   len1: number;
