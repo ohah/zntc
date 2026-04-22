@@ -1120,3 +1120,40 @@ test "Bundler: #1751 ESM wrap function decl assignment has trailing semicolon" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "};\"use strict\"") != null or
         std.mem.indexOf(u8, result.output, "}\"use strict\"") == null);
 }
+
+// #1756: generator 다운레벨 시 `__generator(body, genFn)` 의 `genFn` 인자가
+// `makeIdentifierRefFromSpan` 로만 만들어져 symbol_id 미전파 → 번들 mangler
+// rename 이 이 이름에 반영되지 않아 원본 이름으로 emit 되면서 ReferenceError.
+// makeIdentifierRefWithSymbol 로 원본 binding 의 symbol_id 전파해 해결.
+test "Bundler: #1756 generator downlevel + minify genFn rename" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function* tick(): Generator<string> { yield 'a'; yield 'b'; }
+        \\const g = tick();
+        \\console.log(g.next().value, g.next().value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .platform = .react_native, // ES5 downlevel → __generator 활성
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 원본 이름 `tick` 은 mangle 되어 3자 이하 알파벳으로 rename. `$gn(..., tick)`
+    // 같이 원본 이름이 `$gn` 호출부 두번째 인자로 남아있으면 안됨.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ",tick)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ", tick)") == null);
+    // $gn( 호출부가 존재해야 함 (generator downlevel 확인).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gn(") != null);
+}

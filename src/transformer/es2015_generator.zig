@@ -97,11 +97,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const sm_result = try buildStateMachine(self, body_idx, span);
             if (sm_result.body.isNone()) return .none;
 
-            // generator function 이름이 있으면 프로토타입 체인 설정을 위해 __generator에 전달
-            const genFn_ref: NodeIndex = if (!new_name.isNone()) blk: {
-                const name_node = self.ast.getNode(new_name);
-                break :blk try es_helpers.makeIdentifierRefFromSpan(self, name_node.span);
-            } else .none;
+            // generator function 이름이 있으면 프로토타입 체인 설정을 위해 __generator에 전달.
+            // #1756: makeIdentifierRefFromSpan 만 쓰면 symbol_id 가 전파되지 않아
+            // 번들 모드에서 mangler rename (`function foo → function t`) 이 반영 안 됨.
+            // `__generator(body, foo)` 의 `foo` 가 원본 이름 그대로 emit → ReferenceError.
+            // makeIdentifierRefWithSymbol 로 원본 binding 의 symbol_id 까지 전파해야
+            // codegen 이 `meta.renames.get(sid)` 로 mangled name 을 찾아 emit 함.
+            const genFn_ref: NodeIndex = if (!new_name.isNone())
+                try self.makeIdentifierRefWithSymbol(self.ast.getNode(new_name).data.string_ref, new_name)
+            else
+                .none;
             const gen_call = try buildGeneratorHelperCallWithProto(self, sm_result.body, genFn_ref, span);
 
             // return __generator(...) 문
