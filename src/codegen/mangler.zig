@@ -508,9 +508,10 @@ pub fn isReservedOrGlobal(name: []const u8) bool {
     }
     // #1618 / #1621: bundler runtime helper 축약 이름 — base54 가 사용자 심볼에
     //                동일 이름을 배정해 preamble 정의를 덮어쓰는 것을 방지.
-    //                `runtime_helpers.PAIRS` 가 단일 소스 — drift 불가.
-    const rt = @import("../bundler/runtime_helpers.zig");
-    for (rt.ALL_SHORT_NAMES) |s| {
+    //                #1752: `runtime_helper_names.PAIRS` 공용 모듈 — 단일 소스 + mangler
+    //                가 bundler 를 import 하지 않도록 레이어 역전 회피.
+    const names = @import("../runtime_helper_names.zig");
+    for (names.ALL_SHORT_NAMES) |s| {
         if (std.mem.eql(u8, name, s)) return true;
     }
     return false;

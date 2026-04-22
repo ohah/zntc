@@ -149,16 +149,19 @@ pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
     });
 }
 
-/// #1621: runtime helper (`__extends`, `__classCallCheck` 등) 용 identifier_reference.
-/// `self.options.minify_whitespace` 가 true 면 preamble 과 동일한 축약 이름(`$eX`, `$cC` 등)
-/// 으로 emit. 그렇지 않으면 원본 이름 그대로.
+/// #1621 / #1752: runtime helper (`__extends`, `__classCallCheck` 등) 용
+/// identifier_reference. `self.options.minify_whitespace` 가 true 면 preamble 과
+/// 동일한 축약 이름(`$eX`, `$cC` 등) 으로 emit. 그렇지 않으면 원본 이름 그대로.
 ///
 /// 일반 identifier (`Math`, `writable`, `value` 등) 에는 절대 쓰지 말 것 — 이 함수는
-/// `runtime_helpers.helperName` 화이트리스트에 등록된 이름만 처리한다. 등록되지 않은
-/// 이름을 넘기면 minify 모드에서도 원본 그대로 반환 → 동작은 정상이지만 축약 효과 없음.
+/// `runtime_helper_names.helperName` 화이트리스트에 등록된 이름만 처리한다. 등록되지
+/// 않은 이름을 넘기면 minify 모드에서도 원본 그대로 반환 → 동작은 정상이지만 축약 효과 없음.
+///
+/// transformer → bundler 역의존을 피하기 위해 `bundler/runtime_helpers.zig` 가 아니라
+/// 공용 모듈 `../runtime_helper_names.zig` 를 import 한다.
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
-    const rt = @import("../bundler/runtime_helpers.zig");
-    const resolved = rt.helperName(base_name, self.options.minify_whitespace);
+    const names = @import("../runtime_helper_names.zig");
+    const resolved = names.helperName(base_name, self.options.minify_whitespace);
     return makeIdentifierRef(self, resolved);
 }
 

@@ -50,7 +50,7 @@ test "isReservedOrGlobal" {
 // #1618 / #1621: runtime helper 축약 이름이 모두 mangler 예약 목록에 등록되어 있는지.
 // `runtime_helpers.PAIRS` 가 단일 소스 — 빌드 타임에 순회해 drift 를 잡는다.
 test "isReservedOrGlobal: all #1621 runtime helper short names registered" {
-    const rt = @import("../bundler/runtime_helpers.zig");
+    const rt = @import("../runtime_helper_names.zig");
     inline for (rt.PAIRS) |p| {
         try std.testing.expect(isReservedOrGlobal(p.short));
     }
@@ -64,7 +64,7 @@ test "isReservedOrGlobal: all #1621 runtime helper short names registered" {
 }
 
 test "nextBase54Name: skips all runtime helper short names" {
-    const rt = @import("../bundler/runtime_helpers.zig");
+    const rt = @import("../runtime_helper_names.zig");
     const nextBase54Name = mangler.nextBase54Name;
     var buf: [8]u8 = undefined;
     var counter: u32 = 0;
@@ -81,7 +81,7 @@ test "nextBase54Name: skips all runtime helper short names" {
 // `helperName` 분배 함수가 각 base_name 에 대해 올바른 축약 이름을 반환하는지.
 // transformer 가 이 함수를 통해 AST identifier 이름을 결정하므로 정의 ↔ 매핑 drift 검증.
 test "helperName: base_name → short mapping for every PAIR" {
-    const rt = @import("../bundler/runtime_helpers.zig");
+    const rt = @import("../runtime_helper_names.zig");
     inline for (rt.PAIRS) |p| {
         try std.testing.expectEqualStrings(p.base, rt.helperName(p.base, false));
         try std.testing.expectEqualStrings(p.short, rt.helperName(p.base, true));
