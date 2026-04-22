@@ -76,8 +76,9 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
         }
         return 0;
       },
-      // clock_id: 0=realtime, 1=monotonic, 2/3=cputime. precision 인자는 무시.
-      // 결과는 u64 ns 로 timestamp_ptr 에 little-endian 기록.
+      // clock_id: 0=realtime(Date.now ms 해상도), 1/2/3=monotonic/cputime(performance.now).
+      // precision 인자는 WASI spec 상 hint 일뿐 무시. 결과는 u64 ns LE 로 timestamp_ptr 기록.
+      // 정확도는 호스트 브라우저의 reduced-precision 정책에 종속 (보통 100μs~1ms 단위).
       clock_time_get(clock_id: number, _precision: bigint, ts_ptr: number): number {
         const mem = new DataView(memory().buffer);
         const ns =
