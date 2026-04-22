@@ -54,17 +54,13 @@ pub const ModuleGraph = struct {
     /// 병렬 워커에서 diagnostics 접근 보호용 mutex
     diag_mutex: std.Thread.Mutex = .{},
 
-    /// 패키지별 sideEffects 캐시. pkg_dir_path → SideEffects.
-    /// 같은 패키지의 여러 모듈이 동일 package.json을 반복 읽지 않도록.
-    side_effects_cache: std.StringHashMap(pkg_json.PackageJson.SideEffects),
-
-    /// 패키지 "type": "module" 필드 캐시. pkg_dir_path → isModule 결과.
+    /// 패키지 단위 package.json 정보 캐시. pkg_dir_path → (is_module, side_effects).
+    /// `type: "module"` 과 `sideEffects` 를 **한 번의 pkg.json parse** 로 추출 (#1744).
     /// 키는 module_path 의 substring (graph 수명 동안 유효) — dupe 불필요.
-    /// date-fns 같이 한 패키지 안 수백 파일이 반복 lookup 하는 케이스에서
-    /// per-file 4.5ms → cache hit 1회로 감소 (#1742).
-    pkg_type_cache: std.StringHashMapUnmanaged(bool) = .{},
-    /// pkg_type_cache 병렬 접근 보호. scanWorker 가 병렬 호출.
-    pkg_type_cache_mutex: std.Thread.Mutex = .{},
+    /// scanWorker 병렬 호출 대응으로 Mutex 보호 + double-check pattern.
+    pkg_info_cache: std.StringHashMapUnmanaged(PkgInfo) = .{},
+    /// pkg_info_cache 병렬 접근 보호.
+    pkg_info_cache_mutex: std.Thread.Mutex = .{},
 
     // DFS 상태
     exec_counter: u32 = 0,
@@ -107,6 +103,11 @@ pub const ModuleGraph = struct {
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
 
+    pub const PkgInfo = struct {
+        is_module: bool,
+        side_effects: pkg_json.PackageJson.SideEffects,
+    };
+
     pub const WorkerEntry = struct {
         /// resolve된 worker 파일 절대 경로
         resolved_path: []const u8,
@@ -123,7 +124,6 @@ pub const ModuleGraph = struct {
             .path_to_module = std.StringHashMap(ModuleIndex).init(allocator),
             .diagnostics = .empty,
             .resolve_cache = resolve_cache,
-            .side_effects_cache = std.StringHashMap(pkg_json.PackageJson.SideEffects).init(allocator),
         };
     }
 
@@ -139,10 +139,9 @@ pub const ModuleGraph = struct {
             self.allocator.free(key.*);
         }
         self.path_to_module.deinit();
-        var se_it = self.side_effects_cache.valueIterator();
-        while (se_it.next()) |se| se.deinit(self.allocator);
-        self.side_effects_cache.deinit();
-        self.pkg_type_cache.deinit(self.allocator);
+        var pi_it = self.pkg_info_cache.valueIterator();
+        while (pi_it.next()) |info| info.side_effects.deinit(self.allocator);
+        self.pkg_info_cache.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         for (self.worker_entries.items) |we| {
             self.allocator.free(we.resolved_path);
@@ -1217,29 +1216,52 @@ pub const ModuleGraph = struct {
 
     const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
 
+    /// `pkg_info_cache` 통합 lookup. pkg_dir_path 별 1회만 parsePackageJson,
+    /// 이후 호출은 cache hit. is_module 과 side_effects 모두 반환 (#1744).
+    ///
+    /// Fast path (lock→get→unlock) → Slow path (lock 밖 parse) →
+    /// double-check put (race 시 내 값 폐기). patterns 메모리 소유권은
+    /// 캐시가 보유하며 Linker deinit 에서 일괄 해제.
+    pub fn lookupPkgInfo(self: *ModuleGraph, pkg_dir_path: []const u8) PkgInfo {
+        self.pkg_info_cache_mutex.lock();
+        const cached = self.pkg_info_cache.get(pkg_dir_path);
+        self.pkg_info_cache_mutex.unlock();
+        if (cached) |c| return c;
+
+        var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown };
+        if (std.fs.cwd().openDir(pkg_dir_path, .{})) |dir_val| {
+            var pkg_dir = dir_val;
+            defer pkg_dir.close();
+            if (pkg_json.parsePackageJson(self.allocator, pkg_dir)) |parsed_val| {
+                var parsed = parsed_val;
+                info.is_module = parsed.pkg.isModule();
+                info.side_effects = parsed.pkg.side_effects;
+                // 소유권을 info 로 이전 — parsed.deinit() 에서 이중 free 방지.
+                parsed.pkg.side_effects = .unknown;
+                parsed.deinit();
+            } else |_| {}
+        } else |_| {}
+
+        self.pkg_info_cache_mutex.lock();
+        defer self.pkg_info_cache_mutex.unlock();
+        // Race: 다른 스레드가 먼저 put 했으면 내 info.side_effects 폐기.
+        if (self.pkg_info_cache.get(pkg_dir_path)) |raced| {
+            info.side_effects.deinit(self.allocator);
+            return raced;
+        }
+        self.pkg_info_cache.put(self.allocator, pkg_dir_path, info) catch {
+            // alloc 실패 시 누수 방지
+            info.side_effects.deinit(self.allocator);
+            return .{ .is_module = info.is_module, .side_effects = .unknown };
+        };
+        return info;
+    }
+
     /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
     fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
         const pkg_dir_path = findPackageDirPath(module.path) orelse return;
-
-        // 캐시 확인 — 같은 패키지의 package.json을 반복 읽지 않음
-        if (self.side_effects_cache.get(pkg_dir_path)) |cached| {
-            applyCachedSideEffects(module, pkg_dir_path, cached);
-            return;
-        }
-
-        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return;
-        defer pkg_dir.close();
-
-        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return;
-        defer parsed.deinit();
-
-        // 캐시에 저장 (patterns는 parseSideEffects가 allocator로 dupe 완료)
-        const se = parsed.pkg.side_effects;
-        self.side_effects_cache.put(pkg_dir_path, se) catch {};
-        // 소유권을 캐시로 이전했으므로 parsed.deinit()에서 이중 해제 방지
-        parsed.pkg.side_effects = .unknown;
-
-        applyCachedSideEffects(module, pkg_dir_path, se);
+        const info = self.lookupPkgInfo(pkg_dir_path);
+        applyCachedSideEffects(module, pkg_dir_path, info.side_effects);
     }
 
     /// package.json sideEffects 값을 모듈에 적용.
@@ -1579,33 +1601,12 @@ pub const ModuleGraph = struct {
     }
 
     /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
+    /// `lookupPkgInfo` 로 캐시 경유 — 같은 pkg 의 side_effects 조회와 pkg.json parse 공유.
     fn isPackageTypeModule(self: *ModuleGraph, module_path: []const u8) bool {
         var scope = profile.begin(.graph_discover_pm_is_pkg_type);
         defer scope.end();
-
         const pkg_dir_path = findPackageDirPath(module_path) orelse return false;
-
-        // Fast path: 패키지 단위 캐시 조회. date-fns 처럼 한 패키지 안 수백 파일이
-        // 반복 호출하는 케이스에서 fs openDir + readFile + JSON parse 를 1회로.
-        self.pkg_type_cache_mutex.lock();
-        const cache_hit = self.pkg_type_cache.get(pkg_dir_path);
-        self.pkg_type_cache_mutex.unlock();
-        if (cache_hit) |v| return v;
-
-        // Slow path: 실제 package.json 읽기
-        const result = blk: {
-            var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch break :blk false;
-            defer pkg_dir.close();
-            var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch break :blk false;
-            defer parsed.deinit();
-            break :blk parsed.pkg.isModule();
-        };
-
-        // 캐시 put — race 시 다른 스레드가 먼저 put 해도 같은 결과이므로 덮어써도 안전.
-        self.pkg_type_cache_mutex.lock();
-        defer self.pkg_type_cache_mutex.unlock();
-        self.pkg_type_cache.put(self.allocator, pkg_dir_path, result) catch {};
-        return result;
+        return self.lookupPkgInfo(pkg_dir_path).is_module;
     }
 
     /// TLA 전이적 전파: TLA 모듈을 static import하는 모듈도 TLA로 표시.

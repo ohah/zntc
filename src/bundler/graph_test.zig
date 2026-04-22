@@ -7,6 +7,7 @@ const types = @import("types.zig");
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
+const pkg_json = @import("package_json.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
 fn createFile(dir: std.fs.Dir, path: []const u8) !void {
@@ -730,4 +731,271 @@ test "buildIncremental: changed_files=empty + cache miss (new module) → 강제
     try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
     try std.testing.expectEqual(@as(usize, 1), graph.modules.items.len);
     try std.testing.expectEqual(Module.State.ready, graph.modules.items[0].state);
+}
+
+// ============================================================================
+// pkg_info_cache (#1744) — lookupPkgInfo 의 correctness / thread-safety / 누수
+// ============================================================================
+
+/// 테스트용 ModuleGraph. `lookupPkgInfo` 는 self.allocator / resolve_cache 외에는
+/// 그래프 상태를 쓰지 않으므로 modules 등 기타 필드는 default 로 충분.
+fn makeGraph() struct { graph: ModuleGraph, cache: *resolve_cache_mod.ResolveCache } {
+    const cache = std.testing.allocator.create(resolve_cache_mod.ResolveCache) catch unreachable;
+    cache.* = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    return .{ .graph = ModuleGraph.init(std.testing.allocator, cache), .cache = cache };
+}
+
+fn freeGraph(g: *ModuleGraph, cache: *resolve_cache_mod.ResolveCache) void {
+    g.deinit();
+    cache.deinit();
+    std.testing.allocator.destroy(cache);
+}
+
+/// 임시 tmp 디렉토리 안에 node_modules/<pkg>/package.json 생성.
+fn writePkgJson(tmp_dir: std.fs.Dir, pkg_name: []const u8, contents: []const u8) !void {
+    var buf: [256]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&buf, "node_modules/{s}/package.json", .{pkg_name});
+    try writeFile(tmp_dir, rel, contents);
+}
+
+/// 패키지 디렉토리 절대 경로 = tmp_root/node_modules/<pkg>. findPackageDirPath 검증용.
+fn pkgDirAbs(tmp: *std.testing.TmpDir, pkg_name: []const u8) ![]u8 {
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const rel = try std.fmt.allocPrint(std.testing.allocator, "node_modules/{s}", .{pkg_name});
+    defer std.testing.allocator.free(rel);
+    return try std.fs.path.resolve(std.testing.allocator, &.{ root, rel });
+}
+
+test "pkg_info_cache: missing package.json → unknown + is_module=false" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const pkg_abs = try pkgDirAbs(&tmp, "ghost-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(false, info.is_module);
+    try std.testing.expect(info.side_effects == .unknown);
+    try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
+}
+
+test "pkg_info_cache: type=module → is_module=true, side_effects=unknown" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "mod-pkg", "{\"type\":\"module\"}");
+    const pkg_abs = try pkgDirAbs(&tmp, "mod-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(true, info.is_module);
+    try std.testing.expect(info.side_effects == .unknown);
+}
+
+test "pkg_info_cache: sideEffects=false → .all(false)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "pure-pkg", "{\"sideEffects\":false}");
+    const pkg_abs = try pkgDirAbs(&tmp, "pure-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(false, info.is_module);
+    try std.testing.expect(info.side_effects == .all);
+    try std.testing.expectEqual(false, info.side_effects.all);
+}
+
+test "pkg_info_cache: sideEffects=[*.css] → .patterns, patterns 소유권 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "css-pkg", "{\"sideEffects\":[\"*.css\",\"./polyfill.js\"]}");
+    const pkg_abs = try pkgDirAbs(&tmp, "css-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expect(info.side_effects == .patterns);
+    try std.testing.expectEqual(@as(usize, 2), info.side_effects.patterns.len);
+    try std.testing.expectEqualStrings("*.css", info.side_effects.patterns[0]);
+    try std.testing.expectEqualStrings("./polyfill.js", info.side_effects.patterns[1]);
+    // 누수 체크는 std.testing.allocator 가 graph.deinit 후 자동 수행.
+}
+
+test "pkg_info_cache: type=module + sideEffects=false 조합" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "esm-pure", "{\"type\":\"module\",\"sideEffects\":false}");
+    const pkg_abs = try pkgDirAbs(&tmp, "esm-pure");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(true, info.is_module);
+    try std.testing.expect(info.side_effects == .all);
+    try std.testing.expectEqual(false, info.side_effects.all);
+}
+
+test "pkg_info_cache: 같은 경로 두 번 → cache size 1, 동일 결과" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "hit-pkg", "{\"type\":\"module\"}");
+    const pkg_abs = try pkgDirAbs(&tmp, "hit-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const first = gc.graph.lookupPkgInfo(pkg_abs);
+    const second = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(first.is_module, second.is_module);
+    try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
+}
+
+test "pkg_info_cache: 같은 pkg 다른 파일 경로 → cache entry 1개" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "multi-file", "{\"type\":\"module\"}");
+    // 같은 pkg 안 두 개의 가짜 파일 경로 — findPackageDirPath 는 substring 기반이라
+    // 둘 다 동일한 pkg_dir_path 를 반환해야 함.
+    const pkg_abs = try pkgDirAbs(&tmp, "multi-file");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    _ = gc.graph.lookupPkgInfo(pkg_abs);
+    _ = gc.graph.lookupPkgInfo(pkg_abs);
+    _ = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
+}
+
+test "pkg_info_cache: invalid JSON → is_module=false, side_effects=unknown" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "broken-pkg", "{not valid json");
+    const pkg_abs = try pkgDirAbs(&tmp, "broken-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const info = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expectEqual(false, info.is_module);
+    try std.testing.expect(info.side_effects == .unknown);
+}
+
+test "pkg_info_cache: 다른 패키지는 별도 entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "pkg-a", "{\"type\":\"module\"}");
+    try writePkgJson(tmp.dir, "pkg-b", "{\"sideEffects\":false}");
+    const pkg_a = try pkgDirAbs(&tmp, "pkg-a");
+    defer std.testing.allocator.free(pkg_a);
+    const pkg_b = try pkgDirAbs(&tmp, "pkg-b");
+    defer std.testing.allocator.free(pkg_b);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const a = gc.graph.lookupPkgInfo(pkg_a);
+    const b = gc.graph.lookupPkgInfo(pkg_b);
+    try std.testing.expectEqual(true, a.is_module);
+    try std.testing.expectEqual(false, b.is_module);
+    try std.testing.expect(a.side_effects == .unknown);
+    try std.testing.expect(b.side_effects == .all);
+    try std.testing.expectEqual(@as(u32, 2), gc.graph.pkg_info_cache.count());
+}
+
+// ── Thread-safety — 동일 pkg_dir_path 를 N threads 동시 lookup ──
+const ParallelCtx = struct {
+    graph: *ModuleGraph,
+    pkg_path: []const u8,
+    start_flag: *std.atomic.Value(bool),
+    results: []ModuleGraph.PkgInfo,
+    idx: usize,
+};
+
+fn parallelWorker(ctx: ParallelCtx) void {
+    // busy-wait barrier: 모든 워커가 동시 출발하도록.
+    while (!ctx.start_flag.load(.acquire)) {
+        std.Thread.yield() catch {};
+    }
+    ctx.results[ctx.idx] = ctx.graph.lookupPkgInfo(ctx.pkg_path);
+}
+
+test "pkg_info_cache: patterns 슬라이스가 다회 cache hit 후에도 동일 포인터 + 내용 유지" {
+    // cache 재조회 시 매번 같은 slice 반환 (heap 재할당 없음) 을 검증 —
+    // caller 가 slice 를 보관해도 안전함을 보장. UAF 회귀 테스트.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "stable-pkg", "{\"sideEffects\":[\"*.css\",\"*.scss\"]}");
+    const pkg_abs = try pkgDirAbs(&tmp, "stable-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const a = gc.graph.lookupPkgInfo(pkg_abs);
+    const b = gc.graph.lookupPkgInfo(pkg_abs);
+    const c = gc.graph.lookupPkgInfo(pkg_abs);
+    try std.testing.expect(a.side_effects == .patterns);
+    try std.testing.expect(c.side_effects == .patterns);
+    // 같은 slice 포인터 — 복사 없이 cache 의 소유권 공유.
+    try std.testing.expectEqual(a.side_effects.patterns.ptr, b.side_effects.patterns.ptr);
+    try std.testing.expectEqual(a.side_effects.patterns.ptr, c.side_effects.patterns.ptr);
+    // 내용도 유효.
+    try std.testing.expectEqualStrings("*.css", c.side_effects.patterns[0]);
+    try std.testing.expectEqualStrings("*.scss", c.side_effects.patterns[1]);
+}
+
+test "pkg_info_cache: 병렬 N thread 동시 lookup → 결과 일치 + entry 1개 + 누수 없음" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writePkgJson(tmp.dir, "race-pkg", "{\"type\":\"module\",\"sideEffects\":[\"*.css\"]}");
+    const pkg_abs = try pkgDirAbs(&tmp, "race-pkg");
+    defer std.testing.allocator.free(pkg_abs);
+
+    var gc = makeGraph();
+    defer freeGraph(&gc.graph, gc.cache);
+
+    const N = 16;
+    var threads: [N]std.Thread = undefined;
+    var results: [N]ModuleGraph.PkgInfo = undefined;
+    var start_flag = std.atomic.Value(bool).init(false);
+
+    for (0..N) |i| {
+        threads[i] = try std.Thread.spawn(.{}, parallelWorker, .{ParallelCtx{
+            .graph = &gc.graph,
+            .pkg_path = pkg_abs,
+            .start_flag = &start_flag,
+            .results = &results,
+            .idx = i,
+        }});
+    }
+    // 모든 스레드가 spawn 완료된 후 동시 출발.
+    start_flag.store(true, .release);
+    for (&threads) |*t| t.join();
+
+    // 모든 워커가 동일 결과.
+    for (results) |r| {
+        try std.testing.expectEqual(true, r.is_module);
+        try std.testing.expect(r.side_effects == .patterns);
+        try std.testing.expectEqual(@as(usize, 1), r.side_effects.patterns.len);
+        try std.testing.expectEqualStrings("*.css", r.side_effects.patterns[0]);
+    }
+    // race 상황에서도 entry 는 단 1개 (중복 계산된 경우 폐기되어야).
+    try std.testing.expectEqual(@as(u32, 1), gc.graph.pkg_info_cache.count());
+    // 누수 없음: std.testing.allocator 가 freeGraph 이후 검증.
 }
