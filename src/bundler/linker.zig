@@ -77,24 +77,10 @@ pub const MangleReportCollector = struct {
     /// Bundle emit 후 채움.
     bundle_size_bytes: usize = 0,
 
-    /// #1760 Step 2 shadow mode — `mangleAll()` 을 같은 번들에 대해 한 번 더
-    /// 돌려 수집한 수치. 실제 번들 출력에는 영향 없음, 비교 용도.
-    unified: ?UnifiedSummary = null,
-
     pub const NestedEntry = struct {
         /// linker 생명주기 내 유효 (module.path 차용).
         module_path: []const u8,
         stats: ManglerStats,
-    };
-
-    pub const UnifiedSummary = struct {
-        phase_a: ManglerStats,
-        /// 모든 모듈 Phase B stats 의 합 (slot/length/renamed).
-        phase_b_totals: ManglerStats,
-        /// 전체 renames 개수 (Phase A + Phase B 합).
-        total_renames: usize,
-        /// 모듈 수 (phase_b_modules 길이).
-        module_count: usize,
     };
 
     pub fn init(allocator: std.mem.Allocator) MangleReportCollector {
@@ -138,15 +124,6 @@ pub const MangleReportCollector = struct {
         try writer.writeAll(if (self.nested.items.len == 0) "]" else "\n  ]");
         try writer.print(",\n  \"bundle_size_bytes\": {d},\n  \"totals\": ", .{self.bundle_size_bytes});
         try writeStatsJson(writer, totals);
-
-        if (self.unified) |u| {
-            try writer.writeAll(",\n  \"unified\": {\n    \"phase_a\": ");
-            try writeStatsJson(writer, u.phase_a);
-            try writer.writeAll(",\n    \"phase_b_totals\": ");
-            try writeStatsJson(writer, u.phase_b_totals);
-            try writer.print(",\n    \"total_renames\": {d},\n    \"module_count\": {d}\n  }}", .{ u.total_renames, u.module_count });
-        }
-
         try writer.writeAll("\n}\n");
     }
 
@@ -770,137 +747,9 @@ pub const Linker = struct {
         }
     }
 
-    const NameEntry = struct {
-        name: []const u8,
-        total_refs: u32,
-    };
-
-    /// mangling 후보 수집 결과. computeMangling()에서 사용.
-    const ManglingCandidates = struct {
-        /// mangling 제외 대상 (export/import binding 이름)
-        exported: std.StringHashMap(void),
-        /// 빈도순 정렬된 mangling 후보 목록
-        entries: std.ArrayListUnmanaged(NameEntry),
-        /// scope_maps에 없는 합성 default export 심볼들. dirty list에도 없으므로
-        /// rename 단계에서 별도로 assignSymbolCanonical이 필요하다 (#1585).
-        synthetic_defaults: std.ArrayListUnmanaged(*semantic_symbol.Symbol),
-
-        fn deinit(mc: *ManglingCandidates, allocator: std.mem.Allocator) void {
-            mc.exported.deinit();
-            mc.entries.deinit(allocator);
-            mc.synthetic_defaults.deinit(allocator);
-        }
-    };
-
-    /// 모든 모듈의 top-level 심볼을 수집하고 reference_count 빈도순으로 정렬.
-    /// mangling 제외 대상(export/import binding)도 함께 수집한다.
-    fn collectManglingCandidates(self: *const Linker) !ManglingCandidates {
-        var name_refs = std.StringHashMap(u32).init(self.allocator);
-        defer name_refs.deinit();
-
-        var synthetic_defaults: std.ArrayListUnmanaged(*semantic_symbol.Symbol) = .empty;
-        errdefer synthetic_defaults.deinit(self.allocator);
-
-        // mangling 제외 대상 수집 (public API 경계) — #1581:
-        //   - entry 모듈의 export: 번들 외부 소비자에게 노출되는 public API
-        //   - external import의 local binding: 번들 밖에서 해소되므로 원본 이름이 정답
-        // 중간 모듈의 export 이름은 scope hoisting 후 bundle 내부에서만 소비되므로
-        // 자유롭게 축약 가능. esbuild/rolldown도 동일한 boundary로 동작.
-        var exported = std.StringHashMap(void).init(self.allocator);
-        errdefer exported.deinit();
-        for (self.modules) |m| {
-            if (m.is_entry_point) {
-                for (m.export_bindings) |eb| {
-                    try exported.put(eb.exported_name, {});
-                    try exported.put(m.exportBindingLocalName(eb), {});
-                }
-            }
-            for (m.import_bindings) |ib| {
-                if (ib.import_record_index >= m.import_records.len) continue;
-                if (!m.import_records[ib.import_record_index].is_external) continue;
-                try exported.put(m.importBindingLocalName(ib), {});
-            }
-        }
-
-        // top-level scope(scope_maps[0])의 심볼 reference_count를 이름별로 합산
-        for (self.modules) |m| {
-            const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            // direct eval / with이 이 모듈 내부 어디든 있으면 top-level 바인딩도
-            // 동적으로 참조될 수 있으므로 전체 스킵 (#1258). rolldown/oxc 방식.
-            if (sem.scopes.len > 0 and sem.scopes[0].blocksMangling()) continue;
-            var sit = sem.scope_maps[0].iterator();
-            while (sit.next()) |entry| {
-                const sym_name = entry.key_ptr.*;
-                const sym_idx = entry.value_ptr.*;
-
-                // mangling 제외 대상
-                if (exported.contains(sym_name)) continue;
-                if (sym_name.len <= 1) continue;
-                if (std.mem.eql(u8, sym_name, "default")) continue;
-                if (std.mem.eql(u8, sym_name, "arguments")) continue;
-
-                if (sym_idx >= sem.symbols.items.len) continue;
-                const sym = &sem.symbols.items[sym_idx];
-                // import binding은 mangling 대상이 아님 (#1623). 후보로 잡으면 자체 mangled
-                // 이름이 부여되고, buildMetadataForAst의 self-rename 루프가 그 이름으로
-                // cross-module rename(target export의 canonical name)을 덮어써 reference가 깨진다.
-                if (sym.kind == .import_binding) continue;
-                // canonical_name이 이미 할당된 상태(충돌 해결 후 `_default$1` 등)라면
-                // dirty list 치환이 그 canonical_name으로 lookup하므로 name_refs도
-                // 그 키로 맞춰야 rename이 연결된다 (#1585).
-                const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym_name;
-                if (key.len <= 1) continue;
-                if (exported.contains(key)) continue;
-                const prev = name_refs.get(key) orelse 0;
-                try name_refs.put(key, prev + sym.reference_count);
-            }
-
-            // 합성 default export 심볼(`_default`)도 후보에 포함 (#1585).
-            // scope_maps에 등록되지 않은 합성 심볼은 위 순회에서 누락된다.
-            // populateSyntheticSymbols(#1338)가 semantic 공간에 extend한 심볼만 대상.
-            // 수집한 포인터는 synthetic_defaults로 보관하여 3-b rename 단계에서 재사용.
-            for (sem.symbols.items) |*sym| {
-                const sk = sym.synthetic_kind orelse continue;
-                if (sk != .default_export) continue;
-                const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
-                if (key.len <= 1) continue;
-                if (exported.contains(key)) continue;
-                try synthetic_defaults.append(self.allocator, sym);
-                const prev = name_refs.get(key) orelse 0;
-                try name_refs.put(key, prev + sym.reference_count);
-            }
-        }
-
-        // 빈도순 정렬
-        var entries: std.ArrayListUnmanaged(NameEntry) = .empty;
-        errdefer entries.deinit(self.allocator);
-        {
-            var it = name_refs.iterator();
-            while (it.next()) |entry| {
-                try entries.append(self.allocator, .{
-                    .name = entry.key_ptr.*,
-                    .total_refs = entry.value_ptr.*,
-                });
-            }
-        }
-        std.mem.sortUnstable(NameEntry, entries.items, {}, struct {
-            fn cmp(_: void, a: NameEntry, b: NameEntry) bool {
-                if (a.total_refs != b.total_refs) return a.total_refs > b.total_refs;
-                return std.mem.lessThan(u8, a.name, b.name);
-            }
-        }.cmp);
-
-        return .{ .exported = exported, .entries = entries, .synthetic_defaults = synthetic_defaults };
-    }
-
-    /// #1760 shadow mode: unified_mangler.mangleAll() 을 호출하기 위한 입력 수집.
-    /// `collectManglingCandidates` 와 같은 필터 (exported/imported/1-char/default)
-    /// 를 적용하지만 이름별 집계 대신 `(module_index, symbol_id)` 단위 후보를
-    /// 개별 생성한다. 결과는 caller 가 `deinit` 해야 함.
-    ///
-    /// Step 3 (unified 경로로 전환) 시 이 필터 체인과 `collectManglingCandidates`
-    /// 가 통합되며, 이 함수가 기본 경로로 남고 구 함수는 제거 예정.
+    /// unified_mangler.mangleAll() 을 호출하기 위한 입력 수집. `(module_index,
+    /// symbol_id)` 단위 후보를 개별 생성한다 (이름별 집계 없음). 결과는
+    /// caller 가 `deinit` 해야 함.
     pub fn collectUnifiedInput(self: *const Linker) !UnifiedCollect {
         const um = @import("../codegen/unified_mangler.zig");
 

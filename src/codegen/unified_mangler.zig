@@ -41,8 +41,7 @@ pub const ModuleMangleInput = struct {
 };
 
 /// Phase A 의 mangling 후보. 호출부가 빈도/필터링을 수행해 넘긴다
-/// (현재 `linker.collectManglingCandidates` 와 동일 범주: exported/imported/
-/// 길이 1 이하 제외).
+/// (범주: exported/imported/1-char/default/arguments/import binding 제외).
 pub const TopLevelCandidate = struct {
     module_index: u32,
     symbol_id: u32,
