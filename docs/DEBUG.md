@@ -323,6 +323,7 @@ Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
 - 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
 - Graph 내부: `graphBuild` / `graphWorker` / `graphDiscover` (BFS 스캔) / `graphFinalize` (DFS+승격)
 - Emit 내부 (bundler 수준): `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss`
+- emit_output 내부 (emitter 수준): `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`
 - 비활성 상태에선 모두 0. `parse`/`semantic` 은 진짜 parser/analyzer 시간.
 
 ## 4.1 번개 (bungae) HMR 실측

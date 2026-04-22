@@ -1265,6 +1265,12 @@ const PhaseDurations = struct {
     emit_output_ms: f64 = 0,
     emit_metafile_ms: f64 = 0,
     emit_css_ms: f64 = 0,
+
+    // ── emit_output 내부 분해 (emitter.emitWithTreeShaking) ──
+    emit_prelude_ms: f64 = 0,
+    emit_module_pass_ms: f64 = 0,
+    emit_concat_ms: f64 = 0,
+    emit_sourcemap_finalize_ms: f64 = 0,
 };
 
 /// onRebuild 콜백에 전달할 이벤트 데이터
@@ -1435,6 +1441,11 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 .{ .name = "emitOutput", .value = pd.emit_output_ms },
                 .{ .name = "emitMetafile", .value = pd.emit_metafile_ms },
                 .{ .name = "emitCss", .value = pd.emit_css_ms },
+                // emit_output 내부 (emitter.emitWithTreeShaking 분해).
+                .{ .name = "emitPrelude", .value = pd.emit_prelude_ms },
+                .{ .name = "emitModulePass", .value = pd.emit_module_pass_ms },
+                .{ .name = "emitConcat", .value = pd.emit_concat_ms },
+                .{ .name = "emitSourcemapFinalize", .value = pd.emit_sourcemap_finalize_ms },
             };
             for (fields) |f| {
                 var js_num: c.napi_value = undefined;
@@ -1915,6 +1926,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             .emit_output_ms = nsToMs(profile_mod.totalNs(.emit_output)),
             .emit_metafile_ms = nsToMs(profile_mod.totalNs(.emit_metafile)),
             .emit_css_ms = nsToMs(profile_mod.totalNs(.emit_css)),
+            .emit_prelude_ms = nsToMs(profile_mod.totalNs(.emit_prelude)),
+            .emit_module_pass_ms = nsToMs(profile_mod.totalNs(.emit_module_pass)),
+            .emit_concat_ms = nsToMs(profile_mod.totalNs(.emit_concat)),
+            .emit_sourcemap_finalize_ms = nsToMs(profile_mod.totalNs(.emit_sourcemap_finalize)),
         };
         event.reparsed_modules = rebuild_result.reparsed_modules;
 

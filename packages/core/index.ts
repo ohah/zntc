@@ -477,6 +477,17 @@ export interface WatchRebuildEvent {
     emitMetafile: number;
     /** CSS 엔트리별 번들 + lightningcss 후처리 */
     emitCss: number;
+
+    // emit_output 내부 (emitter.emitWithTreeShaking 분해)
+
+    /** 포맷 prologue + polyfill IIFE + runtime helper 주입 */
+    emitPrelude: number;
+    /** Phase 1/1.5/2/2.5 — used_names + cache lookup + emitModule + cache put */
+    emitModulePass: number;
+    /** Phase 3: module concat + runtime helpers 합산 + renderChunk + epilogue */
+    emitConcat: number;
+    /** 소스맵 V3 JSON 생성 (VLQ encode + sources content + debugId) */
+    emitSourcemapFinalize: number;
   };
   /** 증분 그래프에서 재파싱된 모듈 수. 캐시 미스된 모듈만 카운트. 전체 빌드에서는 미노출. */
   reparsedModules?: number;

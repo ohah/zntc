@@ -14,6 +14,7 @@
 //!   - D058: exec_index 순서 = ESM 실행 순서
 
 const std = @import("std");
+const profile = @import("../profile.zig");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
@@ -278,6 +279,10 @@ pub fn emitWithTreeShaking(
         try ext_param_names.append(allocator, try types.specifierToParamName(allocator, spec));
     }
 
+    // emit_prelude: 포맷 prologue + polyfill 주입 + runtime helper 준비.
+    // emit_module_pass 시작점 (`Phase 1: used_names`) 직전에 end.
+    var prelude_scope = profile.begin(.emit_prelude);
+
     // 포맷별 prologue
     try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names.items);
 
@@ -358,6 +363,13 @@ pub fn emitWithTreeShaking(
         }
         break :blk null;
     };
+
+    prelude_scope.end();
+
+    // emit_module_pass: Phase 1 (used_names 사전 계산) + Phase 1.5 (compiled cache
+    // lookup) + Phase 2 (emitModule 병렬/순차) + Phase 2.5 (cache put). transform /
+    // codegen 실제 호출이 이 범위에서 발생.
+    var module_pass_scope = profile.begin(.emit_module_pass);
 
     // Phase 1: used_names 사전 계산 (순차 — 모듈 간 의존)
     const used_names_list = try computeAllUsedNames(allocator, sorted.items, graph, shaker);
@@ -440,6 +452,12 @@ pub fn emitWithTreeShaking(
             cache.put(m.path, input_hashes[i], results[i]) catch continue;
         }
     }
+
+    module_pass_scope.end();
+
+    // emit_concat: Phase 3 순차 합류 — exec_index 순서대로 module concat + runtime
+    // helper 합산 + 소스맵 매핑 누적 + renderChunk 훅 + epilogue.
+    var concat_scope = profile.begin(.emit_concat);
 
     // Phase 3: 순차 합류 — exec_index 순서대로 concat + helpers 합산 + 소스맵 수집
     var module_output: std.ArrayList(u8) = .empty;
@@ -648,6 +666,13 @@ pub fn emitWithTreeShaking(
         SourceMap.generateUuidV4(&debug_id_buf);
         break :blk &debug_id_buf;
     } else null;
+
+    concat_scope.end();
+
+    // emit_sourcemap_finalize: 소스맵 V3 JSON 생성 (mapping VLQ 인코딩 + sources
+    // 내용 첨부 + debugId 삽입) + 번들 끝의 sourceMappingURL 주석 추가.
+    var sm_finalize_scope = profile.begin(.emit_sourcemap_finalize);
+    defer sm_finalize_scope.end();
 
     // 소스맵 JSON 생성
     var sourcemap_json: ?[]const u8 = null;
