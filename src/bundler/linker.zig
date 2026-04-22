@@ -1413,7 +1413,9 @@ pub const Linker = struct {
             if (sid != ns_sym_id) continue;
             if (node_i >= node_count) {
                 // 인덱스 범위 밖 참조는 보수적으로 opaque
-                access.members.deinit(allocator);
+                // #1754: `members.deinit` 만 호출하면 value ArrayList 의 backing
+                // buffer 가 leak. 전체 deinit 으로 value 까지 해제 후 초기화.
+                access.deinit(allocator);
                 access.members = .{};
                 access.kind = .@"opaque";
                 return access;
@@ -1461,7 +1463,9 @@ pub const Linker = struct {
                 }
             } else {
                 // member-expr object가 아닌 참조 위치 — opaque
-                access.members.deinit(allocator);
+                // #1754: `members.deinit` 만 호출하면 이전에 append 된 value ArrayList 의
+                // backing buffer 가 leak. 전체 deinit 으로 value 까지 해제 후 초기화.
+                access.deinit(allocator);
                 access.members = .{};
                 access.kind = .@"opaque";
                 return access;
