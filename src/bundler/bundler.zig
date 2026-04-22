@@ -759,6 +759,12 @@ pub const Bundler = struct {
             if (!self.options.code_splitting) {
                 try l.computeRenames();
                 if (self.options.minify_identifiers) {
+                    // #1760 Step 2 shadow: computeMangling 전에 unified 도 돌려 수치 수집.
+                    if (mangle_report_enabled) {
+                        runUnifiedShadow(self.allocator, &l, &mangle_collector) catch |err| {
+                            std.log.warn("mangle-report: unified shadow failed: {s}", .{@errorName(err)});
+                        };
+                    }
                     try l.computeMangling();
                 }
             }
@@ -1180,6 +1186,39 @@ pub const Bundler = struct {
         };
     }
 };
+
+/// #1760 Step 2 shadow — `mangleAll()` 을 같은 번들에 돌려 `collector.unified`
+/// 에 요약을 기록. 실제 번들 출력에는 영향 없음.
+fn runUnifiedShadow(
+    allocator: std.mem.Allocator,
+    linker: *Linker,
+    collector: *MangleReportCollector,
+) !void {
+    const um = @import("../codegen/unified_mangler.zig");
+    const ManglerStats = @import("../codegen/mangler.zig").ManglerStats;
+
+    var collected = try linker.collectUnifiedInput();
+    defer collected.deinit();
+
+    var res = try um.mangleAll(allocator, .{
+        .modules = collected.modules,
+        .top_level_candidates = collected.top_level_candidates,
+    });
+    defer res.deinit();
+
+    var phase_b_totals: ManglerStats = .{};
+    for (res.phase_b_modules) |s| {
+        phase_b_totals.slot_count += s.slot_count;
+        phase_b_totals.slot_name_length_sum += s.slot_name_length_sum;
+        phase_b_totals.renamed_symbol_count += s.renamed_symbol_count;
+    }
+    collector.unified = .{
+        .phase_a = res.phase_a,
+        .phase_b_totals = phase_b_totals,
+        .total_renames = res.renames.count(),
+        .module_count = res.phase_b_modules.len,
+    };
+}
 
 /// metafile JSON을 생성한다 (esbuild 호환 형식).
 /// inputs: 각 모듈의 경로, 바이트 수, import 목록
