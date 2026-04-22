@@ -326,11 +326,11 @@ pub fn emitEsmWrappedModule(
             .linking_metadata = cg_linking,
             .replace_import_meta = options.format != .esm,
             .platform = options.platform,
-            .sourcemap = options.sourcemap,
-            .source_root = options.source_root orelse "",
-            .sources_content = options.sources_content,
+            .sourcemap = options.sourcemap.enable,
+            .source_root = options.sourcemap.source_root orelse "",
+            .sources_content = options.sourcemap.sources_content,
         });
-        if (options.sourcemap) {
+        if (options.sourcemap.enable) {
             hoist_cg.line_offsets = module.line_offsets;
             try hoist_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
         }
@@ -522,12 +522,12 @@ pub fn emitEsmWrappedModule(
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
         .keep_names = options.keep_names,
-        .sourcemap = options.sourcemap,
-        .source_root = options.source_root orelse "",
-        .sources_content = options.sources_content,
+        .sourcemap = options.sourcemap.enable,
+        .source_root = options.sourcemap.source_root orelse "",
+        .sources_content = options.sourcemap.sources_content,
     });
     // 소스맵: 소스 파일 등록 + line_offsets 설정
-    if (options.sourcemap) {
+    if (options.sourcemap.enable) {
         body_cg.line_offsets = module.line_offsets;
         try body_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
     }
@@ -545,11 +545,11 @@ pub fn emitEsmWrappedModule(
             .replace_import_meta = options.format != .esm,
             .platform = options.platform,
             .keep_names = options.keep_names,
-            .sourcemap = options.sourcemap,
-            .source_root = options.source_root orelse "",
-            .sources_content = options.sources_content,
+            .sourcemap = options.sourcemap.enable,
+            .source_root = options.sourcemap.source_root orelse "",
+            .sources_content = options.sourcemap.sources_content,
         });
-        if (options.sourcemap) {
+        if (options.sourcemap.enable) {
             func_cg.line_offsets = module.line_offsets;
             try func_cg.addSourceFile(parent.sourcemapSourcePath(module.path, options));
         }

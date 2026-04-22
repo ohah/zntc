@@ -82,6 +82,32 @@ pub const Mapping = struct {
 };
 
 // ============================================================
+// 소스맵 옵션
+// ============================================================
+
+/// Bundler 레벨 sourcemap 옵션 묶음. `EmitOptions.sourcemap` / `BundleOptions.sourcemap`
+/// 양쪽에서 동일 구조체를 공유해 옵션 전파 중복을 제거한다. 단일-파일 경로
+/// (`codegen.zig`, `transpile.zig`) 는 별도 옵션 구조체가 있어 현재 범위 밖.
+pub const SourceMapOptions = struct {
+    /// 소스맵 생성 활성화. dev mode 에서는 번들 레벨 소스맵을 생성한다.
+    enable: bool = false,
+    /// Sentry Debug ID (`--sourcemap-debug-ids`). 번들 끝에 `//# debugId=<UUID>` 주석 추가 +
+    /// 소스맵 JSON 에 `"debugId"` 필드 삽입. 번들과 맵에 동일 UUID 를 공유.
+    debug_ids: bool = false,
+    /// Metro `x_facebook_sources` function map (`--sourcemap-function-map`).
+    /// Hermes 스택트레이스 심볼리케이션용. RN 플랫폼에서 자동 활성화.
+    function_map: bool = false,
+    /// Lazy sourcemap 경로 (Issue #1727 Phase B, Metro `_processSourceMapRequest` 패턴).
+    /// true 면 emit 단계에서 JSON 을 생성하지 않고 `SourceMapBuilder` 를 result 로 이관.
+    /// NAPI handle 이 요청 시 `generateJSON` 을 호출. `enable=false` 이면 무시된다.
+    lazy: bool = false,
+    /// sourceRoot 필드 값 (`--source-root`).
+    source_root: ?[]const u8 = null,
+    /// sourcesContent 포함 여부 (`--sources-content=false` 로 비활성).
+    sources_content: bool = true,
+};
+
+// ============================================================
 // 소스맵 빌더
 // ============================================================
 
@@ -98,7 +124,10 @@ pub const SourceMapBuilder = struct {
     sources_content: bool = true,
     /// Sentry Debug ID. non-null이면 JSON에 "debugId" 필드를 추가한다.
     /// UUID v4 문자열 (예: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx").
+    /// lazy sourcemap 경로 (Issue #1727) 에서 builder 가 emit 함수 밖으로 이관되므로
+    /// stack pointer 의존을 회피하기 위해 `setDebugId` 로 내부 버퍼에 복사해 저장한다.
     debug_id: ?[]const u8 = null,
+    debug_id_buf: [36]u8 = undefined,
     /// x_google_ignoreList: DevTools에서 무시할 소스 인덱스 목록.
     /// 폴리필, node_modules 등 프레임워크 코드를 자동으로 스킵하도록 한다.
     ignored_sources: std.ArrayList(u32) = .empty,
@@ -125,6 +154,29 @@ pub const SourceMapBuilder = struct {
         self.source_contents.deinit(self.allocator);
         self.ignored_sources.deinit(self.allocator);
         self.buf.deinit(self.allocator);
+    }
+
+    /// heap 할당된 builder 의 `deinit` + `allocator.destroy` 를 한 호출로 묶어 처리.
+    /// lazy sourcemap 경로 (Issue #1727) 에서 `SourceMapBuilder` 를 포인터로 이관/보관하는
+    /// 사이트가 여러 곳이라 반복 패턴을 하나로 통합.
+    pub fn destroy(self: *SourceMapBuilder, allocator: std.mem.Allocator) void {
+        self.deinit();
+        allocator.destroy(self);
+    }
+
+    /// UUID v4 문자열 (36 byte) 를 builder 내부 `debug_id_buf` 에 복사하고 `debug_id` 를
+    /// 그 slice 로 설정. lazy 경로에서 builder 가 외부로 이관돼도 pointer 유효성 보장.
+    pub fn setDebugId(self: *SourceMapBuilder, uuid: []const u8) void {
+        std.debug.assert(uuid.len == 36);
+        @memcpy(&self.debug_id_buf, uuid[0..36]);
+        self.debug_id = &self.debug_id_buf;
+    }
+
+    /// 얕은 복사 (`dest.* = src;`) 로 builder 를 이동시킨 직후 호출. `debug_id` 는 내부
+    /// `debug_id_buf` 를 가리키는 self-referential pointer 이므로 복사 후 원래 위치를
+    /// 가리키게 되어 stale. 새 메모리 위치 기준으로 재설정.
+    pub fn fixSelfReferences(self: *SourceMapBuilder) void {
+        if (self.debug_id != null) self.debug_id = &self.debug_id_buf;
     }
 
     /// 소스를 x_google_ignoreList에 추가. DevTools가 해당 소스의 프레임을 스킵한다.

@@ -1272,3 +1272,304 @@ test "JSON module — CJS format" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"key\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"value\"") != null);
 }
+
+// Lazy sourcemap (Issue #1727 Phase B) — eager 와 동일한 JSON 을 생성해야 한다.
+// lazy 경로: emit 에서 builder 이관 → caller 가 generateJSON 호출.
+// eager 경로: emit 에서 바로 JSON 생성.
+// 두 경로의 output 바이트 및 sourcemap JSON 바이트가 완전 동등함을 보장.
+test "emitter: lazy_sourcemap 은 eager 경로와 바이트 동등한 JSON 을 생성한다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x: number = 42;\nconsole.log(x);\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const base_opts: EmitOptions = .{
+        .sourcemap = .{ .enable = true },
+        .output_filename = "bundle.js",
+    };
+
+    // Eager: emit 단계에서 JSON 생성, sourcemap_builder 는 null.
+    var eager_opts = base_opts;
+    eager_opts.sourcemap.lazy = false;
+    const eager_res = try emit(std.testing.allocator, &result.graph, eager_opts, null);
+    defer eager_res.deinit(std.testing.allocator);
+    try std.testing.expect(eager_res.sourcemap != null);
+    try std.testing.expect(eager_res.sourcemap_builder == null);
+
+    // Lazy: emit 단계에서 builder 이관, sourcemap 은 null.
+    var lazy_opts = base_opts;
+    lazy_opts.sourcemap.lazy = true;
+    const lazy_res = try emit(std.testing.allocator, &result.graph, lazy_opts, null);
+    defer lazy_res.deinit(std.testing.allocator);
+    try std.testing.expect(lazy_res.sourcemap == null);
+    try std.testing.expect(lazy_res.sourcemap_builder != null);
+
+    // Lazy 경로에서 caller 가 직접 generateJSON 호출.
+    const lazy_json = try lazy_res.sourcemap_builder.?.generateJSON("bundle.js");
+
+    // 바이트 동등: JSON 과 output(`//# sourceMappingURL=` 주석 포함) 모두.
+    try std.testing.expectEqualStrings(eager_res.sourcemap.?, lazy_json);
+    try std.testing.expectEqualStrings(eager_res.output, lazy_res.output);
+}
+
+test "emitter: lazy_sourcemap 은 sourcemap=false 일 때 builder 도 null" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const y = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    // sourcemap.enable=false 면 lazy 플래그는 무시된다 — builder/json 모두 null.
+    const res = try emit(std.testing.allocator, &result.graph, .{ .sourcemap = .{ .lazy = true } }, null);
+    defer res.deinit(std.testing.allocator);
+    try std.testing.expect(res.sourcemap == null);
+    try std.testing.expect(res.sourcemap_builder == null);
+}
+
+// ── Issue #1727 Phase B lazy sourcemap 추가 테스트 케이스 ─────────────────────
+
+test "emitter: lazy_sourcemap multi-module 바이트 동등성 (eager vs lazy)" {
+    // 여러 모듈 번들에서도 lazy/eager JSON 이 일치하는지 확인.
+    // 모듈 경계에서 mapping offset 계산 회귀를 잡는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nimport './c';\nconst a: number = 1;\n");
+    try writeFile(tmp.dir, "b.ts", "export const b: string = 'hello';\n");
+    try writeFile(tmp.dir, "c.ts", "export function greet(name: string) { return `hi ${name}`; }\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "a.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const base: EmitOptions = .{ .sourcemap = .{ .enable = true }, .output_filename = "bundle.js" };
+
+    var eager = base;
+    eager.sourcemap.lazy = false;
+    const eager_res = try emit(std.testing.allocator, &result.graph, eager, null);
+    defer eager_res.deinit(std.testing.allocator);
+
+    var lazy = base;
+    lazy.sourcemap.lazy = true;
+    const lazy_res = try emit(std.testing.allocator, &result.graph, lazy, null);
+    defer lazy_res.deinit(std.testing.allocator);
+
+    const lazy_json = try lazy_res.sourcemap_builder.?.generateJSON("bundle.js");
+    try std.testing.expectEqualStrings(eager_res.sourcemap.?, lazy_json);
+    try std.testing.expectEqualStrings(eager_res.output, lazy_res.output);
+}
+
+test "emitter: lazy_sourcemap 에서 sourceMappingURL 주석은 항상 붙는다" {
+    // lazy 경로에서도 bungae dev server 가 `/bundle.js.map` 을 serve 하므로 주석이 필요.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true },
+        .output_filename = "bundle.js",
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "//# sourceMappingURL=bundle.js.map") != null);
+}
+
+test "emitter: lazy_sourcemap + debug_ids 는 builder 에 UUID 를 보관한다" {
+    // debug_ids 를 lazy 경로에서도 지원. bundle.js 의 `//# debugId=` 주석과 JSON 의 `debugId`
+    // 필드가 동일 UUID 로 일치해야 Sentry 매칭이 동작.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true, .debug_ids = true },
+        .output_filename = "bundle.js",
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    // bundle.js 의 `//# debugId=<UUID>` 주석에서 UUID 추출
+    const marker = "//# debugId=";
+    const idx = std.mem.indexOf(u8, res.output, marker) orelse return error.TestUnexpectedResult;
+    const uuid_start = idx + marker.len;
+    const uuid_end = std.mem.indexOfScalarPos(u8, res.output, uuid_start, '\n') orelse return error.TestUnexpectedResult;
+    const uuid_from_js = res.output[uuid_start..uuid_end];
+
+    // Lazy getter 로 JSON 생성 → 같은 UUID 가 "debugId" 필드로 직렬화
+    const json = try res.sourcemap_builder.?.generateJSON("bundle.js");
+    const needle = try std.fmt.allocPrint(std.testing.allocator, "\"debugId\":\"{s}\"", .{uuid_from_js});
+    defer std.testing.allocator.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, json, needle) != null);
+}
+
+test "emitter: lazy_sourcemap 은 source_root 를 builder 에 전파" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true, .source_root = "/src" },
+        .output_filename = "bundle.js",
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const json = try res.sourcemap_builder.?.generateJSON("bundle.js");
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sourceRoot\":\"/src\"") != null);
+}
+
+test "emitter: lazy_sourcemap 은 sources_content=false 를 반영해 배열 제외" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true, .sources_content = false },
+        .output_filename = "bundle.js",
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const json = try res.sourcemap_builder.?.generateJSON("bundle.js");
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sourcesContent\"") == null);
+}
+
+test "emitter: lazy_sourcemap dev mode — ModuleDevCode.sm_builder 채워지고 map 은 null" {
+    // HMR 경로 핵심: collect_module_codes=true + dev_mode=true + lazy=true 조합에서 각
+    // ModuleDevCode 가 `sm_builder` 로 전달되고 기존 `map` 필드는 비어 있어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true },
+        .output_filename = "bundle.js",
+        .dev_mode = true,
+        .collect_module_codes = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len > 0);
+    for (codes) |c| {
+        try std.testing.expect(c.sm_builder != null);
+        try std.testing.expect(c.map == null);
+    }
+}
+
+test "emitter: per-module sm_builder lazy/eager JSON 바이트 동등" {
+    // 동일 입력에 대해 eager(.map) 과 lazy(.sm_builder.generateJSON) 결과가 일치.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x: number = 7;\nconsole.log(x);\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const base: EmitOptions = .{
+        .sourcemap = .{ .enable = true },
+        .output_filename = "bundle.js",
+        .dev_mode = true,
+        .collect_module_codes = true,
+    };
+
+    var eager = base;
+    eager.sourcemap.lazy = false;
+    const eager_res = try emit(std.testing.allocator, &result.graph, eager, null);
+    defer eager_res.deinit(std.testing.allocator);
+
+    var lazy = base;
+    lazy.sourcemap.lazy = true;
+    const lazy_res = try emit(std.testing.allocator, &result.graph, lazy, null);
+    defer lazy_res.deinit(std.testing.allocator);
+
+    const eager_codes = eager_res.module_codes orelse return error.TestUnexpectedResult;
+    const lazy_codes = lazy_res.module_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(eager_codes.len, lazy_codes.len);
+
+    for (eager_codes, lazy_codes) |ec, lc| {
+        try std.testing.expect(ec.map != null);
+        try std.testing.expect(lc.sm_builder != null);
+        const lazy_json = try lc.sm_builder.?.generateJSON(lc.id);
+        try std.testing.expectEqualStrings(ec.map.?, lazy_json);
+    }
+}
+
+test "emitter: lazy_sourcemap builder.generateJSON 은 두 번 호출 가능 (재진입)" {
+    // NAPI getter 가 여러 번 호출될 수 있으므로 builder state 를 손상시키지 않는지 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true, .lazy = true },
+        .output_filename = "bundle.js",
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const sm = res.sourcemap_builder.?;
+    const first = try std.testing.allocator.dupe(u8, try sm.generateJSON("bundle.js"));
+    defer std.testing.allocator.free(first);
+    const second = try sm.generateJSON("bundle.js");
+    try std.testing.expectEqualStrings(first, second);
+}
+
+test "emitter: SourceMapOptions 기본값 — 모든 sourcemap 기능 비활성" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    // EmitOptions.{} 기본값에서 sourcemap 은 완전 비활성. output 에 sourceMappingURL 없어야.
+    const res = try emit(std.testing.allocator, &result.graph, .{}, null);
+    defer res.deinit(std.testing.allocator);
+    try std.testing.expect(res.sourcemap == null);
+    try std.testing.expect(res.sourcemap_builder == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "sourceMappingURL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "debugId") == null);
+}

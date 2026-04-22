@@ -121,17 +121,9 @@ pub const BundleOptions = struct {
     global_name: ?[]const u8 = null,
     /// 출력 파일 확장자 오버라이드 (--out-extension:.js=.mjs)
     out_extension_js: ?[]const u8 = null,
-    /// 소스맵 sourceRoot 필드 (--source-root)
-    source_root: ?[]const u8 = null,
-    /// 소스맵에 sourcesContent 포함 여부 (--sources-content=false로 제외)
-    sources_content: bool = true,
-    /// 소스맵 생성 (--sourcemap)
-    sourcemap: bool = false,
-    /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
-    sourcemap_debug_ids: bool = false,
-    /// Metro x_facebook_sources function map (--sourcemap-function-map).
-    /// --platform=react-native 시 자동 활성화. Hermes 스택트레이스 심볼리케이션용.
-    sourcemap_function_map: bool = false,
+    /// 소스맵 관련 옵션 묶음 (enable/debug_ids/function_map/lazy/source_root/sources_content).
+    /// 정의는 `src/codegen/sourcemap.zig` 의 `SourceMapOptions`.
+    sourcemap: @import("../codegen/sourcemap.zig").SourceMapOptions = .{},
     /// 출력 파일명 (소스맵 참조용)
     output_filename: []const u8 = "bundle.js",
     /// UTF-8 문자를 이스케이프하지 않고 그대로 출력 (--charset=utf8)
@@ -243,8 +235,13 @@ pub const BundleOptions = struct {
 pub const BundleResult = struct {
     /// 번들 출력 내용 (단일 파일). code_splitting=false일 때 사용. allocator 소유.
     output: []const u8,
-    /// 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
+    /// 소스맵 JSON (V3). null이면 소스맵 미생성 혹은 lazy 경로. allocator 소유.
     sourcemap: ?[]const u8 = null,
+    /// Lazy 번들 sourcemap builder (Issue #1727 Phase B).
+    /// `BundleOptions.lazy_sourcemap = true` 일 때 `sourcemap` 대신 이 포인터로 builder 를 이관.
+    /// NAPI handle 이 보관하고 `getBundleSourceMap()` 호출 시 `generateJSON` 수행.
+    /// `BundleResult.deinit` 시 builder.deinit() + destroy.
+    sourcemap_builder: ?*@import("../codegen/sourcemap.zig").SourceMapBuilder = null,
     /// 다중 출력 파일. code_splitting=true일 때 사용. allocator 소유.
     /// null이면 단일 파일 모드 (output 필드 사용).
     outputs: ?[]OutputFile = null,
@@ -303,6 +300,7 @@ pub const BundleResult = struct {
     pub fn deinit(self: *const BundleResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
         if (self.sourcemap) |sm| allocator.free(sm);
+        if (self.sourcemap_builder) |sm| sm.destroy(allocator);
         if (self.outputs) |outs| {
             for (outs) |o| {
                 allocator.free(o.path);
@@ -436,8 +434,7 @@ pub const Bundler = struct {
             .footer_js = self.options.footer_js,
             .global_name = self.options.global_name,
             .out_extension_js = self.options.out_extension_js,
-            .source_root = self.options.source_root,
-            .sources_content = self.options.sources_content,
+            .sourcemap = self.options.sourcemap,
             .output_filename = self.options.output_filename,
             .charset_utf8 = self.options.charset_utf8,
             .entry_names = self.options.entry_names,
@@ -450,8 +447,6 @@ pub const Bundler = struct {
             .jsx_factory = self.options.jsx_factory,
             .jsx_fragment = self.options.jsx_fragment,
             .jsx_import_source = self.options.jsx_import_source,
-            .sourcemap_debug_ids = self.options.sourcemap_debug_ids,
-            .sourcemap_function_map = self.options.sourcemap_function_map,
             .root_dir = self.options.root_dir,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
@@ -878,11 +873,14 @@ pub const Bundler = struct {
         // dev mode용 per-module codes + sourcemap
         var module_dev_codes_from_emit: ?[]const types.ModuleDevCode = null;
         var dev_sourcemap: ?[]const u8 = null;
+        // Lazy sourcemap builder (Issue #1727) — emit 단계에서 JSON 생성을 skip 하고 builder 를
+        // BundleResult 로 이관. NAPI handle 이 캐시하고 `/bundle.js.map` 요청 시 직렬화.
+        var dev_sourcemap_builder: ?*@import("../codegen/sourcemap.zig").SourceMapBuilder = null;
 
         if (self.options.dev_mode) {
             // Dev mode: 프로덕션 파이프라인 재사용 (__commonJS/__esm 래핑 + HMR 런타임).
             var dev_emit_opts = self.makeEmitOptions();
-            dev_emit_opts.sourcemap = true;
+            dev_emit_opts.sourcemap.enable = true;
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.react_refresh = self.options.react_refresh;
             dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
@@ -903,6 +901,7 @@ pub const Bundler = struct {
             output = emit_result.output;
             module_dev_codes_from_emit = emit_result.module_codes;
             dev_sourcemap = emit_result.sourcemap;
+            dev_sourcemap_builder = emit_result.sourcemap_builder;
         } else if (self.options.code_splitting or self.options.preserve_modules) {
             // Code splitting / preserve-modules 경로: 청크 그래프 생성 → 다중 파일 출력
             var chunk_graph = if (self.options.preserve_modules)
@@ -947,7 +946,7 @@ pub const Bundler = struct {
             // 단일 파일 경로 (tree shaking + 소스맵 지원)
             var emit_opts = self.makeEmitOptions();
             emit_opts.polyfills = polyfill_entries.items;
-            if (self.options.sourcemap) emit_opts.sourcemap = true;
+            if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
@@ -957,6 +956,7 @@ pub const Bundler = struct {
             );
             output = emit_result.output;
             dev_sourcemap = emit_result.sourcemap;
+            dev_sourcemap_builder = emit_result.sourcemap_builder;
         }
         errdefer self.allocator.free(output);
 
@@ -1115,6 +1115,7 @@ pub const Bundler = struct {
         return .{
             .output = output,
             .sourcemap = dev_sourcemap,
+            .sourcemap_builder = dev_sourcemap_builder,
             .outputs = outputs,
             .diagnostics = diagnostics,
             .module_paths = module_paths,
