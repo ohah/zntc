@@ -213,6 +213,9 @@ pub const ModuleGraph = struct {
                 const result = channel.recv();
                 inflight -= 1;
 
+                var apply_scope = profile.begin(.graph_discover_apply);
+                defer apply_scope.end();
+
                 const mod_idx = @intFromEnum(result.module_idx);
                 self.applySideEffectsFromPackageJson(&self.modules.items[mod_idx]);
                 self.modules.items[mod_idx].state = .ready;
@@ -679,6 +682,9 @@ pub const ModuleGraph = struct {
     /// 이벤트 큐 스캔 워커: parse + resolve 후 결과를 채널로 전송.
     /// 그래프 변형(addModule 등)은 하지 않으므로 메인 스레드의 sole writer 보장.
     fn scanWorker(self: *ModuleGraph, idx: ModuleIndex, channel: *MpscChannel(ScanResult)) void {
+        var scope = profile.begin(.graph_discover_scan_worker);
+        defer scope.end();
+
         self.parseModule(idx);
 
         const mod_idx = @intFromEnum(idx);
