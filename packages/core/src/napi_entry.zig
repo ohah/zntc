@@ -1256,6 +1256,8 @@ const PhaseDurations = struct {
     // ── Graph sub-phase (graph 내부 분해) ──
     graph_build_ms: f64 = 0,
     graph_worker_ms: f64 = 0,
+    graph_discover_ms: f64 = 0,
+    graph_finalize_ms: f64 = 0,
 
     // ── Emit sub-phase (emit 내부 분해) ──
     emit_polyfill_ms: f64 = 0,
@@ -1425,6 +1427,8 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 // Graph sub-phase.
                 .{ .name = "graphBuild", .value = pd.graph_build_ms },
                 .{ .name = "graphWorker", .value = pd.graph_worker_ms },
+                .{ .name = "graphDiscover", .value = pd.graph_discover_ms },
+                .{ .name = "graphFinalize", .value = pd.graph_finalize_ms },
                 // Emit sub-phase (bundler.zig 수준).
                 .{ .name = "emitPolyfill", .value = pd.emit_polyfill_ms },
                 .{ .name = "emitRefresh", .value = pd.emit_refresh_ms },
@@ -1904,6 +1908,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             // Graph / Emit sub-phase — bundler.zig 내부 단계 분해.
             .graph_build_ms = nsToMs(profile_mod.totalNs(.graph_build)),
             .graph_worker_ms = nsToMs(profile_mod.totalNs(.graph_worker)),
+            .graph_discover_ms = nsToMs(profile_mod.totalNs(.graph_discover)),
+            .graph_finalize_ms = nsToMs(profile_mod.totalNs(.graph_finalize)),
             .emit_polyfill_ms = nsToMs(profile_mod.totalNs(.emit_polyfill)),
             .emit_refresh_ms = nsToMs(profile_mod.totalNs(.emit_refresh)),
             .emit_output_ms = nsToMs(profile_mod.totalNs(.emit_output)),

@@ -460,6 +460,10 @@ export interface WatchRebuildEvent {
     graphBuild: number;
     /** `new Worker(new URL(...))` 패턴 entry 별도 빌드 */
     graphWorker: number;
+    /** Phase 1: 이벤트 큐 BFS 스캔 (모듈 발견 + 파싱 + resolve) */
+    graphDiscover: number;
+    /** Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파 */
+    graphFinalize: number;
 
     // Emit sub-phase (bundler.zig 수준 분해)
 

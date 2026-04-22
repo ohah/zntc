@@ -34,6 +34,7 @@ const json_to_esm = @import("json_to_esm.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const profile = @import("../profile.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const stmt_info_mod = @import("stmt_info.zig");
@@ -175,6 +176,7 @@ pub const ModuleGraph = struct {
         // 워커: parseModule + resolve → 채널 send (그래프 변형 없음)
         // 메인: 채널 recv → 결과 적용 + addModule → 즉시 새 워커 스폰
         // 배치 경계 없이 모듈 발견 즉시 파싱 시작 → CPU 유휴 시간 최소화.
+        var discover_scope = profile.begin(.graph_discover);
         for (entry_points) |entry_path| {
             _ = try self.addModule(entry_path);
         }
@@ -303,6 +305,7 @@ pub const ModuleGraph = struct {
                 }
             }
         }
+        discover_scope.end();
 
         try self.finalizeGraph(entry_points);
     }
@@ -310,6 +313,9 @@ pub const ModuleGraph = struct {
     /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
     /// build()와 buildIncremental() 양쪽에서 호출.
     fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
+        var scope = profile.begin(.graph_finalize);
+        defer scope.end();
+
         const count = self.modules.items.len;
         if (count == 0) return;
 
@@ -399,6 +405,8 @@ pub const ModuleGraph = struct {
         var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
         var graph_changed = false;
 
+        var discover_scope = profile.begin(.graph_discover);
+
         // 순차 처리 — 증분 빌드는 캐시 히트가 대부분이므로 스레드 풀 오버헤드보다 효율적.
         var parse_start: usize = 0;
         while (parse_start < self.modules.items.len) {
@@ -479,6 +487,8 @@ pub const ModuleGraph = struct {
                 }
             }
         }
+
+        discover_scope.end();
 
         try self.finalizeGraph(entry_points);
 
