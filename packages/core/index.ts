@@ -691,7 +691,11 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
 function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void {
   if (!options.minify) return;
 
-  let lcss: typeof import("lightningcss");
+  // lightningcss 는 optionalDependencies — 런타임에만 로드하므로 타입을 any 로.
+  // `typeof import("lightningcss")` 를 쓰면 tsc strict 모드에서 모듈 resolution 이
+  // 실패해 소비자측 `tsc --emitDeclarationOnly` 가 깨짐. 이 함수 내부만 영향.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let lcss: any;
   try {
     lcss = require("lightningcss");
   } catch {
