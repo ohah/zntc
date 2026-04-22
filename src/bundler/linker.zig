@@ -1319,6 +1319,47 @@ pub const Linker = struct {
         }
     };
 
+    /// `analyzeNamespaceAccess` 의 ns_sym_id-독립 인덱스.
+    /// 같은 AST 를 여러 namespace import 로 분석할 때 (`populateNamespaceAccesses`) 공유해
+    /// AST 전체 순회를 importer 당 1회로 줄인다 (#1735).
+    const NamespaceAccessIndex = struct {
+        /// obj_node_idx → prop_node_idx 매핑 (static/private member expression).
+        prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{},
+        /// import declaration span 범위 — 이 안의 identifier_reference 는 선언이므로 skip.
+        decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty,
+
+        pub const DeclRange = struct { start: u32, end: u32 };
+
+        pub fn build(allocator: std.mem.Allocator, ast: *const Ast) std.mem.Allocator.Error!NamespaceAccessIndex {
+            var self: NamespaceAccessIndex = .{};
+            errdefer self.deinit(allocator);
+            const node_count = ast.nodes.items.len;
+            for (ast.nodes.items) |node| {
+                switch (node.tag) {
+                    .static_member_expression, .private_field_expression => {
+                        const e = node.data.extra;
+                        if (!ast.hasExtra(e, 2)) continue;
+                        const obj_idx = ast.readExtra(e, 0);
+                        const prop_idx = ast.readExtra(e, 1);
+                        if (obj_idx < node_count and prop_idx < node_count) {
+                            try self.prop_by_obj.put(allocator, obj_idx, prop_idx);
+                        }
+                    },
+                    .import_declaration => {
+                        try self.decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
+                    },
+                    else => {},
+                }
+            }
+            return self;
+        }
+
+        pub fn deinit(self: *NamespaceAccessIndex, allocator: std.mem.Allocator) void {
+            self.prop_by_obj.deinit(allocator);
+            self.decl_ranges.deinit(allocator);
+        }
+    };
+
     /// namespace 심볼의 모든 참조를 스캔해 member-only 접근 여부와 접근된 프로퍼티 집합을 수집.
     /// tree-shaker가 이 정보를 바탕으로 target 모듈의 `export` 중 실제 필요한 것만 live로 표시.
     ///
@@ -1340,43 +1381,25 @@ pub const Linker = struct {
         /// `members[prop]`에 기록 (#1626 dead-scope gating). null이면 기록하지 않는다.
         stmt_spans: ?[]const Span,
     ) std.mem.Allocator.Error!NamespaceAccess {
+        var index = try NamespaceAccessIndex.build(allocator, ast);
+        defer index.deinit(allocator);
+        return analyzeNamespaceAccessWithIndex(allocator, ast, symbol_ids, ns_sym_id, stmt_spans, &index);
+    }
+
+    /// `analyzeNamespaceAccess` 의 ns_sym_id-의존 후반부만 분리.
+    /// 호출자가 `NamespaceAccessIndex` 를 한 번 구축해 여러 namespace 심볼에 재사용 (#1735).
+    fn analyzeNamespaceAccessWithIndex(
+        allocator: std.mem.Allocator,
+        ast: *const Ast,
+        symbol_ids: []const ?u32,
+        ns_sym_id: u32,
+        stmt_spans: ?[]const Span,
+        index: *const NamespaceAccessIndex,
+    ) std.mem.Allocator.Error!NamespaceAccess {
         const node_count = ast.nodes.items.len;
         var access: NamespaceAccess = .{ .kind = .member_only };
         errdefer access.deinit(allocator);
         if (node_count == 0) return access;
-
-        // obj_node_idx → prop_node_idx 매핑. ns 참조가 member-expr의 object인지 O(1)로 확인.
-        // computed_member_expression은 제외 — key가 literal이 아니면 opaque 취급이 안전.
-        var prop_by_obj: std.AutoHashMapUnmanaged(u32, u32) = .{};
-        defer prop_by_obj.deinit(allocator);
-
-        // import/export declaration의 span 범위 — 이 안의 identifier_reference는
-        // 선언 자체이므로 "ns 사용"이 아님. `import { M }; M.foo;`처럼 같은 이름이
-        // import specifier와 member access 양쪽에 등장하는 케이스 처리.
-        const DeclRange = struct { start: u32, end: u32 };
-        var decl_ranges: std.ArrayListUnmanaged(DeclRange) = .empty;
-        defer decl_ranges.deinit(allocator);
-
-        for (ast.nodes.items) |node| {
-            switch (node.tag) {
-                .static_member_expression, .private_field_expression => {
-                    const e = node.data.extra;
-                    if (!ast.hasExtra(e, 2)) continue;
-                    const obj_idx = ast.readExtra(e, 0);
-                    const prop_idx = ast.readExtra(e, 1);
-                    if (obj_idx < node_count and prop_idx < node_count) {
-                        try prop_by_obj.put(allocator, obj_idx, prop_idx);
-                    }
-                },
-                // import declaration 내부 specifier의 identifier_reference는 참조가 아닌 선언 — skip.
-                // export declaration은 initializer에 runtime 참조를 포함할 수 있어 제외하면 안 됨
-                // (`export const f = () => NS.foo` 같은 케이스).
-                .import_declaration => {
-                    try decl_ranges.append(allocator, .{ .start = node.span.start, .end = node.span.end });
-                },
-                else => {},
-            }
-        }
 
         for (symbol_ids, 0..) |maybe_sid, node_i| {
             const sid = maybe_sid orelse continue;
@@ -1397,7 +1420,7 @@ pub const Linker = struct {
 
             // import/export declaration 내부 참조(specifier의 identifier_reference 등)도 skip
             var in_decl = false;
-            for (decl_ranges.items) |r| {
+            for (index.decl_ranges.items) |r| {
                 if (node.span.start >= r.start and node.span.end <= r.end) {
                     in_decl = true;
                     break;
@@ -1405,7 +1428,7 @@ pub const Linker = struct {
             }
             if (in_decl) continue;
 
-            if (prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
+            if (index.prop_by_obj.get(@intCast(node_i))) |prop_node_idx| {
                 const prop_node = ast.nodes.items[prop_node_idx];
                 const name = ast.getText(prop_node.span);
                 if (name.len == 0) continue;
@@ -1603,6 +1626,23 @@ pub const Linker = struct {
 
             if (sem.scope_maps.len == 0) continue;
 
+            // 분석 대상 (namespace 또는 virtual-namespace named) import 가 하나도 없으면
+            // index 구축 전에 outer skip — AST 전체 순회 비용 회피 (#1735).
+            const has_candidate = blk: {
+                for (importer.import_bindings) |ib| {
+                    const is_namespace = ib.kind == .namespace;
+                    const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
+                    if (is_namespace or is_named_candidate) break :blk true;
+                }
+                break :blk false;
+            };
+            if (!has_candidate) continue;
+
+            // importer 당 1회만 AST 순회해 NamespaceAccessIndex 구축.
+            // 같은 모듈 안의 모든 namespace import 분석에 공유 (#1735).
+            var ns_index = NamespaceAccessIndex.build(self.allocator, ast) catch continue;
+            defer ns_index.deinit(self.allocator);
+
             // 모든 namespace import에 공통으로 쓰일 stmt span 배열을 importer당 1회 구축.
             const stmt_spans_opt: ?[]const Span = if (importer.prebuilt_stmt_info) |*infos| spans_blk: {
                 const spans_buf = arena.alloc(Span, infos.stmts.len) catch break :spans_blk null;
@@ -1638,12 +1678,13 @@ pub const Linker = struct {
                 const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
 
                 // 분석은 linker.allocator에서 임시로 (내부 HashMap 용), 결과 슬라이스만 arena.
-                var access = analyzeNamespaceAccess(
+                var access = analyzeNamespaceAccessWithIndex(
                     self.allocator,
                     ast,
                     sem.symbol_ids,
                     @intCast(sym_idx),
                     stmt_spans_opt,
+                    &ns_index,
                 ) catch continue;
                 defer access.deinit(self.allocator);
 
