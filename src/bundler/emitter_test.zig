@@ -1573,3 +1573,212 @@ test "emitter: SourceMapOptions 기본값 — 모든 sourcemap 기능 비활성"
     try std.testing.expect(std.mem.indexOf(u8, res.output, "sourceMappingURL") == null);
     try std.testing.expect(std.mem.indexOf(u8, res.output, "debugId") == null);
 }
+
+// HMR per-module `//# sourceURL=<mod_id>` 주석 (DevTools VM:1 방지). sourceMappingURL 은
+// dev server 가 별도 부착 — 여기서는 sourceURL 만 검증.
+
+test "emitter: dev_mode + sourcemap 활성 시 per-module code 끝에 sourceURL 주석" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len > 0);
+    for (codes) |c| {
+        // eval 코드 끝에 `//# sourceURL=<mod_id>` 주석. IIFE `})();\n` 이후에 위치.
+        const needle = try std.fmt.allocPrint(std.testing.allocator, "//# sourceURL={s}\n", .{c.id});
+        defer std.testing.allocator.free(needle);
+        try std.testing.expect(std.mem.endsWith(u8, c.code, needle));
+    }
+}
+
+test "emitter: dev_mode + sourcemap 비활성 시 sourceURL 주석 없음" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .dev_mode = true,
+        .collect_module_codes = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    for (codes) |c| {
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "//# sourceURL=") == null);
+    }
+}
+
+test "emitter: multi-module 각각에 고유 sourceURL 포함" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const A = 1;\n");
+    try writeFile(tmp.dir, "b.ts", "export const B = 2;\n");
+    try writeFile(tmp.dir, "entry.ts", "import { A } from './a';\nimport { B } from './b';\nconsole.log(A, B);\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "entry.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len >= 3);
+
+    // 각 모듈의 sourceURL 이 해당 모듈 path 로 끝나야 한다 (absolute path 포함).
+    var seen_a = false;
+    var seen_b = false;
+    var seen_entry = false;
+    for (codes) |c| {
+        const needle = try std.fmt.allocPrint(std.testing.allocator, "//# sourceURL={s}\n", .{c.id});
+        defer std.testing.allocator.free(needle);
+        try std.testing.expect(std.mem.endsWith(u8, c.code, needle));
+        if (std.mem.endsWith(u8, c.id, "a.ts")) seen_a = true;
+        if (std.mem.endsWith(u8, c.id, "b.ts")) seen_b = true;
+        if (std.mem.endsWith(u8, c.id, "entry.ts")) seen_entry = true;
+    }
+    try std.testing.expect(seen_a);
+    try std.testing.expect(seen_b);
+    try std.testing.expect(seen_entry);
+}
+
+test "emitter: root_dir 설정 시 sourceURL 이 상대경로" {
+    // dev server / DevTools 가 보기 좋은 경로로 표시하려고 root_dir 을 자주 설정함.
+    // sourceURL 값이 절대경로가 아니라 root 기준 상대 — makeModuleId 동작과 일치해야.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
+
+    const tmp_abs = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_abs);
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .root_dir = tmp_abs,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    for (codes) |c| {
+        // root_dir prefix 가 제거된 상대경로여야 한다.
+        try std.testing.expect(!std.mem.startsWith(u8, c.id, tmp_abs));
+        try std.testing.expect(std.mem.endsWith(u8, c.id, "index.ts"));
+        const needle = try std.fmt.allocPrint(std.testing.allocator, "//# sourceURL={s}\n", .{c.id});
+        defer std.testing.allocator.free(needle);
+        try std.testing.expect(std.mem.endsWith(u8, c.code, needle));
+    }
+}
+
+test "emitter: collect_module_codes=false — per-module code 자체 미수집 (sourceURL 도 없음)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        // collect_module_codes 의도적으로 false.
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    try std.testing.expect(res.module_codes == null);
+    // 번들 output 의 sourceMappingURL 은 eager 경로대로 유지 — sourceURL (per-module)
+    // 은 module code 가 수집되지 않았으므로 어디에도 없어야.
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "//# sourceURL=") == null);
+}
+
+test "emitter: sourceURL 은 IIFE 뒤에 위치 — HMR_PREAMBLE_LINES 오프셋 불변" {
+    // per-module sourcemap 의 preamble offset 은 hmr_code 앞부분 2줄에 의존.
+    // sourceURL 주석이 IIFE 뒤에 와야 mapping offset 이 변하지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    for (result.graph.modules.items) |*m| {
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (result.graph.modules.items) |*m| {
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, .{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    for (codes) |c| {
+        const iife_end = std.mem.indexOf(u8, c.code, "\n})();\n") orelse return error.TestUnexpectedResult;
+        const source_url_idx = std.mem.indexOf(u8, c.code, "//# sourceURL=") orelse return error.TestUnexpectedResult;
+        try std.testing.expect(source_url_idx > iife_end);
+    }
+}

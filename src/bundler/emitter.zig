@@ -570,6 +570,18 @@ pub fn emitWithTreeShaking(
         // IIFE로 래핑 + 런타임 헬퍼 로컬 alias로 eval() 스코프에서 접근 가능.
         if (options.dev_mode and options.collect_module_codes) {
             const mod_id = makeModuleId(m.path, options.root_dir);
+
+            // sourcemap 활성 시 `//# sourceURL=<mod_id>` 주석을 eval 코드 끝에 덧붙여
+            // DevTools 가 익명 eval 스크립트(VM:1) 대신 모듈 경로로 표시하게 한다.
+            // `sourceMappingURL` 은 dev server 가 라우트 컨벤션에 맞춰 별도 부착 —
+            // ZTS 는 서버 URL 구조를 모르므로 여기서는 `sourceURL` 만 담당.
+            // IIFE 끝 뒤에 위치하므로 `HMR_PREAMBLE_LINES` 오프셋에는 영향 없음.
+            var source_url_buf: []const u8 = "";
+            defer if (source_url_buf.len > 0) allocator.free(source_url_buf);
+            if (options.sourcemap.enable) {
+                source_url_buf = try std.fmt.allocPrint(allocator, "//# sourceURL={s}\n", .{mod_id});
+            }
+
             const hmr_code = try std.mem.concat(allocator, u8, &.{
                 "(function(){\n",
                 "var __esm=__zts_g.__esm,__export=__zts_g.__export,__commonJS=__zts_g.__commonJS,",
@@ -581,6 +593,7 @@ pub fn emitWithTreeShaking(
                 "__zts_reload=__zts_g.__zts_reload;\n",
                 code,
                 "\n})();\n",
+                source_url_buf,
             });
 
             // 모듈별 standalone sourcemap (Issue #1248): HMR 클라이언트가 전체 번들
