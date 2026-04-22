@@ -532,6 +532,11 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 
 /// Phase 3 의 세 skip 경로 공용: 원본 이름 + `canonical_name` (top-level mangler
 /// rename 결과) 둘 다 reserved 로 등록. `StringHashMap.put` 은 idempotent.
+///
+/// #1760 Step 3c 실측: Phase B 의 `external_reserved` 로 Phase A 의 모든 이름을
+/// 전달하는 전역 공유 방식은 nested 이름을 과도하게 밀어내 번들 크기 +5~10%
+/// 회귀를 유발. canonical 을 scope-local reserved 로 보존하는 이 방어막이
+/// 실질적 이점 — 전역 pool 공유보다 over-reserving 이 적음.
 fn reserveNameFor(reserved: *std.StringHashMap(void), sym: Symbol, name: []const u8) !void {
     try reserved.put(name, {});
     if (sym.hasCanonicalName()) try reserved.put(sym.canonical_name, {});

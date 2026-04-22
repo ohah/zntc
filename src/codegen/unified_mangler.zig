@@ -145,6 +145,20 @@ pub fn mangleAll(
     errdefer allocator.free(phase_b_stats);
 
     for (input.modules, 0..) |m, i| {
+        // Phase B 는 per-module 독립 counter. external_reserved 는 해당 모듈
+        // scope 심볼의 Phase A mangled 이름만 포함 (outer shadow 방지 + 전역
+        // pool 공유의 over-reserving 회피).
+        var module_reserved: std.StringHashMap(void) = .init(allocator);
+        defer module_reserved.deinit();
+        if (m.scope_maps.len > 0) {
+            var sit = m.scope_maps[0].iterator();
+            while (sit.next()) |entry| {
+                const sid: u32 = @intCast(entry.value_ptr.*);
+                const key: ModuleSymKey = .{ .module_index = @intCast(i), .symbol_id = sid };
+                if (renames.get(key)) |mangled| try module_reserved.put(mangled, {});
+            }
+        }
+
         var nested = try mangler.mangle(allocator, .{
             .scopes = m.scopes,
             .symbols = m.symbols,
@@ -152,14 +166,10 @@ pub fn mangleAll(
             .references = m.references,
             .source = m.source,
             .skip_symbols = m.module_scope_symbols,
-            .starting_name_counter = name_counter,
-            .external_reserved = &reserved,
+            .external_reserved = &module_reserved,
         });
         defer nested.deinit();
         phase_b_stats[i] = nested.stats;
-
-        // Phase A counter 를 이어받아 Phase B 가 더 소비한 양을 회수.
-        name_counter = nested.stats.name_counter_final;
 
         // nested renames 을 unified renames 로 이관 (소유권 이전).
         // OOM 경로에서 아직 이관 못 한 값이 leak 되지 않도록 capacity 를 먼저 확보하고
