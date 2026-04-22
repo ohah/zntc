@@ -197,6 +197,11 @@ pub const BundleOptions = struct {
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
+    /// Watcher 가 이번 rebuild 동안 변경됐다고 보고한 절대경로 set (Issue #1727 §3).
+    /// 주입되면 `graph.buildIncremental` 이 set 에 없는 모듈의 mtime stat syscall 을 skip
+    /// — cached mtime 을 신뢰. 수백 모듈 규모에서 graphDiscover 주 병목이었음.
+    /// null 이면 initial build / CLI / 변경 정보 없음 → 전체 stat (기존 동작).
+    changed_files: ?*const std.StringHashMap(void) = null,
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
@@ -673,7 +678,7 @@ pub const Bundler = struct {
             var gb_scope = profile.begin(.graph_build);
             defer gb_scope.end();
             if (self.options.module_store) |store| {
-                const inc_result = try graph.buildIncremental(self.options.entry_points, store);
+                const inc_result = try graph.buildIncremental(self.options.entry_points, store, self.options.changed_files);
                 reparsed_count = inc_result.reparsed_indices.len;
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
@@ -1107,7 +1112,10 @@ pub const Bundler = struct {
         if (self.options.module_store) |store| {
             for (graph.modules.items) |*m| {
                 if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
-                const mtime = ModuleGraph.getMtime(m.path) catch 0;
+                // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록. 여기서 재-stat
+                // 하면 watcher-driven mtime cache 효과가 half-revert 됨 (Issue #1727 §3).
+                // 0 이면 초기 경로에서 실패했던 모듈 — fallback 으로 한 번 더 stat.
+                const mtime = if (m.mtime != 0) m.mtime else (ModuleGraph.getMtime(m.path) catch 0);
                 store.putModule(m.path, m, mtime);
             }
         }
