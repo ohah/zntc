@@ -1842,6 +1842,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         incremental_opts.collect_module_codes = bundle_opts.dev_mode;
         incremental_opts.module_store = &persistent_store;
         incremental_opts.compiled_cache = &async_data.compiled_cache;
+        // Watcher-driven mtime cache (Issue #1727 §3): changed 집합을 graph 에 넘겨
+        // 나머지 모듈 stat 을 skip 한다. detect 단계에서 이미 content hash 필터링까지
+        // 통과한 `touched` 를 그대로 재사용 — StringHashMap 포인터라 복사 없음.
+        incremental_opts.changed_files = &touched;
         // Lazy sourcemap (Issue #1727 Phase B): initial build 와 동일 경로 유지. cache 키
         // 일치 필수 — initial 에서 lazy=true 로 put 된 엔트리가 rebuild 에서 hit 해야 함.
         if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) incremental_opts.sourcemap.lazy = true;

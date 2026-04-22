@@ -381,6 +381,11 @@ pub const ModuleGraph = struct {
         self: *ModuleGraph,
         entry_points: []const []const u8,
         store: *module_store.PersistentModuleStore,
+        /// Watcher 가 이번 rebuild 동안 변경됐다고 보고한 절대경로 set.
+        /// null → 현재 변경 정보 없음 (initial build / CLI 모드). 전체 모듈 stat.
+        /// non-null → set 에 없는 path 는 mtime stat 을 skip 하고 store 의 cached mtime 을 그대로 신뢰.
+        /// 새로 그래프에 추가된 모듈 (`store.modules.contains(path) == false`) 은 강제로 stat (Issue #1727 §3).
+        changed_files: ?*const std.StringHashMap(void),
     ) !IncrementalBuildResult {
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
@@ -416,7 +421,21 @@ pub const ModuleGraph = struct {
                 if (mod.state == .ready) continue; // disabled 모듈 등
 
                 const mod_path = mod.path;
-                const mtime = getMtime(mod_path) catch 0;
+
+                // Watcher-driven mtime skip (Issue #1727 §3): watcher 가 이 파일을 건드리지
+                // 않았다고 보고했고 cache 에도 있으면 stat syscall 을 생략하고 cached mtime 을
+                // 그대로 쓴다. 수백 모듈 × ~100us stat 이 주 병목이었음. changed_files 가 null
+                // 이거나 cache miss 인 경로는 기존처럼 stat.
+                const mtime: i128 = blk: {
+                    if (changed_files) |cf| {
+                        if (!cf.contains(mod_path)) {
+                            if (store.modules.get(mod_path)) |cached_entry| {
+                                break :blk cached_entry.mtime;
+                            }
+                        }
+                    }
+                    break :blk getMtime(mod_path) catch 0;
+                };
 
                 // 캐시 조회
                 if (store.getIfFresh(mod_path, mtime)) |cached| {
