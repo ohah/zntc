@@ -412,37 +412,41 @@ export interface WatchRebuildEvent {
    *
    * **기본 phase** (항상 측정):
    * - `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
-   * - 주의: `parse` 는 실제로 graph build 전체 (resolve+parse+semantic+finalize) 이고,
-   *   `semantic` 은 link+shake 를 의미. 정확한 분해는 아래 sub-phase 참조.
+   * 필드 이름과 실제 값이 정확히 일치. 2026-04-22 이전의 `parse` / `semantic` 은
+   * 사실 각각 `graph` / `link+shake` 를 담았던 레거시 이름이었으며 제거됨.
    *
-   * **Sub-phase** (`ZTS_PROFILE=hmr` / `BUNGAE_HMR_PROFILE=1` / `profile: ["hmr"]` 활성 시):
-   * - `scan` / `resolve` / `graph` / `link` / `shake` / `transform` / `codegen` / `metadata`
-   * - 비활성 상태에선 모두 0.
+   * **Sub-phase** (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `profile: ["<cat>"]` 활성 시):
+   * - `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
+   * - 비활성 상태에선 모두 0. `parse` 는 이제 진짜 parser 시간, `semantic` 은 진짜 SemanticAnalyzer.
    */
   phaseDurations?: {
+    // 기본 phase (항상 측정)
+
     /** 변경 감지 (mtime 스캔) */
     detect: number;
-    /** 파싱 (레거시: graph build 전체) */
-    parse: number;
-    /** 의미 분석 (레거시: link + shake) */
-    semantic: number;
-    /** 코드 생성 (transform + codegen + metadata 상위) */
+    /** Module graph build — resolve + parse + semantic + finalize */
+    graph: number;
+    /** Scope hoisting + linker */
+    link: number;
+    /** Tree shaking */
+    shake: number;
+    /** 코드 생성 (transform + codegen + emit) */
     emit: number;
     /** HMR delta 추출 */
     delta: number;
     /** 총 리빌드 시간 (detect → delta 합산) */
     total: number;
 
-    /** Scanner tokenization (profile 활성 시에만) */
+    // Sub-phase (profile 활성 시에만)
+
+    /** Scanner tokenization */
     scan: number;
+    /** Parser (진짜 parser 시간, 레거시 `parse_ms`=graph 아님) */
+    parse: number;
     /** Dependency resolution */
     resolve: number;
-    /** Module graph build (resolve + parse + semantic) */
-    graph: number;
-    /** Scope hoisting + linker */
-    link: number;
-    /** Tree shaking */
-    shake: number;
+    /** Semantic analyzer (진짜 semantic, 레거시 `semantic_ms`=link+shake 아님) */
+    semantic: number;
     /** Transformer 전체 */
     transform: number;
     /** Codegen 전체 */

@@ -3853,8 +3853,9 @@ describe("Issue #1223 HMR perf 재현", () => {
 
     expect(event.phaseDurations).toBeDefined();
     expect(typeof event.phaseDurations.detect).toBe("number");
-    expect(typeof event.phaseDurations.parse).toBe("number");
-    expect(typeof event.phaseDurations.semantic).toBe("number");
+    expect(typeof event.phaseDurations.graph).toBe("number");
+    expect(typeof event.phaseDurations.link).toBe("number");
+    expect(typeof event.phaseDurations.shake).toBe("number");
     expect(typeof event.phaseDurations.emit).toBe("number");
     expect(typeof event.phaseDurations.delta).toBe("number");
     expect(typeof event.phaseDurations.total).toBe("number");
