@@ -441,11 +441,11 @@ export interface WatchRebuildEvent {
 
     /** Scanner tokenization */
     scan: number;
-    /** Parser (진짜 parser 시간, 레거시 `parse_ms`=graph 아님) */
+    /** Parser — 실제 parser 시간만 */
     parse: number;
     /** Dependency resolution */
     resolve: number;
-    /** Semantic analyzer (진짜 semantic, 레거시 `semantic_ms`=link+shake 아님) */
+    /** SemanticAnalyzer — 실제 semantic 분석 시간만 */
     semantic: number;
     /** Transformer 전체 */
     transform: number;

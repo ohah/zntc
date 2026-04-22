@@ -267,23 +267,27 @@ pub fn initFromEnv(allocator: std.mem.Allocator) void {
     } else |_| {}
 }
 
+/// totals_ns / counts 를 0 으로 초기화.
+///
+/// Debug + Linux x86_64 에서 `@memset` 이 `mov m64 m64` 로 encode 되어 Zig 0.15.2
+/// 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
+/// Zig upgrade 로 버그 사라지면 이 함수 제거하고 `@memset` 두 줄 복원.
+fn zeroCounters() void {
+    totals_ns = [_]u64{0} ** num_categories;
+    counts = [_]u32{0} ** num_categories;
+}
+
 /// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
 pub fn resetForTest() void {
     enabled_mask = 0;
     current_level = .summary;
-    // Debug + x86_64 에서 `@memset` 이 mov m64 m64 로 encode 되어 Zig 0.15.2
-    // 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
-    totals_ns = [_]u64{0} ** num_categories;
-    counts = [_]u32{0} ** num_categories;
+    zeroCounters();
 }
 
 /// counters 만 reset (mask 와 level 은 유지).
 /// HMR rebuild 시작 전에 호출 — 이전 rebuild 의 누적치가 이월되지 않도록.
 pub fn resetCounters() void {
-    // Debug + x86_64 에서 `@memset` 이 mov m64 m64 로 encode 되어 Zig 0.15.2
-    // 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
-    totals_ns = [_]u64{0} ** num_categories;
-    counts = [_]u32{0} ** num_categories;
+    zeroCounters();
 }
 
 /// 하나의 category 를 활성화하고, prefix 로 시작하는 child category 도 모두 활성화.
