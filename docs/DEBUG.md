@@ -321,7 +321,7 @@ HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
 
 Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
 - 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
-- Graph 내부: `graphBuild` (모듈 그래프 구축) / `graphWorker` (worker entries)
+- Graph 내부: `graphBuild` / `graphWorker` / `graphDiscover` (BFS 스캔) / `graphFinalize` (DFS+승격)
 - Emit 내부 (bundler 수준): `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss`
 - 비활성 상태에선 모두 0. `parse`/`semantic` 은 진짜 parser/analyzer 시간.
 

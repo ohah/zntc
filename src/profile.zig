@@ -54,6 +54,8 @@ pub const Category = enum {
     graph,
     graph_build,
     graph_worker,
+    graph_discover,
+    graph_finalize,
 
     // ── Linking / Tree-shaking ──
     link,
