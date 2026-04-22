@@ -980,6 +980,7 @@ pub fn emitModule(
         .jsx_filename = module.path,
         .worklet_plugin_version = options.worklet_plugin_version,
         .minify_syntax = options.minify_syntax,
+        .minify_whitespace = options.minify_whitespace,
         .keep_names = options.keep_names,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를

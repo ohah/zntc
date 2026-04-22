@@ -259,7 +259,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
                 // __using(_stack, init [, true])
                 const stack_ref = try es_helpers.makeIdentifierRefFromSpan(self, stack_span);
-                const using_ref = try es_helpers.makeIdentifierRef(self, "__using");
+                const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
 
                 const using_call = if (is_await) blk: {
                     const true_span = try self.ast.addString("true");
@@ -341,7 +341,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const stack_ref = try es_helpers.makeIdentifierRefFromSpan(self, stack_span);
             const error_ref = try es_helpers.makeIdentifierRef(self, "_error");
             const has_error_ref = try es_helpers.makeIdentifierRef(self, "_hasError");
-            const dispose_ref = try es_helpers.makeIdentifierRef(self, "__callDispose");
+            const dispose_ref = try es_helpers.makeRuntimeHelperRef(self, "__callDispose");
 
             const call = try es_helpers.makeCallExpr(self, dispose_ref, &.{ stack_ref, error_ref, has_error_ref }, span);
 

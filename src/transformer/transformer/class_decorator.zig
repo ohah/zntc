@@ -18,6 +18,7 @@ const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const PrivateMethodMapping = Transformer.PrivateMethodMapping;
 const es_helpers = @import("../es_helpers.zig");
+const rt = @import("../../bundler/runtime_helpers.zig");
 const es2022 = @import("../es2022.zig");
 
 pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
@@ -892,8 +893,9 @@ pub fn buildDecorateParamCall(
     dec_expr: NodeIndex,
     span: Span,
 ) Error!NodeIndex {
-    // callee: __decorateParam
-    const callee_span = try self.ast.addString("__decorateParam");
+    // callee: __decorateParam (#1621: minify 시 $dK 축약)
+    const param_name = rt.helperName("__decorateParam", self.options.minify_whitespace);
+    const callee_span = try self.ast.addString(param_name);
     const callee = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = callee_span,
@@ -1232,7 +1234,9 @@ pub fn transformExperimentalDecorators(
     ctor_params: ast_mod.NodeList,
 ) Error!NodeIndex {
     const none = @intFromEnum(NodeIndex.none);
-    const decorate_span = try self.ast.addString("__decorateClass");
+    // #1621: minify 시 $dC 축약.
+    const decorate_name = rt.helperName("__decorateClass", self.options.minify_whitespace);
+    const decorate_span = try self.ast.addString(decorate_name);
 
     // class 이름 텍스트를 가져옴 (let Foo = class Foo {} 에 필요)
     const class_name_text = if (!new_name.isNone()) blk: {

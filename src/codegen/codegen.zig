@@ -20,6 +20,7 @@ const Span = @import("../lexer/token.zig").Span;
 const module_parser = @import("../parser/module.zig");
 const Kind = @import("../lexer/token.zig").Kind;
 const Comment = @import("../lexer/scanner.zig").Comment;
+const rt = @import("../bundler/runtime_helpers.zig");
 
 /// 모듈 출력 형식
 pub const ModuleFormat = enum {
@@ -252,8 +253,11 @@ pub const Codegen = struct {
         if (self.fn_map_builder != null) try self.fnMapExit();
 
         // keepNames: 수집된 entries를 코드 끝에 __name() 호출로 append (복사 없음)
+        // #1621: minify 시 __name → $nm 축약.
+        const keep_name: []const u8 = if (self.options.minify_whitespace) rt.NAMES.NAME_MIN else "__name";
         for (self.keep_names_entries.items) |entry| {
-            try self.write("__name(");
+            try self.write(keep_name);
+            try self.write("(");
             try self.write(entry.new_name);
             try self.write(", \"");
             try self.write(entry.original_name);
@@ -2819,7 +2823,11 @@ pub const Codegen = struct {
         // 모듈 전체를 default로 설정해준다. default+named 혼합 시에도 적용 —
         // __toESM이 __esModule 체크 후 프로퍼티를 복사하므로 named 접근도 정상 동작.
         const wrap_toesm = self.options.esm_var_assign_only and (has_default or has_namespace);
-        if (wrap_toesm) try self.write("__toESM(");
+        if (wrap_toesm) {
+            // #1621: minify 시 __toESM → $tE 축약.
+            try self.write(if (self.options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM");
+            try self.writeByte('(');
+        }
         _ = try self.emitRequireRewriteOrCall(source);
         if (wrap_toesm) try self.writeByte(')');
 

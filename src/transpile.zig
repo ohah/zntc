@@ -384,6 +384,8 @@ pub fn transpileWithCallback(
         .jsx_fragment = options.jsx_fragment,
         .jsx_import_source = options.jsx_import_source,
         .jsx_filename = file_path,
+        // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
+        .minify_whitespace = options.minify_whitespace,
     });
     transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
     transformer.symbols = analyzer.symbols.items;

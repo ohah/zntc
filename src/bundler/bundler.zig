@@ -548,6 +548,8 @@ pub const Bundler = struct {
 
         // 링킹
         var worker_linker = Linker.init(arena_alloc, worker_graph.modules.items, .iife);
+        // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
+        worker_linker.minify_whitespace = self.options.minify_whitespace;
         try worker_linker.link();
         try worker_linker.computeRenames();
         if (self.options.minify_identifiers) {
@@ -647,6 +649,8 @@ pub const Bundler = struct {
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
+        // #1621: binary loader 의 `$tb(...)` 축약 활성화.
+        graph.minify_whitespace = self.options.minify_whitespace;
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.project_root = self.options.project_root;
@@ -737,6 +741,8 @@ pub const Bundler = struct {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
             l.dev_mode = self.options.dev_mode;
+            // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
+            l.minify_whitespace = self.options.minify_whitespace;
             try l.link();
             if (!self.options.code_splitting) {
                 try l.computeRenames();

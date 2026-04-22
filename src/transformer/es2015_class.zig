@@ -40,6 +40,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const es2022 = @import("es2022.zig");
+const rt = @import("../bundler/runtime_helpers.zig");
 
 const MethodExtra = ast_mod.MethodExtra;
 const MethodFlags = ast_mod.MethodFlags;
@@ -177,7 +178,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // 1. __classCallCheck(this, ClassName) — constructor body 맨 앞
             {
-                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
@@ -192,7 +193,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const parent_ref = try es_helpers.makeIdentifierRef(self, super_param_text);
-                const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 const extends_call_expr = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, extends_call_expr, span));
                 self.runtime_helpers.extends = true;
@@ -384,7 +385,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 func_node = try prependToFunctionBody(self, func_node, &.{this_decl});
             }
             {
-                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
@@ -418,7 +419,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // classCallCheck
             {
-                const check_id = try es_helpers.makeIdentifierRef(self, "__classCallCheck");
+                const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
                 const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
@@ -448,7 +449,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (has_super and super_span != null) {
                 const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const parent_ref = try es_helpers.makeIdentifierRef(self, expr_super_param);
-                const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+                const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
                 try self.scratch.append(self.allocator, try es_helpers.makeExprStmt(self, try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span), span));
                 self.runtime_helpers.extends = true;
             }
@@ -528,7 +529,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const args_len = self.readU32(e, 2);
             const span = node.span;
 
-            const callee = try es_helpers.makeIdentifierRef(self, "__callSuper");
+            const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
             const this_node = try makeThisOrAlias(self, span);
 
@@ -818,7 +819,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.runtime_helpers.class_private_method_get = true;
             const new_obj = try self.visitNode(obj_idx);
             const new_rhs = try self.visitNode(rhs_old);
-            const helper_ref = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const ws_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
             const fn_ref = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
             const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
@@ -840,7 +841,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.runtime_helpers.class_private_method_get = true;
 
             // getter side: __classPrivateMethodGet(obj, _x, _x_get).call(obj)
-            const get_helper = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const get_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const get_ws = try es_helpers.makeIdentifierRef(self, getter_mapping.weakset_name);
             const get_fn = try es_helpers.makeIdentifierRef(self, getter_mapping.func_name);
             const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
@@ -857,7 +858,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             // setter side: __classPrivateMethodGet(obj, _x, _x_set).call(obj, computed)
-            const set_helper = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const set_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const set_ws = try es_helpers.makeIdentifierRef(self, setter_mapping.weakset_name);
             const set_fn = try es_helpers.makeIdentifierRef(self, setter_mapping.func_name);
             const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
@@ -932,14 +933,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// instance는 `__classPrivateFieldSet` helper, static은 수정된 spec helper 모두 value를 반환 (#1488).
         fn buildPrivateFieldSetWithComputedValue(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, new_value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (mapping.is_static) {
-                const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
                 const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
             }
-            const helper = try es_helpers.makeIdentifierRef(self, "__classPrivateFieldSet");
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
             const wm_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
             const new_obj = try self.visitNode(obj_idx);
             self.runtime_helpers.class_private_field_set = true;
@@ -951,7 +952,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         pub fn emitPrivateFieldGetWithNewObj(self: *Transformer, prop_old_idx: NodeIndex, obj_new: NodeIndex, span: Span) Transformer.Error!?NodeIndex {
             const mapping = findPrivateFieldMapping(self, prop_old_idx) orelse return null;
             if (mapping.is_static) {
-                const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecGet");
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
@@ -1161,7 +1162,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// static private field get: __classStaticPrivateFieldSpecGet(receiver, ClassName, _descriptor)
         fn buildStaticPrivateFieldGet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecGet");
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
             const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
@@ -1221,7 +1222,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// static private field set: __classStaticPrivateFieldSpecSet(receiver, ClassName, _descriptor, value)
         fn buildStaticPrivateFieldSet(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, value_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const helper = try es_helpers.makeIdentifierRef(self, "__classStaticPrivateFieldSpecSet");
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
             const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
@@ -2098,7 +2099,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// instance_fields가 없으면: function Child() { return __callSuper(this, _super, arguments); }
         /// instance_fields가 있으면: function Child() { var _this = __callSuper(this, _super, arguments); <fields on _this>; return _this; }
         fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const call_super_ref = try es_helpers.makeIdentifierRef(self, "__callSuper");
+            const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
@@ -2276,7 +2277,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// __extends(Child, Parent) expression_statement 생성.
         /// child_old_idx, parent_old_idx: 원본 AST 노드 인덱스 (symbol_id 전파용).
         fn buildExtendsCall(self: *Transformer, child_span: Span, parent_span: Span, child_old_idx: NodeIndex, parent_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+            const extends_ref = try es_helpers.makeRuntimeHelperRef(self, "__extends");
             const child_ref = try self.makeIdentifierRefWithSymbol(child_span, child_old_idx);
             const parent_ref = try self.makeIdentifierRefWithSymbol(parent_span, parent_old_idx);
             const call = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
@@ -2656,7 +2657,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // decorator가 없으면 아무것도 안 함
             if (old_deco_len == 0 and member_decos.items.len == 0 and ctor_param_decos.items.len == 0) return;
 
-            const decorate_span = try self.ast.addString("__decorateClass");
+            const decorate_name = rt.helperName("__decorateClass", self.options.minify_whitespace);
+            const decorate_span = try self.ast.addString(decorate_name);
 
             // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
             for (member_decos.items) |md| {

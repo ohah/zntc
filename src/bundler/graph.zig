@@ -25,6 +25,7 @@ const ImportKind = types.ImportKind;
 const ImportRecord = types.ImportRecord;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+const runtime_helpers = @import("runtime_helpers.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache_mod.ResolveCache;
 const resolver_mod = @import("resolver.zig");
@@ -68,6 +69,9 @@ pub const ModuleGraph = struct {
 
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
+    /// #1621: binary loader 가 생성하는 `__toBinary(...)` 소스에서 축약 이름 사용.
+    /// bundler 에서 self.options.minify_whitespace 를 주입.
+    minify_whitespace: bool = false,
     /// 확장자별 로더 오버라이드 (--loader:.png=file). bundler에서 전달.
     loader_overrides: []const types.LoaderOverride = &.{},
     /// 에셋/청크 URL prefix (--public-path). asset 로더에서 사용.
@@ -1781,7 +1785,9 @@ pub const ModuleGraph = struct {
                     module.state = .ready;
                     return;
                 };
-                module.source = std.fmt.allocPrint(arena_alloc, "__toBinary(\"{s}\")", .{encoded}) catch {
+                // #1621: minify 시 $tb 축약.
+                const to_bin_name = runtime_helpers.helperName("__toBinary", self.minify_whitespace);
+                module.source = std.fmt.allocPrint(arena_alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch {
                     module.state = .ready;
                     return;
                 };

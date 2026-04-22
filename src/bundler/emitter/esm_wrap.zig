@@ -437,7 +437,10 @@ pub fn emitEsmWrappedModule(
         }
 
         if (direct_exports.count() > 0 or star_entries.items.len > 0) {
-            try wrapped.appendSlice(allocator, "__export(");
+            // #1621: minify 시 __export → $x 축약.
+            const export_name: []const u8 = if (options.minify_whitespace) rt.NAMES.EXPORT_MIN else "__export";
+            try wrapped.appendSlice(allocator, export_name);
+            try wrapped.appendSlice(allocator, "(");
             try wrapped.appendSlice(allocator, exports_name);
             try wrapped.appendSlice(allocator, ", {\n");
 
@@ -633,8 +636,12 @@ pub fn emitEsmWrappedModule(
                             defer allocator.free(iv);
                             const ev = try source_mod.allocExportsName(allocator);
                             defer allocator.free(ev);
+                            // #1621: minify 시 __toCommonJS → $tC 축약.
+                            const to_cjs_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
                             try reexport_buf.appendSlice(allocator, iv);
-                            try reexport_buf.appendSlice(allocator, "(), __toCommonJS(");
+                            try reexport_buf.appendSlice(allocator, "(), ");
+                            try reexport_buf.appendSlice(allocator, to_cjs_name);
+                            try reexport_buf.appendSlice(allocator, "(");
                             try reexport_buf.appendSlice(allocator, ev);
                             try reexport_buf.appendSlice(allocator, "))");
                         }
@@ -656,7 +663,10 @@ pub fn emitEsmWrappedModule(
                             const rv = try types.makeRequireVarName(allocator, source_mod.path);
                             defer allocator.free(rv);
                             const interop_mode: types.Interop = if (module.def_format.isEsm()) .node else .babel;
-                            try reexport_buf.appendSlice(allocator, "__toESM(");
+                            // #1621: minify 시 __toESM → $tE 축약.
+                            const to_esm_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                            try reexport_buf.appendSlice(allocator, to_esm_name);
+                            try reexport_buf.appendSlice(allocator, "(");
                             try reexport_buf.appendSlice(allocator, rv);
                             if (interop_mode == .node) {
                                 try reexport_buf.appendSlice(allocator, "(), 1).default");
@@ -744,7 +754,8 @@ pub fn emitEsmWrappedModule(
     if (options.minify_whitespace) {
         try wrapped.appendSlice(allocator, "var ");
         try wrapped.appendSlice(allocator, init_name);
-        try wrapped.appendSlice(allocator, "=__esm({");
+        // #1621: minify 시 __esm → $e 축약.
+        try wrapped.appendSlice(allocator, "=" ++ rt.NAMES.ESM_FACTORY_MIN ++ "({");
         if (is_async) try wrapped.appendSlice(allocator, "async ");
         try wrapped.appendSlice(allocator, "\"");
         try wrapped.appendSlice(allocator, basename);

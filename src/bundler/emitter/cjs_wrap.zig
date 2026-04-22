@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const types = @import("../types.zig");
+const rt = @import("../runtime_helpers.zig");
 const Module = @import("../module.zig").Module;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
 
@@ -19,7 +20,8 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, "=__commonJS({\"(disabled)\"(exports,module){}});");
+        // #1621: minify 시 __commonJS → $cj 축약 (#1618 follow-up).
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"(disabled)\"(exports,module){}});");
     } else {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
@@ -45,7 +47,8 @@ pub fn emitCjsWrapper(allocator: std.mem.Allocator, path: []const u8, source: []
     if (minify) {
         try buf.appendSlice(allocator, "var ");
         try buf.appendSlice(allocator, var_name);
-        try buf.appendSlice(allocator, "=__commonJS({\"");
+        // #1621: minify 시 __commonJS → $cj 축약 (#1618 follow-up).
+        try buf.appendSlice(allocator, "=" ++ rt.NAMES.CJS_FACTORY_MIN ++ "({\"");
         try buf.appendSlice(allocator, std.fs.path.basename(path));
         try buf.appendSlice(allocator, "\"(exports,module){module.exports=");
         try buf.appendSlice(allocator, source);
