@@ -2083,7 +2083,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
 
             // __generator(func) 또는 __generator(func, genFn)
-            const gen_ref = try es_helpers.makeIdentifierRef(self, "__generator");
+            const gen_ref = try es_helpers.makeRuntimeHelperRef(self, "__generator");
             if (!genFn_idx.isNone()) {
                 return es_helpers.makeCallExpr(self, gen_ref, &.{ func_expr, genFn_idx }, span);
             }

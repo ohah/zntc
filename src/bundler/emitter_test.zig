@@ -1045,7 +1045,9 @@ test "appendRuntimeHelpers: minified" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
     try appendRuntimeHelpers(&buf, std.testing.allocator, .{ .generator = true }, true, false);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator=function") != null);
+    // #1621: minify 시 __generator → $gn 축약.
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var $gn=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "var __generator") == null);
     // minified에는 줄바꿈이 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\n") == null);
 }

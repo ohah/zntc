@@ -512,7 +512,7 @@ pub fn ES2022(comptime Transformer: type) type {
         /// __classPrivateMethodGet(obj, _set, _fn) 호출 노드 생성.
         fn buildMethodGetCall(self: *Transformer, new_obj: NodeIndex, mapping: Transformer.PrivateMethodMapping, span: Span) Transformer.Error!NodeIndex {
             self.runtime_helpers.class_private_method_get = true;
-            const helper_ref = try es_helpers.makeIdentifierRef(self, "__classPrivateMethodGet");
+            const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const ws_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
             const fn_ref = try es_helpers.makeIdentifierRef(self, mapping.func_name);
             return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);

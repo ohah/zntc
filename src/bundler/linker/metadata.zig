@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const types = @import("../types.zig");
+const rt = @import("../runtime_helpers.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("../module.zig").Module;
@@ -124,8 +125,9 @@ pub fn buildMetadataForAst(
         .allocator = self.allocator,
     };
 
-    // CJS import preamble writer
+    // CJS import preamble writer (#1621: minify 시 __toESM → $tE 등 축약)
     var preamble = PreambleWriter.init(self.allocator);
+    preamble.minify = self.minify_whitespace;
 
     // __esm 모듈의 init_xxx() 호출 중복 방지 (같은 모듈을 여러 binding이 참조할 때)
     var esm_init_set = std.AutoHashMap(u32, void).init(self.allocator);
@@ -621,7 +623,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
                 }
                 const exports_name = try m.allocExportsName(self.allocator);
                 defer self.allocator.free(exports_name);
-                const call_expr = try std.fmt.allocPrint(self.allocator, "__toCommonJS({s})", .{exports_name});
+                // #1621: minify 시 __toCommonJS → $tC 축약.
+                const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                const call_expr = try std.fmt.allocPrint(self.allocator, "{s}({s})", .{ to_cjs_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else if (m.wrap_kind == .cjs) {
                 if (require_rewrites.get(rec.specifier)) |old| {
@@ -653,7 +657,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
                 defer self.allocator.free(init_name);
                 const exports_name = try target_mod.allocExportsName(self.allocator);
                 defer self.allocator.free(exports_name);
-                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), __toCommonJS({s}))", .{ init_name, exports_name });
+                // #1621: minify 시 __toCommonJS → $tC 축약.
+                const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                const call_expr = try std.fmt.allocPrint(self.allocator, "({s}(), {s}({s}))", .{ init_name, to_cjs_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             }
         }

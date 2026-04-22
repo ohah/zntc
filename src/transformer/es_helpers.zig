@@ -149,6 +149,19 @@ pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
     });
 }
 
+/// #1621: runtime helper (`__extends`, `__classCallCheck` 등) 용 identifier_reference.
+/// `self.options.minify_whitespace` 가 true 면 preamble 과 동일한 축약 이름(`$eX`, `$cC` 등)
+/// 으로 emit. 그렇지 않으면 원본 이름 그대로.
+///
+/// 일반 identifier (`Math`, `writable`, `value` 등) 에는 절대 쓰지 말 것 — 이 함수는
+/// `runtime_helpers.helperName` 화이트리스트에 등록된 이름만 처리한다. 등록되지 않은
+/// 이름을 넘기면 minify 모드에서도 원본 그대로 반환 → 동작은 정상이지만 축약 효과 없음.
+pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
+    const rt = @import("../bundler/runtime_helpers.zig");
+    const resolved = rt.helperName(base_name, self.options.minify_whitespace);
+    return makeIdentifierRef(self, resolved);
+}
+
 /// Span으로 identifier_reference 노드 생성 (이미 addString된 span 사용).
 pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
     return self.ast.addNode(.{
@@ -651,7 +664,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
 /// __classPrivateMethodInit(this, _set) expression_statement 생성.
 pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !NodeIndex {
     self.runtime_helpers.class_private_method_init = true;
-    const callee = try makeIdentifierRef(self, "__classPrivateMethodInit");
+    const callee = try makeRuntimeHelperRef(self, "__classPrivateMethodInit");
     const this_node = try self.ast.addNode(.{
         .tag = .this_expression,
         .span = span,
@@ -716,7 +729,7 @@ pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIn
 /// __async(gen).call(this) — this 바인딩 보존.
 pub fn buildAsyncHelperCall(self: anytype, gen_func: NodeIndex, span: Span) !NodeIndex {
     self.runtime_helpers.async_helper = true;
-    const async_ref = try makeIdentifierRef(self, "__async");
+    const async_ref = try makeRuntimeHelperRef(self, "__async");
     const inner_call = try makeCallExpr(self, async_ref, &.{gen_func}, span);
     const call_prop = try makeIdentifierRef(self, "call");
     const member = try makeStaticMember(self, inner_call, call_prop, span);

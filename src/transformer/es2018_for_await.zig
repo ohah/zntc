@@ -74,7 +74,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             // =====================================================
             // 1. var _iter = __asyncValues(iterable), _step, _ret, _errObj;
             // =====================================================
-            const async_values_ref = try es_helpers.makeIdentifierRef(self, "__asyncValues");
+            const async_values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
             const async_values_call = try es_helpers.makeCallExpr(self, async_values_ref, &.{new_right}, span);
 
             const iter_binding = try es_helpers.makeBindingIdentifier(self, iter_span);

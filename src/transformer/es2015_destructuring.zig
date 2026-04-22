@@ -544,7 +544,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const binding = try self.visitNode(rest_idx);
 
             // __rest 호출: __rest(_ref, ["key1", "key2"])
-            const rest_callee = try es_helpers.makeIdentifierRef(self, "__rest");
+            const rest_callee = try es_helpers.makeRuntimeHelperRef(self, "__rest");
 
             // _ref 참조
             const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);

@@ -23,22 +23,145 @@ pub fn appendRequireShim(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     try buf.appendSlice(allocator, if (minify) REQUIRE_SHIM_MIN else REQUIRE_SHIM);
 }
 
-// #1618: minify 모드에서 runtime helper 이름을 짧게 축약.
-// `__commonJS`는 rxjs 번들에서 224회 참조됨 — 10자→3자 축약으로 약 1.5KB 감축.
-// 이름 충돌 방지: `isReservedOrGlobal` (mangler.zig)에 동일 목록 등록 — base54가
-// 사용자 심볼에 같은 이름을 배정해 runtime helper 정의를 덮어쓰는 것을 차단.
-// dev mode는 `__zts_g.<name>` 글로벌 공유 경로라 축약 대상이 아님.
+// #1618 / #1621: minify 모드에서 runtime helper 이름을 2~3자로 축약하여 수 KB 감축.
+// 이름 충돌 방지: `mangler.isReservedOrGlobal` 이 `PAIRS` 를 소비해 reserved 등록 —
+// base54 가 사용자 심볼에 동일 이름을 배정해 preamble 정의를 덮어쓰는 것을 차단.
+// dev mode 는 `__zts_g.<name>` 글로벌 공유 경로라 축약 대상이 아님.
+// ZTS 는 `importHelpers: true` 를 honor 하지 않고 자체 preamble 만 쓰므로 tslib 이름과
+// 충돌 없음 — 모든 helper 의 rename 은 안전.
 pub const NAMES = struct {
-    pub const CJS_FACTORY_MIN = "$cj";
+    // bundler interop
+    pub const CJS_FACTORY_MIN = "$cj"; // __commonJS
+    pub const REQUIRE_MIN = "$r"; // __commonJS body 내부 function __require
+    pub const ESM_FACTORY_MIN = "$e"; // __esm
+    pub const EXPORT_MIN = "$x"; // __export
+    pub const TOESM_MIN = "$tE"; // __toESM
+    pub const TOCOMMONJS_MIN = "$tC"; // __toCommonJS
+    // Object.* alias — __toESM/__export body 에서 참조.
+    pub const CREATE_MIN = "$cr"; // __create
+    pub const GET_PROTO_OF_MIN = "$gP"; // __getProtoOf
+    pub const DEF_PROP_MIN = "$dp"; // __defProp
+    pub const GET_OWN_PROP_NAMES_MIN = "$gN"; // __getOwnPropNames
+    pub const GET_OWN_PROP_DESC_MIN = "$gD"; // __getOwnPropDesc
+    pub const HAS_OWN_MIN = "$hO"; // __hasOwn
+    pub const COPY_PROPS_MIN = "$cp"; // __copyProps
+    // transformer-emitted downlevel (RN/ES5 타겟에서 다수 emit)
+    pub const EXTENDS_MIN = "$eX"; // __extends (ES2015 class)
+    pub const CLASS_CALL_CHECK_MIN = "$cC"; // __classCallCheck
+    pub const CALL_SUPER_MIN = "$cS"; // __callSuper
+    pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
+    pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
+    pub const GENERATOR_MIN = "$gn"; // __generator
+    pub const REST_MIN = "$rs"; // __rest (object rest destructure)
+    pub const TAGGED_TEMPLATE_MIN = "$tt"; // __taggedTemplateLiteral
+    pub const ARRAY_LIKE_TO_ARRAY_MIN = "$aL"; // __arrayLikeToArray
+    pub const TO_CONSUMABLE_ARRAY_MIN = "$tA"; // __toConsumableArray (array spread)
+    pub const NAME_MIN = "$nm"; // __name (--keep-names)
+    pub const TO_BINARY_MIN = "$tb"; // __toBinary (binary loader asset)
+    // ES2022 private field downlevel
+    pub const PRIVATE_METHOD_INIT_MIN = "$pI"; // __classPrivateMethodInit
+    pub const PRIVATE_METHOD_GET_MIN = "$pG"; // __classPrivateMethodGet
+    pub const PRIVATE_FIELD_SET_MIN = "$pF"; // __classPrivateFieldSet
+    pub const STATIC_PRIVATE_ACCESS_MIN = "$sA"; // __classCheckPrivateStaticAccess
+    pub const STATIC_PRIVATE_DESC_MIN = "$sD"; // __classCheckPrivateStaticFieldDescriptor
+    pub const STATIC_PRIVATE_GET_MIN = "$sG"; // __classStaticPrivateFieldSpecGet
+    pub const STATIC_PRIVATE_SET_MIN = "$sS"; // __classStaticPrivateFieldSpecSet
+    // decorator
+    pub const DECORATE_CLASS_MIN = "$dC"; // __decorateClass
+    pub const DECORATE_PARAM_MIN = "$dK"; // __decorateParam (K = param 식별)
+    pub const DEF_PROP_2_MIN = "$dp2"; // __defProp2 (DECORATOR body, $dp 와 분리)
+    pub const METADATA_MIN = "$mD"; // __metadata
+    pub const ES_DECORATE_MIN = "$eD"; // __esDecorate
+    pub const RUN_INITIALIZERS_MIN = "$rI"; // __runInitializers
+    pub const SET_FUNCTION_NAME_MIN = "$sF"; // __setFunctionName
+    pub const PROP_KEY_MIN = "$pK"; // __propKey
+    // ES2025 explicit resource management
+    pub const USING_MIN = "$us"; // __using
+    pub const CALL_DISPOSE_MIN = "$cD"; // __callDispose
 };
+
+/// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
+/// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
+/// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.
+pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
+    // bundler interop (#1618 + #1621)
+    .{ .base = "__commonJS", .short = NAMES.CJS_FACTORY_MIN },
+    .{ .base = "__require", .short = NAMES.REQUIRE_MIN },
+    .{ .base = "__esm", .short = NAMES.ESM_FACTORY_MIN },
+    .{ .base = "__export", .short = NAMES.EXPORT_MIN },
+    .{ .base = "__toESM", .short = NAMES.TOESM_MIN },
+    .{ .base = "__toCommonJS", .short = NAMES.TOCOMMONJS_MIN },
+    .{ .base = "__create", .short = NAMES.CREATE_MIN },
+    .{ .base = "__getProtoOf", .short = NAMES.GET_PROTO_OF_MIN },
+    .{ .base = "__defProp", .short = NAMES.DEF_PROP_MIN },
+    .{ .base = "__getOwnPropNames", .short = NAMES.GET_OWN_PROP_NAMES_MIN },
+    .{ .base = "__getOwnPropDesc", .short = NAMES.GET_OWN_PROP_DESC_MIN },
+    .{ .base = "__hasOwn", .short = NAMES.HAS_OWN_MIN },
+    .{ .base = "__copyProps", .short = NAMES.COPY_PROPS_MIN },
+    // transformer-emitted downlevel (#1621)
+    .{ .base = "__extends", .short = NAMES.EXTENDS_MIN },
+    .{ .base = "__classCallCheck", .short = NAMES.CLASS_CALL_CHECK_MIN },
+    .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
+    .{ .base = "__async", .short = NAMES.ASYNC_MIN },
+    .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
+    .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },
+    .{ .base = "__rest", .short = NAMES.REST_MIN },
+    .{ .base = "__taggedTemplateLiteral", .short = NAMES.TAGGED_TEMPLATE_MIN },
+    .{ .base = "__arrayLikeToArray", .short = NAMES.ARRAY_LIKE_TO_ARRAY_MIN },
+    .{ .base = "__toConsumableArray", .short = NAMES.TO_CONSUMABLE_ARRAY_MIN },
+    .{ .base = "__name", .short = NAMES.NAME_MIN },
+    .{ .base = "__toBinary", .short = NAMES.TO_BINARY_MIN },
+    .{ .base = "__classPrivateMethodInit", .short = NAMES.PRIVATE_METHOD_INIT_MIN },
+    .{ .base = "__classPrivateMethodGet", .short = NAMES.PRIVATE_METHOD_GET_MIN },
+    .{ .base = "__classPrivateFieldSet", .short = NAMES.PRIVATE_FIELD_SET_MIN },
+    .{ .base = "__classCheckPrivateStaticAccess", .short = NAMES.STATIC_PRIVATE_ACCESS_MIN },
+    .{ .base = "__classCheckPrivateStaticFieldDescriptor", .short = NAMES.STATIC_PRIVATE_DESC_MIN },
+    .{ .base = "__classStaticPrivateFieldSpecGet", .short = NAMES.STATIC_PRIVATE_GET_MIN },
+    .{ .base = "__classStaticPrivateFieldSpecSet", .short = NAMES.STATIC_PRIVATE_SET_MIN },
+    .{ .base = "__decorateClass", .short = NAMES.DECORATE_CLASS_MIN },
+    .{ .base = "__decorateParam", .short = NAMES.DECORATE_PARAM_MIN },
+    .{ .base = "__defProp2", .short = NAMES.DEF_PROP_2_MIN },
+    .{ .base = "__metadata", .short = NAMES.METADATA_MIN },
+    .{ .base = "__esDecorate", .short = NAMES.ES_DECORATE_MIN },
+    .{ .base = "__runInitializers", .short = NAMES.RUN_INITIALIZERS_MIN },
+    .{ .base = "__setFunctionName", .short = NAMES.SET_FUNCTION_NAME_MIN },
+    .{ .base = "__propKey", .short = NAMES.PROP_KEY_MIN },
+    .{ .base = "__using", .short = NAMES.USING_MIN },
+    .{ .base = "__callDispose", .short = NAMES.CALL_DISPOSE_MIN },
+};
+
+/// PAIRS 로부터 base_name → short_name comptime 해시맵.
+const helper_map: std.StaticStringMap([]const u8) = blk: {
+    var entries: [PAIRS.len]struct { []const u8, []const u8 } = undefined;
+    for (PAIRS, 0..) |p, i| entries[i] = .{ p.base, p.short };
+    break :blk std.StaticStringMap([]const u8).initComptime(entries);
+};
+
+/// PAIRS 의 short name 만 뽑은 comptime 배열. mangler 예약/테스트 iterate 용.
+pub const ALL_SHORT_NAMES: [PAIRS.len][]const u8 = blk: {
+    var names: [PAIRS.len][]const u8 = undefined;
+    for (PAIRS, 0..) |p, i| names[i] = p.short;
+    break :blk names;
+};
+
+/// transformer 가 AST identifier 로 emit 하는 runtime helper 이름을
+/// minify 플래그에 따라 축약/원본으로 선택한다. non-helper identifier (Math, writable 등)
+/// 는 호출하지 않는다 — 이 함수는 `PAIRS` 테이블에 등록된 이름만 처리.
+///
+/// 매핑에 없으면 원본 그대로 반환 → preamble 과 호출부가 어긋나 런타임 에러.
+/// mangler_test "runtime_helpers names are registered" 가 빌드 타임에 drift 를 잡는다.
+pub fn helperName(base_name: []const u8, minify: bool) []const u8 {
+    if (!minify) return base_name;
+    return helper_map.get(base_name) orelse base_name;
+}
 
 /// __commonJS 팩토리 함수 (esbuild 호환)
 pub const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
-pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
+pub const CJS_RUNTIME_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=(cb,mod)=>function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
 
 /// __commonJS ES5 호환: arrow → function.
 pub const CJS_RUNTIME_ES5 = "var __commonJS = function(cb, mod) { return function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n}; };\n";
-pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}}";
+pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb,mod){return function " ++ NAMES.REQUIRE_MIN ++ "(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports}}";
 
 /// __toESM: CJS 모듈을 ESM namespace로 변환 (rolldown 호환).
 /// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.
@@ -67,7 +190,23 @@ pub const TOESM_RUNTIME =
     \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
     \\
 ;
-pub const TOESM_RUNTIME_MIN = "var __create=Object.create;var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __getOwnPropNames=Object.getOwnPropertyNames;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from,except,desc)=>{if(from&&typeof from===\"object\"||typeof from===\"function\"){for(var keys=__getOwnPropNames(from),i=0,n=keys.length,key;i<n;i++){key=keys[i];if(!__hasOwn.call(to,key)&&key!==except)__defProp(to,key,{get:((k)=>from[k]).bind(null,key),enumerable:!(desc=__getOwnPropDesc(from,key))||desc.enumerable})}}return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?__create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+pub const TOESM_RUNTIME_MIN =
+    "var " ++ NAMES.CREATE_MIN ++ "=Object.create;" ++
+    "var " ++ NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf;" ++
+    "var " ++ NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;" ++
+    "var " ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames;" ++
+    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
+    "var " ++ NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty;" ++
+    "var " ++ NAMES.COPY_PROPS_MIN ++ "=(to,from,except,desc)=>{" ++
+    "if(from&&typeof from===\"object\"||typeof from===\"function\"){" ++
+    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,n=keys.length,key;i<n;i++){" ++
+    "key=keys[i];" ++
+    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key)&&key!==except)" ++
+    NAMES.DEF_PROP_MIN ++ "(to,key,{get:((k)=>from[k]).bind(null,key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable})" ++
+    "}}return to};" ++
+    "var " ++ NAMES.TOESM_MIN ++ "=(mod,isNodeMode,target)=>(" ++
+    "target=mod!=null?" ++ NAMES.CREATE_MIN ++ "(" ++ NAMES.GET_PROTO_OF_MIN ++ "(mod)):{}," ++
+    NAMES.COPY_PROPS_MIN ++ "(isNodeMode||!mod||!mod.__esModule?" ++ NAMES.DEF_PROP_MIN ++ "(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 
 /// __toESM configurable + ES5 호환: RN/Hermes용.
 /// arrow → function, configurable: true. --platform=react-native에서 자동 활성화.
@@ -91,28 +230,44 @@ pub const TOESM_RUNTIME_CONFIGURABLE =
     \\var __toESM = function(mod, isNodeMode, target) { return target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true, configurable: true }) : target, mod); };
     \\
 ;
-pub const TOESM_RUNTIME_CONFIGURABLE_MIN = "var __create=Object.create;var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __getOwnPropNames=Object.getOwnPropertyNames;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=function(to,from,except,desc){if(from&&typeof from===\"object\"||typeof from===\"function\"){for(var keys=__getOwnPropNames(from),i=0,n=keys.length,key;i<n;i++){key=keys[i];if(!__hasOwn.call(to,key)&&key!==except)__defProp(to,key,{get:(function(k){return from[k]}).bind(null,key),enumerable:!(desc=__getOwnPropDesc(from,key))||desc.enumerable,configurable:true})}}return to};var __toESM=function(mod,isNodeMode,target){return target=mod!=null?__create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true,configurable:true}):target,mod)};";
+pub const TOESM_RUNTIME_CONFIGURABLE_MIN =
+    "var " ++ NAMES.CREATE_MIN ++ "=Object.create;" ++
+    "var " ++ NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf;" ++
+    "var " ++ NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;" ++
+    "var " ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames;" ++
+    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
+    "var " ++ NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty;" ++
+    "var " ++ NAMES.COPY_PROPS_MIN ++ "=function(to,from,except,desc){" ++
+    "if(from&&typeof from===\"object\"||typeof from===\"function\"){" ++
+    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,n=keys.length,key;i<n;i++){" ++
+    "key=keys[i];" ++
+    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key)&&key!==except)" ++
+    NAMES.DEF_PROP_MIN ++ "(to,key,{get:(function(k){return from[k]}).bind(null,key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable,configurable:true})" ++
+    "}}return to};" ++
+    "var " ++ NAMES.TOESM_MIN ++ "=function(mod,isNodeMode,target){" ++
+    "return target=mod!=null?" ++ NAMES.CREATE_MIN ++ "(" ++ NAMES.GET_PROTO_OF_MIN ++ "(mod)):{}," ++
+    NAMES.COPY_PROPS_MIN ++ "(isNodeMode||!mod||!mod.__esModule?" ++ NAMES.DEF_PROP_MIN ++ "(target,\"default\",{value:mod,enumerable:true,configurable:true}):target,mod)};";
 
 /// __esm: ESM 모듈의 지연 초기화 팩토리.
 /// factory throw 시 fn을 복원하여 cascade 실패 방지.
 /// circular dep 재진입 시 fn=0(진행 중)이므로 skip.
 pub const ESM_RUNTIME = "var __esm = (fn, res) => function __init() {\n\tif (!fn) return res;\n\tvar f = fn; fn = 0;\n\ttry { res = (0, f[Object.keys(f)[0]])(); }\n\tcatch(e) { fn = f; throw e; }\n\treturn res;\n};\n";
-pub const ESM_RUNTIME_MIN = "var __esm=(fn,res)=>function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res};";
+pub const ESM_RUNTIME_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=(fn,res)=>function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res};";
 
 /// __esm ES5 호환: arrow → function.
 pub const ESM_RUNTIME_ES5 = "var __esm = function(fn, res) { return function __init() {\n\tif (!fn) return res;\n\tvar f = fn; fn = 0;\n\ttry { res = (0, f[Object.keys(f)[0]])(); }\n\tcatch(e) { fn = f; throw e; }\n\treturn res;\n}; };\n";
-pub const ESM_RUNTIME_ES5_MIN = "var __esm=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}}";
+pub const ESM_RUNTIME_ES5_MIN = "var " ++ NAMES.ESM_FACTORY_MIN ++ "=function(fn,res){return function __init(){if(!fn)return res;var f=fn;fn=0;try{res=(0,f[Object.keys(f)[0]])()}catch(e){fn=f;throw e}return res}}";
 
 /// __export: ESM namespace 객체에 live getter 등록 (esbuild 호환).
 /// var foo_exports = {}; __export(foo_exports, { greet: () => greet });
 /// __defProp은 __toESM 런타임에 이미 정의됨.
 /// 참고: references/esbuild/internal/runtime/runtime.go:187
 pub const EXPORT_RUNTIME = "var __export = (target, all) => {\n\tfor (var name in all)\n\t\t__defProp(target, name, { get: all[name], enumerable: true });\n};\n";
-pub const EXPORT_RUNTIME_MIN = "var __export=(target,all)=>{for(var name in all)__defProp(target,name,{get:all[name],enumerable:true})};";
+pub const EXPORT_RUNTIME_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=(target,all)=>{for(var name in all)" ++ NAMES.DEF_PROP_MIN ++ "(target,name,{get:all[name],enumerable:true})};";
 
 /// __export configurable 버전: RN/Hermes 호환.
 pub const EXPORT_RUNTIME_CONFIGURABLE = "var __export = function(target, all) {\n\tfor (var name in all)\n\t\t__defProp(target, name, { get: all[name], enumerable: true, configurable: true });\n};\n";
-pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var __export=function(target,all){for(var name in all)__defProp(target,name,{get:all[name],enumerable:true,configurable:true})};";
+pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var " ++ NAMES.EXPORT_MIN ++ "=function(target,all){for(var name in all)" ++ NAMES.DEF_PROP_MIN ++ "(target,name,{get:all[name],enumerable:true,configurable:true})};";
 
 /// __toCommonJS: ESM namespace → CJS 호환 객체 변환 (rolldown 호환).
 /// __commonJS로 래핑된 모듈은 mod["module.exports"]에 원본 exports가 있으므로
@@ -121,11 +276,11 @@ pub const EXPORT_RUNTIME_CONFIGURABLE_MIN = "var __export=function(target,all){f
 /// 참고: references/rolldown/crates/rolldown/src/runtime/index.js:105
 /// __copyProps, __defProp, __hasOwn은 __toESM 런타임에 이미 정의됨.
 pub const TOCOMMONJS_RUNTIME = "var __toCommonJS = mod => __hasOwn.call(mod, 'module.exports') ? mod['module.exports'] : __copyProps(__defProp({}, '__esModule', { value: true }), mod);\n";
-pub const TOCOMMONJS_RUNTIME_MIN = "var __toCommonJS=mod=>__hasOwn.call(mod,\"module.exports\")?mod[\"module.exports\"]:__copyProps(__defProp({},\"__esModule\",{value:true}),mod);";
+pub const TOCOMMONJS_RUNTIME_MIN = "var " ++ NAMES.TOCOMMONJS_MIN ++ "=mod=>" ++ NAMES.HAS_OWN_MIN ++ ".call(mod,\"module.exports\")?mod[\"module.exports\"]:" ++ NAMES.COPY_PROPS_MIN ++ "(" ++ NAMES.DEF_PROP_MIN ++ "({},\"__esModule\",{value:true}),mod);";
 
 /// __toCommonJS configurable 버전: RN/Hermes 호환.
 pub const TOCOMMONJS_RUNTIME_CONFIGURABLE = "var __toCommonJS = function(mod) { return __hasOwn.call(mod, 'module.exports') ? mod['module.exports'] : __copyProps(__defProp({}, '__esModule', { value: true, configurable: true }), mod); };\n";
-pub const TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN = "var __toCommonJS=function(mod){return __hasOwn.call(mod,\"module.exports\")?mod[\"module.exports\"]:__copyProps(__defProp({},\"__esModule\",{value:true,configurable:true}),mod)};";
+pub const TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN = "var " ++ NAMES.TOCOMMONJS_MIN ++ "=function(mod){return " ++ NAMES.HAS_OWN_MIN ++ ".call(mod,\"module.exports\")?mod[\"module.exports\"]:" ++ NAMES.COPY_PROPS_MIN ++ "(" ++ NAMES.DEF_PROP_MIN ++ "({},\"__esModule\",{value:true,configurable:true}),mod)};";
 
 // ============================================================
 // Decorator
@@ -147,7 +302,16 @@ pub const DECORATOR_RUNTIME =
     \\var __decorateParam = (index, decorator) => (target, key) => decorator(target, key, index);
     \\
 ;
-pub const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __decorateClass=(decorators,target,key,kind)=>{var result=kind>1?void 0:kind?__getOwnPropDesc(target,key):target;for(var i=decorators.length-1,decorator;i>=0;i--)if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;if(kind&&result)__defProp2(target,key,result);return result};var __decorateParam=(index,decorator)=>(target,key)=>decorator(target,key,index);";
+pub const DECORATOR_RUNTIME_MIN =
+    "var " ++ NAMES.DEF_PROP_2_MIN ++ "=Object.defineProperty;" ++
+    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
+    "var " ++ NAMES.DECORATE_CLASS_MIN ++ "=(decorators,target,key,kind)=>{" ++
+    "var result=kind>1?void 0:kind?" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(target,key):target;" ++
+    "for(var i=decorators.length-1,decorator;i>=0;i--)" ++
+    "if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;" ++
+    "if(kind&&result)" ++ NAMES.DEF_PROP_2_MIN ++ "(target,key,result);" ++
+    "return result};" ++
+    "var " ++ NAMES.DECORATE_PARAM_MIN ++ "=(index,decorator)=>(target,key)=>decorator(target,key,index);";
 
 /// __metadata: emitDecoratorMetadata 시 Reflect.metadata 호출 (TypeScript 호환).
 /// design:type, design:paramtypes, design:returntype 메타데이터를 클래스/멤버에 부착.
@@ -158,7 +322,7 @@ pub const METADATA_RUNTIME =
     \\};
     \\
 ;
-pub const METADATA_RUNTIME_MIN = "var __metadata=(key,value)=>{if(typeof Reflect!==\"undefined\"&&typeof Reflect.metadata===\"function\")return Reflect.metadata(key,value)};";
+pub const METADATA_RUNTIME_MIN = "var " ++ NAMES.METADATA_MIN ++ "=(key,value)=>{if(typeof Reflect!==\"undefined\"&&typeof Reflect.metadata===\"function\")return Reflect.metadata(key,value)};";
 
 // ============================================================
 // TC39 Stage 3 Decorators (TypeScript 5.0+ / tslib 호환)
@@ -212,7 +376,7 @@ pub const ES_DECORATOR_RUNTIME =
 ;
 
 pub const ES_DECORATOR_RUNTIME_MIN =
-    "var __esDecorate=function(ctor,descriptorIn,decorators,contextIn,initializers,extraInitializers){" ++
+    "var " ++ NAMES.ES_DECORATE_MIN ++ "=function(ctor,descriptorIn,decorators,contextIn,initializers,extraInitializers){" ++
     "function accept(f){if(f!==void 0&&typeof f!==\"function\")throw new TypeError(\"Function expected\");return f}" ++
     "var kind=contextIn.kind,key=kind===\"getter\"?\"get\":kind===\"setter\"?\"set\":\"value\";" ++
     "var target=!descriptorIn&&ctor?contextIn[\"static\"]?ctor:ctor.prototype:null;" ++
@@ -227,9 +391,9 @@ pub const ES_DECORATOR_RUNTIME_MIN =
     "if(_=accept(result.get))descriptor.get=_;if(_=accept(result.set))descriptor.set=_;if(_=accept(result.init))initializers.unshift(_)}" ++
     "else if(_=accept(result)){if(kind===\"field\")initializers.unshift(_);else descriptor[key]=_}}" ++
     "if(target)Object.defineProperty(target,contextIn.name,descriptor);done=true};" ++
-    "var __runInitializers=function(thisArg,initializers,value){var useValue=arguments.length>2;for(var i=0;i<initializers.length;i++){value=useValue?initializers[i].call(thisArg,value):initializers[i].call(thisArg)}return useValue?value:void 0};" ++
-    "var __setFunctionName=function(f,name,prefix){if(typeof name===\"symbol\")name=name.description?\"[\".concat(name.description,\"]\"):\"\";return Object.defineProperty(f,\"name\",{configurable:true,value:prefix?\"\".concat(prefix,\" \",name):name})};" ++
-    "var __propKey=function(x){return typeof x===\"symbol\"?x:\"\".concat(x)};";
+    "var " ++ NAMES.RUN_INITIALIZERS_MIN ++ "=function(thisArg,initializers,value){var useValue=arguments.length>2;for(var i=0;i<initializers.length;i++){value=useValue?initializers[i].call(thisArg,value):initializers[i].call(thisArg)}return useValue?value:void 0};" ++
+    "var " ++ NAMES.SET_FUNCTION_NAME_MIN ++ "=function(f,name,prefix){if(typeof name===\"symbol\")name=name.description?\"[\".concat(name.description,\"]\"):\"\";return Object.defineProperty(f,\"name\",{configurable:true,value:prefix?\"\".concat(prefix,\" \",name):name})};" ++
+    "var " ++ NAMES.PROP_KEY_MIN ++ "=function(x){return typeof x===\"symbol\"?x:\"\".concat(x)};";
 
 // ============================================================
 // ES2015+ Downlevel
@@ -243,7 +407,7 @@ pub const CLASS_CALL_CHECK_RUNTIME =
     \\};
     \\
 ;
-pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var __classCallCheck=function(instance,Constructor){if(!(instance instanceof Constructor))throw new TypeError(\"Cannot call a class as a function\")};";
+pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++ "=function(instance,Constructor){if(!(instance instanceof Constructor))throw new TypeError(\"Cannot call a class as a function\")};";
 
 /// __callSuper: super() 호출을 Reflect.construct로 래핑 (SWC _call_super 호환).
 /// 네이티브 ES6 클래스(Error, Map 등)를 extends할 때 .call()이 불가하므로
@@ -260,7 +424,7 @@ pub const CALL_SUPER_RUNTIME =
     \\};
     \\
 ;
-pub const CALL_SUPER_RUNTIME_MIN = "var __callSuper=function(_this,Parent,args){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],_this.constructor);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
+pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(_this,Parent,args){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],_this.constructor);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
 
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
@@ -281,7 +445,7 @@ pub const ASYNC_RUNTIME =
     \\};
     \\
 ;
-pub const ASYNC_RUNTIME_MIN = "var __async=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
+pub const ASYNC_RUNTIME_MIN = "var " ++ NAMES.ASYNC_MIN ++ "=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
 
 /// __async ES5 호환: arrow function, rest params 없이 동일 동작.
 pub const ASYNC_RUNTIME_ES5 =
@@ -303,7 +467,7 @@ pub const ASYNC_RUNTIME_ES5 =
     \\};
     \\
 ;
-pub const ASYNC_RUNTIME_ES5_MIN = "var __async=function(fn){return function(){var args=Array.prototype.slice.call(arguments);var self=this;return new Promise(function(resolve,reject){var gen=fn.apply(self,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(function(val){step(\"next\",val)},function(err){step(\"throw\",err)})}step(\"next\")})}};";
+pub const ASYNC_RUNTIME_ES5_MIN = "var " ++ NAMES.ASYNC_MIN ++ "=function(fn){return function(){var args=Array.prototype.slice.call(arguments);var self=this;return new Promise(function(resolve,reject){var gen=fn.apply(self,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(function(val){step(\"next\",val)},function(err){step(\"throw\",err)})}step(\"next\")})}};";
 
 /// __asyncValues: for-await-of 다운레벨 시 주입 (tslib 호환).
 /// Async iterator (Symbol.asyncIterator) 가 있으면 그대로 사용, 아니면 sync iterator 를
@@ -336,11 +500,11 @@ pub const ASYNC_VALUES_RUNTIME =
     \\};
     \\
 ;
-pub const ASYNC_VALUES_RUNTIME_MIN = "var __asyncValues=function(o){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var m=o[Symbol.asyncIterator],i;return m?m.call(o):(o=typeof __values===\"function\"?__values(o):o[Symbol.iterator](),i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i);function verb(n){i[n]=o[n]&&function(v){return new Promise(function(resolve,reject){v=o[n](v);settle(resolve,reject,v.done,v.value)})}}function settle(resolve,reject,d,v){Promise.resolve(v).then(function(v){resolve({value:v,done:d})},reject)}};";
+pub const ASYNC_VALUES_RUNTIME_MIN = "var " ++ NAMES.ASYNC_VALUES_MIN ++ "=function(o){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var m=o[Symbol.asyncIterator],i;return m?m.call(o):(o=typeof __values===\"function\"?__values(o):o[Symbol.iterator](),i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i);function verb(n){i[n]=o[n]&&function(v){return new Promise(function(resolve,reject){v=o[n](v);settle(resolve,reject,v.done,v.value)})}}function settle(resolve,reject,d,v){Promise.resolve(v).then(function(v){resolve({value:v,done:d})},reject)}};";
 
 /// __extends: class 상속 prototype chain (ES2015). TypeScript __extends 호환.
 pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
-pub const EXTENDS_RUNTIME_MIN = "var __extends=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
+pub const EXTENDS_RUNTIME_MIN = "var " ++ NAMES.EXTENDS_MIN ++ "=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
 
 /// __generator: generator 상태 머신 (ES2015). TypeScript __generator 호환.
 /// yield/return/throw를 label 기반 switch로 처리.
@@ -394,13 +558,13 @@ pub const GENERATOR_RUNTIME =
     \\}();
     \\
 ;
-pub const GENERATOR_RUNTIME_MIN = "var __generator=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(null,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}();";
+pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(null,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}();";
 
 /// __taggedTemplateLiteral: tagged template literal의 template 객체 생성 (ES2015).
 /// cooked 배열에 raw 프로퍼티를 추가하여 Object.freeze로 불변 처리.
 /// raw가 cooked와 동일하면 생략 가능 (두 번째 인자 없이 호출).
 pub const TAGGED_TEMPLATE_RUNTIME = "var __taggedTemplateLiteral = function(cooked, raw) {\n\tif (!raw) raw = cooked.slice(0);\n\treturn Object.freeze(Object.defineProperty(cooked, \"raw\", { value: Object.freeze(raw) }));\n};\n";
-pub const TAGGED_TEMPLATE_RUNTIME_MIN = "var __taggedTemplateLiteral=function(cooked,raw){if(!raw)raw=cooked.slice(0);return Object.freeze(Object.defineProperty(cooked,\"raw\",{value:Object.freeze(raw)}))};";
+pub const TAGGED_TEMPLATE_RUNTIME_MIN = "var " ++ NAMES.TAGGED_TEMPLATE_MIN ++ "=function(cooked,raw){if(!raw)raw=cooked.slice(0);return Object.freeze(Object.defineProperty(cooked,\"raw\",{value:Object.freeze(raw)}))};";
 
 /// __rest: object destructuring rest (ES2018). TypeScript __rest 호환.
 /// exclude 배열에 없는 own 프로퍼티 + Symbol 프로퍼티 복사.
@@ -416,7 +580,7 @@ pub const REST_RUNTIME =
     \\};
     \\
 ;
-pub const REST_RUNTIME_MIN = "var __rest=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];if(typeof Object.getOwnPropertySymbols===\"function\")for(var i=0,symbols=Object.getOwnPropertySymbols(s);i<symbols.length;i++)if(e.indexOf(symbols[i])<0&&Object.prototype.propertyIsEnumerable.call(s,symbols[i]))t[symbols[i]]=s[symbols[i]];return t};";
+pub const REST_RUNTIME_MIN = "var " ++ NAMES.REST_MIN ++ "=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];if(typeof Object.getOwnPropertySymbols===\"function\")for(var i=0,symbols=Object.getOwnPropertySymbols(s);i<symbols.length;i++)if(e.indexOf(symbols[i])<0&&Object.prototype.propertyIsEnumerable.call(s,symbols[i]))t[symbols[i]]=s[symbols[i]];return t};";
 
 // ============================================================
 // Asset Loader
@@ -432,12 +596,12 @@ pub const TO_BINARY_RUNTIME =
     \\};
     \\
 ;
-pub const TO_BINARY_RUNTIME_MIN = "var __toBinary=function(b64){var str=atob(b64),arr=new Uint8Array(str.length);for(var i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);return arr};";
+pub const TO_BINARY_RUNTIME_MIN = "var " ++ NAMES.TO_BINARY_MIN ++ "=function(b64){var str=atob(b64),arr=new Uint8Array(str.length);for(var i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);return arr};";
 
 /// __name: 함수/클래스의 .name 프로퍼티를 보존 (esbuild --keep-names 호환).
 /// minify로 식별자가 축약되어도 원래 이름을 .name에 설정.
 pub const KEEP_NAMES_RUNTIME = "var __name = (target, value) => Object.defineProperty(target, \"name\", { value, configurable: true });\n";
-pub const KEEP_NAMES_RUNTIME_MIN = "var __name=(target,value)=>Object.defineProperty(target,\"name\",{value,configurable:true});";
+pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(target,value)=>Object.defineProperty(target,\"name\",{value,configurable:true});";
 
 // ============================================================
 // Private Method (ES2022 downlevel)
@@ -453,7 +617,7 @@ pub const PRIVATE_METHOD_INIT_RUNTIME =
     \\};
     \\
 ;
-pub const PRIVATE_METHOD_INIT_RUNTIME_MIN = "var __classPrivateMethodInit=function(obj,privateSet){if(privateSet.has(obj))throw new TypeError(\"Cannot initialize the same private elements twice on an object\");privateSet.add(obj)};";
+pub const PRIVATE_METHOD_INIT_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_INIT_MIN ++ "=function(obj,privateSet){if(privateSet.has(obj))throw new TypeError(\"Cannot initialize the same private elements twice on an object\");privateSet.add(obj)};";
 
 /// __classPrivateMethodGet: brand check + private method 접근 (SWC 호환).
 /// this.#method() 호출 시 brand check 후 함수 참조 반환.
@@ -464,7 +628,7 @@ pub const PRIVATE_METHOD_GET_RUNTIME =
     \\};
     \\
 ;
-pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var __classPrivateMethodGet=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn}";
+pub const PRIVATE_METHOD_GET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_METHOD_GET_MIN ++ "=function(receiver,privateSet,fn){if(!privateSet.has(receiver))throw new TypeError(\"attempted to get private field on non-instance\");return fn}";
 
 // ============================================================
 // Static Private Field (ES2022 downlevel)
@@ -504,7 +668,17 @@ pub const STATIC_PRIVATE_FIELD_RUNTIME =
     \\};
     \\
 ;
-pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN = "var __classCheckPrivateStaticAccess=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};var __classCheckPrivateStaticFieldDescriptor=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};var __classStaticPrivateFieldSpecGet=function(receiver,classConstructor,descriptor){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"get\");return descriptor.get?descriptor.get.call(receiver):descriptor.value};var __classStaticPrivateFieldSpecSet=function(receiver,classConstructor,descriptor,value){__classCheckPrivateStaticAccess(receiver,classConstructor);__classCheckPrivateStaticFieldDescriptor(descriptor,\"set\");if(descriptor.set)descriptor.set.call(receiver,value);else descriptor.value=value;return value};";
+pub const STATIC_PRIVATE_FIELD_RUNTIME_MIN =
+    "var " ++ NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "=function(receiver,classConstructor){if(receiver!==classConstructor)throw new TypeError(\"Private static access of wrong provenance\")};" ++
+    "var " ++ NAMES.STATIC_PRIVATE_DESC_MIN ++ "=function(descriptor,action){if(descriptor===undefined)throw new TypeError(\"attempted to \"+action+\" private static field before its declaration\")};" ++
+    "var " ++ NAMES.STATIC_PRIVATE_GET_MIN ++ "=function(receiver,classConstructor,descriptor){" ++
+    NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "(receiver,classConstructor);" ++
+    NAMES.STATIC_PRIVATE_DESC_MIN ++ "(descriptor,\"get\");" ++
+    "return descriptor.get?descriptor.get.call(receiver):descriptor.value};" ++
+    "var " ++ NAMES.STATIC_PRIVATE_SET_MIN ++ "=function(receiver,classConstructor,descriptor,value){" ++
+    NAMES.STATIC_PRIVATE_ACCESS_MIN ++ "(receiver,classConstructor);" ++
+    NAMES.STATIC_PRIVATE_DESC_MIN ++ "(descriptor,\"set\");" ++
+    "if(descriptor.set)descriptor.set.call(receiver,value);else descriptor.value=value;return value};";
 
 /// __classPrivateFieldSet: instance private field 쓰기 + 값 반환.
 /// `wm.set(obj, value)` 는 WeakMap을 반환하므로 expression 값이 값 자체가 되도록 helper 사용.
@@ -516,7 +690,7 @@ pub const PRIVATE_FIELD_SET_RUNTIME =
     \\};
     \\
 ;
-pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var __classPrivateFieldSet=function(wm,obj,value){wm.set(obj,value);return value};";
+pub const PRIVATE_FIELD_SET_RUNTIME_MIN = "var " ++ NAMES.PRIVATE_FIELD_SET_MIN ++ "=function(wm,obj,value){wm.set(obj,value);return value};";
 
 // ============================================================
 // HMR (Dev Server)
@@ -725,7 +899,7 @@ pub const USING_RUNTIME =
     \\};
     \\
 ;
-pub const USING_RUNTIME_MIN = "var __using=(stack,value,async)=>{if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var __callDispose=(stack,error,hasError)=>{var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=(e)=>error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e);var next=(it)=>{while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,(e)=>{fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
+pub const USING_RUNTIME_MIN = "var " ++ NAMES.USING_MIN ++ "=(stack,value,async)=>{if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var " ++ NAMES.CALL_DISPOSE_MIN ++ "=(stack,error,hasError)=>{var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=(e)=>error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e);var next=(it)=>{while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,(e)=>{fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
 
 /// __using/__callDispose ES5 호환: arrow → function.
 pub const USING_RUNTIME_ES5 =
@@ -769,7 +943,7 @@ pub const USING_RUNTIME_ES5 =
     \\};
     \\
 ;
-pub const USING_RUNTIME_ES5_MIN = "var __using=function(stack,value,async){if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var __callDispose=function(stack,error,hasError){var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=function(e){error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e)};var next=function(it){while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,function(e){fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
+pub const USING_RUNTIME_ES5_MIN = "var " ++ NAMES.USING_MIN ++ "=function(stack,value,async){if(value!=null){if(typeof value!==\"object\"&&typeof value!==\"function\")throw new TypeError(\"Object expected\");var dispose,inner;if(async)dispose=value[Symbol.asyncDispose];if(dispose===void 0){dispose=value[Symbol.dispose];if(async)inner=dispose}if(typeof dispose!==\"function\")throw new TypeError(\"Object not disposable\");if(inner)dispose=function(){try{inner.call(this)}catch(e){return Promise.reject(e)}};stack.push([async,dispose,value])}else if(async){stack.push([async])}return value};var " ++ NAMES.CALL_DISPOSE_MIN ++ "=function(stack,error,hasError){var E=typeof SuppressedError===\"function\"?SuppressedError:function(e,s,m){var err=new Error(m);err.error=e;err.suppressed=s;return err};var fail=function(e){error=hasError?new E(e,error,\"An error was suppressed during disposal\"):(hasError=true,e)};var next=function(it){while(it=stack.pop()){try{var result=it[1]&&it[1].call(it[2]);if(it[0])return Promise.resolve(result).then(next,function(e){fail(e);return next()})}catch(e){fail(e)}}if(hasError)throw error};return next()};";
 
 // ============================================================
 // Spread Array (ES2015)
@@ -792,7 +966,13 @@ pub const SPREAD_ARRAY_RUNTIME =
     \\};
     \\
 ;
-pub const SPREAD_ARRAY_RUNTIME_MIN = "var __arrayLikeToArray=function(arr,len){if(len==null||len>arr.length)len=arr.length;for(var i=0,arr2=new Array(len);i<len;i++)arr2[i]=arr[i];return arr2};var __toConsumableArray=function(arr){if(Array.isArray(arr))return __arrayLikeToArray(arr);if(typeof Symbol!==\"undefined\"&&arr[Symbol.iterator]!=null)return Array.from(arr);if(arr&&typeof arr.length===\"number\")return __arrayLikeToArray(arr);throw new TypeError(\"Invalid attempt to spread non-iterable instance.\")};";
+pub const SPREAD_ARRAY_RUNTIME_MIN =
+    "var " ++ NAMES.ARRAY_LIKE_TO_ARRAY_MIN ++ "=function(arr,len){if(len==null||len>arr.length)len=arr.length;for(var i=0,arr2=new Array(len);i<len;i++)arr2[i]=arr[i];return arr2};" ++
+    "var " ++ NAMES.TO_CONSUMABLE_ARRAY_MIN ++ "=function(arr){" ++
+    "if(Array.isArray(arr))return " ++ NAMES.ARRAY_LIKE_TO_ARRAY_MIN ++ "(arr);" ++
+    "if(typeof Symbol!==\"undefined\"&&arr[Symbol.iterator]!=null)return Array.from(arr);" ++
+    "if(arr&&typeof arr.length===\"number\")return " ++ NAMES.ARRAY_LIKE_TO_ARRAY_MIN ++ "(arr);" ++
+    "throw new TypeError(\"Invalid attempt to spread non-iterable instance.\")};";
 
 // ============================================================
 // Append Helper

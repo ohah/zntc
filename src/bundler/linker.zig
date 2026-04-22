@@ -25,6 +25,7 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 const bundler_symbol = @import("symbol.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const profile = @import("../profile.zig");
+const rt = @import("runtime_helpers.zig");
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -217,6 +218,12 @@ pub const Linker = struct {
     /// dev mode: HMR용 모듈 참조를 __zts_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
+
+    /// #1621: minify 시 preamble/metadata 에서 __toESM/__toCommonJS 등을
+    /// $tE/$tC 등 축약 이름으로 emit. bundler 가 `self.options.minify_whitespace`
+    /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zts_g.__xxx` 경로를
+    /// 사용하므로 이 플래그는 무시된다.
+    minify_whitespace: bool = false,
 
     /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
     shim_missing_exports: bool = false,
@@ -2172,6 +2179,9 @@ pub const Linker = struct {
 pub const PreambleWriter = struct {
     buf: std.ArrayList(u8) = .empty,
     allocator: std.mem.Allocator,
+    /// #1621: minify 시 preamble 내부 runtime helper 호출을 축약 이름으로 emit.
+    /// Linker.minify_whitespace 와 동일 값. dev 경로에서는 무관 (별도 writer).
+    minify: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) PreambleWriter {
         return .{ .allocator = allocator };
@@ -2284,14 +2294,20 @@ pub const PreambleWriter = struct {
         if (!assign_only) try self.write("var ");
         try self.write(local_name);
         // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
+        // #1621: minify 시 __toESM → $tE 축약.
+        const toesm_name: []const u8 = if (self.minify) rt.NAMES.TOESM_MIN else "__toESM";
         const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
         if (is_namespace) {
-            try self.write(" = __toESM(");
+            try self.write(" = ");
+            try self.write(toesm_name);
+            try self.write("(");
             try self.write(req_var);
             try self.write(toesm_suffix);
             try self.write(";\n");
         } else if (std.mem.eql(u8, imported_name, "default")) {
-            try self.write(" = __toESM(");
+            try self.write(" = ");
+            try self.write(toesm_name);
+            try self.write("(");
             try self.write(req_var);
             try self.write(toesm_suffix);
             try self.write(".default;\n");

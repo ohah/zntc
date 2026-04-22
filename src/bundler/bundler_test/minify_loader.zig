@@ -2320,3 +2320,498 @@ test "#1618 minify: non-CJS bundle doesn't emit runtime helper" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cj=") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS") == null);
 }
+
+// ============================================================
+// #1621: Runtime helper 축약 확장 (__esm/__export/__toESM/__toCommonJS + Object.*)
+// ============================================================
+
+// Helper: ESM 모듈이 require() 로 소비되면 __esm 래핑 + __export + __toCommonJS 가
+// 모두 활성화됨 (references/esbuild: CJS-ESM interop 경로).
+fn writeEsmWrappedFixture(tmp_dir: std.fs.Dir) !void {
+    try writeFile(tmp_dir, "mod.js",
+        \\export function greet() { return 'hello'; }
+        \\export const name = 'world';
+    );
+    try writeFile(tmp_dir, "entry.ts",
+        \\const lib = require('./mod.js');
+        \\console.log(lib.greet(), lib.name);
+    );
+}
+
+test "#1621 minify: __esm/__export/__toCommonJS → $e/$x/$tC short names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeEsmWrappedFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preamble 정의 3종 모두 축약 형태로 출현해야 함.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $e=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $x=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tC=") != null);
+    // 호출부: `=$e({` (ESM wrap) / `$x(` (export getter) / `$tC(` (require rewrite).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "=$e({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$x(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tC(") != null);
+    // 원본 긴 이름은 나타나지 않아야 함.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toCommonJS") == null);
+}
+
+test "#1621 non-minify: __esm/__export/__toCommonJS long names preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeEsmWrappedFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        // non-minify: 긴 이름 유지.
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __esm = ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __export = ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __toCommonJS = ") != null);
+    // 축약 이름 선언은 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $e=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $x=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tC=") == null);
+}
+
+// Helper: CJS 모듈을 default import 하면 preamble 에서 __toESM 래핑이 활성화됨.
+fn writeToEsmFixture(tmp_dir: std.fs.Dir) !void {
+    try writeFile(tmp_dir, "lib.cjs", "module.exports = { v: 42 };");
+    try writeFile(tmp_dir, "entry.ts",
+        \\import lib from './lib.cjs';
+        \\console.log(lib.v);
+    );
+}
+
+test "#1621 minify: __toESM → $tE short name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeToEsmFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preamble 에 `var $tE=` 정의 + 호출부 `$tE(` 존재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tE=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tE(") != null);
+    // 원본 이름은 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);
+}
+
+test "#1621 minify: Object.* alias shortened ($dp/$cr/$gP/$gN/$gD/$hO/$cp)" {
+    // __toESM 런타임 preamble 내부에 Object.* alias 7종이 정의되므로,
+    // __toESM 이 활성화되면 모두 축약 이름으로 선언되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeToEsmFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // Object.* alias 축약 선언 7종 전부 존재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cr=Object.create") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gP=Object.getPrototypeOf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dp=Object.defineProperty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gN=Object.getOwnPropertyNames") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gD=Object.getOwnPropertyDescriptor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $hO=Object.prototype.hasOwnProperty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cp=") != null);
+    // 원본 긴 이름 전부 미출현.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__create") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__getProtoOf") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__getOwnPropNames") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__getOwnPropDesc") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__hasOwn") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__copyProps") == null);
+}
+
+test "#1621 minify: __commonJS body uses $r for __require" {
+    // __commonJS 팩토리 내부 `function __require()` 도 축약되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeCjsWrapFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // $cj 팩토리 body: `function $r(){...}` 형태여야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function $r()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__require") == null);
+}
+
+// ============================================================
+// #1621 확장: transformer-emitted downlevel helper 축약
+// RN/Hermes 타겟(= es5 unsupported matrix)에서 다수 emit 되므로 실측 중요.
+// ============================================================
+
+const compat_mod = @import("../../transformer/compat.zig");
+
+test "#1621 minify+es5: class → $eX/$cC/$cS 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Animal { constructor(n) { this.n = n; } speak() { return this.n; } }
+        \\class Dog extends Animal { constructor(n) { super(n); this.kind = "dog"; } }
+        \\console.log(new Dog("rex").speak());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preamble 축약: __extends → $eX, __classCallCheck → $cC, __callSuper → $cS
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $eX=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cC=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cS=function") != null);
+    // 호출부 모두 축약 이름
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$eX(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cC(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cS(") != null);
+    // 원본 이름 부재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__callSuper") == null);
+}
+
+test "#1621 non-minify+es5: class helper 원본 이름 유지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Animal { constructor(n) { this.n = n; } }
+        \\class Dog extends Animal {}
+        \\console.log(new Dog("rex"));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .unsupported = compat_mod.fromESTarget(.es5),
+        // minify 비활성 — 원본 이름 기대
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __extends = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __classCallCheck = function") != null);
+    // 축약 이름 부재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $eX=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cC=") == null);
+}
+
+test "#1621 minify+es5: async → $aS/$gn 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function run() { return await Promise.resolve(1); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $aS=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gn=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__async") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator") == null);
+}
+
+test "#1621 minify+es5: spread/rest → $tA/$aL/$rs 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function merge(a, ...rest) {
+        \\  const { x, ...others } = rest[0];
+        \\  return [...a, x, others];
+        \\}
+        \\console.log(merge([1, 2], { x: 10, y: 20, z: 30 }));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __rest (object rest) + __toConsumableArray/__arrayLikeToArray (array spread)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $rs=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tA=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $aL=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__rest") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray") == null);
+}
+
+test "#1621 minify+es5: tagged template → $tt 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function tag(strs, ...vals) { return strs.raw.join("") + vals.join(","); }
+        \\console.log(tag`hello ${1} world ${2}`);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tt=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__taggedTemplateLiteral") == null);
+}
+
+test "#1621 minify+es5: private method/field → $pI/$pG/$pF 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Box {
+        \\  #value = 0;
+        \\  #secret() { return this.#value; }
+        \\  inc() { this.#value += 1; return this.#secret(); }
+        \\}
+        \\console.log(new Box().inc());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es2021),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // private method / field helpers 축약.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $pI=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $pG=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodInit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodGet") == null);
+}
+
+test "#1621 minify+keep-names: __name → $nm 축약" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function greeter(name) { return "hi " + name; }
+        \\export function main() { return greeter("world"); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .keep_names = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $nm=") != null);
+    // 호출부도 $nm(
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$nm(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name") == null);
+}
+
+test "#1621 minify + decorator: __decorateClass/__decorateParam → $dC/$dK" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function Log(target: any, key?: any, kind?: any) { return target; }
+        \\@Log
+        \\class Service {
+        \\  @Log method(@Log arg: string) { return arg; }
+        \\}
+        \\console.log(new Service().method("x"));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .experimental_decorators = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // decorator preamble: $dC (class/member) + $dK (param) + $dp2 (defProp2)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dC=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dK=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dp2=Object.defineProperty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__decorateClass") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__decorateParam") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp2") == null);
+}
+
+test "#1621 runtime correctness: es5 minified bundle 실행 결과 일치" {
+    // es5 타겟 + minify 로 축약된 helper 들이 원본과 동일한 동작을 하는지 실측.
+    // class extends + async + spread 를 한번에 — RN 환경의 대표 패턴.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\class Base { constructor(x) { this.x = x; } tag() { return "base:" + this.x; } }
+        \\class Child extends Base {
+        \\  constructor(x, y) { super(x); this.y = y; }
+        \\  tag() { return super.tag() + ",y:" + this.y; }
+        \\}
+        \\function merge(a, ...rest) { return [...a, ...rest]; }
+        \\const inst = new Child(1, 2);
+        \\const arr = merge([inst.x], inst.y, 99);
+        \\console.log(inst.tag(), arr.join(","));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // preamble + 호출부 모두 축약 이름 일관.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $eX=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cC=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tA=function") != null);
+    // preamble 의 `var $X=...` 선언 이후 그 이름으로만 호출 — 원본 이름 절대 부재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray") == null);
+}

@@ -395,12 +395,8 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             if (!value.isNone() and self.ast.getNode(value).tag == .array_expression) return value;
 
             self.runtime_helpers.spread_array = true;
-            const fn_span = try self.ast.addString("__toConsumableArray");
-            const callee = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = fn_span,
-                .data = .{ .string_ref = fn_span },
-            });
+            // #1621: minify 시 $tA 축약. helperName 이 분기 처리.
+            const callee = try es_helpers.makeRuntimeHelperRef(self, "__toConsumableArray");
             return es_helpers.makeCallExpr(self, callee, &.{value}, span);
         }
 

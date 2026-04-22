@@ -167,6 +167,12 @@ pub const TransformOptions = struct {
     /// 예: 미참조 class expression name 익명화, 잉여 parens 제거(codegen).
     minify_syntax: bool = false,
 
+    /// `--minify-whitespace` 활성화 — #1621 runtime helper 축약 이름 사용.
+    /// es_helpers.makeRuntimeHelperRef 가 이 플래그를 읽어 `__extends` → `$eX`
+    /// 같은 단축 이름으로 AST identifier 를 생성. bundler preamble 의 `var $eX=...`
+    /// 와 정의부가 매칭된다. dev_mode 에선 __zts_g 경로라 무관.
+    minify_whitespace: bool = false,
+
     /// `--keep-names` 활성화 — 함수/클래스 이름을 `.name` 프로퍼티로 보존해야 하므로
     /// minify_syntax 기반 이름 제거 최적화를 비활성화.
     keep_names: bool = false,
@@ -3266,7 +3272,7 @@ pub const Transformer = struct {
         });
 
         // --- __taggedTemplateLiteral(cooked, [raw]) 호출 ---
-        const helper_ref = try es_helpers.makeIdentifierRef(self, "__taggedTemplateLiteral");
+        const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__taggedTemplateLiteral");
         var call_args: [2]NodeIndex = undefined;
         var call_arg_count: u32 = 1;
         call_args[0] = cooked_arr;
