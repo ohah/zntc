@@ -82,6 +82,11 @@ pub const Category = enum {
     emit_output,
     emit_metafile,
     emit_css,
+    // ── emit_output 내부 (emitter.emitWithTreeShaking 분해) ──
+    emit_prelude,
+    emit_module_pass,
+    emit_concat,
+    emit_sourcemap_finalize,
 
     // ── HMR ──
     hmr,
