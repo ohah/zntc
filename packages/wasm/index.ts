@@ -76,6 +76,17 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
         }
         return 0;
       },
+      // clock_id: 0=realtime, 1=monotonic, 2/3=cputime. precision 인자는 무시.
+      // 결과는 u64 ns 로 timestamp_ptr 에 little-endian 기록.
+      clock_time_get(clock_id: number, _precision: bigint, ts_ptr: number): number {
+        const mem = new DataView(memory().buffer);
+        const ns =
+          clock_id === 0
+            ? BigInt(Date.now()) * 1_000_000n
+            : BigInt(Math.floor(performance.now() * 1_000_000));
+        mem.setBigUint64(ts_ptr, ns, true);
+        return 0;
+      },
     },
   };
 }
