@@ -1064,6 +1064,34 @@ test "appendRuntimeHelpers: generator runtime is valid JS" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "function step") != null);
 }
 
+// #1755: GENERATOR_RUNTIME_MIN 에 닫는 brace `}` 가 하나 누락되어 RN+minify 번들이
+// SyntaxError: Unexpected end of input 으로 파싱 실패. 문자열 외부의 brace 균형 검증.
+test "GENERATOR_RUNTIME_MIN: brace balance" {
+    const rt = @import("runtime_helpers.zig");
+    const src = rt.GENERATOR_RUNTIME_MIN;
+    var opens: u32 = 0;
+    var closes: u32 = 0;
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const c = src[i];
+        // 문자열 literal 스킵 (escape 처리)
+        if (c == '"') {
+            i += 1;
+            while (i < src.len) : (i += 1) {
+                if (src[i] == '\\') {
+                    i += 1; // 다음 루프 iteration 의 i+=1 이 escape 된 char 를 지나감
+                    continue;
+                }
+                if (src[i] == '"') break;
+            }
+            continue;
+        }
+        if (c == '{') opens += 1;
+        if (c == '}') closes += 1;
+    }
+    try std.testing.expectEqual(opens, closes);
+}
+
 // ============================================================
 // banner/footer Tests
 // ============================================================
