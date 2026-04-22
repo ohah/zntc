@@ -45,6 +45,18 @@ interface NativeBuildResult {
 
 interface NativeWatchHandle {
   stop(): void;
+  /**
+   * 최신 rebuild 의 번들 전체 sourcemap JSON 을 lazy 생성해 반환 (Issue #1727 Phase B).
+   * sourcemap 비활성이거나 초기 빌드 전/stop 이후에는 null.
+   * dev server 가 `/bundle.js.map` 요청을 받을 때 호출.
+   */
+  getBundleSourceMap(): string | null;
+  /**
+   * 최신 rebuild 의 모듈별 sourcemap JSON 을 lazy 생성해 반환.
+   * `moduleId` 가 이번 rebuild 에 포함되지 않았으면 null.
+   * dev server 가 `/hmr-map/:moduleId` 요청을 받을 때 호출.
+   */
+  getHmrSourceMap(moduleId: string): string | null;
 }
 
 interface NativeModule {
@@ -363,6 +375,15 @@ interface BuildOptionsCommon {
   onReady?: (event: WatchReadyEvent) => void;
   /** watch 모드 리빌드 콜백 */
   onRebuild?: (event: WatchRebuildEvent) => void;
+  /**
+   * `.map` 파일을 디스크에 기록할지 여부 (Issue #1727 Phase B).
+   *
+   * - 기본 `true` — `bundle.js.map` 을 `output_filename + ".map"` 경로에 저장.
+   * - `false` — 디스크 I/O 생략. bungae 같은 dev server 가
+   *   {@link WatchHandle.getBundleSourceMap} / {@link WatchHandle.getHmrSourceMap}
+   *   을 호출해 lazy 엔드포인트로 serve 하는 경우 권장.
+   */
+  emitDiskSourcemap?: boolean;
 }
 
 /**
@@ -495,6 +516,23 @@ export interface WatchRebuildEvent {
 
 export interface WatchHandle {
   stop(): void;
+  /**
+   * 최신 rebuild 의 번들 전체 sourcemap JSON 을 lazy 생성해 반환 (Issue #1727 Phase B).
+   *
+   * emit 단계에서 VLQ encode + sourcesContent 첨부를 건너뛰어 HMR latency 밖으로 빼낸
+   * 비용을 요청 시점으로 지연시킨다. dev server 가 `/bundle.js.map` 요청을 받을 때 호출.
+   *
+   * - sourcemap 비활성 / 초기 빌드 전 / `stop()` 이후에는 `null`.
+   * - Metro `_processSourceMapRequest` 패턴.
+   */
+  getBundleSourceMap(): string | null;
+  /**
+   * 최신 rebuild 의 모듈별 sourcemap JSON 을 lazy 생성해 반환.
+   *
+   * dev server 가 `/hmr-map/:moduleId` 요청을 받을 때 호출.
+   * `moduleId` 가 이번 rebuild 에 포함되지 않았으면 `null`.
+   */
+  getHmrSourceMap(moduleId: string): string | null;
 }
 
 export interface ZtsPlugin {

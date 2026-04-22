@@ -58,6 +58,8 @@ const BundleOptions = bundler_mod.BundleOptions;
 const Platform = zts_lib.codegen.codegen.Platform;
 const JsxRuntime = zts_lib.codegen.codegen.JsxRuntime;
 const EmitFormat = bundler_mod.emitter.EmitOptions.Format;
+const SourceMap = zts_lib.codegen.sourcemap;
+const types_mod = zts_lib.bundler.types;
 const c = @cImport({
     @cDefine("NAPI_VERSION", "8");
     @cInclude("node_api.h");
@@ -1195,6 +1197,15 @@ const WatchAsyncData = struct {
     /// watch worker 수명 내내 유지되어 변경 안 된 모듈의 emit 을 스킵.
     compiled_cache: bundler_mod.CompiledOutputCache,
 
+    /// Lazy sourcemap 캐시 (Issue #1727 Phase B). 구조는 rspack `MappedAssetsCache`
+    /// 와 동형 — chunk-level / version-based invalidation 같은 확장은 이 struct 안으로 수용.
+    sm_cache: LazySourceMapCache = .{},
+
+    /// `.map` 파일을 디스크에 기록할지 여부. bungae 등 lazy 엔드포인트를 갖춘 dev 서버는
+    /// false 로 보내 rebuild 경로의 디스크 I/O 를 완전히 제거할 수 있다. CLI 빌드는
+    /// 기본 true 유지.
+    emit_disk_sourcemap: bool = true,
+
     fn deinit(self: *WatchAsyncData) void {
         // 소유된 문자열 해제
         for (self.owned_strings.items) |s| native_alloc.free(s);
@@ -1207,7 +1218,82 @@ const WatchAsyncData = struct {
         self.napi_plugins.deinit(native_alloc);
         self.zig_plugins.deinit(native_alloc);
         self.compiled_cache.deinit();
+        self.sm_cache.deinit(native_alloc);
         native_alloc.destroy(self);
+    }
+};
+
+/// Handle-scoped lazy sourcemap 캐시 (Issue #1727 Phase B).
+///
+/// rebuild 마다 bundler 가 이관한 `SourceMapBuilder` 들을 보관해 dev server 가
+/// `/bundle.js.map` / `/hmr-map/:moduleId` 요청을 받으면 NAPI getter 로 JSON 을 즉석
+/// 생성. HMR 경로에서 VLQ encode 29ms 를 경로 밖으로 빼낸다. rebuild (worker thread) 와
+/// getter (NAPI main thread) 가 동시에 접근할 수 있어 `mutex` 로 직렬화 — builder.buf
+/// 가 재사용 버퍼이므로 동시 `generateJSON` 호출도 racy.
+///
+/// rspack `MappedAssetsCache(FxDashMap)` 과 동형 구조. 향후 chunk-level sourcemap
+/// (code splitting + HMR 조합) 이나 version-based invalidation 같은 확장은 이 struct
+/// 안으로 수용하기 위해 sub-struct 로 분리.
+const LazySourceMapCache = struct {
+    /// 최신 rebuild 의 번들 레벨 sourcemap builder. null 이면 lazy 비활성 상태거나 초기
+    /// 빌드 실패.
+    bundle: ?*SourceMap.SourceMapBuilder = null,
+    /// 최신 rebuild 의 모듈 id → per-module sourcemap builder. key/value 모두 caller 가
+    /// 전달한 allocator 소유 — `deinit` / `clear` 가 정리한다.
+    modules: std.StringHashMapUnmanaged(*SourceMap.SourceMapBuilder) = .{},
+    /// swap / getter 호출을 직렬화.
+    mutex: std.Thread.Mutex = .{},
+
+    /// 현재 캐시된 bundle + module builder 들을 모두 free + 맵 clear. 내부에서 lock
+    /// 하지 않으므로 caller 가 `mutex` 를 이미 잡았거나 (stop 경로처럼) 동시 접근이
+    /// 없음을 보장해야 한다.
+    fn clear(self: *LazySourceMapCache, allocator: std.mem.Allocator) void {
+        if (self.bundle) |sm| sm.destroy(allocator);
+        self.bundle = null;
+        var it = self.modules.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.destroy(allocator);
+        }
+        self.modules.clearRetainingCapacity();
+    }
+
+    /// rebuild 완료 후 builder 들을 swap. 이전 builder 는 free. **내부에서 `mutex` 를
+    /// 직접 acquire** — caller 는 추가 lock 불필요.
+    ///
+    /// Side effect: `module_codes` 의 각 엔트리 `.sm_builder` 를 null 로 되돌린다
+    /// (소유권 이전). 이후 `ModuleDevCode.freeAll` 이 double-free 없이 나머지 필드만 정리.
+    fn swap(
+        self: *LazySourceMapCache,
+        allocator: std.mem.Allocator,
+        new_bundle: ?*SourceMap.SourceMapBuilder,
+        module_codes: []types_mod.ModuleDevCode,
+    ) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clear(allocator);
+        self.bundle = new_bundle;
+        for (module_codes) |*mc| {
+            const builder = mc.sm_builder orelse continue;
+            const id_copy = allocator.dupe(u8, mc.id) catch {
+                builder.destroy(allocator);
+                mc.sm_builder = null;
+                continue;
+            };
+            self.modules.put(allocator, id_copy, builder) catch {
+                allocator.free(id_copy);
+                builder.destroy(allocator);
+                mc.sm_builder = null;
+                continue;
+            };
+            mc.sm_builder = null;
+        }
+    }
+
+    /// 최종 정리 — clear 후 map 자체도 deinit.
+    fn deinit(self: *LazySourceMapCache, allocator: std.mem.Allocator) void {
+        self.clear(allocator);
+        self.modules.deinit(allocator);
     }
 };
 
@@ -1503,6 +1589,24 @@ fn addWatchRootFiles(
     ) catch {};
 }
 
+/// 단일 파일 빌드 산출물의 `.map` 을 디스크에 기록. lazy 경로 (`sourcemap_json == null`)
+/// 이거나 `enabled == false` 이면 no-op. 실패는 silently ignore — dev server 경로에서
+/// disk I/O 장애가 빌드 흐름을 막으면 안 됨.
+fn writeSourcemapFile(
+    allocator: std.mem.Allocator,
+    output_filename: []const u8,
+    sourcemap_json: ?[]const u8,
+    enabled: bool,
+) void {
+    if (!enabled) return;
+    const sm = sourcemap_json orelse return;
+    const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{output_filename}) catch return;
+    defer allocator.free(map_path);
+    const sm_file = std.fs.cwd().createFile(map_path, .{}) catch return;
+    defer sm_file.close();
+    sm_file.writeAll(sm) catch {};
+}
+
 fn watchWorkerThread(async_data: *WatchAsyncData) void {
     const allocator = native_alloc;
     const bundle_opts = async_data.options;
@@ -1520,6 +1624,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     // rebuild 루프와 동일한 collect_module_codes 로 맞춘다 — options_hash 가 같아야
     // first-build 의 cache put 이 첫 rebuild 에서 그대로 hit 된다.
     initial_opts.collect_module_codes = bundle_opts.dev_mode;
+    // Lazy sourcemap (Issue #1727 Phase B): dev watch 세션에서는 initial/rebuild 모두
+    // builder 를 handle 에 캐시해 `/bundle.js.map`, `/hmr-map/:id` 요청을 즉석 서빙.
+    // rebuild 경로의 `emit_sourcemap_finalize` 29ms 를 HMR latency 밖으로 빼낸다.
+    if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) initial_opts.sourcemap.lazy = true;
 
     var bundler = Bundler.init(allocator, initial_opts);
     var result = bundler.bundle() catch |err| {
@@ -1571,6 +1679,18 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 allocator.free(code_copy);
             };
         }
+    }
+
+    // Lazy sourcemap (Issue #1727 Phase B): initial build 의 builder 들을 handle 로 이관.
+    // `swapSourceMapCache` 가 각 `mc.sm_builder` 를 null 로 되돌리므로 `result.deinit` 의
+    // `ModuleDevCode.freeAll` 이 이중 해제하지 않는다. bundle builder 도 같은 규칙.
+    if (initial_opts.sourcemap.lazy) {
+        const mut_codes: []types_mod.ModuleDevCode = if (result.module_dev_codes) |codes|
+            @constCast(codes)
+        else
+            &.{};
+        async_data.sm_cache.swap(native_alloc, result.sourcemap_builder, mut_codes);
+        result.sourcemap_builder = null;
     }
 
     var persistent_resolve_cache = ResolveCache.init(allocator, .{
@@ -1651,16 +1771,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
             if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
                 defer file.close();
                 file.writeAll(result.output) catch {};
-                if (result.sourcemap) |sm| {
-                    const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{bundle_opts.output_filename}) catch null;
-                    if (map_path) |mp| {
-                        defer allocator.free(mp);
-                        if (std.fs.cwd().createFile(mp, .{})) |sm_file| {
-                            defer sm_file.close();
-                            sm_file.writeAll(sm) catch {};
-                        } else |_| {}
-                    }
-                }
+                writeSourcemapFile(allocator, bundle_opts.output_filename, result.sourcemap, async_data.emit_disk_sourcemap);
             } else |_| {}
         }
     }
@@ -1731,10 +1842,13 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         incremental_opts.collect_module_codes = bundle_opts.dev_mode;
         incremental_opts.module_store = &persistent_store;
         incremental_opts.compiled_cache = &async_data.compiled_cache;
+        // Lazy sourcemap (Issue #1727 Phase B): initial build 와 동일 경로 유지. cache 키
+        // 일치 필수 — initial 에서 lazy=true 로 put 된 엔트리가 rebuild 에서 hit 해야 함.
+        if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) incremental_opts.sourcemap.lazy = true;
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
-        const rebuild_result = rebundler.bundle() catch |err| {
+        var rebuild_result = rebundler.bundle() catch |err| {
             // 재빌드 실패
             const event = allocator.create(WatchRebuildEvent) catch continue;
             const err_name: [:0]const u8 = @errorName(err);
@@ -1768,18 +1882,23 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 if (std.fs.cwd().createFile(bundle_opts.output_filename, .{})) |file| {
                     defer file.close();
                     file.writeAll(rebuild_result.output) catch {};
-                    if (rebuild_result.sourcemap) |sm| {
-                        const map_path = std.fmt.allocPrint(allocator, "{s}.map", .{bundle_opts.output_filename}) catch null;
-                        if (map_path) |mp| {
-                            defer allocator.free(mp);
-                            if (std.fs.cwd().createFile(mp, .{})) |sm_file| {
-                                defer sm_file.close();
-                                sm_file.writeAll(sm) catch {};
-                            } else |_| {}
-                        }
-                    }
+                    // lazy 는 `rebuild_result.sourcemap == null` 이라 helper 안에서 자동 skip.
+                    // eager + `emit_disk_sourcemap=false` 도 skip — bungae 처럼 dev server 가
+                    // 직접 lazy 라우트를 제공하는 경우.
+                    writeSourcemapFile(allocator, bundle_opts.output_filename, rebuild_result.sourcemap, async_data.emit_disk_sourcemap);
                 } else |_| {}
             }
+        }
+
+        // Lazy sourcemap (Issue #1727): rebuild 산출 builder 들을 handle 로 swap.
+        // 이전 rebuild 의 builder 는 `swapSourceMapCache` 내부에서 free.
+        if (incremental_opts.sourcemap.lazy) {
+            const mut_codes: []types_mod.ModuleDevCode = if (rebuild_result.module_dev_codes) |codes|
+                @constCast(codes)
+            else
+                &.{};
+            async_data.sm_cache.swap(native_alloc, rebuild_result.sourcemap_builder, mut_codes);
+            rebuild_result.sourcemap_builder = null;
         }
 
         // rebuild 이벤트 생성
@@ -1980,6 +2099,88 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
     async_data.deinit();
 }
 
+/// handle.getBundleSourceMap() — 번들 전체 sourcemap JSON 을 lazy 생성해 반환.
+/// handle 에 캐시된 `latest_bundle_sm` builder 가 있으면 `generateJSON` 을 호출해 V3 JSON
+/// 문자열을 NAPI string 으로 돌려준다. sourcemap 비활성/미캐시/stop 후에는 null.
+/// `sm_mutex` 로 rebuild swap 및 다른 getter 호출과 직렬화 (builder.buf 재진입 금지).
+fn napiWatchGetBundleSourceMap(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 0;
+    var this: c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
+        return throwError(env, "failed to get this");
+    }
+
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+        return js_null;
+    }
+    const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr.?));
+
+    async_data.sm_cache.mutex.lock();
+    defer async_data.sm_cache.mutex.unlock();
+
+    const builder = async_data.sm_cache.bundle orelse {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+        return js_null;
+    };
+
+    const json = builder.generateJSON(async_data.options.output_filename) catch |err| {
+        return throwError(env, @errorName(err));
+    };
+
+    var js_str: c.napi_value = undefined;
+    if (c.napi_create_string_utf8(env, json.ptr, json.len, &js_str) != c.napi_ok) {
+        return throwError(env, "failed to create string");
+    }
+    return js_str;
+}
+
+/// handle.getHmrSourceMap(moduleId) — per-module sourcemap JSON 을 lazy 생성해 반환.
+/// 최신 rebuild 에서 수집된 모듈별 builder 중 `moduleId` 에 해당하는 것을 찾아 `generateJSON`.
+/// 모듈이 최신 rebuild 에 포함되지 않았거나 sourcemap 비활성이면 null.
+fn napiWatchGetHmrSourceMap(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    var this: c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, &this, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+    if (argc < 1) return throwError(env, "getHmrSourceMap requires moduleId argument");
+
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+        return js_null;
+    }
+    const async_data: *WatchAsyncData = @ptrCast(@alignCast(ptr.?));
+
+    const module_id = getStringArg(env, argv[0], native_alloc) orelse return throwError(env, "moduleId is empty");
+    defer native_alloc.free(module_id);
+
+    async_data.sm_cache.mutex.lock();
+    defer async_data.sm_cache.mutex.unlock();
+
+    const builder = async_data.sm_cache.modules.get(module_id) orelse {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+        return js_null;
+    };
+
+    const json = builder.generateJSON(module_id) catch |err| {
+        return throwError(env, @errorName(err));
+    };
+
+    var js_str: c.napi_value = undefined;
+    if (c.napi_create_string_utf8(env, json.ptr, json.len, &js_str) != c.napi_ok) {
+        return throwError(env, "failed to create string");
+    }
+    return js_str;
+}
+
 /// stop() 네이티브 메서드 — JS에서 handle.stop() 호출 시
 fn napiWatchStop(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     // this 객체에서 WatchAsyncData 포인터 추출
@@ -2098,6 +2299,9 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     }
 
     async_data.options = opts;
+    // `emitDiskSourcemap` 옵션 (기본 true) — bungae 등 lazy 라우트를 갖춘 dev server 는
+    // false 로 보내 rebuild 경로의 `.map` 디스크 I/O 를 완전히 제거한다.
+    async_data.emit_disk_sourcemap = getObjectBool(env, argv[0], "emitDiskSourcemap", true);
 
     // onReady 콜백 추출
     const on_ready_fn = getNamedProperty(env, argv[0], "onReady");
@@ -2176,6 +2380,16 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     var stop_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "stop", "stop".len, napiWatchStop, null, &stop_fn);
     _ = c.napi_set_named_property(env, js_handle, "stop", stop_fn);
+
+    // Lazy sourcemap getter 2 개 추가 (Issue #1727 Phase B).
+    // dev server (bungae 등) 가 `/bundle.js.map` / `/hmr-map/:id` 요청받으면 호출.
+    var get_bundle_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "getBundleSourceMap", "getBundleSourceMap".len, napiWatchGetBundleSourceMap, null, &get_bundle_fn);
+    _ = c.napi_set_named_property(env, js_handle, "getBundleSourceMap", get_bundle_fn);
+
+    var get_hmr_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "getHmrSourceMap", "getHmrSourceMap".len, napiWatchGetHmrSourceMap, null, &get_hmr_fn);
+    _ = c.napi_set_named_property(env, js_handle, "getHmrSourceMap", get_hmr_fn);
 
     // 워커 스레드 시작
     const thread = std.Thread.spawn(.{}, watchWorkerThread, .{async_data}) catch {
