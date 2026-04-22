@@ -6,6 +6,7 @@ const Module = @import("module.zig").Module;
 const types = @import("types.zig");
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
+const module_store_mod = @import("module_store.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
 fn createFile(dir: std.fs.Dir, path: []const u8) !void {
@@ -583,4 +584,150 @@ test "matchSideEffectsPatterns: no patterns = no side effects" {
         "/app/node_modules/pkg",
         patterns,
     ));
+}
+
+// Issue #1727 §3 — buildIncremental 의 watcher-driven mtime cache.
+// changed_files 가 전달되면 set 에 없는 모듈의 stat 을 skip 하고 store 의 cached mtime 을 신뢰.
+// `reparsed_indices.len` 으로 cache hit/miss 를 관찰 — disk content 가 바뀌었어도 stat 을
+// 건너뛰면 cache 가 신선한 것으로 판정되어 reparse 가 발생하지 않는다.
+
+/// Build 1 (full) — store 채우기.
+fn populateStoreForChangedFilesTest(
+    cache: *resolve_cache_mod.ResolveCache,
+    store: *module_store_mod.PersistentModuleStore,
+    entry: []const u8,
+) !void {
+    var graph = ModuleGraph.init(std.testing.allocator, cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+    for (graph.modules.items) |*m| {
+        if (m.parse_arena == null) continue;
+        store.putModule(m.path, m, m.mtime);
+    }
+}
+
+test "buildIncremental: changed_files=empty → stat skip → cache hit even after disk change" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const V = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try populateStoreForChangedFilesTest(&cache, &store, entry);
+
+    // mtime resolution(ns) 차이 보장. macOS APFS 는 ns 까지 추적하지만 같은 syscall window
+    // 안에서 두 번 쓰면 동일 mtime 이 될 수 있어 명시적 sleep.
+    std.Thread.sleep(20 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
+
+    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer empty.deinit();
+
+    var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph2.deinit();
+    const r = try graph2.buildIncremental(&.{entry}, &store, &empty);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // changed_files 가 비어 있어 entry.ts 의 stat 을 skip → 디스크가 바뀌었어도 cache hit.
+    try std.testing.expectEqual(@as(usize, 0), r.reparsed_indices.len);
+}
+
+test "buildIncremental: changed_files contains entry → stat → cache miss after disk change" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const V = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try populateStoreForChangedFilesTest(&cache, &store, entry);
+
+    std.Thread.sleep(20 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
+
+    var changed: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer changed.deinit();
+    try changed.put(entry, {});
+
+    var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph2.deinit();
+    const r = try graph2.buildIncremental(&.{entry}, &store, &changed);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // entry 가 changed set 에 있으므로 stat 정상 수행 → 새 mtime 으로 cache miss → reparse 1건.
+    try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
+}
+
+test "buildIncremental: changed_files=null → 기존 동작 (전체 stat) — 변경된 파일 reparse" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const V = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try populateStoreForChangedFilesTest(&cache, &store, entry);
+
+    std.Thread.sleep(20 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "entry.ts", "export const V = 2;");
+
+    var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph2.deinit();
+    const r = try graph2.buildIncremental(&.{entry}, &store, null);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // null fallback — 모든 모듈 stat. 디스크 변경된 entry 는 mtime mismatch → cache miss.
+    try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
+}
+
+test "buildIncremental: changed_files=empty + cache miss (new module) → 강제 stat 후 정상 파싱" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const V = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    // store 비어있음 — entry 가 cache 에 없는 신규 모듈.
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer empty.deinit();
+
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    const r = try graph.buildIncremental(&.{entry}, &store, &empty);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    // changed_files 에 없지만 store 에도 없으므로 skip 조건 불성립 → stat → 신규 파싱.
+    try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.modules.items.len);
+    try std.testing.expectEqual(Module.State.ready, graph.modules.items[0].state);
 }
