@@ -1760,3 +1760,37 @@ test "CJS: ESM-wrapped named import from CJS — namespace rename must survive c
     // binding that the broken destructuring creates.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry$1.getEnforcing(") == null);
 }
+
+// #1754: namespace import 가 member access (ns.prop) 로 먼저 수집된 후
+// bare reference (ns 자체를 값으로) 로 opaque 전환될 때, opaque 경로에서
+// `access.members.deinit` 만 호출하여 이전에 append 된 ArrayList 의 backing
+// buffer 가 leak. GPA debug allocator 가 leak 검출하므로 이 테스트 자체가 regression.
+test "ESM ns-access: opaque path (bare ref after member access) doesn't leak" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.js",
+        \\export function greet() { return 'hi'; }
+        \\export function wave() { return 'wave'; }
+        \\export const tag = 'tag';
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import * as utils from './utils.js';
+        \\// 먼저 member access 여러 번 (access.members 에 append 됨)
+        \\console.log(utils.greet(), utils.wave(), utils.tag);
+        \\// 이어서 bare reference (opaque 로 전환 → 이전 ArrayList 들 해제되어야)
+        \\const all = utils;
+        \\console.log(Object.keys(all).length);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 실제 검증은 GPA debug allocator 의 leak 검출에 위임 —
+    // leak 발생 시 `zig build test` 가 테스트 실패 처리.
+}
